@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import type { AbilityRequest } from "@wpmgr/api";
 
 import { CHANGED_COPY, UNDO_RETRY_COPY } from "./ability-card-model";
+import { isPageEdit } from "./page-edit-model";
 import {
   CODE_REQUEST_CHANGED,
   CODE_UNDO_RETRY,
@@ -42,7 +43,7 @@ export function useAbilityCardActions() {
       {
         onSuccess: () =>
           toast.success(
-            r.ability_name === "wpmgr/rest-write"
+            r.ability_name === "wpmgr/rest-write" || isPageEdit(r)
               ? "Approved. WPMgr will make the change shortly."
               : "Approved. WPMgr will create the draft shortly.",
           ),
@@ -69,27 +70,36 @@ export function useAbilityCardActions() {
       {
         onSuccess: (done) => {
           const rest = r.ability_name === "wpmgr/rest-write";
+          const edit = isPageEdit(r);
           switch (done.undo_state) {
             case "undone":
-              toast.success(rest ? "Put back the way it was." : "Moved to the trash.");
+              toast.success(edit ? "Change undone." : rest ? "Put back the way it was." : "Moved to the trash.");
               break;
             case "refused_published":
               toast.error(
-                rest ? "WPMgr could not undo this change." : "The draft has been published since, so WPMgr left it alone.",
+                edit
+                  ? "This page is published now. Change it in Elementor."
+                  : rest
+                    ? "WPMgr could not undo this change."
+                    : "The draft has been published since, so WPMgr left it alone.",
               );
               break;
             case "refused_conflict":
               toast.error(
-                rest
-                  ? "Someone edited this page after the change, so WPMgr left it as it is."
-                  : "The draft was edited since, so WPMgr left it alone.",
+                edit
+                  ? "WPMgr won't undo: the page changed after this change."
+                  : rest
+                    ? "Someone edited this page after the change, so WPMgr left it as it is."
+                    : "The draft was edited since, so WPMgr left it alone.",
               );
               break;
             case "failed":
               toast.error(
-                rest
-                  ? "WPMgr could not put the old title back. Check the page in WordPress."
-                  : "WPMgr could not move the draft to the trash.",
+                edit
+                  ? "WPMgr could not undo this change. Check the page in Elementor."
+                  : rest
+                    ? "WPMgr could not put the old title back. Check the page in WordPress."
+                    : "WPMgr could not move the draft to the trash.",
               );
               break;
             default:

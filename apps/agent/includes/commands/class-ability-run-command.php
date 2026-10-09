@@ -10,8 +10,12 @@ use WPMgr\Agent\Abilities\AbilityInterception;
 use WPMgr\Agent\Abilities\AbilityLedger;
 use WPMgr\Agent\Abilities\AbilitySideEffects;
 use WPMgr\Agent\Abilities\Builders\BuilderAdapter;
+use WPMgr\Agent\Abilities\Builders\BuilderDocumentSnapshot;
 use WPMgr\Agent\Abilities\Builders\BuilderPageCreate;
+use WPMgr\Agent\Abilities\Builders\BuilderPageEdit;
+use WPMgr\Agent\Abilities\Builders\BuilderPageStructure;
 use WPMgr\Agent\Abilities\Builders\BuilderRegistry;
+use WPMgr\Agent\Abilities\Builders\DraftEligibility;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
 use WPMgr\Agent\Abilities\OwnAbilities;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
@@ -47,6 +51,13 @@ if (!defined('ABSPATH')) {
  *   entry_sha256 hex sha256 of that text (all but ledger)
  *   input       string, JSON text of an object (default "{}"); revert takes none
  *   expected    object {precheck_digest, preview_digest} (write)
+ *   allowed_draft_ids  list of at most one post id: the drafts the control
+ *               plane names as WPMgr's, for wpmgr/page-structure and
+ *               wpmgr/page-edit (optional)
+ *   revert      object, the undo's signed parameters: exactly
+ *               {snapshot_sha256} for wpmgr/page-edit (revert); absent,
+ *               {} or {chain} for wpmgr/page-create, chain the page-edit
+ *               requests made on the created draft, in order (revert)
  *
  * WPMgr's own wpmgr/* abilities run through their own handlers. Any other
  * ability (a vendor's or core's) runs only in read mode, only on WordPress
@@ -57,7 +68,9 @@ if (!defined('ABSPATH')) {
  * by the content service principal, never publishes, verifies the stored
  * bytes, and records a ledger row keyed by request_id. Its revert trashes
  * that draft, taking the post id only from the ledger row of the
- * token-bound request_id, and only while the draft is unchanged.
+ * token-bound request_id, and only while the draft is unchanged, or, for a
+ * page-builder draft, changed only by the wpmgr/page-edit changes the
+ * revert names and this site's ledger records.
  *
  * A page-builder editor ("builder:<id>") resolves through BuilderRegistry
  * against the entry's limits.builders_enabled before anything is built; the
@@ -240,7 +253,7 @@ final class AbilityRunCommand implements CommandInterface
             if ($class !== 'write') {
                 return $this->fail('mode_class_mismatch', 'write and revert modes need a write ability');
             }
-            if ($name !== OwnAbilities::NAME_PAGE_CREATE && $name !== OwnAbilities::NAME_REST_WRITE) {
+            if (!in_array($name, [OwnAbilities::NAME_PAGE_CREATE, OwnAbilities::NAME_REST_WRITE, OwnAbilities::NAME_PAGE_EDIT], true)) {
                 return $this->fail('mode_not_available', 'this agent runs no other write ability');
             }
         }
@@ -248,7 +261,7 @@ final class AbilityRunCommand implements CommandInterface
             if (($entry->approval_mode ?? null) !== 'per_call') {
                 return $this->fail('entry_approval_invalid', 'a write entry must require approval per call');
             }
-            $want = $name === OwnAbilities::NAME_REST_WRITE ? 'post_fields' : 'created_post_trash';
+            $want = [OwnAbilities::NAME_REST_WRITE => 'post_fields', OwnAbilities::NAME_PAGE_EDIT => BuilderPageEdit::SNAPSHOT][$name] ?? 'created_post_trash';
             if (($entry->snapshot ?? null) !== $want) {
                 return $this->fail('snapshot_strategy_invalid', 'this write needs the ' . $want . ' snapshot strategy');
             }
@@ -256,6 +269,9 @@ final class AbilityRunCommand implements CommandInterface
 
         if ($name === OwnAbilities::NAME_PAGE_CREATE) {
             return $this->pageCreate($mode, (string) $requestId, $entrySha, $req, $entry);
+        }
+        if ($name === OwnAbilities::NAME_PAGE_EDIT) {
+            return $this->pageEdit($mode, (string) $requestId, $entrySha, $req, $entry);
         }
         if ($name === OwnAbilities::NAME_REST_READ || $name === OwnAbilities::NAME_REST_WRITE) {
             return $this->restCall($mode, $name, (string) $requestId, $entrySha, $req);
@@ -278,8 +294,132 @@ final class AbilityRunCommand implements CommandInterface
         if ($mode === 'precheck') {
             return $this->precheck($name, (string) $requestId, $entrySha, $inputText, $input);
         }
+        if ($name === OwnAbilities::NAME_PAGE_STRUCTURE) {
+            return $this->pageStructure($entry, $entrySha, $input, $req);
+        }
 
         return $this->read($name, $entrySha, $input);
+    }
+
+    /**
+     * wpmgr/page-structure: the drafts the signed parameters name and the
+     * adapter the entry enables, then the read (BuilderPageStructure).
+     *
+     * @param object $entry    The catalogue entry.
+     * @param string $entrySha Entry hash.
+     * @param object $input    Validated input.
+     * @param object $req      Decoded p.
+     * @return array<string,mixed>
+     */
+    private function pageStructure(object $entry, string $entrySha, object $input, object $req): array
+    {
+        $allowed = DraftEligibility::signedIds($req);
+        if ($allowed === null) {
+            return $this->fail('bad_params', 'allowed_draft_ids must be a list of at most one post id');
+        }
+        $resolved = BuilderPageStructure::adapterFor($entry, $this->builderSeam === null ? null : ($this->builderSeam)());
+        $adapter  = $resolved['adapter'] ?? null;
+        if ($adapter === null) {
+            return $this->fail((string) ($resolved['code'] ?? 'builder_not_enabled'), (string) ($resolved['detail'] ?? 'no page builder can be used'));
+        }
+
+        return $this->read(OwnAbilities::NAME_PAGE_STRUCTURE, $entrySha, $input, static fn (): array => BuilderPageStructure::run($input, $allowed, $adapter));
+    }
+
+    /**
+     * wpmgr/page-edit by mode: the input text, the drafts the signed
+     * parameters name, then BuilderPageEdit's precheck, or its write under
+     * the request claim after the replay check. A revert takes no input and
+     * no draft list: only p.revert's snapshot hash, then BuilderPageEdit's
+     * undo.
+     *
+     * @param string $mode      Mode.
+     * @param string $requestId Request id.
+     * @param string $entrySha  Entry hash.
+     * @param object $req       Decoded p.
+     * @param object $entry     The catalogue entry.
+     * @return array<string,mixed>
+     */
+    private function pageEdit(string $mode, string $requestId, string $entrySha, object $req, object $entry): array
+    {
+        if ($mode === 'revert') {
+            // W3: the post comes from the ledger row, never from the call.
+            $inputText = $req->input ?? '{}';
+            $decoded   = is_string($inputText) ? json_decode($inputText, false, 4) : null;
+            if (!is_object($decoded) || get_object_vars($decoded) !== []) {
+                return $this->fail('bad_input', 'revert takes no input; the post comes from the ledger');
+            }
+            $hash = BuilderPageEdit::revertHash($req->revert ?? null);
+            if ($hash === null) {
+                return $this->fail('bad_params', 'revert must be {"snapshot_sha256": "<lowercase sha256 hex>"}');
+            }
+            $seam = $this->builderSeam === null ? null : ($this->builderSeam)();
+
+            return $this->asPrincipal(static fn (): array => BuilderPageEdit::revert($requestId, $hash, $seam));
+        }
+        $inputText = $req->input ?? null;
+        if (!is_string($inputText) || strlen($inputText) > self::MAX_INPUT_BYTES) {
+            return $this->fail('bad_input', 'input must be JSON text of an object');
+        }
+        $allowed = DraftEligibility::signedIds($req);
+        if ($allowed === null) {
+            return $this->fail('bad_params', 'allowed_draft_ids must be a list of at most one post id');
+        }
+        $seam     = $this->builderSeam === null ? null : ($this->builderSeam)();
+        $media    = fn (array $ids): array => $this->pageCreateMedia(array_map('intval', array_values($ids)));
+        $inputSha = hash('sha256', $inputText);
+
+        if ($mode === 'precheck') {
+            return $this->asPrincipal(function () use ($inputText, $entry, $allowed, $requestId, $media, $seam, $entrySha, $inputSha): array {
+                $plan = BuilderPageEdit::plan($inputText, $entry, $allowed, $requestId, $media, $seam);
+                if (isset($plan['refusal'])) {
+                    return $plan['refusal'];
+                }
+
+                return [
+                    'ok'               => true,
+                    'outcome'          => 'prechecked',
+                    'mode'             => 'precheck',
+                    'ability'          => OwnAbilities::NAME_PAGE_EDIT,
+                    'request_id'       => $requestId,
+                    'valid'            => true,
+                    'base_fingerprint' => $plan['base_fingerprint'],
+                    'preview_digest'   => $plan['preview_digest'],
+                    'precheck_digest'  => $this->precheckDigest($entrySha, $inputSha, $plan['base_fingerprint'], $plan['preview_digest']),
+                    'preview'          => $plan['preview'],
+                ];
+            });
+        }
+
+        // mode === 'write'
+        $expected = $req->expected ?? null;
+        $expPre   = is_object($expected) ? ($expected->precheck_digest ?? null) : null;
+        $expPrev  = is_object($expected) ? ($expected->preview_digest ?? null) : null;
+        if (!is_string($expPre) || preg_match(self::RE_HEX64, $expPre) !== 1
+            || !is_string($expPrev) || preg_match(self::RE_HEX64, $expPrev) !== 1) {
+            return $this->fail('bad_expected', 'expected.precheck_digest and expected.preview_digest are required');
+        }
+        BuilderDocumentSnapshot::sweep();
+        $row = AbilityLedger::get($requestId);
+        if ($row !== null) {
+            return $this->alreadyApplied($requestId, $row);
+        }
+        if (!AbilityLedger::claimRequest($requestId)) {
+            return $this->fail('request_in_flight', 'this request is already running');
+        }
+        try {
+            return $this->asPrincipal(function () use ($inputText, $entry, $allowed, $requestId, $media, $seam, $entrySha, $inputSha, $expPre, $expPrev): array {
+                $row = AbilityLedger::get($requestId);
+                if ($row !== null) {
+                    return $this->alreadyApplied($requestId, $row);
+                }
+                $digest = fn (string $baseFp, string $previewDigest): string => $this->precheckDigest($entrySha, $inputSha, $baseFp, $previewDigest);
+
+                return BuilderPageEdit::write($inputText, $entry, $allowed, $requestId, $entrySha, $expPre, $expPrev, $digest, $media, $seam);
+            });
+        } finally {
+            AbilityLedger::releaseRequest($requestId);
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -1291,8 +1431,12 @@ final class AbilityRunCommand implements CommandInterface
             if (get_object_vars($input) !== []) {
                 return $this->fail('bad_input', 'revert takes no input; the object comes from the ledger');
             }
+            $chain = BuilderPageCreate::revertChain($req->revert ?? null);
+            if ($chain === null) {
+                return $this->fail('bad_params', 'revert must be absent, {} or {"chain": [<page-edit request ids>]}');
+            }
 
-            return $this->pageCreateRevert($requestId);
+            return $this->pageCreateRevert($requestId, $chain);
         }
         if ($mode === 'read') {
             return $this->fail('mode_class_mismatch', 'read mode needs a read ability');
@@ -1795,12 +1939,14 @@ final class AbilityRunCommand implements CommandInterface
     /**
      * Person undo for page-create: trash the created draft, only if it is
      * unchanged since creation and still a draft. The post id comes only from
-     * the ledger row of this token-bound request_id (W3).
+     * the ledger row of this token-bound request_id (W3). A builder draft may
+     * also carry the page-edit changes $chain names (BuilderPageCreate).
      *
-     * @param string $requestId Request id.
+     * @param string       $requestId Request id.
+     * @param list<string> $chain     The page-edit requests p.revert names.
      * @return array<string,mixed>
      */
-    private function pageCreateRevert(string $requestId): array
+    private function pageCreateRevert(string $requestId, array $chain = []): array
     {
         $row = AbilityLedger::get($requestId);
         if ($row === null) {
@@ -1844,7 +1990,7 @@ final class AbilityRunCommand implements CommandInterface
         // revisions of the draft, and its fingerprint covers the builder rows.
         $builderRow = array_key_exists('builder', $row) ? $row : null;
         try {
-            return $this->pageCreateRevertClaimed($requestId, $postId, $completed ? $afterFp : null, $builderRow);
+            return $this->pageCreateRevertClaimed($requestId, $postId, $completed ? $afterFp : null, $builderRow, $chain);
         } finally {
             if ($recovered) {
                 AbilityLedger::releaseRequest($requestId);
@@ -1858,21 +2004,24 @@ final class AbilityRunCommand implements CommandInterface
      * never modified since insert.
      *
      * A builder draft ($builderRow set) is instead checked by
-     * BuilderPageCreate::revertProblem() against its ledger row.
+     * BuilderPageCreate::revertProblem() against its ledger row and the
+     * page-edit changes $chain names, read under the claim. Only a builder
+     * draft has page-edit changes: any other draft with a chain is refused.
      *
      * @param string                   $requestId  Request id.
      * @param int                      $postId     Post id, from the ledger row.
      * @param string|null              $afterFp    Recorded after-fingerprint, or null.
      * @param array<string,mixed>|null $builderRow The ledger row of a builder draft, or null.
+     * @param list<string>             $chain      The page-edit requests p.revert names.
      * @return array<string,mixed>
      */
-    private function pageCreateRevertClaimed(string $requestId, int $postId, ?string $afterFp, ?array $builderRow = null): array
+    private function pageCreateRevertClaimed(string $requestId, int $postId, ?string $afterFp, ?array $builderRow = null, array $chain = []): array
     {
         if (!AbilityLedger::claimTarget($postId)) {
             return $this->fail('target_in_flight', 'another engine call holds this post');
         }
         try {
-            return $this->asPrincipal(function (int $principal) use ($requestId, $postId, $afterFp, $builderRow): array {
+            return $this->asPrincipal(function (int $principal) use ($requestId, $postId, $afterFp, $builderRow, $chain): array {
                 clean_post_cache($postId);
                 $post = get_post($postId);
                 if (!is_object($post)) {
@@ -1889,10 +2038,12 @@ final class AbilityRunCommand implements CommandInterface
                     return $this->fail('conflict', 'the post is not the one this request created');
                 }
                 if ($builderRow !== null) {
-                    $problem = BuilderPageCreate::revertProblem($postId, $builderRow);
+                    $problem = BuilderPageCreate::revertProblem($postId, $builderRow, $chain);
                     if ($problem !== null) {
                         return $this->fail('created_post_touched', $problem);
                     }
+                } elseif ($chain !== []) {
+                    return $this->fail('created_post_touched', BuilderPageCreate::CHAIN_BROKEN);
                 } else {
                     if ($afterFp !== null && !hash_equals($afterFp, PageCreateBuilder::documentFingerprint($post))) {
                         return $this->fail('conflict', 'someone edited this draft after it was created');
@@ -2090,12 +2241,13 @@ final class AbilityRunCommand implements CommandInterface
     /**
      * Execute an own read ability, under the interception guards on WP 7.1+.
      *
-     * @param string $name     Ability.
-     * @param string $entrySha Entry hash.
-     * @param object $input    Validated input.
+     * @param string                                 $name     Ability.
+     * @param string                                 $entrySha Entry hash.
+     * @param object                                 $input    Validated input.
+     * @param (\Closure(): array<string,mixed>)|null $run      The read, when it is not OwnAbilities::run().
      * @return array<string,mixed>
      */
-    private function read(string $name, string $entrySha, object $input): array
+    private function read(string $name, string $entrySha, object $input, ?\Closure $run = null): array
     {
         $guards = new AbilityGuards();
         $armed  = AbilityGuards::supported();
@@ -2105,7 +2257,7 @@ final class AbilityRunCommand implements CommandInterface
         $result = null;
         try {
             try {
-                $result = OwnAbilities::run($name, $input);
+                $result = $run === null ? OwnAbilities::run($name, $input) : $run();
             } catch (AbilityInterception $e) {
                 // The guards recorded why; the violations below refuse.
                 $result = null;

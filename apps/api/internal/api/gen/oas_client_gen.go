@@ -3826,11 +3826,13 @@ type Invoker interface {
 	// Undoes a done request inside its undo window, or removes the draft a failed or given-up page
 	// creation left on the site. Offered exactly when the request's `undo_offered` is true; the server
 	// decides which undo runs from the request's state. For a created page this moves the draft to the
-	// trash, only while it is unchanged and still a draft. The site takes the page from its own record of
-	// this request; nothing in the call names it. `undo_state` in the answer is the result: undone,
-	// refused_conflict, refused_published or failed. When the site did not settle the undo (unreachable,
-	// or busy with this request) the answer is 503 `ability_request_undo_retry` and the undo is offered
-	// again.
+	// trash, only while it is still a draft and nothing but WPMgr changed it: its creation and, for a
+	// page-builder draft, the page edits WPMgr applied to it, which the undo names to the site. For a page
+	// edit it puts back what that change wrote and nothing else, newest change first. The site takes the
+	// page from its own record of this request; nothing in the call names it. `undo_state` in the answer
+	// is the result: undone, refused_conflict, refused_published or failed. When the site did not settle
+	// the undo (unreachable, busy with this request, or unable to read its own copy of the page) the
+	// answer is 503 `ability_request_undo_retry` and the undo is offered again.
 	//
 	// POST /api/v1/sites/{siteId}/ai/ability-requests/{requestId}/undo
 	UndoAbilityRequest(ctx context.Context, request *UndoAbilityRequestReq, params UndoAbilityRequestParams) (UndoAbilityRequestRes, error)
@@ -47292,11 +47294,13 @@ func (c *Client) sendUnblockSiteIP(ctx context.Context, request *UnblockIPReques
 // Undoes a done request inside its undo window, or removes the draft a failed or given-up page
 // creation left on the site. Offered exactly when the request's `undo_offered` is true; the server
 // decides which undo runs from the request's state. For a created page this moves the draft to the
-// trash, only while it is unchanged and still a draft. The site takes the page from its own record of
-// this request; nothing in the call names it. `undo_state` in the answer is the result: undone,
-// refused_conflict, refused_published or failed. When the site did not settle the undo (unreachable,
-// or busy with this request) the answer is 503 `ability_request_undo_retry` and the undo is offered
-// again.
+// trash, only while it is still a draft and nothing but WPMgr changed it: its creation and, for a
+// page-builder draft, the page edits WPMgr applied to it, which the undo names to the site. For a page
+// edit it puts back what that change wrote and nothing else, newest change first. The site takes the
+// page from its own record of this request; nothing in the call names it. `undo_state` in the answer
+// is the result: undone, refused_conflict, refused_published or failed. When the site did not settle
+// the undo (unreachable, busy with this request, or unable to read its own copy of the page) the
+// answer is 503 `ability_request_undo_retry` and the undo is offered again.
 //
 // POST /api/v1/sites/{siteId}/ai/ability-requests/{requestId}/undo
 func (c *Client) UndoAbilityRequest(ctx context.Context, request *UndoAbilityRequestReq, params UndoAbilityRequestParams) (UndoAbilityRequestRes, error) {

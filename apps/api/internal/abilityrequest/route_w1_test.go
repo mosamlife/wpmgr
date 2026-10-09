@@ -83,15 +83,15 @@ func TestE3RouteChangedUnit(t *testing.T) {
 // window open, from the reply and from the ledger.
 func TestRestWriteOutcomes(t *testing.T) {
 	now := time.Now()
-	oc := classifyWrite(agentcmd.AbilityRunResponse{OK: true, Outcome: "updated", Mode: "write"}, nil, now)
+	oc := classifyWrite("", agentcmd.AbilityRunResponse{OK: true, Outcome: "updated", Mode: "write"}, nil, now)
 	if oc.outcome != OutcomeApplied || !oc.undoUntil.Valid || oc.createdPostID != nil {
 		t.Fatalf("updated reply: %+v", oc)
 	}
-	oc, ok := outcomeFromStored([]byte(`{"ok":true,"outcome":"updated","post_id":412}`), now)
+	oc, ok := outcomeFromStored("", []byte(`{"ok":true,"outcome":"updated","post_id":412}`), now)
 	if !ok || oc.outcome != OutcomeApplied {
 		t.Fatalf("updated ledger: %+v ok=%v", oc, ok)
 	}
-	oc = classifyWrite(agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{Code: "post_touched"}, now)
+	oc = classifyWrite("", agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{Code: "post_touched"}, now)
 	if oc.outcome != OutcomeRefused || oc.code == nil || *oc.code != "post_touched" {
 		t.Fatalf("refusal: %+v", oc)
 	}

@@ -38,7 +38,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 # A developer's own seams must not leak into the cases below.
 unset RT_NPX RT_NODE RT_PINS_FILE RT_BLUEPRINT RT_VERSIONS RT_FIXTURES_DIR RT_AGENT_INCLUDES
-unset RT_PLANT RT_HARNESS_ARGS RT_TIMEOUT RT_ALLOW_FILE_URLS RT_LAYOUTS FAKE_MODE FAKE_ARGS_FILE FAKE_FAIL_VERSION FAKE_FAIL_LAYOUT
+unset RT_PLANT RT_HARNESS_ARGS RT_TIMEOUT RT_TEST_KILL_SETTLE RT_ALLOW_FILE_URLS RT_LAYOUTS FAKE_MODE FAKE_ARGS_FILE FAKE_FAIL_VERSION FAKE_FAIL_LAYOUT
 real_cache="${RT_CACHE:-}"
 unset RT_CACHE
 
@@ -170,6 +170,7 @@ case "${FAKE_MODE:-ok}" in
   fail) echo "rt: FAIL [x containers y] stored: tree: want 1, got 2"; echo "rt: SUMMARY elementor=$ver layout=$layout $tail_ok failed=1"; echo "rt: RESULT FAIL"; exit 1 ;;
   crash) echo "PHP Fatal error: boom"; exit 255 ;;
   hang) sleep 30; exit 0 ;;
+  termexit) exec sleep 30 ;;
   download) mkdir -p "$HOME/.wordpress-playground"; : >"$HOME/.wordpress-playground/custom-ffffffff.zip"; echo "$good"; echo "rt: RESULT OK"; exit 0 ;;
 esac
 FAKE
@@ -353,6 +354,15 @@ said "  and the layout that failed is named" "Elementor 4.3.4 (sections) FAILED"
 said "  and both layouts were run" "2 boot(s), 1 version(s) x 2 layout(s)"
 expect "a boot that never answers is red within the timeout" 2 "${offline[@]}" "RT_CACHE=$tmp/c7" RT_VERSIONS=4.3.4 FAKE_MODE=hang RT_TIMEOUT=2
 said "  and it says how long it waited" "no result after 2s"
+# A boot that dies the instant it is told to stop can be reaped before the check has read its
+# status. The wait after the kill makes that certain; the verdict must still be the timeout.
+expect "a boot that exits at once when it is stopped is a timeout, not a missing verdict" 2 "${offline[@]}" "RT_CACHE=$tmp/c7" RT_VERSIONS=4.3.4 RT_LAYOUTS=containers FAKE_MODE=termexit RT_TIMEOUT=2 RT_TEST_KILL_SETTLE=1
+said "  and it says how long it waited" "no result after 2s"
+not_said "  and it does not call the timeout a missing verdict" "gave no usable verdict"
+expect "the same boot without the wait after the kill is a timeout too" 2 "${offline[@]}" "RT_CACHE=$tmp/c7" RT_VERSIONS=4.3.4 RT_LAYOUTS=containers FAKE_MODE=termexit RT_TIMEOUT=2
+said "  and it says how long it waited" "no result after 2s"
+expect "a wait after the kill that is not a number is red" 2 "${offline[@]}" "RT_CACHE=$tmp/c7" RT_TEST_KILL_SETTLE=soon
+said "  and it says what is wrong" "RT_TEST_KILL_SETTLE must be"
 expect "a CLI that downloads its own WordPress is red" 2 "${offline[@]}" "RT_CACHE=$tmp/c8" RT_VERSIONS=4.3.4 FAKE_MODE=download
 said "  and it says so" "downloaded a WordPress of its own"
 
@@ -488,7 +498,7 @@ sections text golden"
     "'containers'       => false,"
   mutant guard "its undo guard skipped" "rt: FAIL [4.3.4 agent-containers person-edit] refused:" \
     commands/class-ability-run-command.php \
-    '$problem = BuilderPageCreate::revertProblem($postId, $builderRow);' \
+    '$problem = BuilderPageCreate::revertProblem($postId, $builderRow, $chain);' \
     '$problem = null;'
 
   mkdir -p "$tmp/fx-empty"

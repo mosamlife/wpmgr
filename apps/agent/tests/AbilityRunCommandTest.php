@@ -501,7 +501,7 @@ final class AbilityRunCommandTest extends TestCase
             $this->assertSame('wpmgr', $row['owner_kind']);
             $this->assertFalse($row['owner_mismatch']);
             $this->assertMatchesRegularExpression('/^sha256:[0-9a-f]{64}$/', $row['schema_struct_sha256']);
-            $this->assertSame(in_array($row['name'], [OwnAbilities::NAME_PAGE_CREATE, OwnAbilities::NAME_REST_WRITE], true) ? 'write' : 'read', $row['class']);
+            $this->assertSame(in_array($row['name'], [OwnAbilities::NAME_PAGE_CREATE, OwnAbilities::NAME_REST_WRITE, OwnAbilities::NAME_PAGE_EDIT], true) ? 'write' : 'read', $row['class']);
         }
     }
 

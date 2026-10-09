@@ -4,6 +4,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { PageError } from "@/components/feedback/page-error";
 
 import { AbilityRequestCard } from "./ability-request-card";
+import { laterEditCount } from "./page-edit-model";
 import { useAbilityCardActions } from "./use-ability-card-actions";
 import {
   CODE_AGENT_OUTDATED,
@@ -147,6 +148,7 @@ function AbilityRequestList({ siteId, siteUrl }: { siteId: string; siteUrl?: str
               key={r.id}
               request={r}
               siteUrl={siteUrl}
+              laterEdits={laterEditCount(r, requests)}
               notice={actions.notices[r.id] ?? null}
               onApprove={actions.handleApprove}
               onDecline={actions.handleDecline}

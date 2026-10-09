@@ -15,6 +15,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 	"github.com/mosamlife/wpmgr/apps/api/internal/wpversion"
 )
 
@@ -25,6 +26,23 @@ const (
 	UndoRefusedPublished = "refused_published"
 	UndoFailed           = "failed"
 )
+
+// Undo codes (m169 undo_code): why a failed undo failed, for the two answers
+// the person is told about in their own words. The table admits only these,
+// and only on a failed undo.
+const (
+	// UndoCodeSnapshotTampered: the copy the site kept for the change, its
+	// record and the hash the undo sent are not one; nothing was changed.
+	UndoCodeSnapshotTampered = "snapshot_tampered"
+	// UndoCodeRestoreMismatch: the site's put-back did not read back as the
+	// copy.
+	UndoCodeRestoreMismatch = "restore_mismatch"
+)
+
+var undoCodes = map[string]struct{}{
+	UndoCodeSnapshotTampered: {},
+	UndoCodeRestoreMismatch:  {},
+}
 
 // Undo budgets. Once Begin has committed in_progress, the agent call and the
 // finish transaction run on a context detached from the request, so a client
@@ -41,10 +59,39 @@ const (
 type undoTxRunner func(ctx context.Context, p domain.Principal, fn func(q *sqlc.Queries, tx pgx.Tx) error) error
 
 // CodeUndoUnavailable refuses an undo that is not open: not done, already
-// undone or started, or past its window.
+// undone or started, past its window, or a page edit with a later edit of
+// the same page still in effect.
 const CodeUndoUnavailable = "ability_request_undo_unavailable"
 
+// CodeUndoBusy refuses, before anything is sent, the undo of a page-builder
+// draft while a page edit of that draft is still being made or undone. The
+// undo stays available.
+const CodeUndoBusy = "ability_request_undo_busy"
+
+// Undo refusal copy.
+const (
+	msgUndoUnavailable = "This change can no longer be undone from WPMgr."
+	msgUndoLaterFirst  = "Undo the later change first."
+	msgUndoBusy        = "A change to this draft is still being finished. Try again in a minute."
+	msgUndoChainLong   = "WPMgr has changed this draft too many times for one undo to check, so it cannot move it to the trash. Remove it in WordPress if you do not want it."
+)
+
+func errUndoUnavailable() error { return domain.Conflict(CodeUndoUnavailable, msgUndoUnavailable) }
+
+// editListLimit is ListEditRequestsForPost's row limit. A list that long may
+// be missing the newest edits, so a draft with that many edit requests is
+// never trashed on its strength.
+const editListLimit = 200
+
 // undoResultFor maps the agent's revert answer onto an undo result.
+//
+// A page edit's undo answers refused_published when the page is published,
+// scheduled or private now, target_not_draft when it is no longer a draft or
+// is gone, and conflict when the page is open, has an autosave, or a later
+// change rewrote what this change wrote (changed_after_this_change): nothing
+// was written in any of these. snapshot_tampered (the kept copy, its ledger
+// record and the hash this undo sent are not one) and restore_mismatch (the
+// put-back did not read back as the copy) finish it as failed.
 func undoResultFor(resp agentcmd.AbilityRunResponse, err error) string {
 	if err == nil {
 		if resp.Outcome == "reverted" || resp.Outcome == "already_reverted" {
@@ -55,18 +102,146 @@ func undoResultFor(resp agentcmd.AbilityRunResponse, err error) string {
 	var refusal *agentcmd.AbilityRunRefusal
 	if errors.As(err, &refusal) {
 		switch refusal.Code {
-		case "created_post_published":
+		case "created_post_published", "refused_published":
 			return UndoRefusedPublished
-		case "conflict", "created_post_touched", "target_in_flight", "post_touched":
+		case "conflict", "created_post_touched", "target_in_flight", "post_touched", "target_not_draft":
 			return UndoRefusedConflict
+		case "snapshot_tampered", "restore_mismatch":
+			return UndoFailed
 		}
 	}
 	return UndoFailed
 }
 
+// undoCodeFor is the undo_code recorded with result: the site's refusal
+// code when the undo failed with one of the closed undo codes, else nil. A
+// code is never recorded with any other result.
+func undoCodeFor(result string, err error) *string {
+	var refusal *agentcmd.AbilityRunRefusal
+	if result != UndoFailed || !errors.As(err, &refusal) {
+		return nil
+	}
+	if _, ok := undoCodes[refusal.Code]; !ok {
+		return nil
+	}
+	code := refusal.Code
+	return &code
+}
+
+// undoCodeOf is undo_code on the wire: the stored code when it is one of the
+// closed undo codes on a failed undo, else nil.
+func undoCodeOf(r sqlc.AssistantAbilityRequest) *string {
+	if r.UndoCode == nil || r.UndoState == nil || *r.UndoState != UndoFailed {
+		return nil
+	}
+	if _, ok := undoCodes[*r.UndoCode]; !ok {
+		return nil
+	}
+	code := *r.UndoCode
+	return &code
+}
+
+// undoRevertFor is the revert's signed parameters for row, read in the
+// transaction that starts the undo, or the refusal that stops the undo
+// before anything is sent. Nil parameters send no p.revert.
+//
+// A wpmgr/page-edit undo sends the snapshot hash its applied outcome
+// recorded, and runs only for the newest applied edit of its post that has
+// not been undone: undo goes newest first.
+//
+// A wpmgr/page-create undo names every applied wpmgr/page-edit of the draft
+// it created, in the order they were applied, so the agent can tell WPMgr's
+// own changes to the draft from anyone else's. Each applied edit's precheck
+// read the page after the edit before it had been applied, so the order the
+// requests were made in is the order they were applied in. An undone edit is
+// named too: its revisions are still WPMgr's. The undo waits while an edit of
+// the draft is approved and not yet sent, sent and not answered, still being
+// resolved from the site's ledger, or being undone. With no applied edit
+// nothing is sent, as before page edits existed.
+func undoRevertFor(ctx context.Context, q *sqlc.Queries, r sqlc.AssistantAbilityRequest) (*agentcmd.AbilityRunRevert, error) {
+	switch r.AbilityName {
+	case mcp.AbilityPageEdit:
+		if r.TargetPostID == nil || r.SnapshotSha256 == nil || !snapshotHashPattern.MatchString(*r.SnapshotSha256) {
+			return nil, errUndoUnavailable()
+		}
+		newest, err := q.NewestUndoableEditForPost(ctx, sqlc.NewestUndoableEditForPostParams{
+			TenantID: r.TenantID, SiteID: r.SiteID, PostID: *r.TargetPostID,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errUndoUnavailable()
+		}
+		if err != nil {
+			return nil, err
+		}
+		if newest.ID != r.ID {
+			return nil, domain.Conflict(CodeUndoUnavailable, msgUndoLaterFirst)
+		}
+		return &agentcmd.AbilityRunRevert{SnapshotSHA256: *r.SnapshotSha256}, nil
+	case mcp.AbilityPageCreate:
+		if r.CreatedPostID == nil || *r.CreatedPostID < 1 {
+			return nil, nil
+		}
+		edits, err := q.ListEditRequestsForPost(ctx, sqlc.ListEditRequestsForPostParams{
+			TenantID: r.TenantID, SiteID: r.SiteID, PostID: *r.CreatedPostID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return revertChainFor(r, edits)
+	}
+	return nil, nil
+}
+
+// revertChainFor is a page-create undo's chain from the edit requests of
+// the post it created (ListEditRequestsForPost, oldest first): see
+// undoRevertFor. Only edits made since this creation are its own.
+func revertChainFor(r sqlc.AssistantAbilityRequest, edits []sqlc.ListEditRequestsForPostRow) (*agentcmd.AbilityRunRevert, error) {
+	if len(edits) >= editListLimit {
+		return nil, domain.Conflict(CodeUndoUnavailable, msgUndoChainLong)
+	}
+	var chain []uuid.UUID
+	for _, e := range edits {
+		if e.CreatedAt.Before(r.CreatedAt) {
+			continue
+		}
+		if editSettling(e) {
+			return nil, domain.Conflict(CodeUndoBusy, msgUndoBusy)
+		}
+		if e.State == "done" && e.Outcome != nil && *e.Outcome == OutcomeApplied {
+			chain = append(chain, e.ID)
+		}
+	}
+	if len(chain) == 0 {
+		return nil, nil
+	}
+	if len(chain) > agentcmd.AbilityRunMaxRevertChain {
+		return nil, domain.Conflict(CodeUndoUnavailable, msgUndoChainLong)
+	}
+	return &agentcmd.AbilityRunRevert{Chain: chain}, nil
+}
+
+// editSettling: the site may still apply this edit, or still be undoing it.
+// Approved and not yet sent, sent and not answered, its outcome still being
+// read from the site's ledger (outcome_unknown with no outcome), or its undo
+// started and not finished. A write WPMgr gave up resolving is settled.
+func editSettling(e sqlc.ListEditRequestsForPostRow) bool {
+	switch {
+	case e.State == "approved", e.State == "dispatched":
+		return true
+	case e.State == "outcome_unknown" && e.Outcome == nil:
+		return true
+	case e.UndoState != nil && *e.UndoState == "in_progress":
+		return true
+	}
+	return false
+}
+
 // Undo starts and finishes a person's undo of a done request. The agent
 // takes the object from its own ledger row for this request id (W3): the
-// revert carries no input and never the created post id.
+// revert carries no input and never a post id. Its only parameters are
+// p.revert (undoRevertFor): the snapshot hash a page edit's outcome
+// recorded, or the page edits of a draft WPMgr created, which name ledger
+// rows on the site and nothing the agent acts on directly.
 func (s *Service) Undo(ctx context.Context, p domain.Principal, siteID, requestID uuid.UUID) (sqlc.AssistantAbilityRequest, error) {
 	var none sqlc.AssistantAbilityRequest
 	if err := requireSession(p); err != nil {
@@ -80,6 +255,7 @@ func (s *Service) Undo(ctx context.Context, p domain.Principal, siteID, requestI
 	var entryBytes []byte
 	var entrySum string
 	var recovery bool
+	var revert *agentcmd.AbilityRunRevert
 	err := s.runAsCaller(ctx, p, func(q *sqlc.Queries, tx pgx.Tx) error {
 		var err error
 		row, err = q.GetAbilityRequestForSite(ctx, sqlc.GetAbilityRequestForSiteParams{TenantID: p.TenantID, ID: requestID, SiteID: siteID})
@@ -95,9 +271,12 @@ func (s *Service) Undo(ctx context.Context, p domain.Principal, siteID, requestI
 		}
 		kind := undoKindFor(row, site.AgentVersion, s.clock())
 		if kind == undoKindNone {
-			return domain.Conflict(CodeUndoUnavailable, "This change can no longer be undone from WPMgr.")
+			return errUndoUnavailable()
 		}
 		recovery = kind == undoKindRecovery
+		if revert, err = undoRevertFor(ctx, q, row); err != nil {
+			return err
+		}
 		siteURL = site.Url
 		e, err := q.GetAbilityCatalogueEntry(ctx, row.EntryID)
 		if err != nil {
@@ -122,16 +301,19 @@ func (s *Service) Undo(ctx context.Context, p domain.Principal, siteID, requestI
 			return err
 		}
 		if n != 1 {
-			return domain.Conflict(CodeUndoUnavailable, "This change can no longer be undone from WPMgr.")
+			return errUndoUnavailable()
 		}
 		if s.audit == nil {
 			return errors.New("audit recorder not wired")
 		}
+		md := map[string]any{"request_id": requestID.String(), "site_id": siteID.String(), "phase": "started", "recovery": recovery}
+		if revert != nil && revert.Chain != nil {
+			md["chain_length"] = len(revert.Chain)
+		}
 		_, err = s.audit.RecordInTx(ctx, tx, audit.Event{
 			TenantID: p.TenantID, ActorType: audit.ActorUser, ActorID: p.UserID.String(),
 			Action: audit.ActionAssistantRequestUndone, TargetType: audit.TargetTypeAssistantAbilityRequest,
-			TargetID: requestID.String(),
-			Metadata: map[string]any{"request_id": requestID.String(), "site_id": siteID.String(), "phase": "started", "recovery": recovery},
+			TargetID: requestID.String(), Metadata: md,
 		})
 		return err
 	})
@@ -148,6 +330,7 @@ func (s *Service) Undo(ctx context.Context, p domain.Principal, siteID, requestI
 	sendCtx, cancelSend := context.WithTimeout(context.WithoutCancel(ctx), undoSendBudget)
 	resp, sendErr := s.agent.AbilityRun(sendCtx, siteID, siteURL, agentcmd.AbilityRunCall{
 		Mode: agentcmd.AbilityRunModeRevert, RequestID: requestID, Entry: entryBytes, EntrySHA256: entrySum,
+		Revert: revert,
 	})
 	cancelSend()
 	if undoRetryable(sendErr) {
@@ -256,15 +439,22 @@ func recoveryUndoSupported(agentVersion string) bool {
 	return agentVersion != "" && wpversion.Compare(agentVersion, agentcmd.MinAgentVersionForRecoveryUndo) >= 0
 }
 
-// UndoOffered is the card's "Undo" button, computed server-side.
-func UndoOffered(r sqlc.AssistantAbilityRequest, agentVersion string, now time.Time) bool {
-	return undoKindFor(r, agentVersion, now) != undoKindNone
+// UndoOffered is the card's "Undo" button, computed server-side. newestEdit
+// says whether a wpmgr/page-edit row is the newest applied edit of its post
+// that has not been undone (Service.NewestEdits); an older edit offers no
+// undo, since undo goes newest first. It is ignored for every other ability.
+func UndoOffered(r sqlc.AssistantAbilityRequest, agentVersion string, newestEdit bool, now time.Time) bool {
+	if undoKindFor(r, agentVersion, now) == undoKindNone {
+		return false
+	}
+	return r.AbilityName != mcp.AbilityPageEdit || newestEdit
 }
 
 // undoRetryable is true when the revert's answer settles nothing: the call
 // did not reach the site, timed out, or its reply was lost, or the site was
-// busy with this request or its post. The undo is released so the person can
-// retry; a revert that did run answers already_reverted next time.
+// busy with this request or its post, or could not read its own database
+// (a page edit's kept copy, or the page). The undo is released so the person
+// can retry; a revert that did run answers already_reverted next time.
 //
 // A definite answer that a resend cannot change is not retryable and
 // finishes the undo as failed: any other refusal, a 4xx from the site (the
@@ -283,7 +473,11 @@ func undoRetryable(err error) bool {
 	}
 	var refusal *agentcmd.AbilityRunRefusal
 	if errors.As(err, &refusal) {
-		return refusal.Code == "target_in_flight" || refusal.Code == "request_in_flight"
+		switch refusal.Code {
+		case "target_in_flight", "request_in_flight", "snapshot_unreadable", "data_unreadable":
+			return true
+		}
+		return false
 	}
 	if errors.Is(err, agentcmd.ErrAbilityRunMalformed) {
 		return false
@@ -394,7 +588,8 @@ func (s *Service) recordUndoFinish(ctx context.Context, run undoTxRunner, p doma
 	var after sqlc.AssistantAbilityRequest
 	err := run(fctx, p, func(q *sqlc.Queries, tx pgx.Tx) error {
 		if _, err := q.FinishAbilityRequestUndo(fctx, sqlc.FinishAbilityRequestUndoParams{
-			UndoResult: result, Restored: reportRestored(report), TenantID: p.TenantID, ID: requestID,
+			UndoResult: result, Restored: reportRestored(report), UndoCode: undoCodeFor(result, sendErr),
+			TenantID: p.TenantID, ID: requestID,
 		}); err != nil {
 			return err
 		}

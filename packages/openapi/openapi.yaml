@@ -9552,13 +9552,17 @@ paths:
         failed or given-up page creation left on the site. Offered exactly
         when the request's `undo_offered` is true; the server decides which
         undo runs from the request's state. For a created page this moves
-        the draft to the trash, only while it is unchanged and still a
-        draft. The site takes the page from its own record of this request;
-        nothing in the call names it. `undo_state` in the answer is the
-        result: undone, refused_conflict, refused_published or failed. When
-        the site did not settle the undo (unreachable, or busy with this
-        request) the answer is 503 `ability_request_undo_retry` and the undo
-        is offered again.
+        the draft to the trash, only while it is still a draft and nothing
+        but WPMgr changed it: its creation and, for a page-builder draft,
+        the page edits WPMgr applied to it, which the undo names to the
+        site. For a page edit it puts back what that change wrote and
+        nothing else, newest change first. The site takes the page from its
+        own record of this request; nothing in the call names it.
+        `undo_state` in the answer is the result: undone, refused_conflict,
+        refused_published or failed. When the site did not settle the undo
+        (unreachable, busy with this request, or unable to read its own
+        copy of the page) the answer is 503 `ability_request_undo_retry`
+        and the undo is offered again.
       tags: [ai-requests]
       parameters:
         - $ref: "#/components/parameters/SiteId"
@@ -9592,7 +9596,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: The change can no longer be undone from WPMgr
+          description: |
+            The change can no longer be undone from WPMgr
+            (`ability_request_undo_unavailable`; for a page edit, also while
+            a later edit of the same page is still in effect), or a page
+            edit of the draft is still being made or undone
+            (`ability_request_undo_busy`; the undo stays offered). Nothing
+            was sent to the site.
           content:
             application/json:
               schema:
@@ -20515,6 +20525,29 @@ components:
         decided_at: { type: string, format: date-time, nullable: true }
         outcome: { type: string, nullable: true }
         outcome_code: { type: string, nullable: true }
+        outcome_detail:
+          type: [string, "null"]
+          enum: [changed_since_read, editor_open, autosave_pending, null]
+          description: |
+            Which conflict refused a wpmgr/page-edit (`outcome_code`
+            conflict): the page changed after the AI read it
+            (changed_since_read), someone has it open in Elementor
+            (editor_open), or someone has unsaved Elementor changes on it
+            (autosave_pending). Null for every other request. A closed
+            value, never the site's own words.
+        outside_change:
+          type: [string, "null"]
+          enum: [active_kit, other_posts, terms, site_settings, users, null]
+          description: |
+            What a wpmgr/page-edit refused with `outcome_code`
+            side_effect_detected changed outside the page while Elementor
+            saved it: the site's active Elementor kit (active_kit), another
+            post or page or its data (other_posts), categories or tags
+            (terms), a site setting (site_settings), or a user account, a
+            role or the site's administrators (users). Null when the site
+            named changes of more than one kind or of none of these, and
+            for every other request. A closed value, never the site's own
+            words.
         not_sent_reason: { type: string, nullable: true }
         created_post_id: { type: integer, format: int64, nullable: true }
         trashed: { type: boolean, nullable: true }
@@ -20528,14 +20561,25 @@ components:
             needing attention. Null when nothing needed putting back, and for
             every other ability.
         undo_state: { type: string, nullable: true }
+        undo_code:
+          type: [string, "null"]
+          enum: [snapshot_tampered, restore_mismatch, null]
+          description: |
+            Why a failed undo (`undo_state` failed) failed: the copy the
+            site kept of the page for this change was changed on the site,
+            so WPMgr did not use it and nothing changed (snapshot_tampered),
+            or the site's put-back did not read back as that copy
+            (restore_mismatch). Null for every other request. A closed
+            value, never the site's own words.
         undo_available_until: { type: string, format: date-time, nullable: true }
         undo_offered:
           type: boolean
           description: |
             Whether `POST .../undo` would start an undo now: a done request
-            inside its undo window, or the draft a failed or given-up page
-            creation left on the site. Show the undo action exactly when
-            this is true.
+            inside its undo window (for a page edit, only the newest applied
+            edit of its page not yet undone), or the draft a failed or
+            given-up page creation left on the site. Show the undo action
+            exactly when this is true.
         resolve_gave_up:
           type: boolean
           description: |
@@ -20576,6 +20620,167 @@ components:
             editor, and for every other ability. A card for a request whose
             editor is a page builder cannot be shown in full without it and
             must not be approvable.
+        page_edit:
+          allOf:
+            - $ref: "#/components/schemas/AbilityRequestPageEdit"
+          nullable: true
+          description: |
+            The card of a wpmgr/page-edit request: the post, the page
+            builder, each change and the page's outline after the edit, as
+            WPMgr checked them against the site's precheck. Null for every
+            other ability. A page-edit request without it cannot be shown in
+            full and must not be approvable.
+    AbilityRequestPageEdit:
+      type: object
+      description: |
+        A wpmgr/page-edit card. Every value under a `from_the_site` member
+        came from the site: render it as plain text in the "From the site"
+        slot. A change's `after` is the text the AI asked for. The other
+        strings are WPMgr's.
+      required: [kind, post, builder, changes, checked_at]
+      properties:
+        kind:
+          type: string
+          enum: [builder_edit]
+        post:
+          type: object
+          required: [id, from_the_site]
+          properties:
+            id:
+              type: integer
+              format: int64
+              description: The post the edit changes, a draft WPMgr created.
+            from_the_site:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+        builder:
+          type: object
+          required: [id, version, format]
+          properties:
+            id:
+              type: string
+              description: The page builder, such as `elementor`.
+            version:
+              type: string
+              description: The builder's version on the site; render it as plain text.
+            format:
+              type: string
+              description: What the builder edits the page in, such as `classic`.
+        changes:
+          type: array
+          description: One per operation, in the order they apply.
+          items:
+            $ref: "#/components/schemas/AbilityRequestPageEditChange"
+        after_outline:
+          $ref: "#/components/schemas/AbilityRequestPageOutline"
+        after_outline_omitted:
+          type: boolean
+          description: |
+            True when the page's outline after the edit was too large to
+            keep on the card; `after_outline` is then absent.
+        checked_at:
+          type: string
+          format: date-time
+          description: When WPMgr checked the edit on the site.
+    AbilityRequestPageEditChange:
+      type: object
+      description: |
+        One change. `set_text` changes `field` of node `ref` to `after`;
+        `insert` puts new nodes (`new_refs`) by `anchor`; `replace` puts
+        `new_refs` where `ref` was; `remove` takes `ref` and everything in it
+        off the page; `move` puts `ref` by `anchor`.
+      required: [op]
+      properties:
+        op:
+          type: string
+          enum: [set_text, insert, replace, remove, move]
+        ref: { type: string }
+        kind:
+          type: string
+          description: What the node is, such as `heading` or `paragraph`.
+        level:
+          type: integer
+          format: int64
+          description: A heading's level.
+        field:
+          type: string
+          enum: [text, url, alt, caption]
+        after:
+          type: string
+          description: The text the AI asked for (set_text).
+        new_refs:
+          type: array
+          items: { type: string }
+          description: Every node the change makes, parent first.
+        anchor:
+          $ref: "#/components/schemas/AbilityRequestPageEditAnchor"
+        from_the_site:
+          type: object
+          required: [before]
+          properties:
+            before:
+              type: object
+              additionalProperties: { type: string }
+              description: The node's text before the change, field by field.
+    AbilityRequestPageEditAnchor:
+      type: object
+      description: |
+        Where an insert or a move puts its nodes: `after`, `before` or
+        `into` the node `ref`, `first` or `last` among its children for
+        `into`. `label` is WPMgr's words for a node it does not edit.
+      required: [ref, how, kind]
+      properties:
+        ref: { type: string }
+        how:
+          type: string
+          enum: [after, before, into]
+        position:
+          type: string
+          enum: [first, last]
+        kind: { type: string }
+        level:
+          type: integer
+          format: int64
+        label: { type: string }
+    AbilityRequestPageOutline:
+      type: object
+      description: |
+        A page's outline as WPMgr reads it: `node_count` nodes in all, the
+        first `nodes` in page order, `truncated` when some were left out.
+      required: [node_count, truncated, nodes]
+      properties:
+        node_count:
+          type: integer
+          format: int64
+        truncated: { type: boolean }
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/AbilityRequestPageOutlineNode"
+    AbilityRequestPageOutlineNode:
+      type: object
+      description: |
+        One node. `parent` is `root` or an earlier node's ref. A node of kind
+        `locked` is one WPMgr does not edit, with WPMgr's `label` for it;
+        every other node lists the fields an edit may change and its text
+        from the site.
+      required: [ref, parent, kind]
+      properties:
+        ref: { type: string }
+        parent: { type: string }
+        kind: { type: string }
+        level:
+          type: integer
+          format: int64
+        editable:
+          type: array
+          items: { type: string }
+        from_the_site:
+          type: object
+          additionalProperties: { type: string }
+        label: { type: string }
     AbilityRequestPageBuilder:
       type: object
       description: |

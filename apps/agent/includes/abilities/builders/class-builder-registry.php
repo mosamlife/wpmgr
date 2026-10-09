@@ -44,6 +44,26 @@ final class BuilderRegistry
     ];
 
     /**
+     * The adapter compiled into this agent for a builder id, whatever any
+     * catalogue entry enables; null for an id this agent does not know or
+     * has not compiled in. An undo uses it to put back what an earlier call
+     * wrote through that builder.
+     *
+     * @param string                             $id           A builder id.
+     * @param array<string, BuilderAdapter>|null $compiledSeam Tests only: stands in for the compiled set. Production passes none.
+     * @return BuilderAdapter|null
+     */
+    public static function compiledAdapter(string $id, ?array $compiledSeam = null): ?BuilderAdapter
+    {
+        if (!in_array($id, self::IDS, true)) {
+            return null;
+        }
+        $adapter = $compiledSeam === null ? self::compiled($id) : ($compiledSeam[$id] ?? null);
+
+        return $adapter instanceof BuilderAdapter && $adapter->id() === $id ? $adapter : null;
+    }
+
+    /**
      * Resolve a page-create editor value to the adapter that builds it.
      *
      * @param string                             $editor       The editor value from the input.
@@ -57,8 +77,8 @@ final class BuilderRegistry
             return ['code' => 'bad_input', 'detail' => 'editor must name a page builder WPMgr knows'];
         }
         $id      = $m[1];
-        $adapter = $compiledSeam === null ? self::compiled($id) : ($compiledSeam[$id] ?? null);
-        if (!$adapter instanceof BuilderAdapter || $adapter->id() !== $id) {
+        $adapter = self::compiledAdapter($id, $compiledSeam);
+        if ($adapter === null) {
             return ['code' => 'builder_not_available', 'detail' => 'not_compiled'];
         }
         if (!self::enabled($limits, $id)) {

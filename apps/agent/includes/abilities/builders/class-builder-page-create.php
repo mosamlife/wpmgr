@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Abilities\Builders;
 
+use WPMgr\Agent\Abilities\AbilityLedger;
 use WPMgr\Agent\Abilities\OwnAbilities;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
 use WPMgr\Agent\Support\ArrayShape;
@@ -43,7 +44,15 @@ if (!defined('ABSPATH')) {
  * the adapter and reads the page back. A draft that fails any step after the
  * insert is moved to the trash and the answer says so ("trashed"). A created
  * draft records its builder_document_v1 fingerprint and the revisions its own
- * save made, which is what revertProblem() checks before an undo.
+ * save made, which is what revertProblem() checks before an undo; a draft
+ * whose record of those cannot be written is moved to the trash too, since
+ * no undo could check it.
+ *
+ * The undo of a builder draft also covers the wpmgr/page-edit changes WPMgr
+ * made to it afterwards: the control plane names them in the undo's signed
+ * parameters (revertChain()), and revertProblem() accepts the draft only
+ * when those changes, read from this site's ledger, account for every
+ * difference between the draft as created and the draft now.
  */
 final class BuilderPageCreate
 {
@@ -73,6 +82,41 @@ final class BuilderPageCreate
 
     /** Most revisions an undo guard reads from the ledger row. */
     private const MAX_OWN_REVISIONS = 50;
+
+    /** The member of an undo's signed parameters naming the later page-edit changes. */
+    public const REVERT_CHAIN = 'chain';
+
+    /** Most page-edit changes an undo's chain names. */
+    public const MAX_CHAIN = 100;
+
+    /**
+     * created_post_touched detail, with a chain: the named changes do not
+     * lead from the draft as created to the draft as it is now.
+     */
+    public const CHAIN_BROKEN = 'chain_broken';
+
+    /** created_post_touched detail, with a chain: a revision neither the creation nor a named change made. */
+    public const FOREIGN_REVISION = 'foreign_revision';
+
+    /** created_post_touched detail, with a chain: someone has an autosave of the draft. */
+    public const AUTOSAVE = 'autosave';
+
+    /** created_post_touched detail, with a chain: someone holds the draft's edit lock. */
+    public const LOCKED = 'locked';
+
+    /** What an undo with no chain answers for each refusal, as it did before chains. */
+    private const UNCHAINED = [
+        self::CHAIN_BROKEN     => 'someone edited this draft after it was created',
+        self::FOREIGN_REVISION => 'this draft has revisions its creation did not make; open it in WordPress',
+        self::AUTOSAVE         => 'someone has unsaved changes to this draft; open it in WordPress',
+        self::LOCKED           => 'someone is editing this draft right now',
+    ];
+
+    /** A request id in a chain: a lowercase UUID (the $ matches only at the very end). */
+    private const RE_CHAIN_ID = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D';
+
+    /** A builder_document_v1 fingerprint. */
+    private const RE_FP = '/^[0-9a-f]{64}$/D';
 
     /**
      * Build and check the page, and answer the preview. Writes nothing.
@@ -296,8 +340,9 @@ final class BuilderPageCreate
             'after_fp'          => $afterFp,
             'verify'            => ['tree_equal' => true, 'status' => 'draft'],
         ];
-        // The draft exists and its id is recorded, so the caller is told it
-        // was created even when the completed state cannot be recorded.
+        // Undo checks a builder draft against this record: the fingerprint
+        // its save left and the revisions that save made. A draft without
+        // the record could never be undone, so it is not left behind.
         $recorded = $ledgerUpdate([
             'phase'            => 'completed',
             'after_fp'         => $afterFp,
@@ -309,35 +354,87 @@ final class BuilderPageCreate
             'result'           => $result,
         ]);
         if (!$recorded) {
-            $result['ledger_recorded'] = false;
+            return self::failTrashed($postId, 'snapshot_failed', 'the ledger could not record the created draft', $ledgerUpdate);
         }
 
         return $result;
     }
 
     /**
+     * The page-edit requests an undo's signed parameters name, or null when
+     * p.revert is not one of: absent, {} or {"chain": [...]}, the list at
+     * most MAX_CHAIN distinct lowercase request ids. Absent and {} name none.
+     *
+     * The list only names which ledger rows to read; nothing an undo checks
+     * or trashes is taken from it.
+     *
+     * @param mixed $revert The decoded p.revert.
+     * @return list<string>|null
+     */
+    public static function revertChain(mixed $revert): ?array
+    {
+        if ($revert === null) {
+            return [];
+        }
+        if (!is_object($revert)) {
+            return null;
+        }
+        $members = get_object_vars($revert);
+        if ($members === []) {
+            return [];
+        }
+        $chain = $members[self::REVERT_CHAIN] ?? null;
+        if (array_keys($members) !== [self::REVERT_CHAIN] || !is_array($chain) || !ArrayShape::isList($chain) || count($chain) > self::MAX_CHAIN) {
+            return null;
+        }
+        $seen = [];
+        foreach ($chain as $id) {
+            if (!is_string($id) || preg_match(self::RE_CHAIN_ID, $id) !== 1 || isset($seen[$id])) {
+                return null;
+            }
+            $seen[$id] = true;
+        }
+
+        return $chain;
+    }
+
+    /**
      * Why undo may not trash this builder draft, or null.
      *
      * Undo trashes the draft only when its builder_document_v1 fingerprint
-     * is still the one recorded when it was created (its content, summary,
-     * slug and password, its builder rows and where it sits, parent and
-     * order), it has no revision
-     * but the ones its own save made, no autosave, and no one holds its edit
-     * lock. Fails closed when any of that cannot be read.
+     * (its content, summary, slug and password, its builder rows and where
+     * it sits, parent and order) is where WPMgr's own changes left it, it
+     * has no revision but the ones those changes made, no autosave, and no
+     * one holds its edit lock. Fails closed when any of that cannot be read.
+     *
+     * With no chain, WPMgr's own changes are the creation alone: the
+     * fingerprint is the one recorded when the draft was created and the
+     * revisions are the ones its save made, answered as before chains
+     * existed.
+     *
+     * With a chain, each named request's ledger row must be a completed
+     * wpmgr/page-edit change of this draft, by the same builder. A change
+     * that was undone counts only for its revisions. The others, in the
+     * chain's order, must each start from the fingerprint the one before
+     * left (the first from the creation's), and the last must have left the
+     * draft as it is now. The revisions allowed are the creation's and every
+     * named change's. A refusal then answers one of CHAIN_BROKEN,
+     * FOREIGN_REVISION, AUTOSAVE or LOCKED.
      *
      * @param int                  $postId    The created draft, from the ledger row.
      * @param array<string, mixed> $ledgerRow The request's ledger row.
+     * @param list<string>         $chain     The page-edit requests the undo names (revertChain()), read inside the caller's claim on the draft.
      * @return string|null
      */
-    public static function revertProblem(int $postId, array $ledgerRow): ?string
+    public static function revertProblem(int $postId, array $ledgerRow, array $chain = []): ?string
     {
         $builder = $ledgerRow['builder'] ?? null;
         $keys    = is_string($builder) ? (self::DESCRIPTOR_KEYS[$builder] ?? null) : null;
-        if ($keys === null) {
+        if (!is_string($builder) || $keys === null) {
             return 'this draft was built with a page builder this agent cannot check';
         }
         $afterFp = $ledgerRow['after_fp'] ?? null;
-        if (!is_string($afterFp) || preg_match('/^[0-9a-f]{64}$/D', $afterFp) !== 1) {
+        if (!is_string($afterFp) || preg_match(self::RE_FP, $afterFp) !== 1) {
             return 'the created draft has no recorded fingerprint';
         }
         $own = self::ledgerRevisions($ledgerRow['own_revision_ids'] ?? null);
@@ -346,6 +443,14 @@ final class BuilderPageCreate
         }
         if ($postId < 1) {
             return 'the created draft no longer exists';
+        }
+        $chained = $chain !== [];
+        if ($chained) {
+            $end = self::chainEnd($postId, $builder, $afterFp, $own, $chain);
+            if ($end === null) {
+                return self::CHAIN_BROKEN;
+            }
+            [$afterFp, $own] = $end;
         }
 
         try {
@@ -357,21 +462,22 @@ final class BuilderPageCreate
             return 'the created draft no longer exists';
         }
         if (!hash_equals($afterFp, $current)) {
-            return 'someone edited this draft after it was created';
+            return self::touched(self::CHAIN_BROKEN, $chained);
         }
 
         // User id 0 (the int) means an autosave by any user.
         if (wp_get_post_autosave($postId, 0) !== false) {
-            return 'someone has unsaved changes to this draft; open it in WordPress';
+            return self::touched(self::AUTOSAVE, $chained);
         }
         $revisions = wp_get_post_revisions($postId, ['check_enabled' => false]);
         if (!is_array($revisions)) {
             return 'the revisions of this draft could not be read';
         }
+        $allowed = array_fill_keys($own, true);
         foreach ($revisions as $key => $revision) {
             $id = is_object($revision) ? (get_object_vars($revision)['ID'] ?? null) : (is_int($revision) ? $revision : $key);
-            if (!is_int($id) || !in_array($id, $own, true)) {
-                return 'this draft has revisions its creation did not make; open it in WordPress';
+            if (!is_int($id) || !isset($allowed[$id])) {
+                return self::touched(self::FOREIGN_REVISION, $chained);
             }
         }
 
@@ -382,10 +488,69 @@ final class BuilderPageCreate
             return 'whether someone is editing this draft could not be checked';
         }
         if (wp_check_post_lock($postId) !== false) {
-            return 'someone is editing this draft right now';
+            return self::touched(self::LOCKED, $chained);
         }
 
         return null;
+    }
+
+    /**
+     * Where the chain's changes left the draft, and the revisions the
+     * creation and those changes made; null when the chain does not hold
+     * (revertProblem()).
+     *
+     * @param int          $postId  The created draft.
+     * @param string       $builder The builder that created it.
+     * @param string       $afterFp The fingerprint its creation left.
+     * @param list<int>    $own     The revisions its creation made.
+     * @param list<string> $chain   The page-edit requests, in the order they were made.
+     * @return array{0: string, 1: list<int>}|null
+     */
+    private static function chainEnd(int $postId, string $builder, string $afterFp, array $own, array $chain): ?array
+    {
+        $fp      = $afterFp;
+        $allowed = array_fill_keys($own, true);
+        foreach ($chain as $requestId) {
+            $row = AbilityLedger::get($requestId);
+            if ($row === null || ($row['ability'] ?? null) !== OwnAbilities::NAME_PAGE_EDIT
+                || ($row['target_post_id'] ?? null) !== $postId || ($row['phase'] ?? null) !== 'completed'
+                || ($row['builder'] ?? null) !== $builder) {
+                return null;
+            }
+            $before    = $row['before_fp'] ?? null;
+            $after     = $row['after_fp'] ?? null;
+            $revisions = self::ledgerRevisions($row['own_revision_ids'] ?? null);
+            if (!is_string($before) || preg_match(self::RE_FP, $before) !== 1
+                || !is_string($after) || preg_match(self::RE_FP, $after) !== 1 || $revisions === null) {
+                return null;
+            }
+            $allowed += array_fill_keys($revisions, true);
+
+            // An undone change put back what it wrote: only its revisions remain.
+            $state = $row['undo_state'] ?? null;
+            if ($state === 'restored') {
+                continue;
+            }
+            if ($state !== 'available' || !hash_equals($fp, $before)) {
+                return null;
+            }
+            $fp = $after;
+        }
+
+        return [$fp, array_keys($allowed)];
+    }
+
+    /**
+     * A refusal's detail: the fixed token with a chain, the words an undo
+     * answered before chains without one.
+     *
+     * @param string $token   CHAIN_BROKEN, FOREIGN_REVISION, AUTOSAVE or LOCKED.
+     * @param bool   $chained Whether the undo named a chain.
+     * @return string
+     */
+    private static function touched(string $token, bool $chained): string
+    {
+        return $chained ? $token : self::UNCHAINED[$token];
     }
 
     /**

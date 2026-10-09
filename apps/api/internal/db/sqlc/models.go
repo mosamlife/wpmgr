@@ -270,6 +270,8 @@ type AssistantAbilityRequest struct {
 	RouteID            *string            `json:"route_id"`
 	RouteSha256        *string            `json:"route_sha256"`
 	CardFacts          []byte             `json:"card_facts"`
+	SnapshotSha256     *string            `json:"snapshot_sha256"`
+	UndoCode           *string            `json:"undo_code"`
 }
 
 type AssistantCachePurgeRequest struct {

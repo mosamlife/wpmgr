@@ -102,20 +102,35 @@ type RequestDTO struct {
 	DecidedAt       *time.Time `json:"decided_at"`
 	Outcome         *string    `json:"outcome"`
 	OutcomeCode     *string    `json:"outcome_code"`
-	NotSentReason   *string    `json:"not_sent_reason"`
-	CreatedPostID   *int64     `json:"created_post_id"`
-	Trashed         *bool      `json:"trashed"`
+	// OutcomeDetail says which conflict refused a wpmgr/page-edit:
+	// changed_since_read, editor_open or autosave_pending (outcomeDetailFor).
+	// Null for every other row. Never the site's own words.
+	OutcomeDetail *string `json:"outcome_detail"`
+	// OutsideChange says what a wpmgr/page-edit refused with
+	// side_effect_detected changed outside the page: active_kit,
+	// other_posts, terms, site_settings or users (outsideChangeFor). Null
+	// for every other row. Never the site's own words.
+	OutsideChange *string `json:"outside_change"`
+	NotSentReason *string `json:"not_sent_reason"`
+	CreatedPostID *int64  `json:"created_post_id"`
+	Trashed       *bool   `json:"trashed"`
 	// Restored is a failed wpmgr/rest-write's own-undo report: true when the
 	// whole post is back as it was, false when the title and excerpt were
 	// put back but other changes the site made remain (or the put-back
 	// itself failed), null when nothing needed restoring or for any other
 	// ability.
-	Restored           *bool      `json:"restored"`
-	UndoState          *string    `json:"undo_state"`
+	Restored  *bool   `json:"restored"`
+	UndoState *string `json:"undo_state"`
+	// UndoCode says why a failed undo failed: snapshot_tampered (the copy
+	// the site kept for the change was changed on the site, so it was not
+	// used and nothing changed) or restore_mismatch (the site's put-back did
+	// not read back as the copy). Null for every other row (undoCodeOf).
+	UndoCode           *string    `json:"undo_code"`
 	UndoAvailableUntil *time.Time `json:"undo_available_until"`
 	// UndoOffered is whether POST .../undo would start an undo now: a done
-	// row's undo inside its window, or the recovery undo of a draft a failed
-	// or given-up write left on the site (GH #826).
+	// row's undo inside its window (for a page edit, only the newest applied
+	// edit of its page not yet undone), or the recovery undo of a draft a
+	// failed or given-up write left on the site (GH #826).
 	UndoOffered bool `json:"undo_offered"`
 	// ResolveGaveUp is true once WPMgr stopped checking the site for the
 	// outcome of a write whose reply was lost (GH #825): the result is final
@@ -138,6 +153,12 @@ type RequestDTO struct {
 	// WordPress editor, and for every other ability). Version came from the
 	// site.
 	PageBuilder *PageBuilderDTO `json:"page_builder"`
+	// PageEdit is a wpmgr/page-edit request's card (null for every other
+	// ability): the post, the page builder, each change, and the page's
+	// outline after the edit, as the control plane checked them against
+	// the site's precheck. Every value under a from_the_site member came
+	// from the site. It is passed through as stored, never added to.
+	PageEdit json.RawMessage `json:"page_edit"`
 }
 
 // PageBuilderDTO is the page builder of a page-create request.
@@ -189,6 +210,18 @@ func cardFactsFor(r sqlc.AssistantAbilityRequest) json.RawMessage {
 	return cardFactsJSON(r.CardFacts)
 }
 
+// pageEditFor is page_edit: a page-edit request's stored card, or null when
+// the row is another ability's or holds no page-edit card.
+func pageEditFor(r sqlc.AssistantAbilityRequest) json.RawMessage {
+	if r.AbilityName != mcp.AbilityPageEdit {
+		return json.RawMessage("null")
+	}
+	if _, ok := mcp.ReadPageEditCardFacts(r.CardFacts); !ok {
+		return json.RawMessage("null")
+	}
+	return cardFactsJSON(r.CardFacts)
+}
+
 // pageMediaFor is page_media: a page-create request's images from its
 // stored card_facts, or nil.
 func pageMediaFor(r sqlc.AssistantAbilityRequest) []PageMediaDTO {
@@ -234,7 +267,10 @@ func ts(t pgtype.Timestamptz) *time.Time {
 	return &v
 }
 
-func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string) RequestDTO {
+// toDTO is one row on the wire. agentVersion is its site's recorded agent
+// version (Service.AgentVersions) and newestEdit whether it is the newest
+// page edit of its page still in effect (Service.NewestEdits).
+func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string, newestEdit bool) RequestDTO {
 	out := RequestDTO{
 		ID: r.ID, SiteID: r.SiteID, AbilityName: r.AbilityName, InputJSON: r.InputJson,
 		TitleExcerpt: r.TitleExcerpt, Editor: r.Editor, PostType: r.PostType,
@@ -242,16 +278,19 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string)
 		SiteLabel: r.SiteLabel, SiteHost: r.SiteHost, GrantLabel: r.GrantLabel, GrantVia: r.GrantVia,
 		SetupClient: r.SetupClient, CardCopyVersion: r.CardCopyVersion, State: r.State,
 		CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt, DecidedAt: ts(r.DecidedAt),
-		Outcome: r.Outcome, OutcomeCode: r.OutcomeCode, NotSentReason: r.NotSentReason,
+		Outcome: r.Outcome, OutcomeCode: r.OutcomeCode, OutcomeDetail: outcomeDetailFor(r),
+		OutsideChange: outsideChangeFor(r), NotSentReason: r.NotSentReason,
 		CreatedPostID: r.CreatedPostID, Trashed: r.Trashed, Restored: r.Restored, UndoState: r.UndoState,
+		UndoCode:           undoCodeOf(r),
 		UndoAvailableUntil: ts(r.UndoAvailableUntil),
-		UndoOffered:        UndoOffered(r, agentVersion, time.Now()),
+		UndoOffered:        UndoOffered(r, agentVersion, newestEdit, time.Now()),
 		ResolveGaveUp:      resolveGaveUp(r),
 		RouteID:            r.RouteID,
 		RouteSHA256:        r.RouteSha256,
 		CardFacts:          cardFactsFor(r),
 		PageMedia:          pageMediaFor(r),
 		PageBuilder:        pageBuilderFor(r),
+		PageEdit:           pageEditFor(r),
 	}
 	if withDigest {
 		d := r.PresentedDigest
@@ -264,7 +303,8 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string)
 // version when the row could offer a recovery undo.
 func (h *Handler) rowDTO(c *gin.Context, p domain.Principal, row sqlc.AssistantAbilityRequest) RequestDTO {
 	rows := []sqlc.AssistantAbilityRequest{row}
-	return toDTO(row, true, h.svc.AgentVersions(c.Request.Context(), p, rows)[row.SiteID])
+	ctx := c.Request.Context()
+	return toDTO(row, true, h.svc.AgentVersions(ctx, p, rows)[row.SiteID], h.svc.NewestEdits(ctx, p, rows)[row.ID])
 }
 
 func principal(c *gin.Context) (domain.Principal, bool) {
@@ -308,8 +348,9 @@ func (h *Handler) listForSite(c *gin.Context) {
 	out := ListResponse{Requests: make([]RequestDTO, 0, len(rows)), Limit: limit, Offset: offset}
 	withDigest := p.Type == domain.PrincipalUser
 	versions := h.svc.AgentVersions(c.Request.Context(), p, rows)
+	newest := h.svc.NewestEdits(c.Request.Context(), p, rows)
 	for _, r := range rows {
-		out.Requests = append(out.Requests, toDTO(r, withDigest, versions[r.SiteID]))
+		out.Requests = append(out.Requests, toDTO(r, withDigest, versions[r.SiteID], newest[r.ID]))
 	}
 	c.JSON(http.StatusOK, out)
 }
@@ -349,8 +390,9 @@ func (h *Handler) listForOrg(c *gin.Context) {
 	out := OrgListResponse{Requests: make([]RequestDTO, 0, len(q.Requests)), PendingCount: q.PendingCount, Limit: limit, Offset: offset}
 	withDigest := p.Type == domain.PrincipalUser
 	versions := h.svc.AgentVersions(c.Request.Context(), p, q.Requests)
+	newest := h.svc.NewestEdits(c.Request.Context(), p, q.Requests)
 	for _, r := range q.Requests {
-		out.Requests = append(out.Requests, toDTO(r, withDigest, versions[r.SiteID]))
+		out.Requests = append(out.Requests, toDTO(r, withDigest, versions[r.SiteID], newest[r.ID]))
 	}
 	c.JSON(http.StatusOK, out)
 }

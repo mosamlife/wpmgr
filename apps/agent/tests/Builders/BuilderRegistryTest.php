@@ -280,9 +280,19 @@ final class BuilderRegistryTest extends TestCase
                 return ['code' => 'node_not_supported_by_builder', 'detail' => 'outline[0]'];
             }
 
+            public function storedTree(array $rowsByKey): ?array
+            {
+                return null;
+            }
+
             public function project(array $tree): Projection
             {
                 return new Projection([Projection::FALLBACK_LABEL => 'Element']);
+            }
+
+            public function planEdit(int $postId, array $ops, IdSeed $ids, array $mediaById): array
+            {
+                return ['code' => 'op_not_supported_by_builder', 'detail' => 'set_text', 'op_index' => 0];
             }
 
             public function write(int $postId, NativeDocument $doc): array
@@ -293,6 +303,15 @@ final class BuilderRegistryTest extends TestCase
             public function verifyCreated(int $postId, NativeDocument $doc, int $principal, string $requestId): ?string
             {
                 return 'not_built';
+            }
+
+            public function verifyEdited(int $postId, NativeDocument $doc, array $before): ?string
+            {
+                return 'not_built';
+            }
+
+            public function afterRestore(int $postId): void
+            {
             }
         };
     }

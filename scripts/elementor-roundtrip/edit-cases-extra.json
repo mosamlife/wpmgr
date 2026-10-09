@@ -1,0 +1,53 @@
+{
+  "note": "Edit cases the round trip adds to the shared edit fixture. A case's page is made by the agent's page-create path from \"seed\" (an outline in the form the AI sends it), and its operations name nodes as @kind#n: the n-th node of that kind on the page, in page order, so no case depends on how node ids are made. Every node of a seed has a text of its own, so the page can be held to the texts an edit replaced or removed. \"restore\" is the page the full-restore scenario edits and makes fail after the snapshot. Media id 5 is the one the golden fixtures declare.",
+  "cases": [
+    {
+      "name": "all-five-operations-entity-text",
+      "seed": [
+        { "type": "heading", "level": 2, "text": "Seed heading Tom & Jerry [12] \"café\" &amp; &lt;b&gt; 'q'" },
+        { "type": "paragraph", "text": "Seed paragraph Tom & Jerry [12] \"café\" &amp; &lt;b&gt; 'q'" },
+        { "type": "list", "ordered": true, "items": ["Seed list item Tom & Jerry [12] \"café\" &amp; &lt;b&gt; 'q'"] },
+        { "type": "quote", "paragraphs": ["Seed quote Tom & Jerry [12] \"café\" &amp; &lt;b&gt; 'q'"], "citation": "Seed cite Tom & Jerry" },
+        { "type": "table", "header": ["Seed table head & cell"], "rows": [["Seed table row & cell [1]"]] },
+        { "type": "buttons", "buttons": [{ "text": "Seed button & more", "url": "/a" }] },
+        { "type": "image", "attachment_id": 5, "alt": "Library alt text", "caption": "Seed caption & more" }
+      ],
+      "ops": [
+        { "op": "set_text", "ref": "@heading#0", "field": "text", "text": "Edited heading: Jerry & Tom [34] \"naïve\" &amp; &lt;i&gt; 'p' ☕" },
+        { "op": "set_text", "ref": "@paragraph#0", "field": "text", "text": "Edited paragraph: Zażółć & Ελληνικά &amp; [1] 😀" },
+        {
+          "op": "insert",
+          "after": "@list#0",
+          "outline": [
+            { "type": "paragraph", "text": "Inserted paragraph: a & b [2] \"c\" &amp; &lt;d&gt; 'e'" },
+            { "type": "list", "ordered": false, "items": ["Inserted item one & two", "Inserted item &amp; three"] }
+          ]
+        },
+        {
+          "op": "replace",
+          "ref": "@quote#0",
+          "outline": [
+            { "type": "heading", "level": 3, "text": "Replacement heading & [5] 日本語" },
+            { "type": "buttons", "buttons": [{ "text": "Réserver ☕ & more", "url": "https://example.com/reserve" }] }
+          ]
+        },
+        { "op": "remove", "ref": "@table#0" },
+        { "op": "move", "ref": "@buttons#0", "before": "@image#0" }
+      ]
+    }
+  ],
+  "restore": {
+    "name": "restore",
+    "seed": [
+      { "type": "heading", "level": 2, "text": "Restore heading Tom & Jerry [12] \"café\" &amp; &lt;b&gt; 'q'" },
+      { "type": "paragraph", "text": "Restore paragraph Zażółć & Ελληνικά [1] 😀" },
+      { "type": "list", "ordered": true, "items": ["Restore list item & more \"x\" 日本語"] },
+      { "type": "quote", "paragraphs": ["Restore quote \"q\" & 'p' &lt;i&gt;"], "citation": "Restore cite & [1]" }
+    ],
+    "ops": [
+      { "op": "set_text", "ref": "@heading#0", "field": "text", "text": "Edited restore heading & more [2] \"y\" &amp; &lt;u&gt;" },
+      { "op": "replace", "ref": "@quote#0", "outline": [{ "type": "paragraph", "text": "Replacement paragraph & more" }] },
+      { "op": "remove", "ref": "@list#0" }
+    ]
+  }
+}
