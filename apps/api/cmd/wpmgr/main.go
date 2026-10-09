@@ -1855,6 +1855,12 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		abilityReqSvc.SetRouteEncoder(abilities.SendableRoute)
 		abilityReqSvc.SetEnabler(ocCmdClient)
 	}
+	// Approval tiers (ADR-065): the approval package decides each new write
+	// request under the site's setting. The setter checks build each person's
+	// principal through the session authenticator's own code path.
+	abilityReqSvc.SetPolicy(abilityrequest.NewPolicyRepo(pool, auditRec), authn)
+	mcpSvc.SetAbilityDecider(abilityReqSvc)
+	mcpSvc.SetPublicBaseURL(cfg.PublicBaseURL)
 	abilityReqScanWorker := abilityrequest.NewScanWorker(abilityReqSvc)
 	abilityReqDispatchWorker := abilityrequest.NewDispatchWorker(abilityReqSvc)
 	abilityReqSweepWorker := abilityrequest.NewSweepWorker(abilityReqSvc)
@@ -2386,6 +2392,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// The AI request scan enqueues one dispatch job per due approved request.
 	assistantReqScanWorker.SetEnqueuer(assistantrequest.NewRiverEnqueuer(riverClient))
 	abilityReqScanWorker.SetEnqueuer(abilityrequest.NewRiverEnqueuer(riverClient))
+	abilityReqSvc.SetDispatchEnqueuer(abilityrequest.NewRiverEnqueuer(riverClient))
 
 	// ADR-046 Performance Suite: wire the RUCSS enqueuer + perf ingest service
 	// now that River has started. The ingest service stashes the agent-posted

@@ -354,6 +354,14 @@ type Service struct {
 	// abilities is the ability engine's wiring (EnableAbilityTools). Nil
 	// means the four ability tools are neither listed nor run.
 	abilities *abilityEngine
+
+	// abilityDecider decides a just-created write request under the site's
+	// setting (SetAbilityDecider). Nil: every request waits for a person.
+	abilityDecider AbilityDecider
+
+	// publicBaseURL is WPMGR_PUBLIC_BASE_URL, for the absolute approval_url
+	// a waiting request's result carries (SetPublicBaseURL).
+	publicBaseURL string
 }
 
 func NewService(store Store) *Service {

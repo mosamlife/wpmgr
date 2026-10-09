@@ -113,6 +113,8 @@ type Service struct {
 	// wired: every request then waits for a person.
 	policy  PolicyStore
 	setters SetterResolver
+	// dispatchEnqueuer sends a request approved by a setting at once.
+	dispatchEnqueuer Enqueuer
 }
 
 // NewService builds the service; the write switch starts off.

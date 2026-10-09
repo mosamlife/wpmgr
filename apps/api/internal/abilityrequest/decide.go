@@ -14,6 +14,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/aipolicy"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
+	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 )
 
 // The policy engine's side of the write rail (ADR-065): after a request is
@@ -66,6 +67,10 @@ type PolicySnapshot struct {
 	// ConnectionAuto and ConnectionSetter are mcp_grants.ai_auto*.
 	ConnectionAuto   aipolicy.ConnectionAuto
 	ConnectionSetter uuid.UUID
+	// TooOld is true when the request was created longer ago than a
+	// decision by setting may follow it (unsettledAge), by the database's
+	// clock. Such a request waits for a person with not_checked.
+	TooOld bool
 }
 
 // sameSetting reports whether every value a setter check relied on is
@@ -145,6 +150,10 @@ func (s *Service) SetPolicy(store PolicyStore, setters SetterResolver) {
 	s.policy, s.setters = store, setters
 }
 
+// SetDispatchEnqueuer wires the enqueuer an approval by setting uses to send
+// the change at once. Without it the periodic scan sends it.
+func (s *Service) SetDispatchEnqueuer(e Enqueuer) { s.dispatchEnqueuer = e }
+
 // DecideResult is the outcome of Decide.
 type DecideResult struct {
 	// Decided is false when the engine is not wired, or the request had
@@ -191,9 +200,26 @@ func (s *Service) Decide(ctx context.Context, tenantID, requestID uuid.UUID) (De
 		if errors.Is(err, errAlreadyDecided) {
 			return DecideResult{}, nil
 		}
+		if err == nil && res.Outcome == aipolicy.OutcomeAutoBySetting {
+			s.enqueueApproved(ctx, res.Approved)
+		}
 		return res, err
 	}
 	return DecideResult{}, errors.New("decide: attempts exhausted")
+}
+
+// enqueueApproved sends an approved request at once. A failure is logged
+// only: the periodic scan sends every approved request that is due.
+func (s *Service) enqueueApproved(ctx context.Context, row sqlc.AssistantAbilityRequest) {
+	if s.dispatchEnqueuer == nil {
+		return
+	}
+	if err := s.dispatchEnqueuer.EnqueueDispatch(ctx, DispatchArgs{
+		TenantID: row.TenantID, RequestID: row.ID, SiteID: row.SiteID, GrantID: row.ProposedByGrantID,
+	}); err != nil {
+		s.logger.WarnContext(ctx, "ability request: approved by setting; the scan will send it",
+			slog.String("request_id", row.ID.String()), slog.Any("error", err))
+	}
 }
 
 // checkSetters runs the setter checks before any lock. A person who is not
@@ -225,12 +251,16 @@ func (s *Service) decideLocked(ctx context.Context, tenantID, requestID uuid.UUI
 		}
 		classing := aipolicy.Classify(classFacts(cur))
 		var d aipolicy.Decision
-		if !cur.sameSetting(checked) {
+		switch {
+		case cur.TooOld:
+			// Never approved by a setting long after it was made.
+			d = aipolicy.Decision{Outcome: aipolicy.OutcomeAsk, Class: classing.Class, Ask: aipolicy.AskNotChecked}
+		case !cur.sameSetting(checked):
 			if !last {
 				return errSettingMoved
 			}
 			d = aipolicy.Decision{Outcome: aipolicy.OutcomeAsk, Class: classing.Class, Ask: aipolicy.AskNotChecked}
-		} else {
+		default:
 			in := aipolicy.Inputs{
 				Class:            classing,
 				SiteMode:         cur.SiteMode,
@@ -364,3 +394,18 @@ func setterCheckMetadata(c aipolicy.SetterCheck) map[string]any {
 	}
 	return m
 }
+
+// DecideAbilityRequest is mcp.AbilityDecider: Decide, answered in the MCP
+// package's terms. It takes ids only.
+func (s *Service) DecideAbilityRequest(ctx context.Context, tenantID, requestID uuid.UUID) (mcp.AbilityDecision, error) {
+	res, err := s.Decide(ctx, tenantID, requestID)
+	if err != nil || !res.Decided {
+		return mcp.AbilityDecision{}, err
+	}
+	if res.Outcome == aipolicy.OutcomeAutoBySetting {
+		return mcp.AbilityDecision{Approved: true}, nil
+	}
+	return mcp.AbilityDecision{AskReason: string(res.Ask), ResumesAt: res.ResumesAt}, nil
+}
+
+var _ mcp.AbilityDecider = (*Service)(nil)

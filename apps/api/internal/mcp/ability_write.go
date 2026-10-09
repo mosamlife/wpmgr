@@ -28,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
+	"github.com/mosamlife/wpmgr/apps/api/internal/aipolicy"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -66,8 +67,8 @@ const (
 )
 
 const (
-	msgAbilityCreated = "Nothing has changed yet. A person must approve this in WPMgr. Review it on " +
-		"the site's Content tab in WPMgr. Call site_ability_request_status with this request_id to " +
+	msgAbilityCreated = "Nothing has changed yet. A person must approve this in WPMgr. Tell the person " +
+		"and give them approval_url. Call site_ability_request_status with this request_id to " +
 		"learn the outcome."
 	msgAbilityLimited = "This connection has reached a limit on ability requests. Nothing was asked. " +
 		"Wait retry_after_seconds before asking again."
@@ -364,19 +365,28 @@ func verifyPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum string,
 // The write branch
 // ---------------------------------------------------------------------------
 
-// abilityCreatedResult is the success answer.
+// abilityCreatedResult is the success answer. approval is "auto" when the
+// site's setting approved the change and it ran (or is running), and "ask"
+// when it waits for a person; ask_reason then says why, from a closed set,
+// and approval_url is where a person decides it.
 type abilityCreatedResult struct {
-	RequestID        string `json:"request_id"`
-	State            string `json:"state"`
-	Existing         bool   `json:"existing"`
-	SiteID           string `json:"site_id"`
-	Name             string `json:"name"`
-	Approval         string `json:"approval"`
-	Undo             string `json:"undo"`
-	ExpiresAt        string `json:"expires_at"`
-	PollAfterSeconds int    `json:"poll_after_seconds"`
-	ReviewPath       string `json:"review_path"`
-	Message          string `json:"message"`
+	RequestID        string  `json:"request_id"`
+	State            string  `json:"state"`
+	Existing         bool    `json:"existing"`
+	SiteID           string  `json:"site_id"`
+	Name             string  `json:"name"`
+	Approval         string  `json:"approval"`
+	AskReason        string  `json:"ask_reason,omitempty"`
+	ApprovalURL      string  `json:"approval_url,omitempty"`
+	AutoResumesAt    string  `json:"auto_resumes_at,omitempty"`
+	Undo             string  `json:"undo"`
+	ExpiresAt        string  `json:"expires_at"`
+	PollAfterSeconds int     `json:"poll_after_seconds"`
+	ReviewPath       string  `json:"review_path"`
+	Outcome          *string `json:"outcome,omitempty"`
+	Code             *string `json:"code,omitempty"`
+	CreatedPostID    *int64  `json:"created_post_id,omitempty"`
+	Message          string  `json:"message"`
 }
 
 func abilityLimitRefusal(reason refusalReason, scope string, retryAfter int) *toolRefusal {
@@ -518,6 +528,8 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 	if err != nil {
 		return "", err
 	}
+	// Step 9: the approval package decides it, after the commit.
+	res = s.decideAbility(ctx, eng.writes, auth, res)
 	b, err := json.Marshal(res)
 	if err != nil {
 		return "", fmt.Errorf("encode ability request result: %w", err)
@@ -822,7 +834,8 @@ func abilityResultFromRow(r sqlc.AssistantAbilityRequest, existing bool) ability
 		Existing:         existing,
 		SiteID:           r.SiteID.String(),
 		Name:             r.AbilityName,
-		Approval:         "per_call",
+		Approval:         aipolicy.ApprovalAsk,
+		AskReason:        askReasonOf(r.AskReason),
 		Undo:             r.Snapshot,
 		ExpiresAt:        r.ExpiresAt.UTC().Format(time.RFC3339),
 		PollAfterSeconds: requestPollAfterSeconds,
