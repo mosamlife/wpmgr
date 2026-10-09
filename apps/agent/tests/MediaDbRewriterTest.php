@@ -211,12 +211,28 @@ final class MediaDbRewriterTest extends TestCase
 
     public function test_json_rewrite_keeps_escaped_slashes_and_unicode_escapes(): void
     {
-        // A document stored with default flags: escaped slashes, \u escapes.
-        $json = '{"src":"https:\/\/ex.test\/a.jpg","t":"é","n":1.50}';
+        // A document stored with default flags: escaped slashes, and a Unicode
+        // escape (backslash, "u", four hex digits) for the e-acute.
+        $eAcute = chr(92) . 'u00e9';
+        $json   = '{"src":"https:\/\/ex.test\/a.jpg","t":"' . $eAcute . '","n":1.50}';
+        $this->assertSame('é', json_decode($json, true)['t'], 'fixture holds a Unicode escape');
 
         $out = (new DbRewriter())->rewriteValue($json, ['https://ex.test/a.jpg' => 'https://ex.test/a.avif']);
 
-        $this->assertSame('{"src":"https:\/\/ex.test\/a.avif","t":"é","n":1.50}', $out);
+        $this->assertSame('{"src":"https:\/\/ex.test\/a.avif","t":"' . $eAcute . '","n":1.50}', $out);
+    }
+
+    public function test_json_whose_only_near_match_is_not_a_url_keeps_its_bytes(): void
+    {
+        // Decoded, the URL runs straight into a letter (an escaped "A"), so the
+        // boundary guard rewrites nothing; in the stored text the same URL is
+        // followed by a backslash. Nothing is rewritten, so nothing changes.
+        $json = '{"b":"https://ex.test/a.jpg' . chr(92) . 'u0041","n":1.50}';
+        $this->assertSame('https://ex.test/a.jpgA', json_decode($json, true)['b'], 'fixture holds an escaped A');
+
+        $out = (new DbRewriter())->rewriteValue($json, ['https://ex.test/a.jpg' => 'https://ex.test/a.avif']);
+
+        $this->assertSame($json, $out);
     }
 
     public function test_json_rewrite_of_both_url_forms_in_one_document(): void
@@ -238,7 +254,8 @@ final class MediaDbRewriterTest extends TestCase
         // in the stored text it is followed by a backslash. An in-place edit
         // would rewrite it, so the rewriter re-encodes instead, in the style of
         // the original: unescaped slashes, raw UTF-8.
-        $json = '{"a":"https://ex.test/a.jpg","b":"https://ex.test/a.jpgA","t":"é"}';
+        $json = '{"a":"https://ex.test/a.jpg","b":"https://ex.test/a.jpg' . chr(92) . 'u0041","t":"é"}';
+        $this->assertSame('https://ex.test/a.jpgA', json_decode($json, true)['b'], 'fixture holds an escaped A');
 
         $out = (new DbRewriter())->rewriteValue($json, ['https://ex.test/a.jpg' => 'https://ex.test/a.avif']);
 
