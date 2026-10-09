@@ -273,8 +273,18 @@ func TestCheckDeliverable_MeasuresRestrictionItemsAsRendered(t *testing.T) {
 		t.Errorf("refusal reports instruction_bytes = %v, want the rendered size %d", got, want)
 	}
 
-	// The read-time half measures the same render.
-	if _, rerr := (ResolvedContext{Restrictions: snap(quotes).Restrictions}).ModelInstructions(); rerr == nil {
-		t.Error("ModelInstructions delivered a block whose rendered size is over the limit")
+	// The read-time half accepts either measure: this context is over the
+	// limit as rendered and within it in its unquoted form, so it is
+	// delivered, whole, as rendered.
+	rc := ResolvedContext{Restrictions: snap(quotes).Restrictions}
+	if rc.unquotedFormBytes() > MaxDeliverableInstructionBytes {
+		t.Fatalf("test setup: the unquoted form is %d bytes, over the limit", rc.unquotedFormBytes())
+	}
+	text, rerr := rc.ModelInstructions()
+	if rerr != nil {
+		t.Fatalf("a context within the limit in its unquoted form is delivered; got %v", rerr)
+	}
+	if text != rc.InstructionText() {
+		t.Error("the delivered text is not the current rendering")
 	}
 }
