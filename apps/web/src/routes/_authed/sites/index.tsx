@@ -25,6 +25,7 @@ import { useTags } from "@/features/tags/use-tags";
 import { useTagColorMap } from "@/features/tags/use-tag-color-map";
 import { TagChip } from "@/features/sites/tag-chip";
 import { SitesTable } from "@/features/sites/sites-table";
+import { useAiReadinessRollup } from "@/features/ai-readiness/use-ai-readiness";
 import { SitesGrid, SitesGridSkeleton } from "@/features/sites/sites-grid";
 import { SitesToolbar } from "@/features/sites/sites-toolbar";
 import { useSitesSelection } from "@/features/sites/use-sites-selection";
@@ -273,6 +274,11 @@ function SitesPage() {
   // control plane, or the field not yet wired) reads as off, matching the
   // channel's "ships dark by default" contract.
   const agentSelfUpdateEnabled = fleetAgents?.self_update_enabled === true;
+
+  // Fleet AI readiness rollup, read once for the AI column and the grid chip.
+  // Best-effort like the agent rollup above: a refused or failed rollup is
+  // "unavailable", which renders a dash per site, never a page error.
+  const aiReadiness = useAiReadinessRollup();
 
   // Active on any filter axis, including the (now server-side) tags filter.
   // A tag filter that matches nothing legitimately returns `sites: []`, // that must render as a filtered-empty state, never the onboarding empty
@@ -1223,6 +1229,7 @@ function SitesPage() {
             <SitesGrid
               sites={visibleSites}
               cardSize={cardSize}
+              aiReadiness={aiReadiness}
               onOpenAutoLogin={autoLogin ? handleOpenAutoLogin : undefined}
               onOpenDetail={handleOpenDetail}
               onDisconnect={operate ? handleDisconnect : undefined}
@@ -1241,6 +1248,7 @@ function SitesPage() {
               agentStatusById={agentStatusById}
               agentReferenceSource={fleetAgents?.reference_source}
               agentReferenceCheck={fleetAgents?.agent_mirror}
+              aiReadiness={aiReadiness}
               onOpenAutoLogin={autoLogin ? handleOpenAutoLogin : undefined}
               onOpenDetail={handleOpenDetail}
               onDisconnect={operate ? handleDisconnect : undefined}

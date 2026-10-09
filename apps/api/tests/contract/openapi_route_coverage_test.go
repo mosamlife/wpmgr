@@ -42,6 +42,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
+	"github.com/mosamlife/wpmgr/apps/api/internal/aireadiness"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/assistantrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
@@ -432,6 +433,7 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 		AssistantRequestH:      assistantReqH,
 		AbilityRequestH:        abilityReqH,
 		AbilityTenantH:         abilities.NewTenantHandler(abilities.NewTenantRepo(pool, auditRec), admingate.NewPoolStore(pool)),
+		AIReadinessH:           aireadiness.NewHandler(aireadiness.NewService(aireadiness.NewRepo(pool), auditRec, logger)),
 		TenantH:                tenant.NewHandler(tenantSvc, auditRec),
 		SiteH:                  siteH,
 		SiteEventsH:            siteEventsH,

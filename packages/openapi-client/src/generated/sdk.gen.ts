@@ -468,6 +468,9 @@ import type {
   GetFleetAgentVersionsData,
   GetFleetAgentVersionsErrors,
   GetFleetAgentVersionsResponses,
+  GetFleetAiReadinessData,
+  GetFleetAiReadinessErrors,
+  GetFleetAiReadinessResponses,
   GetFleetBackupHealthData,
   GetFleetBackupHealthResponses,
   GetFleetDbHealthData,
@@ -550,6 +553,9 @@ import type {
   GetScheduleRunData,
   GetScheduleRunErrors,
   GetScheduleRunResponses,
+  GetSiteAiReadinessData,
+  GetSiteAiReadinessErrors,
+  GetSiteAiReadinessResponses,
   GetSiteAppHealthSettingsData,
   GetSiteAppHealthSettingsErrors,
   GetSiteAppHealthSettingsResponses,
@@ -935,6 +941,9 @@ import type {
   ReenableAbilityForTenantData,
   ReenableAbilityForTenantErrors,
   ReenableAbilityForTenantResponses,
+  RefreshSiteAiReadinessData,
+  RefreshSiteAiReadinessErrors,
+  RefreshSiteAiReadinessResponses,
   RefreshSiteContentInventoryData,
   RefreshSiteContentInventoryErrors,
   RefreshSiteContentInventoryResponses,
@@ -6934,6 +6943,96 @@ export const enableSiteContentEditing = <ThrowOnError extends boolean = false>(
     ThrowOnError
   >({
     url: "/api/v1/sites/{siteId}/ai/content-editing/enable",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Whether an AI assistant can work on this site
+ *
+ * A checklist computed by the control plane from what the site last
+ * reported: WordPress and WPMgr agent versions, whether AI page creation
+ * is on, and, for Elementor and Bricks, the version, the AI tools switch
+ * and (Elementor) the Atomic editor. Every row is `pass`, `fail`,
+ * `unknown` or `not_applicable`; an unknown is never a failure. The
+ * response carries no text the site chose: `observed` is a version
+ * string that passed a strict shape check, or null.
+ *
+ * `status` is `needs_attention` when any row in `base` or in an
+ * installed builder group fails (`fix_count` counts them), otherwise
+ * `incomplete` when any row is unknown, otherwise `ready`. The one
+ * exception is `bricks_abilities`: it is inferred from the site's tool
+ * list and has not been confirmed on a licensed Bricks install, so when
+ * it is `pass` or `fail` it is listed with its state and never counted.
+ * When it is `unknown` (the tool list was never read, or was cut short)
+ * it is an ordinary unknown and makes the site `incomplete`.
+ * A builder that is not installed contributes nothing, and neither
+ * does one that is installed but not active: that is a choice, not a
+ * fix, so its version row is `not_applicable` with reason `inactive`.
+ * `warnings` never change `status`.
+ *
+ * Advisory only: no tool call, approval or dispatch reads this result.
+ *
+ * Requires `site:read` and access to the site. Returns 404 for a site
+ * that is not the caller's, is archived, or has never been enrolled.
+ *
+ */
+export const getSiteAiReadiness = <ThrowOnError extends boolean = false>(
+  options: Options<GetSiteAiReadinessData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetSiteAiReadinessResponses,
+    GetSiteAiReadinessErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/ai/readiness", ...options });
+
+/**
+ * AI readiness of every site the caller can see
+ *
+ * One compact row per enrolled, non-archived site: the same `status`
+ * and `fix_count` the per-site route returns, the ids of the failing
+ * rows, and the warning codes. Computed by the same function as the
+ * per-site route, so the two cannot disagree. A site collaborator sees
+ * only the sites shared with them. Requires `site:read`.
+ *
+ */
+export const getFleetAiReadiness = <ThrowOnError extends boolean = false>(
+  options?: Options<GetFleetAiReadinessData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    GetFleetAiReadinessResponses,
+    GetFleetAiReadinessErrors,
+    ThrowOnError
+  >({ url: "/api/v1/fleet/ai-readiness", ...options });
+
+/**
+ * Ask the site to report again
+ *
+ * Queues a fresh metadata report from the site and, when the site's
+ * WPMgr agent can read its tool list, a fresh tool-list read. Returns
+ * 202 at once; the results appear on the next GET within a couple of
+ * minutes. `abilities` is true when a tool-list read was queued by this
+ * call or was already queued within the last two minutes, and false
+ * when the agent is too old to run one. Requires `site.content.refresh`
+ * (operator and above, the same tier as the content inventory refresh)
+ * and access to the site: a viewer can read the result but cannot ask
+ * for a new one. The body must be JSON (an empty object is fine).
+ * Returns 409 `site_unreachable` when the site is not enrolled or its
+ * agent has not been heard from recently.
+ *
+ */
+export const refreshSiteAiReadiness = <ThrowOnError extends boolean = false>(
+  options: Options<RefreshSiteAiReadinessData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    RefreshSiteAiReadinessResponses,
+    RefreshSiteAiReadinessErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/ai/readiness/refresh",
     ...options,
     headers: {
       "Content-Type": "application/json",

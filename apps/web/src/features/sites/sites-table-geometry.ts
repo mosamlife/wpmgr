@@ -67,6 +67,8 @@ export const SITES_COLUMN_TRACKS: readonly SitesColumnTrack[] = [
   { id: "wp_version", base: 76 },
   { id: "php_version", base: 80 },
   { id: "agent_version", base: 104 },
+  // Icon + "Ready" / "12 to fix" / "Not checked" + the amber warning triangle.
+  { id: "ai_readiness", base: 110 },
   { id: "updates_count", base: 120 },
   { id: "backup_status", base: 120, grow: 1, max: 160 },
   { id: "uptime_sparkline", base: 72 },

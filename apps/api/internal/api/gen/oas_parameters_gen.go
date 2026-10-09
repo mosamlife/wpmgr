@@ -668,6 +668,11 @@ type GetSiteParams struct {
 	SiteId uuid.UUID
 }
 
+// GetSiteAIReadinessParams is parameters of getSiteAIReadiness operation.
+type GetSiteAIReadinessParams struct {
+	SiteId uuid.UUID
+}
+
 // GetSiteAppHealthSettingsParams is parameters of getSiteAppHealthSettings operation.
 type GetSiteAppHealthSettingsParams struct {
 	SiteId uuid.UUID
@@ -1409,6 +1414,11 @@ type RecheckSiteParams struct {
 // ReenableAbilityForTenantParams is parameters of reenableAbilityForTenant operation.
 type ReenableAbilityForTenantParams struct {
 	EntryId uuid.UUID
+}
+
+// RefreshSiteAIReadinessParams is parameters of refreshSiteAIReadiness operation.
+type RefreshSiteAIReadinessParams struct {
+	SiteId uuid.UUID
 }
 
 // RefreshSiteContentInventoryParams is parameters of refreshSiteContentInventory operation.

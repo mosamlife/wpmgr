@@ -37,6 +37,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentmirror"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentupstream"
+	"github.com/mosamlife/wpmgr/apps/api/internal/aireadiness"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/assistantrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
@@ -1861,6 +1862,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	abilityReqUndoReconcileWorker := abilityrequest.NewUndoReconcileWorker(abilityReqSvc)
 	abilityReqH := abilityrequest.NewHandler(abilityReqSvc)
 	abilityTenantH := abilities.NewTenantHandler(abilities.NewTenantRepo(pool, auditRec), admingate.NewPoolStore(pool))
+	// AI readiness: the advisory per-site checklist and its fleet rollup. The
+	// refresh enqueuers are set once River has started, below.
+	aiReadinessSvc := aireadiness.NewService(aireadiness.NewRepo(pool), auditRec, logger)
+	aiReadinessH := aireadiness.NewHandler(aiReadinessSvc)
 	// Stamp WPMgr's own seeded catalogue entries (NULL hash) so requests
 	// made against them can be dispatched (W1 compares the stamped hash).
 	if n, err := abilities.StampOwnEntryHashes(ctx, pool, logger); err != nil {
@@ -2363,6 +2368,16 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	contentSweepWorker.SetEnqueuer(contentEnqueuer)
 	abilityEnqueuer := abilities.NewRiverEnqueuer(riverClient)
 	abilitySweepWorker.SetEnqueuer(abilityEnqueuer)
+	// "Check again" on the AI readiness card asks the site for a fresh metadata
+	// report (the same job the updates refresh queues) and, for an agent that
+	// can, a fresh tool-list read (unique per site per two minutes).
+	aiReadinessSvc.SetRefreshers(
+		newSiteRefreshAdapter(updateEnqueuer),
+		aireadiness.InventoryRefreshFunc(func(ctx context.Context, tenantID, siteID uuid.UUID) (bool, error) {
+			return abilityEnqueuer.EnqueueRefresh(ctx, abilities.RefreshArgs{TenantID: tenantID, SiteID: siteID}, time.Time{})
+		}),
+		cfg.Agent.StaleAfter,
+	)
 	// A read of a never-inventoried site queues that site's refresh.
 	mcpSvc.SetAbilityRefresher(func(ctx context.Context, tenantID, siteID uuid.UUID) (bool, error) {
 		return abilityEnqueuer.EnqueueRefresh(ctx, abilities.RefreshArgs{TenantID: tenantID, SiteID: siteID}, time.Time{})
@@ -3071,6 +3086,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		AssistantRequestH: assistantReqH,
 		AbilityRequestH:   abilityReqH,
 		AbilityTenantH:    abilityTenantH,
+		AIReadinessH:      aiReadinessH,
 		MCPDiscoveryH:     mcpDiscoveryH,
 		FilesH:            filesH,
 		UpdateH:           updateH,
