@@ -441,6 +441,64 @@ final class BuilderPageEditTest extends TestCase
         $this->assertSame('failed', AbilityLedger::get(self::EDIT)['phase'] ?? null);
     }
 
+    public function test_tables_without_transactions_refuse_before_any_write(): void
+    {
+        $input = $this->input(self::ops());
+        $plan  = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, (string) json_encode($plan['refusal'] ?? null));
+        $pre = $this->digest($input)($plan['base_fingerprint'], $plan['preview_digest']);
+
+        $cases = [
+            'postmeta on MyISAM'          => ['wp_postmeta', 'MyISAM', 'tables_not_transactional'],
+            'posts on Aria'               => ['wp_posts', 'Aria', 'tables_not_transactional'],
+            'posts listed with no engine' => ['wp_posts', null, 'tables_not_transactional'],
+            'postmeta not listed'         => ['wp_postmeta', false, 'table_engine_unreadable'],
+            'the catalogue read fails'    => ['', null, 'table_engine_unreadable'],
+        ];
+        foreach ($cases as $why => [$table, $engine, $detail]) {
+            // A new request on the site: a new database handle, read afresh.
+            $this->storePage(self::page());
+            if ($table === '') {
+                $this->rows->failOn = 'information_schema';
+            } elseif ($engine === false) {
+                unset($this->rows->tableEngines[$table]);
+            } else {
+                $this->rows->tableEngines[$table] = $engine;
+            }
+            $this->assertSame(['builder_not_available', $detail], self::codeOf($this->plan($input)), $why . ': precheck');
+
+            $before = $this->rows->metaRowsOf(self::TARGET);
+            $post   = $this->rows->postRow(self::TARGET);
+            $this->api->storingDocument(self::TARGET, $this->rows);
+            $r = $this->write($input, $pre, $plan['preview_digest']);
+            $this->assertSame(['builder_not_available', $detail, false], [$r['code'] ?? null, $r['detail'] ?? null, $r['ok'] ?? null], $why . ': write');
+            $this->assertSame([], $this->api->documents[self::TARGET]->saves, $why . ': Elementor was never asked to save');
+            $this->assertSame($before, $this->rows->metaRowsOf(self::TARGET), $why);
+            $this->assertSame($post, $this->rows->postRow(self::TARGET), $why);
+            $this->assertNull(AbilityLedger::get(self::EDIT), $why . ': no ledger row');
+            $this->assertSame([], $this->rows->optionRows(), $why . ': no snapshot');
+            $this->assertSame([], $this->wpdb->claims, $why . ': the claim is released');
+        }
+    }
+
+    public function test_table_engines_read_once_per_request(): void
+    {
+        $input               = $this->input(self::ops());
+        $this->rows->queries = [];
+        $this->assertArrayNotHasKey('refusal', $this->plan($input));
+        $this->assertArrayNotHasKey('refusal', $this->plan($input));
+        $reads = array_values(array_filter($this->rows->queries, static fn (array $q): bool => $q['sql'] === FakeBuilderWpdb::ENGINES_SQL));
+        $this->assertCount(1, $reads, 'information_schema is read once per request');
+        $this->assertSame([$this->rows->posts, $this->rows->postmeta], $reads[0]['args'], 'for the posts and postmeta tables, through prepare()');
+
+        // Within the request the answer stands; a new request reads again.
+        $this->rows->tableEngines['wp_postmeta'] = 'MyISAM';
+        $this->assertArrayNotHasKey('refusal', $this->plan($input));
+        $this->storePage(self::page());
+        $this->rows->tableEngines['wp_postmeta'] = 'MyISAM';
+        $this->assertSame(['builder_not_available', 'tables_not_transactional'], self::codeOf($this->plan($input)));
+    }
+
     public function test_ineligible_target_single_code(): void
     {
         $input = $this->input(self::ops());
