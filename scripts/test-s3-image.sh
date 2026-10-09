@@ -37,13 +37,17 @@
 #     several) are removed before matching, so prose may say what the fixture used
 #     to be; string and rune literals are kept, so an image named in code may not.
 #     "//" inside a string is not a comment, and neither is "/*".
-#   * no non-comment line in .github/workflows names one either, and
-#     api-integration.yml has a non-comment line that CAPTURES this script's
-#     output with $(...). A workflow that stopped calling it would fall back to a
-#     literal sooner or later; this says so before that happens. Capturing is the
-#     structure being asked for, not a mention of the file name: a pre-pull that
-#     only prints the image, or an error message that names the script, derives
-#     nothing.
+#   * no workflow under .github/workflows names one either. A workflow comment
+#     (a whole line or a trailing one) is removed before matching, so a step may
+#     say what it used to pull; quoted text is kept, so an image named in a
+#     command may not. A "#" starts a comment only at the start of a line or after
+#     a space or tab, and never inside quotes.
+#   * api-integration.yml has a line, other than a whole-line comment, that
+#     CAPTURES this script's output with $(...). A workflow that stopped calling
+#     it would fall back to a literal sooner or later; this says so before that
+#     happens. Capturing is the structure being asked for, not a mention of the
+#     file name: a pre-pull that only prints the image, or an error message that
+#     names the script, derives nothing.
 # The list of repositories it knows is S3_IMAGE_REPOS below. It is a list of
 # names, so a server that is not on it is not caught: add it when a new one is
 # chosen.
@@ -51,8 +55,8 @@
 # FAILING CLOSED. Standard output carries the reference and nothing else, and
 # only on success, so a caller that captures it never captures a half answer.
 # Every other outcome writes to standard error and exits non-zero. A missing
-# tests directory, no declaration, no workflow files to scan: all errors, never
-# "nothing found, so fine".
+# tests directory, no declaration, no workflow files to scan, a workflow scan
+# that could not run: all errors, never "nothing found, so fine".
 #
 # Exit codes: 0 ok, 1 a check failed, 2 the script was misused or ROOT is not a
 # directory.
@@ -145,6 +149,49 @@ go_code_hits() {
   ' "$1"
 }
 # END go_code_hits
+
+# wf_code_hits FILE: print "LINE:text" for every line of a workflow whose CODE
+# names an S3 server image repository. The comment is removed first, so a step
+# may say what it used to pull. YAML and shell agree on what starts a comment and
+# on what hides one, and the scanner knows only that:
+#   #      starts a comment at the start of a line or after a space or tab, so
+#          the # in a#b, ${#x} and $# does not
+#   "..."  holds # as text, and \" does not end it
+#   '...'  holds # as text, and a backslash in it is only a backslash
+#   \x     outside single quotes, the character after it is text
+# The state is reset on every line. A quote that is not closed on its line leaves
+# the rest of that line as code, which can add a finding and never hides one.
+# BEGIN wf_code_hits
+wf_code_hits() {
+  awk -v repos="$S3_IMAGE_REPOS" -v sq="'" '
+    function strip(line,    out, i, n, c, q, prev) {
+      out = ""
+      q = ""
+      prev = " "
+      n = length(line)
+      for (i = 1; i <= n; i++) {
+        c = substr(line, i, 1)
+        if (c == "\\" && q != sq) {
+          out = out c substr(line, i + 1, 1)
+          i++
+          prev = c
+          continue
+        }
+        if (q == "") {
+          if (c == "#" && (prev == " " || prev == "\t")) { break }
+          if (c == "\"" || c == sq) { q = c }
+        } else if (c == q) {
+          q = ""
+        }
+        out = out c
+        prev = c
+      }
+      return out
+    }
+    strip($0) ~ repos { print FNR ":" $0 }
+  ' "$1"
+}
+# END wf_code_hits
 
 usage() {
   cat <<'USAGE'
@@ -311,9 +358,12 @@ EOF
     else
       while IFS= read -r f; do
         [ -n "$f" ] || continue
-        bad="$(grep -n -E "$S3_IMAGE_REPOS" "$f" | grep -v -E '^[0-9]+:[[:space:]]*#' || true)"
+        if ! bad="$(wf_code_hits "$f")"; then
+          err "could not scan $f for an S3 server image; a scan that did not run is not a clean one."
+          continue
+        fi
         if [ -n "$bad" ]; then
-          err "$f names an S3 server image on a non-comment line; derive it with $SELF_NAME:"
+          err "$f names an S3 server image outside a comment; derive it with $SELF_NAME:"
           printf '%s\n' "$bad" | sed 's/^/         /' >&2
         fi
       done <<EOF

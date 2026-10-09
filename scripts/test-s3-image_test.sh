@@ -357,6 +357,108 @@ t="$(tree check-workflow-indented-comment)"
 printf '          # chrislusf/seaweedfs:3.80 was here\n' >>"$(wf "$t")"
 case_run "check: an indented workflow comment is prose too" pass check "$t" "=$REF"
 
+# ---- Workflow comments beyond a whole line. A trailing comment is removed before
+# the match, so a step may say what it used to pull; quoted text is kept, so an
+# image named in a command may not. A "#" starts a comment only at the start of a
+# line or after a space or tab, and never inside quotes. Every case appends one
+# line to the workflow and asserts on that line alone.
+
+# What must NOT be flagged: the image is named only in comment text.
+t="$(tree check-workflow-trailing-comment)"
+cat >>"$(wf "$t")" <<'YML'
+      - run: docker pull postgres:16-alpine # previously minio/minio
+YML
+case_run "check: a trailing comment naming the old image is prose" pass check "$t" "=$REF"
+
+t="$(tree check-workflow-comment-column-one)"
+cat >>"$(wf "$t")" <<'YML'
+# previously minio/minio
+YML
+case_run "check: a comment that starts in the first column is prose" pass check "$t" "=$REF"
+
+t="$(tree check-workflow-trailing-comment-tab)"
+printf '      - run: docker pull postgres:16-alpine\t# previously minio/minio\n' >>"$(wf "$t")"
+case_run "check: a tab before the # starts a comment too" pass check "$t" "=$REF"
+
+t="$(tree check-workflow-comment-after-quoted-arg)"
+cat >>"$(wf "$t")" <<'YML'
+      - run: docker pull "postgres:16-alpine" # previously minio/minio
+YML
+case_run "check: a comment after a closed quoted argument is prose" pass check "$t" "=$REF"
+
+t="$(tree check-workflow-comment-with-quotes)"
+cat >>"$(wf "$t")" <<'YML'
+      - run: docker pull postgres:16-alpine # it's "minio/minio" now
+YML
+case_run "check: quotes inside a comment do not matter" pass check "$t" "=$REF"
+
+t="$(tree check-workflow-single-quoted-backslash)"
+cat >>"$(wf "$t")" <<'YML'
+      - run: echo 'C:\' # previously minio/minio
+YML
+case_run "check: a backslash inside single quotes does not escape the closing quote" pass check "$t" "=$REF"
+
+# What must STILL be flagged: the image is named in code, whatever surrounds it.
+t="$(tree check-workflow-literal-then-comment)"
+cat >>"$(wf "$t")" <<'YML'
+      - run: docker pull minio/minio:RELEASE.2024-01-16T16-07-38Z # the old pin
+YML
+case_run "check: an image before a trailing comment is still a finding" fail check "$t" "+api-integration.yml names an S3 server image"
+
+t="$(tree check-workflow-quoted-literal-then-comment)"
+cat >>"$(wf "$t")" <<'YML'
+      - run: docker pull "minio/minio:RELEASE.2024-01-16T16-07-38Z" # the old pin
+YML
+case_run "check: a quoted image before a trailing comment is still a finding" fail check "$t" "+api-integration.yml names an S3 server image"
+
+t="$(tree check-workflow-hash-in-double-quotes)"
+cat >>"$(wf "$t")" <<'YML'
+      - run: echo "a # b" && docker pull minio/minio:x
+YML
+case_run "check: # inside double quotes is not a comment, so a literal after it is found" fail check "$t" "+api-integration.yml names an S3 server image"
+
+t="$(tree check-workflow-hash-in-single-quotes)"
+cat >>"$(wf "$t")" <<'YML'
+      - run: echo 'a # b' && docker pull minio/minio:x
+YML
+case_run "check: # inside single quotes is not a comment, so a literal after it is found" fail check "$t" "+api-integration.yml names an S3 server image"
+
+t="$(tree check-workflow-hash-mid-word)"
+cat >>"$(wf "$t")" <<'YML'
+      - run: curl -fsS https://example.test/page#minio/minio
+YML
+case_run "check: a # that follows a character is not a comment" fail check "$t" "+api-integration.yml names an S3 server image"
+
+t="$(tree check-workflow-escaped-space)"
+cat >>"$(wf "$t")" <<'YML'
+      - run: echo \ # docker pull minio/minio:x
+YML
+case_run "check: an escaped space is part of a word, so the # after it is not a comment" fail check "$t" "+api-integration.yml names an S3 server image"
+
+t="$(tree check-workflow-escaped-quote)"
+cat >>"$(wf "$t")" <<'YML'
+      - run: echo "say \" # still a string" && docker pull minio/minio:x
+YML
+case_run "check: an escaped quote does not end the string early" fail check "$t" "+api-integration.yml names an S3 server image"
+
+t="$(tree check-workflow-quote-left-open)"
+cat >>"$(wf "$t")" <<'YML'
+      - run: echo don't # previously minio/minio
+YML
+case_run "check: a quote left open keeps the rest of the line as code" fail check "$t" "+api-integration.yml names an S3 server image"
+
+# A scan that did not run is not a clean scan. awk is replaced by one that fails,
+# for this one case.
+FAKEBIN="$WORK/fakebin"
+mkdir -p "$FAKEBIN"
+printf '#!/bin/sh\necho "awk: simulated failure" >&2\nexit 2\n' >"$FAKEBIN/awk"
+chmod +x "$FAKEBIN/awk"
+t="$(tree check-workflow-scan-cannot-run)"
+SAVED_PATH="$PATH"
+PATH="$FAKEBIN:$PATH"
+case_run "check: a workflow scan that cannot run is an error, not a clean scan" fail check "$t" "+could not scan"
+PATH="$SAVED_PATH"
+
 t="$(tree check-other-go-literal)"
 cat >"$t/apps/api/tests/other_test.go" <<'GO'
 package tests
