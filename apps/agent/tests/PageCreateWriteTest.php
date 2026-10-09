@@ -1239,6 +1239,7 @@ final class PageCreateWriteTest extends TestCase
             'a password parent'         => ['password parent', ['parent_status' => 'publish', 'parent_password' => 'secret'], 'image_not_available'],
             'a missing parent'          => ['missing parent', ['parent' => 4242], 'image_not_available'],
             'a trashed attachment'      => ['trashed attachment', ['status' => 'trash'], 'image_not_available'],
+            'a password attachment'     => ['password attachment', ['password' => 'secret'], 'image_not_available'],
             'not readable'              => ['unreadable', ['unreadable' => true], 'image_not_available'],
             'javascript address'        => ['javascript src', ['src' => ['javascript:alert(1)', 1, 1, false]], 'image_url_unusable'],
             'quote in the address'      => ['quote src', ['src' => ['https://example.com/a".jpg', 1, 1, false]], 'image_url_unusable'],
@@ -1326,7 +1327,7 @@ final class PageCreateWriteTest extends TestCase
         $p->post_type         = $o['post_type'] ?? 'attachment';
         $p->post_status       = $o['status'] ?? 'inherit';
         $p->post_parent       = (int) ($o['parent'] ?? 0);
-        $p->post_password     = '';
+        $p->post_password     = (string) ($o['password'] ?? '');
         $p->post_title        = 'image ' . $id;
         $p->post_content      = '';
         $p->post_modified_gmt = $o['modified_gmt'] ?? '2026-10-01 09:00:00';
