@@ -21,10 +21,12 @@
 #              correct work gets switched off, and then it guards nothing.
 #
 # THE FIXTURE TREE IS HERMETIC. It needs no Go toolchain, no database and no
-# network: the mcp.Store interface is supplied through --store-doc in exactly
-# the format `go doc -u` emits, and the Go files are the few lines the guard's
-# control patterns read. That is deliberate — the suite must be runnable on a
-# machine where the real check cannot run, or it will not be run.
+# network: the Store and requestStore interfaces are supplied through
+# --store-doc in exactly the format `go doc -u` emits (or, for the cases that
+# run the production extraction, by a fake `go` on PATH), and the Go files are
+# the few lines the guard's control patterns read. That is deliberate — the
+# suite must be runnable on a machine where the real check cannot run, or it
+# will not be run.
 #
 # RUN IT:
 #   make check-mcp-containment-test
@@ -274,17 +276,38 @@ run_case "ok-doc-comment-period-is-not-a-split-call" 0 "check-mcp-site-containme
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
 rm -f "$TREE/apps/api/internal/mcp/iface.go"
 
-# A new requestStore method with an unreviewed uuid parameter is the bypass
-# Rule B used to miss, because it read Store alone.
-REQUEST_STORE_EXTRA='Foo(ctx context.Context, siteID uuid.UUID) error' make_store_doc "$DOC"
-run_case "bypass-request-store-unreviewed-uuid-param" 1 "PARAM Foo.siteID" - -- \
+# The bypass planted in an EXPORTED requestStore method is run through the
+# production extraction further down (bypass-request-store-through-go-doc-
+# extraction). A copy of it here, handed to the guard as a finished document,
+# is reported by a guard that never asks go doc for requestStore at all, so it
+# would prove nothing about reading that interface and is not kept.
+
+# An UNEXPORTED method is a method. requestStore is an unexported interface, so
+# the method most likely to be added to it is unexported too; a guard that read
+# upper-case names only passed it green.
+REQUEST_STORE_EXTRA='siteByID(ctx context.Context, siteID uuid.UUID) error' make_store_doc "$DOC"
+run_case "bypass-request-store-unexported-uuid-param" 1 "PARAM siteByID.siteID" - -- \
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
 make_store_doc "$DOC"
 
-# The same method with no uuid is ordinary work.
+# The same method with no uuid is ordinary work, exported or not.
 REQUEST_STORE_EXTRA='CountOpen(ctx context.Context, limit int32) (int, error)' make_store_doc "$DOC"
 run_case "ok-request-store-method-without-uuid" 0 "check-mcp-site-containment: OK" "VIOLATION" -- \
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+make_store_doc "$DOC"
+
+REQUEST_STORE_EXTRA='countOpen(ctx context.Context, limit int32) (int, error)' make_store_doc "$DOC"
+run_case "ok-request-store-unexported-method-without-uuid" 0 "check-mcp-site-containment: OK" "VIOLATION" -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$DOC"
+make_store_doc "$DOC"
+
+# An unexported method whose uuid parameter a reviewer HAS allowlisted is clean,
+# and the entry is matched rather than left stale: a stale entry is exit 1, so
+# exit 0 here means the guard found the parameter and the entry named it.
+REQUEST_STORE_EXTRA='siteByID(ctx context.Context, siteID uuid.UUID) error' make_store_doc "$DOC"
+make_allow "$WORK/allow.reviewed" 'PARAM siteByID.siteID   # a reviewed id'
+run_case "ok-request-store-unexported-uuid-param-reviewed" 0 "check-mcp-site-containment: OK" "VIOLATION" -- \
+  --api-root "$TREE/apps/api" --allowlist "$WORK/allow.reviewed" --store-doc "$DOC"
 make_store_doc "$DOC"
 
 run_case "ok-doc-comments-are-not-methods" 0 "Rule B  8 uuid parameter(s)" "VIOLATION" -- \
@@ -702,6 +725,14 @@ run_case "broken-store-doc-interface-renamed" 2 "does not contain 'type Store in
 { make_store_doc "$WORK/two.doc"; sed '/^type requestStore interface/,$d' "$WORK/two.doc" >"$WORK/onlystore.doc"; }
 run_case "broken-request-store-missing-from-doc" 2 "does not contain 'type requestStore interface'" "containment: OK" -- \
   --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$WORK/onlystore.doc"
+
+# requestStore PRESENT but extracting to no methods (the doc format changed) is a
+# guard reading half the boundary. A populated Store must not hide it: exit 2,
+# naming requestStore.
+cp "$WORK/onlystore.doc" "$WORK/unparseable-request.doc"
+printf '\ntype requestStore interface {\n  ListSiteAddressesInScope(ctx context.Context) error\n}\n' >>"$WORK/unparseable-request.doc"
+run_case "broken-request-store-no-methods-parsed" 2 "parsed ZERO methods out of the mcp requestStore interface" "containment: OK" -- \
+  --api-root "$TREE/apps/api" --allowlist "$ALLOW" --store-doc "$WORK/unparseable-request.doc"
 
 # The real extraction path (no --store-doc): a `go doc` that fails, or that
 # exits 0 and prints nothing for requestStore, must be exit 2. A fake go on

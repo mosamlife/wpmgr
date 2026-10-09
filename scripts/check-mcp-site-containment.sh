@@ -550,12 +550,14 @@ while IFS= read -r entry; do
 done <"$ALLOW_CALL"
 
 # ---------------------------------------------------------------------------
-# RULE B. Every uuid parameter on the mcp.Store interface.
+# RULE B. Every uuid parameter on the mcp.Store and requestStore interfaces.
 #
-# Read through Go's own parser, after the package type-checks, rather than by
-# grepping repo.go: a wrapped signature, a method moved to another file in the
-# package, or a package that stopped compiling must not be able to make this
-# rule quietly match less.
+# Read through Go's own parser (`go doc -u`, one call per interface in
+# STORE_IFACES) rather than by grepping repo.go: a wrapped signature or a method
+# moved to another file in the package must not be able to make this rule
+# quietly match less. `go doc` parses and does not type-check (see the header),
+# so a `go doc` that FAILS is exit 2, and so is an interface that extracts to no
+# methods.
 # ---------------------------------------------------------------------------
 STORE_DOC_FILE="$TMPDIR_RUN/store.doc"
 if [ -n "$STORE_DOC" ]; then
@@ -577,7 +579,7 @@ else
   done
 fi
 
-[ -s "$STORE_DOC_FILE" ] || broken "the mcp.Store interface extraction produced NO OUTPUT. Rule B cannot report containment on an empty interface."
+[ -s "$STORE_DOC_FILE" ] || broken "the mcp Store / requestStore interface extraction produced NO OUTPUT. Rule B cannot report containment on an empty interface."
 for iface in $STORE_IFACES; do
   grep -q "type $iface interface" "$STORE_DOC_FILE" \
     || broken "the extraction does not contain 'type $iface interface' -- the interface was renamed, or the doc format changed. Rule B is measuring nothing."
@@ -585,12 +587,33 @@ done
 grep -q "$CHOKEPOINT(" "$STORE_DOC_FILE" \
   || broken "the mcp.Store interface no longer declares $CHOKEPOINT. Either the chokepoint left the interface, or the extraction is wrong; both mean Rule B's baseline is gone."
 
-# Method lines: one tab, an upper-case identifier, an open paren. Doc comments
-# in the extraction start `\t//`, blank lines separate, and the closing brace is
-# at column 0, so this selects declarations and nothing else.
+# Method lines: one tab, an identifier, an open paren. The identifier may be
+# EXPORTED OR NOT -- an ASCII letter or an underscore first -- because
+# requestStore is an unexported interface and a method added to it is as likely
+# to be unexported as not; a method the extraction does not select is a uuid
+# parameter nobody reviewed. A method whose first character is a non-ASCII
+# letter is not selected.
+#
+# Each interface is cut at its own declaration and its own closing brace (column
+# 0 in the extraction), so a line outside an interface body is never read as a
+# method. Doc comments inside the body start `\t//`, and the doc text that
+# follows an interface is indented with spaces, so neither is selected.
+#
+# EACH INTERFACE MUST YIELD A METHOD ON ITS OWN. Pooling the lines first and
+# testing the pool would let a populated Store hide a requestStore that
+# extracted to nothing, and a requestStore that reads as empty is a rule that
+# reviews half the boundary and reports the whole of it.
 METHODS="$TMPDIR_RUN/store.methods"
-grep -E '^	[A-Z][A-Za-z0-9_]*\(' "$STORE_DOC_FILE" | sed 's/^	//' >"$METHODS"
-[ -s "$METHODS" ] || broken "parsed ZERO methods out of the mcp.Store interface. The doc format changed; Rule B would pass on any tree at all in this state."
+: >"$METHODS"
+for iface in $STORE_IFACES; do
+  awk -v want="$iface" '
+    index($0, "type " want " interface") == 1 { inside = 1; next }
+    inside && substr($0, 1, 1) == "}"         { inside = 0; next }
+    inside                                     { print }
+  ' "$STORE_DOC_FILE" | grep -E '^	[A-Za-z_][A-Za-z0-9_]*\(' | sed 's/^	//' >"$METHODS.$iface"
+  [ -s "$METHODS.$iface" ] || broken "parsed ZERO methods out of the mcp $iface interface. The doc format changed, or the interface was emptied; Rule B reads nothing from it and would pass whatever it declared."
+  cat "$METHODS.$iface" >>"$METHODS"
+done
 
 # For each method, every parameter binding whose type is uuid.UUID or
 # []uuid.UUID. Go groups names: `tenantID, grantID, tokenID uuid.UUID` binds
