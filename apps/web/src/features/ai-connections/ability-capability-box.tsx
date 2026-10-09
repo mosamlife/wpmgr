@@ -5,8 +5,9 @@ import { CAPABILITY_DESCRIPTIONS, capabilityLabel } from "./capabilities";
 // The site-tools box (scope mcp:site), shared by the wizard's capability step
 // and the consent screen so the two cannot describe it differently. Two
 // explicit ticks, both clear by default and in no preset: the read can return
-// page text, and the request only ever creates a request that a person
-// approves in WPMgr.
+// page text, and the request lets the connection make changes as far as each
+// site's setting allows (a change the setting does not allow waits for a
+// person in WPMgr).
 
 const ROWS = ["mcp.ability.read", "mcp.ability.request"] as const;
 

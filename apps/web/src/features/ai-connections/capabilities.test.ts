@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  CAPABILITY_DESCRIPTIONS,
   capabilityKind,
   capabilityLabel,
   CONFERRABLE_READS,
@@ -31,6 +32,44 @@ describe("capabilityLabel", () => {
     // server actually stored still renders, as itself, rather than being
     // dropped or replaced with a generic "unknown" placeholder.
     expect(capabilityLabel("mcp.not.a.real.capability")).toBe("mcp.not.a.real.capability");
+  });
+});
+
+// The site-tools request row. Each site's setting decides whether a change
+// runs at once or waits, so neither the label nor the description may say a
+// person approves every request. Both are pinned by value, and the retired
+// wording is pinned as something that must not return.
+describe("the site-tools request capability copy", () => {
+  it("is labelled by what the site's setting allows, with the always-wait line", () => {
+    expect(capabilityLabel("mcp.ability.request")).toBe(
+      "Make changes through the site's tools, as far as each site's setting allows. Some changes always wait for you.",
+    );
+  });
+
+  it("is described by the site's setting, not by approval of each request", () => {
+    expect(CAPABILITY_DESCRIPTIONS["mcp.ability.request"]).toBe(
+      "Make a change through one of a site's reviewed tools, as far as that site's setting " +
+        "allows. Each site's setting decides which changes run at once and which wait until " +
+        "someone allowed to edit that site's content approves them in WPMgr. Some changes " +
+        "always wait.",
+    );
+  });
+
+  it("never says a person approves each request, in the label or the description", () => {
+    const copy = [
+      capabilityLabel("mcp.ability.request"),
+      CAPABILITY_DESCRIPTIONS["mcp.ability.request"],
+    ].join(" ");
+    expect(copy).not.toMatch(/You approve each/i);
+    expect(copy).not.toMatch(/approve each request/i);
+    expect(copy).not.toMatch(/one at a time/i);
+    expect(copy).not.toMatch(/Nothing runs until/i);
+  });
+
+  it("leaves the cache row on approval by a person, which is still how it works", () => {
+    expect(CAPABILITY_DESCRIPTIONS["mcp.cache.purge"]).toMatch(
+      /Nothing runs until someone allowed to clear caches on that site approves/,
+    );
   });
 });
 

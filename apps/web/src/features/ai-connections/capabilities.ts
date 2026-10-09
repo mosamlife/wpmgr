@@ -42,10 +42,13 @@ export const CAPABILITY_LABELS = {
   // accident.
   "mcp.cache.purge": "Ask to clear the site cache",
   // The site-tools engine (scope mcp:site). The first is a read that is NOT in
-  // any preset, because it can return page text; the second is a request, like
-  // the cache row: nothing runs until a person approves it in WPMgr.
+  // any preset, because it can return page text; the second is a request. Each
+  // site's setting decides whether a request runs at once or waits for a person,
+  // and some kinds of change always wait, so the label says "as far as each
+  // site's setting allows" and never that every change is approved one by one.
   "mcp.ability.read": "See this site's tools and read its published pages",
-  "mcp.ability.request": "Ask to make changes through the site's tools. You approve each one.",
+  "mcp.ability.request":
+    "Make changes through the site's tools, as far as each site's setting allows. Some changes always wait for you.",
 } as const satisfies Readonly<Record<string, string>>;
 
 /** A capability wire string this build's vocabulary knows. */
@@ -175,9 +178,10 @@ export const CAPABILITY_DESCRIPTIONS: Readonly<Record<Capability, string>> = {
     "read-only, such as reading a published page. This can return the text of pages on " +
     "the sites you chose. It changes nothing.",
   "mcp.ability.request":
-    "Ask to make a change through one of a site's reviewed tools. Nothing runs until " +
-    "someone allowed to edit that site's content approves the request in WPMgr. You " +
-    "approve each request one at a time.",
+    "Make a change through one of a site's reviewed tools, as far as that site's setting " +
+    "allows. Each site's setting decides which changes run at once and which wait until " +
+    "someone allowed to edit that site's content approves them in WPMgr. Some changes " +
+    "always wait.",
 } as const;
 
 /**
