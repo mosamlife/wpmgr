@@ -372,7 +372,7 @@ final class ElementorFactsTest extends TestCase
         ];
         foreach ($throwers as $throw) {
             $plugin = new ElementorPluginStandIn();
-            foreach (['documents', 'elements_manager', 'widgets_manager', 'experiments', 'kits_manager'] as $name) {
+            foreach (['documents', 'elements_manager', 'widgets_manager', 'experiments', 'kits_manager', 'files_manager'] as $name) {
                 $plugin->{$name} = new ElementorManagerStandIn($throw);
             }
             ElementorPluginStandIn::$instance = $plugin;
@@ -452,6 +452,50 @@ final class ElementorFactsTest extends TestCase
         );
 
         $this->assertSame(['sanitised' => ['a' => '<b>x</b>']], $runtime->ksesPostDeep(['a' => '<b>x</b>']));
+    }
+
+    public function test_runtime_deletes_post_css_through_elementors_files_manager(): void
+    {
+        $deleted = [];
+        $file    = new class ($deleted) {
+            /**
+             * @param list<string> $deleted Records each delete().
+             */
+            public function __construct(private array &$deleted)
+            {
+            }
+
+            public function delete(): void
+            {
+                $this->deleted[] = 'delete';
+            }
+        };
+        $plugin                = new ElementorPluginStandIn();
+        $plugin->files_manager = new ElementorManagerStandIn(static fn (string $m, array $args) => $args[1] === [41] ? $file : null);
+        ElementorPluginStandIn::$instance = $plugin;
+        $runtime = $this->standInRuntime();
+
+        // The object Elementor's own post CSS create() returns, then its delete().
+        $this->assertTrue($runtime->deletePostCss(41));
+        $this->assertSame([['get', ['Elementor\\Core\\Files\\CSS\\Post', [41]]]], $plugin->files_manager->calls);
+        $this->assertSame(['delete'], $deleted);
+
+        // No object, an object without delete(), or no post: false, and nothing deleted.
+        $this->assertFalse($runtime->deletePostCss(42));
+        $plugin->files_manager = new ElementorManagerStandIn(static fn () => new \stdClass());
+        $this->assertFalse($runtime->deletePostCss(41));
+        $this->assertFalse($runtime->deletePostCss(0));
+        $this->assertSame([['get', ['Elementor\\Core\\Files\\CSS\\Post', [41]]]], $plugin->files_manager->calls, 'post 0 never reaches Elementor');
+        $this->assertSame(['delete'], $deleted);
+
+        // An Elementor whose delete() throws answers false, never throws.
+        $plugin->files_manager = new ElementorManagerStandIn(static fn () => new class () {
+            public function delete(): void
+            {
+                throw new \RuntimeException('unlink failed');
+            }
+        });
+        $this->assertFalse($runtime->deletePostCss(41));
     }
 
     public function test_sanitiser_is_elementors_own_where_the_running_elementor_has_one(): void
@@ -688,6 +732,7 @@ final class ElementorFactsTest extends TestCase
         $this->assertFalse($runtime->elementTypeExists('section'));
         $this->assertFalse($runtime->widgetTypeExists('heading'));
         $this->assertNull($runtime->ksesPostDeep(['a' => '<b>x</b>']));
+        $this->assertFalse($runtime->deletePostCss(41));
 
         $facts = ElementorFacts::collect($runtime, self::PRINCIPAL);
         $this->assertSame($loaded, $facts['active']);
@@ -729,6 +774,9 @@ final class ElementorPluginStandIn
 
     /** @var object|null */
     public $kits_manager = null;
+
+    /** @var object|null */
+    public $files_manager = null;
 }
 
 /**
