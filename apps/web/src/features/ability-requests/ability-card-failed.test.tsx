@@ -106,15 +106,42 @@ describe("AbilityRequestCard on a failed row with a post id", () => {
 describe("abilityStatus plain-English refusals", () => {
   const refused = (code: string) => abilityStatus(mk({ outcome: "refused", outcome_code: code })).text;
   const generic = "The site refused to create the draft page. Nothing was created.";
+  // The page layout codes are the ones the agent's page-create builder
+  // (class-page-create-builder.php) and its ability_run command
+  // (class-ability-run-command.php) refuse with. Each line says what to ask the
+  // AI next.
   const groups: Array<[string[], string]> = [
     [
       ["content_editing_not_enabled", "principal_capabilities_drifted", "principal_missing"],
       "Turn AI page creation on again from this tab.",
     ],
     [["editor_unavailable"], "This site's editor isn't available."],
-    [["preview_changed", "entry_approval_invalid"], "The site changed since you approved. Ask the AI to try again."],
-    [["sanitiser_changed_new_content"], "Ask the AI to simplify the text."],
+    [
+      ["preview_changed"],
+      "The site or one of the chosen images changed since you approved. Ask the AI to try again.",
+    ],
+    [
+      ["entry_approval_invalid", "integration_entry_changed"],
+      "The site changed since you approved. Ask the AI to try again.",
+    ],
+    [
+      ["sanitiser_changed_new_content"],
+      "This site changes page content when saving it, often because of a plugin, in a way WPMgr can't approve. Ask the AI to simplify the page.",
+    ],
     [["create_content_invalid", "bad_input"], "The AI's page outline wasn't valid. Ask it to try again."],
+    [["layout_invalid", "link_invalid"], "The AI's page layout wasn't valid. Ask it to try again."],
+    [
+      ["image_not_available"],
+      "An image the AI chose is no longer in the media library, or WPMgr may not use it. Ask the AI to pick another image.",
+    ],
+    [
+      ["image_url_unusable"],
+      "WordPress gave an unusual address for one of the images, so WPMgr stopped. Ask the AI to pick another image.",
+    ],
+    [
+      ["layout_needs_block_editor"],
+      "This site uses the classic editor, which has no columns, sections, buttons or spacing. Ask the AI for a simpler page.",
+    ],
     [["disabled_on_site", "ability_disabled"], "AI page creation is turned off for this site."],
   ];
   for (const [codes, advice] of groups) {

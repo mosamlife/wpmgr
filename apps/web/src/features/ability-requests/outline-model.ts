@@ -299,6 +299,51 @@ export function indexPageMedia(raw: unknown): ReadonlyMap<number, PageMediaFact>
   return byId;
 }
 
+// --- Reading the input text -------------------------------------------------
+
+/**
+ * True when the JSON text holds a number written with a fraction or an
+ * exponent. Every number in the grammar is a whole number, and the control
+ * plane refuses 42.0 as it refuses 42.5, but JSON.parse reads both as 42.
+ */
+function hasFractionalNumber(json: string): boolean {
+  let inString = false;
+  for (let i = 0; i < json.length; i += 1) {
+    const ch = json.charAt(i);
+    if (inString) {
+      if (ch === "\\") i += 1;
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') {
+      inString = true;
+    } else if (ch === "-" || (ch >= "0" && ch <= "9")) {
+      let end = i + 1;
+      while (end < json.length && /[0-9.eE+-]/.test(json.charAt(end))) end += 1;
+      if (!/^-?(0|[1-9][0-9]*)$/.test(json.slice(i, end))) return true;
+      i = end - 1;
+    }
+  }
+  return false;
+}
+
+/**
+ * The input as data, or undefined for text that is not JSON the card can read
+ * in full. A "__proto__" key anywhere is refused because the schema parser
+ * skips that key by design, which would drop it from the screen.
+ */
+function readInput(inputJson: string): unknown {
+  let hidden = false;
+  let value: unknown;
+  try {
+    value = JSON.parse(inputJson, (key, v: unknown) => {
+      if (key === "__proto__") hidden = true;
+      return v;
+    });
+  } catch {
+    return undefined;
+  }
+  return hidden || hasFractionalNumber(inputJson) ? undefined : value;
+}
+
 // --- The parsed preview -----------------------------------------------------
 
 export interface PagePreview {
@@ -315,12 +360,8 @@ export interface PagePreview {
  * with no fact from the site.
  */
 export function parsePagePreview(inputJson: string, pageMedia?: unknown): PagePreview | null {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(inputJson);
-  } catch {
-    return null;
-  }
+  const raw = readInput(inputJson);
+  if (raw === undefined) return null;
   const parsed = pageInputSchema.safeParse(raw);
   if (!parsed.success) return null;
   const { editor, title, outline } = parsed.data;

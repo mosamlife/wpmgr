@@ -157,7 +157,7 @@ function NodeView({ node, ctx }: { node: OutlineNode; ctx: Ctx }) {
               <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">
                 {/* The address is shown as text and is never a link. It is ASCII by the
                     grammar, so it needs no isolation. */}
-                <span className="break-all">{`Links to ${button.url}`}</span>
+                <span className="break-all">{`Links to ${button.url}`}</span>{" "}
                 <LinkChip target={classifyLink(button.url, ctx.siteHost)} />
               </p>
             </div>
