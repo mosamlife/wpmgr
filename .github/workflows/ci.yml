@@ -71,7 +71,7 @@ jobs:
           GOWORK: "off"
           CGO_ENABLED: "0"
         # Also exclude apps/api/tests here: those are container-based integration
-        # tests (testcontainers: postgres, redis, minio, clickhouse) that belong
+        # tests (testcontainers: postgres, redis, seaweedfs, clickhouse) that belong
         # in a separate lane, not the fast unit CI. Nearly all of that package's
         # test functions run under CGO_ENABLED=0 (one is excluded by a
         # //go:build cgo tag), and most stand up their own ephemeral Postgres,
@@ -515,6 +515,24 @@ jobs:
 
       - name: Version surface guard (openapi, changelog page, badge, agent, install pins)
         run: scripts/check-version-surfaces.sh
+
+      # ---- The integration tests' S3 store image -----------------------------
+      # GH #819: that image was pinned twice, as a Go literal and as a literal in
+      # api-integration.yml's pre-pull, and its registry stopped serving it. The
+      # Go const s3TestImage is now the only literal and the pre-pull asks
+      # scripts/test-s3-image.sh for it. `--check` fails when the const is
+      # missing or is not pinned by digest, when any other file names an S3
+      # server image, and when the pre-pull stops calling the script. The
+      # integration lane is manual-dispatch, so without this a bad pin would be
+      # found by whoever next ran it.
+      #
+      # Self-test FIRST, same reasoning as the version surface guard: a broken
+      # guard must fail here, not pass by failing open.
+      - name: S3 test image guard self-test (GH #819)
+        run: scripts/test-s3-image_test.sh
+
+      - name: S3 test image guard (digest-pinned, named once, pre-pull derives it)
+        run: scripts/test-s3-image.sh --check
 
 
       # ---- License surfaces --------------------------------------------------

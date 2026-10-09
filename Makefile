@@ -213,6 +213,17 @@ check-versions: ## Check every version-naming surface (docs, marketing, agent)
 check-versions-test: ## Run the version surface guard's regression suite
 	scripts/check-version-surfaces_test.sh
 
+# GH #819: the integration tests' S3 store is one digest-pinned const in
+# apps/api/tests, and api-integration.yml pre-pulls whatever this reads out of
+# it. The same two commands CI runs, suite first.
+.PHONY: check-s3-image
+check-s3-image: ## Check the integration tests' S3 image is digest-pinned, named once, and pre-pulled from the const
+	scripts/test-s3-image.sh --check
+
+.PHONY: check-s3-image-test
+check-s3-image-test: ## Run the S3 image guard's regression suite
+	scripts/test-s3-image_test.sh
+
 # The agent's generated block markup, validated by the real @wordpress/blocks
 # on the pinned WP 6.2 and latest package sets (CI job page-blocks).
 .PHONY: check-page-blocks
