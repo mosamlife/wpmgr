@@ -9,6 +9,10 @@ use WPMgr\Agent\Abilities\AbilityGuards;
 use WPMgr\Agent\Abilities\AbilityInterception;
 use WPMgr\Agent\Abilities\AbilityLedger;
 use WPMgr\Agent\Abilities\AbilitySideEffects;
+use WPMgr\Agent\Abilities\Builders\BuilderAdapter;
+use WPMgr\Agent\Abilities\Builders\BuilderPageCreate;
+use WPMgr\Agent\Abilities\Builders\BuilderRegistry;
+use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
 use WPMgr\Agent\Abilities\OwnAbilities;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
 use WPMgr\Agent\Abilities\RestCall;
@@ -54,6 +58,12 @@ if (!defined('ABSPATH')) {
  * bytes, and records a ledger row keyed by request_id. Its revert trashes
  * that draft, taking the post id only from the ledger row of the
  * token-bound request_id, and only while the draft is unchanged.
+ *
+ * A page-builder editor ("builder:<id>") resolves through BuilderRegistry
+ * against the entry's limits.builders_enabled before anything is built; the
+ * build, the save and the undo guard of a builder draft are
+ * BuilderPageCreate's. Idempotency, the claims, the digest re-check and the
+ * ledger row are the same for every editor.
  */
 final class AbilityRunCommand implements CommandInterface
 {
@@ -71,6 +81,13 @@ final class AbilityRunCommand implements CommandInterface
 
     /** Post meta naming the request that created a post (unknown-outcome recovery). */
     public const META_CREATED_BY = '_wpmgr_created_by_request';
+
+    /**
+     * @param (\Closure(): array<string, BuilderAdapter>)|null $builderSeam Tests only: builds stand-ins for the compiled page builder adapters, afresh for each call. Production passes none.
+     */
+    public function __construct(private readonly ?\Closure $builderSeam = null)
+    {
+    }
 
     /**
      * {@inheritDoc}
@@ -238,7 +255,7 @@ final class AbilityRunCommand implements CommandInterface
         }
 
         if ($name === OwnAbilities::NAME_PAGE_CREATE) {
-            return $this->pageCreate($mode, (string) $requestId, $entrySha, $req);
+            return $this->pageCreate($mode, (string) $requestId, $entrySha, $req, $entry);
         }
         if ($name === OwnAbilities::NAME_REST_READ || $name === OwnAbilities::NAME_REST_WRITE) {
             return $this->restCall($mode, $name, (string) $requestId, $entrySha, $req);
@@ -1255,9 +1272,10 @@ final class AbilityRunCommand implements CommandInterface
      * @param string $requestId Request id.
      * @param string $entrySha  Entry hash.
      * @param object $req       Decoded p.
+     * @param object $entry     The catalogue entry.
      * @return array<string,mixed>
      */
-    private function pageCreate(string $mode, string $requestId, string $entrySha, object $req): array
+    private function pageCreate(string $mode, string $requestId, string $entrySha, object $req, object $entry): array
     {
         $inputText = $req->input ?? '{}';
         if (!is_string($inputText) || strlen($inputText) > self::MAX_INPUT_BYTES) {
@@ -1287,6 +1305,41 @@ final class AbilityRunCommand implements CommandInterface
         $spec     = $checked['spec'];
         $inputSha = hash('sha256', $inputText);
 
+        // A page-builder editor builds only through a builder this agent
+        // knows, has compiled in, and the entry enables.
+        $adapter = null;
+        if (preg_match(BuilderRegistry::RE_EDITOR, $spec['editor']) === 1) {
+            if (OwnAbilities::buildersEnabled($entry) === null) {
+                return $this->fail('bad_input', 'the entry\'s limits.builders_enabled is not a list of page builder ids');
+            }
+            $resolved = BuilderRegistry::resolve($spec['editor'], get_object_vars($entry)['limits'] ?? null, $this->builderSeam === null ? null : ($this->builderSeam)());
+            if (!isset($resolved['adapter'])) {
+                return $this->fail((string) ($resolved['code'] ?? 'bad_input'), (string) ($resolved['detail'] ?? 'that page builder cannot be used'));
+            }
+            $adapter = $resolved['adapter'];
+        }
+
+        if ($mode === 'precheck' && $adapter !== null) {
+            return $this->asPrincipal(function () use ($spec, $adapter, $requestId, $entrySha, $inputSha): array {
+                $built = $this->builderBuild($spec, $adapter, $requestId);
+                if (isset($built['refusal'])) {
+                    return $built['refusal'];
+                }
+
+                return [
+                    'ok'               => true,
+                    'outcome'          => 'prechecked',
+                    'mode'             => 'precheck',
+                    'ability'          => OwnAbilities::NAME_PAGE_CREATE,
+                    'request_id'       => $requestId,
+                    'valid'            => true,
+                    'base_fingerprint' => $built['base_fingerprint'],
+                    'preview_digest'   => $built['preview_digest'],
+                    'precheck_digest'  => $this->precheckDigest($entrySha, $inputSha, $built['base_fingerprint'], $built['preview_digest']),
+                    'preview'          => $built['preview'],
+                ];
+            });
+        }
         if ($mode === 'precheck') {
             return $this->asPrincipal(function () use ($spec, $requestId, $entrySha, $inputSha): array {
                 $built = $this->pageCreateBuild($spec);
@@ -1341,12 +1394,112 @@ final class AbilityRunCommand implements CommandInterface
             return $this->fail('request_in_flight', 'this request is already running');
         }
         try {
-            return $this->asPrincipal(function (int $principal) use ($spec, $requestId, $entrySha, $inputSha, $expPre, $expPrev): array {
+            return $this->asPrincipal(function (int $principal) use ($spec, $adapter, $requestId, $entrySha, $inputSha, $expPre, $expPrev): array {
+                if ($adapter !== null) {
+                    return $this->builderPageCreateWrite($principal, $spec, $adapter, $requestId, $entrySha, $inputSha, $expPre, $expPrev);
+                }
+
                 return $this->pageCreateWrite($principal, $spec, $requestId, $entrySha, $inputSha, $expPre, $expPrev);
             });
         } finally {
             AbilityLedger::releaseRequest($requestId);
         }
+    }
+
+    /**
+     * Resolve the outline's images and build the page with a page builder,
+     * as the principal. Writes nothing.
+     *
+     * @param array<string,mixed> $spec      Spec with a builder editor.
+     * @param BuilderAdapter      $adapter   The resolved adapter.
+     * @param string              $requestId Request id; node ids derive from it.
+     * @return array<string,mixed> BuilderPageCreate::precheck()'s answer, or {refusal}.
+     */
+    private function builderBuild(array $spec, BuilderAdapter $adapter, string $requestId): array
+    {
+        $resolved = $this->pageCreateMedia(PageCreateBuilder::mediaIds($spec));
+        if (!isset($resolved['facts'])) {
+            return ['refusal' => $resolved['refusal'] ?? $this->fail('image_not_available', 'an image could not be resolved')];
+        }
+        $facts = $adapter instanceof ElementorAdapter ? $adapter->facts() : [];
+
+        return BuilderPageCreate::precheck($spec, $adapter, $facts, $resolved['facts'], $requestId);
+    }
+
+    /**
+     * The write pipeline for a builder page, under the request claim, as the
+     * principal: the same replay check, digest re-check and ledger row as
+     * every page-create, then BuilderPageCreate's write.
+     *
+     * @param int                 $principal Service user id.
+     * @param array<string,mixed> $spec      Spec with a builder editor.
+     * @param BuilderAdapter      $adapter   The resolved adapter.
+     * @param string              $requestId Request id.
+     * @param string              $entrySha  Entry hash.
+     * @param string              $inputSha  Input hash.
+     * @param string              $expPre    Expected precheck digest.
+     * @param string              $expPrev   Expected preview digest.
+     * @return array<string,mixed>
+     */
+    private function builderPageCreateWrite(int $principal, array $spec, BuilderAdapter $adapter, string $requestId, string $entrySha, string $inputSha, string $expPre, string $expPrev): array
+    {
+        $row = AbilityLedger::get($requestId);
+        if ($row !== null) {
+            return $this->alreadyApplied($requestId, $row);
+        }
+
+        $built = $this->builderBuild($spec, $adapter, $requestId);
+        if (isset($built['refusal'])) {
+            return $built['refusal'];
+        }
+        $precheck = $this->precheckDigest($entrySha, $inputSha, $built['base_fingerprint'], $built['preview_digest']);
+        if (!hash_equals($expPrev, $built['preview_digest']) || !hash_equals($expPre, $precheck)) {
+            return $this->fail('preview_changed', 'what would be created differs from what was approved');
+        }
+
+        if (!AbilityLedger::create($requestId, $this->pageCreateLedgerRow($requestId, $entrySha, $built['base_fingerprint'], $built['preview_digest'], $precheck))) {
+            return $this->fail('snapshot_failed', 'the ledger row could not be written; nothing was created');
+        }
+
+        return BuilderPageCreate::write(
+            $principal,
+            $spec,
+            $adapter,
+            $requestId,
+            $built,
+            static fn (array $fields): bool => AbilityLedger::update($requestId, $fields)
+        );
+    }
+
+    /**
+     * The ledger row a page-create write records before any effect: the
+     * idempotency key is durable, and created_post_id is filled right after
+     * the insert.
+     *
+     * @param string $requestId     Request id.
+     * @param string $entrySha      Entry hash.
+     * @param string $baseFp        Base fingerprint.
+     * @param string $previewDigest Preview digest.
+     * @param string $precheck      Precheck digest.
+     * @return array<string,mixed>
+     */
+    private function pageCreateLedgerRow(string $requestId, string $entrySha, string $baseFp, string $previewDigest, string $precheck): array
+    {
+        return [
+            'request_id'      => $requestId,
+            'ability'         => OwnAbilities::NAME_PAGE_CREATE,
+            'entry_sha256'    => $entrySha,
+            'snapshot'        => 'created_post_trash',
+            'phase'           => 'inserting',
+            'created_post_id' => 0,
+            'before_fp'       => $baseFp,
+            'after_fp'        => '',
+            'preview_digest'  => $previewDigest,
+            'precheck_digest' => $precheck,
+            'undo_state'      => 'none',
+            'created_at'      => time(),
+            'result'          => null,
+        ];
     }
 
     /**
@@ -1520,21 +1673,7 @@ final class AbilityRunCommand implements CommandInterface
 
         // 4. The ledger row exists before any effect: the idempotency key is
         //    durable, and created_post_id is filled right after the insert.
-        $ledger = [
-            'request_id'      => $requestId,
-            'ability'         => OwnAbilities::NAME_PAGE_CREATE,
-            'entry_sha256'    => $entrySha,
-            'snapshot'        => 'created_post_trash',
-            'phase'           => 'inserting',
-            'created_post_id' => 0,
-            'before_fp'       => $built['base_fingerprint'],
-            'after_fp'        => '',
-            'preview_digest'  => $built['preview_digest'],
-            'precheck_digest' => $precheck,
-            'undo_state'      => 'none',
-            'created_at'      => time(),
-            'result'          => null,
-        ];
+        $ledger = $this->pageCreateLedgerRow($requestId, $entrySha, $built['base_fingerprint'], $built['preview_digest'], $precheck);
         if (!AbilityLedger::create($requestId, $ledger)) {
             return $this->fail('snapshot_failed', 'the ledger row could not be written; nothing was created');
         }
@@ -1701,8 +1840,11 @@ final class AbilityRunCommand implements CommandInterface
         if ($recovered && !AbilityLedger::claimRequest($requestId)) {
             return $this->fail('request_in_flight', 'this request is still running');
         }
+        // A builder draft is checked by its builder's guard: the save made
+        // revisions of the draft, and its fingerprint covers the builder rows.
+        $builderRow = array_key_exists('builder', $row) ? $row : null;
         try {
-            return $this->pageCreateRevertClaimed($requestId, $postId, $completed ? $afterFp : null);
+            return $this->pageCreateRevertClaimed($requestId, $postId, $completed ? $afterFp : null, $builderRow);
         } finally {
             if ($recovered) {
                 AbilityLedger::releaseRequest($requestId);
@@ -1715,18 +1857,22 @@ final class AbilityRunCommand implements CommandInterface
      * was recorded: the draft must then be authored by the principal and
      * never modified since insert.
      *
-     * @param string      $requestId Request id.
-     * @param int         $postId    Post id, from the ledger row.
-     * @param string|null $afterFp   Recorded after-fingerprint, or null.
+     * A builder draft ($builderRow set) is instead checked by
+     * BuilderPageCreate::revertProblem() against its ledger row.
+     *
+     * @param string                   $requestId  Request id.
+     * @param int                      $postId     Post id, from the ledger row.
+     * @param string|null              $afterFp    Recorded after-fingerprint, or null.
+     * @param array<string,mixed>|null $builderRow The ledger row of a builder draft, or null.
      * @return array<string,mixed>
      */
-    private function pageCreateRevertClaimed(string $requestId, int $postId, ?string $afterFp): array
+    private function pageCreateRevertClaimed(string $requestId, int $postId, ?string $afterFp, ?array $builderRow = null): array
     {
         if (!AbilityLedger::claimTarget($postId)) {
             return $this->fail('target_in_flight', 'another engine call holds this post');
         }
         try {
-            return $this->asPrincipal(function (int $principal) use ($requestId, $postId, $afterFp): array {
+            return $this->asPrincipal(function (int $principal) use ($requestId, $postId, $afterFp, $builderRow): array {
                 clean_post_cache($postId);
                 $post = get_post($postId);
                 if (!is_object($post)) {
@@ -1742,24 +1888,31 @@ final class AbilityRunCommand implements CommandInterface
                 if ((string) get_post_meta($postId, self::META_CREATED_BY, true) !== $requestId) {
                     return $this->fail('conflict', 'the post is not the one this request created');
                 }
-                if ($afterFp !== null && !hash_equals($afterFp, PageCreateBuilder::documentFingerprint($post))) {
-                    return $this->fail('conflict', 'someone edited this draft after it was created');
-                }
-                if ($afterFp === null) {
-                    if ((int) $post->post_author !== $principal) {
-                        return $this->fail('conflict', 'the draft has another author now');
+                if ($builderRow !== null) {
+                    $problem = BuilderPageCreate::revertProblem($postId, $builderRow);
+                    if ($problem !== null) {
+                        return $this->fail('created_post_touched', $problem);
                     }
-                    // Core stamps the modified dates equal to the dates on
-                    // insert and moves them on every later save.
-                    $v = get_object_vars($post);
-                    if ((string) ($v['post_modified_gmt'] ?? '') !== (string) ($v['post_date_gmt'] ?? "\0")
-                        || (string) ($v['post_modified'] ?? '') !== (string) ($v['post_date'] ?? "\0")) {
+                } else {
+                    if ($afterFp !== null && !hash_equals($afterFp, PageCreateBuilder::documentFingerprint($post))) {
                         return $this->fail('conflict', 'someone edited this draft after it was created');
                     }
-                }
-                $touched = $this->touchedBySomeone($postId);
-                if ($touched !== null) {
-                    return $this->fail('created_post_touched', $touched);
+                    if ($afterFp === null) {
+                        if ((int) $post->post_author !== $principal) {
+                            return $this->fail('conflict', 'the draft has another author now');
+                        }
+                        // Core stamps the modified dates equal to the dates on
+                        // insert and moves them on every later save.
+                        $v = get_object_vars($post);
+                        if ((string) ($v['post_modified_gmt'] ?? '') !== (string) ($v['post_date_gmt'] ?? "\0")
+                            || (string) ($v['post_modified'] ?? '') !== (string) ($v['post_date'] ?? "\0")) {
+                            return $this->fail('conflict', 'someone edited this draft after it was created');
+                        }
+                    }
+                    $touched = $this->touchedBySomeone($postId);
+                    if ($touched !== null) {
+                        return $this->fail('created_post_touched', $touched);
+                    }
                 }
 
                 if (!$this->trashOwn($postId)) {

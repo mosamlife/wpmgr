@@ -55,6 +55,12 @@ final class OwnAbilities
 
     private const RE_SLUG = '/^[A-Za-z0-9._-]{1,100}$/';
 
+    /** A page builder id in an entry's limits.builders_enabled. */
+    private const RE_BUILDER_ID = '/^[a-z0-9]{1,32}$/D';
+
+    /** Most ids limits.builders_enabled may hold. */
+    private const BUILDERS_ENABLED_MAX = 32;
+
     /**
      * Names of the abilities this agent implements.
      *
@@ -183,6 +189,47 @@ final class OwnAbilities
         }
 
         return null;
+    }
+
+    /**
+     * The page builders a catalogue entry enables: its limits.builders_enabled,
+     * a list of distinct lowercase builder ids.
+     *
+     * An entry with no limits, or limits without builders_enabled (absent or
+     * null), enables none: []. Any other shape is malformed and answers null:
+     * limits that is not an object, builders_enabled that is not a list, or
+     * an item that is not a builder id or repeats one. Whether an id is a
+     * builder this agent knows and has compiled in is the builder registry's
+     * decision, not this parse's.
+     *
+     * @param object $entry The catalogue entry, decoded with objects.
+     * @return list<string>|null
+     */
+    public static function buildersEnabled(object $entry): ?array
+    {
+        $limits = get_object_vars($entry)['limits'] ?? null;
+        if ($limits === null) {
+            return [];
+        }
+        if (!$limits instanceof \stdClass) {
+            return null;
+        }
+        $list = get_object_vars($limits)['builders_enabled'] ?? null;
+        if ($list === null) {
+            return [];
+        }
+        if (!is_array($list) || !array_is_list($list) || count($list) > self::BUILDERS_ENABLED_MAX) {
+            return null;
+        }
+        $ids = [];
+        foreach ($list as $id) {
+            if (!is_string($id) || preg_match(self::RE_BUILDER_ID, $id) !== 1 || in_array($id, $ids, true)) {
+                return null;
+            }
+            $ids[] = $id;
+        }
+
+        return $ids;
     }
 
     /**
