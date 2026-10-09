@@ -93,6 +93,12 @@ type fakeStore struct {
 	// holds, and one that says nothing holds nothing and is refused.
 	grantOauthScopes []string
 
+	// grantNotAuthorized makes the redeem transaction's read-back report
+	// authorized=false: the grant was revoked or has expired since consent, or
+	// the organisation's assistant is paused. The real transaction then rolls
+	// back, so the fake leaves `consumed` unflipped and counts no token.
+	grantNotAuthorized bool
+
 	recheck   sqlc.ReCheckMCPRequestAuthorizationInTenantTxRow
 	recheckOK bool
 
@@ -317,6 +323,11 @@ func (f *fakeStore) RedeemAuthorizationCode(_ context.Context, _, _ uuid.UUID, t
 	// consume never becomes visible and the code remains redeemable.
 	if f.tokenPersistErr != nil {
 		return RedeemedCode{}, f.tokenPersistErr
+	}
+	// Then the read-back's verdict. A grant that is not authorized rolls the
+	// whole transaction back: nothing is consumed and no token is counted.
+	if f.grantNotAuthorized {
+		return RedeemedCode{}, errGrantNotAuthorized
 	}
 	// Then the read-back of the grant's stored scope set, returned AS STORED,
 	// exactly as the real transaction returns it: deciding whether a token

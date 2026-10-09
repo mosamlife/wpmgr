@@ -8,6 +8,7 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ### Added
 
+- The agent now includes two read-only facts in the site details it sends to WPMgr: which parent theme a child theme uses and, on a site running Elementor, whether Elementor's Atomic editor is switched on. It changes nothing on the site. Agent 0.61.159.
 - An AI connected through WPMgr can now read a site's published pages, posts, media, categories and tags through WordPress's own REST API, as the dedicated WPMgr content user. With per-request approval in WPMgr it can also change a page or post title or excerpt, with undo, and it refuses pages whose other content the WPMgr user may not save. It can use reviewed read tools that other plugins register with the WordPress Abilities API (WordPress 7.1 or later); a read that tries to change settings or contact other servers is refused, and admin-rights changes are put back. Agent 0.61.158.
 - The dashboard's AI requests list now covers title and excerpt changes, and an approval card shows the before and after of the change. A superadmin-managed allowlist now limits which REST routes an AI can read.
 - AI page creation is more reliable. Page titles and text can contain "&" and bracketed numbers such as [1]; they are stored as literal text and never run as shortcodes. A draft left behind by an interrupted AI request can now be moved to the trash from WPMgr, as long as nobody has edited it. Agent 0.61.157.
