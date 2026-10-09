@@ -55,12 +55,22 @@ const (
 	maxComponentVersionLen = 64
 )
 
+// cleanWPVersion returns the site's WordPress version if it has the expected
+// shape. It does not trim: the AI tools read the stored text exactly as it is
+// and refuse a version with space around it, so a padded one is not a usable
+// version here either.
 func cleanWPVersion(s string) (string, bool) {
-	s = strings.TrimSpace(s)
 	if len(s) > maxWPVersionLen || !wpVersionRe.MatchString(s) {
 		return "", false
 	}
 	return s, true
+}
+
+// wpReleaseNumber is the dotted number a well-formed WordPress version starts
+// with: 7.1 for 7.1-RC1, 7.1.1 for 7.1.1-src. A plain release is its own number.
+func wpReleaseNumber(v string) string {
+	num, _, _ := strings.Cut(v, "-")
+	return num
 }
 
 func cleanAgentVersion(s string) (string, bool) {
@@ -110,6 +120,9 @@ func Evaluate(f Facts) Result { return EvaluateWith(f, DefaultFloors()) }
 //   - Every site-reported version is validated before it is compared or
 //     returned. One that fails its shape check is "not reported", never a
 //     failure.
+//   - The WordPress row passes only for a version the AI tools accept. A
+//     development or pre-release build whose release number reaches the floor
+//     fails with reason prerelease_build; an older version fails with no reason.
 //   - A check is unknown, not failing, whenever WPMgr could not tell: the
 //     inventory never ran, it was cut short with nothing found, or the agent
 //     is too old to report the fact.
@@ -269,12 +282,21 @@ func (e *evaluator) factsReason() Reason {
 	return ReasonNotReported
 }
 
+// checkWP passes only for a version the AI tools accept: it decides with
+// agentcmd.WPVersionMeetsFloor, the rule behind agentcmd.WPMeetsVendorFloor, on
+// the stored text. A version that passes the shape check but is refused is a
+// fail. When its release number reaches the floor, what the tools refuse is the
+// kind of build (a development or pre-release build), reason prerelease_build;
+// otherwise the version is simply too old, with no reason.
 func (e *evaluator) checkWP() Check {
 	if !e.wpOK {
 		return unknown(CheckWPVersion, ReasonNotReported, "")
 	}
-	if wpversion.Compare(e.wp, e.fl.WP) >= 0 {
+	if agentcmd.WPVersionMeetsFloor(e.wp, e.fl.WP) {
 		return pass(CheckWPVersion, e.wp)
+	}
+	if wpversion.Compare(wpReleaseNumber(e.wp), e.fl.WP) >= 0 {
+		return fail(CheckWPVersion, ReasonPrereleaseBuild, e.wp)
 	}
 	return fail(CheckWPVersion, ReasonNone, e.wp)
 }

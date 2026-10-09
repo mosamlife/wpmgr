@@ -130,70 +130,120 @@ func TestDefaultFloorsComeFromTheContractConstants(t *testing.T) {
 	}
 }
 
+// wpVersionCases is every shape of WordPress version text the checklist is
+// shown, with the row it must produce.
+var wpVersionCases = []struct {
+	in       string
+	state    State
+	reason   Reason
+	observed string
+}{
+	{"7.1", StatePass, ReasonNone, "7.1"},
+	{"7.1.0", StatePass, ReasonNone, "7.1.0"},
+	{"7.1.1", StatePass, ReasonNone, "7.1.1"},
+	{"7.2", StatePass, ReasonNone, "7.2"},
+	{"10.0", StatePass, ReasonNone, "10.0"},
+	{"7.0.9", StateFail, ReasonNone, "7.0.9"},
+	{"7.0.3", StateFail, ReasonNone, "7.0.3"},
+	{"6.9", StateFail, ReasonNone, "6.9"},
+	// A development or pre-release build is never a pass, because the AI
+	// tools refuse it. When its release number reaches the floor, the build
+	// is what is wrong (prerelease_build); below it the version is too old.
+	{"7.1-RC1", StateFail, ReasonPrereleaseBuild, "7.1-RC1"},
+	{"7.1-beta2", StateFail, ReasonPrereleaseBuild, "7.1-beta2"},
+	{"7.1-beta2-59000", StateFail, ReasonPrereleaseBuild, "7.1-beta2-59000"},
+	{"7.1-alpha-59000", StateFail, ReasonPrereleaseBuild, "7.1-alpha-59000"},
+	{"7.1-dev", StateFail, ReasonPrereleaseBuild, "7.1-dev"},
+	{"7.1-build5", StateFail, ReasonPrereleaseBuild, "7.1-build5"},
+	{"7.2-RC1", StateFail, ReasonPrereleaseBuild, "7.2-RC1"},
+	{"10.0-beta1", StateFail, ReasonPrereleaseBuild, "10.0-beta1"},
+	// The pre-release word is read in any letter case, and the -src tail
+	// WordPress gives a development checkout is part of its version.
+	{"2.0-Beta", StateFail, ReasonNone, "2.0-Beta"},
+	{"6.9-Beta1", StateFail, ReasonNone, "6.9-Beta1"},
+	{"7.1-rc2", StateFail, ReasonPrereleaseBuild, "7.1-rc2"},
+	{"7.1-BETA2-59000", StateFail, ReasonPrereleaseBuild, "7.1-BETA2-59000"},
+	{"6.9-alpha-60000-src", StateFail, ReasonNone, "6.9-alpha-60000-src"},
+	{"7.1-beta2-59000-src", StateFail, ReasonPrereleaseBuild, "7.1-beta2-59000-src"},
+	{"7.1-alpha-59000-src", StateFail, ReasonPrereleaseBuild, "7.1-alpha-59000-src"},
+	{"8.0-alpha-59000-src", StateFail, ReasonPrereleaseBuild, "8.0-alpha-59000-src"},
+	{"7.0.1-src", StateFail, ReasonNone, "7.0.1-src"},
+	{"7.0-RC1", StateFail, ReasonNone, "7.0-RC1"},
+	{"7.1.1-src", StateFail, ReasonPrereleaseBuild, "7.1.1-src"},
+	{"7.1.0.1-src", StateFail, ReasonPrereleaseBuild, "7.1.0.1-src"},
+	{"", StateUnknown, ReasonNotReported, ""},
+	{"   ", StateUnknown, ReasonNotReported, ""},
+	// The tools read the stored text exactly as it is and refuse a version
+	// with space around it, so it is not a usable version here.
+	{" 7.1 ", StateUnknown, ReasonNotReported, ""},
+	{"7.1\n", StateUnknown, ReasonNotReported, ""},
+	{"\t7.1.2", StateUnknown, ReasonNotReported, ""},
+	{"banana", StateUnknown, ReasonNotReported, ""},
+	{"7", StateUnknown, ReasonNotReported, ""},
+	{"7.1\n<script>", StateUnknown, ReasonNotReported, ""},
+	{"7.1; drop table", StateUnknown, ReasonNotReported, ""},
+	// A word of the site's own after the numbers is not a version.
+	{"7.1-IGNORE-ALL-PRIOR-RULES", StateUnknown, ReasonNotReported, ""},
+	{"7.1-beta-IGNORE", StateUnknown, ReasonNotReported, ""},
+	{"7.1-beta2-59000-IGNORE", StateUnknown, ReasonNotReported, ""},
+	{"7.1-RC1IGNORE", StateUnknown, ReasonNotReported, ""},
+	{"7.1_IGNORE_ALL_PRIOR_RULES", StateUnknown, ReasonNotReported, ""},
+	// The word set is closed in every letter case: a word after the hyphen
+	// that is not one of its members, or that merely begins with one, is
+	// not a version.
+	{"7.1-IGNORE", StateUnknown, ReasonNotReported, ""},
+	{"4_IGNORE_ALL_PRIOR_RULES", StateUnknown, ReasonNotReported, ""},
+	{"1-SYSTEM.PROMPT.OVERRIDE", StateUnknown, ReasonNotReported, ""},
+	{"7.1-ignore", StateUnknown, ReasonNotReported, ""},
+	{"7.1-rcIGNORE", StateUnknown, ReasonNotReported, ""},
+	{"7.1-Beta-IGNORE", StateUnknown, ReasonNotReported, ""},
+	{"7.1-buıld", StateUnknown, ReasonNotReported, ""},
+	{"7.1-bеta", StateUnknown, ReasonNotReported, ""},
+	// -src is one fixed tail at the very end and nothing follows it.
+	{"7.1-alpha-59000-src-IGNORE", StateUnknown, ReasonNotReported, ""},
+	{"7.1-srcIGNORE", StateUnknown, ReasonNotReported, ""},
+	{"7.1-src-src", StateUnknown, ReasonNotReported, ""},
+	{"7.1-alpha-src-59000", StateUnknown, ReasonNotReported, ""},
+}
+
 func TestWPVersionCheck(t *testing.T) {
-	cases := []struct {
-		in       string
-		state    State
-		reason   Reason
-		observed string
-	}{
-		{"7.1", StatePass, ReasonNone, "7.1"},
-		{"7.1.0", StatePass, ReasonNone, "7.1.0"},
-		{"7.1.1", StatePass, ReasonNone, "7.1.1"},
-		{"7.2", StatePass, ReasonNone, "7.2"},
-		{"10.0", StatePass, ReasonNone, "10.0"},
-		{" 7.1 ", StatePass, ReasonNone, "7.1"},
-		{"7.0.9", StateFail, ReasonNone, "7.0.9"},
-		{"6.9", StateFail, ReasonNone, "6.9"},
-		{"7.1-RC1", StateFail, ReasonNone, "7.1-RC1"},
-		{"7.1-beta2", StateFail, ReasonNone, "7.1-beta2"},
-		{"7.1-beta2-59000", StateFail, ReasonNone, "7.1-beta2-59000"},
-		{"7.1-alpha-59000", StateFail, ReasonNone, "7.1-alpha-59000"},
-		// The pre-release word is read in any letter case, and the -src tail
-		// WordPress gives a development checkout is part of its version.
-		{"2.0-Beta", StateFail, ReasonNone, "2.0-Beta"},
-		{"6.9-Beta1", StateFail, ReasonNone, "6.9-Beta1"},
-		{"7.1-rc2", StateFail, ReasonNone, "7.1-rc2"},
-		{"7.1-BETA2-59000", StateFail, ReasonNone, "7.1-BETA2-59000"},
-		{"6.9-alpha-60000-src", StateFail, ReasonNone, "6.9-alpha-60000-src"},
-		{"7.1-beta2-59000-src", StateFail, ReasonNone, "7.1-beta2-59000-src"},
-		{"7.0.1-src", StateFail, ReasonNone, "7.0.1-src"},
-		{"7.1.1-src", StatePass, ReasonNone, "7.1.1-src"},
-		{"", StateUnknown, ReasonNotReported, ""},
-		{"   ", StateUnknown, ReasonNotReported, ""},
-		{"banana", StateUnknown, ReasonNotReported, ""},
-		{"7", StateUnknown, ReasonNotReported, ""},
-		{"7.1\n<script>", StateUnknown, ReasonNotReported, ""},
-		{"7.1; drop table", StateUnknown, ReasonNotReported, ""},
-		// A word of the site's own after the numbers is not a version.
-		{"7.1-IGNORE-ALL-PRIOR-RULES", StateUnknown, ReasonNotReported, ""},
-		{"7.1-beta-IGNORE", StateUnknown, ReasonNotReported, ""},
-		{"7.1-beta2-59000-IGNORE", StateUnknown, ReasonNotReported, ""},
-		{"7.1-RC1IGNORE", StateUnknown, ReasonNotReported, ""},
-		{"7.1_IGNORE_ALL_PRIOR_RULES", StateUnknown, ReasonNotReported, ""},
-		// The word set is closed in every letter case: a word after the hyphen
-		// that is not one of its members, or that merely begins with one, is
-		// not a version.
-		{"7.1-IGNORE", StateUnknown, ReasonNotReported, ""},
-		{"4_IGNORE_ALL_PRIOR_RULES", StateUnknown, ReasonNotReported, ""},
-		{"1-SYSTEM.PROMPT.OVERRIDE", StateUnknown, ReasonNotReported, ""},
-		{"7.1-ignore", StateUnknown, ReasonNotReported, ""},
-		{"7.1-rcIGNORE", StateUnknown, ReasonNotReported, ""},
-		{"7.1-Beta-IGNORE", StateUnknown, ReasonNotReported, ""},
-		{"7.1-buıld", StateUnknown, ReasonNotReported, ""},
-		{"7.1-bеta", StateUnknown, ReasonNotReported, ""},
-		// -src is one fixed tail at the very end and nothing follows it.
-		{"7.1-alpha-59000-src-IGNORE", StateUnknown, ReasonNotReported, ""},
-		{"7.1-srcIGNORE", StateUnknown, ReasonNotReported, ""},
-		{"7.1-src-src", StateUnknown, ReasonNotReported, ""},
-		{"7.1-alpha-src-59000", StateUnknown, ReasonNotReported, ""},
-	}
-	for _, c := range cases {
+	for _, c := range wpVersionCases {
 		t.Run(c.in, func(t *testing.T) {
 			f := readyFacts()
 			f.WPVersion = c.in
 			expect(t, find(t, Evaluate(f), CheckWPVersion), c.state, c.reason, c.observed)
 		})
+	}
+}
+
+// The row never passes a WordPress version the AI tools refuse. Both ask
+// agentcmd.WPMeetsVendorFloor of the stored text, so over every shape of
+// version in wpVersionCases the row passes exactly when the tools' rule does,
+// and a version the tools refuse never leaves the site ready.
+func TestWPVersionRowPassesExactlyWhenTheToolsRuleDoes(t *testing.T) {
+	for _, c := range wpVersionCases {
+		t.Run(c.in, func(t *testing.T) {
+			f := readyFacts()
+			f.WPVersion = c.in
+			r := Evaluate(f)
+			row := find(t, r, CheckWPVersion)
+			tools := agentcmd.WPMeetsVendorFloor(c.in)
+			if passes := row.State == StatePass; passes != tools {
+				t.Fatalf("wp_version for %q is %q, but the tools' rule says %v", c.in, row.State, tools)
+			}
+			if !tools && r.Status == StatusReady {
+				t.Fatalf("a version the tools refuse (%q) left the site ready", c.in)
+			}
+		})
+	}
+	// A version over the length cap is not read at all. The tools may accept
+	// it; the row passes nothing the tools refuse, which is the direction that
+	// matters.
+	long := strings.Repeat("9", maxWPVersionLen) + ".1"
+	f := readyFacts()
+	f.WPVersion = long
+	if row := find(t, Evaluate(f), CheckWPVersion); row.State == StatePass {
+		t.Fatalf("an over-long version passed: %+v", row)
 	}
 }
 
@@ -205,6 +255,47 @@ func TestWPVersionFloorBoundaryUsesTheGivenFloor(t *testing.T) {
 	expect(t, find(t, EvaluateWith(f, fl), CheckWPVersion), StatePass, ReasonNone, "9.9")
 	f.WPVersion = "9.8.9"
 	expect(t, find(t, EvaluateWith(f, fl), CheckWPVersion), StateFail, ReasonNone, "9.8.9")
+	// A build is judged against the given floor too: its release number says
+	// whether the build or the age is what is wrong.
+	f.WPVersion = "9.9-RC1"
+	expect(t, find(t, EvaluateWith(f, fl), CheckWPVersion), StateFail, ReasonPrereleaseBuild, "9.9-RC1")
+	f.WPVersion = "9.9.1-src"
+	expect(t, find(t, EvaluateWith(f, fl), CheckWPVersion), StateFail, ReasonPrereleaseBuild, "9.9.1-src")
+	f.WPVersion = "9.8-RC1"
+	expect(t, find(t, EvaluateWith(f, fl), CheckWPVersion), StateFail, ReasonNone, "9.8-RC1")
+	f.WPVersion = "7.1.1-src"
+	expect(t, find(t, EvaluateWith(f, fl), CheckWPVersion), StateFail, ReasonNone, "7.1.1-src")
+}
+
+// A development or pre-release build is one thing to fix on the WordPress row.
+func TestPrereleaseWordPressBuildIsOneFix(t *testing.T) {
+	f := readyFacts()
+	f.WPVersion = "7.1.1-src"
+	r := Evaluate(f)
+	if r.Status != StatusNeedsAttention || r.FixCount != 1 {
+		t.Fatalf("status %q fix_count %d, want needs_attention 1", r.Status, r.FixCount)
+	}
+	if got := r.Failing(); len(got) != 1 || got[0] != CheckWPVersion {
+		t.Fatalf("failing = %v, want [wp_version]", got)
+	}
+}
+
+// prerelease_build belongs to the WordPress row alone.
+func TestPrereleaseBuildReasonIsOnlyOnTheWordPressRow(t *testing.T) {
+	f := withBricks(withElementor(readyFacts()))
+	f.WPVersion = "7.1-RC1"
+	f.AgentVersion = DefaultFloors().Agent + "-beta"
+	f.ElementorVersion = "4.3.4-beta1"
+	f.BricksVersion = "2.4.1-beta1"
+	r := Evaluate(f)
+	for _, g := range r.Groups {
+		for _, c := range g.Checks {
+			if c.Reason == ReasonPrereleaseBuild && c.ID != CheckWPVersion {
+				t.Errorf("%s carries %q", c.ID, c.Reason)
+			}
+		}
+	}
+	expect(t, find(t, r, CheckWPVersion), StateFail, ReasonPrereleaseBuild, "7.1-RC1")
 }
 
 func TestAgentVersionCheck(t *testing.T) {
