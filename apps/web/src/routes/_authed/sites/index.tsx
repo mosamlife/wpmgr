@@ -1315,7 +1315,7 @@ function SitesPage() {
             addSiteSlot={operate ? undefined : <AddSitePlaceholder />}
           />
 
-          {/* Phase 5 — archived filter chip. The same switch as the Status
+          {/* Phase 5, archived filter chip. The same switch as the Status
               menu's "Archived" entry (GH #568): both write the one `archived`
               search param, and both add a history entry so Back returns. */}
           {operate ? (
