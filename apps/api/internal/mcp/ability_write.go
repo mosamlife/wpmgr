@@ -47,11 +47,17 @@ const AbilityCardCopyVersion int32 = 1
 // the layout outline, with the images' facts from card_facts.
 const AbilityCardCopyVersionLayout int32 = 2
 
-// Limits of the ability creation rail (engine v4 §1.4 step 8).
+// Limits of the ability creation rail (engine v4 §1.4 step 8). Each one
+// refuses with rate_limited and bounds the queue. The two waiting caps bound
+// what a person must read, so they stay small. The two creation caps count
+// every request, including the drafts a site's setting runs at once, so they
+// are sized for a connection doing draft work without a person clicking
+// (ADR-065); above the draft budget a request is still created and waits for
+// a person instead of running.
 const (
 	maxPendingAbilityPerConnection   = 10
-	maxCreatedAbilityPerConnection   = 30
-	maxAbilityRequestsPerSiteHour    = 12
+	maxCreatedAbilityPerConnection   = 2000
+	maxAbilityRequestsPerSiteHour    = 200
 	maxPendingCreationsPerConnSite   = 5
 	abilityRequestWindow             = 24 * time.Hour
 	abilityStatusListLimit           = 20
