@@ -541,6 +541,16 @@ export function imageSizeLabel(width: number, height: number): string | null {
   return width > 0 && height > 0 ? `${width} × ${height}` : null;
 }
 
+/**
+ * Our words before an image's alt text. On a page Elementor builds the alt is
+ * the one saved with the image in the media library, so the line says so; an
+ * empty one is not called decorative there, only absent from the library.
+ */
+export function imageAltLabel(alt: string, fromLibrary: boolean): string {
+  if (alt === "") return fromLibrary ? "No alt text in the media library" : "No alt text (decorative)";
+  return fromLibrary ? "Alt text (from the media library):" : "Alt text:";
+}
+
 export function imageAlignLabel(align: ImageNode["align"]): string | null {
   switch (align) {
     case "center":

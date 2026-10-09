@@ -143,6 +143,7 @@ function PageCreateCard({
             siteHost={request.site_host}
             siteUrl={siteUrl}
             labelledBy={outlineLabelId}
+            altFromLibrary={preview.builder !== null}
           />
         ) : (
           <p className="text-sm text-muted-foreground">{NOT_SHOWABLE_COPY}</p>

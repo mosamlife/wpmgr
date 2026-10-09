@@ -99,6 +99,24 @@ function rowText(card: HTMLElement, label: string): string {
   return dt?.nextElementSibling?.textContent ?? "";
 }
 
+// Two images as the agent's goldens place them (ids 5 and 7 in
+// elementor-classic-containers.json). The agent's precheck refuses an alt that
+// differs from the image's alt in the media library (the mapper's image(),
+// code image_alt_from_library; the control plane carries the refusal to the AI
+// in mcp/ability_write.go, precheckRefusalHints), so no card exists for one:
+// on a card that can be approved, the outline's alt is the library's.
+const IMAGES = [
+  { type: "image", attachment_id: 5, alt: "Library alt text", caption: "Our van & crew", align: "center" },
+  { type: "image", attachment_id: 7, alt: "", align: "none" },
+];
+const IMAGE_MEDIA = [mediaFact(5, { filename: "van.png", mime: "image/png" }), mediaFact(7, { filename: "team.jpg" })];
+
+/** The alt line of each image row of the outline, in document order. */
+function altLines(card: HTMLElement): string[] {
+  const outline = within(card).getByTestId("ability-outline");
+  return Array.from(outline.querySelectorAll("p"), (p) => p.textContent ?? "").filter((t) => /^(No )?alt text/i.test(t));
+}
+
 const ELEMENTOR_ROWS: Array<[string, string]> = [
   [
     "Elementor",
@@ -197,6 +215,45 @@ describe("a page Elementor builds in its Atomic editor", () => {
   });
 });
 
+// --- an image's alt text ------------------------------------------------------------
+
+describe("the images on a page Elementor builds", () => {
+  const imagesRow = (outline: unknown[] = IMAGES, media = IMAGE_MEDIA) =>
+    pageCreateRow({ input_json: pageInput({ editor: "builder:elementor", outline }), media, page_builder: elementorFacts() });
+
+  it("say the alt text is the media library's, and show an empty one as none", async () => {
+    renderTab([imagesRow()]);
+    const card = await openCard();
+    expect(altLines(card)).toEqual([
+      'Alt text (from the media library): "Library alt text"',
+      "No alt text in the media library",
+    ]);
+    // The block editor's wording is not shown beside it.
+    expect(card).not.toHaveTextContent("Alt text:");
+    expect(card).not.toHaveTextContent("decorative");
+  });
+
+  it("keep every other line of an image row", async () => {
+    renderTab([imagesRow()]);
+    const card = await openCard();
+    const outline = within(card).getByTestId("ability-outline");
+    for (const text of ["van.png · 1200 × 800", "team.jpg", 'Caption: "Our van & crew"', "Centred"]) {
+      expect(outline).toHaveTextContent(text);
+    }
+    expect(within(card).getAllByRole("link", { name: /^View image in WordPress/ })).toHaveLength(2);
+    expect(within(card).getByRole("button", { name: "Approve" })).toBeEnabled();
+  });
+
+  it("show the alt text as text, never as markup", async () => {
+    const hostile = '<img src=x onerror="alert(1)"><script>alert(2)</script>';
+    renderTab([imagesRow([{ type: "image", attachment_id: 5, alt: hostile }], [mediaFact(5)])]);
+    const card = await openCard();
+    expect(altLines(card)).toEqual([`Alt text (from the media library): "${hostile}"`]);
+    expect(card.querySelector("img")).toBeNull();
+    expect(card.querySelector("script")).toBeNull();
+  });
+});
+
 // --- the failure state ----------------------------------------------------------
 
 describe("an Elementor request the card cannot show in full", () => {
@@ -283,6 +340,19 @@ describe("a block-editor page", () => {
     expect(card).toHaveTextContent(NOTHING_PUBLISHED);
     expect(within(card).queryByTestId("builder-rows")).toBeNull();
     expect(within(card).getByTestId("layout-summary")).toHaveTextContent("1 separator");
+    expect(within(card).getByRole("button", { name: "Approve" })).toBeEnabled();
+  });
+
+  it("keeps the wording of an image's alt text, with no mention of the media library", async () => {
+    renderTab([pageCreateRow({ input_json: pageInput({ outline: IMAGES }), media: IMAGE_MEDIA })]);
+    const card = await openCard();
+    expect(altLines(card)).toEqual(['Alt text: "Library alt text"', "No alt text (decorative)"]);
+    expect(card).not.toHaveTextContent("media library");
+    const outline = within(card).getByTestId("ability-outline");
+    for (const text of ["van.png · 1200 × 800", "team.jpg", 'Caption: "Our van & crew"', "Centred"]) {
+      expect(outline).toHaveTextContent(text);
+    }
+    expect(within(card).getAllByRole("link", { name: /^View image in WordPress/ })).toHaveLength(2);
     expect(within(card).getByRole("button", { name: "Approve" })).toBeEnabled();
   });
 

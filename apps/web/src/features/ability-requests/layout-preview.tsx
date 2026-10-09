@@ -10,6 +10,7 @@ import {
   columnsLabel,
   headingLabel,
   imageAlignLabel,
+  imageAltLabel,
   imageSizeLabel,
   quoted,
   spacerLabel,
@@ -37,16 +38,24 @@ export interface LayoutPreviewProps {
   siteUrl?: string | null;
   /** The id of the element that names this region. */
   labelledBy: string;
+  /**
+   * True on a page Elementor builds, where an image shows the alt text saved
+   * with it in the media library: an alt that differs from the library's is
+   * refused before any card exists, so the outline's alt is the library's and
+   * each alt line says so. Absent or false, the lines are the block editor's.
+   */
+  altFromLibrary?: boolean;
 }
 
 interface Ctx {
   readonly preview: PagePreview;
   readonly siteHost: string;
   readonly siteUrl: string | null;
+  readonly altFromLibrary: boolean;
 }
 
-export function LayoutPreview({ preview, siteHost, siteUrl, labelledBy }: LayoutPreviewProps) {
-  const ctx: Ctx = { preview, siteHost, siteUrl: siteUrl ?? null };
+export function LayoutPreview({ preview, siteHost, siteUrl, labelledBy, altFromLibrary = false }: LayoutPreviewProps) {
+  const ctx: Ctx = { preview, siteHost, siteUrl: siteUrl ?? null, altFromLibrary };
   return (
     // A scrolling region has to be reachable by keyboard to be scrolled by it.
     <div
@@ -221,11 +230,11 @@ function ImageView({ node, ctx }: { node: ImageNode; ctx: Ctx }) {
       </p>
       <div className="space-y-0.5 pl-3">
         <p className="break-words">
-          {node.alt === "" ? (
-            <Label>No alt text (decorative)</Label>
-          ) : (
+          <Label>{imageAltLabel(node.alt, ctx.altFromLibrary)}</Label>
+          {node.alt === "" ? null : (
             <>
-              <Label>Alt text:</Label> <Txt>{quoted(node.alt)}</Txt>
+              {" "}
+              <Txt>{quoted(node.alt)}</Txt>
             </>
           )}
         </p>

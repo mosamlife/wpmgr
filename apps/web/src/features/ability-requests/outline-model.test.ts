@@ -9,6 +9,7 @@ import {
   classifyLink,
   columnsLabel,
   imageAlignLabel,
+  imageAltLabel,
   imageSizeLabel,
   indexPageMedia,
   isSameSiteHost,
@@ -470,6 +471,13 @@ describe("the words on the card", () => {
     expect(imageAlignLabel("center")).toBe("Centred");
     expect(imageAlignLabel("wide")).toBe("Wide");
     expect(imageAlignLabel("full")).toBe("Full width");
+  });
+
+  it("labels an image's alt text, and says when it is the media library's", () => {
+    expect(imageAltLabel("A van", false)).toBe("Alt text:");
+    expect(imageAltLabel("", false)).toBe("No alt text (decorative)");
+    expect(imageAltLabel("A van", true)).toBe("Alt text (from the media library):");
+    expect(imageAltLabel("", true)).toBe("No alt text in the media library");
   });
 });
 
