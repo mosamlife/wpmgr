@@ -151,6 +151,14 @@ func g2cUndoState(t *testing.T, w *e2World, id uuid.UUID) string {
 	return *undo
 }
 
+// g2cStr is an undo state for a failure message.
+func g2cStr(p *string) string {
+	if p == nil {
+		return "<none>"
+	}
+	return *p
+}
+
 func g2cRefusal(t *testing.T, err error, code, message string) {
 	t.Helper()
 	de, ok := domain.AsDomain(err)
@@ -174,7 +182,7 @@ func TestPageEditUndoSendsTheRecordedHashAsAppRole(t *testing.T) {
 
 	got, err := w.svc.Undo(ctx, w.person, w.site, e1.ID)
 	if err != nil || got.UndoState == nil || *got.UndoState != abilityrequest.UndoDone {
-		t.Fatalf("undo of the edit: %v %v", got.UndoState, err)
+		t.Fatalf("undo of the edit: %v %v", g2cStr(got.UndoState), err)
 	}
 	last := w.agent.last
 	if last.Mode != agentcmd.AbilityRunModeRevert || last.RequestID != e1.ID || len(last.Input) != 0 ||
@@ -186,7 +194,7 @@ func TestPageEditUndoSendsTheRecordedHashAsAppRole(t *testing.T) {
 	site.copies[e2.ID] = acprHex("g2c-copy-rewritten")
 	got, err = w.svc.Undo(ctx, w.person, w.site, e2.ID)
 	if err != nil || got.UndoState == nil || *got.UndoState != abilityrequest.UndoFailed {
-		t.Fatalf("undo against a rewritten copy: %v %v, want failed", got.UndoState, err)
+		t.Fatalf("undo against a rewritten copy: %v %v, want failed", g2cStr(got.UndoState), err)
 	}
 	if w.agent.last.Revert == nil || w.agent.last.Revert.SnapshotSHA256 != h2 {
 		t.Fatalf("second undo sent %+v, want the hash its outcome recorded", w.agent.last.Revert)
@@ -221,14 +229,14 @@ func TestPageEditUndoNewestFirstAsAppRole(t *testing.T) {
 	}
 
 	if got, err := w.svc.Undo(ctx, w.person, w.site, e2.ID); err != nil || got.UndoState == nil || *got.UndoState != abilityrequest.UndoDone {
-		t.Fatalf("undo of the newer edit: %v %v", got.UndoState, err)
+		t.Fatalf("undo of the newer edit: %v %v", g2cStr(got.UndoState), err)
 	}
 	offered = g2cOffered(t, w, e1.ID, e2.ID)
 	if !offered[e1.ID] || offered[e2.ID] {
 		t.Fatalf("after the newer undo: older %v newer %v, want only the older", offered[e1.ID], offered[e2.ID])
 	}
 	if got, err := w.svc.Undo(ctx, w.person, w.site, e1.ID); err != nil || got.UndoState == nil || *got.UndoState != abilityrequest.UndoDone {
-		t.Fatalf("undo of the older edit: %v %v", got.UndoState, err)
+		t.Fatalf("undo of the older edit: %v %v", g2cStr(got.UndoState), err)
 	}
 	if w.agent.last.Revert == nil || w.agent.last.Revert.SnapshotSHA256 != h1 {
 		t.Fatalf("older undo sent %+v, want its own hash", w.agent.last.Revert)
@@ -249,7 +257,7 @@ func TestPageEditChainTrashNamesEveryAppliedEditAsAppRole(t *testing.T) {
 	site := &g2cSite{copies: map[uuid.UUID]string{e1.ID: h1, e2.ID: h2}}
 	w.agent.setOverride(site.answer)
 	if got, err := w.svc.Undo(ctx, w.person, w.site, e2.ID); err != nil || got.UndoState == nil || *got.UndoState != abilityrequest.UndoDone {
-		t.Fatalf("undo of e2: %v %v", got.UndoState, err)
+		t.Fatalf("undo of e2: %v %v", g2cStr(got.UndoState), err)
 	}
 	e3 := g2cSent(t, w, 42, "g2c-chain-3-failed")
 	if n, err := m169Outcome(t, w.pool, w.tenant, e3.ID, sqlc.RecordAbilityRequestOutcomeParams{Outcome: "refused", OutcomeCode: acprStr("conflict")}); err != nil || n != 1 {
@@ -262,7 +270,7 @@ func TestPageEditChainTrashNamesEveryAppliedEditAsAppRole(t *testing.T) {
 
 	got, err := w.svc.Undo(ctx, w.person, w.site, create.ID)
 	if err != nil || got.UndoState == nil || *got.UndoState != abilityrequest.UndoDone {
-		t.Fatalf("chain trash: %v %v (sent %+v)", got.UndoState, err, w.agent.last.Revert)
+		t.Fatalf("chain trash: %v %v (sent %+v)", g2cStr(got.UndoState), err, w.agent.last.Revert)
 	}
 	if r := w.agent.last.Revert; r == nil || fmt.Sprint(r.Chain) != fmt.Sprint(site.ledger[create.ID]) || r.SnapshotSHA256 != "" {
 		t.Fatalf("chain sent %+v, want %v", r, site.ledger[create.ID])
@@ -270,7 +278,7 @@ func TestPageEditChainTrashNamesEveryAppliedEditAsAppRole(t *testing.T) {
 
 	plain := g2cCreated(t, w, 44, "g2c-chain-no-edits")
 	if got, err := w.svc.Undo(ctx, w.person, w.site, plain.ID); err != nil || got.UndoState == nil || *got.UndoState != abilityrequest.UndoDone {
-		t.Fatalf("undo of a draft with no edits: %v %v", got.UndoState, err)
+		t.Fatalf("undo of a draft with no edits: %v %v", g2cStr(got.UndoState), err)
 	}
 	if w.agent.last.RequestID != plain.ID || w.agent.last.Revert != nil {
 		t.Fatalf("a draft with no edits sent revert parameters %+v", w.agent.last.Revert)
@@ -303,6 +311,6 @@ func TestPageEditChainTrashWaitsForAnEditInFlightAsAppRole(t *testing.T) {
 	g2cAnswer(t, w, e2, h2)
 	got, err := w.svc.Undo(ctx, w.person, w.site, create.ID)
 	if err != nil || got.UndoState == nil || *got.UndoState != abilityrequest.UndoDone {
-		t.Fatalf("chain trash after the edit settled: %v %v (sent %+v)", got.UndoState, err, w.agent.last.Revert)
+		t.Fatalf("chain trash after the edit settled: %v %v (sent %+v)", g2cStr(got.UndoState), err, w.agent.last.Revert)
 	}
 }
