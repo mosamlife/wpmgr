@@ -22,16 +22,18 @@ export const Route = createFileRoute("/_authed/admin/agent-mirror")({
 //
 // GH #322. Triggering an immediate upstream agent-release mirror check is an
 // install-level operation (POST /api/v1/admin/agent-mirror/check): the mirror
-// is ONE PER INSTALL. This page is the SUPERADMIN's route to it, and remains
-// the only one, because a superadmin cannot open the tenant-scoped Sites page
-// at all (see routes/_authed.tsx's isSuperadminAllowedPath guard).
+// is ONE PER INSTALL. This page is the SUPERADMIN's route to it. For a
+// superadmin who belongs to no organisation it is the only one, because they
+// cannot open the tenant-scoped Sites page (see routes/_authed.tsx's
+// isSuperadminAllowedPath gate).
 //
-// The same action is now also offered on the Sites page, in the Agent column
+// The same action is also offered on the Sites page, in the Agent column
 // header's popover, to a viewer the control plane says may use it
 // (agent_mirror.can_check_now: the owner of the only live organisation on the
-// install). Same endpoint, same mutation hook, same outcome vocabulary. That
-// path is unreachable here and this one is unreachable there, so neither
-// duplicates the other for any single person.
+// install, or a superadmin, who can open that page once they belong to an
+// organisation). Same endpoint, same mutation hook, same outcome vocabulary.
+// A superadmin with no organisation reaches only this page, and the owner of
+// the only organisation reaches only the Sites one.
 //
 // The freshness of the mirror itself (last confirmed, last attempted,
 // stale/misconfigured/standing down) is shown to every tenant that CAN see

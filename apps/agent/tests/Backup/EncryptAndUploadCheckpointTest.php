@@ -92,11 +92,11 @@ final class EncryptAndUploadCheckpointTest extends TestCase
                 return $uploads;
             }
 
-            public function putChunk(string $presignedUrl, string $ciphertext): bool
+            public function putChunkWithStatus(string $presignedUrl, string $ciphertext): array
             {
                 $hash = substr($presignedUrl, strlen('https://s3.example/put/'));
                 $this->puts[$hash] = $ciphertext;
-                return true;
+                return ['ok' => true, 'status' => 200, 'error' => '', 's3_code' => '', 'host' => 's3.example', 'retryable' => false, 'represign' => false];
             }
         };
     }

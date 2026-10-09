@@ -49,8 +49,10 @@ final class StoragePaths {
 			}
 		}
 
-		// Fallback: wp-content (for hosts where uploads is not yet configured or
-		// is read-only at storage-path resolution time).
+		// Fallback: wp-content, only when WordPress reports no uploads base directory
+		// (wp_upload_dir() is missing or returns an empty basedir). This method does
+		// not test writability: a caller that finds the uploads path unwritable has
+		// to handle that itself.
 		if ( defined( 'WP_CONTENT_DIR' ) && is_string( WP_CONTENT_DIR ) && WP_CONTENT_DIR !== '' ) {
 			return rtrim( WP_CONTENT_DIR, '/\\' ) . '/wpmgr-' . $purpose;
 		}

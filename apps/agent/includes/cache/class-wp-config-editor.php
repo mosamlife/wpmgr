@@ -150,8 +150,8 @@ final class WpConfigEditor
      *      toggle regardless of the file constant.
      *   3. Returns true (no-op) when the constant is not yet defined but the
      *      wp-config.php content itself looks framework-managed (see
-     *      {@see isManagedWpConfig()}) — refuses to insert a raw define that
-     *      could race or conflict with the framework's own constant
+     *      {@see isManagedConfigContent()}) — refuses to insert a raw define
+     *      that could race or conflict with the framework's own constant
      *      management.
      *
      * None of these paths are failures: the operator's intent (the constant
@@ -212,7 +212,7 @@ final class WpConfigEditor
         // constant definitions live in a required config file rather than
         // wp-config.php itself) — refuse to insert a raw define even in this
         // edge case, so we never race the framework's own definition.
-        if ($this->isManagedWpConfig($content)) {
+        if (self::isManagedConfigContent($content)) {
             $this->lastNotice = sprintf(
                 "%s was not written: wp-config.php appears to be managed by a framework such as Roots/Bedrock (references Roots\\WPConfig\\Config / requires config/application.php) — inserting a raw define here could conflict with the framework's own constant management.",
                 $name
@@ -332,10 +332,6 @@ final class WpConfigEditor
         return preg_match($pattern, $content) === 1;
     }
 
-    // -------------------------------------------------------------------------
-    // Private helpers
-    // -------------------------------------------------------------------------
-
     /**
      * Whether wp-config.php content indicates a framework-managed config
      * layer that owns constant definitions itself (GH #268). Roots/Bedrock is
@@ -349,10 +345,15 @@ final class WpConfigEditor
      *   - a `require`/`require_once` of a `config/application.php` file
      *     (Bedrock's own bootstrap step), regardless of quoting/concatenation.
      *
+     * A pure string test: it never includes, evaluates or otherwise runs the
+     * content. Public and static so WPMgr\Agent\Support\ManagedCore reads the
+     * same signals when deciding whether WordPress core on this site is owned
+     * by Composer (GitHub issue #367), rather than growing a second copy.
+     *
      * @param string $content wp-config.php content.
      * @return bool
      */
-    private function isManagedWpConfig(string $content): bool
+    public static function isManagedConfigContent(string $content): bool
     {
         if (str_contains($content, 'Roots\WPConfig\Config') || str_contains($content, 'roots/wp-config')) {
             return true;
@@ -360,6 +361,10 @@ final class WpConfigEditor
 
         return preg_match('/\brequire(_once)?\b[^;]*config\/application\.php/', $content) === 1;
     }
+
+    // -------------------------------------------------------------------------
+    // Private helpers
+    // -------------------------------------------------------------------------
 
     /**
      * Atomic write: temp file in the same directory + rename over the target.
