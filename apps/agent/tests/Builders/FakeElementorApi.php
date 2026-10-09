@@ -207,6 +207,64 @@ final class FakeElementorApi implements ElementorApi
     }
 
     /**
+     * Register a stand-in Elementor document for $postId and return it.
+     *
+     * Its save() records the data it is given, sets the numeric locale to
+     * "C" as Elementor's does first, then answers what $onSave answers (true
+     * when unset; $onSave may also throw, fire hooks or change rows), and
+     * puts the locale back only when that answer is true, as Elementor does.
+     *
+     * @param int    $postId   Post id.
+     * @param string $name     What get_name() answers.
+     * @param bool   $editable What is_editable_by_current_user() answers.
+     * @return object
+     */
+    public function addDocument(int $postId, string $name = 'wp-page', bool $editable = true): object
+    {
+        $document = new class ($name, $editable) {
+            /** @var list<mixed> Data given to each save(), in order. */
+            public array $saves = [];
+
+            /** @var (\Closure(mixed): mixed)|null */
+            public ?\Closure $onSave = null;
+
+            public function __construct(public string $name, public bool $editable)
+            {
+            }
+
+            public function get_name(): string
+            {
+                return $this->name;
+            }
+
+            public function is_editable_by_current_user(): bool
+            {
+                return $this->editable;
+            }
+
+            /**
+             * @param mixed $data Save data.
+             * @return mixed
+             */
+            public function save($data)
+            {
+                $this->saves[] = $data;
+                $original      = setlocale(LC_NUMERIC, '0');
+                setlocale(LC_NUMERIC, 'C');
+                $answer = $this->onSave === null ? true : ($this->onSave)($data);
+                if ($answer === true && is_string($original)) {
+                    setlocale(LC_NUMERIC, $original);
+                }
+
+                return $answer;
+            }
+        };
+        $this->documents[$postId] = $document;
+
+        return $document;
+    }
+
+    /**
      * The names of the experiments asked about, in order.
      *
      * @return list<string>

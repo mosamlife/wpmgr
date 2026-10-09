@@ -12,8 +12,12 @@ namespace WPMgr\Agent\Tests\Builders;
 
 use WPMgr\Agent\Abilities\Builders\AdapterStatus;
 use WPMgr\Agent\Abilities\Builders\BuilderAdapter;
+use WPMgr\Agent\Abilities\Builders\BuilderContract;
 use WPMgr\Agent\Abilities\Builders\BuilderRegistry;
 use WPMgr\Agent\Abilities\Builders\DocumentDescriptor;
+use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
+use WPMgr\Agent\Abilities\Builders\ElementorClassicMapper;
+use WPMgr\Agent\Abilities\Builders\ElementorDocument;
 use WPMgr\Agent\Abilities\Builders\IdSeed;
 use WPMgr\Agent\Abilities\Builders\NativeDocument;
 use WPMgr\Agent\Abilities\Builders\Projection;
@@ -128,6 +132,27 @@ final class BuilderRegistryTest extends TestCase
             ['elementor', 'beaver', 'wpbakery', 'divi5', 'bricks', 'breakdance', 'oxygen6'],
             BuilderRegistry::IDS
         );
+    }
+
+    public function test_elementor_compiled_and_enabled_resolves(): void
+    {
+        // No seam: the adapter compiled into the agent.
+        $result  = BuilderRegistry::resolve('builder:elementor', self::limits('{"builders_enabled":["elementor"]}'));
+        $adapter = $result['adapter'] ?? null;
+        $this->assertInstanceOf(ElementorAdapter::class, $adapter);
+        $this->assertSame('elementor', $adapter->id());
+        $this->assertSame(['adapter'], array_keys($result));
+
+        // Compiled, but the entry still has to enable it.
+        $this->assertSame('builder_not_enabled', BuilderRegistry::resolve('builder:elementor', self::limits('{"builders_enabled":["bricks"]}'))['code'] ?? null);
+        $this->assertSame('builder_not_enabled', BuilderRegistry::resolve('builder:elementor', self::limits('{}'))['code'] ?? null);
+
+        // The adapter declares every page-edit operation and node kind, and the mapper's allowlist and leaf rules.
+        $this->assertSame(BuilderContract::OPS, $adapter->capabilities()['operations']);
+        $this->assertSame(BuilderContract::KINDS, $adapter->capabilities()['node_kinds']);
+        $this->assertSame(ElementorClassicMapper::ALLOWED_KEYS, $adapter->allowedKeys());
+        $this->assertSame(['refuse_braces' => false, 'forbidden' => ['[elementor-tag']], $adapter->leafRules());
+        $this->assertSame(ElementorDocument::DESCRIPTOR_KEYS, $adapter->descriptor()->exactKeys);
     }
 
     public function test_entry_range_can_only_narrow(): void
