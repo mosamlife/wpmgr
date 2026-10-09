@@ -10,7 +10,10 @@ package tests
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -31,6 +34,9 @@ type g2cSite struct {
 	// ledger is each draft's applied page edits as the site recorded them,
 	// in the order they were applied, by the request that created the draft.
 	ledger map[uuid.UUID][]uuid.UUID
+	// mismatch names the page edits whose put-back does not read back as
+	// their copy.
+	mismatch map[uuid.UUID]bool
 }
 
 // answer is the agent's revert: a page edit's undo runs only when the hash
@@ -46,6 +52,9 @@ func (s *g2cSite) answer(call agentcmd.AbilityRunCall) (agentcmd.AbilityRunRespo
 		}
 		if call.Revert.SnapshotSHA256 != kept {
 			return agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{Code: "snapshot_tampered"}, true
+		}
+		if s.mismatch[call.RequestID] {
+			return agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{Code: "restore_mismatch", Detail: "read_back_differs"}, true
 		}
 		return agentcmd.AbilityRunResponse{OK: true, Outcome: "reverted", Mode: "revert", PostID: 42}, nil, true
 	}
@@ -142,6 +151,33 @@ func g2cOffered(t *testing.T, w *e2World, ids ...uuid.UUID) map[uuid.UUID]bool {
 	return out
 }
 
+// g2cListed is each listed request's wire object, by id, as the real list
+// handler serves the queue to w's owner.
+func g2cListed(t *testing.T, w *e2World) map[uuid.UUID]map[string]any {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sites/"+w.site.String()+"/ai/ability-requests?limit=100", nil)
+	bfeQueueEngine(w).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Requests []map[string]any `json:"requests"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode the list: %v", err)
+	}
+	out := map[uuid.UUID]map[string]any{}
+	for _, r := range body.Requests {
+		id, err := uuid.Parse(fmt.Sprint(r["id"]))
+		if err != nil {
+			t.Fatalf("listed id %v: %v", r["id"], err)
+		}
+		out[id] = r
+	}
+	return out
+}
+
 func g2cUndoState(t *testing.T, w *e2World, id uuid.UUID) string {
 	t.Helper()
 	_, _, _, undo, _ := w.row(t, id)
@@ -170,7 +206,9 @@ func g2cRefusal(t *testing.T, err error, code, message string) {
 // TestPageEditUndoSendsTheRecordedHashAsAppRole: the undo sends the snapshot
 // hash the applied outcome recorded and nothing else; the site puts the
 // change back. When the site's copy no longer hashes to it, the site answers
-// snapshot_tampered and the undo is recorded as failed.
+// snapshot_tampered and the undo is recorded as failed; when its put-back
+// does not read back, restore_mismatch. The list handler names each failed
+// undo's code as undo_code, and null for the undone one.
 func TestPageEditUndoSendsTheRecordedHashAsAppRole(t *testing.T) {
 	ctx := context.Background()
 	w := newE2World(t, true)
@@ -198,6 +236,27 @@ func TestPageEditUndoSendsTheRecordedHashAsAppRole(t *testing.T) {
 	}
 	if w.agent.last.Revert == nil || w.agent.last.Revert.SnapshotSHA256 != h2 {
 		t.Fatalf("second undo sent %+v, want the hash its outcome recorded", w.agent.last.Revert)
+	}
+
+	h3 := acprHex("g2c-copy-3")
+	e3 := g2cApplied(t, w, 42, "g2c-hash-3", h3)
+	site.copies[e3.ID] = h3
+	site.mismatch = map[uuid.UUID]bool{e3.ID: true}
+	got, err = w.svc.Undo(ctx, w.person, w.site, e3.ID)
+	if err != nil || got.UndoState == nil || *got.UndoState != abilityrequest.UndoFailed {
+		t.Fatalf("undo whose put-back did not read back: %v %v, want failed", g2cStr(got.UndoState), err)
+	}
+
+	listed := g2cListed(t, w)
+	for id, want := range map[uuid.UUID]any{e1.ID: nil, e2.ID: "snapshot_tampered", e3.ID: "restore_mismatch"} {
+		r, ok := listed[id]
+		if !ok {
+			t.Fatalf("request %s not listed", id)
+		}
+		v, present := r["undo_code"]
+		if !present || v != want {
+			t.Fatalf("request %s (undo_state %v): undo_code %v (present %v), want %v", id, r["undo_state"], v, present, want)
+		}
 	}
 }
 
