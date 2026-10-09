@@ -795,7 +795,7 @@ final class ElementorClassicMapper
      * @param string $detail Detail: WPMgr's words and outline positions only.
      * @return null
      */
-    private function fail(string $code, string $detail): ?array
+    private function fail(string $code, string $detail)
     {
         if ($this->refusal === null) {
             $this->refusal = ['code' => $code, 'detail' => $detail];
