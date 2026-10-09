@@ -223,6 +223,19 @@ func TestRevertChainFor_NamesFailedEditsThePageWasPutBackFrom(t *testing.T) {
 	}
 }
 
+// Only a record of a put-back that read back counts as the page put back.
+func TestPagePutBack_OnlyARecordedRestore(t *testing.T) {
+	yes, no := true, false
+	for _, c := range []struct {
+		restored *bool
+		want     bool
+	}{{nil, false}, {&no, false}, {&yes, true}} {
+		if got := pagePutBack(sqlc.AssistantAbilityRequest{Restored: c.restored}); got != c.want {
+			t.Errorf("restored %v: got %v, want %v", c.restored, got, c.want)
+		}
+	}
+}
+
 // While an edit of the draft may still change it, the undo waits and sends
 // nothing. A write WPMgr gave up resolving does not hold it.
 func TestRevertChainFor_WaitsForAnEditInFlight(t *testing.T) {

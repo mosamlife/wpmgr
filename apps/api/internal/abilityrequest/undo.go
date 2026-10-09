@@ -197,7 +197,7 @@ func undoRevertFor(ctx context.Context, q *sqlc.Queries, r sqlc.AssistantAbility
 			if err != nil {
 				return false, err
 			}
-			return e.Restored != nil && *e.Restored, nil
+			return pagePutBack(e), nil
 		})
 	}
 	return nil, nil
@@ -241,6 +241,12 @@ func revertChainFor(r sqlc.AssistantAbilityRequest, edits []sqlc.ListEditRequest
 		return nil, domain.Conflict(CodeUndoUnavailable, msgUndoChainLong)
 	}
 	return &agentcmd.AbilityRunRevert{Chain: chain}, nil
+}
+
+// pagePutBack: a failed edit's record says the site put the page back
+// (restored true). No report, or a put-back that did not read back, is not.
+func pagePutBack(e sqlc.AssistantAbilityRequest) bool {
+	return e.Restored != nil && *e.Restored
 }
 
 // editSettling: the site may still apply this edit, or still be undoing it.
