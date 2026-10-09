@@ -249,4 +249,55 @@ func TestAgentMirrorBootCheck_RiverUniqueness(t *testing.T) {
 				d, agentupstream.BootCheckMinDelay, agentupstream.BootCheckMaxDelay)
 		}
 	})
+
+	t.Run("a request time ahead of the clock is lowered in storage, so the stored check is due after the window it closes", func(t *testing.T) {
+		reset(t)
+		start := time.Now()
+		if err := repo.RecordAttempt(ctx, agentmirror.AttemptInput{
+			Trigger:       agentmirror.TriggerPeriodic,
+			Outcome:       agentmirror.OutcomeCurrent,
+			LastRequestAt: start.Add(3 * time.Hour),
+		}); err != nil {
+			t.Fatalf("record attempt: %v", err)
+		}
+		bc, err := agentupstream.EnqueueBootCheck(ctx, client, repo, start)
+		if err != nil || !bc.Queued || !bc.Deferred || !bc.RequestTimeLowered || bc.LowerErr != nil {
+			t.Fatalf("EnqueueBootCheck = %+v, %v; want queued, deferred, and the request time lowered", bc, err)
+		}
+
+		st, err := repo.Load(ctx)
+		if err != nil || st.LastRequestAt == nil {
+			t.Fatalf("load after the start: %+v, %v", st, err)
+		}
+		stored := *st.LastRequestAt
+		// timestamptz keeps microseconds, so compare to the millisecond.
+		if d := stored.Sub(start).Abs(); d > time.Millisecond {
+			t.Fatalf("stored last_request_at is %v from the start clock, want it lowered to it", d)
+		}
+		got := bootRows(t)
+		if len(got) != 1 {
+			t.Fatalf("boot check rows = %d, want 1", len(got))
+		}
+		// What the job will read when it runs is a request time at least one
+		// spacing window older than the moment it is due, so the guard passes.
+		if gap := got[0].scheduledAt.Sub(stored); gap < agentupstream.MinRequestSpacing {
+			t.Fatalf("the stored check is due %v after the stored request time, want at least %v", gap, agentupstream.MinRequestSpacing)
+		}
+
+		// Over-fire, in SQL: a time at or before the ceiling is not touched, and
+		// neither is a missing one.
+		if changed, err := repo.ClampLastRequestAt(ctx, start.Add(time.Hour)); err != nil || changed {
+			t.Fatalf("ClampLastRequestAt above the stored time = %v, %v; want no change", changed, err)
+		}
+		if again, err := repo.Load(ctx); err != nil || again.LastRequestAt == nil || !again.LastRequestAt.Equal(stored) {
+			t.Fatalf("stored request time moved to %+v (err %v), want it unchanged at %v", again.LastRequestAt, err, stored)
+		}
+		reset(t)
+		if changed, err := repo.ClampLastRequestAt(ctx, start); err != nil || changed {
+			t.Fatalf("ClampLastRequestAt with no stored time = %v, %v; want no change", changed, err)
+		}
+		if empty, err := repo.Load(ctx); err != nil || empty.LastRequestAt != nil {
+			t.Fatalf("no-stored-time row became %+v (err %v), want it left NULL", empty.LastRequestAt, err)
+		}
+	})
 }

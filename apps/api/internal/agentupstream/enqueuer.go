@@ -8,6 +8,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentmirror"
 )
 
 // ManualCheckEnqueuer inserts an operator-requested "check now" mirror job
@@ -44,6 +46,19 @@ type JobInserter interface {
 
 var _ JobInserter = (*river.Client[pgx.Tx])(nil)
 
+// RequestClockStore is the persisted request clock as EnqueueBootCheck uses it:
+// read, and lowered when it is ahead of the clock that reads it. Satisfied by
+// *agentmirror.Repo; an interface so a test can supply the state without a
+// database.
+type RequestClockStore interface {
+	StateLoader
+	// ClampLastRequestAt lowers the stored request time to ceiling when it is
+	// later than ceiling, and reports whether it changed anything.
+	ClampLastRequestAt(ctx context.Context, ceiling time.Time) (bool, error)
+}
+
+var _ RequestClockStore = (*agentmirror.Repo)(nil)
+
 // BootCheck reports what EnqueueBootCheck did.
 type BootCheck struct {
 	// ScheduledAt is when the boot check was asked to run.
@@ -54,6 +69,14 @@ type BootCheck struct {
 	// Deferred is true when the persisted request time pushed the check past
 	// the end of the request-spacing window.
 	Deferred bool
+	// RequestTimeLowered is true when the persisted request time was ahead of
+	// this process's clock and was lowered to it. Worth a log line: it means a
+	// clock somewhere on this install is, or was, wrong.
+	RequestTimeLowered bool
+	// LowerErr is set when the persisted request time was ahead of this
+	// process's clock and could not be lowered. The check is queued regardless,
+	// but the request spacing may then refuse it when it runs.
+	LowerErr error
 }
 
 // EnqueueBootCheck queues one mirror check to run a few minutes after this
@@ -75,26 +98,35 @@ type BootCheck struct {
 // the request clock from the same persisted value), so a request is never
 // spent early whatever this schedule says.
 //
+// A persisted request time AHEAD of now can only be a skewed clock on whichever
+// host recorded it. It is read as now, which delays this check by one window at
+// most, and it is lowered to now in storage as well. The second half is what
+// keeps the schedule honest: the job reads the stored value again when it runs,
+// and a value still ahead of that later clock would be read as that later now,
+// so the check would be refused for the very spacing window it was scheduled to
+// wait out. Lowered once here, the job reads the value the schedule was
+// computed from. A value at or before now is never written.
+//
 // A failure to read the persisted state is not a reason to skip the check; it
 // is scheduled as if no request had been recorded, and the run-time guard still
-// applies. now is a parameter so a test can pin it; production passes
-// time.Now().
-func EnqueueBootCheck(ctx context.Context, ins JobInserter, state StateLoader, now time.Time) (BootCheck, error) {
+// applies. Nor is a failure to lower it (BootCheck.LowerErr). now is a
+// parameter so a test can pin it; production passes time.Now().
+func EnqueueBootCheck(ctx context.Context, ins JobInserter, state RequestClockStore, now time.Time) (BootCheck, error) {
 	if ins == nil {
 		return BootCheck{}, fmt.Errorf("enqueue agent release mirror boot check: no job inserter")
 	}
 
-	start, deferred := now, false
+	var out BootCheck
+	start := now
 	if state != nil {
 		if st, err := state.Load(ctx); err == nil && st.LastRequestAt != nil {
 			last := *st.LastRequestAt
 			if last.After(now) {
-				// A future request time can only be a skewed clock. Treat it as
-				// now so it delays this check by one window at most.
 				last = now
+				out.RequestTimeLowered, out.LowerErr = state.ClampLastRequestAt(ctx, now)
 			}
 			if open := last.Add(minRequestSpacing); open.After(now) {
-				start, deferred = open, true
+				start, out.Deferred = open, true
 			}
 		}
 	}
@@ -104,6 +136,7 @@ func EnqueueBootCheck(ctx context.Context, ins JobInserter, state StateLoader, n
 	if err != nil {
 		return BootCheck{}, fmt.Errorf("enqueue agent release mirror boot check: %w", err)
 	}
-	queued := res == nil || !res.UniqueSkippedAsDuplicate
-	return BootCheck{ScheduledAt: at, Queued: queued, Deferred: deferred}, nil
+	out.ScheduledAt = at
+	out.Queued = res == nil || !res.UniqueSkippedAsDuplicate
+	return out, nil
 }

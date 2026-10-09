@@ -567,6 +567,96 @@ func TestEnqueueBootCheck_FutureRequestTimeDelaysOneWindowAtMost(t *testing.T) {
 	requireBootDelay(t, start.Add(minRequestSpacing), opts.ScheduledAt)
 }
 
+// TestEnqueueBootCheck_FutureRequestTimeIsLoweredOnce: a persisted request time
+// ahead of the start clock is lowered to it in storage, so the job reads the
+// value its schedule was computed from. A second start finds nothing ahead of
+// its clock and writes nothing.
+func TestEnqueueBootCheck_FutureRequestTimeIsLoweredOnce(t *testing.T) {
+	ctx := context.Background()
+	start := time.Now()
+	future := start.Add(3 * time.Hour)
+	rec := &fakeRecorder{state: agentmirror.State{LastRequestAt: &future}}
+
+	bc, err := EnqueueBootCheck(ctx, &fakeInserter{}, rec, start)
+	if err != nil {
+		t.Fatalf("EnqueueBootCheck: %v", err)
+	}
+	if got := rec.storedRequestTime(); got == nil || !got.Equal(start) {
+		t.Fatalf("stored request time = %v, want it lowered to the start clock %v", got, start)
+	}
+	if !bc.RequestTimeLowered || bc.LowerErr != nil || !bc.Queued || !bc.Deferred {
+		t.Fatalf("BootCheck = %+v, want lowered, no error, queued and deferred", bc)
+	}
+
+	again, err := EnqueueBootCheck(ctx, &fakeInserter{}, rec, start.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("second EnqueueBootCheck: %v", err)
+	}
+	if again.RequestTimeLowered || again.LowerErr != nil {
+		t.Fatalf("second BootCheck = %+v, want nothing lowered", again)
+	}
+	if n := len(rec.clampCalls()); n != 1 {
+		t.Fatalf("storage was asked to lower the request time %d times, want 1", n)
+	}
+}
+
+// TestEnqueueBootCheck_SaneRequestTimeIsNeverRewritten is the over-fire case:
+// no recorded request, one a few minutes old, one long past, and one exactly at
+// the start clock are all left alone. Only a time ahead of the clock is touched.
+func TestEnqueueBootCheck_SaneRequestTimeIsNeverRewritten(t *testing.T) {
+	start := time.Now()
+	recent := start.Add(-5 * time.Minute)
+	old := start.Add(-2 * time.Hour)
+	same := start
+	cases := []struct {
+		name string
+		last *time.Time
+	}{
+		{"none recorded", nil},
+		{"a few minutes old", &recent},
+		{"long past", &old},
+		{"exactly the start clock", &same},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &fakeRecorder{state: agentmirror.State{LastRequestAt: tc.last}}
+			bc, err := EnqueueBootCheck(context.Background(), &fakeInserter{}, rec, start)
+			if err != nil {
+				t.Fatalf("EnqueueBootCheck: %v", err)
+			}
+			if n := len(rec.clampCalls()); n != 0 {
+				t.Fatalf("storage was asked to lower the request time %d times, want 0", n)
+			}
+			if bc.RequestTimeLowered || bc.LowerErr != nil {
+				t.Fatalf("BootCheck = %+v, want nothing lowered", bc)
+			}
+			if got := rec.storedRequestTime(); (got == nil) != (tc.last == nil) || (got != nil && !got.Equal(*tc.last)) {
+				t.Fatalf("stored request time = %v, want it unchanged at %v", got, tc.last)
+			}
+		})
+	}
+}
+
+// TestEnqueueBootCheck_FutureRequestTimeThatCannotBeLoweredStillQueues: failing
+// to lower the stored time is reported, never swallowed, and is not a reason to
+// skip the check or to fail the start.
+func TestEnqueueBootCheck_FutureRequestTimeThatCannotBeLoweredStillQueues(t *testing.T) {
+	ins := &fakeInserter{}
+	start := time.Now()
+	future := start.Add(3 * time.Hour)
+	rec := &fakeRecorder{state: agentmirror.State{LastRequestAt: &future}, clampErr: errors.New("read-only transaction")}
+
+	bc, err := EnqueueBootCheck(context.Background(), ins, rec, start)
+	if err != nil {
+		t.Fatalf("EnqueueBootCheck: %v", err)
+	}
+	_, opts := ins.only(t)
+	requireBootDelay(t, start.Add(minRequestSpacing), opts.ScheduledAt)
+	if !bc.Queued || bc.RequestTimeLowered || bc.LowerErr == nil {
+		t.Fatalf("BootCheck = %+v, want queued, not lowered, with the error reported", bc)
+	}
+}
+
 // TestEnqueueBootCheck_UnreadableStateStillQueues: failing to read the
 // persisted state is no reason to skip the check; the run-time guard still
 // applies when it runs.

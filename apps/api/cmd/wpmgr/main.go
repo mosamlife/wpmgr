@@ -2225,6 +2225,13 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 				slog.Time("scheduled_at", bc.ScheduledAt),
 				slog.Bool("queued", bc.Queued),
 				slog.Bool("deferred_for_request_spacing", bc.Deferred))
+			if bc.RequestTimeLowered {
+				logger.Warn("agent release mirror: the recorded time of the last upstream request was ahead of this host's clock, so it was reset to now; check the clocks on this install")
+			}
+			if bc.LowerErr != nil {
+				logger.Warn("agent release mirror: the recorded time of the last upstream request is ahead of this host's clock and could not be reset, so the request spacing may refuse the startup check",
+					slog.String("error", bc.LowerErr.Error()))
+			}
 		}
 	}
 	mediaRiverClient, err := newMediaRiverClient(pool.Pool, logger, riverClient, mediaRiverSchema)

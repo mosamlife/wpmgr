@@ -921,7 +921,10 @@ func (m *Mirror) LastRequestAt() time.Time {
 // held changes nothing, so a stale read can never reopen a window this process
 // has just closed. A time in the future (a skewed clock on whichever host
 // recorded it) is clamped to now, which bounds the wait it can impose to one
-// spacing window instead of however far ahead that clock was.
+// spacing window instead of however far ahead that clock was. EnqueueBootCheck
+// lowers a stored time that is ahead of its clock once, at start, so the check
+// it schedules reads the value that schedule was computed from and is not
+// refused by this clamp when it runs.
 func (m *Mirror) SeedLastRequestAt(t time.Time) {
 	if t.IsZero() {
 		return
