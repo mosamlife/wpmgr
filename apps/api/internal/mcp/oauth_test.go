@@ -87,6 +87,18 @@ type fakeStore struct {
 	// atomicity proof asserts.
 	tokenPersistErr error
 
+	// grantOauthScopes is mcp_grants.oauth_scopes of the grant the code was
+	// issued for: what the redeem transaction reads back for the token it
+	// inserted. No default. A fixture that redeems must say what the grant
+	// holds, and one that says nothing holds nothing and is refused.
+	grantOauthScopes []string
+
+	// grantNotAuthorized makes the redeem transaction's read-back report
+	// authorized=false: the grant was revoked or has expired since consent, or
+	// the organisation's assistant is paused. The real transaction then rolls
+	// back, so the fake leaves `consumed` unflipped and counts no token.
+	grantNotAuthorized bool
+
 	recheck   sqlc.ReCheckMCPRequestAuthorizationInTenantTxRow
 	recheckOK bool
 
@@ -296,7 +308,7 @@ func (f *fakeStore) LookupAuthorizationCode(_ context.Context, _ string) (sqlc.G
 // would roll the UPDATE back. A fake that marked the code consumed and then
 // returned the error would model two commits, which is the defect being fixed,
 // and the test would pass against the broken code.
-func (f *fakeStore) RedeemAuthorizationCode(_ context.Context, _, _ uuid.UUID, tok sqlc.CreateMCPConnectionTokenParams) (sqlc.McpConnectionToken, error) {
+func (f *fakeStore) RedeemAuthorizationCode(_ context.Context, _, _ uuid.UUID, tok sqlc.CreateMCPConnectionTokenParams) (RedeemedCode, error) {
 	f.note("RedeemAuthorizationCode")
 	f.mu.Lock()
 	f.consumeCalls++
@@ -305,17 +317,27 @@ func (f *fakeStore) RedeemAuthorizationCode(_ context.Context, _, _ uuid.UUID, t
 	// The compare-and-set runs first, inside the transaction.
 	if f.raceLost || f.consumed {
 		// `consumed_at IS NULL` matched nothing; :one turns that into ErrNoRows.
-		return sqlc.McpConnectionToken{}, pgx.ErrNoRows
+		return RedeemedCode{}, pgx.ErrNoRows
 	}
 	// Then the insert. If it fails the whole transaction rolls back, so the
 	// consume never becomes visible and the code remains redeemable.
 	if f.tokenPersistErr != nil {
-		return sqlc.McpConnectionToken{}, f.tokenPersistErr
+		return RedeemedCode{}, f.tokenPersistErr
 	}
-
+	// Then the read-back's verdict. A grant that is not authorized rolls the
+	// whole transaction back: nothing is consumed and no token is counted.
+	if f.grantNotAuthorized {
+		return RedeemedCode{}, errGrantNotAuthorized
+	}
+	// Then the read-back of the grant's stored scope set, returned AS STORED,
+	// exactly as the real transaction returns it: deciding whether a token
+	// response can name it is Exchange's job, not the store's.
 	f.consumed = true
 	f.tokensMinted++
-	return sqlc.McpConnectionToken{ID: uuid.New(), TenantID: tok.TenantID, GrantID: tok.GrantID}, nil
+	return RedeemedCode{
+		Token:       sqlc.McpConnectionToken{ID: uuid.New(), TenantID: tok.TenantID, GrantID: tok.GrantID},
+		GrantScopes: grantScopes(f.grantOauthScopes),
+	}, nil
 }
 
 // CreateGrantWithCode records the principal it was handed. THIS FAKE CANNOT
@@ -900,6 +922,7 @@ func TestExchange_ConsumedCodeCannotBeReplayed(t *testing.T) {
 	store := &fakeStore{
 		codeOK: true, code: redeemableCode(t, verifier, redirect, clientID),
 		clientOK: true, client: liveClient(redirect),
+		grantOauthScopes: []string{string(ScopeRead)},
 	}
 	svc := NewService(store)
 

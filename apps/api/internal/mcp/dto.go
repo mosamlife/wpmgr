@@ -108,6 +108,15 @@ type consentResponseDTO struct {
 	// meets an effect it does not know must not offer Approve: an unknown
 	// effect is not a read.
 	ConferrableCapabilities []conferrableCapabilityDTO `json:"conferrable_capabilities"`
+
+	// UnregisteredScopes names the scopes the client asked for that its own
+	// registration does not hold. They are not on this screen, are not in the
+	// ticket, and cannot be approved; `scopes` above is what remains. The
+	// client can ask for them only by registering again, which for a standard
+	// MCP client means removing the server from the AI app and adding it back,
+	// so a screen that shows this list should say that. Always present, and []
+	// when the request fit the registration.
+	UnregisteredScopes []string `json:"unregistered_scopes"`
 }
 
 type conferrableCapabilityDTO struct {
@@ -126,8 +135,13 @@ func toConsentResponse(c ConsentContext) consentResponseDTO {
 			Name: string(cc.Name), Effect: string(cc.Effect),
 		})
 	}
+	unregistered := make([]string, 0, len(c.UnregisteredScopes))
+	for _, s := range c.UnregisteredScopes {
+		unregistered = append(unregistered, string(s))
+	}
 	return consentResponseDTO{
 		ConferrableCapabilities: conferrable,
+		UnregisteredScopes:      unregistered,
 		ClientID:                c.ClientID,
 		ClientNameUnverified:    c.ClientNameUnverified,
 		ClientURIUnverified:     c.ClientURIUnverified,

@@ -574,11 +574,13 @@ type RegisteredClient struct {
 // {mcp:read} AND NOT THE WHOLE REGISTRY. The whole registry was the answer
 // while it held one member, and it would now register a client that said
 // nothing for the cache scope too, leaving the containment check in Authorize
-// and Approve with nothing to bite on. A client that wants the cache scope
-// asks for it by name at registration; one that registered without it and
-// asks at /authorize is refused there (requireScopesWithinRegistration), and
-// the consent screen tells the operator to remove the server from the client
-// and add it again.
+// and Approve with nothing to bite on. A client that wants the cache or site
+// scope names it at registration, which an MCP client does by copying the
+// advertised list (AdvertisedScopes) into its registration request. One that
+// registered without it and asks at /authorize is offered only the scopes it
+// registered for; the rest are withheld and named in the consent context's
+// UnregisteredScopes (see Authorize), and asking for them takes a new
+// registration.
 //
 // UNRECOGNISED TOKENS ARE DROPPED, NOT REFUSED. See ParseRegistrationScopes
 // for why registration is the one lenient reader.
@@ -778,6 +780,15 @@ type ConsentContext struct {
 	// for the screen's capability picker. Set by Authorize; never read back
 	// from an approval body.
 	ConferrableCapabilities []ConferrableCapability
+
+	// UnregisteredScopes is what the client asked for and its own registration
+	// does not hold, in the order it asked. Authorize withholds these rather
+	// than refusing the request: Scopes is the overlap, and only Scopes is
+	// sealed into the ticket or can be approved. The client can ask for one of
+	// these only by registering again, which for a standard MCP client means
+	// the operator removes the server from the AI app and adds it back. Set by
+	// Authorize; never read back from an approval body.
+	UnregisteredScopes []Scope
 }
 
 // Authorize validates an authorization request and returns what the consent
@@ -828,13 +839,35 @@ func (s *Service) Authorize(ctx context.Context, req AuthorizeRequest) (ConsentC
 	}
 
 	// CONTAINMENT, AND IT MUST PRECEDE THE TICKET. ParseRequestedScopes above
-	// established that the server knows these scopes; this establishes that
-	// THIS CLIENT registered for them. Placed here rather than after the issue
-	// call because the ticket is the durable artefact of this request -- it is
-	// what Approve measures the approval body against -- so a set outside the
-	// registration must never be sealed into one.
-	if err := requireScopesWithinRegistration(client.RegisteredScopes, scopes); err != nil {
-		return ConsentContext{}, err
+	// established that the server knows these scopes; this establishes which of
+	// them THIS CLIENT registered for (m137), and only those are offered, sealed
+	// or stored. Placed here rather than after the issue call because the ticket
+	// is the durable artefact of this request -- it is what Approve measures the
+	// approval body against -- so a scope outside the registration must never be
+	// sealed into one.
+	//
+	// NARROWED, NOT REFUSED, WHEN THE REQUEST AND THE REGISTRATION OVERLAP. RFC
+	// 6749 section 3.3 lets an authorization server issue less than was asked.
+	// A client keeps the client_id it registered with and asks for whatever the
+	// server advertises at its next sign-in, so a client registered before a
+	// scope was advertised asks for one it never registered for. Refusing that
+	// request would end every such sign-in at an error that retrying cannot
+	// clear. Narrowing offers the scopes it did register for, and
+	// UnregisteredScopes names the rest so the consent screen can say that the
+	// client must register again to ask for them. The bound is unchanged:
+	// nothing outside the registration reaches the screen, the ticket or the
+	// grant, and Approve re-checks the sealed set against the registration.
+	//
+	// REFUSED WHEN NOTHING OVERLAPS, with invalid_scope naming the first scope
+	// asked for. An empty registration overlaps nothing, so it still authorizes
+	// nothing (m137 DECISION 4).
+	//
+	// scopes IS REASSIGNED to the overlap, so every line below -- the ticket,
+	// the capability list, the screen -- reads the narrowed set, and none of
+	// them can reach the request's own.
+	scopes, unregistered := partitionByRegistration(client.RegisteredScopes, scopes)
+	if len(scopes) == 0 {
+		return ConsentContext{}, unregisteredScopeError(unregistered)
 	}
 
 	redirectHost := ""
@@ -869,6 +902,7 @@ func (s *Service) Authorize(ctx context.Context, req AuthorizeRequest) (ConsentC
 		CodeChallenge:        req.CodeChallenge,
 		CodeChallengeMethod:  req.CodeChallengeMethod,
 		ConsentTicket:        ticket,
+		UnregisteredScopes:   unregistered,
 
 		ConferrableCapabilities: conferrable,
 	}, nil
@@ -905,21 +939,54 @@ func (s *Service) Authorize(ctx context.Context, req AuthorizeRequest) (ConsentC
 // back because it is the caller's own input. The client's registered set is
 // NOT echoed: it is another party's registration metadata whenever the
 // client_id was not the caller's to begin with, and naming the one scope that
-// was refused is what makes the failure debuggable.
+// was refused is what makes the failure debuggable. Authorize's consent
+// context does show the overlap between the request and the registration,
+// because that overlap is what the operator is approving; it says nothing
+// about a registered scope the caller did not ask for.
+//
+// Approve calls this on the set the ticket sealed. Authorize narrows instead
+// of calling it, through the same partitionByRegistration, so the two entry
+// points cannot disagree about what the registration holds.
 func requireScopesWithinRegistration(registered []string, requested []Scope) error {
+	if _, outside := partitionByRegistration(registered, requested); len(outside) > 0 {
+		return unregisteredScopeError(outside)
+	}
+	return nil
+}
+
+// partitionByRegistration splits requested into the scopes the client's
+// registration holds and the ones it does not, each in the order requested.
+// Both results are non-nil, so a caller can range or serialise either without
+// a nil check.
+func partitionByRegistration(registered []string, requested []Scope) (within, outside []Scope) {
 	registeredSet := make(map[Scope]struct{}, len(registered))
 	for _, r := range registered {
 		registeredSet[Scope(r)] = struct{}{}
 	}
+	within = make([]Scope, 0, len(requested))
+	outside = make([]Scope, 0, len(requested))
 	for _, s := range requested {
-		if _, ok := registeredSet[s]; !ok {
-			return domain.Validation(ErrCodeInvalidScope,
-				fmt.Sprintf("scope %q is not one this client is registered to request",
-					string(s))).
-				WithDetails(map[string]any{"unregistered_scope": string(s)})
+		if _, ok := registeredSet[s]; ok {
+			within = append(within, s)
+		} else {
+			outside = append(outside, s)
 		}
 	}
-	return nil
+	return within, outside
+}
+
+// unregisteredScopeError is the invalid_scope refusal naming the first scope in
+// outside. An empty outside still refuses: a caller that reaches here with
+// nothing to name has nothing to authorize either.
+func unregisteredScopeError(outside []Scope) error {
+	if len(outside) == 0 {
+		return domain.Validation(ErrCodeInvalidScope,
+			"no scope this client is registered to request was asked for")
+	}
+	return domain.Validation(ErrCodeInvalidScope,
+		fmt.Sprintf("scope %q is not one this client is registered to request; "+
+			"the client must register again to ask for it", string(outside[0]))).
+		WithDetails(map[string]any{"unregistered_scope": string(outside[0])})
 }
 
 // exactMatchRedirectURI compares byte-for-byte against each registered URI.
@@ -1044,10 +1111,12 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 	//
 	// WHAT IS NOW TRUE. Both entry points measure the scope set against
 	// mcp_oauth_clients.registered_scopes: Authorize before it seals a ticket,
-	// and this function before it stores a grant -- see
-	// requireScopesWithinRegistration. A ticket for a scope the client never
-	// registered cannot be minted, and one that exists anyway (issued by an
-	// older build, still inside its TTL) cannot be spent. The ceiling on what
+	// narrowing the request to the registration, and this function before it
+	// stores a grant, refusing a sealed set outside it -- see
+	// partitionByRegistration and requireScopesWithinRegistration. A ticket
+	// for a scope the client never registered cannot be minted, and one that
+	// exists anyway (issued by an older build, still inside its TTL) cannot be
+	// spent. The ceiling on what
 	// any principal can obtain through this pair of endpoints is now THE
 	// CLIENT'S OWN REGISTRATION rather than the server's whole registry. The
 	// escalation described above is closed, not narrowed.
@@ -1087,11 +1156,13 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 	// one of them. Recorded here so the next author does not spend the
 	// afternoon re-deriving it.
 	//
-	// THE DIFFERENCE IS STILL NOT OBSERVABLE IN PRODUCTION TODAY: one scope is
-	// recognised, so the only ticket this server will mint and the only set
-	// this line can store is {mcp:read}. Containment is proved against a second
-	// scope planted in the test process -- see m137_scope_containment_test.go,
-	// which is the only place the two sets can differ.
+	// THE DIFFERENCE IS OBSERVABLE IN PRODUCTION. The registry recognises
+	// mcp:read, mcp:site and mcp:cache, and discovery advertises all three, so
+	// a client registered for mcp:read alone routinely asks for more than its
+	// registration holds. Authorize narrows that request to the registration
+	// before sealing it, so the ticket this line reads carries only scopes the
+	// client registered for. m137_scope_containment_test.go and
+	// advertised_scopes_test.go prove both halves.
 	grantedScopes, err := s.authorizedScopes(req.Consent)
 	if err != nil {
 		return Approval{}, err
@@ -1545,7 +1616,13 @@ func (s *Service) Exchange(ctx context.Context, req TokenRequest) (IssuedToken, 
 	// won, it expired since the lookup, or RLS refused the write. All three mean
 	// refuse. Treating "no row" as "already fine" is exactly how single-use
 	// becomes multi-use, so there is no such branch.
-	if _, err := s.store.RedeemAuthorizationCode(ctx, row.TenantID, row.ID,
+	//
+	// errGrantNotAuthorized means the grant the code was issued for is not
+	// authorized now: revoked or expired since consent, or the organisation's
+	// assistant is paused. The redeem transaction rolled back, so no token row
+	// exists and the code is unconsumed. RFC 6749 section 5.2 names this case
+	// invalid_grant ("revoked"), and oauthError maps that code to a 400.
+	redeemed, err := s.store.RedeemAuthorizationCode(ctx, row.TenantID, row.ID,
 		sqlc.CreateMCPConnectionTokenParams{
 			TenantID:    row.TenantID,
 			GrantID:     row.GrantID,
@@ -1553,21 +1630,44 @@ func (s *Service) Exchange(ctx context.Context, req TokenRequest) (IssuedToken, 
 			TokenHash:   hashCredential(secret),
 			Status:      string(GrantStatusActive),
 			ExpiresAt:   pgtype.Timestamptz{Time: expiresAt, Valid: true},
-		}); err != nil {
+		})
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidGrant,
 				"the authorization code could not be redeemed; it was already used or has expired")
+		}
+		if errors.Is(err, errGrantNotAuthorized) {
+			// The same wording Authenticate uses for an unauthorized verdict, so
+			// the refusal discloses no more about the grant than a request would.
+			return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidGrant,
+				"this connection has been revoked or has expired")
 		}
 		// The consume rolled back with the failure, so the code is still
 		// redeemable and the client may retry this exact request.
 		return IssuedToken{}, fmt.Errorf("redeem authorization code: %w", err)
 	}
 
+	// 6. THE SCOPE IS THE GRANT'S STORED SET, read back inside the redeem
+	// transaction from mcp_grants.oauth_scopes, the column Authenticate reads on
+	// every request. It is never a constant and never the request's scope
+	// parameter: a grant that holds mcp:site and mcp:cache says so, and a
+	// read-only grant says exactly "mcp:read".
+	//
+	// A SET THE RESPONSE CANNOT NAME FAILS CLOSED, with server_error and no
+	// access token. The refusal comes after the commit, so the code is spent and
+	// the token row exists, but its plaintext never leaves this function and
+	// nothing can present it. Both refusals are rows the schema's CHECKs make
+	// unstorable, so no retry of this code could have succeeded either.
+	scope, err := tokenResponseScope(redeemed.GrantScopes)
+	if err != nil {
+		return IssuedToken{}, fmt.Errorf("render the issued token's scope: %w", err)
+	}
+
 	return IssuedToken{
 		AccessToken: secret, // once, here, never again
 		TokenType:   "Bearer",
 		ExpiresIn:   int(connectionTokenTTL.Seconds()),
-		Scope:       string(ScopeRead),
+		Scope:       scope,
 	}, nil
 }
 

@@ -1,7 +1,8 @@
-// m137 made the requestable scope set PER-CLIENT: Authorize and Approve both
-// refuse a scope the client's own mcp_oauth_clients.registered_scopes does not
-// contain. This file proves both refuse it, and that neither refuses the
-// honest request.
+// m137 made the requestable scope set PER-CLIENT: a scope the client's own
+// mcp_oauth_clients.registered_scopes does not contain never reaches a consent
+// ticket or a grant. Authorize narrows a request to the registration and
+// refuses one that does not overlap it; Approve refuses a sealed set outside
+// it. This file proves both, and that neither refuses the honest request.
 //
 // WHY THIS CANNOT BE A tests/ INTEGRATION FILE, WHICH IS THE FIRST THING A
 // READER WILL ASK. The behaviour under test is a DISAGREEMENT between two
@@ -105,19 +106,19 @@ func authorizeReqWithScope(scope string) AuthorizeRequest {
 // TestAuthorizeRefusesAScopeTheClientNeverRegistered is the first entry point,
 // and the one that stops the escalation at its source: no consent ticket is
 // sealed, so Approve is never reached with a set to spend.
+//
+// A request that ALSO names a registered scope is not refused; it is narrowed
+// to the registration, and TestAuthorizeNarrowsAMixedRequestToTheRegistration
+// below proves the unregistered scope still never reaches the ticket. This test
+// holds the requests narrowing cannot answer, where nothing overlaps.
 func TestAuthorizeRefusesAScopeTheClientNeverRegistered(t *testing.T) {
 	planted := plantForContainment(t)
 
 	cases := map[string]string{
-		// The escalation proper: smuggle the unregistered scope alongside the
-		// one the client is entitled to. This is the shape that survives a
-		// careless "does the request contain mcp:read" check.
-		"registered scope plus an unregistered one": string(ScopeRead) + " " + string(planted),
 		// The bare form: nothing the client registered for at all.
 		"only an unregistered scope": string(planted),
-		// Order must not matter. A check that returns on the first MATCH rather
-		// than checking every member passes one of these and fails the other.
-		"unregistered scope first": string(planted) + " " + string(ScopeRead),
+		// Several, none registered: narrowing leaves nothing to offer.
+		"only unregistered scopes": string(planted) + " " + string(ScopeSite),
 	}
 
 	for name, scope := range cases {
@@ -161,6 +162,64 @@ func TestAuthorizeRefusesAScopeTheClientNeverRegistered(t *testing.T) {
 					"the refusal must precede it")
 			}
 			t.Logf("Authorize refused %q: %v", scope, err)
+		})
+	}
+}
+
+// TestAuthorizeNarrowsAMixedRequestToTheRegistration is the escalation proper:
+// the unregistered scope smuggled in alongside the one the client is entitled
+// to. Authorize answers it with the registered scope alone. The load-bearing
+// assertion is the ticket's contents, because the ticket is what Approve will
+// store: it must seal the registered scope and nothing else.
+func TestAuthorizeNarrowsAMixedRequestToTheRegistration(t *testing.T) {
+	planted := plantForContainment(t)
+
+	cases := map[string]string{
+		"registered scope plus an unregistered one": string(ScopeRead) + " " + string(planted),
+		// Order must not matter. A partition that stops at the first match
+		// rather than reading every member gets one of these wrong.
+		"unregistered scope first": string(planted) + " " + string(ScopeRead),
+	}
+
+	for name, scope := range cases {
+		t.Run(name, func(t *testing.T) {
+			store := clientRegisteredForReadOnly()
+			svc := consentSvc(store)
+
+			got, err := svc.Authorize(context.Background(), authorizeReqWithScope(scope))
+			if err != nil {
+				t.Fatalf("Authorize refused %q for a client registered for %v: %v; "+
+					"a request that overlaps the registration is narrowed to it",
+					scope, store.client.RegisteredScopes, err)
+			}
+			if len(got.Scopes) != 1 || got.Scopes[0] != ScopeRead {
+				t.Fatalf("consent scopes = %v, want [%s]", got.Scopes, ScopeRead)
+			}
+			if len(got.UnregisteredScopes) != 1 || got.UnregisteredScopes[0] != planted {
+				t.Fatalf("unregistered scopes = %v, want [%s]", got.UnregisteredScopes, planted)
+			}
+			claims, ok := testTicketCodec.open(got.ConsentTicket, time.Now())
+			if !ok {
+				t.Fatal("Authorize issued no ticket that opens under the test key")
+			}
+			if len(claims.Scopes) != 1 || claims.Scopes[0] != string(ScopeRead) {
+				t.Fatalf("the ticket seals %v; the unregistered scope must never be sealed, "+
+					"because Approve stores the ticket's set", claims.Scopes)
+			}
+
+			// And the body cannot put it back: the ticket binds the approval.
+			req := approvalFor(got)
+			req.Consent.Scopes = []Scope{ScopeRead, planted}
+			_, err = auditedService(store).Approve(context.Background(), req)
+			if de, ok := domain.AsDomain(err); !ok || de.Code != ErrCodeScopeNotAuthorized {
+				t.Fatalf("Approve with the unregistered scope restored = %v, want %s",
+					err, ErrCodeScopeNotAuthorized)
+			}
+			for _, c := range store.callLog() {
+				if c == "CreateGrantWithCode" {
+					t.Fatal("a refused approval still created a grant")
+				}
+			}
 		})
 	}
 }

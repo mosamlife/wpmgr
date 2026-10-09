@@ -152,6 +152,62 @@ describe("parseConsentContext — the consent ticket is carried, never interpret
   });
 });
 
+describe("parseConsentContext, the scopes the server withheld", () => {
+  // The wire shape for a registration that holds mcp:read alone and asked for
+  // the advertised list: `scopes` is the overlap and `unregistered_scopes` is
+  // the rest, in the order the client asked. Pinned on the Go side by
+  // TestAuthorizeHandler_NamesTheWithheldScopes
+  // (apps/api/internal/mcp/advertised_scopes_test.go), which reads
+  // `"scopes":["mcp:read"]` and `"unregistered_scopes":["mcp:site","mcp:cache"]`
+  // off the handler's own output.
+  const WITHHELD = { ...VALID, unregistered_scopes: ["mcp:site", "mcp:cache"] };
+
+  it("carries the withheld scopes through, in the order the client asked", () => {
+    // Without the key in the wire schema, zod's default object parse strips it
+    // silently and the screen never hears about it.
+    expect(parseConsentContext(WITHHELD).unregisteredScopes).toEqual(["mcp:site", "mcp:cache"]);
+  });
+
+  it("keeps them out of the scopes that can be approved", () => {
+    // The server sealed `scopes` into the ticket. Folding the withheld ones in
+    // here would put scopes the registration does not hold on the approval.
+    const ctx = parseConsentContext(WITHHELD);
+    expect(ctx.scopes).toEqual([SCOPE_READ]);
+    expect(ctx.scopes).not.toContain("mcp:site");
+    expect(ctx.scopes).not.toContain("mcp:cache");
+  });
+
+  it("reads [] as nothing withheld", () => {
+    // dto.go sends [] rather than null when the request fit the registration.
+    expect(parseConsentContext({ ...VALID, unregistered_scopes: [] }).unregisteredScopes).toEqual(
+      [],
+    );
+  });
+
+  it("reads an absent key as nothing withheld, because a server that predates the field sends none", () => {
+    // Required here would fail the whole consent screen closed against every
+    // server that has not shipped the field, and the field is copy only.
+    expect(parseConsentContext(VALID).unregisteredScopes).toEqual([]);
+  });
+
+  it("refuses a value that is not an array of scope strings rather than guessing", () => {
+    // Present means held to the server's promise: an array of non-empty
+    // strings. dto.go builds the slice with make(), so it is never null.
+    expect(() => parseConsentContext({ ...VALID, unregistered_scopes: "mcp:site" })).toThrow();
+    expect(() => parseConsentContext({ ...VALID, unregistered_scopes: null })).toThrow();
+    expect(() => parseConsentContext({ ...VALID, unregistered_scopes: [1] })).toThrow();
+    expect(() => parseConsentContext({ ...VALID, unregistered_scopes: [""] })).toThrow();
+    expect(() => parseConsentContext({ ...VALID, unregistered_scopes: { 0: "mcp:site" } })).toThrow();
+  });
+
+  it("did NOT make the wire schema permissive", () => {
+    // One known optional key is the change. An unknown key is still dropped.
+    const parsed = consentWireSchema.parse({ ...WITHHELD, surprise: "payload" });
+    expect(parsed.unregistered_scopes).toEqual(["mcp:site", "mcp:cache"]);
+    expect(parsed).not.toHaveProperty("surprise");
+  });
+});
+
 describe("asSelfAsserted", () => {
   it("reports presence and absence as distinct facts", () => {
     expect(asSelfAsserted("Fleet")).toEqual({ stated: true, value: "Fleet" });
