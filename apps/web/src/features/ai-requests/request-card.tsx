@@ -12,6 +12,7 @@ import {
   requestStatusLine,
   setUpForLine,
 } from "./request-card-model";
+import { useDeepLinkFocus } from "./use-deep-link";
 
 // The AI request card (tracka-cache-purge-design-v7 §2.6). Every field this
 // component renders is named in "Where each fact comes from" and is shown
@@ -30,6 +31,11 @@ export interface RequestCardProps {
   /** True for exactly one card in a list, so Decline is the default focus
    *  target without every card in a page stealing it from the last. */
   autoFocusDecline?: boolean;
+  /**
+   * The address named this request (`?request=<id>`): scroll to the card and
+   * focus Decline on it, or the card itself when nothing is left to decide.
+   */
+  deepLinked?: boolean;
   className?: string;
 }
 
@@ -41,17 +47,24 @@ export function RequestCard({
   approvePending = false,
   declinePending = false,
   autoFocusDecline = false,
+  deepLinked = false,
   className,
 }: RequestCardProps) {
   const status = requestStatusLine(request, currentUserId);
   const actionable = isActionable(request);
   const setUpFor = setUpForLine(request);
   const busy = approvePending || declinePending;
+  const { articleRef, declineRef } = useDeepLinkFocus(deepLinked, actionable);
 
   return (
     <article
+      ref={articleRef}
       aria-label={cardTitle(request)}
-      className={cn("space-y-3 rounded-lg border border-border bg-card p-4", className)}
+      tabIndex={deepLinked ? -1 : undefined}
+      className={cn(
+        "space-y-3 rounded-lg border border-border bg-card p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]",
+        className,
+      )}
     >
       <div className="space-y-1">
         <h3 className="text-sm font-semibold text-foreground">{cardTitle(request)}</h3>
@@ -109,6 +122,7 @@ export function RequestCard({
               select-all or bulk approve anywhere on this page: each request
               is decided on its own. */}
           <Button
+            ref={declineRef}
             type="button"
             variant="outline"
             autoFocus={autoFocusDecline}

@@ -254,6 +254,15 @@ export const ACTIVITY_FILTERED_EMPTY = "Nothing matches these filters.";
 /** The Requests page's subline: only what waits for a person is decided there. */
 export const REQUESTS_SUBLINE = "Each request that waits for you is decided on its own. There is no approve-all.";
 
+// --- The link an AI hands a person when a change waits (design §7, §8.9) -----
+
+/** The address names a request that neither queue holds for this organisation. */
+export const DEEP_LINK_NOT_FOUND =
+  "We could not find that request. It may belong to another organisation. Check which organisation you are signed in to.";
+
+/** The address names a request this person's role cannot read or decide. */
+export const DEEP_LINK_NO_PERMISSION = "You can see AI activity but only an operator can decide this request.";
+
 // --- A connection's automatic changes (design §8.7) -------------------------
 
 export const AUTO_QUESTION = "May this connection run changes automatically?";

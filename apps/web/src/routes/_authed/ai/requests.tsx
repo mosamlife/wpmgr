@@ -1,5 +1,7 @@
+import type { ReactNode } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { toast } from "sonner";
+import { z } from "zod";
 import type { AssistantRequest } from "@wpmgr/api";
 
 import { Button } from "@/components/ui/button";
@@ -8,7 +10,11 @@ import { PageError } from "@/components/feedback/page-error";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMe } from "@/features/auth/use-auth";
 import { AiAreaTabs } from "@/features/ai-requests/ai-area-tabs";
-import { REQUESTS_SUBLINE } from "@/features/ai-trust/ai-trust-copy";
+import {
+  DEEP_LINK_NOT_FOUND,
+  DEEP_LINK_NO_PERMISSION,
+  REQUESTS_SUBLINE,
+} from "@/features/ai-trust/ai-trust-copy";
 import { OrgAbilityRequests } from "@/features/ability-requests/org-ability-requests";
 import { RequestCard } from "@/features/ai-requests/request-card";
 import {
@@ -16,6 +22,7 @@ import {
   useApproveAssistantRequest,
   useDeclineAssistantRequest,
 } from "@/features/ai-requests/use-ai-requests";
+import { useDeepLink } from "@/features/ai-requests/use-deep-link";
 
 // /ai/requests — the AI request queue (tracka-cache-purge-design-v7 §2.6,
 // slice W2). A tab beside /ai's Connections list, with a count badge fed by
@@ -29,15 +36,41 @@ import {
 // is reached from the tab bar on /ai (and from the Cache tab's banner), not
 // from the primary nav.
 
+// THE LINK AN AI HANDS A PERSON. When a change waits, the AI's result carries
+// an absolute `approval_url` of the form `/ai/requests?request=<id>` (design
+// §7, layer 1). The page scrolls to that card and puts focus on its Decline
+// button, the safe choice, instead of on the first waiting card. A value that
+// is not a short string is dropped, and the page then behaves as it does with
+// no link. The id is only ever compared with ids the server listed; it is not
+// shown, put in a URL or used in any sentence.
+const searchSchema = z.object({
+  request: z.string().max(64).optional().catch(undefined),
+});
+
 export const Route = createFileRoute("/_authed/ai/requests")({
+  validateSearch: searchSchema,
   component: AiRequestsPage,
 });
+
+function DeepLinkNotice({ testId, children }: { testId: string; children: ReactNode }) {
+  return (
+    <p
+      role="alert"
+      data-testid={testId}
+      className="rounded-md border border-warning/40 bg-warning-subtle px-3 py-2 text-sm text-warning-subtle-fg"
+    >
+      {children}
+    </p>
+  );
+}
 
 function AiRequestsPage() {
   const query = useAssistantRequestPages();
   const approve = useApproveAssistantRequest();
   const decline = useDeclineAssistantRequest();
   const { data: me } = useMe();
+  const deepLinkId = Route.useSearch().request;
+  const deepLink = useDeepLink(deepLinkId);
 
   const loaded = query.data?.pages.flatMap((p) => p.requests) ?? [];
   // Pending first, then decided, each keeping the server's newest-first order.
@@ -93,6 +126,13 @@ function AiRequestsPage() {
       />
       <AiAreaTabs />
 
+      {deepLink.kind === "not_found" ? (
+        <DeepLinkNotice testId="deep-link-not-found">{DEEP_LINK_NOT_FOUND}</DeepLinkNotice>
+      ) : null}
+      {deepLink.kind === "no_permission" ? (
+        <DeepLinkNotice testId="deep-link-no-permission">{DEEP_LINK_NO_PERMISSION}</DeepLinkNotice>
+      ) : null}
+
       {query.isPending ? (
         <RequestsSkeleton />
       ) : query.isError && loaded.length === 0 ? (
@@ -139,7 +179,8 @@ function AiRequestsPage() {
               declinePending={
                 decline.isPending && decline.variables?.requestId === request.id
               }
-              autoFocusDecline={request.id === firstPendingId}
+              autoFocusDecline={deepLinkId === undefined && request.id === firstPendingId}
+              deepLinked={deepLinkId !== undefined && request.id === deepLinkId}
             />
           ))}
           {pendingCount > pendingLoaded && (
@@ -175,7 +216,7 @@ function AiRequestsPage() {
           )}
         </div>
       )}
-      <OrgAbilityRequests currentUserId={me?.user?.id ?? null} />
+      <OrgAbilityRequests currentUserId={me?.user?.id ?? null} deepLinkId={deepLinkId} />
     </div>
   );
 }

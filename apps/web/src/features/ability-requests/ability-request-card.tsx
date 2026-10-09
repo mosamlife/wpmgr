@@ -4,6 +4,7 @@ import type { AbilityRequest } from "@wpmgr/api";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { setUpForLine } from "@/features/ai-requests/request-card-model";
+import { useDeepLinkFocus } from "@/features/ai-requests/use-deep-link";
 import { UNDO_WINDOW_OVER_LINE, ranAutomatically } from "@/features/ai-trust/ai-trust-copy";
 
 import { AutoApprovalRows, RanAutomaticallyChip, WaitingBecauseRow } from "./auto-approval";
@@ -42,6 +43,11 @@ export interface AbilityRequestCardProps {
   /** A refusal from the last action on this card, shown as an alert. */
   notice?: string | null;
   autoFocusDecline?: boolean;
+  /**
+   * The address named this request (`?request=<id>`): scroll to the card and
+   * focus Decline on it, or the card itself when nothing is left to decide.
+   */
+  deepLinked?: boolean;
   className?: string;
   /** The signed-in person's id, so a setting they chose reads "set by you". */
   currentUserId?: string | null;
@@ -64,11 +70,13 @@ function PageCreateCard({
   undoPending = false,
   notice,
   autoFocusDecline = false,
+  deepLinked = false,
   className,
   canUndo,
   currentUserId,
 }: AbilityRequestCardProps & { canUndo: boolean }) {
   const pending = isPending(request);
+  const { articleRef, declineRef } = useDeepLinkFocus(deepLinked, pending);
   const status = abilityStatus(request);
   const auto = ranAutomatically(request.approval);
   // Null unless every node and every image fact can be shown in full; a null
@@ -83,9 +91,11 @@ function PageCreateCard({
 
   return (
     <article
+      ref={articleRef}
       aria-label={title}
+      tabIndex={deepLinked ? -1 : undefined}
       className={cn(
-        "space-y-3 rounded-lg border border-border bg-card p-4",
+        "space-y-3 rounded-lg border border-border bg-card p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]",
         auto && status.kind === "failed" && "border-destructive",
         className,
       )}
@@ -177,6 +187,7 @@ function PageCreateCard({
           {/* Decline first in the DOM and focused on the first card: the safe
               choice is the default. Each request is decided on its own. */}
           <Button
+            ref={declineRef}
             type="button"
             variant="outline"
             autoFocus={autoFocusDecline}

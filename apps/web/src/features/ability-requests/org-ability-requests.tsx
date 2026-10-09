@@ -13,7 +13,14 @@ import { AbilityRequestError, useOrgAbilityRequestPages } from "./use-ability-re
 // card and handlers as a site's Content tab) and links to that site's Content
 // tab. The badge count is the server's pending_count, never the page length.
 
-export function OrgAbilityRequests({ currentUserId = null }: { currentUserId?: string | null }) {
+export function OrgAbilityRequests({
+  currentUserId = null,
+  deepLinkId,
+}: {
+  currentUserId?: string | null;
+  /** The request an AI's link named (`?request=<id>`); that card takes focus instead of the first waiting one. */
+  deepLinkId?: string;
+}) {
   const query = useOrgAbilityRequestPages();
   const actions = useAbilityCardActions();
 
@@ -65,7 +72,10 @@ export function OrgAbilityRequests({ currentUserId = null }: { currentUserId?: s
                 approvePending={actions.approvePendingId === r.id}
                 declinePending={actions.declinePendingId === r.id}
                 undoPending={actions.undoPendingId === r.id}
-                autoFocusDecline={r.id === firstPendingId}
+                // A link names the one card that takes focus; without one,
+                // the first waiting card does.
+                autoFocusDecline={deepLinkId === undefined && r.id === firstPendingId}
+                deepLinked={deepLinkId !== undefined && r.id === deepLinkId}
               />
               <Link
                 to="/sites/$siteId/content"

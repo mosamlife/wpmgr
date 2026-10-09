@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { setUpForLine } from "@/features/ai-requests/request-card-model";
+import { useDeepLinkFocus } from "@/features/ai-requests/use-deep-link";
 import { UNDO_WINDOW_OVER_LINE, ranAutomatically } from "@/features/ai-trust/ai-trust-copy";
 
 import { clockTime, isPending, undoWindowOver } from "./ability-card-model";
@@ -29,12 +30,14 @@ export function StructuredAbilityCard(props: AbilityRequestCardProps & { canUndo
     undoPending = false,
     notice,
     autoFocusDecline = false,
+    deepLinked = false,
     className,
     canUndo,
     currentUserId,
   } = props;
   const facts = parseRestCardFacts(request);
   const pending = isPending(request);
+  const { articleRef, declineRef } = useDeepLinkFocus(deepLinked, pending);
   const status = restWriteStatus(request);
   const setUpFor = setUpForLine(request);
   const busy = approvePending || declinePending;
@@ -43,9 +46,11 @@ export function StructuredAbilityCard(props: AbilityRequestCardProps & { canUndo
   const auto = ranAutomatically(request.approval);
   return (
     <article
+      ref={articleRef}
       aria-label={title}
+      tabIndex={deepLinked ? -1 : undefined}
       className={cn(
-        "space-y-3 rounded-lg border border-border bg-card p-4",
+        "space-y-3 rounded-lg border border-border bg-card p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]",
         auto && status.kind === "failed" && "border-destructive",
         className,
       )}
@@ -148,6 +153,7 @@ export function StructuredAbilityCard(props: AbilityRequestCardProps & { canUndo
       {pending ? (
         <div className="flex flex-wrap justify-end gap-2">
           <Button
+            ref={declineRef}
             type="button"
             variant="outline"
             autoFocus={autoFocusDecline}
