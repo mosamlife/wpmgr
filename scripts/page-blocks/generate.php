@@ -11,9 +11,10 @@
 //
 // The builder and everything it uses are loaded the way the plugin's main file
 // loads them: through the agent's own class resolver (includes/class-autoloader.php).
-// No agent class file is named here, so a class the builder starts to use needs
-// no change to this script. A class the resolver cannot find is a non-zero exit
-// that names the class, never a skipped case.
+// The resolver is the only agent file named here and no class the builder uses
+// is, so a class the builder starts to use needs no change to this script. A
+// class the resolver cannot find is a non-zero exit that names the class, never
+// a skipped case.
 //
 // outlines.json is a list of cases:
 //   name      unique, kebab-case
