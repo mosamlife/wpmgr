@@ -278,7 +278,7 @@ final class ReadmeEncryptionClaimTest extends TestCase
             'end to end' => ['Backups use end-to-end encryption.'],
             'chunks' => ['Chunks are age-encrypted.'],
             'a not that does not deny it' => ['Archives are encrypted, not just compressed.'],
-            'a but after the not' => ['Backups are not just compressed but encrypted.'],
+            'a but between the not and the verb' => ['Backups are not compressed but encrypted.'],
         ];
     }
 
