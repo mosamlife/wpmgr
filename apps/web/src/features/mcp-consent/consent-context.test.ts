@@ -3,8 +3,10 @@ import { describe, it, expect } from "vitest";
 import {
   allScopesRecognised,
   asSelfAsserted,
+  buildApprovalCapabilities,
   consentWireSchema,
   describeScope,
+  offeredReads,
   parseConsentContext,
   SCOPE_READ,
 } from "./consent-context";
@@ -237,5 +239,151 @@ describe("describeScope", () => {
     // Matching is exact and case-sensitive server-side (RFC 6749 s3.3), so a
     // normalised near-miss must not be described as the real scope.
     expect(allScopesRecognised(["MCP:READ"])).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The capability list an approval sends
+// ---------------------------------------------------------------------------
+
+// What the server lists for a request holding mcp:read, mcp:cache and mcp:site:
+// scopeCapabilities in apps/api/internal/mcp/policy.go, written out rather than
+// derived from the dashboard's vocabulary. Every read has the "read" effect,
+// the cache-clear and ability.request have "request", and ability.read is a
+// read.
+const READS = [
+  "mcp.activity.read",
+  "mcp.backups.read",
+  "mcp.diagnostics.read",
+  "mcp.performance.read",
+  "mcp.security.read",
+  "mcp.sites.read",
+  "mcp.uptime.read",
+];
+const asReads = (names: readonly string[]) => names.map((name) => ({ name, effect: "read" }));
+const CACHE = { name: "mcp.cache.purge", effect: "request" };
+const ABILITY_READ = { name: "mcp.ability.read", effect: "read" };
+const ABILITY_REQUEST = { name: "mcp.ability.request", effect: "request" };
+const EVERYTHING = [...asReads(READS), CACHE, ABILITY_READ, ABILITY_REQUEST];
+
+describe("offeredReads", () => {
+  it("is the reads the server listed, once each, in vocabulary order", () => {
+    expect(
+      offeredReads([
+        ...asReads(["mcp.uptime.read", "mcp.sites.read", "mcp.sites.read"]),
+        CACHE,
+        ABILITY_READ,
+      ]),
+    ).toEqual(["mcp.sites.read", "mcp.uptime.read"]);
+  });
+
+  it("leaves out the write, the site-tools names and anything this build does not know", () => {
+    expect(offeredReads([CACHE, ABILITY_READ, ABILITY_REQUEST])).toEqual([]);
+    expect(offeredReads(asReads(["mcp.future-thing.read"]))).toEqual([]);
+  });
+
+  it("leaves out mcp.content.read even when the server lists it as a read", () => {
+    expect(offeredReads(asReads(["mcp.content.read", "mcp.sites.read"]))).toEqual([
+      "mcp.sites.read",
+    ]);
+  });
+
+  it("does not take a conferrable name offered with the wrong effect for a read", () => {
+    expect(offeredReads([{ name: "mcp.sites.read", effect: "request" }])).toEqual([]);
+  });
+
+  it("is empty for a server that listed nothing", () => {
+    expect(offeredReads([])).toEqual([]);
+  });
+});
+
+describe("buildApprovalCapabilities, exactly the ticks limited to what was offered", () => {
+  it("sends the ticked reads and no read that is not ticked", () => {
+    expect([...buildApprovalCapabilities(EVERYTHING, ["mcp.backups.read", "mcp.security.read"])].sort()).toEqual([
+      "mcp.backups.read",
+      "mcp.security.read",
+    ]);
+    // The reads on offer are seven; one is ticked; one is sent.
+    expect(buildApprovalCapabilities(EVERYTHING, ["mcp.sites.read"])).toEqual(["mcp.sites.read"]);
+  });
+
+  it("sends every offered read when every read is ticked", () => {
+    expect([...buildApprovalCapabilities(EVERYTHING, READS)].sort()).toEqual([...READS].sort());
+  });
+
+  it("sends nothing for an empty tick list, and the caller omits the key", () => {
+    expect(buildApprovalCapabilities(EVERYTHING, [])).toEqual([]);
+  });
+
+  it("drops a ticked name the server did not offer", () => {
+    // A tick left over from a different request, or one the screen should not
+    // have been able to make, cannot widen the approval.
+    expect(
+      buildApprovalCapabilities(asReads(["mcp.sites.read"]), ["mcp.sites.read", "mcp.uptime.read"]),
+    ).toEqual(["mcp.sites.read"]);
+    expect(buildApprovalCapabilities([], ["mcp.sites.read", "mcp.cache.purge"])).toEqual([]);
+  });
+
+  it("never sends mcp.content.read, ticked or not, offered or not", () => {
+    expect(
+      buildApprovalCapabilities(asReads(["mcp.content.read", "mcp.sites.read"]), [
+        "mcp.content.read",
+        "mcp.sites.read",
+      ]),
+    ).toEqual(["mcp.sites.read"]);
+  });
+
+  it("sends mcp.cache.purge only when it is ticked and offered as a request", () => {
+    expect(buildApprovalCapabilities(EVERYTHING, ["mcp.sites.read"])).not.toContain("mcp.cache.purge");
+    expect(buildApprovalCapabilities(EVERYTHING, ["mcp.sites.read", "mcp.cache.purge"])).toEqual([
+      "mcp.sites.read",
+      "mcp.cache.purge",
+    ]);
+    // Offered with the wrong effect, or not offered at all: not sent.
+    expect(
+      buildApprovalCapabilities([{ name: "mcp.cache.purge", effect: "read" }], ["mcp.cache.purge"]),
+    ).toEqual([]);
+    expect(buildApprovalCapabilities(asReads(READS), ["mcp.cache.purge"])).toEqual([]);
+  });
+
+  it("sends the site-tools names only when ticked and offered with their own effect", () => {
+    expect(
+      buildApprovalCapabilities(EVERYTHING, [
+        "mcp.sites.read",
+        "mcp.ability.read",
+        "mcp.ability.request",
+      ]),
+    ).toEqual(["mcp.sites.read", "mcp.ability.read", "mcp.ability.request"]);
+    expect(buildApprovalCapabilities(EVERYTHING, ["mcp.sites.read"])).toEqual(["mcp.sites.read"]);
+    expect(
+      buildApprovalCapabilities([ABILITY_READ, { name: "mcp.ability.request", effect: "read" }], [
+        "mcp.ability.read",
+        "mcp.ability.request",
+      ]),
+    ).toEqual(["mcp.ability.read"]);
+  });
+
+  it("lists the reads first, in vocabulary order, then the write and the site tools", () => {
+    expect(
+      buildApprovalCapabilities(EVERYTHING, [
+        "mcp.ability.request",
+        "mcp.uptime.read",
+        "mcp.cache.purge",
+        "mcp.sites.read",
+        "mcp.ability.read",
+      ]),
+    ).toEqual([
+      "mcp.sites.read",
+      "mcp.uptime.read",
+      "mcp.cache.purge",
+      "mcp.ability.read",
+      "mcp.ability.request",
+    ]);
+  });
+
+  it("does not mutate the tick list it was given", () => {
+    const ticks = Object.freeze(["mcp.sites.read", "mcp.cache.purge"]);
+    expect(() => buildApprovalCapabilities(EVERYTHING, ticks)).not.toThrow();
+    expect(ticks).toEqual(["mcp.sites.read", "mcp.cache.purge"]);
   });
 });
