@@ -114,13 +114,30 @@ type fakeRestoreRunStore struct {
 	// content instead of inferring it merely happened from source-adjacency to
 	// another call this fake DOES capture.
 	eventCalls []AppendRestoreEventInput
+	// stored is what GetRestoreRun returns.
+	stored RestoreRun
+	// stalled is what ListStalledRestoreRuns returns; stallLists records the
+	// threshold of each call, failCalls each FailStalledRestoreRun call, and
+	// failResult (by run id) whether that call changed the run.
+	stalled    []StalledRestoreRun
+	stallLists []time.Duration
+	failCalls  []FailStalledRestoreRunInput
+	failResult map[uuid.UUID]bool
 }
 
 func (f *fakeRestoreRunStore) CreateRestoreRun(_ context.Context, _ CreateRestoreRunInput) (RestoreRun, error) {
 	return RestoreRun{}, nil
 }
 func (f *fakeRestoreRunStore) GetRestoreRun(_ context.Context, _, _ uuid.UUID) (RestoreRun, error) {
-	return RestoreRun{}, nil
+	return f.stored, nil
+}
+func (f *fakeRestoreRunStore) ListStalledRestoreRuns(_ context.Context, stallAfter time.Duration, _ int) ([]StalledRestoreRun, error) {
+	f.stallLists = append(f.stallLists, stallAfter)
+	return f.stalled, nil
+}
+func (f *fakeRestoreRunStore) FailStalledRestoreRun(_ context.Context, in FailStalledRestoreRunInput) (bool, error) {
+	f.failCalls = append(f.failCalls, in)
+	return f.failResult[in.RunID], nil
 }
 func (f *fakeRestoreRunStore) ListRestoreRunsBySite(_ context.Context, _, _ uuid.UUID, _ int) ([]RestoreRun, error) {
 	return nil, nil

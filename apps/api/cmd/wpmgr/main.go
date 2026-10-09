@@ -1008,6 +1008,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// gap in the phpbu pipeline is age-encrypt for a multi-GB site); only a
 		// hard stall (default 30m) actually fails the run.
 		progressWatchdog = backup.NewProgressWatchdogWorker(backupSvc, cfg.Backup.StallSoftTimeout, cfg.Backup.StallHardTimeout, logger)
+		progressWatchdog.SetRestoreStallTimeout(cfg.Backup.RestoreStallTimeout)
 		backupH = backup.NewHandler(backupSvc, backupHub, auditRec)
 		backupAgentH = backup.NewAgentHandler(backupSvc, auditRec)
 		restoreRunH = backup.NewRestoreRunHandler(backupSvc)
