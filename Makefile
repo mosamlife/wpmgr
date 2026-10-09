@@ -213,6 +213,17 @@ check-versions: ## Check every version-naming surface (docs, marketing, agent)
 check-versions-test: ## Run the version surface guard's regression suite
 	scripts/check-version-surfaces_test.sh
 
+# GH #819: the integration tests' S3 store is one digest-pinned const in
+# apps/api/tests, and api-integration.yml pre-pulls whatever this reads out of
+# it. The same two commands CI runs, suite first.
+.PHONY: check-s3-image
+check-s3-image: ## Check the integration tests' S3 image is digest-pinned, named once, and pre-pulled from the const
+	scripts/test-s3-image.sh --check
+
+.PHONY: check-s3-image-test
+check-s3-image-test: ## Run the S3 image guard's regression suite
+	scripts/test-s3-image_test.sh
+
 # The agent's generated block markup, validated by the real @wordpress/blocks
 # on the pinned WP 6.2 and latest package sets (CI job page-blocks).
 .PHONY: check-page-blocks
@@ -234,6 +245,21 @@ check-page-kses: ## Run the page builder's markup through core kses per WordPres
 .PHONY: check-page-kses-test
 check-page-kses-test: ## Run the kses guard's regression suite
 	scripts/check-page-kses_test.sh
+
+# The agent's Elementor trees, saved by a real Elementor as the service user and
+# rendered, and the agent's own create path (precheck, write, undo) run on that
+# Elementor, per pinned Elementor version and per layout (CI job
+# elementor-roundtrip). It runs a real WordPress under the Playground CLI (needs
+# node 22 and network on a first run; downloads are sha256-pinned and cached).
+# RT_VERSIONS and RT_LAYOUTS narrow a run. The second target is the guard's own
+# regression suite; run it after editing the guard or the agent's create path.
+.PHONY: check-elementor-roundtrip
+check-elementor-roundtrip: ## Save and render the agent's Elementor trees, and run its create path, under each pinned Elementor
+	scripts/elementor-roundtrip/run.sh
+
+.PHONY: check-elementor-roundtrip-test
+check-elementor-roundtrip-test: ## Run the Elementor round trip's regression suite
+	scripts/elementor-roundtrip_test.sh
 
 # The load-balancer url-map. Twice in one day a route shipped, deployed and was
 # unreachable because the API mounted it and the LB did not route it — POST
@@ -285,6 +311,24 @@ check-rls-cross-tenant: ## Audit cross-tenant RLS policies against the ledger (D
 .PHONY: check-rls-cross-tenant-test
 check-rls-cross-tenant-test: ## Run the RLS cross-tenant guard's regression suite (hermetic, no DB)
 	scripts/check-rls-cross-tenant_test.sh
+
+# scripts/check-schema-sync.sh (GH #759) replays every migration into one
+# throwaway postgres, loads apps/api/db/schema.sql into a second, and compares
+# what the catalogs say: tables, columns, indexes, constraints, RLS flags and
+# policies, functions. It also checks atlas.sum names exactly the migration
+# files, in order, with the hashes Atlas would write. Needs Docker (the
+# postgres:16-alpine image, no network, nothing published) and openssl; run it
+# before merging anything that touches a migration or schema.sql.
+# check-schema-sync-test is the guard's own regression suite; it needs the same
+# Docker and builds small trees, so it is unaffected by the real tree's state.
+# Run it after editing the guard.
+.PHONY: check-schema-sync
+check-schema-sync: ## Check db/schema.sql and atlas.sum are in step with the migrations (Docker required)
+	scripts/check-schema-sync.sh
+
+.PHONY: check-schema-sync-test
+check-schema-sync-test: ## Run the schema sync guard's regression suite (Docker required)
+	scripts/check-schema-sync_test.sh
 
 # ADR-061 A11 item 4: the containment test. No handler on the assistant surface
 # may take a site id from a request and pass it anywhere but the ONE audited
