@@ -1,0 +1,22 @@
+# Everything the Elementor round trip downloads, pinned by sha256.
+#
+# One line per file:  <name> <version> <sha256> <url> [<stored form>]
+#   name         wordpress or elementor
+#   version      the release the file holds; the harness refuses a site that runs any other
+#   sha256       of the downloaded zip, 64 lowercase hex characters
+#   url          plain https
+#   stored form  elementor lines only, how that version stores a saved tree's scalars:
+#                  as_given  booleans, null and strings come back as they went in
+#                  strings   every scalar comes back as a string: true as "1", false and
+#                            null as ""
+#                Measured per version; the round trip requires exactly that form, so a
+#                release that changes it turns the run red. A new pin needs a measured form.
+#
+# The wordpress line is the one WordPress core the round trip boots. Each
+# elementor line is a version the round trip runs against: the last 3.20 patch
+# (3.20.4), 3.35.9 and 4.3.4. Adding a line adds a version to the matrix. A changed hash is a changed file and fails the run; a new pin
+# needs its hash taken from the downloaded file, not from a page that lists it.
+wordpress 6.8    6ec3954f27bfbf365b203de360734672605b1075cacc15cc791d79fe83d67c2a https://downloads.wordpress.org/release/wordpress-6.8.zip
+elementor 3.20.4 37717666276c72b1dbbb916a1b74cb16085000ae0291924c0a47aa5da3b22028 https://downloads.wordpress.org/plugin/elementor.3.20.4.zip strings
+elementor 3.35.9 90a41a7b76980e611619ff19daf4e89dc170c7608da18fcb8bb1fed266eb40cc https://downloads.wordpress.org/plugin/elementor.3.35.9.zip as_given
+elementor 4.3.4  1b67ddd3acca7b245ac0b7e42e4f8ef958e01602d629e8919874b90607cdc12e https://downloads.wordpress.org/plugin/elementor.4.3.4.zip as_given

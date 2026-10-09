@@ -16,9 +16,15 @@ import type { AbilityRequest } from "@wpmgr/api";
 //     only (a page-create row carries none of them).
 //   The control plane (apps/api/internal/mcp/ability_write.go): card copy
 //     version 2 when the outline holds a block beyond heading, paragraph and
-//     list, else 1; and page_media is the request's distinct image ids in
-//     document order (apps/api/internal/abilityrequest/handler.go pageMediaFor),
-//     or null.
+//     list, else 1; the editor column is the input's editor; and page_media is
+//     the request's distinct image ids in document order
+//     (apps/api/internal/abilityrequest/handler.go pageMediaFor), or null.
+//   page_builder (handler.go pageBuilderFor) is null except on a page-create
+//     row whose editor is builder:elementor, and holds what the control
+//     plane's reader returns (mcp/page_create_input.go readPageCardBuilder):
+//     builder elementor, format classic, layout containers or sections, a
+//     version of the checked shape. It is null on an Elementor row whose
+//     stored facts do not read back.
 
 const STATES = [
   "pending",
@@ -148,15 +154,39 @@ export function assertDbShape(r: AbilityRequest): void {
       const got = r.page_media.map((m) => m.id);
       if (JSON.stringify(ids) !== JSON.stringify(got)) fail("page_media must list the outline's distinct image ids in order");
     }
-  } else if (r.page_media != null) {
-    fail("page_media is for wpmgr/page-create rows only");
+    const editor = inputEditor(r.input_json);
+    if (r.editor !== editor) fail("the editor column is the input's editor");
+    if (r.page_builder != null) {
+      if (editor !== ELEMENTOR) fail("page_builder belongs to a page Elementor builds");
+      const b = r.page_builder;
+      if (
+        Object.keys(b).length !== 4 ||
+        b.builder !== "elementor" ||
+        b.format !== "classic" ||
+        (b.layout !== "containers" && b.layout !== "sections") ||
+        !/^[0-9]{1,4}\.[0-9]{1,4}(\.[0-9]{1,4})?([.-][0-9A-Za-z]{1,16}){0,2}$/.test(b.version)
+      ) {
+        fail("page_builder must be a value the control plane's reader returns");
+      }
+    }
+  } else if (r.page_media != null || r.page_builder != null) {
+    fail("page_media and page_builder are for wpmgr/page-create rows only");
   }
+}
+
+const ELEMENTOR = "builder:elementor";
+
+/** The editor an input names, as the control plane records it. */
+function inputEditor(inputJson: string): string | null {
+  const editor = (JSON.parse(inputJson) as { editor?: unknown }).editor;
+  return typeof editor === "string" ? editor : null;
 }
 
 export interface PageInput {
   title?: string;
   post_type?: "page" | "post";
-  editor?: "wordpress_blocks" | "wordpress_classic";
+  editor?: "wordpress_blocks" | "wordpress_classic" | "builder:elementor";
+  elementor_format?: "site_default" | "classic" | "atomic";
   outline: unknown[];
 }
 
@@ -166,7 +196,15 @@ export function pageInput(input: PageInput): string {
     editor: input.editor ?? "wordpress_blocks",
     title: input.title ?? "Spring menu",
     outline: input.outline,
+    ...(input.elementor_format === undefined ? {} : { elementor_format: input.elementor_format }),
   });
+}
+
+export type PageBuilderRow = NonNullable<AbilityRequest["page_builder"]>;
+
+/** The page_builder of a page Elementor builds, as the control plane returns it. */
+export function elementorFacts(over: Partial<PageBuilderRow> = {}): PageBuilderRow {
+  return { builder: "elementor", format: "classic", version: "3.35.9", layout: "containers", ...over };
 }
 
 /** What the site reported for an attachment (the page_media fact shape). */
@@ -194,7 +232,7 @@ export function pageCreateRow(
     ability_name: "wpmgr/page-create",
     input_json,
     title_excerpt: "Spring menu",
-    editor: "wordpress_blocks",
+    editor: inputEditor(input_json),
     post_type: "page",
     effect_copy: "draft",
     snapshot: "created_post_trash",
@@ -211,6 +249,7 @@ export function pageCreateRow(
     undo_offered: false,
     resolve_gave_up: false,
     page_media: media === undefined ? null : media,
+    page_builder: null,
     ...rest,
   };
   assertDbShape(row);

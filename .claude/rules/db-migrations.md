@@ -55,9 +55,9 @@ closed in handlers before anyone asked why they kept appearing.
 
 ## `db/schema.sql` is not authoritative for RLS
 
-Its first line calls itself the single source of truth. It is sqlc's input,
-and as of #762 it is in step with the migrations: it loads into an empty
-database in one pass.
+Its first line calls it a declarative mirror of the migrations. It is sqlc's
+input, and as of #762 it is in step with the migrations: it loads into an
+empty database in one pass.
 
 ```sh
 site_scope_count() {
@@ -70,12 +70,21 @@ site_scope_count apps/api/migrations/*.sql
 site_scope_count apps/api/db/schema.sql
 ```
 
-Run both in the turn you need the figures; expect them to agree. Nothing
-checks `schema.sql` against the migrations automatically yet (#759), so treat
-any gap as drift, not noise, and find which migration caused it. Every new
-migration must update `schema.sql` in the same commit and re-hash
-`apps/api/migrations/atlas.sum` (`atlas migrate hash`), or the two fall out of
-step with nothing to catch it.
+Run both in the turn you need the figures; expect them to agree, and treat any
+gap as drift, not noise: find which migration caused it.
+
+CI's `schema-sync` job runs `scripts/check-schema-sync.sh` on every PR and
+push. It replays every migration into one throwaway database, loads
+`schema.sql` into a second, compares what the two catalogs report (tables,
+columns, indexes, constraints, the ENABLE and FORCE RLS flags, policies,
+functions, triggers, views, types), and checks that
+`apps/api/migrations/atlas.sum` names exactly the migration files on disk with
+the hashes Atlas would write. It does not compare privileges, seed rows or
+comments; the script's header lists everything it leaves out. Run it locally
+with `make check-schema-sync` (needs Docker) before you push a migration. The
+guard reports a miss; it does not make the edit. Every new migration still
+updates `schema.sql` in the same commit and re-hashes
+`apps/api/migrations/atlas.sum` (`atlas migrate hash`).
 
 The wrapper exists because the bare pipeline ends in `wc -l`, which prints `0`
 and exits `0` when the pattern matches nothing. On this page, `0` is not a
@@ -84,8 +93,10 @@ mangled paste produces, and it reads as "this table has no site-scope policy",
 which is the exact wrong conclusion the paragraph below warns about. An empty
 search here has to refuse rather than answer.
 
-Grepping `schema.sql` alone answers a security question nothing has verified:
-for RLS, the migrations are the authority regardless of what `schema.sql`
+Grepping `schema.sql` alone answers a security question from a mirror, and the
+guard vouches for that mirror only where it has run: a working tree carrying a
+migration `schema.sql` does not yet reflect is exactly where it has not. For
+RLS, the migrations are the authority regardless of what `schema.sql`
 currently shows. Grep both the quoted, schema-qualified form the migrations
 use and the bare form `schema.sql` uses.
 
