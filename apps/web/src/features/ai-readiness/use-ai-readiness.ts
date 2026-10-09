@@ -57,7 +57,16 @@ export class AiReadinessLoadError extends Error {
   }
 }
 
+/**
+ * What a site's readiness was computed from. These two timestamps move when new
+ * results land (a metadata report, a tool-list read) and not otherwise.
+ */
+function resultsStamp(r: Pick<SiteAiReadiness, "metadata_as_of" | "abilities_as_of">): string {
+  return `${r.metadata_as_of ?? ""}|${r.abilities_as_of ?? ""}`;
+}
+
 export function useSiteAiReadiness(siteId: string): UseQueryResult<SiteAiReadiness, Error> {
+  const queryClient = useQueryClient();
   return useQuery({
     queryKey: aiReadinessKeys.site(siteId),
     queryFn: async (): Promise<SiteAiReadiness> => {
@@ -68,6 +77,15 @@ export function useSiteAiReadiness(siteId: string): UseQueryResult<SiteAiReadine
           isApiError(error) ? error.message : toError(error).message,
           status,
         );
+      }
+      // The fleet rollup is computed from the same facts. "Check again" marks it
+      // stale once, when the request is accepted, which is before any results
+      // exist; a rollup read after that is current only until results land.
+      // Whenever a read finds newer results than the last one did, whether a
+      // poll, a refocus or a return to the tab, the rollup is stale again.
+      const previous = queryClient.getQueryData<SiteAiReadiness>(aiReadinessKeys.site(siteId));
+      if (previous && resultsStamp(previous) !== resultsStamp(data)) {
+        void queryClient.invalidateQueries({ queryKey: aiReadinessKeys.fleet() });
       }
       return data;
     },

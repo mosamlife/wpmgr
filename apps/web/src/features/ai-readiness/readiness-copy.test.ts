@@ -110,9 +110,6 @@ describe("WordPress and WPMgr group", () => {
 describe("Elementor group", () => {
   it("elementor_version", () => {
     expect(detail(c("elementor_version", "pass", null, "4.3.4"))).toBe("Elementor 4.3.4, active.");
-    expect(detail(c("elementor_version", "fail", "inactive", "4.3.4"))).toBe(
-      "Elementor 4.3.4 is installed but not active.",
-    );
     expect(detail(c("elementor_version", "fail", "too_old", "4.2.9"))).toBe(
       "Elementor 4.2.9. Its AI tools need 4.3 or later. Update Elementor.",
     );
@@ -162,9 +159,6 @@ describe("Elementor group", () => {
 describe("Bricks group", () => {
   it("bricks_version", () => {
     expect(detail(c("bricks_version", "pass", null, "2.4.1"))).toBe("Bricks 2.4.1, active theme.");
-    expect(detail(c("bricks_version", "fail", "inactive", "2.4.1"))).toBe(
-      "Bricks 2.4.1 is installed but is not the active theme.",
-    );
     expect(detail(c("bricks_version", "fail", "too_old", "2.3"))).toBe(
       "Bricks 2.3. Its AI abilities need 2.4 or later. Update Bricks.",
     );
@@ -175,12 +169,9 @@ describe("Bricks group", () => {
   });
 
   it("bricks_abilities", () => {
-    expect(detail(c("bricks_abilities", "pass"))).toBe(
-      "On. Bricks advises keeping this off on live sites while it is experimental.",
-    );
-    expect(detail(c("bricks_abilities", "fail"))).toBe(
-      "Off. A site administrator turns it on in the WordPress admin: Bricks → AI.",
-    );
+    // A pass or a fail is derived from the tool list and unconfirmed: see the
+    // "derived and unconfirmed" block below. Only the rows that claim nothing
+    // about On or Off keep their own copy.
     expect(detail(c("bricks_abilities", "unknown", "inventory_never_run"))).toBe("Not checked yet.");
     expect(detail(c("bricks_abilities", "unknown", "inventory_truncated"))).toBe(
       "Could not tell: this site lists more tools than WPMgr reads.",
@@ -194,6 +185,114 @@ describe("Bricks group", () => {
     expect(detail(c("bricks_abilities", "unknown", "needs_bricks"))).toBe(
       "Needs Bricks 2.4 or later first.",
     );
+  });
+});
+
+describe("a builder that is installed but not active", () => {
+  const BUILDERS = [
+    { id: "elementor_version", observed: "4.3.4", label: "Elementor 4.3 or later" },
+    { id: "bricks_version", observed: "2.4.1", label: "Bricks 2.4 or later" },
+  ] as const;
+
+  it.each(BUILDERS)(
+    "$id reads grey 'Installed, not active.' whichever state carries the reason",
+    ({ id, observed, label }) => {
+      for (const state of ["fail", "not_applicable", "unknown"]) {
+        const row = describeCheck(c(id, state, "inactive", observed), OPERATOR);
+        expect(row.tone).toBe("neutral");
+        expect(row.iconLabel).toBe("Not active");
+        expect(row.detail).toBe("Installed, not active.");
+        // The row still says what it is about.
+        expect(row.label).toBe(label);
+      }
+    },
+  );
+
+  it.each(BUILDERS)("$id still reads green when it passes, and red when the version is too old", ({ id }) => {
+    const pass = describeCheck(c(id, "pass", null, "9.9"), OPERATOR);
+    expect(pass.tone).toBe("pass");
+    expect(pass.iconLabel).toBe("Passed");
+
+    const tooOld = describeCheck(c(id, "fail", "too_old", "1.0"), OPERATOR);
+    expect(tooOld.tone).toBe("fail");
+    expect(tooOld.iconLabel).toBe("Needs fixing");
+  });
+
+  it("does not read the reason `inactive` as a builder row on any other check", () => {
+    const row = describeCheck(c("wp_version", "fail", "inactive", "7.0"), OPERATOR);
+    expect(row.tone).toBe("fail");
+    expect(row.detail).not.toBe("Installed, not active.");
+  });
+
+  it("makes the rows that wait on it say it has to be active, not a newer version", () => {
+    const inactive: CopyContext = { ...OPERATOR, builderInactive: true };
+    expect(detail(c("elementor_mcp_switch", "not_applicable", "needs_elementor"), inactive)).toBe(
+      "Needs Elementor to be active first.",
+    );
+    expect(detail(c("elementor_atomic", "not_applicable", "needs_elementor"), inactive)).toBe(
+      "Needs Elementor to be active first.",
+    );
+    expect(detail(c("bricks_abilities", "not_applicable", "needs_bricks"), inactive)).toBe(
+      "Needs Bricks to be active first.",
+    );
+    // A row waiting on something else keeps its own words.
+    expect(detail(c("elementor_mcp_switch", "not_applicable", "needs_abilities"), inactive)).toBe(
+      "Needs WordPress abilities first.",
+    );
+  });
+
+  it("still asks for the newer version when the builder is active but too old", () => {
+    expect(detail(c("elementor_mcp_switch", "not_applicable", "needs_elementor"), OPERATOR)).toBe(
+      "Needs Elementor 4.3 or later first.",
+    );
+  });
+});
+
+describe("a row that is derived and unconfirmed", () => {
+  it("reads grey 'Derived, unconfirmed.' with a short note, for a pass", () => {
+    const row = describeCheck(c("bricks_abilities", "pass"), OPERATOR);
+    expect(row.tone).toBe("neutral");
+    expect(row.iconLabel).toBe("Unconfirmed");
+    expect(row.label).toBe("Bricks AI abilities");
+    expect(row.detail).toBe(
+      "Derived, unconfirmed. Bricks tools are listed on this site. Not yet checked on a licensed Bricks install.",
+    );
+  });
+
+  it("reads the same grey for a fail, never a red cross", () => {
+    const row = describeCheck(c("bricks_abilities", "fail"), OPERATOR);
+    expect(row.tone).toBe("neutral");
+    expect(row.iconLabel).toBe("Unconfirmed");
+    expect(row.detail).toBe(
+      "Derived, unconfirmed. No Bricks tools are listed on this site. Not yet checked on a licensed Bricks install.",
+    );
+  });
+
+  it("never says On or Off", () => {
+    for (const state of ["pass", "fail"]) {
+      expect(detail(c("bricks_abilities", state))).not.toMatch(/\bOn\b|\bOff\b/);
+    }
+  });
+
+  it("is the same for an operator and a viewer: there is nothing to turn on from here", () => {
+    expect(detail(c("bricks_abilities", "fail"), VIEWER)).toBe(detail(c("bricks_abilities", "fail"), OPERATOR));
+  });
+
+  it("leaves rows that claim nothing about On or Off with their own copy and icon", () => {
+    const never = describeCheck(c("bricks_abilities", "unknown", "inventory_never_run"), OPERATOR);
+    expect(never.detail).toBe("Not checked yet.");
+    expect(never.iconLabel).toBe("Not checked");
+    const waits = describeCheck(c("bricks_abilities", "not_applicable", "needs_bricks"), OPERATOR);
+    expect(waits.detail).toBe("Needs Bricks 2.4 or later first.");
+    expect(waits.iconLabel).toBe("Not applicable");
+  });
+
+  it("applies to the Bricks row only: Elementor's switch still reads On or Off", () => {
+    const on = describeCheck(c("elementor_mcp_switch", "pass"), OPERATOR);
+    expect(on.tone).toBe("pass");
+    expect(on.detail).toBe("On.");
+    const off = describeCheck(c("elementor_mcp_switch", "fail"), OPERATOR);
+    expect(off.tone).toBe("fail");
   });
 });
 

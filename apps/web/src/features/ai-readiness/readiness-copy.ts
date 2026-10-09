@@ -26,8 +26,18 @@ import { relativeTime } from "@/lib/utils";
 /** The three icon tones. Grey is never red: an unknown is not a failure. */
 export type RowTone = "pass" | "fail" | "neutral";
 
-/** The accessible name of a row's icon. */
-export type IconLabel = "Passed" | "Needs fixing" | "Not checked" | "Not applicable";
+/**
+ * The accessible name of a row's icon. "Not active" and "Unconfirmed" are
+ * grey like "Not checked": none of the three is a verdict that something needs
+ * fixing.
+ */
+export type IconLabel =
+  | "Passed"
+  | "Needs fixing"
+  | "Not checked"
+  | "Not applicable"
+  | "Not active"
+  | "Unconfirmed";
 
 /**
  * A check as this page reads it. Wider than the generated AiReadinessCheck on
@@ -46,6 +56,12 @@ export interface CopyContext {
   floors: AiReadinessFloors;
   /** operator+ on this site: the "Turn on" button in AI editing is present. */
   canOperate: boolean;
+  /**
+   * The builder this row belongs to is installed but not active. Rows that wait
+   * on the builder then say it has to be active first, not that it has to be a
+   * newer version.
+   */
+  builderInactive?: boolean;
 }
 
 export interface RowView {
@@ -69,6 +85,56 @@ export function iconFor(state: string): { tone: RowTone; label: IconLabel } {
       // `unknown`, and any state this page has never heard of.
       return { tone: "neutral", label: "Not checked" };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Rows that are grey for a reason of their own
+// ---------------------------------------------------------------------------
+
+/** The detail of a builder that is installed and not switched on. */
+export const INSTALLED_NOT_ACTIVE = "Installed, not active.";
+
+/**
+ * Whether a row says its builder is installed but not active. Only the two
+ * builder version rows can; the server names the cause with the reason
+ * `inactive`. Such a row is grey, whatever state accompanies the reason: a
+ * builder the owner has not switched on is not a fault. A pass is never read
+ * this way.
+ */
+export function isInactiveRow(c: CheckInput): boolean {
+  return (
+    (c.id === "elementor_version" || c.id === "bricks_version") &&
+    c.state !== "pass" &&
+    c.reason === "inactive"
+  );
+}
+
+/**
+ * Rows whose pass or fail is inferred from the site's tool list and has not
+ * been confirmed on a real install. Such a row never reads as a confirmed On or
+ * Off. Remove an id here once its derivation is confirmed on a licensed
+ * install; its row then reads from the server's state like any other.
+ */
+const UNCONFIRMED_CHECKS: ReadonlySet<string> = new Set(["bricks_abilities"]);
+
+/** The lead of a derived row's detail, and the whole of its label in the fleet hover text. */
+export const DERIVED_UNCONFIRMED = "Derived, unconfirmed.";
+
+/**
+ * Whether a row's pass or fail is shown as derived and unconfirmed. Unknown and
+ * not-applicable states keep their own copy: they claim nothing about On or
+ * Off.
+ */
+export function isUnconfirmedRow(c: CheckInput): boolean {
+  return UNCONFIRMED_CHECKS.has(c.id) && (c.state === "pass" || c.state === "fail");
+}
+
+function unconfirmedDetail(c: CheckInput): string {
+  const seen =
+    c.state === "pass"
+      ? "Bricks tools are listed on this site."
+      : "No Bricks tools are listed on this site.";
+  return `${DERIVED_UNCONFIRMED} ${seen} Not yet checked on a licensed Bricks install.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -129,6 +195,7 @@ function genericDetail(state: string): string {
  */
 function builderSwitchPending(
   c: CheckInput,
+  x: CopyContext,
   builder: "Elementor" | "Bricks",
   needsReason: "needs_elementor" | "needs_bricks",
   floor: string,
@@ -141,10 +208,17 @@ function builderSwitchPending(
     case "needs_abilities":
       return "Needs WordPress abilities first.";
     case needsReason:
-      return `Needs ${builder} ${floor} or later first.`;
+      return needsBuilder(x, builder, floor);
     default:
       return undefined;
   }
+}
+
+/** What a row that waits on its builder says: be active first, or be a newer version first. */
+function needsBuilder(x: CopyContext, builder: "Elementor" | "Bricks", floor: string): string {
+  return x.builderInactive
+    ? `Needs ${builder} to be active first.`
+    : `Needs ${builder} ${floor} or later first.`;
 }
 
 type DetailFn = (c: CheckInput, x: CopyContext) => string | undefined;
@@ -201,9 +275,6 @@ const DETAIL: Record<AiReadinessCheckId, DetailFn> = {
     const v = observed(c);
     if (c.state === "pass") return v ? `Elementor ${v}, active.` : undefined;
     if (c.state === "fail") {
-      if (c.reason === "inactive") {
-        return v ? `Elementor ${v} is installed but not active.` : "Elementor is installed but not active.";
-      }
       if (c.reason === "too_old") {
         const need = `Its AI tools need ${x.floors.elementor} or later. Update Elementor.`;
         return v ? `Elementor ${v}. ${need}` : need;
@@ -219,7 +290,7 @@ const DETAIL: Record<AiReadinessCheckId, DetailFn> = {
     if (c.state === "fail") {
       return "Off. A site administrator turns it on in the WordPress admin, in Elementor's MCP settings.";
     }
-    return builderSwitchPending(c, "Elementor", "needs_elementor", x.floors.elementor);
+    return builderSwitchPending(c, x, "Elementor", "needs_elementor", x.floors.elementor);
   },
 
   elementor_atomic: (c, x) => {
@@ -233,7 +304,7 @@ const DETAIL: Record<AiReadinessCheckId, DetailFn> = {
       case "not_reported":
         return "Not reported yet.";
       case "needs_elementor":
-        return `Needs Elementor ${x.floors.elementor} or later first.`;
+        return needsBuilder(x, "Elementor", x.floors.elementor);
       default:
         return undefined;
     }
@@ -243,11 +314,6 @@ const DETAIL: Record<AiReadinessCheckId, DetailFn> = {
     const v = observed(c);
     if (c.state === "pass") return v ? `Bricks ${v}, active theme.` : undefined;
     if (c.state === "fail") {
-      if (c.reason === "inactive") {
-        return v
-          ? `Bricks ${v} is installed but is not the active theme.`
-          : "Bricks is installed but is not the active theme.";
-      }
       if (c.reason === "too_old") {
         const need = `Its AI abilities need ${x.floors.bricks} or later. Update Bricks.`;
         return v ? `Bricks ${v}. ${need}` : need;
@@ -266,7 +332,7 @@ const DETAIL: Record<AiReadinessCheckId, DetailFn> = {
     if (c.state === "fail") {
       return "Off. A site administrator turns it on in the WordPress admin: Bricks → AI.";
     }
-    return builderSwitchPending(c, "Bricks", "needs_bricks", x.floors.bricks);
+    return builderSwitchPending(c, x, "Bricks", "needs_bricks", x.floors.bricks);
   },
 };
 
@@ -283,10 +349,17 @@ export function describeCheck(c: CheckInput, x: CopyContext): RowView {
       iconLabel: "Not checked",
     };
   }
+  const label = LABEL[c.id](x.floors);
+  if (isInactiveRow(c)) {
+    return { id: c.id, label, detail: INSTALLED_NOT_ACTIVE, tone: "neutral", iconLabel: "Not active" };
+  }
+  if (isUnconfirmedRow(c)) {
+    return { id: c.id, label, detail: unconfirmedDetail(c), tone: "neutral", iconLabel: "Unconfirmed" };
+  }
   const icon = iconFor(c.state);
   return {
     id: c.id,
-    label: LABEL[c.id](x.floors),
+    label,
     detail: DETAIL[c.id](c, x) ?? genericDetail(c.state),
     tone: icon.tone,
     iconLabel: icon.label,

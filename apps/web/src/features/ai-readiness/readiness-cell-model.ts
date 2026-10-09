@@ -34,16 +34,21 @@ export function fixLabel(n: number): string {
   return `${n} to fix`;
 }
 
+// One line per thing to fix. The two builder version rows are worded as the
+// fix, not as the row's name: a bare "Elementor version" reads as a version
+// problem whatever the cause, and a builder that is installed but switched off
+// is not a version problem.
 const FLEET_CHECK_LABEL: Record<AiReadinessCheckId, string> = {
   wp_version: "WordPress version",
   abilities_api: "WordPress abilities",
   agent_version: "WPMgr plugin version",
   content_editing: "AI page creation",
-  elementor_version: "Elementor version",
+  elementor_version: "Elementor needs updating",
   elementor_mcp_switch: "Elementor AI tools switch",
   elementor_atomic: "Elementor Atomic editor",
-  bricks_version: "Bricks version",
-  bricks_abilities: "Bricks AI abilities",
+  bricks_version: "Bricks needs updating",
+  // Never a confirmed failure; see UNCONFIRMED_CHECKS in readiness-copy.ts.
+  bricks_abilities: "Bricks AI abilities (derived, unconfirmed)",
 };
 
 const FLEET_WARNING_SHORT: Record<AiReadinessWarningCode, string> = {

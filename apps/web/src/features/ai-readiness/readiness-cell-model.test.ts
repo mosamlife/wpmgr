@@ -99,6 +99,32 @@ describe("labels in the hover text", () => {
     expect(fleetCheckLabel("elementor_role_access")).toBe("Another check");
   });
 
+  it("words a builder's version line as the fix, not as a bare 'version' row", () => {
+    expect(fleetCheckLabel("elementor_version")).toBe("Elementor needs updating");
+    expect(fleetCheckLabel("bricks_version")).toBe("Bricks needs updating");
+  });
+
+  it("lists a failing builder version row by what to do, one line each", () => {
+    const cell = cellFor(
+      ready(
+        fleetSite({
+          site_id: A,
+          status: "needs_attention",
+          fix_count: 2,
+          failing: ["elementor_version", "bricks_version"],
+        }),
+      ),
+      A,
+    );
+    if (cell.kind !== "result") throw new Error("expected a result");
+    expect(cell.lines).toEqual(["Elementor needs updating", "Bricks needs updating"]);
+    for (const line of cell.lines) expect(line).not.toMatch(/\bversion\b/i);
+  });
+
+  it("never lists the Bricks AI row as a confirmed failure", () => {
+    expect(fleetCheckLabel("bricks_abilities")).toBe("Bricks AI abilities (derived, unconfirmed)");
+  });
+
   it("describes a warning it does not know without naming one", () => {
     expect(fleetWarningLine("a_new_warning")).toBe("Open AI connection point: see this site's AI readiness");
   });

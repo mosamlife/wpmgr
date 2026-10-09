@@ -20,6 +20,7 @@ import {
   freshnessLine,
   groupHeading,
   builderHeaderRight,
+  isInactiveRow,
   LOAD_ERROR_NOT_FOUND,
   LOAD_ERROR_WHAT,
   notInstalledLine,
@@ -78,7 +79,10 @@ function GroupSection({ group, ctx }: { group: AiReadinessGroup; ctx: CopyContex
   const { title, builder } = groupHeading(group.id);
   const isBuilder = builder !== null;
   const installed = group.installed === true;
-  const rows = group.checks.map((c) => describeCheck(c, ctx));
+  // The rows of an installed builder that is not switched on wait on it, and
+  // say so, rather than asking for a newer version.
+  const rowCtx: CopyContext = { ...ctx, builderInactive: group.checks.some(isInactiveRow) };
+  const rows = group.checks.map((c) => describeCheck(c, rowCtx));
 
   return (
     <section aria-labelledby={titleId} className="space-y-3 border-t border-border pt-4">

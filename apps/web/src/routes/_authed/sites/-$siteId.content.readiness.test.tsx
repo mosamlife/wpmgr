@@ -350,7 +350,13 @@ describe("builder groups", () => {
     expect(
       c.getByText("WPMgr cannot build Bricks pages yet. These checks show whether this site will be ready."),
     ).toBeInTheDocument();
-    expect(c.getByText("On. Bricks advises keeping this off on live sites while it is experimental.")).toBeInTheDocument();
+    // The Bricks AI row is derived from the tool list and unconfirmed, so a
+    // pass is never shown as a confirmed On.
+    expect(
+      c.getByText(
+        "Derived, unconfirmed. Bricks tools are listed on this site. Not yet checked on a licensed Bricks install.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("drops the 'coming' note once WPMgr can build with the builder", async () => {
