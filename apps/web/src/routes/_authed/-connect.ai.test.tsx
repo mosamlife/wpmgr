@@ -11,6 +11,7 @@ import {
   OAuthRequestError,
 } from "@/features/mcp-consent/use-consent";
 import { parseConsentContext, SCOPE_CACHE, SCOPE_READ } from "@/features/mcp-consent/consent-context";
+import { capabilityLabel } from "@/features/ai-connections/capabilities";
 import { useSites } from "@/features/sites/use-sites";
 import { useTags } from "@/features/tags/use-tags";
 import type { ConsentContext } from "@/features/mcp-consent/consent-context";
@@ -255,11 +256,15 @@ function approveResponse(): Response {
   );
 }
 
-/** Drive the screen to a real approval POST and return the body it sent. */
+/**
+ * Drive the screen to a real approval POST and return the body it sent.
+ * `interact` runs after the screen is up and before Approve is pressed, so a
+ * case can tick and clear boxes exactly as an operator would.
+ */
 async function postedApprovalBody(
   consent: ConsentContext,
   fetchMock: ReturnType<typeof vi.fn>,
-  opts: { tickCache?: boolean } = {},
+  opts: { tickCache?: boolean; interact?: () => void } = {},
 ): Promise<Record<string, unknown>> {
   mockedConsent.mockReturnValue(mockQueryResult<ConsentContext>({ data: consent }));
   vi.stubGlobal("fetch", fetchMock);
@@ -272,6 +277,7 @@ async function postedApprovalBody(
   if (opts.tickCache) {
     fireEvent.click(within(screen.getByTestId("consent-cache-capability")).getByRole("checkbox"));
   }
+  opts.interact?.();
   fireEvent.click(screen.getByTestId("consent-approve"));
 
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
@@ -335,12 +341,14 @@ describe("/connect/ai — the approval carries the consented capabilities", () =
     ],
   };
 
-  it("sends the reads and NOT mcp.cache.purge when the box is left unticked", async () => {
+  it("sends only Sites, the wizard's default, and NOT mcp.cache.purge when nothing is changed", async () => {
+    // The server offers Sites and Uptime here. Only Sites is ticked on open, so
+    // only Sites is sent: Uptime is on offer, not on the screen as ticked.
     const fetchMock = vi.fn().mockResolvedValue(approveResponse());
     const body = await postedApprovalBody(parseConsentContext(CACHE_WIRE), fetchMock);
 
     const caps = body.capabilities as string[];
-    expect([...caps].sort()).toEqual(["mcp.sites.read", "mcp.uptime.read"]);
+    expect([...caps].sort()).toEqual(["mcp.sites.read"]);
     expect(caps).not.toContain("mcp.cache.purge");
   });
 
@@ -353,7 +361,6 @@ describe("/connect/ai — the approval carries the consented capabilities", () =
     expect([...(body.capabilities as string[])].sort()).toEqual([
       "mcp.cache.purge",
       "mcp.sites.read",
-      "mcp.uptime.read",
     ]);
   });
 
@@ -365,5 +372,163 @@ describe("/connect/ai — the approval carries the consented capabilities", () =
     );
 
     expect("capabilities" in body).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The read picker: what is ticked is exactly what is posted (GH #660).
+// ---------------------------------------------------------------------------
+//
+// Through the real useApproveConsent, with fetch stubbed, so what is asserted
+// is the JSON body that would leave the browser. Before the picker the screen
+// posted every read the server offered whatever the operator had on screen.
+
+// What the server lists for a request holding mcp:read and mcp:cache:
+// scopeCapabilities[ScopeRead] and [ScopeCache] in
+// apps/api/internal/mcp/policy.go, written out rather than derived from the
+// dashboard's vocabulary.
+const SERVER_READS = [
+  "mcp.activity.read",
+  "mcp.backups.read",
+  "mcp.diagnostics.read",
+  "mcp.performance.read",
+  "mcp.security.read",
+  "mcp.sites.read",
+  "mcp.uptime.read",
+];
+
+const PICKER_WIRE = {
+  ...TICKETED_WIRE,
+  scopes: [SCOPE_READ, SCOPE_CACHE],
+  conferrable_capabilities: [
+    ...SERVER_READS.map((name) => ({ name, effect: "read" })),
+    { name: "mcp.cache.purge", effect: "request" },
+  ],
+};
+
+const picker = () => screen.getByRole("group", { name: "It will be able to read" });
+
+const row = (cap: string) =>
+  within(picker()).getByRole<HTMLInputElement>("checkbox", {
+    name: new RegExp(`^${capabilityLabel(cap)}\\b`),
+  });
+
+describe("/connect/ai, the approval posts exactly what is ticked", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts Backups and Security, and not Sites, when those are the ticks", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(approveResponse());
+    const body = await postedApprovalBody(parseConsentContext(PICKER_WIRE), fetchMock, {
+      interact: () => {
+        fireEvent.click(row("mcp.sites.read"));
+        fireEvent.click(row("mcp.backups.read"));
+        fireEvent.click(row("mcp.security.read"));
+      },
+    });
+
+    expect([...(body.capabilities as string[])].sort()).toEqual([
+      "mcp.backups.read",
+      "mcp.security.read",
+    ]);
+  });
+
+  it("posts the reads that are ticked on screen, whatever mix the operator left", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(approveResponse());
+    let shown: string[] = [];
+    const body = await postedApprovalBody(parseConsentContext(PICKER_WIRE), fetchMock, {
+      interact: () => {
+        fireEvent.click(row("mcp.diagnostics.read"));
+        fireEvent.click(row("mcp.activity.read"));
+        fireEvent.click(row("mcp.activity.read"));
+        fireEvent.click(row("mcp.performance.read"));
+        shown = SERVER_READS.filter((cap) => row(cap).checked).sort();
+      },
+    });
+
+    expect(shown).toEqual(["mcp.diagnostics.read", "mcp.performance.read", "mcp.sites.read"]);
+    expect([...(body.capabilities as string[])].sort()).toEqual(shown);
+  });
+
+  it("posts every offered read for Read everything, and neither the cache request nor mcp.content.read", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(approveResponse());
+    const body = await postedApprovalBody(parseConsentContext(PICKER_WIRE), fetchMock, {
+      interact: () => {
+        fireEvent.click(within(picker()).getByRole("button", { name: "Read everything" }));
+      },
+    });
+
+    const caps = body.capabilities as string[];
+    expect([...caps].sort()).toEqual([...SERVER_READS].sort());
+    expect(caps).not.toContain("mcp.cache.purge");
+    expect(caps).not.toContain("mcp.content.read");
+  });
+
+  it("posts the cache request beside the ticked reads, and only when its box is ticked", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(approveResponse());
+    const body = await postedApprovalBody(parseConsentContext(PICKER_WIRE), fetchMock, {
+      tickCache: true,
+      interact: () => {
+        fireEvent.click(row("mcp.sites.read"));
+        fireEvent.click(row("mcp.uptime.read"));
+      },
+    });
+
+    expect([...(body.capabilities as string[])].sort()).toEqual([
+      "mcp.cache.purge",
+      "mcp.uptime.read",
+    ]);
+  });
+
+  it("posts nothing when nothing is ticked, and says why", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(approveResponse());
+    mockedConsent.mockReturnValue(
+      mockQueryResult<ConsentContext>({ data: parseConsentContext(PICKER_WIRE) }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    renderWithProviders(<ConnectAiPage />, { withRouter: true, initialPath: LAUNCH });
+
+    await screen.findByLabelText(/name this connection/i);
+    fireEvent.click(row("mcp.sites.read"));
+
+    expect(screen.getByTestId("consent-approve")).toBeDisabled();
+    expect(screen.getByTestId("consent-nothing-to-confer").textContent).toBe(
+      "Nothing is ticked, so this connection could do nothing: tick a box above, or deny the request.",
+    );
+    // Not by the button alone: submitting the form is refused too, and no
+    // request leaves the browser, least of all one with an empty list in it.
+    fireEvent.submit(screen.getByTestId("consent-approve").closest("form")!);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockedNavigate).not.toHaveBeenCalled();
+  });
+
+  it("shows the server's refusal and stays on the page, with the ticks as the operator left them", async () => {
+    // The consent endpoint answers a refused narrowing with HTTP 400, error
+    // "invalid_request" and the Go message as the description (CapabilitySet.
+    // NarrowTo in policy.go, rendered by the oauthError default arm in dto.go).
+    const refusal = new Response(
+      JSON.stringify({
+        error: "invalid_request",
+        error_description:
+          'capability "mcp.uptime.read" is not held by this organisation\'s default, so a connection cannot be granted it; a connection may only ever be narrower than the organisation default',
+      }),
+      { status: 400, headers: { "Content-Type": "application/json" } },
+    );
+    const fetchMock = vi.fn().mockResolvedValue(refusal);
+    mockedConsent.mockReturnValue(
+      mockQueryResult<ConsentContext>({ data: parseConsentContext(PICKER_WIRE) }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    renderWithProviders(<ConnectAiPage />, { withRouter: true, initialPath: LAUNCH });
+
+    await screen.findByLabelText(/name this connection/i);
+    fireEvent.click(row("mcp.uptime.read"));
+    fireEvent.click(screen.getByTestId("consent-approve"));
+
+    expect(await screen.findByText(/is not held by this organisation's default/i)).toBeTruthy();
+    expect(mockedNavigate).not.toHaveBeenCalled();
+    expect(row("mcp.uptime.read").checked).toBe(true);
+    expect(screen.getByTestId("consent-approve")).toBeEnabled();
   });
 });
