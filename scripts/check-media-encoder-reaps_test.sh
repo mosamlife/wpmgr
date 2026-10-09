@@ -300,6 +300,7 @@ if should_run "$NAME"; then
   run_check fakectr
   want_rc "$NAME" 0 &&
     want_says "$NAME" '0 zombies among 9 processes' &&
+    want_silent_about "$NAME" 'zombie pid=' &&
     pass "$NAME"
 fi
 
@@ -314,6 +315,7 @@ if should_run "$NAME"; then
   run_check fakectr
   want_rc "$NAME" 0 &&
     want_says "$NAME" '0 zombies among 5 processes' &&
+    want_silent_about "$NAME" 'zombie pid=' &&
     pass "$NAME"
 fi
 

@@ -109,6 +109,7 @@ ORPHAN_SCRIPT='sh -c "sleep 1 >/dev/null 2>&1 </dev/null &"; sleep 3'
 # The state is the first field AFTER THE LAST ") " in the line, never after
 # the first: comm is free text and may itself contain ") Z (".
 # Exit 3 means "could not scan"; the host treats it as a broken check.
+# shellcheck disable=SC2016 # this text is sent to the container, not expanded here
 SCAN_SCRIPT='
 root=$1
 [ -r "$root/1/comm" ] || { echo "cannot read $root/1/comm" >&2; exit 3; }
@@ -146,6 +147,7 @@ echo "scanned=$scanned zombies=$zombies"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/wpmgr-reaps.XXXXXX")" || { echo "$ME: cannot create a temp dir" >&2; exit 2; }
 CLEANUP_NAMES=""
 
+# shellcheck disable=SC2329 # runs from the EXIT trap below
 cleanup() {
   if [ -n "$CLEANUP_NAMES" ] && [ -n "${DOCKER:-}" ]; then
     # shellcheck disable=SC2086 # the names are ours and contain no whitespace
