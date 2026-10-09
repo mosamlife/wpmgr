@@ -1155,6 +1155,7 @@ func (q *Queries) GiveUpAbilityRequestOutcome(ctx context.Context, arg GiveUpAbi
 
 const insertAbilityRequest = `-- name: InsertAbilityRequest :one
 INSERT INTO assistant_ability_requests (
+    id,
     tenant_id, site_id, proposed_by_grant_id,
     entry_id, entry_sha256, ability_name, operator_permission,
     input_json, input_sha256, target_post_id,
@@ -1164,15 +1165,16 @@ INSERT INTO assistant_ability_requests (
     digest_nonce, presented_digest, state, expires_at,
     route_id, route_sha256, card_facts
 ) VALUES (
-    $1, $2, $3,
-    $4, $5, $6, $7,
-    $8, $9, $10,
-    $11, $12, $13,
-    $14, $15, $16, $17, $18,
-    $19, $20, $21,
-    $22, $23, $24,
-    $25, $26, 'pending', $27,
-    $28, $29, $30
+    COALESCE($1::uuid, gen_random_uuid()),
+    $2, $3, $4,
+    $5, $6, $7, $8,
+    $9, $10, $11,
+    $12, $13, $14,
+    $15, $16, $17, $18, $19,
+    $20, $21, $22,
+    $23, $24, $25,
+    $26, $27, 'pending', $28,
+    $29, $30, $31
 )
 ON CONFLICT (tenant_id, site_id, proposed_by_grant_id, ability_name, target_key)
     WHERE state = 'pending'
@@ -1181,46 +1183,54 @@ RETURNING id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, 
 `
 
 type InsertAbilityRequestParams struct {
-	TenantID           uuid.UUID `json:"tenant_id"`
-	SiteID             uuid.UUID `json:"site_id"`
-	ProposedByGrantID  uuid.UUID `json:"proposed_by_grant_id"`
-	EntryID            uuid.UUID `json:"entry_id"`
-	EntrySha256        string    `json:"entry_sha256"`
-	AbilityName        string    `json:"ability_name"`
-	OperatorPermission string    `json:"operator_permission"`
-	InputJson          string    `json:"input_json"`
-	InputSha256        string    `json:"input_sha256"`
-	TargetPostID       *int64    `json:"target_post_id"`
-	PrecheckDigest     string    `json:"precheck_digest"`
-	PreviewDigest      *string   `json:"preview_digest"`
-	BaseFingerprint    string    `json:"base_fingerprint"`
-	SiteLabel          string    `json:"site_label"`
-	SiteHost           string    `json:"site_host"`
-	GrantLabel         string    `json:"grant_label"`
-	GrantVia           string    `json:"grant_via"`
-	SetupClient        *string   `json:"setup_client"`
-	TitleExcerpt       *string   `json:"title_excerpt"`
-	Editor             *string   `json:"editor"`
-	PostType           *string   `json:"post_type"`
-	EffectCopy         string    `json:"effect_copy"`
-	Snapshot           string    `json:"snapshot"`
-	CardCopyVersion    int32     `json:"card_copy_version"`
-	DigestNonce        string    `json:"digest_nonce"`
-	PresentedDigest    string    `json:"presented_digest"`
-	ExpiresAt          time.Time `json:"expires_at"`
-	RouteID            *string   `json:"route_id"`
-	RouteSha256        *string   `json:"route_sha256"`
-	CardFacts          []byte    `json:"card_facts"`
+	ID                 pgtype.UUID `json:"id"`
+	TenantID           uuid.UUID   `json:"tenant_id"`
+	SiteID             uuid.UUID   `json:"site_id"`
+	ProposedByGrantID  uuid.UUID   `json:"proposed_by_grant_id"`
+	EntryID            uuid.UUID   `json:"entry_id"`
+	EntrySha256        string      `json:"entry_sha256"`
+	AbilityName        string      `json:"ability_name"`
+	OperatorPermission string      `json:"operator_permission"`
+	InputJson          string      `json:"input_json"`
+	InputSha256        string      `json:"input_sha256"`
+	TargetPostID       *int64      `json:"target_post_id"`
+	PrecheckDigest     string      `json:"precheck_digest"`
+	PreviewDigest      *string     `json:"preview_digest"`
+	BaseFingerprint    string      `json:"base_fingerprint"`
+	SiteLabel          string      `json:"site_label"`
+	SiteHost           string      `json:"site_host"`
+	GrantLabel         string      `json:"grant_label"`
+	GrantVia           string      `json:"grant_via"`
+	SetupClient        *string     `json:"setup_client"`
+	TitleExcerpt       *string     `json:"title_excerpt"`
+	Editor             *string     `json:"editor"`
+	PostType           *string     `json:"post_type"`
+	EffectCopy         string      `json:"effect_copy"`
+	Snapshot           string      `json:"snapshot"`
+	CardCopyVersion    int32       `json:"card_copy_version"`
+	DigestNonce        string      `json:"digest_nonce"`
+	PresentedDigest    string      `json:"presented_digest"`
+	ExpiresAt          time.Time   `json:"expires_at"`
+	RouteID            *string     `json:"route_id"`
+	RouteSha256        *string     `json:"route_sha256"`
+	CardFacts          []byte      `json:"card_facts"`
 }
 
+// id is the request id the site receives with the write. A caller that
+// prechecked the request under an id it generated passes that id, so the
+// write names the request its precheck was made under; NULL takes the
+// column default, gen_random_uuid().
 // ON CONFLICT names the one-pending index's columns and predicate. A conflict
-// inserts nothing and returns NO ROW (pgx.ErrNoRows): the caller reads the
-// waiting row with GetPendingAbilityRequestForTarget. state is always
-// 'pending'; target_key is generated and never written. m161: route_id,
-// route_sha256 and card_facts are set together for wpmgr/rest-write and are
-// NULL for every other ability (the table's CHECKs refuse anything else).
+// inserts nothing and returns NO ROW (pgx.ErrNoRows), whatever id was passed:
+// the caller reads the waiting row, which keeps its own id, with
+// GetPendingAbilityRequestForTarget. An id that already names a row is not
+// that conflict: it fails with 23505. state is always 'pending'; target_key
+// is generated and never written. m161: route_id, route_sha256 and
+// card_facts are set together for wpmgr/rest-write and are NULL for every
+// other ability (the table's CHECKs refuse anything else).
 func (q *Queries) InsertAbilityRequest(ctx context.Context, arg InsertAbilityRequestParams) (AssistantAbilityRequest, error) {
 	row := q.db.QueryRow(ctx, insertAbilityRequest,
+		arg.ID,
 		arg.TenantID,
 		arg.SiteID,
 		arg.ProposedByGrantID,
