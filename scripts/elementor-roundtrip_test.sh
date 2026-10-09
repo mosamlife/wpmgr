@@ -410,7 +410,9 @@ sections text golden"
   fail_lines="$(printf '%s\n' "$LAST_OUT" | grep -c '^rt: FAIL ' || true)"
   matched_lines="$(printf '%s\n' "$LAST_OUT" | grep -c -E '^rt: FAIL \[[0-9.]+ (containers|sections) [a-z0-9-]+\] [a-z-]+:' || true)"
   if [ "$fail_lines" = "$matched_lines" ]; then ok "  and no failure is anything but a named check on a named case"; else bad "  $fail_lines failure line(s), $matched_lines of them name a check on a case"; fi
-  ok_n="$(printf '%s\n' "$LAST_OUT" | grep -c '^rt: ok ' || true)"
+  # Only the round trip's own cases: the agent path prints "ok" lines of its own (tagged agent-<layout>),
+  # and the verdict's cases= counts the round trip's cases alone.
+  ok_n="$(printf '%s\n' "$LAST_OUT" | grep -c -E '^rt: ok +\[[0-9.]+ (containers|sections) ' || true)"
   failing_cases="$(printf '%s\n' "$got" | awk '{print $1 " " $2}' | sort -u | wc -l | tr -d ' ')"
   total_n="$(printf '%s\n' "$LAST_OUT" | sed -n -E 's/^rt: SUMMARY .* cases=([0-9]+) .*/\1/p' | tail -n 1)"
   if [ -n "$total_n" ] && [ "$ok_n" -gt 0 ] && [ $((ok_n + failing_cases)) -eq "$total_n" ]; then
