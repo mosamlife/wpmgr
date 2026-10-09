@@ -526,7 +526,7 @@ jobs:
       # Docker needed. It covers the zombie, the wrong PID 1, the honest cases
       # that must stay green, and every way the check can learn nothing, which
       # must exit 2 and never 0.
-      - name: Media-encoder reaper check self-test (GH #290)
+      - name: "Media-encoder reaper check self-test (GH #290)"
         run: scripts/check-media-encoder-reaps_test.sh
 
 

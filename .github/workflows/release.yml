@@ -109,7 +109,7 @@ jobs:
           build-args: ${{ matrix.build_arg }}=${{ steps.vars.outputs.version }}
           provenance: false
 
-      - name: Check media-encoder reaps orphaned processes (GH #290)
+      - name: "Check media-encoder reaps orphaned processes (GH #290)"
         if: matrix.name == 'media-encoder'
         run: scripts/check-media-encoder-reaps.sh --image wpmgr-media-encoder:reaper-check
 
