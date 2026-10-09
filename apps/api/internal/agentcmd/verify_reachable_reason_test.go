@@ -141,6 +141,37 @@ func TestVerifyReachableWithReason_HTTP5xx(t *testing.T) {
 	}
 }
 
+// TestVerifyReachableWithReason_HTTP500 proves an HTTP 500 on ping, PHP
+// failing on the agent's own route, has its own reason, apart from every
+// other server error status.
+func TestVerifyReachableWithReason_HTTP500(t *testing.T) {
+	cases := []struct {
+		status int
+		want   ReachabilityReason
+	}{
+		{http.StatusInternalServerError, ReasonHTTP500},
+		{http.StatusBadGateway, ReasonHTTP5xx},
+		{http.StatusServiceUnavailable, ReasonHTTP5xx},
+		{http.StatusGatewayTimeout, ReasonHTTP5xx},
+		{522, ReasonHTTP5xx},
+	}
+	for _, tc := range cases {
+		siteID := uuid.New()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(tc.status)
+		}))
+		client := buildTestAgentClient(t, srv)
+		alive, _, reason, err := client.VerifyReachableWithReason(context.Background(), siteID, srv.URL)
+		srv.Close()
+		if err != nil {
+			t.Fatalf("status %d: unexpected error: %v", tc.status, err)
+		}
+		if alive || reason != tc.want {
+			t.Fatalf("status %d: alive=%v reason=%q, want false and %q", tc.status, alive, reason, tc.want)
+		}
+	}
+}
+
 // TestVerifyReachableWithReason_HTTP4xx proves a non-404 client error on ping
 // (e.g. a security plugin's 403) classifies as ReasonHTTP4xx, not as
 // ReasonAgentAbsent404 or a generic unreachable.
