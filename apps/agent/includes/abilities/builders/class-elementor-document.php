@@ -44,9 +44,11 @@ if (!defined('ABSPATH')) {
  *   or a post, no autosave by anyone, no edit lock held by someone else, and
  *   one stored element tree that can be read as a list.
  * - precheckEditTree() refuses an edit Elementor would not store as planned:
- *   content on the page the save would strip, element types that are not
- *   registered, and, built without saving, only the nodes the edit made or
- *   changed.
+ *   content already on the page that the save would strip, an element type
+ *   that is not registered, new content the sanitiser would change, or a
+ *   node the edit made or changed that Elementor, building it without
+ *   saving, would store differently. A node the edit did not touch is never
+ *   built.
  * - verifyEdited() reads the edited page back with SQL and requires the
  *   whole stored tree to equal the planned one, and the post and page rows
  *   the edit does not write to be as the snapshot holds them.
@@ -217,8 +219,8 @@ final class ElementorDocument
      *   registered type (page_has_unknown_elements);
      * - the whole current page is what Elementor's sanitiser leaves it: the
      *   save sanitises every string of the page for a user without
-     *   unfiltered_html, so content only such a user may save would not
-     *   survive the edit (page_has_admin_only_content);
+     *   unfiltered_html, so content that only a user with it may save would
+     *   not survive the edit (page_has_admin_only_content);
      * - every touched node, with what it holds, is a registered type
      *   (page_has_unknown_elements, the detail prefixed "after the edit") and
      *   what the sanitiser leaves it (sanitiser_changed_new_content);

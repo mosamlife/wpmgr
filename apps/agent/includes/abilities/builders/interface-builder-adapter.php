@@ -145,11 +145,11 @@ interface BuilderAdapter
 
     /**
      * Read an edited page back and compare it with what planEdit() built and
-     * with the page's snapshot taken before the save: the whole stored
-     * document, untouched nodes included, is the planned one; what the edit
-     * does not write (the post's status, type, author, parent and slug, and
-     * the page's other document rows) is as the snapshot holds it; and what
-     * the edit wrote passes the adapter's allowlist and leaf rules.
+     * with the page's snapshot taken before the save: the post is still a
+     * draft; its type, author, parent and slug, and the page's document rows
+     * the edit does not write, are as the snapshot holds them; the whole
+     * stored document, untouched nodes included, is the planned one; and
+     * what the edit wrote passes the adapter's allowlist and leaf rules.
      *
      * @param int                  $postId Post id.
      * @param NativeDocument       $doc    What planEdit() built.
