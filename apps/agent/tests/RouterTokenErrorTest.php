@@ -46,7 +46,11 @@ final class RouterTokenErrorTest extends TestCase
     /** Route registered by Router::registerRoutes(), with the segment filled in. */
     private const ROUTE_BASE = '/wpmgr/v1/command/';
 
-    private string $keyFile;
+    /**
+     * The key file this class named, when it was the first in the process to
+     * define WPMGR_AGENT_KEY_FILE; empty when another class named it.
+     */
+    private static string $ownKeyFile = '';
 
     /** @var array<string,mixed> In-memory wp-options. */
     private array $options = [];
@@ -66,9 +70,19 @@ final class RouterTokenErrorTest extends TestCase
         parent::set_up();
         Monkey\setUp();
 
-        $this->keyFile = sys_get_temp_dir() . '/wpmgr-agent-tokenerr-' . bin2hex(random_bytes(8)) . '.key';
+        // The constant keeps its first path for the whole process, and every
+        // later test, in this class or another, recreates that file through
+        // Keystore. tear_down() removes it after each test here; the shutdown
+        // hook removes whatever a later class recreates.
         if (!defined('WPMGR_AGENT_KEY_FILE')) {
-            define('WPMGR_AGENT_KEY_FILE', $this->keyFile);
+            $keyFile          = sys_get_temp_dir() . '/wpmgr-agent-tokenerr-' . bin2hex(random_bytes(8)) . '.key';
+            self::$ownKeyFile = $keyFile;
+            define('WPMGR_AGENT_KEY_FILE', $keyFile);
+            register_shutdown_function(static function () use ($keyFile): void {
+                if (is_file($keyFile)) {
+                    @unlink($keyFile);
+                }
+            });
         }
 
         $this->options = [];
@@ -112,8 +126,10 @@ final class RouterTokenErrorTest extends TestCase
     {
         $this->resetShieldStash();
         Connector::resetRequestCacheForTesting();
-        if (is_file($this->keyFile)) {
-            @unlink($this->keyFile);
+        // Only the exact file this class named; one another class named is
+        // that class's to remove.
+        if (self::$ownKeyFile !== '' && is_file(self::$ownKeyFile)) {
+            @unlink(self::$ownKeyFile);
         }
         unset($GLOBALS['wpdb']);
         Monkey\tearDown();
