@@ -21,9 +21,18 @@ package mcp
 //   - changes are one per operation, in order, each naming the operation's
 //     op, ref and anchor; a set_text's after is exactly the input's text, a
 //     removed or replaced node is no longer on the page;
-//   - the nodes an insert or replace made (its new_refs) are exactly the
-//     elements under the new top-level nodes, and project to the projection
-//     of the input's outline mapped for the same place;
+//   - each change is checked against the page as its own operation left it.
+//     A node it changed, moved or made is on the page after the call, except
+//     when a later operation of the call removed or replaced a node that
+//     holds others (a section, row, column or group): then it may be off the
+//     page with that node. An insert's or a move's nodes are on the page
+//     exactly when their anchor is, and an insert's or replace's new nodes
+//     are all on the page or all off it. A new node never takes a ref the
+//     input names;
+//   - the nodes an insert or replace made (its new_refs), when they are on
+//     the page, are exactly the elements under the new top-level nodes, and
+//     project to the projection of the input's outline mapped for the same
+//     place;
 //   - after_outline is the projection of the tree, recomputed here.
 //
 // Anything else refuses the request as precheck_mismatch; nothing is
@@ -237,12 +246,21 @@ func verifyPageEditPrecheck(resp agentcmd.AbilityRunResponse, entrySum string, i
 	if cd.Decode(&changes) != nil || cd.More() || len(changes) != len(f.ops) {
 		return checkedPageEdit{}, false
 	}
+	// No new node takes a ref the input names: those are nodes of the page
+	// before the call.
 	made := map[string]bool{}
+	for _, op := range f.ops {
+		for _, r := range op.refs() {
+			made[r] = true
+		}
+	}
 	for i, op := range f.ops {
-		if !pageEditChangeMatches(changes[i], op, elements, made) {
+		takenOff := pageEditTakenOffLater(f.ops[i+1:], changes[i+1:])
+		if !pageEditChangeMatches(changes[i], op, elements, made, takenOff) {
 			return checkedPageEdit{}, false
 		}
-		if op.Op == "insert" || op.Op == "replace" {
+		// New nodes a later operation took off are not on the page to check.
+		if (op.Op == "insert" || op.Op == "replace") && elements[changes[i].NewRefs[0]] != nil {
 			if !pageEditNewNodesMatch(changes[i].NewRefs, op, tree, elements, proj) {
 				return checkedPageEdit{}, false
 			}
@@ -258,13 +276,32 @@ func verifyPageEditPrecheck(resp agentcmd.AbilityRunResponse, entrySum string, i
 	}, true
 }
 
+// pageEditHoldsNodes is the projection kinds that hold other nodes.
+var pageEditHoldsNodes = map[string]bool{"section": true, "columns": true, "column": true, "group": true}
+
+// pageEditTakenOffLater: one of the later operations (ops, with their
+// changes) removed or replaced a node that holds others, so a node an
+// earlier change named or made may have left the page with it.
+func pageEditTakenOffLater(ops []pageEditOp, changes []pageEditChange) bool {
+	for j, op := range ops {
+		if (op.Op == pageEditOpRemove || op.Op == pageEditOpReplace) && pageEditHoldsNodes[changes[j].Kind] {
+			return true
+		}
+	}
+	return false
+}
+
 // pageEditChangeMatches: change c is operation op's, as the agent's
-// LayoutOps describes it. made collects every new_ref of the call, which
-// no two changes share.
-func pageEditChangeMatches(c pageEditChange, op pageEditOp, elements map[string]*treeElement, made map[string]bool) bool {
+// LayoutOps describes it, on the page as op left it. made holds every ref
+// the input names and collects every new_ref of the call, which no two
+// changes share. takenOff says a later operation took a node that holds
+// others off the page (pageEditTakenOffLater): only then may a node c
+// changed, moved or made be off the page after the call.
+func pageEditChangeMatches(c pageEditChange, op pageEditOp, elements map[string]*treeElement, made map[string]bool, takenOff bool) bool {
 	if c.Op != op.Op || (c.Level != nil && (*c.Level < 1 || *c.Level > 6)) {
 		return false
 	}
+	on := func(ref string) bool { return elements[ref] != nil }
 	kindOK := func(kind string) bool { return kind == "locked" || projectionKinds[kind] }
 	anchorOK := func() bool {
 		a := c.Anchor
@@ -284,37 +321,48 @@ func pageEditChangeMatches(c pageEditChange, op pageEditOp, elements map[string]
 			return op.Anchor == "into" && (*a.Position == "first" || *a.Position == "last")
 		}
 	}
+	// The new nodes are all on the page, or all off it with a node a later
+	// operation took off: no later operation can name one of them.
 	newRefsOK := func() bool {
 		if len(c.NewRefs) == 0 {
 			return false
 		}
+		onPage := 0
 		for _, r := range c.NewRefs {
-			if !pageEditRefPattern.MatchString(r) || made[r] || elements[r] == nil {
+			if !pageEditRefPattern.MatchString(r) || made[r] {
 				return false
 			}
 			made[r] = true
+			if on(r) {
+				onPage++
+			}
 		}
-		return true
+		return onPage == len(c.NewRefs) || (onPage == 0 && takenOff)
 	}
 	switch op.Op {
 	case "set_text":
 		if c.Ref != op.Ref || !projectionKinds[c.Kind] || c.After == nil || len(*c.After) != 1 ||
-			c.NewRefs != nil || c.Anchor != nil || elements[c.Ref] == nil {
+			c.NewRefs != nil || c.Anchor != nil || (!on(c.Ref) && !takenOff) {
 			return false
 		}
 		text, ok := (*c.After)[op.Field]
 		return ok && text == op.Text
 	case "insert":
-		return c.Ref == "" && c.Kind == "" && c.Before == nil && c.After == nil && anchorOK() && newRefsOK()
+		// The new nodes stand beside or inside the anchor, so they leave the
+		// page only with it.
+		return c.Ref == "" && c.Kind == "" && c.Before == nil && c.After == nil && anchorOK() && newRefsOK() &&
+			on(c.NewRefs[0]) == on(op.AnchorRef)
 	case "replace":
 		return c.Ref == op.Ref && projectionKinds[c.Kind] && c.After == nil && c.Anchor == nil &&
-			elements[c.Ref] == nil && newRefsOK()
+			!on(c.Ref) && newRefsOK()
 	case "remove":
 		return c.Ref == op.Ref && projectionKinds[c.Kind] && c.After == nil && c.Anchor == nil &&
-			c.NewRefs == nil && elements[c.Ref] == nil
+			c.NewRefs == nil && !on(c.Ref)
 	case "move":
+		// The moved node stands beside its anchor, so it leaves the page
+		// only with it.
 		return c.Ref == op.Ref && projectionKinds[c.Kind] && c.After == nil && c.NewRefs == nil &&
-			elements[c.Ref] != nil && anchorOK()
+			(on(c.Ref) || takenOff) && on(c.Ref) == on(op.AnchorRef) && anchorOK()
 	}
 	return false
 }
