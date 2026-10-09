@@ -687,6 +687,11 @@ func (w *Worker) runDry(ctx context.Context, task Task, siteURL string, item age
 		if re, ok := agentcmd.AsRedirect(err); ok {
 			return w.finish(ctx, task, TaskFailed, task.FromVersion, "", re.OperatorMessage("Dry run"), err.Error())
 		}
+		// GH #679: a 403 names who refused and what fixes it. The raw reply
+		// stays in the error log, never in the detail.
+		if msg, ok := agentcmd.ForbiddenMessage(err, "Dry run"); ok {
+			return w.finish(ctx, task, TaskFailed, task.FromVersion, "", msg, err.Error())
+		}
 		return w.finish(ctx, task, TaskFailed, task.FromVersion, "", "dry-run command failed", err.Error())
 	}
 	// A 200 only means the transport worked. resp.OK is the agent's own verdict on
@@ -730,6 +735,10 @@ func (w *Worker) runApply(ctx context.Context, task Task, siteURL string, item a
 	if err != nil {
 		if re, ok := agentcmd.AsRedirect(err); ok {
 			return w.finish(ctx, task, TaskFailed, task.FromVersion, "", re.OperatorMessage("Update"), err.Error())
+		}
+		// GH #679: see runDry.
+		if msg, ok := agentcmd.ForbiddenMessage(err, "Update"); ok {
+			return w.finish(ctx, task, TaskFailed, task.FromVersion, "", msg, err.Error())
 		}
 		return w.finish(ctx, task, TaskFailed, task.FromVersion, "", "update command failed", err.Error())
 	}
