@@ -71,6 +71,7 @@ use WPMgr\Agent\Backup\Destinations\DestinationResolver;
 use WPMgr\Agent\Support\AgeCrypto;
 use WPMgr\Agent\Support\BackupTransport;
 use WPMgr\Agent\Support\Blake3;
+use WPMgr\Agent\Support\DebugLog;
 use WPMgr\Agent\Support\LongRunningJob;
 
 /**
@@ -136,6 +137,27 @@ final class EncryptAndUpload
      */
     public const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30.0;
 
+    /**
+     * GH #369: PUT attempts per chunk when the failure is retryable (a
+     * transport error, HTTP 408/425/429 or any 5xx; see
+     * BackupTransport::putChunkWithStatus()). A terminal 4xx is not retried.
+     */
+    private const PUT_MAX_ATTEMPTS = 3;
+
+    /**
+     * GH #369: backoff before PUT attempt N+1 is PUT_BACKOFF_BASE_MS * 2^(N-1),
+     * so 2 s then 4 s.
+     *
+     * Watchdog budget: a PUT blocks for up to BackupTransport::PUT_TIMEOUT
+     * (120 s) without emitting progress. A heartbeat is emitted after every
+     * failed attempt, before the backoff, and before a re-presign, so the
+     * longest silent window is the heartbeat interval (30 s) or the presign
+     * callback timeout (30 s), plus one PUT. That stays below
+     * Watchdog::STALL_THRESHOLD_SECONDS (180 s) even with TaskRunner's 5 s
+     * progress-write throttle on top. EncryptAndUploadPutFailureTest pins it.
+     */
+    private const PUT_BACKOFF_BASE_MS = 2000;
+
     private AgeCrypto $age;
     private BackupTransport $transport;
     private string $snapshotId;
@@ -164,6 +186,15 @@ final class EncryptAndUpload
     private float $lastProgressEmitAt = 0.0;
 
     /**
+     * GH #369: sleeps between PUT retry attempts. Signature: (int $ms): void.
+     * Production uses usleep; tests pass a recorder so a retry test does not
+     * wait out real backoff.
+     *
+     * @var callable(int):void
+     */
+    private $sleeper;
+
+    /**
      * @param AgeCrypto             $age               Shared age helper.
      * @param BackupTransport       $transport         Configured M4 transport (CP-callbacks + raw PUT).
      * @param string                $snapshotId        In-flight snapshot id.
@@ -178,6 +209,8 @@ final class EncryptAndUpload
      *   null, the destination defaults to `cp`, preserving the 0.9.6 pipeline.
      * @param float                 $heartbeatIntervalSeconds GH #279 wall-clock
      *   progress heartbeat gate; defaults to DEFAULT_HEARTBEAT_INTERVAL_SECONDS.
+     * @param (callable(int):void)|null $sleeper GH #369 sleep between PUT
+     *   retry attempts, in milliseconds; null means usleep.
      */
     public function __construct(
         AgeCrypto $age,
@@ -188,7 +221,8 @@ final class EncryptAndUpload
         string $manifestEndpoint,
         int $chunkBytes = self::DEFAULT_CHUNK_BYTES,
         ?array $destinationParams = null,
-        float $heartbeatIntervalSeconds = self::DEFAULT_HEARTBEAT_INTERVAL_SECONDS
+        float $heartbeatIntervalSeconds = self::DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+        ?callable $sleeper = null
     ) {
         $this->age              = $age;
         $this->transport        = $transport;
@@ -198,6 +232,11 @@ final class EncryptAndUpload
         $this->manifestEndpoint = $manifestEndpoint;
         $this->chunkBytes       = max(1, $chunkBytes);
         $this->heartbeatIntervalSeconds = max(0.0, $heartbeatIntervalSeconds);
+        $this->sleeper          = $sleeper ?? static function (int $ms): void {
+            if ($ms > 0) {
+                usleep($ms * 1000);
+            }
+        };
 
         // Resolve the destination adapter. The resolver needs the runner
         // params it would normally read from sub_state; we synthesize the
@@ -485,7 +524,10 @@ final class EncryptAndUpload
      *   without any interim durability guarantee (matches pre-GH-#283
      *   behavior for callers that don't opt in).
      * @return array<string,mixed> On completion: `done:true`, telemetry.
-     * @throws \RuntimeException On transport-level PUT failure.
+     * @throws \RuntimeException When a chunk PUT still fails after
+     *   putChunkWithRetry(): the message names the storage host and the
+     *   HTTP status and S3 error code, or the transport error (GH #369).
+     *   The checkpoint runs first, so every hash already uploaded is persisted.
      */
     public function uploadChunks(array $encryptCursor, array $resume, callable $progress, ?callable $checkpoint = null): array
     {
@@ -661,23 +703,48 @@ final class EncryptAndUpload
                     throw new \RuntimeException('EncryptAndUpload: cannot read local chunk: ' . esc_html($chunkPath));
                 }
 
-                $ok = ($this->destination instanceof CpDestination)
-                    ? $this->destination->putPresigned($url, $cipher)
-                    : $this->transport->putChunk($url, $cipher);
-                if (!$ok) {
+                // GH #369: bounded retry for transient failures, and one
+                // re-presign for a 403 a fresh URL may get past.
+                $put = $this->putChunkWithRetry($hash, $url, $cipher, $progress, [
+                    'stage'          => 'upload',
+                    'chunks_done'    => $chunksDone,
+                    'chunks_total'   => $chunksTotal,
+                    'bytes_uploaded' => $bytesUploaded,
+                ]);
+                if (!$put['ok']) {
+                    $cipher = '';
+                    // GH #283 ordering on the failure path: persist the
+                    // hashes this pass already confirmed (each one after its
+                    // own 2xx) BEFORE failing, so they survive into any
+                    // resume; checkpointAndFlush() deletes their local files
+                    // only after that persist succeeds. A persist failure here
+                    // keeps those files on disk and must not replace the
+                    // upload failure as the reported cause.
+                    $persistFailure = null;
+                    try {
+                        $this->checkpointAndFlush($checkpoint, $uploadedHashes, $chunksTotal, $putCount, $dedupHits, $bytesUploaded, $pendingDeletes);
+                    } catch (\Throwable $e) {
+                        $persistFailure = $e;
+                    }
                     // Surface as RuntimeException so the TaskRunner's top-level
-                    // catch marks the snapshot failed (or, in watchdog re-entry,
-                    // resume_count increments and we try again).
-                    throw new \RuntimeException('EncryptAndUpload: PUT failed for chunk ' . esc_html($hash));
+                    // catch marks the snapshot failed with this reason.
+                    throw new \RuntimeException($this->describePutFailure($hash, $put), 0, $persistFailure); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; plain-text reason for the CP progress channel and the debug log, not browser output; every part is sanitized by describePutFailure() and BackupTransport::putChunkWithStatus()
                 }
-                $bytesUploaded += strlen($cipher);
-                $cipher         = '';
+                if ($put['already_stored']) {
+                    // The re-presign found the CP already holds this chunk.
+                    $dedupHits++;
+                } else {
+                    $bytesUploaded += strlen($cipher);
+                    $putCount++;
+                }
+                $cipher = '';
 
                 // GH #283: record success and queue the local file for
                 // deletion. Do NOT delete yet. See checkpointAndFlush().
+                // GH #369: only reached once this hash got a 2xx (or the CP
+                // confirmed it already holds it), never on a failed PUT.
                 $uploadedHashes[$hash] = 1;
                 $pendingDeletes[$hash] = $chunkPath;
-                $putCount++;
                 $chunksDone++;
                 $sinceTick++;
                 $sinceCheckpoint++;
@@ -1283,6 +1350,150 @@ final class EncryptAndUpload
             }
         }
         $pendingDeletes = [];
+    }
+
+    /**
+     * GH #369: PUT one chunk to its bulk-presigned URL, retrying what a retry
+     * can fix.
+     *
+     *   - A retryable result (transport error, HTTP 408/425/429, any 5xx) is
+     *     retried up to PUT_MAX_ATTEMPTS in all, with PUT_BACKOFF_BASE_MS
+     *     doubling between attempts.
+     *   - A 403 that BackupTransport marks `represign` (AccessDenied,
+     *     ExpiredToken, an expired request) gets one fresh single-hash
+     *     presign and one more PUT through CpDestination::putChunkWithStatus().
+     *     Retrying the stale URL itself would only get the same answer.
+     *   - Every other 4xx fails at once.
+     *
+     * A heartbeat is emitted after each failed attempt, before the backoff,
+     * and before the re-presign, so a slow retry sequence never looks like a
+     * stalled run to the watchdog (see PUT_BACKOFF_BASE_MS).
+     *
+     * @param string              $hash            Chunk hash.
+     * @param string              $url             Bulk-presigned PUT URL (bearer credential, never logged).
+     * @param string              $cipher          Chunk bytes.
+     * @param callable            $progress        Progress callback.
+     * @param array<string,mixed> $heartbeatDetail Upload progress payload for the heartbeats.
+     * @return array{ok:bool,status:int,error:string,s3_code:string,host:string,retryable:bool,represign:bool,already_stored:bool,attempts:int}
+     */
+    private function putChunkWithRetry(string $hash, string $url, string $cipher, callable $progress, array $heartbeatDetail): array
+    {
+        $result = [
+            'ok'        => false,
+            'status'    => 0,
+            'error'     => '',
+            's3_code'   => '',
+            'host'      => '',
+            'retryable' => false,
+            'represign' => false,
+        ];
+        $attempts = 0;
+        for ($attempt = 1; $attempt <= self::PUT_MAX_ATTEMPTS; $attempt++) {
+            $attempts = $attempt;
+            $result   = ($this->destination instanceof CpDestination)
+                ? $this->destination->putPresignedWithStatus($url, $cipher)
+                : $this->transport->putChunkWithStatus($url, $cipher);
+            if ($result['ok'] || !$result['retryable'] || $attempt >= self::PUT_MAX_ATTEMPTS) {
+                break;
+            }
+            $delayMs = self::PUT_BACKOFF_BASE_MS * (1 << ($attempt - 1));
+            $this->notePutRetry($progress, $heartbeatDetail, $hash, $attempt, $result, 'backoff_ms=' . $delayMs);
+            ($this->sleeper)($delayMs);
+        }
+
+        $alreadyStored = false;
+        if (!$result['ok'] && $result['represign'] && $this->destination instanceof CpDestination) {
+            $this->notePutRetry($progress, $heartbeatDetail, $hash, $attempts, $result, 'represign');
+            try {
+                $fresh = $this->destination->putChunkWithStatus($hash, $cipher);
+            } catch (\RuntimeException $e) {
+                // The presign callback itself failed. The storage's 403 is
+                // still the cause worth reporting, so keep that result.
+                $fresh = null;
+            }
+            if ($fresh !== null) {
+                $alreadyStored = $fresh['already_stored'];
+                if (!$alreadyStored) {
+                    $attempts++;
+                }
+                $result = [
+                    'ok'        => $fresh['ok'],
+                    'status'    => $fresh['status'],
+                    'error'     => $fresh['error'],
+                    's3_code'   => $fresh['s3_code'],
+                    'host'      => $fresh['host'] !== '' ? $fresh['host'] : $result['host'],
+                    'retryable' => $fresh['retryable'],
+                    'represign' => $fresh['represign'],
+                ];
+            }
+        }
+
+        return $result + ['already_stored' => $alreadyStored, 'attempts' => $attempts];
+    }
+
+    /**
+     * GH #369: between PUT attempts, record the retry in the debug log (host,
+     * status and code only: never the presigned URL) and emit a heartbeat so
+     * the watchdog's clock restarts before the next blocking request.
+     *
+     * @param callable                                                                                   $progress      Progress callback.
+     * @param array<string,mixed>                                                                        $detail        Upload progress payload.
+     * @param string                                                                                     $hash          Chunk hash.
+     * @param int                                                                                        $failedAttempt The attempt that just failed.
+     * @param array{ok:bool,status:int,error:string,s3_code:string,host:string,retryable:bool,represign:bool} $result        Its result.
+     * @param string                                                                                     $next          What happens next, for the log line.
+     */
+    private function notePutRetry(callable $progress, array $detail, string $hash, int $failedAttempt, array $result, string $next): void
+    {
+        if (DebugLog::isEnabled()) {
+            DebugLog::write(sprintf(
+                'WPMgr EncryptAndUpload: upload retry chunk %s attempt=%d/%d host=%s status=%d code=%s err=%s next=%s',
+                substr($hash, 0, 12),
+                $failedAttempt,
+                self::PUT_MAX_ATTEMPTS,
+                $result['host'],
+                $result['status'],
+                $result['s3_code'],
+                substr($result['error'], 0, 80),
+                $next
+            ));
+        }
+        $detail['heartbeat']    = true;
+        $detail['put_retrying'] = $failedAttempt;
+        $this->safeProgress($progress, 'encrypting_uploading', $detail);
+    }
+
+    /**
+     * GH #369: the reason a chunk upload failed, for the TaskRunner's failure
+     * report. It reaches the dashboard and the backup-failure email through
+     * the CP, so it carries only the storage host, the HTTP status and S3
+     * error code or the transport error (all sanitized by BackupTransport),
+     * the attempt count and the hex chunk hash; never the URL. The cause
+     * comes before the hash because TaskRunner keeps only the first 240
+     * characters of a failure message.
+     *
+     * @param string                                                                          $hash   Chunk hash.
+     * @param array{status:int,error:string,s3_code:string,host:string,attempts:int} $result Final putChunkWithRetry() result.
+     * @return string
+     */
+    private function describePutFailure(string $hash, array $result): string
+    {
+        if ($result['status'] > 0) {
+            $cause = trim('HTTP ' . $result['status'] . ' ' . $result['s3_code']);
+        } elseif ($result['error'] !== '') {
+            $cause = $result['error'];
+        } else {
+            $cause = 'no response from storage';
+        }
+
+        return sprintf(
+            'EncryptAndUpload: upload to %s failed: %s (%d %s, chunk %s)',
+            $result['host'] !== '' ? $result['host'] : 'storage',
+            $cause,
+            $result['attempts'],
+            $result['attempts'] === 1 ? 'attempt' : 'attempts',
+            (string) preg_replace('/[^0-9a-fA-F]/', '', $hash)
+        );
     }
 
     /**

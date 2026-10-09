@@ -77,6 +77,26 @@ final class CpDestination implements BackupDestination
      */
     public function putChunk(string $hash, string $ciphertext): bool
     {
+        return $this->putChunkWithStatus($hash, $ciphertext)['ok'];
+    }
+
+    /**
+     * Single-shot path with a structured result: presign this one hash, then
+     * PUT it once. EncryptAndUpload uses it to re-presign a chunk whose bulk-
+     * presigned URL was refused with a 403 (GH #369), so a failure still
+     * names its status and storage host.
+     *
+     * `already_stored` is true when the CP answered the presign without a URL
+     * for this hash, meaning it already holds the chunk (a dedup hit): `ok` is
+     * true and no PUT was made.
+     *
+     * @param string $hash       Chunk hash.
+     * @param string $ciphertext Chunk bytes.
+     * @return array{ok:bool,status:int,error:string,s3_code:string,host:string,retryable:bool,represign:bool,already_stored:bool}
+     * @throws \RuntimeException When the presign callback itself fails.
+     */
+    public function putChunkWithStatus(string $hash, string $ciphertext): array
+    {
         $uploads = $this->transport->presignChunks(
             $this->presignEndpoint,
             $this->snapshotId,
@@ -84,9 +104,20 @@ final class CpDestination implements BackupDestination
         );
         if (!isset($uploads[$hash])) {
             // CP says it already has this chunk (dedup hit). Treat as success.
-            return true;
+            return [
+                'ok'             => true,
+                'status'         => 0,
+                'error'          => '',
+                's3_code'        => '',
+                'host'           => '',
+                'retryable'      => false,
+                'represign'      => false,
+                'already_stored' => true,
+            ];
         }
-        return $this->transport->putChunk($uploads[$hash], $ciphertext);
+        $result                   = $this->transport->putChunkWithStatus($uploads[$hash], $ciphertext);
+        $result['already_stored'] = false;
+        return $result;
     }
 
     public function getChunk(string $hash): ?string
@@ -150,6 +181,20 @@ final class CpDestination implements BackupDestination
      */
     public function putPresigned(string $presignedUrl, string $ciphertext): bool
     {
-        return $this->transport->putChunk($presignedUrl, $ciphertext);
+        return $this->putPresignedWithStatus($presignedUrl, $ciphertext)['ok'];
+    }
+
+    /**
+     * Raw PUT to a presigned URL with the structured result described on
+     * BackupTransport::putChunkWithStatus(). The presigned URL is never part
+     * of the result.
+     *
+     * @param string $presignedUrl Presigned PUT URL (bearer credential).
+     * @param string $ciphertext   Chunk bytes.
+     * @return array{ok:bool,status:int,error:string,s3_code:string,host:string,retryable:bool,represign:bool}
+     */
+    public function putPresignedWithStatus(string $presignedUrl, string $ciphertext): array
+    {
+        return $this->transport->putChunkWithStatus($presignedUrl, $ciphertext);
     }
 }

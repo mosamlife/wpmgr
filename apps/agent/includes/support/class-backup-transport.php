@@ -7,7 +7,8 @@
  *                       returning the blake3 -> presigned-PUT-URL map for chunks
  *                       NOT already stored (dedup).      [PresignChunksRequest /
  *                                                          PresignChunksResponse]
- *   - putChunk():       direct PUT of ciphertext to a presigned S3 URL.
+ *   - putChunk():       direct PUT of ciphertext to a presigned S3 URL
+ *                       (putChunkWithStatus() returns the structured outcome).
  *   - submitManifest(): agent->CP signed POST to the command's manifest_endpoint
  *                       with the completed manifest.      [SubmitManifestRequest /
  *                                                          SubmitManifestResponse]
@@ -17,8 +18,9 @@
  * (Signer + the four X-WPMgr-* headers); the CP authenticates the agent from the
  * verified key, never a client header (see agent_handler.go).
  *
- * Presigned URLs are bearer credentials: they are NEVER logged. On any failure
- * we surface a generic boolean/empty result, not the URL or response body.
+ * Presigned URLs are bearer credentials: they are NEVER logged or returned. A
+ * failed chunk transfer reports its HTTP status, the storage host and a short
+ * sanitized cause, never the URL, its query string or the raw response body.
  *
  * @package WPMgr\Agent\Support
  */
@@ -34,8 +36,26 @@ use WPMgr\Agent\Signer;
  */
 class BackupTransport
 {
-    /** Default outbound request timeout, in seconds. */
+    /** Default outbound request timeout, in seconds (CP callbacks, chunk GETs). */
     private const TIMEOUT = 30;
+
+    /**
+     * Per-attempt timeout for one chunk PUT, in seconds. A 4 MiB chunk on a
+     * slow uplink can run past the 30 s callback timeout; 120 s matches the
+     * file-archive upload path. A PUT blocks without emitting progress, so
+     * EncryptAndUpload keeps this plus its heartbeat interval below the
+     * backup watchdog's stall threshold (pinned by a test).
+     */
+    private const PUT_TIMEOUT = 120;
+
+    /** Longest S3 error <Code> kept; longer or non-alphanumeric codes are dropped. */
+    private const S3_CODE_MAX = 64;
+
+    /** Longest transport-error excerpt returned by putChunkWithStatus(). */
+    private const PUT_ERROR_MAX = 160;
+
+    /** Longest host returned for diagnostics. */
+    private const HOST_MAX = 100;
 
     private Signer $signer;
 
@@ -110,28 +130,173 @@ class BackupTransport
     /**
      * Upload a ciphertext chunk to a presigned PUT URL.
      *
+     * Thin wrapper over putChunkWithStatus() for callers that only need a
+     * yes/no answer (CpDestination's single-shot putChunk()).
+     *
      * @param string $presignedUrl Presigned S3 PUT URL (bearer credential).
      * @param string $ciphertext   Ciphertext bytes.
      * @return bool True on a 2xx response.
      */
     public function putChunk(string $presignedUrl, string $ciphertext): bool
     {
+        return $this->putChunkWithStatus($presignedUrl, $ciphertext)['ok'];
+    }
+
+    /**
+     * Upload a ciphertext chunk and return a structured result the caller can
+     * use to decide whether to retry and to say why an upload failed. The PUT
+     * counterpart of getChunkWithStatus().
+     *
+     *   ok         true iff the response status was 2xx.
+     *   status     HTTP status code (0 on WP_Error / connect failure).
+     *   error      transport error excerpt (WP_Error message), '' otherwise.
+     *              Any URL in it is reduced to its host and any signature
+     *              query parameter is redacted, so the presigned URL cannot
+     *              leak through a transport that echoes it.
+     *   s3_code    the <Code> of an S3 XML error body (e.g.
+     *              SignatureDoesNotMatch, AccessDenied, SlowDown), kept only
+     *              when it is a single alphanumeric token of at most 64
+     *              characters; '' otherwise. The body itself is never returned.
+     *   host       host of the presigned URL (never its path or query).
+     *   retryable  true for a WP_Error (network, DNS, TLS, timeout), HTTP 408,
+     *              425, 429 or any 5xx. False on 2xx and on every other 4xx:
+     *              the same URL keeps getting the same answer.
+     *   represign  true for an HTTP 403 that a freshly presigned URL may get
+     *              past: code AccessDenied or ExpiredToken, or an expired-
+     *              request message. Retrying the SAME URL never helps there.
+     *
+     * The presigned URL itself is NEVER returned or logged.
+     *
+     * @param string $presignedUrl Presigned S3 PUT URL (bearer credential).
+     * @param string $ciphertext   Ciphertext bytes.
+     * @return array{ok:bool,status:int,error:string,s3_code:string,host:string,retryable:bool,represign:bool}
+     */
+    public function putChunkWithStatus(string $presignedUrl, string $ciphertext): array
+    {
+        $host     = $this->hostOf($presignedUrl);
         $response = wp_remote_request(
             $presignedUrl,
             [
                 'method'  => 'PUT',
-                'timeout' => self::TIMEOUT,
+                'timeout' => self::PUT_TIMEOUT,
                 'headers' => ['Content-Type' => 'application/octet-stream'],
                 'body'    => $ciphertext,
             ]
         );
 
         if ($this->isWpError($response)) {
-            return false;
+            $msg = '';
+            if (is_object($response) && method_exists($response, 'get_error_message')) {
+                $msg = (string) $response->get_error_message();
+            }
+            return [
+                'ok'        => false,
+                'status'    => 0,
+                'error'     => $this->redactTransportError($msg, $presignedUrl),
+                's3_code'   => '',
+                'host'      => $host,
+                'retryable' => true,
+                'represign' => false,
+            ];
         }
-        $status = (int) wp_remote_retrieve_response_code($response);
 
-        return $status >= 200 && $status < 300;
+        $status = (int) wp_remote_retrieve_response_code($response);
+        if ($status >= 200 && $status < 300) {
+            return [
+                'ok'        => true,
+                'status'    => $status,
+                'error'     => '',
+                's3_code'   => '',
+                'host'      => $host,
+                'retryable' => false,
+                'represign' => false,
+            ];
+        }
+
+        $raw = wp_remote_retrieve_body($response);
+        // An S3 error document is a few hundred bytes; never scan more.
+        $raw  = is_string($raw) ? substr($raw, 0, 4096) : '';
+        $code = $this->s3ErrorCode($raw);
+
+        // Same retry classification as getChunkWithStatus().
+        $retryable = ($status >= 500 && $status < 600)
+            || $status === 408
+            || $status === 425
+            || $status === 429;
+
+        $represign = $status === 403
+            && ($code === 'AccessDenied'
+                || $code === 'ExpiredToken'
+                || stripos($raw, 'Request has expired') !== false);
+
+        return [
+            'ok'        => false,
+            'status'    => $status,
+            'error'     => '',
+            's3_code'   => $code,
+            'host'      => $host,
+            'retryable' => $retryable,
+            'represign' => $represign,
+        ];
+    }
+
+    /**
+     * Pull the <Code> out of an S3 XML error body, e.g.
+     * `<Error><Code>SignatureDoesNotMatch</Code>...</Error>`. The value ends up
+     * in a backup-failure message, so only a single alphanumeric token that
+     * starts with a letter is accepted (S3's documented codes are all of that
+     * shape, some with digits, e.g. XAmzContentSHA256Mismatch). Anything else
+     * yields ''.
+     *
+     * @param string $body Response body (already length-capped).
+     * @return string
+     */
+    private function s3ErrorCode(string $body): string
+    {
+        if ($body === '') {
+            return '';
+        }
+        $pattern = '#<Code>\s*([A-Za-z][A-Za-z0-9]{0,' . (self::S3_CODE_MAX - 1) . '})\s*</Code>#';
+        if (preg_match($pattern, $body, $m) !== 1) {
+            return '';
+        }
+        return $m[1];
+    }
+
+    /**
+     * Make a transport error message safe to return: the presigned URL (and
+     * any other absolute URL) is reduced to its host, signature-bearing query
+     * parameters are redacted, control characters are flattened and the
+     * result is capped.
+     *
+     * @param string $message      Raw WP_Error message.
+     * @param string $presignedUrl The URL the request was made to.
+     * @return string
+     */
+    private function redactTransportError(string $message, string $presignedUrl): string
+    {
+        if ($message === '') {
+            return '';
+        }
+        if ($presignedUrl !== '') {
+            $message = str_replace($presignedUrl, $this->hostOf($presignedUrl), $message);
+        }
+        $message = (string) preg_replace_callback(
+            '#\bhttps?://[^\s"\'<>]+#i',
+            function (array $m): string {
+                $host = $this->hostOf($m[0]);
+                return $host !== '' ? $host : '[url]';
+            },
+            $message
+        );
+        $message = (string) preg_replace(
+            '#\b(X-Amz-[A-Za-z0-9-]+|X-Goog-[A-Za-z0-9-]+|Signature|AWSAccessKeyId|GoogleAccessId|Expires)=[^\s&"\'<>]*#i',
+            '$1=[redacted]',
+            $message
+        );
+        $message = (string) preg_replace('/[\x00-\x1F\x7F]+/', ' ', $message);
+
+        return substr(trim($message), 0, self::PUT_ERROR_MAX);
     }
 
     /**
@@ -241,8 +406,11 @@ class BackupTransport
     }
 
     /**
-     * Extract the host of a URL (used by getChunkWithStatus for diagnostics
-     * that don't leak the presigned bearer URL).
+     * Extract the host of a URL (used by getChunkWithStatus and
+     * putChunkWithStatus for diagnostics that don't leak the presigned bearer
+     * URL). The host reaches failure messages, so it is reduced to hostname
+     * characters (letters, digits, dot, hyphen, and the brackets and colons
+     * of an IPv6 literal) and capped.
      */
     private function hostOf(string $url): string
     {
@@ -250,7 +418,8 @@ class BackupTransport
         if (!is_array($parts) || !isset($parts['host']) || !is_string($parts['host'])) {
             return '';
         }
-        return $parts['host'];
+        $host = (string) preg_replace('/[^A-Za-z0-9.\-\[\]:]/', '', $parts['host']);
+        return substr($host, 0, self::HOST_MAX);
     }
 
     /**
