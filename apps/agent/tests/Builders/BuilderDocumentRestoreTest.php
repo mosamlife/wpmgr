@@ -123,11 +123,12 @@ final class BuilderDocumentRestoreTest extends TestCase
         $this->assertNotSame($rowsBefore, $this->rows(), 'precondition: the save changed the rows');
         $this->assertNotSame($beforeFp, $this->fp(), 'precondition: the save changed the page');
 
-        $this->assertNull(BuilderDocumentRestore::full(self::POST_ID, $snapshot, $this->descriptor, $this->adapter, $beforeFp));
+        $result = BuilderDocumentRestore::full(self::POST_ID, $snapshot, $this->descriptor, $this->adapter, $beforeFp);
 
         // Keys, values, row counts and order, byte for byte; NULL stays NULL.
         $this->assertSame($rowsBefore, $this->rows());
         $this->assertSame($postBefore, $this->db->postRow(self::POST_ID));
+        $this->assertNull($result);
         $this->assertSame($beforeFp, $this->fp());
         $this->assertSame([], $this->metaApi, 'the restore never goes through the meta API');
         // The revision the failed save made is left, as the target's own.
@@ -157,7 +158,7 @@ final class BuilderDocumentRestoreTest extends TestCase
         $this->db->insert('wp_postmeta', ['post_id' => self::POST_ID, 'meta_key' => '_elementor_edit_mode', 'meta_value' => 'builder']);
         $this->db->insert('wp_postmeta', ['post_id' => self::POST_ID, 'meta_key' => '_elementor_page_assets', 'meta_value' => 'a:0:{}']);
 
-        $this->assertNull(BuilderDocumentRestore::full(self::POST_ID, $snapshot, $this->descriptor, $this->adapter, $beforeFp));
+        $result = BuilderDocumentRestore::full(self::POST_ID, $snapshot, $this->descriptor, $this->adapter, $beforeFp);
 
         $keys = array_column($this->rows(), 0);
         foreach (['_elementor_controls_usage', 'seo_plugin_score', '_elementor_page_assets'] as $added) {
@@ -165,6 +166,7 @@ final class BuilderDocumentRestoreTest extends TestCase
         }
         $this->assertSame(1, array_count_values($keys)['_elementor_edit_mode']);
         $this->assertSame($rowsBefore, $this->rows());
+        $this->assertNull($result);
     }
 
     public function test_full_restore_reruns_fp_and_reports_mismatch(): void
@@ -255,9 +257,11 @@ final class BuilderDocumentRestoreTest extends TestCase
         $this->edit();
         [$keys, $fields] = $this->changeOfEdit($snapshot);
 
-        // After the change, a person sets a featured image (meta only, no save).
-        $this->db->insert('wp_postmeta', ['post_id' => self::POST_ID, 'meta_key' => '_thumbnail_id', 'meta_value' => '88']);
+        // After the change, a person sets another featured image (meta only,
+        // no save); the snapshot still holds the old one.
+        $this->replaceRows('_thumbnail_id', ['88']);
         $thumbnail = $this->rowsWithIds('_thumbnail_id');
+        $this->assertSame(['77'], self::snapshotValues($snapshot, '_thumbnail_id'), 'precondition');
         $untouched = $this->rowsWithIds('_elementor_page_settings');
 
         $this->assertNull(BuilderDocumentRestore::scoped(self::POST_ID, $snapshot, $keys, $fields, $this->descriptor, $this->adapter));
