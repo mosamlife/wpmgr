@@ -930,7 +930,8 @@ func ReadPageCardFacts(stored []byte) ([]PageCardMedia, bool) {
 				return nil, false
 			}
 		}
-		if c.ID < 1 || c.ID > pageCreateMaxAttachmentID || c.Width < 0 || c.Height < 0 {
+		if _, known := pageImageMimes[c.Mime]; !known || c.ID < 1 || c.ID > pageCreateMaxAttachmentID ||
+			c.Width < 0 || c.Width > pageCreateMaxImageDimension || c.Height < 0 || c.Height > pageCreateMaxImageDimension {
 			return nil, false
 		}
 		out = append(out, c)

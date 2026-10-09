@@ -20355,6 +20355,40 @@ components:
             - $ref: "#/components/schemas/AbilityRequestCardFacts"
           nullable: true
           description: The structured card of a wpmgr/rest-write request; null otherwise.
+        page_media:
+          type: array
+          nullable: true
+          items:
+            $ref: "#/components/schemas/AbilityRequestPageMedia"
+          description: |
+            The images a wpmgr/page-create request places, in outline order, as
+            the site described them when WPMgr checked the request. Null when
+            the outline has no image, and for every other ability. A card whose
+            outline names an image with no entry here cannot be shown in full
+            and must not be approvable.
+    AbilityRequestPageMedia:
+      type: object
+      description: |
+        One image a wpmgr/page-create request places. `filename` came from
+        the site: render it as plain text.
+      required: [id, filename, mime, width, height]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: The attachment id the outline names.
+        filename: { type: string }
+        mime:
+          type: string
+          enum: [image/jpeg, image/png, image/gif, image/webp, image/avif]
+        width:
+          type: integer
+          format: int64
+          description: Pixels; 0 when the site does not know.
+        height:
+          type: integer
+          format: int64
+          description: Pixels; 0 when the site does not know.
     AbilityRequestCardFacts:
       type: object
       description: |
