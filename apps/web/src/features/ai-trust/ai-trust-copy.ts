@@ -225,3 +225,10 @@ export function settingNotSentLine(reason: string | null | undefined): string | 
 export const RAN_AUTOMATICALLY = "Ran automatically";
 
 export const UNDO_WINDOW_OVER_LINE = "Undo is no longer available. Its period has ended.";
+
+export const ACTIVITY_EMPTY =
+  "Nothing has happened yet. When an AI connection changes a site, it will be listed here.";
+export const ACTIVITY_FILTERED_EMPTY = "Nothing matches these filters.";
+
+/** The Requests page's subline: only what waits for a person is decided there. */
+export const REQUESTS_SUBLINE = "Each request that waits for you is decided on its own. There is no approve-all.";

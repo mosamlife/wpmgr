@@ -59,6 +59,7 @@ import { Route as AuthedConnectAiRouteImport } from './routes/_authed/connect.ai
 import { Route as AuthedClientsClientIdRouteImport } from './routes/_authed/clients/$clientId'
 import { Route as AuthedAiRequestsRouteImport } from './routes/_authed/ai/requests'
 import { Route as AuthedAiConnectRouteImport } from './routes/_authed/ai/connect'
+import { Route as AuthedAiActivityRouteImport } from './routes/_authed/ai/activity'
 import { Route as AuthedAdminVulnFeedRouteImport } from './routes/_authed/admin/vuln-feed'
 import { Route as AuthedAdminRevenueRouteImport } from './routes/_authed/admin/revenue'
 import { Route as AuthedAdminContentReportRouteImport } from './routes/_authed/admin/content-report'
@@ -339,6 +340,11 @@ const AuthedAiConnectRoute = AuthedAiConnectRouteImport.update({
   path: '/ai/connect',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedAiActivityRoute = AuthedAiActivityRouteImport.update({
+  id: '/ai/activity',
+  path: '/ai/activity',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthedAdminVulnFeedRoute = AuthedAdminVulnFeedRouteImport.update({
   id: '/vuln-feed',
   path: '/vuln-feed',
@@ -531,6 +537,7 @@ export interface FileRoutesByFullPath {
   '/admin/content-report': typeof AuthedAdminContentReportRoute
   '/admin/revenue': typeof AuthedAdminRevenueRoute
   '/admin/vuln-feed': typeof AuthedAdminVulnFeedRoute
+  '/ai/activity': typeof AuthedAiActivityRoute
   '/ai/connect': typeof AuthedAiConnectRoute
   '/ai/requests': typeof AuthedAiRequestsRoute
   '/clients/$clientId': typeof AuthedClientsClientIdRouteWithChildren
@@ -608,6 +615,7 @@ export interface FileRoutesByTo {
   '/admin/content-report': typeof AuthedAdminContentReportRoute
   '/admin/revenue': typeof AuthedAdminRevenueRoute
   '/admin/vuln-feed': typeof AuthedAdminVulnFeedRoute
+  '/ai/activity': typeof AuthedAiActivityRoute
   '/ai/connect': typeof AuthedAiConnectRoute
   '/ai/requests': typeof AuthedAiRequestsRoute
   '/connect/ai': typeof AuthedConnectAiRoute
@@ -687,6 +695,7 @@ export interface FileRoutesById {
   '/_authed/admin/content-report': typeof AuthedAdminContentReportRoute
   '/_authed/admin/revenue': typeof AuthedAdminRevenueRoute
   '/_authed/admin/vuln-feed': typeof AuthedAdminVulnFeedRoute
+  '/_authed/ai/activity': typeof AuthedAiActivityRoute
   '/_authed/ai/connect': typeof AuthedAiConnectRoute
   '/_authed/ai/requests': typeof AuthedAiRequestsRoute
   '/_authed/clients/$clientId': typeof AuthedClientsClientIdRouteWithChildren
@@ -769,6 +778,7 @@ export interface FileRouteTypes {
     | '/admin/content-report'
     | '/admin/revenue'
     | '/admin/vuln-feed'
+    | '/ai/activity'
     | '/ai/connect'
     | '/ai/requests'
     | '/clients/$clientId'
@@ -846,6 +856,7 @@ export interface FileRouteTypes {
     | '/admin/content-report'
     | '/admin/revenue'
     | '/admin/vuln-feed'
+    | '/ai/activity'
     | '/ai/connect'
     | '/ai/requests'
     | '/connect/ai'
@@ -924,6 +935,7 @@ export interface FileRouteTypes {
     | '/_authed/admin/content-report'
     | '/_authed/admin/revenue'
     | '/_authed/admin/vuln-feed'
+    | '/_authed/ai/activity'
     | '/_authed/ai/connect'
     | '/_authed/ai/requests'
     | '/_authed/clients/$clientId'
@@ -1344,6 +1356,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedAiConnectRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/ai/activity': {
+      id: '/_authed/ai/activity'
+      path: '/ai/activity'
+      fullPath: '/ai/activity'
+      preLoaderRoute: typeof AuthedAiActivityRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/admin/vuln-feed': {
       id: '/_authed/admin/vuln-feed'
       path: '/vuln-feed'
@@ -1706,6 +1725,7 @@ interface AuthedRouteChildren {
   AuthedSharedWithMeRoute: typeof AuthedSharedWithMeRoute
   AuthedUptimeRoute: typeof AuthedUptimeRoute
   AuthedVulnerabilitiesRoute: typeof AuthedVulnerabilitiesRoute
+  AuthedAiActivityRoute: typeof AuthedAiActivityRoute
   AuthedAiConnectRoute: typeof AuthedAiConnectRoute
   AuthedAiRequestsRoute: typeof AuthedAiRequestsRoute
   AuthedClientsClientIdRoute: typeof AuthedClientsClientIdRouteWithChildren
@@ -1734,6 +1754,7 @@ const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedSharedWithMeRoute: AuthedSharedWithMeRoute,
   AuthedUptimeRoute: AuthedUptimeRoute,
   AuthedVulnerabilitiesRoute: AuthedVulnerabilitiesRoute,
+  AuthedAiActivityRoute: AuthedAiActivityRoute,
   AuthedAiConnectRoute: AuthedAiConnectRoute,
   AuthedAiRequestsRoute: AuthedAiRequestsRoute,
   AuthedClientsClientIdRoute: AuthedClientsClientIdRouteWithChildren,

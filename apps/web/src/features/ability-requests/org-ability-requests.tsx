@@ -13,7 +13,7 @@ import { AbilityRequestError, useOrgAbilityRequestPages } from "./use-ability-re
 // card and handlers as a site's Content tab) and links to that site's Content
 // tab. The badge count is the server's pending_count, never the page length.
 
-export function OrgAbilityRequests() {
+export function OrgAbilityRequests({ currentUserId = null }: { currentUserId?: string | null }) {
   const query = useOrgAbilityRequestPages();
   const actions = useAbilityCardActions();
 
@@ -57,6 +57,7 @@ export function OrgAbilityRequests() {
             <div key={r.id} className="space-y-1">
               <AbilityRequestCard
                 request={r}
+                currentUserId={currentUserId}
                 notice={actions.notices[r.id] ?? null}
                 onApprove={actions.handleApprove}
                 onDecline={actions.handleDecline}

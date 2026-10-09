@@ -8,6 +8,7 @@ import { PageError } from "@/components/feedback/page-error";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMe } from "@/features/auth/use-auth";
 import { AiAreaTabs } from "@/features/ai-requests/ai-area-tabs";
+import { REQUESTS_SUBLINE } from "@/features/ai-trust/ai-trust-copy";
 import { OrgAbilityRequests } from "@/features/ability-requests/org-ability-requests";
 import { RequestCard } from "@/features/ai-requests/request-card";
 import {
@@ -88,7 +89,7 @@ function AiRequestsPage() {
     <div className="space-y-6">
       <PageHeader
         title="AI connections"
-        subline="Each request is approved on its own. There is no approve-all."
+        subline={REQUESTS_SUBLINE}
       />
       <AiAreaTabs />
 
@@ -174,7 +175,7 @@ function AiRequestsPage() {
           )}
         </div>
       )}
-      <OrgAbilityRequests />
+      <OrgAbilityRequests currentUserId={me?.user.id ?? null} />
     </div>
   );
 }

@@ -105,6 +105,7 @@ function AiEditingSwitch({ siteId, canOperate }: { siteId: string; canOperate: b
 function AbilityRequestList({ siteId, siteUrl }: { siteId: string; siteUrl?: string | null }) {
   const query = useAbilityRequestPages(siteId, true);
   const actions = useAbilityCardActions();
+  const { data: me } = useMe();
 
   const loaded = query.data?.pages.flatMap((p) => p.requests) ?? [];
   // Pending first so a waiting decision is never below the fold; each group
@@ -156,6 +157,7 @@ function AbilityRequestList({ siteId, siteUrl }: { siteId: string; siteUrl?: str
               key={r.id}
               request={r}
               siteUrl={siteUrl}
+              currentUserId={me?.user.id ?? null}
               notice={actions.notices[r.id] ?? null}
               onApprove={actions.handleApprove}
               onDecline={actions.handleDecline}
