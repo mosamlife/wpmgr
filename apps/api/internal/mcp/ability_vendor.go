@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"regexp"
 	"strings"
 
 	"github.com/google/uuid"
@@ -41,8 +40,9 @@ const (
 
 // MinWPVersionForVendorReads is the WordPress floor for vendor and core reads:
 // the interception guards need the 7.1 filters (owner ruling 2: not available
-// below it). The value is agentcmd's, so the AI readiness checklist, which
-// must not import this package, compares against the same number.
+// below it). The value, and agentcmd.WPMeetsVendorFloor which applies it, are
+// agentcmd's, so the AI readiness checklist, which must not import this
+// package, decides with the same number and the same rule.
 const MinWPVersionForVendorReads = agentcmd.MinWPVersionForVendorReads
 
 // notRunnableCopy is our plain text for each not-runnable reason, for the
@@ -172,19 +172,6 @@ func versionInEntryRange(v *string, e *sqlc.AbilityCatalogue) bool {
 // bareSHA strips the agent's "sha256:" prefix; the catalogue holds bare hex.
 func bareSHA(s string) string { return strings.TrimPrefix(strings.TrimSpace(s), "sha256:") }
 
-// wpVersionShape is anchored at both ends. Go's $ without the m flag is the
-// end of the text, so a trailing newline does not match.
-var wpVersionShape = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}$`)
-
-// wpMeetsVendorFloor reports whether the site's WordPress version is at
-// least 7.1. An empty or malformed version does not.
-func wpMeetsVendorFloor(v string) bool {
-	if !wpVersionShape.MatchString(v) {
-		return false
-	}
-	return wpversion.Compare(v, MinWPVersionForVendorReads) >= 0
-}
-
 // vendorReadRunnable is classify's vendor/core READ branch. It returns the
 // not-runnable reason, or "" when the read may be sent.
 func vendorReadRunnable(e *sqlc.AbilityCatalogue, inv *sqlc.SiteAbilityInventory, agentVersion, wpVersion string) string {
@@ -213,7 +200,7 @@ func vendorReadRunnable(e *sqlc.AbilityCatalogue, inv *sqlc.SiteAbilityInventory
 		(inv.SchemaStructSha256 == nil || bareSHA(*inv.SchemaStructSha256) != bareSHA(*e.SchemaStructSha256)) {
 		return notRunnableSchemaChanged
 	}
-	if !wpMeetsVendorFloor(wpVersion) {
+	if !agentcmd.WPMeetsVendorFloor(wpVersion) {
 		return notRunnableWPTooOld
 	}
 	if !vendorAgentMeetsFloor(agentVersion, e.MinAgentVersion) {
