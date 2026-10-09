@@ -133,6 +133,32 @@ type RequestDTO struct {
 	// as the site described them at precheck (null when the outline has no
 	// image, and for every other ability). Each filename came from the site.
 	PageMedia []PageMediaDTO `json:"page_media"`
+	// PageBuilder is the page builder that builds a wpmgr/page-create
+	// request's page, as the site's precheck named it (null for a page in a
+	// WordPress editor, and for every other ability). Version came from the
+	// site.
+	PageBuilder *PageBuilderDTO `json:"page_builder"`
+}
+
+// PageBuilderDTO is the page builder of a page-create request.
+type PageBuilderDTO struct {
+	Builder string `json:"builder"`
+	Format  string `json:"format"`
+	Version string `json:"version"`
+	Layout  string `json:"layout"`
+}
+
+// pageBuilderFor is page_builder: the builder a page-create request's
+// stored card_facts name, or nil.
+func pageBuilderFor(r sqlc.AssistantAbilityRequest) *PageBuilderDTO {
+	if r.AbilityName != mcp.AbilityPageCreate || len(r.CardFacts) == 0 {
+		return nil
+	}
+	b, ok := mcp.ReadPageCardBuilder(r.CardFacts)
+	if !ok {
+		return nil
+	}
+	return &PageBuilderDTO{Builder: b.Builder, Format: b.Format, Version: b.Version, Layout: b.Layout}
 }
 
 // PageMediaDTO is one image a page-create request places.
@@ -225,6 +251,7 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string)
 		RouteSHA256:        r.RouteSha256,
 		CardFacts:          cardFactsFor(r),
 		PageMedia:          pageMediaFor(r),
+		PageBuilder:        pageBuilderFor(r),
 	}
 	if withDigest {
 		d := r.PresentedDigest
