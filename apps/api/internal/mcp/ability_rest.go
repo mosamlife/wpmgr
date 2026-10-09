@@ -770,6 +770,25 @@ func restPrecheckHint(code string) string {
 	return ""
 }
 
+// maxCheckedTargetStatusRunes is the longest checked_target_status the
+// request row holds (its CHECK counts characters).
+const maxCheckedTargetStatusRunes = 64
+
+// checkedTargetStatus is the request's checked_target_status: the raw post
+// status the verified precheck reported, exactly as the site sent it. The
+// approval-tier engine classes a write by target status from this value,
+// compared exactly, never from the card's cleaned copy. A value the column
+// cannot hold (longer than 64 characters, or containing a NUL) is not a
+// status WordPress reports; it is recorded as NULL, which classes the target
+// as unknown, so the request waits for a person.
+func checkedTargetStatus(raw string) *string {
+	if utf8.RuneCountInString(raw) > maxCheckedTargetStatusRunes || strings.ContainsRune(raw, 0) {
+		return nil
+	}
+	s := raw
+	return &s
+}
+
 // createRestWriteRequest is step 8 for rest-write, in one connection-scoped
 // transaction: the same lock, expiry, caps and one-pending dedupe as
 // createAbilityRequest, keyed on the target post.
@@ -818,6 +837,7 @@ func (s *Service) createRestWriteRequest(ctx context.Context, store AbilityReque
 		}
 		postType := pc.target.PostType
 		routeID, routeSum := rt.row.RouteID, rt.sum
+		targetStatus := checkedTargetStatus(pc.target.Status)
 		done := false
 		for attempt := 0; attempt < 2 && !done; attempt++ {
 			ins, err := q.InsertAbilityRequest(ctx, sqlc.InsertAbilityRequestParams{
@@ -831,6 +851,7 @@ func (s *Service) createRestWriteRequest(ctx context.Context, store AbilityReque
 				EffectCopy: e.EffectCopy, Snapshot: e.Snapshot, CardCopyVersion: AbilityCardCopyVersion,
 				DigestNonce: f.nonce, PresentedDigest: f.digest, ExpiresAt: f.expiresAt,
 				RouteID: &routeID, RouteSha256: &routeSum, CardFacts: card,
+				CheckedTargetStatus: targetStatus,
 			})
 			if err == nil {
 				out = abilityResultFromRow(ins, false)
