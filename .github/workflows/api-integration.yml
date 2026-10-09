@@ -212,6 +212,16 @@ jobs:
           docker version
           docker info --format 'server={{.ServerVersion}} driver={{.Driver}}'
 
+      # Every container this lane starts, the pre-pull below and the tests'
+      # own testcontainers pulls alike, is an anonymous Docker Hub pull, and
+      # Docker Hub meters those per source address while hosted runners share
+      # addresses. This points the daemon at Google's public mirror of Docker
+      # Hub, so the digest pins in the tests and the pre-pull below stay exactly
+      # as written; see scripts/ci-docker-mirror.sh. It exits 2 when the mirror
+      # cannot be made active.
+      - name: Pull images through the Docker Hub mirror
+        run: ../../scripts/ci-docker-mirror.sh
+
       # Pull the images the package uses up front. Not required for
       # correctness (testcontainers pulls on demand) but it moves the network
       # cost into a named step, so a registry problem reads as a pull
@@ -470,6 +480,12 @@ jobs:
           path: ${{ runner.temp }}/integration.log
           retention-days: 14
           if-no-files-found: warn
+
+      # Which registry each image pull of this lane was resolved against, read
+      # back from the daemon's own log. Informational; it never fails the lane.
+      - name: Docker mirror report
+        if: always()
+        run: ../../scripts/ci-docker-mirror.sh --report
 
   # ---- RLS cross-tenant guard, live (GH #470) -------------------------------
   # There used to be a job here (`rls-cross-tenant`) running
