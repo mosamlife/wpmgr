@@ -19,10 +19,12 @@ import (
 )
 
 // itemCommander answers every Update with one scripted item result and
-// records every Rollback request it is sent.
+// records every Rollback request it is sent. A non-nil rollbackErr makes
+// every Rollback fail in transport, after the request is recorded.
 type itemCommander struct {
-	result    agentcmd.ItemResult
-	rollbacks []agentcmd.RollbackRequest
+	result      agentcmd.ItemResult
+	rollbacks   []agentcmd.RollbackRequest
+	rollbackErr error
 }
 
 func (c *itemCommander) Update(context.Context, uuid.UUID, string, agentcmd.UpdateRequest) (agentcmd.UpdateResponse, error) {
@@ -31,6 +33,9 @@ func (c *itemCommander) Update(context.Context, uuid.UUID, string, agentcmd.Upda
 
 func (c *itemCommander) Rollback(_ context.Context, _ uuid.UUID, _ string, req agentcmd.RollbackRequest) (agentcmd.RollbackResponse, error) {
 	c.rollbacks = append(c.rollbacks, req)
+	if c.rollbackErr != nil {
+		return agentcmd.RollbackResponse{}, c.rollbackErr
+	}
 	return agentcmd.RollbackResponse{OK: true, RestoredVersion: req.ToVersion}, nil
 }
 
@@ -182,8 +187,8 @@ func TestRunApply_PluginOrThemeUpToDate_IsNotHealthChecked(t *testing.T) {
 		t.Run(target, func(t *testing.T) {
 			cmd := &verifyingItemCommander{
 				itemCommander: itemCommander{result: agentcmd.ItemResult{Type: target, Slug: "x", FromVersion: "1.0", ToVersion: "1.0", Status: agentcmd.ItemUpToDate}},
-				alive:              true,
-				reason:             agentcmd.ReasonAlive,
+				alive:         true,
+				reason:        agentcmd.ReasonAlive,
 			}
 			repo := &probeFakeRepo{}
 			w := newApplyTestWorker(repo, cmd, &panicProber{t: t})
@@ -310,6 +315,65 @@ func TestRunApply_CoreUpdated_ConfirmedFatal_RollsBackWithDowngradeFlag(t *testi
 			}
 			if got := onlyFinish(t, repo); got.Status != TaskRolledBack {
 				t.Errorf("status = %q (detail %q), want %q", got.Status, got.Detail, TaskRolledBack)
+			}
+		})
+	}
+}
+
+// TestRunApply_CoreUpdated_ConfirmedFatal_RollbackUndeliverable_NeedsManualRecovery:
+// a core rollback whose command cannot be delivered fails the task with the
+// core detail. The agent's automatic recovery covers plugins and themes only,
+// so the detail must say manual recovery is needed and must not promise it.
+func TestRunApply_CoreUpdated_ConfirmedFatal_RollbackUndeliverable_NeedsManualRecovery(t *testing.T) {
+	cmd := &itemCommander{result: coreUpdated(), rollbackErr: errors.New("dial tcp: connection refused")}
+	repo := &probeFakeRepo{}
+	w := newApplyTestWorker(repo, cmd, &scriptedProber{script: []probeStep{unhealthyStep(500)}})
+
+	if err := w.runApply(context.Background(), coreTask(), "https://example.test", coreItem()); err != nil {
+		t.Fatalf("runApply: %v", err)
+	}
+	if len(cmd.rollbacks) != 1 || !cmd.rollbacks[0].AllowCoreDowngrade {
+		t.Fatalf("rollbacks = %+v, want exactly one, carrying allow_core_downgrade", cmd.rollbacks)
+	}
+	got := onlyFinish(t, repo)
+	if got.Status != TaskFailed {
+		t.Fatalf("status = %q, want %q", got.Status, TaskFailed)
+	}
+	if got.Detail != coreRollbackUndeliverableDetail {
+		t.Errorf("detail = %q, want the core detail %q", got.Detail, coreRollbackUndeliverableDetail)
+	}
+	if !strings.Contains(got.Detail, "manual recovery") || strings.Contains(got.Detail, "watchdog") {
+		t.Errorf("detail = %q, want it to name manual recovery and never the agent's watchdog", got.Detail)
+	}
+	if got.Error == "" {
+		t.Error("error is empty, want the rollback command's own error in the task's error log")
+	}
+}
+
+// TestConfirmedFatal pins what counts as a confirmed fatal for a core
+// rollback: the signed agent check's server error, a homepage 5xx, or a PHP
+// fatal-error page. No answer, a cached answer and a 4xx do not count.
+func TestConfirmedFatal(t *testing.T) {
+	cases := []struct {
+		name  string
+		probe agentcmd.ProbeResult
+		agent bool
+		want  bool
+	}{
+		{"signed agent check returned a server error", agentcmd.ProbeResult{}, true, true},
+		{"homepage 500", agentcmd.ProbeResult{StatusCode: 500}, false, true},
+		{"homepage 503", agentcmd.ProbeResult{StatusCode: 503}, false, true},
+		{"homepage PHP fatal served with 200", agentcmd.ProbeResult{StatusCode: 200, Fatal: true}, false, true},
+		{"no answer (timeout or refused connection)", agentcmd.ProbeResult{}, false, false},
+		{"cached 500", agentcmd.ProbeResult{StatusCode: 500, CacheHit: true}, false, false},
+		{"cached PHP fatal page", agentcmd.ProbeResult{StatusCode: 200, Fatal: true, CacheHit: true}, false, false},
+		{"homepage 404", agentcmd.ProbeResult{StatusCode: 404}, false, false},
+		{"homepage 200", agentcmd.ProbeResult{StatusCode: 200}, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := confirmedFatal(tc.probe, tc.agent); got != tc.want {
+				t.Errorf("confirmedFatal(%+v, %v) = %v, want %v", tc.probe, tc.agent, got, tc.want)
 			}
 		})
 	}

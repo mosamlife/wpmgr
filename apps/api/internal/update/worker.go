@@ -1132,15 +1132,15 @@ func confirmedFatal(probe agentcmd.ProbeResult, agentConfirmedFatal bool) bool {
 // check without a confirmed fatal. The check's own reason goes to the task's
 // error log.
 const coreLeftAsIsDetail = "WordPress core was updated, but the site did not pass the health check afterwards. " +
-	"Core was left as is: an automatic core rollback runs only when the site answers with a server error or shows a PHP fatal error, " +
-	"and this check saw neither. Check the site."
+	"Core was left as is: an automatic core rollback runs only when the check confirms a server error or a PHP fatal error, " +
+	"and this check did not. Check the site."
 
 // coreRollbackUndeliverableDetail is the GH #210 detail for core. The agent
 // arms its update watchdog and takes a directory snapshot only for plugins
 // and themes, so after a completed core update nothing restores core on its
 // own.
-const coreRollbackUndeliverableDetail = "site not responding: site-wide PHP fatal after the WordPress core update; rollback command undeliverable. " +
-	"No automatic recovery follows for WordPress core, so manual recovery is required."
+const coreRollbackUndeliverableDetail = "The site is down after the WordPress core update: it answered with a server error or showed a PHP fatal error, " +
+	"and the rollback command could not be delivered. Nothing restores WordPress core automatically, so the site needs manual recovery."
 
 // rollback issues the signed rollback command and records the rolled_back
 // state. probe is the ProbeResult that triggered the rollback decision (the
@@ -1157,8 +1157,8 @@ const coreRollbackUndeliverableDetail = "site not responding: site-wide PHP fata
 // Core policy (GH #415): rolling core back is a forced downgrade of WordPress
 // itself, so it is sent only after a confirmed fatal, and always with
 // allow_core_downgrade. Anything weaker records the failure and leaves core
-// where the update put it. This is the one place the control plane sends a
-// rollback, so no other path can downgrade core.
+// where the update put it. This is the only place the control plane sends the
+// rollback command.
 func (w *Worker) rollback(ctx context.Context, task Task, siteURL string, item agentcmd.UpdateItem, res agentcmd.ItemResult, probe agentcmd.ProbeResult, agentConfirmedFatal bool, reason string) error {
 	from := fromOr(res.FromVersion, task.FromVersion)
 	fatal := confirmedFatal(probe, agentConfirmedFatal)
@@ -1198,7 +1198,8 @@ func (w *Worker) rollback(ctx context.Context, task Task, siteURL string, item a
 		// generic "rollback failed" (which could also mean e.g. a
 		// transient network blip unrelated to the update). Record a distinct
 		// detail so the operator knows the automatic filesystem-level
-		// recovery on the agent side is the remaining recovery path.
+		// recovery on the agent side is the remaining recovery path. Core has
+		// no such path, so its detail says manual recovery is needed.
 		switch {
 		case fatal && isCore:
 			detail = coreRollbackUndeliverableDetail
