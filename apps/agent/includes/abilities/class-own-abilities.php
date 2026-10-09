@@ -45,6 +45,7 @@ final class OwnAbilities
     public const NAME_REST_READ   = RestCall::NAME_READ;
     public const NAME_REST_WRITE  = RestCall::NAME_WRITE;
     public const NAME_PAGE_STRUCTURE = 'wpmgr/page-structure';
+    public const NAME_PAGE_EDIT      = 'wpmgr/page-edit';
 
     private const CATEGORY = 'wpmgr';
 
@@ -78,7 +79,7 @@ final class OwnAbilities
      */
     public static function names(): array
     {
-        return [self::NAME_INVENTORY, self::NAME_FACTS, self::NAME_CONTENT, self::NAME_PAGE_CREATE, self::NAME_REST_READ, self::NAME_REST_WRITE, self::NAME_PAGE_STRUCTURE];
+        return [self::NAME_INVENTORY, self::NAME_FACTS, self::NAME_CONTENT, self::NAME_PAGE_CREATE, self::NAME_REST_READ, self::NAME_REST_WRITE, self::NAME_PAGE_STRUCTURE, self::NAME_PAGE_EDIT];
     }
 
     /**
@@ -110,7 +111,7 @@ final class OwnAbilities
      */
     public static function abilityClass(string $name): string
     {
-        if ($name === self::NAME_PAGE_CREATE || $name === self::NAME_REST_WRITE) {
+        if ($name === self::NAME_PAGE_CREATE || $name === self::NAME_REST_WRITE || $name === self::NAME_PAGE_EDIT) {
             return 'write';
         }
 
@@ -149,6 +150,8 @@ final class OwnAbilities
                 return PageCreateBuilder::inputSchema();
             case self::NAME_PAGE_STRUCTURE:
                 return BuilderContract::pageStructureInputSchema();
+            case self::NAME_PAGE_EDIT:
+                return BuilderContract::pageEditInputSchema();
             default:
                 return ['type' => 'object', 'properties' => new \stdClass(), 'additionalProperties' => false];
         }

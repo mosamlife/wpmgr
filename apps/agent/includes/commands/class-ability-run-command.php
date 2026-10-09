@@ -10,7 +10,9 @@ use WPMgr\Agent\Abilities\AbilityInterception;
 use WPMgr\Agent\Abilities\AbilityLedger;
 use WPMgr\Agent\Abilities\AbilitySideEffects;
 use WPMgr\Agent\Abilities\Builders\BuilderAdapter;
+use WPMgr\Agent\Abilities\Builders\BuilderDocumentSnapshot;
 use WPMgr\Agent\Abilities\Builders\BuilderPageCreate;
+use WPMgr\Agent\Abilities\Builders\BuilderPageEdit;
 use WPMgr\Agent\Abilities\Builders\BuilderPageStructure;
 use WPMgr\Agent\Abilities\Builders\BuilderRegistry;
 use WPMgr\Agent\Abilities\Builders\DraftEligibility;
@@ -50,7 +52,8 @@ if (!defined('ABSPATH')) {
  *   input       string, JSON text of an object (default "{}"); revert takes none
  *   expected    object {precheck_digest, preview_digest} (write)
  *   allowed_draft_ids  list of at most one post id: the drafts the control
- *               plane names as WPMgr's, for wpmgr/page-structure (optional)
+ *               plane names as WPMgr's, for wpmgr/page-structure and
+ *               wpmgr/page-edit (optional)
  *
  * WPMgr's own wpmgr/* abilities run through their own handlers. Any other
  * ability (a vendor's or core's) runs only in read mode, only on WordPress
@@ -244,7 +247,7 @@ final class AbilityRunCommand implements CommandInterface
             if ($class !== 'write') {
                 return $this->fail('mode_class_mismatch', 'write and revert modes need a write ability');
             }
-            if ($name !== OwnAbilities::NAME_PAGE_CREATE && $name !== OwnAbilities::NAME_REST_WRITE) {
+            if (!in_array($name, [OwnAbilities::NAME_PAGE_CREATE, OwnAbilities::NAME_REST_WRITE, OwnAbilities::NAME_PAGE_EDIT], true)) {
                 return $this->fail('mode_not_available', 'this agent runs no other write ability');
             }
         }
@@ -252,7 +255,7 @@ final class AbilityRunCommand implements CommandInterface
             if (($entry->approval_mode ?? null) !== 'per_call') {
                 return $this->fail('entry_approval_invalid', 'a write entry must require approval per call');
             }
-            $want = $name === OwnAbilities::NAME_REST_WRITE ? 'post_fields' : 'created_post_trash';
+            $want = [OwnAbilities::NAME_REST_WRITE => 'post_fields', OwnAbilities::NAME_PAGE_EDIT => BuilderPageEdit::SNAPSHOT][$name] ?? 'created_post_trash';
             if (($entry->snapshot ?? null) !== $want) {
                 return $this->fail('snapshot_strategy_invalid', 'this write needs the ' . $want . ' snapshot strategy');
             }
@@ -260,6 +263,9 @@ final class AbilityRunCommand implements CommandInterface
 
         if ($name === OwnAbilities::NAME_PAGE_CREATE) {
             return $this->pageCreate($mode, (string) $requestId, $entrySha, $req, $entry);
+        }
+        if ($name === OwnAbilities::NAME_PAGE_EDIT) {
+            return $this->pageEdit($mode, (string) $requestId, $entrySha, $req, $entry);
         }
         if ($name === OwnAbilities::NAME_REST_READ || $name === OwnAbilities::NAME_REST_WRITE) {
             return $this->restCall($mode, $name, (string) $requestId, $entrySha, $req);
@@ -312,6 +318,89 @@ final class AbilityRunCommand implements CommandInterface
         }
 
         return $this->read(OwnAbilities::NAME_PAGE_STRUCTURE, $entrySha, $input, static fn (): array => BuilderPageStructure::run($input, $allowed, $adapter));
+    }
+
+    /**
+     * wpmgr/page-edit by mode: the input text, the drafts the signed
+     * parameters name, then BuilderPageEdit's precheck, or its write under
+     * the request claim after the replay check. Undo of an edit is not
+     * offered by this agent.
+     *
+     * @param string $mode      Mode.
+     * @param string $requestId Request id.
+     * @param string $entrySha  Entry hash.
+     * @param object $req       Decoded p.
+     * @param object $entry     The catalogue entry.
+     * @return array<string,mixed>
+     */
+    private function pageEdit(string $mode, string $requestId, string $entrySha, object $req, object $entry): array
+    {
+        if ($mode === 'revert') {
+            return $this->fail('mode_not_available', 'this agent does not undo a page edit');
+        }
+        $inputText = $req->input ?? null;
+        if (!is_string($inputText) || strlen($inputText) > self::MAX_INPUT_BYTES) {
+            return $this->fail('bad_input', 'input must be JSON text of an object');
+        }
+        $allowed = DraftEligibility::signedIds($req);
+        if ($allowed === null) {
+            return $this->fail('bad_params', 'allowed_draft_ids must be a list of at most one post id');
+        }
+        $seam     = $this->builderSeam === null ? null : ($this->builderSeam)();
+        $media    = fn (array $ids): array => $this->pageCreateMedia($ids);
+        $inputSha = hash('sha256', $inputText);
+
+        if ($mode === 'precheck') {
+            return $this->asPrincipal(function () use ($inputText, $entry, $allowed, $requestId, $media, $seam, $entrySha, $inputSha): array {
+                $plan = BuilderPageEdit::plan($inputText, $entry, $allowed, $requestId, $media, $seam);
+                if (isset($plan['refusal'])) {
+                    return $plan['refusal'];
+                }
+
+                return [
+                    'ok'               => true,
+                    'outcome'          => 'prechecked',
+                    'mode'             => 'precheck',
+                    'ability'          => OwnAbilities::NAME_PAGE_EDIT,
+                    'request_id'       => $requestId,
+                    'valid'            => true,
+                    'base_fingerprint' => $plan['base_fingerprint'],
+                    'preview_digest'   => $plan['preview_digest'],
+                    'precheck_digest'  => $this->precheckDigest($entrySha, $inputSha, $plan['base_fingerprint'], $plan['preview_digest']),
+                    'preview'          => $plan['preview'],
+                ];
+            });
+        }
+
+        // mode === 'write'
+        $expected = $req->expected ?? null;
+        $expPre   = is_object($expected) ? ($expected->precheck_digest ?? null) : null;
+        $expPrev  = is_object($expected) ? ($expected->preview_digest ?? null) : null;
+        if (!is_string($expPre) || preg_match(self::RE_HEX64, $expPre) !== 1
+            || !is_string($expPrev) || preg_match(self::RE_HEX64, $expPrev) !== 1) {
+            return $this->fail('bad_expected', 'expected.precheck_digest and expected.preview_digest are required');
+        }
+        BuilderDocumentSnapshot::sweep();
+        $row = AbilityLedger::get($requestId);
+        if ($row !== null) {
+            return $this->alreadyApplied($requestId, $row);
+        }
+        if (!AbilityLedger::claimRequest($requestId)) {
+            return $this->fail('request_in_flight', 'this request is already running');
+        }
+        try {
+            return $this->asPrincipal(function () use ($inputText, $entry, $allowed, $requestId, $media, $seam, $entrySha, $inputSha, $expPre, $expPrev): array {
+                $row = AbilityLedger::get($requestId);
+                if ($row !== null) {
+                    return $this->alreadyApplied($requestId, $row);
+                }
+                $digest = fn (string $baseFp, string $previewDigest): string => $this->precheckDigest($entrySha, $inputSha, $baseFp, $previewDigest);
+
+                return BuilderPageEdit::write($inputText, $entry, $allowed, $requestId, $entrySha, $expPre, $expPrev, $digest, $media, $seam);
+            });
+        } finally {
+            AbilityLedger::releaseRequest($requestId);
+        }
     }
 
     // ---------------------------------------------------------------------

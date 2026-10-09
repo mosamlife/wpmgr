@@ -291,6 +291,69 @@ final class BuilderDocumentRestore
     }
 
     /**
+     * What a change wrote, as the ledger records it for scoped(), read with
+     * SQL after the change against the snapshot taken before it.
+     *
+     * changed_keys lists, in key byte order, every meta key in $written and
+     * every key whose rows now differ from the snapshot's (so a key the
+     * change deleted, or one written without the meta API, counts), each
+     * with rowsSha256() of its snapshot rows and of its rows now. The edit
+     * lock is never listed. changed_fields lists, in RESTORE_POST_COLUMNS
+     * order, every column whose stored bytes now differ from the snapshot's,
+     * each with the sha256 of the snapshot's bytes and of the bytes now.
+     *
+     * @param int          $postId   Post ID; the snapshot must be of this post.
+     * @param array<mixed> $snapshot What BuilderDocumentSnapshot::decode() returned.
+     * @param array<mixed> $written  Meta keys the change is known to have written (the write scope's target_meta_keys).
+     * @return array{changed_keys:list<array{key:string,before_sha256:string,after_sha256:string}>,changed_fields:list<array{field:string,before_sha256:string,after_sha256:string}>}
+     * @throws \InvalidArgumentException When the snapshot is not one of this post, or a written key is not a string.
+     * @throws \RuntimeException         When the post is gone or the database cannot answer.
+     */
+    public static function changes(int $postId, array $snapshot, array $written): array
+    {
+        $snap = self::snapshot($postId, $snapshot);
+        $now  = self::read($postId, false);
+        if ($now === null) {
+            throw new \RuntimeException('the post is gone');
+        }
+
+        $keys = [];
+        foreach ($written as $key) {
+            if (!is_string($key)) {
+                throw new \InvalidArgumentException('a written key must be a string');
+            }
+            $keys[$key] = true;
+        }
+        foreach ($snap['meta'] as $pair) {
+            $keys[$pair[0]] = true;
+        }
+        foreach ($now['rows'] as $row) {
+            $keys[$row['key']] = true;
+        }
+        unset($keys[BuilderDocumentSnapshot::EDIT_LOCK_KEY]);
+        $names = array_map('strval', array_keys($keys));
+        usort($names, 'strcmp');
+
+        $changedKeys = [];
+        foreach ($names as $key) {
+            $before = self::rowsSha256(self::snapshotValues($snap['meta'], $key));
+            $after  = self::rowsSha256(self::currentValues($now['rows'], $key));
+            if ($before !== $after || in_array($key, $written, true)) {
+                $changedKeys[] = ['key' => $key, 'before_sha256' => $before, 'after_sha256' => $after];
+            }
+        }
+
+        $changedFields = [];
+        foreach (BuilderDocumentSnapshot::RESTORE_POST_COLUMNS as $column) {
+            if ($snap['post'][$column] !== $now['post'][$column]) {
+                $changedFields[] = ['field' => $column, 'before_sha256' => hash('sha256', $snap['post'][$column]), 'after_sha256' => hash('sha256', $now['post'][$column])];
+            }
+        }
+
+        return ['changed_keys' => $changedKeys, 'changed_fields' => $changedFields];
+    }
+
+    /**
      * Runs one restore: opens a transaction, reads the post's meta rows and
      * posts row with locking reads, asks $plan what to write, writes it and
      * commits. Rolls back on a refusal from $plan and on any failure.
