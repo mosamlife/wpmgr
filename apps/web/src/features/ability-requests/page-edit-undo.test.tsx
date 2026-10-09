@@ -186,6 +186,21 @@ describe("the confirmation to undo a page edit", () => {
     expect(within(dialog).getByRole("button", { name: "Undo" })).toBeEnabled();
   });
 
+  it("names the draft by its number when the site gave it no title", async () => {
+    renderTab([
+      applied("pe-new", {
+        undo_offered: true,
+        page_edit: editFacts({ post: { id: 418, from_the_site: { title: "" } } }),
+      }),
+    ]);
+    const [card] = await cardsOf(1);
+    fireEvent.click(within(card!).getByRole("button", { name: "Undo this change" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(flat(dialog.querySelector("p"))).toBe(
+      'WPMgr puts back what this change wrote on "#418". Changes approved after it that touched other parts of the page, like a featured image, stay.',
+    );
+  });
+
   it("changes nothing when it is cancelled", async () => {
     const dialog = await askToUndo();
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
