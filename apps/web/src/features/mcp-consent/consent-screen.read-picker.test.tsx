@@ -130,7 +130,7 @@ describe("ConsentScreen, the read picker opens on the wizard's defaults", () => 
   it("describes what the preset does, in the wizard's words", async () => {
     await renderScreen(consentFor(reads(SERVER_READS)));
     expect(
-      within(readPicker()).getByText("See which sites are in scope, and no other read."),
+      within(readPicker()).getByText("See which sites are in scope. Nothing else from this list."),
     ).toBeTruthy();
   });
 
@@ -254,10 +254,16 @@ describe("ConsentScreen, a preset changes only the read rows", () => {
     expect(abilityRequest().checked).toBe(true);
     expect(within(picker).getByRole("button", { name: "Just the basics", pressed: true })).toBeTruthy();
     expect(within(picker).queryByTestId("preset-custom")).toBeNull();
-    expect(
-      within(picker).getByText("See which sites are in scope, and no other read."),
-    ).toBeTruthy();
+    const description = within(picker).getByText(
+      "See which sites are in scope. Nothing else from this list.",
+    );
+    expect(description).toBeTruthy();
     expect(picker.textContent ?? "").not.toMatch(/your own set|you have changed|clears them/i);
+    // The site-tools read is ticked here, and it returns page text, so a sentence
+    // that said the connection reads "only" the sites, or "no other read", would
+    // be false on this default screen. The description is about its own list.
+    expect(description.textContent ?? "").not.toMatch(/\bonly\b|no other read/i);
+    expect(document.body.textContent ?? "").not.toMatch(/no other read/i);
   });
 
   it("keeps both site tools ticked when Read everything is pressed, and the approval carries them with every read", async () => {

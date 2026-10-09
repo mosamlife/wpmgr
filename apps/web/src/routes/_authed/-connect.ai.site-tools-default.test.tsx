@@ -348,10 +348,16 @@ describe("/connect/ai, site tools asked for", () => {
     expect(requestBox().checked).toBe(true);
     expect(screen.getByRole("button", { name: "Just the basics", pressed: true })).toBeTruthy();
     expect(screen.queryByTestId("preset-custom")).toBeNull();
-    expect(screen.getByText("See which sites are in scope, and no other read.")).toBeTruthy();
+    const description = screen.getByText("See which sites are in scope. Nothing else from this list.");
+    expect(description).toBeTruthy();
     expect(screen.getByTestId("consent-read-capability").textContent ?? "").not.toMatch(
       /your own set|you have changed|clears them/i,
     );
+    // The site-tools read is ticked on this default screen and returns page text,
+    // so no visible sentence may say the connection reads "only" the sites, or
+    // that it has "no other read".
+    expect(description.textContent ?? "").not.toMatch(/\bonly\b|no other read/i);
+    expect(document.body.textContent ?? "").not.toMatch(/no other read/i);
   });
 
   it("keeps both site tools ticked when Read everything is pressed, and the approval carries them", async () => {

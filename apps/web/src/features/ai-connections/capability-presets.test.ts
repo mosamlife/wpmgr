@@ -259,23 +259,29 @@ describe("withPreset", () => {
   });
 });
 
-// The line under the chip says what the active shortcut is. It describes the
-// reads, so it stays true when site tools are ticked as well.
+// The line under the chip says what the active shortcut is. A shortcut sets the
+// read rows, and the site-tools box (which holds a read that returns page text)
+// can be ticked alongside it, so each description is about THIS LIST and claims
+// nothing about the connection as a whole.
 describe("the preset descriptions", () => {
   const presets = capabilityPresets(SERVER_READS);
   const description = (id: string) => presets.find((p) => p.id === id)?.description;
 
-  it("is written about the reads, in plain words", () => {
-    expect(description("basics")).toBe("See which sites are in scope, and no other read.");
+  it("is written about the rows in its own list, in plain words", () => {
+    expect(description("basics")).toBe("See which sites are in scope. Nothing else from this list.");
     expect(description("read-everything")).toBe(
-      "Every read this connection could be given. None of them can change anything.",
+      "Every read in this list. None of them can change anything.",
     );
   });
 
-  it("never says the whole connection cannot change anything, which a ticked request would make false", () => {
+  it("says 'this list' and makes no claim about the connection as a whole", () => {
+    // A ticked request, or the site-tools read, would make any such claim false.
     for (const preset of presets) {
-      expect(preset.description).not.toMatch(/\bit (still )?cannot change/i);
-      expect(preset.description).not.toMatch(/nothing else/i);
+      expect(preset.description).toMatch(/\bthis list\b/);
+      expect(preset.description).not.toMatch(/\bonly\b/i);
+      expect(preset.description).not.toMatch(/no other read/i);
+      expect(preset.description).not.toMatch(/this connection/i);
+      expect(preset.description).not.toMatch(/\bit (still )?(can|cannot)\b/i);
       expect(preset.description).not.toMatch(new RegExp(`[${String.fromCharCode(0x2013, 0x2014)}]`));
     }
   });

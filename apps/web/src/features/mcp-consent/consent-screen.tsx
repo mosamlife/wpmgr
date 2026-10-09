@@ -800,9 +800,11 @@ export function ConsentScreen({
   );
   const [nameError, setNameError] = useState<string | null>(null);
   // EVERYTHING THE OPERATOR HAS TICKED, in one list, as the wizard keeps it:
-  // the read rows, the cache-clear box and the two site-tools boxes. One list
-  // is what lets the preset claim be derived over all of it, and it is what the
-  // approval is built from, so the screen and the request read one value.
+  // the read rows, the cache-clear box and the two site-tools boxes. One list is
+  // what the approval is built from, so the screen and the request read one
+  // value. The preset claim is derived from the read rows in it only, because a
+  // preset sets the reads and nothing else (owner ruling 2026-10-09): the boxes
+  // further down never move the chip, and a press never touches them.
   //
   // IT OPENS ON THE WIZARD'S DEFAULT PRESET, from the same function the wizard
   // opens on, limited to the reads the server offered: Sites alone. Never every

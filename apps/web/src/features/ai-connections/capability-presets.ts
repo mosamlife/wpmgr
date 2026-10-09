@@ -85,18 +85,24 @@ function setKey(names: readonly string[]): string {
  */
 export function capabilityPresets(offered: readonly string[]): readonly CapabilityPreset[] {
   const reads = conferrableReadsIn(offered);
+  // THE DESCRIPTIONS ARE ABOUT THIS LIST ONLY, and say "this list" so. A shortcut
+  // sets the read rows, and the site-tools box (a read that can return page text,
+  // and a request) and the cache-clear box sit outside them and may be ticked
+  // alongside. So a description must not claim anything about the connection as
+  // a whole: not "only", not "nothing else" without the list, not what the
+  // connection "can" or "cannot" do.
   const candidates: readonly CapabilityPreset[] = [
     {
       id: "basics",
       label: "Just the basics",
       capabilities: reads.filter((cap) => (BASICS_READS as readonly string[]).includes(cap)),
-      description: "See which sites are in scope, and no other read.",
+      description: "See which sites are in scope. Nothing else from this list.",
     },
     {
       id: "read-everything",
       label: "Read everything",
       capabilities: reads,
-      description: "Every read this connection could be given. None of them can change anything.",
+      description: "Every read in this list. None of them can change anything.",
     },
   ];
   const seen = new Set<string>();

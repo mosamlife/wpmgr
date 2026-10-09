@@ -956,8 +956,9 @@ export function ConnectWizard({
               This selection is sent with the connection token when you choose that sign-in
               method at step 5, and is exactly what the connection holds. Browser sign-in does
               not use this wizard's step 4 at all: your client opens a separate approval screen,
-              which asks for the reads, the cache-clear row and the site-tools rows again, and
-              this page's answer here plays no part in that connection's permissions.
+              which asks for the reads and, if the app asks for them, the cache-clear row and
+              the site-tools rows again, and this page's answer here plays no part in that
+              connection's permissions.
             </p>
             {/* NO PRIVATE REFUSAL PANEL HERE. `capabilitiesRequest.refusal` is
                 the exact string `stepGate`'s CAPABILITY_LOCAL_STEP branch

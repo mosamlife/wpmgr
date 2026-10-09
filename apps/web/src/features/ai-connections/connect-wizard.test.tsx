@@ -1747,7 +1747,7 @@ describe("choosing what a token may do (step 4, token path only)", () => {
     // sentence names both, not only the cache clear.
     expect(
       screen.getByText(
-        /which asks for the reads, the cache-clear row and the site-tools rows again/i,
+        /which asks for the reads and, if the app asks for them, the cache-clear row and the site-tools rows again/i,
       ),
     ).toBeInTheDocument();
     // The step's hint describes both asks the same way, and says that a person
