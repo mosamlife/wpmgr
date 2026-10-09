@@ -477,6 +477,43 @@ final class ElementorPageCreateRouterTest extends TestCase
         $this->assertFalse(AbilityLedger::inflight(self::REQ_GOLDEN));
     }
 
+    public function test_completed_record_failure_trashes_the_draft(): void
+    {
+        $this->enable();
+        $pre = $this->precheck(self::REQ_GOLDEN, $this->input('columns'));
+
+        // The ledger takes every write but the completed record, once.
+        $refused = 0;
+        Functions\when('update_option')->alias(function ($name, $value) use (&$refused) {
+            if ($name === 'wpmgr_ability_ledger_' . self::REQ_GOLDEN && is_array($value) && ($value['phase'] ?? null) === 'completed' && $refused++ === 0) {
+                return false;
+            }
+            $this->options[$name] = $value;
+
+            return true;
+        });
+        $r = $this->write(self::REQ_GOLDEN, $this->input('columns'), $pre['precheck_digest'], $pre['preview_digest']);
+        $this->assertSame(1, $refused, 'precondition: the completed record was refused');
+
+        // The person's undo of the untouched draft is never refused.
+        $undo = $this->revert(self::REQ_GOLDEN);
+        $this->assertSame([true, 'already_reverted'], [$undo['ok'] ?? null, $undo['outcome'] ?? null], (string) json_encode(['write' => $r, 'undo' => $undo]));
+
+        // The create answers the failure, and the draft is not left behind.
+        $this->assertSame(['ok' => false, 'code' => 'snapshot_failed', 'post_id' => $r['post_id'] ?? null, 'trashed' => true], array_intersect_key($r, ['ok' => 1, 'code' => 1, 'post_id' => 1, 'trashed' => 1]), (string) json_encode($r));
+        $id = (int) $r['post_id'];
+        $this->assertSame([$id], $this->inserted);
+        $this->assertSame('trash', $this->posts[$id]->post_status);
+        $ledger = AbilityLedger::get(self::REQ_GOLDEN);
+        $this->assertSame(['failed', 'trashed', $id, $r], [$ledger['phase'], $ledger['undo_state'], $ledger['created_post_id'], $ledger['result']]);
+        $this->assertFalse(AbilityLedger::inflight(self::REQ_GOLDEN), 'the claim is released');
+
+        // A replay answers the recorded failure and creates nothing.
+        $again = $this->write(self::REQ_GOLDEN, $this->input('columns'), $pre['precheck_digest'], $pre['preview_digest']);
+        $this->assertSame(['already_applied', $r], [$again['outcome'] ?? null, $again['result'] ?? null]);
+        $this->assertSame([$id], $this->inserted, 'no second draft');
+    }
+
     public function test_undo_trashes_builder_draft_with_own_revisions(): void
     {
         $id = $this->createDraft();
