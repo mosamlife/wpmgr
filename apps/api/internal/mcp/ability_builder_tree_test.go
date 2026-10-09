@@ -224,10 +224,17 @@ func treeFor(t *testing.T, input []byte, requestID string, containers bool, medi
 func TestElementorPrecheckProjection(t *testing.T) {
 	entrySum := sha256Hex([]byte("entry"))
 	goldens := readElementorGoldens(t)
+	// mod is one more top-level member of the input (no trailing comma), put
+	// after the editor member.
 	setup := func(g elementorGolden, c elementorGoldenCase, mod string) ([]byte, pageCreateFacts, builderAnswer) {
 		input := []byte(elementorInput(string(c.Input)))
 		if mod != "" {
-			input = []byte(strings.Replace(string(input), `"editor":"builder:elementor"`, `"editor":"builder:elementor",`+mod, 1))
+			editor := `"editor":"builder:elementor"`
+			withMod := strings.Replace(string(input), editor, editor+","+mod, 1)
+			if withMod == string(input) || !json.Valid([]byte(withMod)) {
+				t.Fatalf("%s: the member %s did not make a valid input: %.200s", c.Name, mod, withMod)
+			}
+			input = []byte(withMod)
 		}
 		f, code := validatePageCreateInput(input)
 		if code != "" {
@@ -259,12 +266,15 @@ func TestElementorPrecheckProjection(t *testing.T) {
 	otherRequest := "99999999-2222-4333-8444-777777777777"
 
 	type refusal struct {
-		name     string
-		golden   elementorGolden
-		c        elementorGoldenCase
-		mod      string
-		edit     func(a *builderAnswer, input []byte, f pageCreateFacts)
-		swapTree func(tree string) string
+		name   string
+		golden elementorGolden
+		c      elementorGoldenCase
+		mod    string
+		// wantFormat is the elementor_format the grammar must read from the
+		// input once mod is added: the case means what its name says.
+		wantFormat string
+		edit       func(a *builderAnswer, input []byte, f pageCreateFacts)
+		swapTree   func(tree string) string
 	}
 	cases := []refusal{
 		{name: "a text the outline does not hold", golden: boxes, c: plans,
@@ -293,7 +303,7 @@ func TestElementorPrecheckProjection(t *testing.T) {
 			edit: func(a *builderAnswer, _ []byte, _ pageCreateFacts) { a.layout = "grid" }},
 		{name: "the atomic format", golden: boxes, c: mixed,
 			edit: func(a *builderAnswer, _ []byte, _ pageCreateFacts) { a.format = "atomic" }},
-		{name: "a classic tree for an atomic input", golden: boxes, c: mixed, mod: `"elementor_format":"atomic",`},
+		{name: "a classic tree for an atomic input", golden: boxes, c: mixed, mod: `"elementor_format":"atomic"`, wantFormat: "atomic"},
 		{name: "a version that is not one", golden: boxes, c: mixed,
 			edit: func(a *builderAnswer, _ []byte, _ pageCreateFacts) { a.version = "3.35.9<b>" }},
 		{name: "another title", golden: boxes, c: mixed,
@@ -309,6 +319,9 @@ func TestElementorPrecheckProjection(t *testing.T) {
 	}
 	for _, rc := range cases {
 		input, f, a := setup(rc.golden, rc.c, rc.mod)
+		if rc.wantFormat != "" && f.elementorFormat != rc.wantFormat {
+			t.Fatalf("%s: the grammar read elementor_format %q, want %q", rc.name, f.elementorFormat, rc.wantFormat)
+		}
 		if rc.swapTree != nil {
 			canonicalSpaced := spacedJSON(t, rc.c.Tree)
 			swapped := rc.swapTree(canonicalSpaced)
