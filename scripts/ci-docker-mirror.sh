@@ -204,10 +204,11 @@ configure() {
 # against. At debug level the daemon logs one line per image reference it
 # resolves, in one of two shapes depending on the image store it runs:
 #   containerd store   msg=resolving host=<registry> ... url="https://<registry>/v2/<repo>/manifests/<ref>..."
-#   classic store      msg="Trying to pull <image> from https://<registry>/ v2"
-# This counts both shapes and lists the distinct lines, so a run's own log shows
-# whether its images came from the mirror or from Docker Hub. Describes; it
-# never fails the job.
+#   classic store      msg="Trying to pull <image> from https://<registry>/"
+# BuildKit, which runs inside the daemon for `docker build`, logs the first
+# shape whatever the image store. This counts both shapes and lists the
+# distinct lines, so a run's own log shows whether its images came from the
+# mirror or from Docker Hub. Describes; it never fails the job.
 report() {
   local log host re_host pat_mirror pat_hub mirror_n hub_n
   if ! command -v journalctl >/dev/null 2>&1; then
