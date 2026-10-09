@@ -565,6 +565,10 @@ type GetEmailNotifySettingsRes interface {
 	getEmailNotifySettingsRes()
 }
 
+type GetFleetAIReadinessRes interface {
+	getFleetAIReadinessRes()
+}
+
 type GetFleetAgentVersionsRes interface {
 	getFleetAgentVersionsRes()
 }
@@ -647,6 +651,10 @@ type GetScanRunRes interface {
 
 type GetScheduleRunRes interface {
 	getScheduleRunRes()
+}
+
+type GetSiteAIReadinessRes interface {
+	getSiteAIReadinessRes()
 }
 
 type GetSiteAppHealthSettingsRes interface {
@@ -1103,6 +1111,10 @@ type RecheckSiteRes interface {
 
 type ReenableAbilityForTenantRes interface {
 	reenableAbilityForTenantRes()
+}
+
+type RefreshSiteAIReadinessRes interface {
+	refreshSiteAIReadinessRes()
 }
 
 type RefreshSiteContentInventoryRes interface {

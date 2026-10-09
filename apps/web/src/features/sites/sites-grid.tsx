@@ -20,6 +20,7 @@ import type { Site } from "@wpmgr/api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { fadeUp } from "@/lib/motion-presets";
 import { SiteCard } from "@/features/sites/site-card";
+import { cellFor, type AiReadinessRollup } from "@/features/ai-readiness/readiness-cell-model";
 import { useSitesSelection } from "@/features/sites/use-sites-selection";
 import type { CardSize } from "@/features/sites/use-sites-view";
 
@@ -28,6 +29,8 @@ import type { CardSize } from "@/features/sites/use-sites-view";
 export interface SitesGridProps {
   sites: Site[];
   cardSize: CardSize;
+  /** The fleet AI readiness rollup, read once by the route; see SitesTable. */
+  aiReadiness?: AiReadinessRollup;
   onOpenAutoLogin?: (site: Site) => void;
   /** Opens the site's detail page — wired to the "Open site" menu action. */
   onOpenDetail?: (site: Site) => void;
@@ -44,6 +47,7 @@ export interface SitesGridProps {
 export function SitesGrid({
   sites,
   cardSize,
+  aiReadiness,
   onOpenAutoLogin,
   onOpenDetail,
   onDisconnect,
@@ -77,6 +81,7 @@ export function SitesGrid({
             key={site.id}
             site={site}
             cardSize={cardSize}
+            aiCell={cellFor(aiReadiness, site.id)}
             selectionCount={selection.count}
             onOpenAutoLogin={onOpenAutoLogin}
             onOpenDetail={onOpenDetail}

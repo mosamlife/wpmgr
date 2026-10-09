@@ -2311,6 +2311,34 @@ export const AgentMetadataSchema = {
         },
       },
     },
+    builder_facts: {
+      type: ["object", "null"],
+      description:
+        'Facts about the site\'s page builders that the plugin and theme\nlists do not carry, collected read-only on every metadata report.\nOptional and additive: an agent that predates it omits the whole\nobject, which the control plane stores as "not reported" and never\nreads as "off". Every field is tolerantly decoded: a value of an\nunexpected type is dropped on its own and never rejects the\nreport. Only the fields below are kept; any other key is ignored.\n',
+      properties: {
+        v: {
+          type: "integer",
+          description: "Schema version of this object. 1 today.",
+        },
+        theme_template: {
+          type: "string",
+          description:
+            "Directory name of the active theme's parent (the theme itself\nwhen it has no parent). Kept only when it is 1 to 100\ncharacters of letters, digits, dot, underscore or hyphen;\nomitted by the agent when it cannot be read.\n",
+        },
+        elementor: {
+          type: ["object", "null"],
+          description:
+            'Present only when Elementor is loaded on the site. Absent\nmeans "not installed", never "off".\n',
+          properties: {
+            atomic_editor: {
+              type: ["boolean", "null"],
+              description:
+                "Whether Elementor's Atomic editor is on, asked of\nElementor itself. Null means Elementor is loaded but gave\nno definite answer; unknown is never sent as false.\n",
+            },
+          },
+        },
+      },
+    },
   },
 } as const;
 
@@ -8347,6 +8375,262 @@ export const ContentEditingStateSchema = {
       type: "string",
       format: "uuid",
       nullable: true,
+    },
+  },
+} as const;
+
+export const SiteAIReadinessSchema = {
+  type: "object",
+  description:
+    "Whether an AI assistant connected to WPMgr can work on one site. All\nvalues come from WPMgr's own checks; nothing the site wrote reaches\nthis object except version strings that passed a strict shape check.\n",
+  required: [
+    "site_id",
+    "status",
+    "fix_count",
+    "metadata_as_of",
+    "abilities_as_of",
+    "warnings",
+    "floors",
+    "groups",
+  ],
+  properties: {
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    status: {
+      $ref: "#/components/schemas/AIReadinessStatus",
+    },
+    fix_count: {
+      type: "integer",
+      format: "int32",
+      minimum: 0,
+      description:
+        "Number of rows with state `fail` in `base` and in installed\nbuilder groups. A `bricks_abilities` row is never one of them: as\na `fail` it is unconfirmed, and as an `unknown` it is not a\nfailure (see `status`).\n",
+    },
+    metadata_as_of: {
+      type: ["string", "null"],
+      format: "date-time",
+      description:
+        "When the site last reported its plugin and theme details. Null when it never has.",
+    },
+    abilities_as_of: {
+      type: ["string", "null"],
+      format: "date-time",
+      description:
+        "When the site's tool list was last read. Null when it never has.",
+    },
+    warnings: {
+      type: "array",
+      description:
+        "Advisory notices. They never change `status` or `fix_count`.",
+      items: {
+        $ref: "#/components/schemas/AIReadinessWarning",
+      },
+    },
+    floors: {
+      $ref: "#/components/schemas/AIReadinessFloors",
+    },
+    groups: {
+      type: "array",
+      description: "Always `base`, `elementor`, `bricks`, in that order.",
+      items: {
+        $ref: "#/components/schemas/AIReadinessGroup",
+      },
+    },
+  },
+} as const;
+
+export const AIReadinessStatusSchema = {
+  type: "string",
+  enum: ["ready", "needs_attention", "incomplete"],
+} as const;
+
+export const AIReadinessWarningCodeSchema = {
+  type: "string",
+  enum: ["mcp_adapter_plugin_active", "elementor_mcp_endpoint_open"],
+} as const;
+
+export const AIReadinessWarningSchema = {
+  type: "object",
+  required: ["code"],
+  properties: {
+    code: {
+      $ref: "#/components/schemas/AIReadinessWarningCode",
+    },
+  },
+} as const;
+
+export const AIReadinessFloorsSchema = {
+  type: "object",
+  description:
+    'The versions the checks compare against, so a client can write "needs\n7.1 or later" without hard-coding the number.\n',
+  required: ["wp", "agent", "facts_agent", "elementor", "bricks"],
+  properties: {
+    wp: {
+      type: "string",
+    },
+    agent: {
+      type: "string",
+    },
+    facts_agent: {
+      type: "string",
+      description:
+        "The first WPMgr agent release that reports the Atomic editor and the parent theme.",
+    },
+    elementor: {
+      type: "string",
+    },
+    bricks: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const AIReadinessCheckIDSchema = {
+  type: "string",
+  enum: [
+    "wp_version",
+    "abilities_api",
+    "agent_version",
+    "content_editing",
+    "elementor_version",
+    "elementor_mcp_switch",
+    "elementor_atomic",
+    "bricks_version",
+    "bricks_abilities",
+  ],
+} as const;
+
+export const AIReadinessGroupSchema = {
+  type: "object",
+  required: ["id", "checks"],
+  properties: {
+    id: {
+      type: "string",
+      enum: ["base", "elementor", "bricks"],
+    },
+    installed: {
+      type: "boolean",
+      description:
+        "Builder groups only. False means the builder is not installed on\nthe site and `checks` is empty; the group counts toward nothing.\n",
+    },
+    version: {
+      type: ["string", "null"],
+      description:
+        "Builder groups only. The installed version, or null when it is not\ninstalled or the site did not report a usable version.\n",
+    },
+    wpmgr_support: {
+      type: "string",
+      enum: ["coming", "available"],
+      description:
+        "Builder groups only. `coming` while WPMgr cannot yet build pages\nwith this builder; the checks then show whether the site will be\nready.\n",
+    },
+    checks: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AIReadinessCheck",
+      },
+    },
+  },
+} as const;
+
+export const AIReadinessCheckSchema = {
+  type: "object",
+  description:
+    "One row. `state` is `pass`, `fail`, `unknown` (WPMgr could not tell;\nnever a failure) or `not_applicable` (a row this one depends on\nfailed, or the builder is installed but not active). `observed` is\nthe version that was compared, or null.\n\n`reason` is null for `pass`, and for a `fail` with a single way to\nfail. Otherwise, per row:\n\n- `wp_version`: unknown `not_reported`; fail `prerelease_build` (a\n  development or pre-release build, such as `7.1-RC1` or\n  `7.1.1-src`, whose release number reaches `floors.wp`: WPMgr's AI\n  tools run on a released WordPress only). A released version below\n  `floors.wp` is a `fail` with a null reason.\n- `agent_version`: unknown `not_reported`.\n- `abilities_api`: unknown `inventory_never_run`, `agent_too_old`\n  (the agent cannot read the tool list) or `not_reported`.\n- `content_editing`: only `pass` or `fail`.\n- `elementor_version`, `bricks_version`: fail `too_old`;\n  not_applicable `inactive` (installed but not active, so not a fix;\n  `observed` still carries the installed version); unknown\n  `not_reported`, and for `bricks_version` also\n  `agent_too_old_for_fact` (a child theme may be in use and the agent\n  is too old to report its parent).\n- `elementor_mcp_switch`, `bricks_abilities`: unknown\n  `inventory_never_run` (no tool list yet, or the last one was read\n  while the site lacked the Abilities API), `inventory_truncated` or\n  `needs_elementor` / `needs_bricks`; not_applicable `needs_abilities`\n  or `needs_elementor` / `needs_bricks`.\n- `elementor_atomic`: unknown `agent_too_old_for_fact`,\n  `not_reported` or `needs_elementor`; not_applicable\n  `needs_elementor`.\n\n`bricks_abilities` is inferred from the site's tool list and has not\nbeen confirmed on a licensed Bricks install. When it is `pass` or\n`fail` it is listed with its state, but it is not counted in\n`status`, `fix_count` or `failing`. When it is `unknown` it is an\nordinary unknown: it makes `status` `incomplete`, and it is still not\na fix, so it is not in `failing` either.\n\nA client must render a state or reason it does not recognise as a\nneutral \"not checked\", never as a failure.\n",
+  required: ["id", "state", "reason", "observed"],
+  properties: {
+    id: {
+      $ref: "#/components/schemas/AIReadinessCheckID",
+    },
+    state: {
+      type: "string",
+      enum: ["pass", "fail", "unknown", "not_applicable"],
+    },
+    reason: {
+      type: ["string", "null"],
+      enum: [
+        "not_reported",
+        "inventory_never_run",
+        "inventory_truncated",
+        "agent_too_old",
+        "agent_too_old_for_fact",
+        "needs_abilities",
+        "needs_elementor",
+        "needs_bricks",
+        "inactive",
+        "too_old",
+        "prerelease_build",
+        null,
+      ],
+    },
+    observed: {
+      type: ["string", "null"],
+      description:
+        "A version string that passed a strict shape check, or null.",
+    },
+  },
+} as const;
+
+export const FleetAIReadinessSchema = {
+  type: "object",
+  required: ["sites"],
+  properties: {
+    sites: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/FleetAIReadinessSite",
+      },
+    },
+  },
+} as const;
+
+export const FleetAIReadinessSiteSchema = {
+  type: "object",
+  required: ["site_id", "status", "fix_count", "failing", "warnings"],
+  properties: {
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    status: {
+      $ref: "#/components/schemas/AIReadinessStatus",
+    },
+    fix_count: {
+      type: "integer",
+      format: "int32",
+      minimum: 0,
+    },
+    failing: {
+      type: "array",
+      description:
+        "Ids of the rows that count toward `fix_count`: those whose state\nis `fail`. `bricks_abilities` is never listed, whatever its state;\nwhen it is `unknown` it makes the site `incomplete`, and it is\nstill not a fix.\n",
+      items: {
+        $ref: "#/components/schemas/AIReadinessCheckID",
+      },
+    },
+    warnings: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AIReadinessWarningCode",
+      },
+    },
+  },
+} as const;
+
+export const AIReadinessRefreshResultSchema = {
+  type: "object",
+  required: ["metadata", "abilities"],
+  properties: {
+    metadata: {
+      type: "boolean",
+      description: "A fresh metadata report was requested from the site.",
+    },
+    abilities: {
+      type: "boolean",
+      description:
+        "A tool-list read was queued by this call or already queued within\nthe last two minutes. False when the site's agent is too old to\nrun one.\n",
     },
   },
 } as const;

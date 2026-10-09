@@ -138,6 +138,10 @@ export {
   undoAbilityRequest,
   getSiteContentEditing,
   enableSiteContentEditing,
+  // AI readiness checklist (per-site card, fleet rollup, re-check)
+  getSiteAiReadiness,
+  getFleetAiReadiness,
+  refreshSiteAiReadiness,
   // search-replace (#188)
   runSearchReplace,
   // db snapshots (#189)
@@ -570,6 +574,22 @@ export type {
   UndoAbilityRequestData,
   GetSiteContentEditingData,
   EnableSiteContentEditingData,
+  // AI readiness checklist. The status, check id and warning code unions are
+  // the closed sets the control plane returns.
+  SiteAiReadiness,
+  AiReadinessStatus,
+  AiReadinessWarning,
+  AiReadinessWarningCode,
+  AiReadinessFloors,
+  AiReadinessCheckId,
+  AiReadinessGroup,
+  AiReadinessCheck,
+  AiReadinessRefreshResult,
+  FleetAiReadiness,
+  FleetAiReadinessSite,
+  GetSiteAiReadinessData,
+  GetFleetAiReadinessData,
+  RefreshSiteAiReadinessData,
   // search-replace (#188)
   SearchReplaceRequest,
   SearchReplaceResult,
