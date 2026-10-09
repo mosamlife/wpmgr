@@ -53,18 +53,42 @@ import { CachePurgeCapabilityBox } from "@/features/ai-connections/cache-purge-c
 export const REVOKE_LOCATION = "Settings, under AI connections";
 
 /**
- * The sentence shown when the server withheld scopes the app asked for
+ * The sentences shown when the server withheld scopes the app asked for
  * (`unregistered_scopes` on the consent payload).
  *
  * An AI app keeps the registration it made the first time it was connected, and
- * that registration lists what it may ever ask for. One connected before WPMgr
- * offered site tools cannot be given them from this screen: the only way to ask
- * again is to register again, which for a standard MCP client means removing
- * WPMgr from the app and adding it back. So the sentence says that, and offers
- * no tick, because there is nothing here to tick.
+ * that registration lists what it may ever ask for. A scope it did not register
+ * for cannot be given from this screen: the only way to ask again is to register
+ * again, which for a standard MCP client means removing WPMgr from the app and
+ * adding it back. So the sentence says that, and offers no tick, because there
+ * is nothing here to tick.
+ *
+ * TWO SENTENCES, CHOSEN BY MEMBERSHIP. A registration can hold mcp:site and lack
+ * mcp:cache. For that app this screen already offers site tools, so a sentence
+ * promising site tools after a reinstall would send the user to remove an app
+ * that has the access they came for. The site sentence is therefore shown only
+ * when mcp:site itself was withheld. Any other withheld scope gets the general
+ * sentence, which names no scope and no tool.
  */
-export const UNREGISTERED_SCOPES_NOTICE =
+export const UNREGISTERED_SITE_TOOLS_NOTICE =
   "This AI app was connected before WPMgr offered site tools. To give it site tools, remove WPMgr from the app and add it again.";
+
+export const UNREGISTERED_OTHER_SCOPES_NOTICE =
+  "This AI app was connected before WPMgr offered some of the permissions it is asking for. To give it those, remove WPMgr from the app and add it again.";
+
+/**
+ * Which sentence, if any, explains the withheld scopes. Membership decides:
+ * mcp:site anywhere in the list selects the site sentence, any other non-empty
+ * list selects the general one, and an empty list selects none. Order and length
+ * change nothing. The scope strings are never rendered, so a value the server
+ * sends that this dashboard has never heard of cannot reach the page.
+ */
+function unregisteredScopesNotice(unregistered: readonly string[]): string | null {
+  if (unregistered.length === 0) return null;
+  return unregistered.includes(SCOPE_SITE)
+    ? UNREGISTERED_SITE_TOOLS_NOTICE
+    : UNREGISTERED_OTHER_SCOPES_NOTICE;
+}
 
 // ---------------------------------------------------------------------------
 // Checklist item 1: which client is asking
@@ -263,11 +287,11 @@ function PermissionsBlock({
         </div>
       )}
 
-      {/* Where the site-tools box would be, for an app whose registration does
-          not hold mcp:site. Read from `unregisteredScopes` for this sentence
-          only: the boxes above are driven by `scopes`, so a withheld scope can
-          never grow a tick. */}
-      {consent.unregisteredScopes.length > 0 && <UnregisteredScopesNotice />}
+      {/* Why the app is being offered less than it asked for. Read from
+          `unregisteredScopes` to choose a sentence and for nothing else: the
+          boxes above are driven by `scopes`, so a withheld scope can never grow
+          a tick. */}
+      <UnregisteredScopesNotice unregistered={consent.unregisteredScopes} />
 
       {!capabilitiesOk && (
         <p
@@ -345,9 +369,12 @@ function PermissionsBlock({
 /**
  * Why an app that asked for more is being offered less. A plain informational
  * note, not a warning: nothing is wrong with the request and nothing here is
- * blocked, the app is simply limited to what it registered for.
+ * blocked, the app is simply limited to what it registered for. Renders nothing
+ * when nothing was withheld.
  */
-function UnregisteredScopesNotice() {
+function UnregisteredScopesNotice({ unregistered }: { unregistered: readonly string[] }) {
+  const sentence = unregisteredScopesNotice(unregistered);
+  if (sentence === null) return null;
   return (
     <div
       role="note"
@@ -355,7 +382,7 @@ function UnregisteredScopesNotice() {
       className="mt-4 flex items-start gap-2 rounded-md border border-[var(--color-info)]/30 bg-[var(--color-info-subtle)] p-3 text-sm text-[var(--color-info-subtle-fg)]"
     >
       <Info aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-      <p>{UNREGISTERED_SCOPES_NOTICE}</p>
+      <p>{sentence}</p>
     </div>
   );
 }
