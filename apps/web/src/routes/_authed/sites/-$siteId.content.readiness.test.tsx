@@ -1149,6 +1149,39 @@ describe("turning AI editing on", () => {
     expect(c.getByText("On.")).toBeInTheDocument();
     expect(screen.getByTestId("fleet-reader")).toHaveTextContent("Ready");
   });
+
+  it("is not undone by a poll read that was already on its way when it was turned on", async () => {
+    serveSwitch(false);
+    refreshReadiness.mockResolvedValue(okResult({ metadata: true, abilities: true }));
+    renderTab("operator", { fleetReader: true });
+    const c = await card();
+    expect(await screen.findByTestId("fleet-reader")).toHaveTextContent("1 to fix");
+    const turnOn = await screen.findByRole("button", { name: "Turn on" });
+
+    vi.useFakeTimers();
+    fireEvent.click(c.getByRole("button", { name: "Check again" }));
+    await settle(0);
+
+    // The next poll's read leaves before the switch flips and answers after.
+    let answerOldRead!: (v: unknown) => void;
+    const oldRead = new Promise((resolve) => (answerOldRead = resolve));
+    getReadiness.mockImplementationOnce(() => oldRead);
+    await settle(POLL_INTERVAL_MS);
+
+    fireEvent.click(turnOn);
+    await settle(0);
+    expect(c.getByTestId("ai-readiness-status")).toHaveTextContent("Ready.");
+
+    // The read that left first now answers, with the switch still off.
+    await act(async () => {
+      answerOldRead(okResult(siteReadiness(false)));
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    await settle(0);
+    expect(c.getByTestId("ai-readiness-status")).toHaveTextContent("Ready.");
+    expect(c.getByText("On.")).toBeInTheDocument();
+    expect(screen.getByTestId("fleet-reader")).toHaveTextContent("Ready");
+  });
 });
 
 describe("floors", () => {
