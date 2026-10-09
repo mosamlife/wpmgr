@@ -119,7 +119,7 @@ func TestRevertChainFor_NamesEveryAppliedEditInOrder(t *testing.T) {
 	s := func(v string) *string { return &v }
 	applied, refused, notSent, gaveUp := s(OutcomeApplied), s(OutcomeRefused), s("not_sent"), s(OutcomeUnknown)
 
-	if r, err := revertChainFor(creation, nil); err != nil || r != nil {
+	if r, err := revertChainFor(creation, nil, noPutBack); err != nil || r != nil {
 		t.Fatalf("no edits: %+v %v, want nothing sent", r, err)
 	}
 
@@ -135,7 +135,7 @@ func TestRevertChainFor_NamesEveryAppliedEditInOrder(t *testing.T) {
 		editAt(t0.Add(8*time.Minute), "done", applied, s(UndoRefusedConflict)),
 		editAt(t0.Add(9*time.Minute), "pending", nil, nil),
 	}
-	r, err := revertChainFor(creation, edits)
+	r, err := revertChainFor(creation, edits, noPutBack)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,8 +150,76 @@ func TestRevertChainFor_NamesEveryAppliedEditInOrder(t *testing.T) {
 	}
 
 	// Edits that are not applied name nothing.
-	if r, err := revertChainFor(creation, edits[2:3]); err != nil || r != nil {
+	if r, err := revertChainFor(creation, edits[2:3], noPutBack); err != nil || r != nil {
 		t.Fatalf("no applied edit: %+v %v, want nothing sent", r, err)
+	}
+}
+
+// noPutBack reads every failed edit as one the site did not put back.
+func noPutBack(uuid.UUID) (bool, error) { return false, nil }
+
+// A failed edit whose record says the site put the page back left nothing of
+// its own on the draft but the revisions its save made. The draft's undo
+// names it among the edits, in the order they were made, so the site counts
+// those revisions as WPMgr's. A failed edit the site did not put back, or
+// that recorded no put-back at all, is never named.
+func TestRevertChainFor_NamesFailedEditsThePageWasPutBackFrom(t *testing.T) {
+	t0 := time.Date(2026, 10, 10, 9, 0, 0, 0, time.UTC)
+	creation := sqlc.AssistantAbilityRequest{ID: uuid.New(), AbilityName: mcp.AbilityPageCreate, CreatedAt: t0}
+	s := func(v string) *string { return &v }
+	applied, refused, mismatch := s(OutcomeApplied), s(OutcomeRefused), s(OutcomeVerifyMismatch)
+
+	edits := []sqlc.ListEditRequestsForPostRow{
+		editAt(t0.Add(-time.Hour), "failed", refused, nil), // an earlier draft's edit of a reused post id, put back
+		editAt(t0.Add(1*time.Minute), "done", applied, s("available")),
+		editAt(t0.Add(2*time.Minute), "failed", refused, nil),  // put back
+		editAt(t0.Add(3*time.Minute), "failed", refused, nil),  // not put back
+		editAt(t0.Add(4*time.Minute), "failed", refused, nil),  // failed before it wrote anything: no report
+		editAt(t0.Add(5*time.Minute), "failed", mismatch, nil), // put back
+		editAt(t0.Add(6*time.Minute), "done", applied, s("available")),
+	}
+	putBackIDs := map[uuid.UUID]bool{edits[0].ID: true, edits[2].ID: true, edits[5].ID: true}
+	var read []uuid.UUID
+	putBack := func(id uuid.UUID) (bool, error) {
+		read = append(read, id)
+		return putBackIDs[id], nil
+	}
+	r, err := revertChainFor(creation, edits, putBack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []uuid.UUID{edits[1].ID, edits[2].ID, edits[5].ID, edits[6].ID}
+	if r == nil || r.SnapshotSHA256 != "" || len(r.Chain) != len(want) {
+		t.Fatalf("chain = %+v, want %v", r, want)
+	}
+	for i := range want {
+		if r.Chain[i] != want[i] {
+			t.Fatalf("chain[%d] = %s, want %s (order or membership wrong)", i, r.Chain[i], want[i])
+		}
+	}
+	// Only the failed edits since this creation are read.
+	wantRead := []uuid.UUID{edits[2].ID, edits[3].ID, edits[4].ID, edits[5].ID}
+	if len(read) != len(wantRead) {
+		t.Fatalf("read %v, want %v", read, wantRead)
+	}
+	for i := range wantRead {
+		if read[i] != wantRead[i] {
+			t.Fatalf("read[%d] = %s, want %s", i, read[i], wantRead[i])
+		}
+	}
+
+	// A draft whose only edit failed and was put back names that edit.
+	if r, err := revertChainFor(creation, edits[2:3], putBack); err != nil || r == nil || len(r.Chain) != 1 || r.Chain[0] != edits[2].ID {
+		t.Fatalf("only a put-back failed edit: %+v %v", r, err)
+	}
+	// One the site did not put back names nothing, as before.
+	if r, err := revertChainFor(creation, edits[3:5], putBack); err != nil || r != nil {
+		t.Fatalf("failed edits not put back: %+v %v, want nothing sent", r, err)
+	}
+	// A record that cannot be read refuses the undo before anything is sent.
+	boom := errors.New("read failed")
+	if _, err := revertChainFor(creation, edits[2:3], func(uuid.UUID) (bool, error) { return false, boom }); !errors.Is(err, boom) {
+		t.Fatalf("got %v, want the read's error", err)
 	}
 }
 
@@ -169,18 +237,18 @@ func TestRevertChainFor_WaitsForAnEditInFlight(t *testing.T) {
 		"being undone":            editAt(t0.Add(2*time.Minute), "done", s(OutcomeApplied), s("in_progress")),
 		"earlier edit being sent": editAt(t0.Add(30*time.Second), "dispatched", nil, nil),
 	} {
-		_, err := revertChainFor(creation, []sqlc.ListEditRequestsForPostRow{done, e})
+		_, err := revertChainFor(creation, []sqlc.ListEditRequestsForPostRow{done, e}, noPutBack)
 		if de, ok := domain.AsDomain(err); !ok || de.Code != CodeUndoBusy || de.Message != msgUndoBusy {
 			t.Errorf("%s: got %v, want %s", name, err, CodeUndoBusy)
 		}
 	}
 	gaveUp := editAt(t0.Add(2*time.Minute), "outcome_unknown", s(OutcomeUnknown), nil)
-	if r, err := revertChainFor(creation, []sqlc.ListEditRequestsForPostRow{done, gaveUp}); err != nil || r == nil || len(r.Chain) != 1 {
+	if r, err := revertChainFor(creation, []sqlc.ListEditRequestsForPostRow{done, gaveUp}, noPutBack); err != nil || r == nil || len(r.Chain) != 1 {
 		t.Fatalf("a given-up edit held the undo or joined the chain: %+v %v", r, err)
 	}
 	// An edit request older than this creation is not about this draft.
 	old := editAt(t0.Add(-time.Minute), "dispatched", nil, nil)
-	if _, err := revertChainFor(creation, []sqlc.ListEditRequestsForPostRow{old, done}); err != nil {
+	if _, err := revertChainFor(creation, []sqlc.ListEditRequestsForPostRow{old, done}, noPutBack); err != nil {
 		t.Fatalf("an edit older than the creation held the undo: %v", err)
 	}
 }
@@ -198,18 +266,18 @@ func TestRevertChainFor_RefusesWhatItCannotNameInFull(t *testing.T) {
 		}
 		return out
 	}
-	r, err := revertChainFor(creation, many(agentcmd.AbilityRunMaxRevertChain))
+	r, err := revertChainFor(creation, many(agentcmd.AbilityRunMaxRevertChain), noPutBack)
 	if err != nil || r == nil || len(r.Chain) != agentcmd.AbilityRunMaxRevertChain {
 		t.Fatalf("a full chain: %v", err)
 	}
-	_, err = revertChainFor(creation, many(agentcmd.AbilityRunMaxRevertChain+1))
+	_, err = revertChainFor(creation, many(agentcmd.AbilityRunMaxRevertChain+1), noPutBack)
 	wantDomainCode(t, err, CodeUndoUnavailable)
 
 	cut := many(editListLimit)
 	for i := range cut {
 		cut[i].State, cut[i].Outcome, cut[i].UndoState = "declined", nil, nil
 	}
-	_, err = revertChainFor(creation, cut)
+	_, err = revertChainFor(creation, cut, noPutBack)
 	wantDomainCode(t, err, CodeUndoUnavailable)
 }
 

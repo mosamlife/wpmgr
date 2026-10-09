@@ -154,10 +154,13 @@ func undoCodeOf(r sqlc.AssistantAbilityRequest) *string {
 // own changes to the draft from anyone else's. Each applied edit's precheck
 // read the page after the edit before it had been applied, so the order the
 // requests were made in is the order they were applied in. An undone edit is
-// named too: its revisions are still WPMgr's. The undo waits while an edit of
-// the draft is approved and not yet sent, sent and not answered, still being
-// resolved from the site's ledger, or being undone. With no applied edit
-// nothing is sent, as before page edits existed.
+// named too: its revisions are still WPMgr's. So is a failed edit whose
+// record says the site put the page back (restored): the page is as it was
+// before that edit, and the revisions its save made are WPMgr's. The undo
+// waits while an edit of the draft is approved and not yet sent, sent and
+// not answered, still being resolved from the site's ledger, or being
+// undone. With no edit to name nothing is sent, as before page edits
+// existed.
 func undoRevertFor(ctx context.Context, q *sqlc.Queries, r sqlc.AssistantAbilityRequest) (*agentcmd.AbilityRunRevert, error) {
 	switch r.AbilityName {
 	case mcp.AbilityPageEdit:
@@ -187,15 +190,24 @@ func undoRevertFor(ctx context.Context, q *sqlc.Queries, r sqlc.AssistantAbility
 		if err != nil {
 			return nil, err
 		}
-		return revertChainFor(r, edits)
+		return revertChainFor(r, edits, func(id uuid.UUID) (bool, error) {
+			e, err := q.GetAbilityRequestForSite(ctx, sqlc.GetAbilityRequestForSiteParams{
+				TenantID: r.TenantID, ID: id, SiteID: r.SiteID,
+			})
+			if err != nil {
+				return false, err
+			}
+			return e.Restored != nil && *e.Restored, nil
+		})
 	}
 	return nil, nil
 }
 
 // revertChainFor is a page-create undo's chain from the edit requests of
 // the post it created (ListEditRequestsForPost, oldest first): see
-// undoRevertFor. Only edits made since this creation are its own.
-func revertChainFor(r sqlc.AssistantAbilityRequest, edits []sqlc.ListEditRequestsForPostRow) (*agentcmd.AbilityRunRevert, error) {
+// undoRevertFor. Only edits made since this creation are its own. putBack
+// reads whether a failed edit's record says the site put the page back.
+func revertChainFor(r sqlc.AssistantAbilityRequest, edits []sqlc.ListEditRequestsForPostRow, putBack func(uuid.UUID) (bool, error)) (*agentcmd.AbilityRunRevert, error) {
 	if len(edits) >= editListLimit {
 		return nil, domain.Conflict(CodeUndoUnavailable, msgUndoChainLong)
 	}
@@ -207,8 +219,19 @@ func revertChainFor(r sqlc.AssistantAbilityRequest, edits []sqlc.ListEditRequest
 		if editSettling(e) {
 			return nil, domain.Conflict(CodeUndoBusy, msgUndoBusy)
 		}
-		if e.State == "done" && e.Outcome != nil && *e.Outcome == OutcomeApplied {
+		switch {
+		case e.State == "done" && e.Outcome != nil && *e.Outcome == OutcomeApplied:
 			chain = append(chain, e.ID)
+		case e.State == "failed":
+			// A failed edit the site put the page back from left only the
+			// revisions its save made, and those are WPMgr's too.
+			back, err := putBack(e.ID)
+			if err != nil {
+				return nil, err
+			}
+			if back {
+				chain = append(chain, e.ID)
+			}
 		}
 	}
 	if len(chain) == 0 {
