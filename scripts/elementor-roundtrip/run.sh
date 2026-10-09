@@ -362,9 +362,14 @@ for v in "${selected[@]}"; do
       >"$log" 2>&1 &
     child=$!
     set -e
+    # The timeout is decided from the clock, recorded before the kill is sent, and the status
+    # comes from that record: a boot that is reaped the moment it is stopped has no process
+    # left to look at, and looking would turn a timeout into a missing verdict.
     waited=0
+    timed_out=0
     while kill -0 "$child" 2>/dev/null; do
       if [ "$waited" -ge "$timeout_s" ]; then
+        timed_out=1
         pkill -P "$child" 2>/dev/null || true
         kill "$child" 2>/dev/null || true
         [ "$kill_settle" -eq 0 ] || sleep "$kill_settle"
@@ -374,9 +379,9 @@ for v in "${selected[@]}"; do
       waited=$((waited + 1))
     done
     set +e
-    if kill -0 "$child" 2>/dev/null; then
-      rc=124
+    if [ "$timed_out" -eq 1 ]; then
       wait "$child" 2>/dev/null
+      rc=124
     else
       wait "$child"
       rc=$?
