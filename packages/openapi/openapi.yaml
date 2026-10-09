@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.164
+  version: 0.61.183
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -1022,6 +1022,20 @@ paths:
       summary: Begin OIDC login (redirect to provider)
       description: Redirects (302) to the OIDC provider. Returns 501 if OIDC is disabled.
       tags: [auth]
+      parameters:
+        - name: redirect
+          in: query
+          required: false
+          description: >
+            Where to land after a successful sign-in, including one that first
+            answers a second factor, so a shared deep link survives the
+            identity provider round trip. Must be a path on this origin;
+            anything else (absolute, protocol-relative, or an encoded form of
+            either) is discarded and the sign-in lands on the default page. The
+            value is kept with the handshake in the session and is never handed
+            to the identity provider or read back off the callback URL.
+          schema:
+            type: string
       responses:
         "302":
           description: Redirect to the OIDC provider
@@ -1035,6 +1049,10 @@ paths:
     get:
       operationId: oidcCallback
       summary: OIDC redirect callback
+      description: >
+        The identity provider's return leg, reached by a browser navigation, so
+        a completed sign-in answers with a redirect into the app rather than a
+        response body.
       tags: [auth]
       parameters:
         - name: code
@@ -1048,12 +1066,15 @@ paths:
           schema:
             type: string
       responses:
-        "200":
-          description: Authenticated via OIDC; session cookie set
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Me"
+        "302":
+          description: >
+            Signed in. Without a second factor the session cookie is set and the
+            browser goes to the path given to oidcLogin as `redirect`, or to the
+            default page. With a second factor enrolled no session is issued
+            yet: the browser goes to the `/2fa-challenge` page carrying
+            `challenge`, `totp`, `webauthn`, `recovery_factor` and, when one was
+            given, `redirect`, which that page follows once the factor is
+            proven.
         "401":
           description: OIDC verification failed
           content:
@@ -20545,6 +20566,35 @@ components:
             the outline has no image, and for every other ability. A card whose
             outline names an image with no entry here cannot be shown in full
             and must not be approvable.
+        page_builder:
+          allOf:
+            - $ref: "#/components/schemas/AbilityRequestPageBuilder"
+          nullable: true
+          description: |
+            The page builder that builds a wpmgr/page-create request's page, as
+            the site's precheck named it. Null for a page in a WordPress
+            editor, and for every other ability. A card for a request whose
+            editor is a page builder cannot be shown in full without it and
+            must not be approvable.
+    AbilityRequestPageBuilder:
+      type: object
+      description: |
+        The page builder of a wpmgr/page-create request. `version` came from
+        the site: render it as plain text.
+      required: [builder, format, version, layout]
+      properties:
+        builder:
+          type: string
+          description: The page builder, such as `elementor`.
+        format:
+          type: string
+          description: What the builder builds the page from, such as `classic` (Elementor's classic widgets).
+        version:
+          type: string
+          description: The builder's version on the site.
+        layout:
+          type: string
+          description: How the page is laid out, such as `containers` or `sections` (Elementor's two classic layouts).
     AbilityRequestPageMedia:
       type: object
       description: |

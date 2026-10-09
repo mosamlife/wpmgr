@@ -63,6 +63,15 @@ const MinAgentVersionForRestCall = "0.61.158"
 // usage text names the same release.
 const MinAgentVersionForPageLayout = "0.61.160"
 
+// MinAgentVersionForBuilderAdapters is the first agent release whose
+// wpmgr/page-create builds a draft with a page builder (editor
+// "builder:elementor"): the builder registry, the Elementor adapter and its
+// classic mapper. The entry's own floor stays MinAgentVersionForPageCreate;
+// the control plane applies this floor to a builder input, at run and again
+// at dispatch, so an older agent is never asked to build one. It names the
+// release that ships the builder path and moves with that release's number.
+const MinAgentVersionForBuilderAdapters = "0.61.161"
+
 // ErrAbilityRunMalformed marks a 2xx ability_run reply the control plane
 // could not use: a body that did not decode, or an answer for another mode or
 // entry. Resending the same call gets the same answer.
@@ -445,6 +454,17 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"layout_needs_block_editor": {},
 	"image_not_available":       {},
 	"image_url_unusable":        {},
+	// wpmgr/page-create with a page builder (MinAgentVersionForBuilderAdapters).
+	"builder_not_enabled":           {},
+	"builder_not_available":         {},
+	"node_not_supported_by_builder": {},
+	"image_alt_from_library":        {},
+	"leaf_unsafe":                   {},
+	"adapter_key_not_allowed":       {},
+	"page_has_unknown_elements":     {},
+	"builder_would_change_layout":   {},
+	"builder_save_refused":          {},
+	"builder_crashed":               {},
 }
 
 var abilityRunCodeRe = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)

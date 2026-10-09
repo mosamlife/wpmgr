@@ -1,0 +1,906 @@
+{
+    "note": "Golden Elementor classic trees for page-create outlines, sections layout. \"input\" is the outline as the AI sends it; \"tree\" is what ElementorClassicMapper::map() must build for it with IdSeed(request_id) and the media facts below (\"url\" is the large-size address, \"alt\" the library alt). Node shapes, key order and setting values follow what Elementor 3.20.4, 3.35.9 and 4.3.4 stored when the same shapes were saved as the WPMgr service user through the document save path. Those versions store such a tree alike except for numbers, booleans and null, so numbers are written as strings and no setting holds a boolean or null. Checked by hand against those captures; never regenerate this file from the mapper.",
+    "elementor_versions": [
+        "3.20.4",
+        "3.35.9",
+        "4.3.4"
+    ],
+    "request_id": "11111111-2222-4333-8444-777777777777",
+    "media": {
+        "5": {
+            "url": "https://example.com/wp-content/uploads/2026/10/van-1024x640.png",
+            "alt": "Library alt text"
+        },
+        "7": {
+            "url": "https://example.com/wp-content/uploads/2026/10/team-1024x683.jpg",
+            "alt": ""
+        }
+    },
+    "cases": [
+        {
+            "name": "heading",
+            "input": [
+                {
+                    "type": "heading",
+                    "level": 2,
+                    "text": "Fish & Chips [1] — “Ça va”"
+                },
+                {
+                    "type": "heading",
+                    "level": 3,
+                    "text": "Our services & prices"
+                }
+            ],
+            "tree": [
+                {
+                    "id": "93e6ad3",
+                    "elType": "section",
+                    "settings": {
+                        "structure": "10"
+                    },
+                    "elements": [
+                        {
+                            "id": "ef21f00",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "100"
+                            },
+                            "elements": [
+                                {
+                                    "id": "605cdc2",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "title": "Fish &amp; Chips &#091;1&#093; — “Ça va”",
+                                        "header_size": "h2"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "heading"
+                                },
+                                {
+                                    "id": "3ee0f20",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "title": "Our services &amp; prices",
+                                        "header_size": "h3"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "heading"
+                                }
+                            ],
+                            "isInner": false
+                        }
+                    ],
+                    "isInner": false
+                }
+            ]
+        },
+        {
+            "name": "text",
+            "input": [
+                {
+                    "type": "paragraph",
+                    "text": "We fix leaking taps fast & cheap [1]."
+                }
+            ],
+            "tree": [
+                {
+                    "id": "93e6ad3",
+                    "elType": "section",
+                    "settings": {
+                        "structure": "10"
+                    },
+                    "elements": [
+                        {
+                            "id": "ef21f00",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "100"
+                            },
+                            "elements": [
+                                {
+                                    "id": "605cdc2",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<p>We fix leaking taps fast &amp; cheap &#091;1&#093;.</p>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                }
+                            ],
+                            "isInner": false
+                        }
+                    ],
+                    "isInner": false
+                }
+            ]
+        },
+        {
+            "name": "list",
+            "input": [
+                {
+                    "type": "list",
+                    "ordered": false,
+                    "items": [
+                        "First item",
+                        "Second & third"
+                    ]
+                }
+            ],
+            "tree": [
+                {
+                    "id": "93e6ad3",
+                    "elType": "section",
+                    "settings": {
+                        "structure": "10"
+                    },
+                    "elements": [
+                        {
+                            "id": "ef21f00",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "100"
+                            },
+                            "elements": [
+                                {
+                                    "id": "605cdc2",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<ul><li>First item</li><li>Second &amp; third</li></ul>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                }
+                            ],
+                            "isInner": false
+                        }
+                    ],
+                    "isInner": false
+                }
+            ]
+        },
+        {
+            "name": "quote",
+            "input": [
+                {
+                    "type": "quote",
+                    "paragraphs": [
+                        "Best plumber in town."
+                    ],
+                    "citation": "A customer"
+                }
+            ],
+            "tree": [
+                {
+                    "id": "93e6ad3",
+                    "elType": "section",
+                    "settings": {
+                        "structure": "10"
+                    },
+                    "elements": [
+                        {
+                            "id": "ef21f00",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "100"
+                            },
+                            "elements": [
+                                {
+                                    "id": "605cdc2",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<blockquote><p>Best plumber in town.</p><cite>A customer</cite></blockquote>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                }
+                            ],
+                            "isInner": false
+                        }
+                    ],
+                    "isInner": false
+                }
+            ]
+        },
+        {
+            "name": "button",
+            "input": [
+                {
+                    "type": "buttons",
+                    "align": "center",
+                    "buttons": [
+                        {
+                            "text": "Book now & save",
+                            "url": "https://example.com/book?ref=home"
+                        }
+                    ]
+                }
+            ],
+            "tree": [
+                {
+                    "id": "93e6ad3",
+                    "elType": "section",
+                    "settings": {
+                        "structure": "10"
+                    },
+                    "elements": [
+                        {
+                            "id": "ef21f00",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "100"
+                            },
+                            "elements": [
+                                {
+                                    "id": "5b13921",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "text": "Book now &amp; save",
+                                        "link": {
+                                            "url": "https://example.com/book?ref=home",
+                                            "is_external": "",
+                                            "nofollow": ""
+                                        },
+                                        "align": "center"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "button"
+                                }
+                            ],
+                            "isInner": false
+                        }
+                    ],
+                    "isInner": false
+                }
+            ]
+        },
+        {
+            "name": "image",
+            "input": [
+                {
+                    "type": "image",
+                    "attachment_id": 5,
+                    "alt": "Library alt text",
+                    "caption": "Our van & crew",
+                    "align": "center"
+                }
+            ],
+            "tree": [
+                {
+                    "id": "93e6ad3",
+                    "elType": "section",
+                    "settings": {
+                        "structure": "10"
+                    },
+                    "elements": [
+                        {
+                            "id": "ef21f00",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "100"
+                            },
+                            "elements": [
+                                {
+                                    "id": "605cdc2",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "image": {
+                                            "url": "https://example.com/wp-content/uploads/2026/10/van-1024x640.png",
+                                            "id": "5",
+                                            "source": "library"
+                                        },
+                                        "image_size": "large",
+                                        "align": "center",
+                                        "caption_source": "custom",
+                                        "caption": "Our van &amp; crew"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "image"
+                                }
+                            ],
+                            "isInner": false
+                        }
+                    ],
+                    "isInner": false
+                }
+            ]
+        },
+        {
+            "name": "spacer",
+            "input": [
+                {
+                    "type": "spacer",
+                    "size": "medium"
+                }
+            ],
+            "tree": [
+                {
+                    "id": "93e6ad3",
+                    "elType": "section",
+                    "settings": {
+                        "structure": "10"
+                    },
+                    "elements": [
+                        {
+                            "id": "ef21f00",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "100"
+                            },
+                            "elements": [
+                                {
+                                    "id": "605cdc2",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "space": {
+                                            "unit": "px",
+                                            "size": "48",
+                                            "sizes": []
+                                        }
+                                    },
+                                    "elements": [],
+                                    "widgetType": "spacer"
+                                }
+                            ],
+                            "isInner": false
+                        }
+                    ],
+                    "isInner": false
+                }
+            ]
+        },
+        {
+            "name": "divider",
+            "input": [
+                {
+                    "type": "separator"
+                }
+            ],
+            "tree": [
+                {
+                    "id": "93e6ad3",
+                    "elType": "section",
+                    "settings": {
+                        "structure": "10"
+                    },
+                    "elements": [
+                        {
+                            "id": "ef21f00",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "100"
+                            },
+                            "elements": [
+                                {
+                                    "id": "605cdc2",
+                                    "elType": "widget",
+                                    "settings": [],
+                                    "elements": [],
+                                    "widgetType": "divider"
+                                }
+                            ],
+                            "isInner": false
+                        }
+                    ],
+                    "isInner": false
+                }
+            ]
+        },
+        {
+            "name": "columns",
+            "input": [
+                {
+                    "type": "columns",
+                    "columns": [
+                        {
+                            "children": [
+                                {
+                                    "type": "heading",
+                                    "level": 3,
+                                    "text": "Left column"
+                                }
+                            ]
+                        },
+                        {
+                            "children": [
+                                {
+                                    "type": "paragraph",
+                                    "text": "Right column"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "tree": [
+                {
+                    "id": "605cdc2",
+                    "elType": "section",
+                    "settings": {
+                        "structure": "20"
+                    },
+                    "elements": [
+                        {
+                            "id": "c87900b",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "50"
+                            },
+                            "elements": [
+                                {
+                                    "id": "52982f9",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "title": "Left column",
+                                        "header_size": "h3"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "heading"
+                                }
+                            ],
+                            "isInner": false
+                        },
+                        {
+                            "id": "3d3406f",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "50"
+                            },
+                            "elements": [
+                                {
+                                    "id": "6cbe98a",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<p>Right column</p>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                }
+                            ],
+                            "isInner": false
+                        }
+                    ],
+                    "isInner": false
+                }
+            ]
+        },
+        {
+            "name": "group-with-columns-and-widths",
+            "input": [
+                {
+                    "type": "group",
+                    "children": [
+                        {
+                            "type": "heading",
+                            "level": 2,
+                            "text": "Plans"
+                        },
+                        {
+                            "type": "columns",
+                            "widths": [
+                                40,
+                                60
+                            ],
+                            "columns": [
+                                {
+                                    "children": [
+                                        {
+                                            "type": "list",
+                                            "ordered": true,
+                                            "items": [
+                                                "Basic",
+                                                "Pro"
+                                            ]
+                                        }
+                                    ]
+                                },
+                                {
+                                    "children": [
+                                        {
+                                            "type": "table",
+                                            "header": [
+                                                "Plan",
+                                                "Price"
+                                            ],
+                                            "rows": [
+                                                [
+                                                    "Basic",
+                                                    "10"
+                                                ],
+                                                [
+                                                    "Pro",
+                                                    ""
+                                                ]
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        },
+                        {
+                            "type": "paragraph",
+                            "text": "Prices include VAT."
+                        }
+                    ]
+                }
+            ],
+            "tree": [
+                {
+                    "id": "605cdc2",
+                    "elType": "section",
+                    "settings": {
+                        "structure": "10"
+                    },
+                    "elements": [
+                        {
+                            "id": "134cc62",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "100"
+                            },
+                            "elements": [
+                                {
+                                    "id": "d1126e8",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "title": "Plans",
+                                        "header_size": "h2"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "heading"
+                                },
+                                {
+                                    "id": "2d7c149",
+                                    "elType": "section",
+                                    "settings": {
+                                        "structure": "20"
+                                    },
+                                    "elements": [
+                                        {
+                                            "id": "3f617af",
+                                            "elType": "column",
+                                            "settings": {
+                                                "_column_size": "50",
+                                                "_inline_size": "40"
+                                            },
+                                            "elements": [
+                                                {
+                                                    "id": "26bfe1d",
+                                                    "elType": "widget",
+                                                    "settings": {
+                                                        "editor": "<ol><li>Basic</li><li>Pro</li></ol>"
+                                                    },
+                                                    "elements": [],
+                                                    "widgetType": "text-editor"
+                                                }
+                                            ],
+                                            "isInner": true
+                                        },
+                                        {
+                                            "id": "7743930",
+                                            "elType": "column",
+                                            "settings": {
+                                                "_column_size": "50",
+                                                "_inline_size": "60"
+                                            },
+                                            "elements": [
+                                                {
+                                                    "id": "4e87eb8",
+                                                    "elType": "widget",
+                                                    "settings": {
+                                                        "editor": "<table><thead><tr><th>Plan</th><th>Price</th></tr></thead><tbody><tr><td>Basic</td><td>10</td></tr><tr><td>Pro</td><td></td></tr></tbody></table>"
+                                                    },
+                                                    "elements": [],
+                                                    "widgetType": "text-editor"
+                                                }
+                                            ],
+                                            "isInner": true
+                                        }
+                                    ],
+                                    "isInner": true
+                                },
+                                {
+                                    "id": "edd9c90",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<p>Prices include VAT.</p>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                }
+                            ],
+                            "isInner": false
+                        }
+                    ],
+                    "isInner": false
+                }
+            ]
+        },
+        {
+            "name": "mixed-top-level",
+            "input": [
+                {
+                    "type": "heading",
+                    "level": 2,
+                    "text": "Welcome"
+                },
+                {
+                    "type": "image",
+                    "attachment_id": 7,
+                    "alt": "",
+                    "align": "none"
+                },
+                {
+                    "type": "columns",
+                    "columns": [
+                        {
+                            "children": [
+                                {
+                                    "type": "paragraph",
+                                    "text": "One"
+                                }
+                            ]
+                        },
+                        {
+                            "children": [
+                                {
+                                    "type": "paragraph",
+                                    "text": "Two"
+                                }
+                            ]
+                        },
+                        {
+                            "children": [
+                                {
+                                    "type": "spacer",
+                                    "size": "small"
+                                },
+                                {
+                                    "type": "quote",
+                                    "paragraphs": [
+                                        "Fast",
+                                        "Friendly"
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "type": "buttons",
+                    "buttons": [
+                        {
+                            "text": "Call us",
+                            "url": "/contact"
+                        },
+                        {
+                            "text": "Email",
+                            "url": "https://example.com/mail",
+                            "style": "fill"
+                        }
+                    ]
+                },
+                {
+                    "type": "spacer",
+                    "size": "large"
+                },
+                {
+                    "type": "separator"
+                },
+                {
+                    "type": "table",
+                    "rows": [
+                        [
+                            "a",
+                            "b"
+                        ]
+                    ]
+                }
+            ],
+            "tree": [
+                {
+                    "id": "93e6ad3",
+                    "elType": "section",
+                    "settings": {
+                        "structure": "10"
+                    },
+                    "elements": [
+                        {
+                            "id": "ef21f00",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "100"
+                            },
+                            "elements": [
+                                {
+                                    "id": "605cdc2",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "title": "Welcome",
+                                        "header_size": "h2"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "heading"
+                                },
+                                {
+                                    "id": "3ee0f20",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "image": {
+                                            "url": "https://example.com/wp-content/uploads/2026/10/team-1024x683.jpg",
+                                            "id": "7",
+                                            "source": "library"
+                                        },
+                                        "image_size": "large"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "image"
+                                }
+                            ],
+                            "isInner": false
+                        }
+                    ],
+                    "isInner": false
+                },
+                {
+                    "id": "0d3499d",
+                    "elType": "section",
+                    "settings": {
+                        "structure": "30"
+                    },
+                    "elements": [
+                        {
+                            "id": "5e0fd0c",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "33"
+                            },
+                            "elements": [
+                                {
+                                    "id": "470f2bd",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<p>One</p>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                }
+                            ],
+                            "isInner": false
+                        },
+                        {
+                            "id": "8b9726c",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "33"
+                            },
+                            "elements": [
+                                {
+                                    "id": "e007af3",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<p>Two</p>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                }
+                            ],
+                            "isInner": false
+                        },
+                        {
+                            "id": "8b1d596",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "33"
+                            },
+                            "elements": [
+                                {
+                                    "id": "ae231b1",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "space": {
+                                            "unit": "px",
+                                            "size": "24",
+                                            "sizes": []
+                                        }
+                                    },
+                                    "elements": [],
+                                    "widgetType": "spacer"
+                                },
+                                {
+                                    "id": "2483453",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<blockquote><p>Fast</p><p>Friendly</p></blockquote>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                }
+                            ],
+                            "isInner": false
+                        }
+                    ],
+                    "isInner": false
+                },
+                {
+                    "id": "880160e",
+                    "elType": "section",
+                    "settings": {
+                        "structure": "10"
+                    },
+                    "elements": [
+                        {
+                            "id": "a5c75d3",
+                            "elType": "column",
+                            "settings": {
+                                "_column_size": "100"
+                            },
+                            "elements": [
+                                {
+                                    "id": "f8bffa2",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "text": "Call us",
+                                        "link": {
+                                            "url": "/contact",
+                                            "is_external": "",
+                                            "nofollow": ""
+                                        },
+                                        "align": "left"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "button"
+                                },
+                                {
+                                    "id": "53dd771",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "text": "Email",
+                                        "link": {
+                                            "url": "https://example.com/mail",
+                                            "is_external": "",
+                                            "nofollow": ""
+                                        },
+                                        "align": "left"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "button"
+                                },
+                                {
+                                    "id": "8745ee1",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "space": {
+                                            "unit": "px",
+                                            "size": "96",
+                                            "sizes": []
+                                        }
+                                    },
+                                    "elements": [],
+                                    "widgetType": "spacer"
+                                },
+                                {
+                                    "id": "7c364a6",
+                                    "elType": "widget",
+                                    "settings": [],
+                                    "elements": [],
+                                    "widgetType": "divider"
+                                },
+                                {
+                                    "id": "faf8bcc",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<table><tbody><tr><td>a</td><td>b</td></tr></tbody></table>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                }
+                            ],
+                            "isInner": false
+                        }
+                    ],
+                    "isInner": false
+                }
+            ]
+        }
+    ]
+}
