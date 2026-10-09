@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import {
   createMemoryHistory,
   createRootRouteWithContext,
@@ -17,6 +17,8 @@ import {
   CONSENT_APPROVE_PATH,
   CONSENT_AUTHORIZE_PATH,
 } from "@/features/mcp-consent/use-consent";
+
+import { parseConsentContext } from "@/features/mcp-consent/consent-context";
 
 import { Route as ConnectAiRoute } from "./connect.ai";
 
@@ -149,7 +151,7 @@ function lateAnswer(body: unknown) {
   };
 }
 
-function mount() {
+function mount(search: string = SEARCH) {
   const queryClient = createTestQueryClient();
   const rootRoute = createRootRouteWithContext<RouterContext>()({});
   type UpdateOptions = Parameters<typeof ConnectAiRoute.update>[0];
@@ -160,11 +162,11 @@ function mount() {
   } as unknown as UpdateOptions);
   const router = createRouter({
     routeTree: rootRoute.addChildren([connectAiRoute]),
-    history: createMemoryHistory({ initialEntries: [`/connect/ai?${SEARCH}`] }),
+    history: createMemoryHistory({ initialEntries: [`/connect/ai?${search}`] }),
     context: { queryClient },
   });
   renderWithProviders(<RouterProvider router={router} />, { queryClient });
-  return { queryClient };
+  return { queryClient, router };
 }
 
 const readBox = () => screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.read");
@@ -177,13 +179,23 @@ function authorizeRequests(): string[] {
 }
 
 /** The JSON body of the one approval POST, read from the request itself. */
-async function approvalBody(): Promise<{ capabilities?: string[]; consent_ticket?: string }> {
+async function approvalBody(): Promise<{
+  capabilities?: string[];
+  consent_ticket?: string;
+  client_id?: string;
+  name?: string;
+}> {
   await waitFor(() => expect(navigateTo).toHaveBeenCalledTimes(1));
   const posts = fetchMock.mock.calls.filter(([input]) => urlOf(input) === CONSENT_APPROVE_PATH);
   expect(posts).toHaveLength(1);
   const raw = posts[0]![1]?.body;
   if (typeof raw !== "string") throw new Error("the approval body was not a JSON string");
-  return JSON.parse(raw) as { capabilities?: string[]; consent_ticket?: string };
+  return JSON.parse(raw) as {
+    capabilities?: string[];
+    consent_ticket?: string;
+    client_id?: string;
+    name?: string;
+  };
 }
 
 function submitApproval() {
@@ -483,4 +495,115 @@ describe("/connect/ai, site tools not asked for", () => {
     const body = await approvalBody();
     expect(body.capabilities).toEqual(["mcp.sites.read"]);
   });
+});
+
+// A DIFFERENT AUTHORIZE REQUEST IS A DIFFERENT SCREEN. The screen keeps what the
+// person ticks and types and works out its opening ticks once, so when the
+// browser's back and forward buttons hand the route a context that is already
+// cached for another request, the mounted screen must not carry the first
+// request's ticks, name or sentences into the second. The second request is put
+// in the cache before the move, which is exactly the state back and forward
+// leave, and the fetch stub refuses any authorize request it was not told about,
+// so a screen that went to the network instead would fail loudly.
+describe("/connect/ai, a different authorize request", () => {
+  const PARAMS_B = {
+    response_type: "code",
+    client_id: "c_second",
+    redirect_uri: "https://other.example/cb",
+    scope: "mcp:read mcp:cache",
+    state: "s2",
+    code_challenge: "cc2",
+    code_challenge_method: "S256",
+  };
+  const SEARCH_B =
+    "response_type=code&client_id=c_second&redirect_uri=https%3A%2F%2Fother.example%2Fcb" +
+    "&scope=mcp%3Aread%20mcp%3Acache&state=s2&code_challenge=cc2&code_challenge_method=S256";
+  const CACHE_PURGE = { name: "mcp.cache.purge", effect: "request" };
+
+  const cacheBox = () =>
+    within(screen.getByTestId("consent-cache-capability")).getByRole<HTMLInputElement>("checkbox");
+  const nameInput = () => screen.getByLabelText<HTMLInputElement>("Name this connection");
+  const cannotChange = () => screen.getByTestId("consent-cannot-change");
+
+  it("mounts a fresh screen for the second request, and again for the first when the person goes back", async () => {
+    const wireA = wire("ticket-a", {
+      scopes: ["mcp:read", "mcp:site", "mcp:cache"],
+      conferrable_capabilities: [...FULL_OFFER, CACHE_PURGE],
+    });
+    const wireB = wire("ticket-b", {
+      client_id: "c_second",
+      client_name_unverified: "Second Client",
+      redirect_uri: "https://other.example/cb",
+      redirect_host: "other.example",
+      scopes: ["mcp:read", "mcp:cache"],
+      conferrable_capabilities: [{ name: "mcp.sites.read", effect: "read" }, CACHE_PURGE],
+    });
+    const late = lateAnswer(wireA);
+    authorizeAnswers = [late.answer];
+    const { queryClient, router } = mount();
+    await screen.findByRole("status", { name: "Loading the connection request" });
+    late.release();
+    await screen.findByTestId("consent-site-capability");
+
+    // The first screen. It opens with the site tools ticked and the cache clear
+    // clear. The person ticks the cache clear and renames the connection.
+    expect(nameInput().value).toBe("Route Test Client");
+    expect(cacheBox().checked).toBe(false);
+    fireEvent.click(cacheBox());
+    fireEvent.change(nameInput(), { target: { value: "Renamed on the first screen" } });
+    expect(cacheBox().checked).toBe(true);
+    expect(cannotChange()).toHaveTextContent(
+      "Beyond reading, the only things it can do are ask to clear the site cache and ask to make changes through the site's tools.",
+    );
+
+    // The second request, already cached, as it is on the way back and forth.
+    queryClient.setQueryData(consentKeys.authorize(PARAMS_B), parseConsentContext(wireB));
+    act(() => {
+      router.history.push(`/connect/ai?${SEARCH_B}`);
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("consent-redirect-host")).toHaveTextContent("other.example"),
+    );
+    expect(authorizeRequests()).toHaveLength(1);
+
+    // Its ticks, its name and its sentences are the second request's own.
+    expect(screen.queryByTestId("consent-site-capability")).toBeNull();
+    expect(cacheBox().checked).toBe(false);
+    expect(nameInput().value).toBe("Second Client");
+    expect(cannotChange()).toHaveTextContent("This connection is read-only.");
+    expect(cannotChange()).not.toHaveTextContent(/clear the site cache/);
+
+    // And back to the first: a fresh screen again, not the one the person
+    // ticked and renamed.
+    act(() => {
+      router.history.back();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("consent-redirect-host")).toHaveTextContent("x.example"),
+    );
+    expect(authorizeRequests()).toHaveLength(1);
+    expect(readBox().checked).toBe(true);
+    expect(requestBox().checked).toBe(true);
+    expect(cacheBox().checked).toBe(false);
+    expect(nameInput().value).toBe("Route Test Client");
+    expect(cannotChange()).toHaveTextContent(
+      "Beyond reading, the only thing it can do is ask to make changes through the site's tools.",
+    );
+
+    // What goes to the server is the first request's own, with no cache clear.
+    submitApproval();
+    const body = await approvalBody();
+    expect(body.client_id).toBe("c_route");
+    expect(body.consent_ticket).toBe("ticket-a");
+    expect(body.name).toBe("Route Test Client");
+    expect([...(body.capabilities ?? [])].sort()).toEqual([
+      "mcp.ability.read",
+      "mcp.ability.request",
+      "mcp.sites.read",
+    ]);
+  });
+
+  // The over-fire arm of the key, that it is the request and not the consent
+  // ticket, is the earlier test in this file where a refreshed context for the
+  // SAME request brings a new ticket and the person's cleared tick survives.
 });
