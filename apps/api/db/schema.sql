@@ -9653,10 +9653,10 @@ SELECT 'wpmgr/page-create', 'wpmgr', 'write', 'admitted', true, 'per_call',
        'in alt text. On a site that uses the classic editor, send editor wordpress_classic and only headings, ' ||
        'paragraphs, lists, quotes, tables, separators and images without captions. Layout blocks need the WPMgr ' ||
        'plugin 0.61.160 or later on the site. On a site with Elementor, send editor builder:elementor to build the ' ||
-       'draft in Elementor from the same outline. You may add elementor_format: site_default (the default, which ' ||
-       'follows the site''s own setting and is classic unless the site chose Atomic), classic for Elementor''s ' ||
-       'classic widgets, or atomic for its Atomic editor, which works only where that editor is switched on and ' ||
-       'WPMgr supports the site''s Elementor version. In Elementor, buttons cannot use the outline style, a ' ||
+       'draft in Elementor from the same outline. The draft is built with Elementor''s classic widgets: leave ' ||
+       'elementor_format out or send classic; site_default, the default, builds classic widgets too. Atomic is not ' ||
+       'available yet: elementor_format atomic is always refused, whatever the site runs. In Elementor, buttons ' ||
+       'cannot use the outline style, a ' ||
        'paragraph cannot be only a web address, and an image''s alt text must be exactly the alt text it has in the ' ||
        'media library. Elementor pages need the WPMgr plugin 0.61.161 or later and Elementor 3.20 or later on the ' ||
        'site.',
