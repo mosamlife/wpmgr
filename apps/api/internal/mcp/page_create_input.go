@@ -247,6 +247,9 @@ func (w *pageWalk) image(n map[string]json.RawMessage) string {
 	if !ok || id < 1 || id > pageCreateMaxAttachmentID {
 		return pageCreateBadInput
 	}
+	// Alt text's own rules (no square bracket, no character reference) are
+	// text rules: the agent refuses them as create_content_invalid, and the
+	// shared case table has this side pass them on.
 	if !isJSONString(n["alt"]) {
 		return pageCreateBadInput
 	}
@@ -590,11 +593,15 @@ var (
 	pageLinkAuthority    = regexp.MustCompile(`^((?:[A-Za-z0-9-]+\.)+[A-Za-z0-9-]+)(?::([0-9]{1,5}))?$`)
 	pageImageAuthority   = regexp.MustCompile(`^[A-Za-z0-9.-]+(?::[0-9]{1,5})?$`)
 	pageModifiedGMTShape = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$`)
+	// pageCharacterReference is an "&" that starts a character reference: a
+	// name, a decimal number or a hex number, ended by ";". The agent's
+	// CHARACTER_REFERENCE, which links, image addresses and alt text refuse.
+	pageCharacterReference = regexp.MustCompile(`&(?:[A-Za-z0-9]+|#[0-9]+|#[xX][0-9A-Fa-f]+);`)
 )
 
 // pageURLShapeUsable is the shape every link and image address shares: 1 to
 // 2048 bytes of ASCII from the link character set, every % followed by two
-// hex digits.
+// hex digits, and no "&" that starts a character reference.
 func pageURLShapeUsable(u string) bool {
 	if len(u) < 1 || len(u) > pageCreateMaxURLBytes || !pageURLCharset.MatchString(u) {
 		return false
@@ -604,7 +611,7 @@ func pageURLShapeUsable(u string) bool {
 			return false
 		}
 	}
-	return true
+	return !pageCharacterReference.MatchString(u)
 }
 
 func isHexDigit(c byte) bool {
@@ -619,16 +626,20 @@ func authorityOf(rest string) string {
 	return rest
 }
 
-// pageLinkUsable is a button link the grammar accepts: an https:// address
-// (lowercase scheme, a DNS host with at least one dot, an optional port
-// 1..65535, no user name or password) or a path on the site that starts with
-// one '/'.
+// pageLinkUsable is a button link the grammar accepts, in the shared shape:
+// an https:// address (lowercase scheme, a DNS host with at least one dot, an
+// optional port 1..65535, no user name or password) or a path on the site
+// that starts with one '/' and holds no ':' and no "&#" anywhere (a colon is
+// written %3A).
 func pageLinkUsable(u string) bool {
 	if !pageURLShapeUsable(u) {
 		return false
 	}
 	if u[0] == '/' {
-		return len(u) == 1 || (u[1] != '/' && u[1] != '\\')
+		if len(u) > 1 && (u[1] == '/' || u[1] == '\\') {
+			return false
+		}
+		return !strings.Contains(u, ":") && !strings.Contains(u, "&#")
 	}
 	if !strings.HasPrefix(u, "https://") {
 		return false
@@ -652,7 +663,8 @@ func pageLinkUsable(u string) bool {
 
 // pageImageURLUsable is an address the site gave for an image: http:// or
 // https:// (lowercase), a plain host with an optional port and no user name,
-// in the shared shape.
+// in the shared shape (so no character reference either: the agent refuses
+// such an address as image_url_unusable).
 func pageImageURLUsable(u string) bool {
 	if !pageURLShapeUsable(u) {
 		return false
