@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
 // ---------------------------------------------------------------------------
@@ -237,7 +238,7 @@ func TestResendEmail_DispatchedPayloadMatchesAgentContract(t *testing.T) {
 	if !res.Verified {
 		t.Error("an agent that attested verified=true must report Verified=true")
 	}
-	if strings.Contains(res.Detail, "could not confirm") {
+	if strings.Contains(res.Detail, "could not") || strings.HasPrefix(res.Detail, "Sent") {
 		t.Errorf("a verified resend must not carry the unverified note: %q", res.Detail)
 	}
 	if meta, ok := resendAuditMeta(logID, res); !ok {
@@ -314,7 +315,7 @@ func TestResendEmail_UnaskedAttestation_FailsClosed(t *testing.T) {
 	if res.Verified {
 		t.Error("the CP supplied nothing to compare against, so no attestation can be believed")
 	}
-	if !strings.Contains(res.Detail, "no provider message ID was recorded") {
+	if !strings.Contains(res.Detail, "no delivery ID") {
 		t.Errorf("the operator must be told the real cause, got %q", res.Detail)
 	}
 }
@@ -352,20 +353,20 @@ func TestResendEmail_NoMessageID_OmitsKeyAndReportsUnverified(t *testing.T) {
 	if res.Verified {
 		t.Error("a dispatch with no message_id must report Verified=false")
 	}
-	if !strings.Contains(res.Detail, "could not confirm") {
+	if !strings.Contains(res.Detail, "could not be double-checked") {
 		t.Errorf("an unverified resend must say so to the operator, got %q", res.Detail)
 	}
 	// And with the RIGHT cause. Nothing here is fixable by updating the plugin,
 	// so the note must not send the operator after one.
-	if !strings.Contains(res.Detail, "no provider message ID was recorded") {
+	if !strings.Contains(res.Detail, "no delivery ID") {
 		t.Errorf("expected the no-recorded-id cause, got %q", res.Detail)
 	}
 	if strings.Contains(res.Detail, "too old") {
 		t.Errorf("this site's plugin is not the problem; the note misdirects: %q", res.Detail)
 	}
-	// PR #542 review: this state must say plainly that there is nothing to fix.
-	if !strings.Contains(res.Detail, "nothing to fix") {
-		t.Errorf("an explicit verified=false with no prior Message-ID must tell the operator there is nothing to fix, got %q", res.Detail)
+	// PR #542 review: this state must say plainly that nothing is wrong.
+	if !strings.Contains(res.Detail, "normal") {
+		t.Errorf("an explicit verified=false with no prior Message-ID must tell the operator this is normal, got %q", res.Detail)
 	}
 
 	// The audit row must record it too, or the log cannot tell the two apart.
@@ -450,7 +451,7 @@ func TestResendEmail_LegacyAgentSilence_IsNotVerified(t *testing.T) {
 		t.Error("an agent that returned no `verified` field never compared anything; " +
 			"reporting the resend as verified tells the operator a check happened when none did")
 	}
-	if !strings.Contains(res.Detail, "could not confirm") {
+	if !strings.Contains(res.Detail, "double-check") {
 		t.Errorf("an unconfirmed resend must say so to the operator, got %q", res.Detail)
 	}
 	// And the cause has to be the honest one: the plugin did not answer, which
@@ -458,7 +459,7 @@ func TestResendEmail_LegacyAgentSilence_IsNotVerified(t *testing.T) {
 	if !strings.Contains(res.Detail, "too old") {
 		t.Errorf("the operator must be told the site's plugin could not check, got %q", res.Detail)
 	}
-	if strings.Contains(res.Detail, "no provider message ID was recorded") {
+	if strings.Contains(res.Detail, "no delivery ID") {
 		t.Errorf("wrong cause reported: the CP had a Message-ID and sent it, got %q", res.Detail)
 	}
 	// PR #542 review: an agent old enough to omit `verified` entirely is
@@ -517,7 +518,7 @@ func TestResendEmail_NoMessageID_LegacyAgentSilence_IsNotAPluginProblem(t *testi
 	if res.Verified {
 		t.Error("the agent returned no `verified` field; this must not report a verified resend")
 	}
-	if !strings.Contains(res.Detail, "could not confirm") {
+	if !strings.Contains(res.Detail, "could not be double-checked") {
 		t.Errorf("an unconfirmed resend must say so to the operator, got %q", res.Detail)
 	}
 	// The crux of the bug: nothing could have been checked, so telling this
@@ -525,11 +526,11 @@ func TestResendEmail_NoMessageID_LegacyAgentSilence_IsNotAPluginProblem(t *testi
 	if strings.Contains(res.Detail, "too old") || strings.Contains(res.Detail, "Update the plugin") {
 		t.Errorf("no Message-ID was ever sent, so this is not a plugin problem, got %q", res.Detail)
 	}
-	if !strings.Contains(res.Detail, "no provider message ID was recorded") {
+	if !strings.Contains(res.Detail, "no delivery ID") {
 		t.Errorf("expected the no-recorded-id cause, got %q", res.Detail)
 	}
-	if !strings.Contains(res.Detail, "nothing to fix") {
-		t.Errorf("the operator must be told plainly there is nothing to fix, got %q", res.Detail)
+	if !strings.Contains(res.Detail, "normal") {
+		t.Errorf("the operator must be told plainly this is normal, got %q", res.Detail)
 	}
 
 	meta, ok := resendAuditMeta(logID, res)
@@ -994,45 +995,32 @@ func TestResendFailureMessage(t *testing.T) {
 
 // TestResendUnverifiedNote_DefaultCase pins case 2 of resendUnverifiedNote's
 // doc comment directly: askedForCheck=true, legacyAgent=false. A provider
-// message ID WAS sent, and a current agent answered the comparison honestly
-// with verified:false. Before this fix, this branch returned the identical
-// sentence as the !askedForCheck case ("no provider message ID was recorded
-// for this entry"), which is the opposite of what happened here and
-// contradicted the doc comment immediately above the switch.
+// message ID WAS sent, and a current agent answered the comparison with
+// verified:false. The note must not claim no ID was recorded, and must not send
+// the operator to update a plugin that already answered.
 //
-// As built, apps/agent's ResendEmailCommand::execute() cannot actually
-// produce this combination end to end (see the comment on the default case
-// in resendUnverifiedNote) — a supplied message_id either mismatches and
-// refuses outright, or matches and verified is fixed true through the return.
-// This test calls the function directly so the corrected wording is pinned
-// even though the branch is presently unreachable through a real agent.
+// As built, apps/agent's ResendEmailCommand::execute() cannot produce this
+// combination end to end (see the comment on the default case in
+// resendUnverifiedNote), so this calls the function directly.
 func TestResendUnverifiedNote_DefaultCase(t *testing.T) {
 	got := resendUnverifiedNote(true, false)
 
-	if strings.Contains(got, "no provider message ID was recorded") || strings.Contains(got, "usual when the original send failed") {
+	if strings.Contains(got, "delivery ID") || strings.Contains(got, "first send failed") {
 		t.Errorf("a Message-ID WAS sent in this case; the note must not claim none was recorded, got %q", got)
 	}
 	if strings.Contains(got, "too old") || strings.Contains(got, "Update the plugin") {
 		t.Errorf("a current agent answered the check; the note must not send the operator to update it, got %q", got)
 	}
-	if !strings.Contains(got, "message ID was sent") {
-		t.Errorf("the note must say a Message-ID was sent, got %q", got)
+	if !strings.HasPrefix(got, "Sent") {
+		t.Errorf("the note must open with the outcome, got %q", got)
 	}
-	if !strings.Contains(got, "current") {
-		t.Errorf("the note must say the plugin is current and did respond, got %q", got)
-	}
-	if !strings.Contains(got, "could not confirm the match") {
-		t.Errorf("the note must say the site reported it could not confirm the match, got %q", got)
-	}
-	if !strings.Contains(got, "message has been sent") {
-		t.Errorf("the note must say the message was sent, got %q", got)
+	if !strings.Contains(got, "could not confirm it was the message you selected") {
+		t.Errorf("the note must say the site could not confirm the match, got %q", got)
 	}
 }
 
-// TestResendUnverifiedNote_AllCases is a light sanity check that the other two
-// branches keep their existing, distinct wording after the default case was
-// corrected — the switch was not restructured, only the default branch's
-// return value changed.
+// TestResendUnverifiedNote_AllCases checks that the three branches keep
+// distinct wording, each naming its own cause.
 func TestResendUnverifiedNote_AllCases(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -1040,9 +1028,9 @@ func TestResendUnverifiedNote_AllCases(t *testing.T) {
 		legacyAgent   bool
 		want          string
 	}{
-		{name: "no message id at all", askedForCheck: false, legacyAgent: false, want: "no provider message ID was recorded"},
-		{name: "legacy agent silence", askedForCheck: true, legacyAgent: true, want: "too old to support the check"},
-		{name: "current agent, verified:false", askedForCheck: true, legacyAgent: false, want: "could not confirm the match"},
+		{name: "no message id at all", askedForCheck: false, legacyAgent: false, want: "no delivery ID"},
+		{name: "legacy agent silence", askedForCheck: true, legacyAgent: true, want: "too old to double-check"},
+		{name: "current agent, verified:false", askedForCheck: true, legacyAgent: false, want: "could not confirm it was the message you selected"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1052,4 +1040,82 @@ func TestResendUnverifiedNote_AllCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestResendCopy_AnswersDidItSendFirst is GH #546. Every sentence the resend
+// flow shows an operator answers "did it send?" before anything else, and none
+// of them names an internal field or identifier. The dashboard renders these
+// verbatim (#545), so this is the copy a person reads.
+func TestResendCopy_AnswersDidItSendFirst(t *testing.T) {
+	banned := []string{"provider message ID", "wpmgr could not confirm", "Note:", "body_stored", "agent_seq"}
+	requireClean := func(t *testing.T, got string) {
+		t.Helper()
+		for _, b := range banned {
+			if strings.Contains(got, b) {
+				t.Errorf("%q names %q, which is our reasoning or our data model, not the reader's email", got, b)
+			}
+		}
+	}
+
+	for _, tc := range []struct {
+		name                       string
+		askedForCheck, legacyAgent bool
+	}{
+		{"no delivery ID recorded", false, false},
+		{"no delivery ID recorded, old plugin", false, true},
+		{"plugin too old to check", true, true},
+		{"current plugin could not confirm", true, false},
+	} {
+		t.Run("note: "+tc.name, func(t *testing.T) {
+			got := resendUnverifiedNote(tc.askedForCheck, tc.legacyAgent)
+			if !strings.HasPrefix(got, "Sent") {
+				t.Errorf("resendUnverifiedNote(%v, %v) = %q, want it to open with \"Sent\"", tc.askedForCheck, tc.legacyAgent, got)
+			}
+			requireClean(t, got)
+		})
+	}
+
+	// What ResendEmail returns, which is what the dashboard shows: the agent's
+	// success code must not precede the outcome.
+	t.Run("an unconfirmed resend's detail opens with the outcome", func(t *testing.T) {
+		tenantID, siteID, logID := uuid.New(), uuid.New(), uuid.New()
+		repo := &fakeResendRepo{fakeRepo: newFakeRepo(), rows: map[uuid.UUID]ResendTarget{}}
+		repo.addRow(logID, 7, true) // no Message-ID recorded
+		agent := &fakeResendAgent{result: mustDecodeResendResult(t,
+			`{"ok":true,"detail":"resent","message_id":"<new@site>","verified":false}`)}
+		res, err := newResendSvc(repo, agent).ResendEmail(context.Background(), tenantID, siteID, logID)
+		if err != nil || !res.OK || res.Verified {
+			t.Fatalf("PREMISE FAILED: want an unconfirmed successful resend, got %+v, %v", res, err)
+		}
+		if !strings.HasPrefix(res.Detail, "Sent") {
+			t.Errorf("detail = %q, want it to open with \"Sent\"", res.Detail)
+		}
+		requireClean(t, res.Detail)
+	})
+
+	t.Run("body not stored refusal names no internal field", func(t *testing.T) {
+		tenantID, siteID, logID := uuid.New(), uuid.New(), uuid.New()
+		repo := &fakeResendRepo{fakeRepo: newFakeRepo(), rows: map[uuid.UUID]ResendTarget{}}
+		repo.addRow(logID, 7, false)
+		_, err := newResendSvc(repo, &fakeResendAgent{}).ResendEmail(context.Background(), tenantID, siteID, logID)
+		if err == nil || !containsCode(err, "resend_body_not_stored") {
+			t.Fatalf("PREMISE FAILED: want the resend_body_not_stored refusal, got %v", err)
+		}
+		de, _ := domain.AsDomain(err)
+		if de == nil || de.Message == "" {
+			t.Fatalf("PREMISE FAILED: the refusal carries no message: %v", err)
+		}
+		if !strings.Contains(de.Message, "can't be resent") {
+			t.Errorf("message = %q, want it to say the email can't be resent", de.Message)
+		}
+		requireClean(t, de.Message)
+	})
+
+	t.Run("identity mismatch refusal opens with the outcome", func(t *testing.T) {
+		got := resendFailureMessage(agentcmd.ResendDetailMessageIDMismatch)
+		if !strings.HasPrefix(got, "Not sent") {
+			t.Errorf("mismatch message = %q, want it to open with \"Not sent\"", got)
+		}
+		requireClean(t, got)
+	})
 }
