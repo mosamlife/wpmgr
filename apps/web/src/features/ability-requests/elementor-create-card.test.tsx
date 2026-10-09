@@ -246,6 +246,27 @@ describe("an Elementor request the card cannot show in full", () => {
     renderTab([pageCreateRow({ input_json, page_builder: elementorFacts() })]);
     expectNotApprovable(await openCard());
   });
+
+  // Built straight, bypassing the fixture builder on purpose: it holds the
+  // editor column to the input's editor (assertDbShape), as the control plane
+  // records it. These are the two ways a stored row could disagree with its
+  // own input, and neither is shown in part.
+  it.each<[string, AbilityRequest]>([
+    [
+      "the column names a WordPress editor and the input names Elementor",
+      { ...elementorRow(elementorFacts()), editor: "wordpress_blocks" },
+    ],
+    [
+      "the column names Elementor and the input names a WordPress editor",
+      {
+        ...pageCreateRow({ input_json: pageInput({ outline: [{ type: "paragraph", text: "Hello" }] }) }),
+        editor: "builder:elementor",
+      },
+    ],
+  ])("when %s it cannot be approved", async (_name, row) => {
+    renderTab([row]);
+    expectNotApprovable(await openCard());
+  });
 });
 
 // --- a block-editor page is unchanged ----------------------------------------------
@@ -359,6 +380,27 @@ describe("a draft Elementor created", () => {
     const card = await openCard();
     expect(card).toHaveTextContent("Draft created in Elementor.");
     expect(linksOf(card)).toEqual([]);
+    // Nor the words of a link that has nowhere to go.
+    expect(card).not.toHaveTextContent("Open in Elementor");
+    expect(card).not.toHaveTextContent("Preview");
+  });
+
+  // A person's Undo is recorded as undo_state, and `trashed` is left as it was
+  // (ability-card-model.ts, undoStatus), so a draft in the trash reaches the
+  // card as either signal. The site address and the post id are both good, so
+  // the trash is the only reason there is nothing to open.
+  it.each<[string, Partial<AbilityRequest>]>([
+    ["trashed", { trashed: true }],
+    ["undone", { undo_state: "undone", undo_available_until: "2026-10-23T09:58:00Z" }],
+  ])("offers no link to a draft that is %s", async (_name, over) => {
+    renderTab([done(over)]);
+    const card = await openCard();
+    expect(card).toHaveTextContent("Moved to the trash.");
+    expect(card).not.toHaveTextContent("Draft created in Elementor.");
+    expect(linksOf(card)).toEqual([]);
+    expect(card).not.toHaveTextContent("Open in Elementor");
+    expect(card).not.toHaveTextContent("Preview");
+    expect(card).not.toHaveTextContent("Edit the draft in WordPress");
   });
 });
 

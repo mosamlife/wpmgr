@@ -567,6 +567,7 @@ describe("a page Elementor builds", () => {
 
   it.each<[string, unknown]>([
     ["an address with words around it", { type: "paragraph", text: "See https://example.com today" }],
+    ["an address followed by words", { type: "paragraph", text: "https://example.com today" }],
     ["an image aligned none or centred", { type: "image", attachment_id: 5, alt: "a", align: "center" }],
     ["a filled button", { type: "buttons", buttons: [{ text: "Go", url: "/go", style: "fill" }] }],
   ])("is shown with %s", (_name, node) => {
