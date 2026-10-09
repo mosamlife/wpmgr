@@ -98,6 +98,15 @@ func startedHandshake(t *testing.T, h *Handler, w *httptest.ResponseRecorder) ha
 }
 
 func TestSafeReturnPathAcceptsOnlySameOriginPaths(t *testing.T) {
+	// The consent screen's address as a browser reaches it from an AI
+	// client's sign-in: the query must come back exactly as it went in,
+	// order and percent-encoding included, or the screen asks about a
+	// different request.
+	const mcpConsentDeepLink = "/connect/ai?response_type=code&client_id=c1&code_challenge=abc" +
+		"&code_challenge_method=S256&state=a~b-_c" +
+		"&redirect_uri=http%3A%2F%2Flocalhost%3A61695%2Fcallback" +
+		"&scope=mcp%3Aread%20mcp%3Asite%20mcp%3Acache" +
+		"&resource=https%3A%2F%2Fmanage.example.test%2Fmcp"
 	cases := []struct {
 		name string
 		in   string
@@ -105,6 +114,7 @@ func TestSafeReturnPathAcceptsOnlySameOriginPaths(t *testing.T) {
 	}{
 		{"plain path", "/sites/abc", "/sites/abc"},
 		{"path with query", "/sites?tab=backups", "/sites?tab=backups"},
+		{"MCP authorize deep link", mcpConsentDeepLink, mcpConsentDeepLink},
 		{"empty", "", ""},
 		{"relative", "sites/abc", ""},
 		{"absolute url", "https://evil.example/steal", ""},
