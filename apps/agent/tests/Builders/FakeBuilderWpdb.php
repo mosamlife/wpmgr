@@ -18,7 +18,7 @@
  * - an insert takes the next AUTO_INCREMENT id, which is never reused, not
  *   even after a ROLLBACK;
  * - START TRANSACTION, COMMIT and ROLLBACK cover the posts, postmeta and
- *   options rows;
+ *   options rows, and a FOR UPDATE read outside a transaction throws;
  * - every statement resets last_error, and a failing one sets it.
  *
  * add_option() and delete_option() as core runs them against this table are
@@ -80,6 +80,9 @@ final class FakeBuilderWpdb
 
     /** @var string The next statement whose SQL starts with this fails, or "". */
     public string $failOnStatement = '';
+
+    /** @var int How many statements matching $failOnStatement succeed before the one that fails. */
+    public int $failOnStatementAfter = 0;
 
     /**
      * @var bool A driver that returns native types: the integer columns of a
@@ -298,7 +301,7 @@ final class FakeBuilderWpdb
 
             return $output === ARRAY_A ? $row : (object) $row;
         }
-        if (preg_match('/^SELECT ([a-z_]+(?:, [a-z_]+)*) FROM %i WHERE ID = %d$/', $sql, $m) !== 1) {
+        if (preg_match('/^SELECT ([a-z_]+(?:, [a-z_]+)*) FROM %i WHERE ID = %d( FOR UPDATE)?$/', $sql, $m) !== 1) {
             throw new \LogicException('get_row: unexpected query: ' . $sql);
         }
         $columns = explode(', ', $m[1]);
@@ -308,6 +311,9 @@ final class FakeBuilderWpdb
             }
         }
         $this->assertTable($args[0], $this->posts, 'get_row');
+        if (($m[2] ?? '') !== '') {
+            $this->assertInTransaction('get_row FOR UPDATE');
+        }
         if ($this->fails('posts', $sql)) {
             return null;
         }
@@ -345,8 +351,15 @@ final class FakeBuilderWpdb
             return $this->optionHeads($sql, $args, $output);
         }
 
-        $keys = null;
-        if (preg_match('/^SELECT meta_key, meta_value FROM %i WHERE post_id = %d AND meta_key IN \((%s(?:, %s)*)\)( ORDER BY meta_id ASC)?$/', $sql, $m) === 1) {
+        $keys   = null;
+        $withId = false;
+        if (preg_match('/^SELECT meta_id, meta_key, meta_value FROM %i WHERE post_id = %d ORDER BY meta_id ASC( FOR UPDATE)?$/', $sql, $m) === 1) {
+            $withId  = true;
+            $ordered = true;
+            if (($m[1] ?? '') !== '') {
+                $this->assertInTransaction('get_results FOR UPDATE');
+            }
+        } elseif (preg_match('/^SELECT meta_key, meta_value FROM %i WHERE post_id = %d AND meta_key IN \((%s(?:, %s)*)\)( ORDER BY meta_id ASC)?$/', $sql, $m) === 1) {
             $keys    = array_map(static fn ($k): string => self::collate((string) $k), array_slice($args, 2));
             $ordered = ($m[2] ?? '') !== '';
         } elseif (preg_match('/^SELECT meta_key, meta_value FROM %i WHERE post_id = %d( ORDER BY meta_id ASC)?$/', $sql, $m) === 1) {
@@ -368,7 +381,10 @@ final class FakeBuilderWpdb
         }
         $out = [];
         foreach ($rows as $r) {
-            $row   = ['meta_key' => $r['meta_key'], 'meta_value' => $r['meta_value']];
+            $row = ['meta_key' => $r['meta_key'], 'meta_value' => $r['meta_value']];
+            if ($withId) {
+                $row = ['meta_id' => $this->nativeInts ? $r['meta_id'] : (string) $r['meta_id']] + $row;
+            }
             $out[] = $output === ARRAY_A ? $row : (object) $row;
         }
 
@@ -525,10 +541,12 @@ final class FakeBuilderWpdb
             sort($columns);
             if ($columns === ['meta_id']) {
                 $match = static fn (array $r): bool => $r['meta_id'] === (int) $where['meta_id'];
+            } elseif ($columns === ['meta_id', 'post_id']) {
+                $match = static fn (array $r): bool => $r['meta_id'] === (int) $where['meta_id'] && $r['post_id'] === (int) $where['post_id'];
             } elseif ($columns === ['meta_key', 'post_id']) {
                 $match = static fn (array $r): bool => $r['post_id'] === (int) $where['post_id'] && self::collate($r['meta_key']) === self::collate((string) $where['meta_key']);
             } else {
-                throw new \LogicException('delete: postmeta by meta_id, or by post_id and meta_key, only');
+                throw new \LogicException('delete: postmeta by meta_id, by meta_id and post_id, or by post_id and meta_key, only');
             }
             if ($this->fails('postmeta', 'DELETE FROM ' . $table)) {
                 return false;
@@ -639,6 +657,24 @@ final class FakeBuilderWpdb
         return $out;
     }
 
+    /** Whether a transaction is open. */
+    public function inTransaction(): bool
+    {
+        return $this->transaction !== null;
+    }
+
+    /**
+     * A locking read means nothing outside a transaction.
+     *
+     * @throws \LogicException When no transaction is open.
+     */
+    private function assertInTransaction(string $method): void
+    {
+        if ($this->transaction === null) {
+            throw new \LogicException($method . ': a locking read outside a transaction');
+        }
+    }
+
     /**
      * Records the query and resets the error, as every wpdb query does.
      *
@@ -669,6 +705,11 @@ final class FakeBuilderWpdb
         if ($this->failOn === $table) {
             $this->failOn = '';
         } elseif ($this->failOnStatement !== '' && str_starts_with($sql, $this->failOnStatement)) {
+            if ($this->failOnStatementAfter > 0) {
+                --$this->failOnStatementAfter;
+
+                return false;
+            }
             $this->failOnStatement = '';
         } else {
             return false;
