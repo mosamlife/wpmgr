@@ -5,6 +5,7 @@ import { settingNotSentLine } from "@/features/ai-trust/ai-trust-copy";
 
 import {
   approvedNotStartedText,
+  automaticStatus,
   clockTime,
   notSentText,
   refusalAdvice,
@@ -106,6 +107,11 @@ function undoStatusText(r: AbilityRequest): AbilityStatus | null {
 }
 
 export function restWriteStatus(r: AbilityRequest): AbilityStatus {
+  return automaticStatus(r, baseRestWriteStatus(r));
+}
+
+/** The status as a person's own approval reads it; `restWriteStatus` adjusts it for an automatic one. */
+function baseRestWriteStatus(r: AbilityRequest): AbilityStatus {
   switch (r.state) {
     case "pending":
       return { kind: "pending", text: "Waiting for your decision." };

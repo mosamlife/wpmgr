@@ -130,7 +130,7 @@ function AiRequestsPage() {
             <RequestCard
               key={request.id}
               request={request}
-              currentUserId={me?.user.id ?? null}
+              currentUserId={me?.user?.id ?? null}
               onApprove={handleApprove}
               onDecline={handleDecline}
               approvePending={

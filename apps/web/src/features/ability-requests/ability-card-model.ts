@@ -1,6 +1,10 @@
 import type { AbilityRequest } from "@wpmgr/api";
 
-import { ranAutomatically, settingNotSentLine } from "@/features/ai-trust/ai-trust-copy";
+import {
+  OUTCOME_UNKNOWN_LINE,
+  ranAutomatically,
+  settingNotSentLine,
+} from "@/features/ai-trust/ai-trust-copy";
 
 // Pure logic for the AI page-creation approval card (engine slice E2). Every
 // string the AI or the site supplied (title, outline text, site and connection
@@ -191,7 +195,36 @@ function undoStatus(r: AbilityRequest, trashedCounts: boolean): AbilityStatus | 
   return null;
 }
 
+/**
+ * A failure whose end state the record settles: the site refused before it
+ * changed anything, or what it changed was put back or moved to the trash.
+ * Those keep their own words. Every other failure leaves the result open.
+ */
+function failureEndStateKnown(r: AbilityRequest): boolean {
+  return r.outcome === "refused" || r.trashed === true || r.restored === true;
+}
+
+/**
+ * A change the site's setting approved was decided by no person, so a status
+ * that leans on "what you approved" cannot stand. Where WPMgr cannot vouch for
+ * the result, because it is unresolved or the failure left the end state open,
+ * the card says so in one plain sentence and names where to read the answer
+ * (design §8.9). The kind is unchanged, so a failure keeps its red border and
+ * its place under "Failed or result unknown". A person's own approval is
+ * untouched, and so is a failure whose end state is known.
+ */
+export function automaticStatus(r: AbilityRequest, status: AbilityStatus): AbilityStatus {
+  if (!ranAutomatically(r.approval)) return status;
+  const open = status.kind === "unknown_outcome" || (status.kind === "failed" && !failureEndStateKnown(r));
+  return open ? { ...status, text: OUTCOME_UNKNOWN_LINE } : status;
+}
+
 export function abilityStatus(r: AbilityRequest): AbilityStatus {
+  return automaticStatus(r, baseAbilityStatus(r));
+}
+
+/** The status as a person's own approval reads it; `abilityStatus` adjusts it for an automatic one. */
+function baseAbilityStatus(r: AbilityRequest): AbilityStatus {
   const noun = isPostRequest(r) ? "post" : "page";
   switch (r.state) {
     case "pending":
