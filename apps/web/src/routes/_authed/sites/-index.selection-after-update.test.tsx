@@ -208,7 +208,7 @@ function buildRouter(
   });
   const elsewhereRoute = createRoute({
     getParentRoute: () => rootRoute,
-    path: "/elsewhere",
+    path: "/backups",
     component: () => <p>Somewhere else</p>,
   });
   return createRouter({
@@ -374,7 +374,7 @@ describe("Sites page: a selection does not outlive the visit it was made in (GH 
       "idle",
     );
 
-    await act(async () => {
+    act(() => {
       releaseRunPage();
     });
     await screen.findByText("Run page", {}, { timeout: FIND_TIMEOUT });
@@ -427,7 +427,7 @@ describe("Sites page: a selection does not outlive the visit it was made in (GH 
 
     await selectSites("Alpha", "Bravo");
     await act(async () => {
-      await router.navigate({ to: "/elsewhere" });
+      await router.navigate({ to: "/backups" });
     });
     await screen.findByText("Somewhere else");
 
@@ -484,7 +484,7 @@ describe("Command palette: selected-site actions exist only while the Sites page
     );
 
     await act(async () => {
-      await router.navigate({ to: "/elsewhere" });
+      await router.navigate({ to: "/backups" });
     });
     await screen.findByText("Somewhere else");
 
