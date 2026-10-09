@@ -31,9 +31,30 @@ const (
 // append in the SAME transaction as the version insert (Decision 7). No other
 // path in this codebase writes to either context table.
 type Service struct {
-	repo     *Repo
+	repo     versionStore
 	audit    *audit.Recorder
 	resolver *Resolver
+}
+
+// versionStore is every storage call Service makes. *Repo is its one
+// production implementation, and NewService accepts nothing else; the
+// interface lets this package's unit tests drive the Service's own methods,
+// every check in them included, over in-memory versions.
+type versionStore interface {
+	LatestOrgVersion(ctx context.Context, tenantID uuid.UUID) (Version, error)
+	LatestOrgSnapshot(ctx context.Context, tenantID uuid.UUID) (Snapshot, bool, error)
+	GetOrgVersionByID(ctx context.Context, tenantID, id uuid.UUID) (Version, error)
+	GetOrgVersionByVersion(ctx context.Context, tenantID uuid.UUID, version int64) (Version, error)
+	ListOrgVersions(ctx context.Context, tenantID uuid.UUID, cursor int64, limit int32) ([]Version, error)
+	CreateOrgVersion(ctx context.Context, tenantID uuid.UUID, expectVersion int64, in CreateOrgVersionInput,
+		record func(tx pgx.Tx, versionID uuid.UUID) error) (Version, error)
+
+	LatestSiteVersion(ctx context.Context, tenantID, siteID uuid.UUID) (Version, error)
+	GetSiteVersionByID(ctx context.Context, tenantID, siteID, id uuid.UUID) (Version, error)
+	GetSiteVersionByVersion(ctx context.Context, tenantID, siteID uuid.UUID, version int64) (Version, error)
+	ListSiteVersions(ctx context.Context, tenantID, siteID uuid.UUID, cursor int64, limit int32) ([]Version, error)
+	CreateSiteVersion(ctx context.Context, tenantID, siteID uuid.UUID, expectVersion int64, in CreateSiteVersionInput,
+		record func(tx pgx.Tx, versionID uuid.UUID) error) (Version, error)
 }
 
 // NewService wires a Service. resolver may share repo as its ContextStore

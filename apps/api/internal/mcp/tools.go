@@ -403,8 +403,9 @@ const listSitesInstructions = siteTextNotice +
 // correctly (the never_collected rule, the scope rule); the operator's context
 // follows because it governs what the model may then DO. Neither is at risk of
 // being cut: they hold separate budgets, and the operator's half has already
-// been refused outright by Service.operatorContext if it did not fit
-// contextInstructionByteBudget. There is deliberately no clamp call here --
+// been refused outright by Service.operatorContext if it was not deliverable
+// (govcontext.ResolvedContext.ModelInstructions, which measures it against
+// contextInstructionByteBudget). There is deliberately no clamp call here --
 // adding one would reintroduce, at the last possible moment, exactly the
 // silent mid-text truncation this feature refuses at both ends.
 //

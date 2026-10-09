@@ -44,7 +44,7 @@ func TestValidatePageCreateInput(t *testing.T) {
 	bad := []string{
 		`{"post_type":"page","editor":"wordpress_blocks","title":"T","outline":[{"type":"paragraph","text":"x"}],"status":"publish"}`,
 		`{"post_type":"product","editor":"wordpress_blocks","title":"T","outline":[{"type":"paragraph","text":"x"}]}`,
-		`{"post_type":"page","editor":"builder:elementor","title":"T","outline":[{"type":"paragraph","text":"x"}]}`,
+		`{"post_type":"page","editor":"builder:beaver","title":"T","outline":[{"type":"paragraph","text":"x"}]}`,
 		`{"post_type":"page","editor":"wordpress_blocks","title":" ","outline":[{"type":"paragraph","text":"x"}]}`,
 		`{"post_type":"page","editor":"wordpress_blocks","title":"T","outline":[]}`,
 		`{"post_type":"page","editor":"wordpress_blocks","title":"T","outline":[{"type":"heading","level":1,"text":"x"}]}`,
