@@ -4744,9 +4744,10 @@ export type AbilityRequest = {
   undo_available_until?: string;
   /**
    * Whether `POST .../undo` would start an undo now: a done request
-   * inside its undo window, or the draft a failed or given-up page
-   * creation left on the site. Show the undo action exactly when
-   * this is true.
+   * inside its undo window (for a page edit, only the newest applied
+   * edit of its page not yet undone), or the draft a failed or
+   * given-up page creation left on the site. Show the undo action
+   * exactly when this is true.
    *
    */
   undo_offered: boolean;
@@ -18845,6 +18846,12 @@ export type UndoAbilityRequestErrors = {
   404: Error;
   /**
    * The change can no longer be undone from WPMgr
+   * (`ability_request_undo_unavailable`; for a page edit, also while
+   * a later edit of the same page is still in effect), or a page
+   * edit of the draft is still being made or undone
+   * (`ability_request_undo_busy`; the undo stays offered). Nothing
+   * was sent to the site.
+   *
    */
   409: Error;
   /**

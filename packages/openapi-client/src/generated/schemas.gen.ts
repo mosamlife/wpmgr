@@ -8211,7 +8211,7 @@ export const AbilityRequestSchema = {
     undo_offered: {
       type: "boolean",
       description:
-        "Whether `POST .../undo` would start an undo now: a done request\ninside its undo window, or the draft a failed or given-up page\ncreation left on the site. Show the undo action exactly when\nthis is true.\n",
+        "Whether `POST .../undo` would start an undo now: a done request\ninside its undo window (for a page edit, only the newest applied\nedit of its page not yet undone), or the draft a failed or\ngiven-up page creation left on the site. Show the undo action\nexactly when this is true.\n",
     },
     resolve_gave_up: {
       type: "boolean",

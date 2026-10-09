@@ -2069,8 +2069,9 @@ type AbilityRequest struct {
 	Restored           OptNilBool     `json:"restored"`
 	UndoState          OptNilString   `json:"undo_state"`
 	UndoAvailableUntil OptNilDateTime `json:"undo_available_until"`
-	// Whether `POST .../undo` would start an undo now: a done request inside its undo window, or the draft
-	// a failed or given-up page creation left on the site. Show the undo action exactly when this is true.
+	// Whether `POST .../undo` would start an undo now: a done request inside its undo window (for a page
+	// edit, only the newest applied edit of its page not yet undone), or the draft a failed or given-up
+	// page creation left on the site. Show the undo action exactly when this is true.
 	UndoOffered bool `json:"undo_offered"`
 	// True once WPMgr stopped checking the site for the outcome of a write whose reply was lost. The
 	// result is final: the person should look at the site's drafts.

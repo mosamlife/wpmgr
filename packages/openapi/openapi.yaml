@@ -9552,13 +9552,17 @@ paths:
         failed or given-up page creation left on the site. Offered exactly
         when the request's `undo_offered` is true; the server decides which
         undo runs from the request's state. For a created page this moves
-        the draft to the trash, only while it is unchanged and still a
-        draft. The site takes the page from its own record of this request;
-        nothing in the call names it. `undo_state` in the answer is the
-        result: undone, refused_conflict, refused_published or failed. When
-        the site did not settle the undo (unreachable, or busy with this
-        request) the answer is 503 `ability_request_undo_retry` and the undo
-        is offered again.
+        the draft to the trash, only while it is still a draft and nothing
+        but WPMgr changed it: its creation and, for a page-builder draft,
+        the page edits WPMgr applied to it, which the undo names to the
+        site. For a page edit it puts back what that change wrote and
+        nothing else, newest change first. The site takes the page from its
+        own record of this request; nothing in the call names it.
+        `undo_state` in the answer is the result: undone, refused_conflict,
+        refused_published or failed. When the site did not settle the undo
+        (unreachable, busy with this request, or unable to read its own
+        copy of the page) the answer is 503 `ability_request_undo_retry`
+        and the undo is offered again.
       tags: [ai-requests]
       parameters:
         - $ref: "#/components/parameters/SiteId"
@@ -9592,7 +9596,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: The change can no longer be undone from WPMgr
+          description: |
+            The change can no longer be undone from WPMgr
+            (`ability_request_undo_unavailable`; for a page edit, also while
+            a later edit of the same page is still in effect), or a page
+            edit of the draft is still being made or undone
+            (`ability_request_undo_busy`; the undo stays offered). Nothing
+            was sent to the site.
           content:
             application/json:
               schema:
@@ -20533,9 +20543,10 @@ components:
           type: boolean
           description: |
             Whether `POST .../undo` would start an undo now: a done request
-            inside its undo window, or the draft a failed or given-up page
-            creation left on the site. Show the undo action exactly when
-            this is true.
+            inside its undo window (for a page edit, only the newest applied
+            edit of its page not yet undone), or the draft a failed or
+            given-up page creation left on the site. Show the undo action
+            exactly when this is true.
         resolve_gave_up:
           type: boolean
           description: |
