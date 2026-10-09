@@ -234,12 +234,12 @@ describe("/ai's static surfaces", () => {
 describe("what a connection can and cannot do", () => {
   beforeEach(() => stubFetch(() => json({ connections: [] })));
 
-  it("states the lead, the cache-clear allowance, and that nothing is implicit", async () => {
+  it("states the lead, both asks, and that nothing is implicit", async () => {
     renderPage();
     expect(
       await screen.findByText(
         "A connection lets one AI client read your fleet, limited to the sites you name. " +
-          "If you allow it, it can also ask you to clear their cache. " +
+          "If you allow it, it can also ask you to clear their cache and to make changes through their tools. " +
           "Nothing about it is implicit.",
       ),
     ).toBeInTheDocument();
@@ -250,11 +250,15 @@ describe("what a connection can and cannot do", () => {
     expect(await screen.findByText("What a connection can do")).toBeInTheDocument();
     expect(screen.getByText("Read the sites you put in its scope")).toBeInTheDocument();
     expect(screen.getByText("Report what it found, with its sources")).toBeInTheDocument();
-    // The one write in the nine-name vocabulary (mcp.cache.purge): it says
-    // "ask", not "propose", and it says approval is required in the same
-    // sentence rather than as a separate, easy-to-miss caveat.
+    // The two asks in the vocabulary (mcp.cache.purge, and mcp.ability.request
+    // for changes through a site's tools) are one line: it says "ask", not
+    // "propose", and it says approval is required in the same sentence rather
+    // than as a separate, easy-to-miss caveat. Being one line, the two are
+    // worded the same way, so neither reads as the lesser or the safer one.
     expect(
-      screen.getByText("Ask you to clear a site's cache, if you allow it. Nothing runs until you approve it."),
+      screen.getByText(
+        "Ask you to clear a site's cache, or to make changes through a site's tools, if you allow it. Nothing runs until a person approves each request.",
+      ),
     ).toBeInTheDocument();
   });
 

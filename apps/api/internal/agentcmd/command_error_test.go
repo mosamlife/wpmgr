@@ -2,6 +2,7 @@ package agentcmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -248,5 +249,200 @@ func TestCommandError_ErrorByteIdentical(t *testing.T) {
 				t.Errorf("Error() = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+// forbidden403 builds the CommandError postRaw builds for a 403 reply with
+// body, through the same snippet clamp and constructor.
+func forbidden403(body string) *CommandError {
+	snippet := body
+	if len(snippet) > 512 {
+		snippet = snippet[:512] + "…(truncated)"
+	}
+	return newCommandError("update", http.StatusForbidden, snippet, []byte(body))
+}
+
+// noticePrefix is what a site with display_errors and html_errors on prints
+// in front of a REST reply.
+const noticePrefix = "<br />\n<b>Deprecated</b>:  Function get_page_by_title is deprecated in <b>/var/www/html/wp-includes/functions.php</b> on line <b>6031</b><br />\n"
+
+// TestForbiddenMessage covers every branch of the GH #679 classifier: who
+// refused (a layer in front of the agent, something else on the site, or the
+// agent with one of its codes) and the fixed copy each gets.
+func TestForbiddenMessage(t *testing.T) {
+	const (
+		firewall  = "A firewall or security rule blocked the request (HTTP 403) before it reached the WPMgr agent."
+		other     = "Something on the site other than the WPMgr agent refused the request (HTTP 403)"
+		clock     = "because the site's server clock differs from WPMgr's"
+		reconnect = "Reconnect the site to WPMgr, then run the update again."
+		header    = "without its Authorization header"
+	)
+	tests := []struct {
+		name    string
+		body    string
+		wantIn  []string
+		wantOut []string
+	}{
+		// --- not from the agent: no code at all ---
+		{"html firewall page", "<html><body><h1>Forbidden</h1><p>Request forbidden by administrative rules.</p></body></html>",
+			[]string{"Update not started. ", firewall, "/wp-json/wpmgr/v1/"}, []string{"administrative rules", "<"}},
+		{"empty body", "", []string{firewall}, nil},
+		{"plain text", "Forbidden", []string{firewall}, nil},
+		{"json without a code", `{"message":"denied by edge rule 1234"}`, []string{firewall}, []string{"edge rule"}},
+		{"json null", "null", []string{firewall}, nil},
+		{"json with a numeric code", `{"code":403,"message":"Forbidden"}`, []string{firewall}, nil},
+		{"html page over 8 KiB", "<html>" + strings.Repeat("edgepage ", 1200) + "</html>", []string{firewall}, []string{"edgepage"}},
+
+		// --- a code, but not one of the agent's: generic, never echoed ---
+		{"rest api restricted by another plugin", `{"code":"rest_forbidden","message":"Sorry, you are not allowed to do that.","data":{"status":403}}`,
+			[]string{"Update not started. ", other}, []string{"rest_forbidden", "Sorry"}},
+		{"markup in the code", `{"code":"wpmgr_<script>alert(1)</script>","data":{"status":403}}`, []string{other}, []string{"script", "alert"}},
+		{"overlong agent-shaped code", `{"code":"wpmgr_` + strings.Repeat("a", 41) + `","data":{"status":403}}`, []string{other}, []string{strings.Repeat("a", 41)}},
+		{"non-ascii code", `{"code":"wpmgr_tökén_skew","data":{"status":403}}`, []string{other}, []string{"tökén", clock}},
+		{"uppercase code", `{"code":"WPMGR_TOKEN_SKEW","data":{"status":403}}`, []string{other}, []string{"WPMGR", clock}},
+		{"digit in the category", `{"code":"wpmgr_token2","data":{"status":403}}`, []string{other}, []string{"wpmgr_token2"}},
+		{"empty category", `{"code":"wpmgr_","data":{"status":403}}`, []string{other}, []string{"wpmgr_)"}},
+		{"newline in the code", `{"code":"wpmgr_token_skew\nInjected","data":{"status":403}}`, []string{other}, []string{"Injected", clock}},
+
+		// --- the agent's own codes ---
+		{"token expired: clock ahead", `{"code":"wpmgr_token_expired","message":"Forbidden.","data":{"status":403}}`,
+			[]string{"(HTTP 403, wpmgr_token_expired)", clock, "sync the server time (NTP), then run the update again."}, []string{"Forbidden."}},
+		{"token skew: clock behind", `{"code":"wpmgr_token_skew","message":"Forbidden.","data":{"status":403}}`,
+			[]string{"(HTTP 403, wpmgr_token_skew)", clock}, nil},
+		{"aud mismatch", `{"code":"wpmgr_aud_mismatch","message":"Forbidden.","data":{"status":403}}`,
+			[]string{"(HTTP 403, wpmgr_aud_mismatch)", "missing or no longer valid", reconnect}, []string{clock}},
+		{"site not enrolled", `{"code":"wpmgr_site_not_enrolled","message":"Forbidden.","data":{"status":403}}`, []string{reconnect}, nil},
+		{"signature failed", `{"code":"wpmgr_sig_failed","message":"Forbidden.","data":{"status":403}}`, []string{reconnect}, nil},
+		{"key not provisioned", `{"code":"wpmgr_key_not_provisioned","message":"Forbidden.","data":{"status":403}}`, []string{reconnect}, nil},
+		{"missing token: header stripped", `{"code":"wpmgr_missing_token","message":"Forbidden.","data":{"status":403}}`,
+			[]string{"(HTTP 403, wpmgr_missing_token)", header, "forward the Authorization header to PHP"}, []string{"Reconnect", clock}},
+		{"invalid token: clock first, then reconnect", `{"code":"wpmgr_invalid_token","message":"Forbidden.","data":{"status":403}}`,
+			[]string{"(HTTP 403, wpmgr_invalid_token)", "server clock", "reconnect the site to WPMgr", "Then run the update again."}, nil},
+		{"other agent code: named, no invented remedy", `{"code":"wpmgr_token_replay","message":"Forbidden.","data":{"status":403}}`,
+			[]string{"Update not started. The WPMgr agent refused the request (HTTP 403, wpmgr_token_replay)."}, []string{"Reconnect", clock, header}},
+		{"longest allowed agent code", `{"code":"wpmgr_` + strings.Repeat("a", 40) + `","data":{"status":403}}`,
+			[]string{"(HTTP 403, wpmgr_" + strings.Repeat("a", 40) + ")"}, nil},
+
+		// --- the agent's reply behind PHP notices ---
+		{"agent code behind a notice", noticePrefix + `{"code":"wpmgr_token_skew","message":"Forbidden.","data":{"status":403}}`,
+			[]string{"(HTTP 403, wpmgr_token_skew)", clock}, []string{"Deprecated", "functions.php"}},
+		{"rest code behind a notice", noticePrefix + `{"code":"rest_forbidden","message":"Sorry.","data":{"status":403}}`,
+			[]string{other}, []string{"rest_forbidden"}},
+		{"envelope behind a notice with another status", noticePrefix + `{"code":"wpmgr_token_skew","data":{"status":500}}`,
+			[]string{firewall}, []string{clock}},
+		{"truncated envelope behind a notice", noticePrefix + `{"code":"wpmgr_token_skew","data":{"sta`,
+			[]string{firewall}, []string{clock}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := ForbiddenMessage(forbidden403(tt.body), "Update")
+			if !ok {
+				t.Fatalf("ForbiddenMessage() ok = false for a 403")
+			}
+			if !strings.HasPrefix(got, "Update not started. ") {
+				t.Errorf("message %q does not lead with %q", got, "Update not started. ")
+			}
+			for _, want := range tt.wantIn {
+				if !strings.Contains(got, want) {
+					t.Errorf("message %q\n  does not contain %q", got, want)
+				}
+			}
+			for _, leak := range tt.wantOut {
+				if strings.Contains(got, leak) {
+					t.Errorf("message %q\n  contains %q", got, leak)
+				}
+			}
+		})
+	}
+}
+
+// TestForbiddenMessage_DryRunAction proves the action word reaches both the
+// lead-in and the closing step.
+func TestForbiddenMessage_DryRunAction(t *testing.T) {
+	got, ok := ForbiddenMessage(forbidden403(`{"code":"wpmgr_token_skew","data":{"status":403}}`), "Dry run")
+	if !ok {
+		t.Fatal("ok = false for a 403")
+	}
+	if !strings.HasPrefix(got, "Dry run not started. ") || !strings.HasSuffix(got, "then run the dry run again.") {
+		t.Errorf("message = %q, want the dry-run lead-in and closing step", got)
+	}
+}
+
+// TestForbiddenMessage_OnlyA403 proves the classifier describes nothing but a
+// 403 CommandError, wrapped or not.
+func TestForbiddenMessage_OnlyA403(t *testing.T) {
+	agentBody := `{"code":"wpmgr_token_skew","data":{"status":403}}`
+	for _, status := range []int{401, 404, 409, 500, 503} {
+		if got, ok := ForbiddenMessage(newCommandError("update", status, agentBody, []byte(agentBody)), "Update"); ok || got != "" {
+			t.Errorf("status %d: ForbiddenMessage() = (%q, %v), want (\"\", false)", status, got, ok)
+		}
+	}
+	notCommandErrors := []error{
+		nil,
+		errors.New("dial tcp: connection refused"),
+		&RedirectError{Command: "update", Status: 301, From: "https://example.com/wp-json/wpmgr/v1/command/update"},
+	}
+	for _, err := range notCommandErrors {
+		if got, ok := ForbiddenMessage(err, "Update"); ok || got != "" {
+			t.Errorf("%v: ForbiddenMessage() = (%q, %v), want (\"\", false)", err, got, ok)
+		}
+	}
+	wrapped := fmt.Errorf("update: %w", forbidden403(agentBody))
+	if got, ok := ForbiddenMessage(wrapped, "Update"); !ok || !strings.Contains(got, "wpmgr_token_skew") {
+		t.Errorf("wrapped 403: ForbiddenMessage() = (%q, %v), want the clock copy", got, ok)
+	}
+}
+
+// TestForbiddenMessage_ThroughPostRaw is the production path: a real 403
+// reply served over HTTP comes back from postRaw as an error the classifier
+// reads, including a reply with PHP notices in front of the agent's JSON.
+func TestForbiddenMessage_ThroughPostRaw(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"host firewall page", "<html><body><h1>Forbidden</h1><p>Request forbidden by administrative rules.</p></body></html>", "firewall or security rule"},
+		{"agent code", `{"code":"wpmgr_aud_mismatch","message":"Forbidden.","data":{"status":403}}`, "Reconnect the site to WPMgr"},
+		{"agent code behind a notice", noticePrefix + `{"code":"wpmgr_token_expired","message":"Forbidden.","data":{"status":403}}`, "server clock"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			client := buildTestAgentClient(t, srv)
+			_, err := client.postRaw(context.Background(), uuid.New(), srv.URL, "update", struct{}{})
+			if err == nil {
+				t.Fatal("postRaw: expected an error for a 403 response, got nil")
+			}
+			got, ok := ForbiddenMessage(err, "Update")
+			if !ok || !strings.Contains(got, tt.want) {
+				t.Errorf("ForbiddenMessage() = (%q, %v), want it to contain %q", got, ok, tt.want)
+			}
+		})
+	}
+}
+
+// TestCommandError_EmbeddedCodeChangesNoOtherClassifier proves the
+// notice-prefixed parse is read by ForbiddenMessage alone: Error(), Code,
+// AgentFailed and DescribeAttemptError see the reply exactly as before.
+func TestCommandError_EmbeddedCodeChangesNoOtherClassifier(t *testing.T) {
+	body := noticePrefix + `{"code":"wpmgr_token_skew","message":"Forbidden.","data":{"status":403}}`
+	ce := forbidden403(body)
+	if ce.Code != "" || ce.Message != "" || ce.DataStatus != 0 {
+		t.Errorf("parsed fields = (%q, %q, %d), want all empty for a reply that is not JSON as a whole", ce.Code, ce.Message, ce.DataStatus)
+	}
+	if want := "update command rejected by agent: status 403 body=" + body; ce.Error() != want {
+		t.Errorf("Error() = %q, want %q", ce.Error(), want)
+	}
+	if ce.AgentFailed() {
+		t.Error("AgentFailed() = true for a 403")
+	}
+	if got, want := DescribeAttemptError(ce), "The site refused the request (HTTP 403)."; got != want {
+		t.Errorf("DescribeAttemptError() = %q, want %q (unchanged)", got, want)
 	}
 }

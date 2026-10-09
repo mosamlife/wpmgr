@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.160
+Stable tag: 0.61.161
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -22,7 +22,7 @@ Every action the dashboard can ask for is on a closed, named list compiled into 
 
 = What you can do once a site is connected =
 
-**Backups and restore.** Full and incremental backups of the database and files, scheduled per site or run on demand. Archives are encrypted on the site before upload, and an incremental run uses a content-addressed chunk store so only changed blocks move. Send them to storage the dashboard manages, a folder on your own server, or your own S3-compatible bucket. Restore a whole site or pick components, with a health check afterwards and an automatic rollback if the site does not come back.
+**Backups and restore.** Full and incremental backups of the database and files, scheduled per site or run on demand. An incremental run uses a content-addressed chunk store so only changed blocks move. Send them to storage the dashboard manages, a folder on your own server, or your own S3-compatible bucket. Restore a whole site or pick components, with a health check afterwards and an automatic rollback if the site does not come back.
 
 **Updates you can undo.** Core, plugin and theme updates across every connected site, applied by WordPress's own Upgrader against WordPress.org packages. A snapshot is taken before each one, so a bad release is one click back rather than a restore from last night's backup. A watchdog recovers a site whose update died mid-write.
 
@@ -144,7 +144,7 @@ Once connected, the agent communicates only with the control-plane URL you confi
 
 - Site and environment metadata: site URL, WordPress, PHP and server versions, active theme and plugins, and Site Health diagnostics. The metadata also includes the parent theme of a child theme and, on a site running Elementor, whether Elementor's Atomic editor is switched on. Sent on connect, on a periodic heartbeat, and when you click Re-run checks. Used to display your site's status in the dashboard.
 - Update inventory: the list of available core, plugin and theme updates. Sent when inventory is refreshed. Used to show and apply updates.
-- Backup archives (encrypted): when you run or schedule a backup, the agent archives your database and/or files, encrypts the archive, and uploads it to the storage destination your control plane configured. Archive contents may include your site's content and personal data, and are encrypted before leaving the server.
+- Backup archives (not encrypted by this plugin): when you run or schedule a backup, the agent archives your database and/or files and uploads them to the storage destination your control plane configured. Protection at rest comes from that destination. Archive contents may include your site's content and personal data.
 - Rendered HTML: for CSS optimization (used-CSS generation), the agent submits rendered HTML of selected pages so unused CSS can be computed. Used only to produce optimized stylesheets.
 - Diagnostics and activity logs: error logs, performance and cache statistics, and a record of management actions, sent so they can be surfaced in the dashboard.
 
@@ -178,7 +178,7 @@ This plugin contacts external hosts only after you connect it to a control plane
 
 **WPMgr control plane (the URL you supply)**
 
-What is sent: site URL and name, WordPress and PHP versions, active plugin and theme inventory, Site Health results, rendered HTML of selected pages (for used-CSS computation), encrypted backup archives, transcoded font bytes, and cache and performance statistics.
+What is sent: site URL and name, WordPress and PHP versions, active plugin and theme inventory, Site Health results, rendered HTML of selected pages (for used-CSS computation), backup archives, transcoded font bytes, and cache and performance statistics.
 When: on enrollment, diagnostics, heartbeat, backup progress, cache and performance operations, Remove Unused CSS, autologin token consumption, database clean, font transcoding, and password breach checking. Always triggered by an action or schedule you initiate, never autonomously.
 Why: this is the dashboard that manages the site.
 Hosted at https://manage.wpmgr.app, its terms and privacy policy apply. Terms: https://manage.wpmgr.app/terms Privacy: https://manage.wpmgr.app/privacy
@@ -194,7 +194,7 @@ The control-plane hop is covered by the WPMgr terms above.
 
 **Object storage (configured by your control plane)**
 
-What is sent: encrypted backup archives, restored backup chunks, optimized media files and transcoded font bytes, over short-lived presigned URLs the control plane supplies. No storage endpoint is hardcoded in this plugin.
+What is sent: backup archives (not encrypted by this plugin), restored backup chunks, optimized media files and transcoded font bytes, over short-lived presigned URLs the control plane supplies. No storage endpoint is hardcoded in this plugin.
 When: during backup, restore, and media or font optimization operations that you initiate.
 Why: this is where your backups and optimized assets are stored.
 The hosted service uses Google Cloud Storage (storage.googleapis.com) by default; a self-hosted operator may configure any S3-compatible destination. For the hosted default, Terms: https://cloud.google.com/terms Privacy: https://policies.google.com/privacy
@@ -284,7 +284,11 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 == Changelog ==
 
-The entries below summarize the notable changes since 0.33.0. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+The entries below summarize the notable changes since 0.34.0. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+
+= 0.61.161 =
+* Added: An AI connected through WPMgr can now create a draft page or post in Elementor from an outline, with your approval for each request in WPMgr. The outline can use headings, paragraphs, lists, quotes, tables, separators, buttons, spacing, sections and columns, and images that are already in the site's media library. The draft is built from Elementor's own classic widgets, in containers or in sections and columns, whichever the site's Elementor is set up for. Nothing is published, and undo moves the draft to the trash while nobody has edited it.
+* Added: A page built in Elementor this way needs Elementor 3.20 to 4.3. A request for Elementor's Atomic editor is refused, and so are a button in the outline style and an image whose alt text differs from the one saved in the media library. After Elementor saves the page, WPMgr checks that it holds exactly the approved layout and that nothing outside the page changed, and moves the draft to the trash if not.
 
 = 0.61.160 =
 * Added: An AI connected through WPMgr can now create a draft page or post from an outline with real layout, with your approval for each request in WPMgr. The outline can use headings, paragraphs, lists, quotes, tables and separators, and images that are already in the site's media library. In the block editor it can also use buttons, spacing, sections and columns. Nothing is published, and undo moves the draft to the trash.
@@ -476,17 +480,10 @@ The entries below summarize the notable changes since 0.33.0. This project ships
 * Changed: one-click wp-admin login is more reliable and now lands past common two-factor prompts. The login token still expires, is single-use, and is bound to the site and your role.
 * Changed: site connection status is steadier. The connection indicator no longer briefly flips to "degraded" on healthy low-traffic sites, and a "Re-check connection" action forces an immediate refresh from the dashboard.
 
-= 0.33.9 =
-* Hardening for WordPress.org guidelines: request inputs (including server and cookie values) are sanitized; the media quarantine and database-snapshot data now write under the uploads directory (with a read fallback to the legacy location so existing installs keep working); the diagnostics info REST endpoint binds its signed token to this site and endpoint; the login-screen branding style is enqueued; and the readme now documents every external service and the public source of the bundled scripts. No change to backups, cache, or other behavior.
-
-= 0.33.8 =
-* Fixed: WooCommerce cart-fragments now inject reliably on themes whose body tag has attributes; previously the shim only matched a bare body tag and skipped injection. Cart totals refresh correctly on cached catalog pages.
-* Fixed: cache hit-ratio now counts 304 Not Modified and HEAD responses served from cache, and hit/miss counts are no longer lost if a stats upload to the control plane fails.
-
-= 0.33.0 =
-* New: Real User Monitoring (RUM), per-site and off by default. When enabled, the agent injects a tiny first-party measurement script into cached pages; the visitor's browser sends anonymous Core Web Vitals (LCP, INP, CLS, FCP, TTFB) and page-load timing directly to your control plane. No cookies, no cross-site identifiers, the page path is stored with the query string stripped, and the visitor IP is never stored. See the Privacy section.
-
 == Upgrade Notice ==
+
+= 0.61.161 =
+Lets a connected AI create a draft page or post in Elementor from an outline, with your approval for each request in WPMgr. Nothing is published, and undo moves the draft to the trash.
 
 = 0.61.160 =
 Lets a connected AI create a draft page or post from an outline with real layout, with your approval for each request in WPMgr. Nothing is published. Also keeps each cache purge's report separate when one purge starts another.

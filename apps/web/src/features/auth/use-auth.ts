@@ -496,14 +496,42 @@ export function isSuperadmin(me: Me | null | undefined): boolean {
 }
 
 /**
- * Paths a superadmin (who has no org) may visit outside the Admin area. The
- * _authed gate keeps superadmins out of the tenant-scoped shell (which would
- * 403 or bounce them to the create-org screen), but their OWN personal account
- * settings — profile and 2FA/security — are per-user, not tenant-scoped, so
- * they must be reachable (otherwise a superadmin can never enable their own
- * 2FA). Everything else outside /admin stays redirected to /admin.
+ * Whether the user has an organisation to work in: a membership in at least
+ * one, or an active tenant. The active tenant is what counts for someone who
+ * reaches an organisation only through a share and so has no membership row.
+ *
+ * This is the one definition of "has no organisation". The create-organisation
+ * onboarding screen, the superadmin gate in routes/_authed.tsx and the sidebar
+ * all ask it, so they cannot disagree about who is organisation-less.
  */
-export function isSuperadminAllowedPath(pathname: string): boolean {
+export function hasOrg(me: Me | null | undefined): boolean {
+  if (!me) return false;
+  return me.memberships.length > 0 || !!me.active_tenant_id;
+}
+
+/**
+ * Whether the _authed gate lets this superadmin open `pathname`. Only
+ * meaningful for a superadmin; the caller checks isSuperadmin(me) first.
+ *
+ * A superadmin who belongs to an organisation is a member of it like anyone
+ * else, so no page is off limits. The API treats them that way already (a
+ * superadmin's memberships and active tenant resolve exactly as any member's),
+ * and the browser must not be the only thing keeping them out of their own
+ * sites.
+ *
+ * A superadmin with no organisation has nothing to do in the tenant-scoped
+ * shell (every call there would 403, and it would bounce them to the
+ * create-organisation screen), so they are kept in the Admin area. Their OWN
+ * personal account settings (profile and 2FA/security) are per-user, not
+ * tenant-scoped, so those stay reachable too; otherwise such a superadmin
+ * could never enable their own 2FA. Everything else outside /admin stays
+ * redirected to /admin.
+ */
+export function isSuperadminAllowedPath(
+  me: Me | null | undefined,
+  pathname: string,
+): boolean {
+  if (hasOrg(me)) return true;
   return (
     pathname.startsWith("/admin") ||
     pathname === "/settings/account" ||

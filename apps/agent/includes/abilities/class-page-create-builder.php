@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Abilities;
 
+use WPMgr\Agent\Abilities\Builders\BuilderRegistry;
+
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
     exit;
@@ -13,10 +15,18 @@ if (!defined('ABSPATH')) {
  * wpmgr/page-create: validate the outline, and render it deterministically.
  *
  * Input (exact JSON text, an object):
- *   post_type  "page" | "post"
- *   editor     "wordpress_blocks" | "wordpress_classic"
- *   title      plain text, 1..200 characters, no newline
- *   outline    1..200 items; an item is a block, a group or columns
+ *   post_type         "page" | "post"
+ *   editor            "wordpress_blocks" | "wordpress_classic" | "builder:elementor"
+ *   title             plain text, 1..200 characters, no newline
+ *   outline           1..200 items; an item is a block, a group or columns
+ *   elementor_format  optional, only with "builder:elementor":
+ *                     "site_default" (the default) | "classic" | "atomic"
+ *
+ * A page-builder editor ("builder:<id>") passes this grammar on its shape;
+ * which builders exist, are compiled in and are enabled is decided by the
+ * builder registry before anything is built. The spec of a builder editor
+ * carries elementor_format; the spec of a WordPress editor is exactly its
+ * four fields.
  *
  * Blocks (allowed anywhere a node is allowed):
  *   {"type":"heading","level":2|3|4,"text":TEXT}
@@ -56,6 +66,12 @@ final class PageCreateBuilder
 {
     public const EDITOR_BLOCKS  = 'wordpress_blocks';
     public const EDITOR_CLASSIC = 'wordpress_classic';
+
+    /** The page-builder editor value the published schema offers. */
+    public const EDITOR_BUILDER_ELEMENTOR = 'builder:elementor';
+
+    /** elementor_format values; site_default is the default. */
+    public const ELEMENTOR_FORMATS = ['site_default', 'classic', 'atomic'];
 
     public const MAX_TOP_LEVEL_NODES = 200;
 
@@ -191,12 +207,12 @@ final class PageCreateBuilder
      * editor). Nothing is rewritten.
      *
      * @param object $input Decoded input.
-     * @return array{spec?:array{post_type:string,editor:string,title:string,outline:list<array<string,mixed>>},code?:string,detail?:string}
+     * @return array{spec?:array{post_type:string,editor:string,title:string,outline:list<array<string,mixed>>,elementor_format?:string},code?:string,detail?:string}
      */
     public static function validate(object $input): array
     {
         $vars    = get_object_vars($input);
-        $allowed = ['post_type', 'editor', 'title', 'outline'];
+        $allowed = ['post_type', 'editor', 'title', 'outline', 'elementor_format'];
         foreach (array_keys($vars) as $key) {
             if (!in_array((string) $key, $allowed, true)) {
                 return self::bad('bad_input', 'unknown input field');
@@ -206,9 +222,20 @@ final class PageCreateBuilder
         if (!is_string($type) || !in_array($type, ['page', 'post'], true)) {
             return self::bad('bad_input', 'post_type must be page or post');
         }
-        $editor = $vars['editor'] ?? null;
-        if (!is_string($editor) || !in_array($editor, [self::EDITOR_BLOCKS, self::EDITOR_CLASSIC], true)) {
-            return self::bad('bad_input', 'editor must be wordpress_blocks or wordpress_classic');
+        $editor  = $vars['editor'] ?? null;
+        $builder = is_string($editor) && preg_match(BuilderRegistry::RE_EDITOR, $editor) === 1;
+        if (!is_string($editor) || (!$builder && !in_array($editor, [self::EDITOR_BLOCKS, self::EDITOR_CLASSIC], true))) {
+            return self::bad('bad_input', 'editor must be wordpress_blocks, wordpress_classic or builder:elementor');
+        }
+        $format = null;
+        if (array_key_exists('elementor_format', $vars)) {
+            if ($editor !== self::EDITOR_BUILDER_ELEMENTOR) {
+                return self::bad('bad_input', 'elementor_format is only for editor builder:elementor');
+            }
+            $format = $vars['elementor_format'];
+            if (!is_string($format) || !in_array($format, self::ELEMENTOR_FORMATS, true)) {
+                return self::bad('bad_input', 'elementor_format must be site_default, classic or atomic');
+            }
         }
         $title = $vars['title'] ?? null;
         if (!is_string($title)) {
@@ -246,7 +273,12 @@ final class PageCreateBuilder
             return self::bad('layout_needs_block_editor', $ctx['block_only'] . ' needs the block editor');
         }
 
-        return ['spec' => ['post_type' => $type, 'editor' => $editor, 'title' => $title, 'outline' => $nodes]];
+        $spec = ['post_type' => $type, 'editor' => $editor, 'title' => $title, 'outline' => $nodes];
+        if ($editor === self::EDITOR_BUILDER_ELEMENTOR) {
+            $spec['elementor_format'] = $format ?? self::ELEMENTOR_FORMATS[0];
+        }
+
+        return ['spec' => $spec];
     }
 
     /**
@@ -554,7 +586,7 @@ final class PageCreateBuilder
             'type'                 => 'object',
             'properties'           => [
                 'post_type' => ['type' => 'string', 'enum' => ['page', 'post']],
-                'editor'    => ['type' => 'string', 'enum' => [self::EDITOR_BLOCKS, self::EDITOR_CLASSIC]],
+                'editor'    => ['type' => 'string', 'enum' => [self::EDITOR_BLOCKS, self::EDITOR_CLASSIC, self::EDITOR_BUILDER_ELEMENTOR]],
                 'title'     => ['type' => 'string', 'minLength' => 1, 'maxLength' => self::MAX_TITLE_CHARS],
                 'outline'   => [
                     'type'     => 'array',
@@ -562,6 +594,7 @@ final class PageCreateBuilder
                     'maxItems' => self::MAX_TOP_LEVEL_NODES,
                     'items'    => ['oneOf' => array_merge($leaves, [$group, $columns])],
                 ],
+                'elementor_format' => ['type' => 'string', 'enum' => self::ELEMENTOR_FORMATS],
             ],
             'required'             => ['post_type', 'editor', 'title', 'outline'],
             'additionalProperties' => false,

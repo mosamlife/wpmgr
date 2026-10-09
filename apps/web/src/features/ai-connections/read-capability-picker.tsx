@@ -10,7 +10,7 @@ import {
   capabilityLabel,
   isAbilityCapability,
 } from "./capabilities";
-import { capabilityPresets, presetFor, withCapability } from "./capability-presets";
+import { capabilityPresets, presetFor, withCapability, withPreset } from "./capability-presets";
 
 // The read picker: the presets and the read rows, shared by the connection
 // wizard's step 4 and the consent screen.
@@ -19,13 +19,15 @@ import { capabilityPresets, presetFor, withCapability } from "./capability-prese
 // it, write rows included, and every change goes out through `onChange` as the
 // complete next list. The host keeps the cache-clear box and the site-tools box
 // (they are not reads and live in their own bordered boxes) and ticks them into
-// the same list, which is why the preset claim below is derived over all of it.
+// the same list.
 //
-// A PRESET SETS THE CHECKBOXES AND NOTHING ELSE (ruling 33). Pressing one
-// replaces the whole list, so a write row ticked by hand is cleared by it. The
-// claim on screen is derived from the list by `presetFor` on every render, so
-// there is no code path that leaves a preset marked over a set that no longer
-// matches it.
+// A PRESET SETS THE READ ROWS AND NOTHING ELSE (owner ruling 2026-10-09, which
+// supersedes ruling 33 for the site-tools and cache-clear boxes). Pressing one
+// replaces the reads and leaves every other tick exactly as it was, so a box the
+// operator ticked, or that the screen opened with ticked, survives it. The claim
+// on screen is derived from the read rows by `presetFor` on every render, so
+// there is no code path that leaves a preset marked over a set of reads that no
+// longer matches it, and a tick further down never moves it.
 //
 // WHICH ROWS CAN BE TICKED IS DECIDED BY THE HOST, through `offered`, and only
 // ever from the reads this build can confer. A read the host did not offer is
@@ -37,8 +39,12 @@ const CONTENT_UNAVAILABLE_REASON =
   "Not available yet -- there are no content tools for a connection to call, so there is " +
   "nothing this permission could reach.";
 
-/** Why a read this build can confer is not tickable on this surface. */
-const NOT_OFFERED_REASON = "Not requested by this app";
+/**
+ * Why a read this build can confer is not tickable on this surface. The rows
+ * only appear when the app asked for reading, so the reason says what WPMgr did,
+ * never that the app did not ask.
+ */
+const NOT_OFFERED_REASON = "WPMgr did not offer this for this connection.";
 
 export interface ReadCapabilityPickerProps {
   /** Every capability currently ticked on the host surface, reads and writes. */
@@ -63,11 +69,11 @@ export function ReadCapabilityPicker({
 
   return (
     <div className="space-y-3" data-testid="read-capability-picker">
-      {/* THE PRESETS. A shortcut, not a mode: pressing one sets the checkboxes
-          and nothing else, and the moment the set diverges the control says
+      {/* THE PRESETS. A shortcut, not a mode: pressing one sets the read rows
+          and nothing else, and the moment the read rows diverge the control says
           Custom. That is not enforced by a handler -- it is derived by
           presetFor, so no code path exists that could leave a preset selected
-          over a set that no longer matches it. */}
+          over reads that no longer match it. */}
       <div className="space-y-2">
         <p className="text-xs font-medium text-[var(--color-foreground)]">Start from</p>
         <div className="flex flex-wrap items-center gap-2" data-testid="capability-presets">
@@ -81,7 +87,7 @@ export function ReadCapabilityPicker({
                 aria-pressed={active}
                 disabled={disabled}
                 onClick={() => {
-                  onChange([...preset.capabilities]);
+                  onChange(withPreset(selected, preset));
                 }}
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-left text-xs transition-colors",
@@ -125,7 +131,7 @@ export function ReadCapabilityPicker({
         </div>
         <p className="text-xs text-[var(--color-muted-foreground)]">
           {activePreset === null
-            ? "You have changed the rows below, so this is your own set rather than either shortcut."
+            ? "The read rows are not either shortcut."
             : (presets.find((p) => p.id === activePreset)?.description ?? "")}
         </p>
       </div>
@@ -184,8 +190,8 @@ export function ReadCapabilityPicker({
         })}
       </ul>
       <p className="text-xs text-[var(--color-muted-foreground)]">
-        Every row above this line is read-only. No capability on this screen can change
-        WordPress content or configuration, whichever ones you pick.
+        Every row above this line is read-only. None of them can change WordPress content or
+        configuration, whichever ones you pick.
       </p>
     </div>
   );
