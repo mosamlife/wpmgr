@@ -82,9 +82,8 @@ final class CpDestination implements BackupDestination
 
     /**
      * Single-shot path with a structured result: presign this one hash, then
-     * PUT it once. EncryptAndUpload uses it to re-presign a chunk whose bulk-
-     * presigned URL was refused with a 403 (GH #369), so a failure still
-     * names its status and storage host.
+     * PUT it once, so a failure names its status and storage host (GH #369).
+     * putChunk() is its bool form.
      *
      * `already_stored` is true when the CP answered the presign without a URL
      * for this hash, meaning it already holds the chunk (a dedup hit): `ok` is

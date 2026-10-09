@@ -31,6 +31,7 @@ use WPMgr\Agent\Backup\TaskRunner;
 use WPMgr\Agent\Backup\Watchdog;
 use WPMgr\Agent\Support\AgeCrypto;
 use WPMgr\Agent\Support\BackupTransport;
+use WPMgr\Agent\Support\DebugLog;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -306,6 +307,80 @@ final class EncryptAndUploadPutFailureTest extends TestCase
     }
 
     /**
+     * A transient failure on the renewed URL is retried from the attempts
+     * left, on that same fresh URL, and the URL is not renewed again:
+     * 403 expired, then 503 and 200 on the fresh URL.
+     */
+    public function test_a_transient_failure_on_the_renewed_url_is_retried(): void
+    {
+        $this->respondWith(function (string $url, int $n) {
+            if ($n === 1) {
+                return $this->response(403, self::EXPIRED);
+            }
+            return $n === 2 ? $this->response(503, '<Error><Code>SlowDown</Code></Error>') : $this->response(200);
+        });
+        $transport = $this->transport();
+        $enc       = $this->encrypt($transport, 3);
+        $first     = $this->hashOfUrl($transport->urlsInFirstPresign()[0]);
+
+        $up = $this->upload($transport, $enc);
+
+        self::assertTrue($up['done'] ?? false, 'a 503 on the renewed URL must not fail the backup');
+        self::assertCount(2, $transport->presignCalls, 'the URL is renewed once, not again for the 503');
+        foreach ([1, 2] as $i) {
+            self::assertSame($first, $this->hashOfUrl($this->requests[$i]['url']));
+            self::assertStringContainsString('sig-round-2', $this->requests[$i]['url'], 'the 503 is retried on the fresh URL');
+        }
+        self::assertSame(count($enc['all_hashes']), $up['chunks_put']);
+        self::assertSame([4000], $this->sleeps, 'one backoff, before attempt 3');
+        self::assertSame([1, 2], $this->retryHeartbeats());
+    }
+
+    /**
+     * The renewed URL shares the chunk's attempt budget: a 403 and then 503s
+     * stop at PUT_MAX_ATTEMPTS PUTs in all.
+     */
+    public function test_a_renewed_url_that_keeps_failing_stops_at_the_attempt_bound(): void
+    {
+        $this->respondWith(function (string $url, int $n) {
+            return $n === 1 ? $this->response(403, self::EXPIRED) : $this->response(503);
+        });
+        $transport = $this->transport();
+        $enc       = $this->encrypt($transport, 3);
+
+        $message = $this->uploadExpectingFailure($transport, $enc);
+
+        $maxAttempts = $this->uploaderConstant('PUT_MAX_ATTEMPTS');
+        self::assertCount($maxAttempts, $this->requests);
+        self::assertCount(2, $transport->presignCalls);
+        self::assertStringContainsString('HTTP 503', $message);
+        self::assertStringContainsString($maxAttempts . ' attempts', $message);
+    }
+
+    /**
+     * A 403 on the last attempt still gets one PUT on the renewed URL.
+     */
+    public function test_a_403_on_the_last_attempt_still_gets_one_put_on_the_renewed_url(): void
+    {
+        $maxAttempts = $this->uploaderConstant('PUT_MAX_ATTEMPTS');
+        $this->respondWith(function (string $url, int $n) use ($maxAttempts) {
+            if ($n < $maxAttempts) {
+                return $this->response(503);
+            }
+            return $n === $maxAttempts ? $this->response(403, self::EXPIRED) : $this->response(200);
+        });
+        $transport = $this->transport();
+        $enc       = $this->encrypt($transport, 3);
+
+        $up = $this->upload($transport, $enc);
+
+        self::assertTrue($up['done'] ?? false);
+        self::assertCount(2, $transport->presignCalls);
+        self::assertStringContainsString('sig-round-2', $this->requests[$maxAttempts]['url']);
+        self::assertSame(range(1, $maxAttempts), $this->retryHeartbeats());
+    }
+
+    /**
      * A 404 is terminal: no retry, no backoff, no re-presign.
      */
     public function test_404_is_terminal(): void
@@ -369,6 +444,34 @@ final class EncryptAndUploadPutFailureTest extends TestCase
         self::assertStringContainsString($longHost, $message);
         self::assertStringContainsString('Сбой соединения', $message);
         self::assertStringContainsString(substr($first, 0, 16), $message);
+    }
+
+    /**
+     * The retry line in the debug log keeps a multi-byte (translated)
+     * transport error valid UTF-8: its 80-byte excerpt ends on a character
+     * boundary.
+     */
+    public function test_retry_log_line_keeps_a_multibyte_transport_error_valid_utf8(): void
+    {
+        $error = 'x' . str_repeat('é', 60);
+        self::assertNotSame(1, preg_match('//u', substr($error, 0, 80)), 'fixture: a plain 80-byte cut must split a character');
+        $lines = [];
+        \Patchwork\redefine(DebugLog::class . '::isEnabled', static fn (): bool => true);
+        \Patchwork\redefine(DebugLog::class . '::write', static function (string $message) use (&$lines): void {
+            $lines[] = $message;
+        });
+        $this->respondWith(static fn (): \WP_Error => new \WP_Error('http_request_failed', $error));
+        $transport = $this->transport();
+        $enc       = $this->encrypt($transport, 3);
+
+        $this->uploadExpectingFailure($transport, $enc);
+
+        $retryLines = array_filter($lines, static fn (string $line): bool => strpos($line, 'upload retry chunk') !== false);
+        self::assertCount($this->uploaderConstant('PUT_MAX_ATTEMPTS') - 1, $retryLines, 'one retry line per retried attempt');
+        foreach ($retryLines as $line) {
+            self::assertSame(1, preg_match('//u', $line), 'the retry line must be valid UTF-8');
+            self::assertStringContainsString('err=x' . str_repeat('é', 39) . ' next=', $line);
+        }
     }
 
     // ------------------------------------------------------------------

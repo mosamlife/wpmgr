@@ -1367,9 +1367,10 @@ final class EncryptAndUpload
      *     retried up to PUT_MAX_ATTEMPTS in all, with PUT_BACKOFF_BASE_MS
      *     doubling between attempts.
      *   - A 403 that BackupTransport marks `represign` (AccessDenied,
-     *     ExpiredToken, an expired request) gets one fresh single-hash
-     *     presign and one more PUT through CpDestination::putChunkWithStatus().
-     *     Retrying the stale URL itself would only get the same answer.
+     *     ExpiredToken, an expired request) renews the URL once with a fresh
+     *     single-hash presign. Retrying the stale URL itself would only get
+     *     the same answer. The fresh URL gets the attempts left, and at
+     *     least one.
      *   - Every other 4xx fails at once.
      *
      * A heartbeat is emitted after each failed attempt, before the backoff,
@@ -1396,46 +1397,45 @@ final class EncryptAndUpload
         ];
         // CP and s3_compat both resolve to a CpDestination; any other kind
         // falls back to the raw transport, with no re-presign available.
-        $cp       = $this->destination instanceof CpDestination ? $this->destination : null;
-        $attempts = 0;
-        for ($attempt = 1; $attempt <= self::PUT_MAX_ATTEMPTS; $attempt++) {
-            $attempts = $attempt;
-            $result   = $cp !== null
+        $cp            = $this->destination instanceof CpDestination ? $this->destination : null;
+        $attempts      = 0;
+        $limit         = self::PUT_MAX_ATTEMPTS;
+        $renewed       = false;
+        $alreadyStored = false;
+        while ($attempts < $limit) {
+            $attempts++;
+            $result = $cp !== null
                 ? $cp->putPresignedWithStatus($url, $cipher)
                 : $this->transport->putChunkWithStatus($url, $cipher);
-            if ($result['ok'] || !$result['retryable'] || $attempt >= self::PUT_MAX_ATTEMPTS) {
+            if ($result['ok']) {
                 break;
             }
-            $delayMs = self::PUT_BACKOFF_BASE_MS * (1 << ($attempt - 1));
-            $this->notePutRetry($progress, $heartbeatDetail, $hash, $attempt, $result, 'backoff_ms=' . $delayMs);
-            ($this->sleeper)($delayMs);
-        }
-
-        $alreadyStored = false;
-        if (!$result['ok'] && $result['represign'] && $cp !== null) {
-            $this->notePutRetry($progress, $heartbeatDetail, $hash, $attempts, $result, 'represign');
-            try {
-                $fresh = $cp->putChunkWithStatus($hash, $cipher);
-            } catch (\RuntimeException $e) {
-                // The presign callback itself failed. The storage's 403 is
-                // still the cause worth reporting, so keep that result.
-                $fresh = null;
-            }
-            if ($fresh !== null) {
-                $alreadyStored = $fresh['already_stored'];
-                if (!$alreadyStored) {
-                    $attempts++;
+            if ($result['represign'] && $cp !== null && !$renewed) {
+                $renewed = true;
+                $this->notePutRetry($progress, $heartbeatDetail, $hash, $attempts, $result, 'represign');
+                try {
+                    $fresh = $cp->presignAll([$hash]);
+                } catch (\RuntimeException $e) {
+                    // The presign callback itself failed. The storage's 403 is
+                    // still the cause worth reporting, so keep that result.
+                    break;
                 }
-                $result = [
-                    'ok'        => $fresh['ok'],
-                    'status'    => $fresh['status'],
-                    'error'     => $fresh['error'],
-                    's3_code'   => $fresh['s3_code'],
-                    'host'      => $fresh['host'] !== '' ? $fresh['host'] : $result['host'],
-                    'retryable' => $fresh['retryable'],
-                    'represign' => $fresh['represign'],
-                ];
+                if (!isset($fresh[$hash])) {
+                    // The CP already holds this chunk (a dedup hit): no PUT.
+                    $alreadyStored = true;
+                    $result        = ['ok' => true, 'status' => 0, 'error' => '', 's3_code' => '', 'retryable' => false, 'represign' => false] + $result;
+                    break;
+                }
+                $url   = $fresh[$hash];
+                $limit = max($limit, $attempts + 1);
+                continue;
             }
+            if (!$result['retryable'] || $attempts >= $limit) {
+                break;
+            }
+            $delayMs = self::PUT_BACKOFF_BASE_MS * (1 << ($attempts - 1));
+            $this->notePutRetry($progress, $heartbeatDetail, $hash, $attempts, $result, 'backoff_ms=' . $delayMs);
+            ($this->sleeper)($delayMs);
         }
 
         return $result + ['already_stored' => $alreadyStored, 'attempts' => $attempts];
@@ -1464,7 +1464,7 @@ final class EncryptAndUpload
                 $result['host'],
                 $result['status'],
                 $result['s3_code'],
-                substr($result['error'], 0, 80),
+                BackupTransport::capUtf8($result['error'], 80),
                 $next
             ));
         }
