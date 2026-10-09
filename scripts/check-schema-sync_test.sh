@@ -175,11 +175,20 @@ ALTER TABLE "public"."notes" DROP COLUMN "scratch";
 EOF
 }
 
+# A migration that holds only a comment: not empty, and valid.
+write_mig_comment() {
+  cat <<'EOF'
+-- Fixture migration 4 (variant): a migration that only explains itself.
+EOF
+}
+
 MIG1=20260101000000_init.sql
 MIG2=20260101000100_functions.sql
 MIG3=20260101000200_view_and_sequence.sql
 MIG4=20260101000300_label.sql
 MIG4B=20260101000300_scratch_column.sql
+MIG_EMPTY=20260101000300_empty.sql
+MIG_COMMENT=20260101000300_comment_only.sql
 
 # Written by the real `atlas migrate hash`; see the header.
 SUM_TRIO='h1:DHup/DUU8P+6NReRhHFanI34fPZPXP3poJ1wSWr+22I=
@@ -200,6 +209,20 @@ SUM_SCRATCH='h1:420F8DLKxP1yNYC0D4+6T8ecWLe0lyisb4LvqdMI1Lc=
 20260101000100_functions.sql h1:BYez+/u9lqgobQ+GQao2ImbFXn+8ZdW5MWEG0JUzUyY=
 20260101000200_view_and_sequence.sql h1:RpCy6fuCdlrwGDm9KdFmD0LeDUPPBZ9/n+CWEBGjglo=
 20260101000300_scratch_column.sql h1:cK4Zh3xc80LGhlImKjx7LB+5w6w1ypjcw0koWOnMls4='
+
+# The trio plus a zero-byte migration.
+SUM_EMPTY='h1:PjJx4p1wpLPT62d+To6nSDcRc1CxVxkyA+tmHaXJ/Ds=
+20260101000000_init.sql h1:Scgj7c+J5cPVf9BCMo5Jho0clqJpuhowTCOvjt8JdXs=
+20260101000100_functions.sql h1:BYez+/u9lqgobQ+GQao2ImbFXn+8ZdW5MWEG0JUzUyY=
+20260101000200_view_and_sequence.sql h1:RpCy6fuCdlrwGDm9KdFmD0LeDUPPBZ9/n+CWEBGjglo=
+20260101000300_empty.sql h1:NQxJo1pGExjbDYNprLTFox6FZr7OJasjtBccv1p7tkg='
+
+# The trio plus a migration holding only a comment.
+SUM_COMMENT='h1:eA+bF2jnWUGlFeixMvek0ciX1LLAXsYd8WhhJ6G2Rb0=
+20260101000000_init.sql h1:Scgj7c+J5cPVf9BCMo5Jho0clqJpuhowTCOvjt8JdXs=
+20260101000100_functions.sql h1:BYez+/u9lqgobQ+GQao2ImbFXn+8ZdW5MWEG0JUzUyY=
+20260101000200_view_and_sequence.sql h1:RpCy6fuCdlrwGDm9KdFmD0LeDUPPBZ9/n+CWEBGjglo=
+20260101000300_comment_only.sql h1:cEP5LKDS8b8cm/Hi0Q50AQbfXz8as9nT64LFt6rs7rg='
 
 write_schema() {
   cat <<'EOF'
@@ -304,7 +327,7 @@ NL=$'\n'
 # --emit-fixture DIR trio|label|scratch -- write the migrations a sum is for,
 # so the real atlas can hash them. Nothing else uses this mode.
 if [ "${1:-}" = "--emit-fixture" ]; then
-  dir="${2:?usage: --emit-fixture DIR trio|label|scratch}"
+  dir="${2:?usage: --emit-fixture DIR trio|label|scratch|empty|comment}"
   which="${3:-trio}"
   mkdir -p "$dir" || exit 2
   write_mig_1 > "$dir/$MIG1"
@@ -314,6 +337,8 @@ if [ "${1:-}" = "--emit-fixture" ]; then
     trio) : ;;
     label) write_mig_label > "$dir/$MIG4" ;;
     scratch) write_mig_scratch > "$dir/$MIG4B" ;;
+    empty) : > "$dir/$MIG_EMPTY" ;;
+    comment) write_mig_comment > "$dir/$MIG_COMMENT" ;;
     *) echo "unknown fixture set: $which" >&2; exit 2 ;;
   esac
   echo "wrote the '$which' fixture migrations to $dir"
@@ -761,6 +786,30 @@ case_run "broken: a postgres container that does not exist" broken "$t" \
 t="$(tree dead-docker)"
 case_run "broken: a docker daemon that is not reachable" broken "$t" \
   "env:DOCKER_HOST=unix:///nonexistent/docker.sock" "+GUARD BROKEN" "+docker daemon is not reachable" "-are in step"
+
+# ===========================================================================
+# An empty migration among valid ones (bot review of #868, gap 3). The sum is
+# regenerated over the zero-byte file, so atlas.sum cannot object; only an
+# explicit emptiness check can.
+# ===========================================================================
+t="$(tree empty-file-before-docker)"
+: > "$t/$M/$MIG_EMPTY"
+printf '%s\n' "$SUM_EMPTY" > "$t/$M/atlas.sum"
+case_run "broken: [empty-file] a zero-byte migration is refused before docker is touched" broken "$t" \
+  "env:DOCKER_HOST=unix:///nonexistent/docker.sock" \
+  "+GUARD BROKEN" "+migration $MIG_EMPTY is empty" "-docker daemon" "-are in step"
+
+t="$(tree empty-file)"
+: > "$t/$M/$MIG_EMPTY"
+printf '%s\n' "$SUM_EMPTY" > "$t/$M/atlas.sum"
+case_run "broken: [empty-file] one zero-byte migration among valid ones, atlas.sum regenerated over it" broken "$t" \
+  "+GUARD BROKEN" "+migration $MIG_EMPTY is empty" "-are in step"
+
+t="$(tree comment-only-migration)"
+write_mig_comment > "$t/$M/$MIG_COMMENT"
+printf '%s\n' "$SUM_COMMENT" > "$t/$M/atlas.sum"
+case_run "honest: [empty-file] a migration holding only a comment is not empty and stays valid" pass "$t" \
+  "+atlas.sum lists exactly the 4 migration files" "+compared:" "-FAIL" "-GUARD BROKEN"
 
 # ===========================================================================
 # Findings that are not drift: the two inputs do not load.

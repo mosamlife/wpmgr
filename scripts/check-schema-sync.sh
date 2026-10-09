@@ -206,6 +206,15 @@ sed 's|^\./||' "$MIG_LIST.raw" | LC_ALL=C sort > "$MIG_LIST" \
 N_MIGS="$(awk 'END { print NR + 0 }' "$MIG_LIST")"
 [ "$N_MIGS" -gt 0 ] || broken "no *.sql files in $MIG_DIR. Zero migrations is not 'in sync', it is nothing to check."
 
+# One empty file among valid ones counts too. A zero-byte migration applies
+# nothing and still hashes into a regenerated atlas.sum, so without this a tree
+# could pass with a migration that does not exist in any real sense. Refused
+# here, before docker is touched. (A migration holding only comments is not
+# empty and stays valid.)
+while IFS= read -r name; do
+  [ -s "$MIG_DIR/$name" ] || broken "migration $name is empty (zero bytes). It applies nothing, so it cannot stand for a schema change; refusing to count it."
+done < "$MIG_LIST"
+
 [ -f "$SCHEMA_FILE" ] || broken "no schema file at $SCHEMA_FILE."
 [ -s "$SCHEMA_FILE" ] || broken "$SCHEMA_FILE is empty."
 [ -f "$SUM_FILE" ] || broken "no atlas.sum at $SUM_FILE."
