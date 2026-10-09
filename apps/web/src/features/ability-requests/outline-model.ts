@@ -342,7 +342,7 @@ export function parsePageBuilder(raw: unknown): PageBuilderFacts | null {
 
 // A paragraph whose whole text is one web address, which Elementor would turn
 // into an embedded player (ability_builder.go, elementorOwnAddress).
-const ADDRESS_ONLY = /^[\t\n\x0B\f\r ]*https?:\/\/[^\t\n\x0B\f\r <>"]+[\t\n\x0B\f\r ]*$/i;
+const ADDRESS_ONLY = /^[\t\n\v\f\r ]*https?:\/\/[^\t\n\v\f\r <>"]+[\t\n\v\f\r ]*$/i;
 
 /**
  * True for a node Elementor does not build as the outline asks, which the
