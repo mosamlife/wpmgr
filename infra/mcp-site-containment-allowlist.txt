@@ -23,7 +23,8 @@
 #                             stale on every unrelated edit gets deleted.
 #
 #   PARAM <Method>.<param>    A uuid.UUID / []uuid.UUID parameter on the Store
-#                             or requestStore interface. EVERY uuid parameter on that interface
+#                             or requestStore interface, on an exported method
+#                             or not. EVERY uuid parameter on either interface
 #                             needs an entry, not only the site-looking ones,
 #                             because `GetSiteByID(ctx, tenantID, id uuid.UUID)`
 #                             is a site id wearing a name a pattern would not
@@ -54,7 +55,7 @@ CALL internal/mcp/service.go authorizeGrant             # request path (moved ou
 # (Service.authorizeGrant builds it from the ids ResolveScopeSites returned, in
 # the same function, so it needs no second CALL entry.)
 
-# ---- Store interface uuid parameters ---------------------------------------
+# ---- Store and requestStore interface uuid parameters ----------------------
 # Each of these was read and is not a request-supplied site id.
 PARAM RedeemAuthorizationCode.tenantID                  # tenant of the resolved principal
 PARAM RedeemAuthorizationCode.codeID                    # authorization code row id, from the code lookup

@@ -35,12 +35,13 @@
 #      body, a cache, the grant column read directly) is a resolution that never
 #      happened, and its own doc comment says so.
 #
-#   B. THE STORE INTERFACES' uuid SURFACE. Package mcp reaches the database
-#      through two interfaces: mcp.Store, and the unexported requestStore that
-#      the request rail and the status tool use (cache_purge_repo.go). Both are
-#      read; the list is STORE_IFACES below. Every uuid.UUID / []uuid.UUID
-#      parameter on either must be allowlisted BY NAME -- not only the ones spelled
-#      "site". A bypass does not announce itself:
+#   B. THE STORE INTERFACES' uuid SURFACE. Rule B reads two interfaces through
+#      which package mcp reaches the database: mcp.Store, and the unexported
+#      requestStore that the request rail and the status tool use
+#      (cache_purge_repo.go). The list is STORE_IFACES below, and an interface
+#      that is not on it is not read (gap 2). Every uuid.UUID / []uuid.UUID
+#      parameter on either must be allowlisted BY NAME -- not only the ones
+#      spelled "site". A bypass does not announce itself:
 #
 #          GetSiteByID(ctx context.Context, tenantID, id uuid.UUID) (...)
 #
@@ -50,10 +51,13 @@
 #      someone who is not trying to be caught, and, more to the point, by
 #      someone who has never read this file.
 #
-#      The interface is read with `go doc -u`, i.e. through Go's own parser,
+#      Each interface is read with `go doc -u`, i.e. through Go's own parser,
 #      NOT by grepping repo.go. A signature reformatted across lines and a
 #      method moved to another file in the package are both invisible to this
-#      guard by construction, which a grep over one file cannot manage.
+#      guard by construction, which a grep over one file cannot manage. Methods
+#      are selected exported or not (requestStore is unexported), and each
+#      interface must yield at least one method on its own, or the guard is
+#      broken (exit 2) rather than clean.
 #
 #      `go doc` PARSES; IT DOES NOT TYPE-CHECK, and that was measured rather
 #      than assumed. With a bypass planted in this tree -- a Store method with
@@ -79,7 +83,8 @@
 #      unrelated function whose json.RawMessage was a JSON-RPC envelope id.
 #
 #   D. SECOND DATABASE PATHS. Rules A to C all assume the database is reached
-#      through mcp.Store. Rule D is the backstop for a file that goes round it,
+#      through the interfaces Rule B reads, mcp.Store and requestStore. Rule D
+#      is the backstop for a file that goes round them,
 #      and its subject is EXECUTING SQL -- an sqlc Queries built through
 #      whatever local name the file's import block binds, a direct pgx
 #      Query/QueryRow/Exec/SendBatch/CopyFrom, or a held pgxpool. repo.go is
@@ -98,7 +103,7 @@
 # check-license-surfaces.sh and check-urlmap-routes.sh.
 #
 # RUN IT:
-#   make check-mcp-containment        # reads the Store interface via go doc
+#   make check-mcp-containment        # reads Store and requestStore via go doc
 #   make check-mcp-containment-test   # the guard's own regression suite
 #   scripts/check-mcp-site-containment.sh --store-doc /tmp/store.txt   # offline
 #
@@ -167,19 +172,24 @@
 #      human looked correctly. An allowlist entry with a wrong reason passes.
 #      This is the big one and no amount of parsing fixes it.
 #
-#   2. Rule B's subject is the mcp.Store interface. A handler that reaches the
-#      database WITHOUT going through Store is outside its reach. Rule D is the
-#      backstop and now covers all three mechanisms available in this package
+#   2. Rule B's subjects are two interfaces, mcp.Store and the unexported
+#      requestStore (STORE_IFACES). A handler that reaches the database WITHOUT
+#      going through either of them is outside its reach, and so is a method on
+#      any other interface declared in the package, until that interface is
+#      added to STORE_IFACES. Rule D is the backstop and now covers all three
+#      mechanisms available in this package
 #      -- an sqlc Queries built through any local name for the package, a
 #      direct pgx Query/QueryRow/Exec/SendBatch/CopyFrom, and a held pgxpool --
 #      in every file except repo.go and the reviewed DBPATH exceptions.
 #      WHAT STILL GETS THROUGH: a file that executes no SQL itself but calls a
 #      helper in ANOTHER package that holds the pool; and `database/sql` or a
 #      query builder, neither of which this repo uses. A new Repo method wired
-#      through a NEW interface declared inside the package no longer passes
-#      silently -- Rule D catches the file that executes the SQL -- but it is
-#      caught as an unreviewed DBPATH, not as an unreviewed interface, so the
-#      reviewer is pointed at the file rather than at the interface.
+#      through a NEW interface declared inside the package is outside Rule B.
+#      Rule D sees it only when the method lives in a file that executes the SQL
+#      and is neither repo.go nor a reviewed DBPATH, and then as an unreviewed
+#      DBPATH, not as an unreviewed interface, so the reviewer is pointed at the
+#      file rather than at the interface. In repo.go, or in a file that already
+#      has a DBPATH entry, nothing fires.
 #
 #   3. Rule C's granularity is the FILE, not the tool. Once one file is
 #      allowlisted for reading tool arguments, a second tool added to that same
@@ -687,7 +697,7 @@ awk '
   }
 ' "$METHODS" | sort -u >"$FOUND_PARAM"
 
-# Zero uuid parameters on an interface that HEAD declares with many is an
+# Zero uuid parameters across interfaces that HEAD declares with many is an
 # extraction failure, not a clean surface.
 [ -s "$FOUND_PARAM" ] || broken "found ZERO uuid parameters on the mcp Store interfaces. HEAD declares several, so this is a parse failure, and a parse failure that reports containment is the defect this guard exists to prevent."
 
@@ -707,8 +717,9 @@ while IFS= read -r entry; do
     Rule B (ADR-061 A11.4): '$parm' is a uuid this surface hands to the database.
     If it is a SITE ID that came from a request, this is the bypass: A11 says no
     handler may pass a request-supplied site id anywhere but $CHOKEPOINT, and a
-    Store method taking one goes round it. Route it through $CHOKEPOINT and
-    filter with SiteSet.Allows. If it is not a site id, add to $ALLOWLIST:
+    Store or requestStore method taking one goes round it. Route it through
+    $CHOKEPOINT and filter with SiteSet.Allows. If it is not a site id, add to
+    $ALLOWLIST:
         PARAM $entry   # what this id is and where it comes from"
   fi
 done <"$FOUND_PARAM"
@@ -855,10 +866,10 @@ done <"$ALLOW_TOOLARGS"
 # ---------------------------------------------------------------------------
 # RULE D. The backstop named in gap 2 of the header.
 #
-# Rule B's subject is the Store interface. A file in package mcp that imports
-# the sqlc package or pgx directly is a file that could talk to the database
-# without going through Store at all, which is where a second, unwatched path
-# would begin. repo.go is the one file whose job that is.
+# Rule B's subjects are the Store and requestStore interfaces. A file in package
+# mcp that imports the sqlc package or pgx directly is a file that could talk to
+# the database without going through either at all, which is where a second,
+# unwatched path would begin. repo.go is the one file whose job that is.
 # ---------------------------------------------------------------------------
 # THE OLD FORM GATED EVERYTHING ON ONE IMPORT AND ONE LITERAL, and both halves
 # leaked:
@@ -964,10 +975,11 @@ while IFS= read -r f; do
   if ! grep -qxF "$rel" "$ALLOW_DBPATH"; then
     violation "$rel $mech
     Rule D (backstop for ADR-061 A11.4): package mcp reaches the database
-    through the Store interface, which is what Rule B watches. A second path
-    built here is outside that watch, and a site id could travel it. Move the
-    query behind a Store method so it is covered -- or, if this file IS part of
-    the Store implementation (Repo split across files), record that in $ALLOWLIST:
+    through the Store and requestStore interfaces, which is what Rule B
+    watches. A second path built here is outside that watch, and a site id could
+    travel it. Move the query behind a Store or requestStore method so it is
+    covered -- or, if this file IS part of the Store implementation (Repo split
+    across files), record that in $ALLOWLIST:
         DBPATH $rel   # which Repo method reaches this, and why it is on the audited boundary"
   fi
 done <"$TMPDIR_RUN/mcpfiles"
