@@ -5,22 +5,16 @@ import { AlertTriangle, Check, ExternalLink, Lock } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CopyableMono } from "@/components/shared/copyable-mono";
 import { cn } from "@/lib/utils";
-import {
-  CAPABILITY_DESCRIPTIONS,
-  CONFERRABLE_READS,
-  KNOWN_CAPABILITIES,
-  isAbilityCapability,
-  capabilityKind,
-  capabilityLabel,
-} from "./capabilities";
+import { CONFERRABLE_READS } from "./capabilities";
+import { defaultCapabilities } from "./capability-presets";
 import { AbilityCapabilityBox } from "./ability-capability-box";
 import { CachePurgeCapabilityBox } from "./cache-purge-capability-box";
+import { ReadCapabilityPicker } from "./read-capability-picker";
 
 import {
   CLIENT_TABLE_VERIFIED_AT,
@@ -102,15 +96,14 @@ import {
 // put the auth step second.
 //
 // WHERE THE ANSWER ACTUALLY GOES, STATED ON THE STEP RATHER THAN IMPLIED. On
-// the token path it is on the wire. On the browser sign-in path it is not: the
-// client redirects into the approval screen at /connect/ai, which calls
-// Approve (service.go:607); ApprovalRequest carries Principal, Consent,
-// GrantName and SiteScope and nothing else, so that path has no channel for a
-// capability answer today (tracked in GH #660). That is exactly the position
-// site scope is already in one step earlier, and it is handled the same way:
-// the step is asked, and it says what happens to the answer on each path. A
-// step that vanished for half the operators would be a rail that changes
-// length under them, which ruling 15 forbids.
+// the token path it is on the wire. On the browser sign-in path this page's
+// answer is not carried: the client redirects into the approval screen at
+// /connect/ai, which this wizard never opens, and that screen offers the same
+// read picker (ReadCapabilityPicker) and sends what is ticked there. That is
+// exactly the position site scope is already in one step earlier, and it is
+// handled the same way: the step is asked, and it says what happens to the
+// answer on each path. A step that vanished for half the operators would be a
+// rail that changes length under them, which ruling 15 forbids.
 //
 // NO SNIPPET IS WRITTEN IN THIS FILE. Every block comes from buildSnippet, and
 // snippet.test.ts fails the build if a config literal appears here.
@@ -195,71 +188,6 @@ function unbuiltRailNote(steps: readonly SpecStepDef[]): string {
       : `Steps ${unbuilt.slice(0, -1).map(String).join(", ")} and ${String(unbuilt[unbuilt.length - 1])}`;
   const verb = unbuilt.length === 1 ? "is" : "are";
   return `${list} ${verb} not built yet, so ${unbuilt.length === 1 ? "it is" : "they are"} shown but not offered.`;
-}
-
-/**
- * THE TWO PRESETS, and there are two because the owner ruled two. The deck
- * draws four; the other two name a propose model the backend does not have
- * (ruling 17), so building them would put a shortcut on screen that sets a
- * capability no grant can hold.
- *
- * BOTH ARE DERIVED FROM THE VOCABULARY, NOT WRITTEN OUT. "Read everything" is
- * every conferrable READ, so a capability added to CONFERRABLE_READS joins it
- * by construction rather than by somebody remembering. Writing the six names
- * here would be a second copy of the list that capabilities.ts exists to
- * prevent, and its failure mode is a preset called "read everything" that
- * quietly stops meaning it.
- *
- * NEITHER PRESET MAY INCLUDE THE WRITE. `mcp.cache.purge` needs its own
- * per-call approval (ADR-061 option B) and is never pre-ticked and never part
- * of a preset (design v7 S2.1, ruling 33): CONFERRABLE_READS is the reads-only
- * list precisely so a preset built from it cannot pick the write row up the
- * way CONFERRABLE_CAPABILITIES (every name the picker may offer at all,
- * including the write) would.
- */
-const CAPABILITY_PRESETS = [
-  {
-    id: "basics",
-    label: "Just the basics",
-    /**
-     * The default the wizard already opens on, and dto.go's own default for an
-     * omitted field. An operator who changes nothing gets exactly what not
-     * answering would have given them.
-     */
-    capabilities: ["mcp.sites.read"] as readonly string[],
-    description: "See which sites are in scope, and nothing else.",
-  },
-  {
-    id: "read-everything",
-    label: "Read everything",
-    capabilities: CONFERRABLE_READS as readonly string[],
-    description: "Every read this connection could be given. It still cannot change anything.",
-  },
-] as const;
-
-/**
- * Which preset the CURRENT selection is, or null for a custom set.
- *
- * DERIVED ON EVERY RENDER, NEVER STORED, AND THAT IS THE WHOLE DESIGN. Ruling
- * 33 says touching a checkbox moves the control to an unlabelled Custom state.
- * Storing "the operator pressed Read everything" and clearing it on each
- * checkbox change would implement that with a second piece of state that can
- * disagree with the set underneath -- and a label claiming a preset over a set
- * that has diverged is this component's signature defect, the same shape as the
- * rail claiming a step done while its action was blocked.
- *
- * Deriving it means the disagreement is not merely tested against, it is
- * UNCONSTRUCTIBLE: there is no second value for a label to read. Unticking a
- * row from "read everything" makes this return null on the very same render,
- * and re-ticking it makes the preset name come back on its own -- which is
- * correct, because the set genuinely is that preset again.
- */
-function presetFor(selected: readonly string[]): string | null {
-  const chosen = [...selected].sort().join("|");
-  const match = CAPABILITY_PRESETS.find(
-    (p) => [...p.capabilities].sort().join("|") === chosen,
-  );
-  return match?.id ?? null;
 }
 
 /** Each built section's local step, named rather than written as a bare number. */
@@ -559,8 +487,12 @@ export function ConnectWizard({
   // the same reasoning the site-scope step's "no default 'all'" comment above
   // already gives. Sites-read matches dto.go's own default for an OMITTED
   // field, so an operator who changes nothing here ends up with exactly what
-  // they would have gotten by not answering.
-  const [capabilities, setCapabilities] = useState<readonly string[]>(["mcp.sites.read"]);
+  // they would have gotten by not answering. The consent screen opens on the
+  // same preset through the same function, so the two surfaces cannot default
+  // differently.
+  const [capabilities, setCapabilities] = useState<readonly string[]>(() =>
+    defaultCapabilities(CONFERRABLE_READS),
+  );
 
   const client = useMemo(
     () => MCP_CLIENTS.find((c) => c.id === clientId) ?? null,
@@ -637,10 +569,9 @@ export function ConnectWizard({
     [capabilities],
   );
 
-  // WHICH PRESET THE OPERATOR IS ON, OR NULL FOR CUSTOM -- derived from the
-  // same `capabilities` array the checkboxes render and the mint sends, so the
-  // label, the ticks and the wire payload are three readings of one value.
-  const activePreset = presetFor(capabilities);
+  // The picker derives which preset the operator is on, or Custom, from this
+  // same `capabilities` array, so the label, the ticks and the wire payload are
+  // three readings of one value.
   const toggleCapability = (cap: string, next: boolean) =>
     setCapabilities((current) =>
       next
@@ -986,131 +917,15 @@ export function ConnectWizard({
               {describeSiteScope(scope)} This decides what it may see there -- how many sites
               it reaches is step 3's answer, already given.
             </p>
-            {/* THE PRESETS. A shortcut, not a mode: pressing one sets the
-                checkboxes and nothing else, and the moment the set diverges the
-                control says Custom. That is not enforced by a handler -- it is
-                derived by presetFor, so no code path exists that could leave a
-                preset selected over a set that no longer matches it. */}
-            <div className="space-y-2">
-              <p className="text-xs font-medium text-[var(--color-foreground)]">Start from</p>
-              <div className="flex flex-wrap items-center gap-2" data-testid="capability-presets">
-                {CAPABILITY_PRESETS.map((preset) => {
-                  const active = activePreset === preset.id;
-                  return (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      data-testid={`preset-${preset.id}`}
-                      aria-pressed={active}
-                      disabled={mintInFlight}
-                      onClick={() => {
-                        setCapabilities([...preset.capabilities]);
-                      }}
-                      className={cn(
-                        "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-left text-xs transition-colors",
-                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]",
-                        mintInFlight && "cursor-not-allowed opacity-70",
-                        active
-                          ? "border-[var(--color-primary)] bg-[var(--color-accent)] font-medium text-[var(--color-foreground)]"
-                          : "border-[var(--color-border)] text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)]",
-                      )}
-                    >
-                      {/* THE TICK IS WHAT ACTUALLY SAYS "CHOSEN", and it is
-                          here because border-and-fill alone did not. Pressing a
-                          preset leaves focus on that button, and the focus ring
-                          is close enough to the selected border that a
-                          just-diverged preset went on LOOKING selected next to
-                          a freshly appeared Custom -- aria-pressed said false
-                          and the picture said otherwise. Found by opening the
-                          screenshot; the e2e assertion on aria-pressed passed
-                          throughout. A glyph that only the active branch
-                          renders cannot be imitated by a focus style.
-                          ClientCard already marks selection this way. */}
-                      {active ? (
-                        <Check aria-hidden="true" className="size-3.5 text-[var(--color-primary)]" />
-                      ) : null}
-                      {preset.label}
-                    </button>
-                  );
-                })}
-                {/* THE THIRD STATE, AND IT IS A STATEMENT RATHER THAN A BUTTON.
-                    Ruling 33 calls it unlabelled and there is nothing to press:
-                    Custom is where you ARE, not somewhere you go. Rendering it
-                    as a third button would invite an operator to click it and
-                    wonder why nothing happened. */}
-                {activePreset === null ? (
-                  <span
-                    data-testid="preset-custom"
-                    className="rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-xs font-medium text-[var(--color-foreground)]"
-                  >
-                    Custom
-                  </span>
-                ) : null}
-              </div>
-              <p className="text-xs text-[var(--color-muted-foreground)]">
-                {activePreset === null
-                  ? "You have changed the rows below, so this is your own set rather than either shortcut."
-                  : (CAPABILITY_PRESETS.find((p) => p.id === activePreset)?.description ?? "")}
-              </p>
-            </div>
-            <ul className="space-y-2">
-              {/* READS ONLY. The write row (mcp.cache.purge) never renders in
-                  this list -- it gets its own bordered box below, visibly
-                  distinct and never pre-ticked (design v7 S2.1). Filtering by
-                  CAPABILITY_KIND here, rather than by a written-out name,
-                  means a future read added to the vocabulary joins this list
-                  by construction and a future write does not. */}
-              {KNOWN_CAPABILITIES.filter(
-                (cap) => capabilityKind(cap) === "read" && !isAbilityCapability(cap),
-              ).map((cap) => {
-                const conferrable = (CONFERRABLE_READS as readonly string[]).includes(cap);
-                const checked = capabilities.includes(cap);
-                return (
-                  <li key={cap}>
-                    <label
-                      className={cn(
-                        "flex items-start gap-2 rounded-md border border-[var(--color-border)] p-2 text-sm",
-                        !conferrable && "cursor-not-allowed opacity-70",
-                      )}
-                    >
-                      <Checkbox
-                        className="mt-0.5"
-                        checked={checked}
-                        disabled={!conferrable || mintInFlight}
-                        onChange={(e) => {
-                          const next = e.target.checked;
-                          setCapabilities((current) =>
-                            next
-                              ? current.includes(cap)
-                                ? current
-                                : [...current, cap]
-                              : current.filter((c) => c !== cap),
-                          );
-                        }}
-                      />
-                      <span>
-                        <span className="block font-medium text-[var(--color-foreground)]">
-                          {capabilityLabel(cap)}
-                        </span>
-                        <span className="block text-xs text-[var(--color-muted-foreground)]">
-                          {CAPABILITY_DESCRIPTIONS[cap]}
-                        </span>
-                        {!conferrable ? (
-                          <span className="block text-xs text-[var(--color-muted-foreground)]">
-                            Not available yet -- there are no content tools for a connection to
-                            call, so there is nothing this permission could reach.
-                          </span>
-                        ) : null}
-                      </span>
-                    </label>
-                  </li>
-                );
-              })}
-            </ul>
-            <p className="text-xs text-[var(--color-muted-foreground)]">
-              Every row above this line is read-only. No capability on this screen can change
-              WordPress content or configuration, whichever ones you pick.
-            </p>
+            {/* THE PRESETS AND THE READ ROWS are the shared picker, the same one
+                the consent screen renders for a browser sign-in. This page
+                offers every read the build can confer. */}
+            <ReadCapabilityPicker
+              selected={capabilities}
+              onChange={setCapabilities}
+              offered={CONFERRABLE_READS}
+              disabled={mintInFlight}
+            />
 
             {/* THE ONE WRITE ROW, IN ITS OWN BOX. Never mixed into the reads
                 list above, never pre-ticked, and never part of either preset
