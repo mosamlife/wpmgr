@@ -264,6 +264,35 @@ final class LayoutOpsTest extends TestCase
         $this->assertSame([], $r['touched']);
     }
 
+    public function test_locked_node_never_goes_with_its_holder(): void
+    {
+        foreach ([true, false] as $containers) {
+            $tree = self::page($containers);
+            $ref  = self::refs($tree, $containers);
+            // top2 holds the locked widget: directly as a container, or
+            // through its column box2 as a section.
+            foreach (array_unique([$ref['top2'], $ref['box2']]) as $holder) {
+                $this->assertRefused('node_not_editable', 0, $tree, [['op' => 'remove', 'ref' => $holder]], $containers, 'holds_locked');
+                $this->assertRefused('node_not_editable', 0, $tree, [['op' => 'replace', 'ref' => $holder, 'outline' => [self::para('Gone')]]], $containers, 'holds_locked');
+            }
+            $this->assertRefused('node_not_editable', 1, $tree, [self::setText($ref['h3'], 'text', 'Fine'), ['op' => 'remove', 'ref' => $ref['top2']]], $containers, 'holds_locked');
+
+            // A holder may still move, and the lock goes with it unchanged.
+            $r = self::applied($tree, [['op' => 'move', 'ref' => $ref['top2'], 'before' => $ref['top0']]], $containers);
+            $this->assertSame(json_encode(self::byId($tree)[$ref['lock']]), json_encode(self::byId($r['tree'])[$ref['lock']]));
+        }
+
+        // Judged on the tree the earlier operations left: the column holding
+        // the locked widget moves into the row, so the row now holds it.
+        $tree = self::page(false);
+        $ref  = self::refs($tree, false);
+        $move = ['op' => 'move', 'ref' => $ref['box2'], 'before' => $ref['col1']];
+        $this->assertRefused('node_not_editable', 1, $tree, [$move, ['op' => 'remove', 'ref' => $ref['row']]], false, 'holds_locked');
+        $r = self::applied($tree, [$move, ['op' => 'remove', 'ref' => $ref['top2']]], false);
+        $this->assertArrayHasKey($ref['lock'], self::byId($r['tree']), 'the section the lock left may go; the lock stays');
+        $this->assertArrayNotHasKey($ref['top2'], self::byId($r['tree']));
+    }
+
     public function test_move_keeps_node_bytes(): void
     {
         foreach ([true, false] as $containers) {
