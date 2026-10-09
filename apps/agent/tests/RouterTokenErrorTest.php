@@ -397,6 +397,64 @@ final class RouterTokenErrorTest extends TestCase
         $this->assertStringContainsString('ciphertext authentication failed', $lines[1]);
     }
 
+    /**
+     * The log line's reason passes through the same key-material redaction as
+     * the command-failure line, including the reason of whatever caused the
+     * refusal and the message of a Throwable that is not a typed refusal.
+     */
+    public function test_the_debug_log_redacts_key_material_from_the_reason(): void
+    {
+        $padded = 'JpXsrsvpkJ4QU9D43mEqo/DWxzeE2nX9GPs/Zi7BpTA=';
+        $throw  = null;
+
+        $lines   = [];
+        $handles = [
+            \Patchwork\redefine('WPMgr\Agent\Support\DebugLog::isEnabled', static fn (): bool => true),
+            \Patchwork\redefine('WPMgr\Agent\Support\DebugLog::write', static function (string $line) use (&$lines): void {
+                $lines[] = $line;
+            }),
+            // Not static: Patchwork binds an instance method's replacement
+            // to the instance, and a static closure cannot be bound.
+            \Patchwork\redefine('WPMgr\Agent\Keystore::getControlPlanePublicKey', function () use (&$throw): void {
+                throw $throw;
+            }),
+        ];
+
+        try {
+            // A keystore failure: typed as key_unreadable, its reason chained.
+            $throw  = new \RuntimeException('unwrap failed for ' . $padded);
+            $result = $this->authorize($this->sign($this->claims()));
+            $this->assertSame('wpmgr_sig_failed', $result instanceof \WP_Error ? $result->get_error_code() : null);
+
+            // Not a RuntimeException, so not a typed refusal: the catch-all.
+            $throw  = new \LogicException('unwrap failed for ' . $padded);
+            $result = $this->authorize($this->sign($this->claims()));
+            $this->assertSame('wpmgr_invalid_token', $result instanceof \WP_Error ? $result->get_error_code() : null);
+        } finally {
+            foreach ($handles as $handle) {
+                \Patchwork\restore($handle);
+            }
+        }
+
+        $lines = array_values(array_filter(
+            $lines,
+            static fn (string $line): bool => strpos($line, 'command authorize failed') !== false
+        ));
+        $this->assertCount(2, $lines, implode("\n", $lines));
+
+        $this->assertStringContainsString(
+            ' category=key_unreadable code=wpmgr_sig_failed reason=WPMgr Agent: control-plane key unreadable. Caused by RuntimeException: unwrap failed for <redacted>',
+            $lines[0]
+        );
+        $this->assertStringContainsString(
+            ' category=invalid_token code=wpmgr_invalid_token reason=LogicException: unwrap failed for <redacted>',
+            $lines[1]
+        );
+        foreach ($lines as $line) {
+            $this->assertStringNotContainsString('JpXsrsvpkJ4QU9D43mEqo', $line);
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
