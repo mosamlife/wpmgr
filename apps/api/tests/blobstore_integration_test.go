@@ -52,6 +52,17 @@ const (
 	s3TestProbeKey = "readiness-probe"
 )
 
+// s3TestServerFlags follow "server -s3 -s3.config=<file>" on the container's
+// command line. The image's entrypoint turns "server" into `weed server` with
+// its own data directory and volume defaults, and flags given here come last, so
+// they win. Volumes are not preallocated and are capped small, so one fixture
+// reserves almost no disk (the defaults reserve a gibibyte per volume, several
+// volumes at the first write).
+var s3TestServerFlags = []string{
+	"-master.volumePreallocate=false",
+	"-master.volumeSizeLimitMB=64",
+}
+
 // s3TestConfig renders the gateway's identity file: one identity holding the
 // test credentials, in the same shape as infra/seaweedfs/s3.json.
 func s3TestConfig() ([]byte, error) {
@@ -151,15 +162,10 @@ func startBlobstore(t *testing.T) *blobstore.Store {
 		t.Fatalf("seaweedfs: render S3 config: %v", err)
 	}
 
-	// The image's entrypoint turns "server" into `weed server` with its own data
-	// directory and volume defaults; the flags after it come last and win.
-	// Volumes are not preallocated and are capped small, so one fixture reserves
-	// almost no disk (the defaults reserve a gibibyte per volume, several volumes
-	// at the first write).
+	began := time.Now()
 	container, err := testcontainers.Run(ctx, s3TestImage,
 		testcontainers.WithExposedPorts(s3TestPort),
-		testcontainers.WithCmd("server", "-s3", "-s3.config="+s3TestConfigPath,
-			"-master.volumePreallocate=false", "-master.volumeSizeLimitMB=64"),
+		testcontainers.WithCmd(append([]string{"server", "-s3", "-s3.config=" + s3TestConfigPath}, s3TestServerFlags...)...),
 		testcontainers.WithFiles(testcontainers.ContainerFile{
 			Reader:            bytes.NewReader(cfg),
 			ContainerFilePath: s3TestConfigPath,
@@ -180,6 +186,7 @@ func startBlobstore(t *testing.T) *blobstore.Store {
 			"seaweedfs: container start")
 	}
 
+	answered := time.Since(began)
 	host, err := container.Host(ctx)
 	if err != nil {
 		t.Fatalf("seaweedfs container host: %v", err)
@@ -201,6 +208,10 @@ func startBlobstore(t *testing.T) *blobstore.Store {
 		t.Fatalf("blobstore new: %v", err)
 	}
 	awaitS3Writable(t, ctx, store, container)
+	// Printed, not asserted: this fixture is started once per test, so its cost
+	// is the first thing to read when the lane gets slow.
+	t.Logf("seaweedfs: gateway answered after %s, first write accepted after %s",
+		answered.Round(100*time.Millisecond), time.Since(began).Round(100*time.Millisecond))
 	return store
 }
 
