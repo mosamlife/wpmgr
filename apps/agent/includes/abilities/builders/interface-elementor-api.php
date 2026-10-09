@@ -88,9 +88,17 @@ interface ElementorApi
     public function widgetTypeExists(string $type): bool;
 
     /**
-     * $data after the sanitiser Elementor applies to every string of a
-     * document saved by a user without unfiltered_html. Null when that
-     * sanitiser cannot be asked; a caller refuses on null.
+     * $data with every string passed through wp_kses_post(), which is what
+     * Elementor's document save does to the strings of a document saved by a
+     * user without unfiltered_html; every other value is returned as given.
+     * Elementor's own deep sanitiser answers where the running Elementor has
+     * one, and wp_kses_post() is applied here where it has none, so the
+     * answer is the same on every supported Elementor version.
+     *
+     * Null only when no answer can be had: Elementor is not loaded, its own
+     * sanitiser fails or does not return an array, wp_kses_post() is not
+     * available, or $data nests deeper than ElementorDocument::MAX_DEPTH. A
+     * caller refuses on null.
      *
      * @param array<mixed> $data Element tree or settings.
      * @return array<mixed>|null

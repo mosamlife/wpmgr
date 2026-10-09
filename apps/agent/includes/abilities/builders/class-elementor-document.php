@@ -173,7 +173,7 @@ final class ElementorDocument
         if ($unknown !== null) {
             return ['code' => self::CODE_UNKNOWN, 'detail' => $unknown];
         }
-        $clean = $this->sanitised($tree);
+        $clean = $this->api->ksesPostDeep($tree);
         if ($clean === null) {
             return ['code' => self::CODE_SANITISER, 'detail' => 'Elementor\'s sanitiser could not be asked'];
         }
@@ -417,56 +417,6 @@ final class ElementorDocument
         }
 
         return null;
-    }
-
-    /**
-     * $tree after the sanitiser the save applies for a user without
-     * unfiltered_html. Asked of Elementor where it offers that sanitiser;
-     * where it does not, the save applies WordPress's wp_kses_post() to every
-     * string, so that is asked. Null when neither can be asked.
-     *
-     * @param array<mixed> $tree Element tree.
-     * @return array<mixed>|null
-     */
-    private function sanitised(array $tree): ?array
-    {
-        $clean = $this->api->ksesPostDeep($tree);
-        if ($clean !== null) {
-            return $clean;
-        }
-        if (!$this->api->loaded() || !function_exists('wp_kses_post')) {
-            return null;
-        }
-
-        return self::ksesStrings($tree, 1);
-    }
-
-    /**
-     * Every string of $data through wp_kses_post(); other values as they are.
-     *
-     * @param array<mixed> $data  Data.
-     * @param int          $depth Nesting depth of $data.
-     * @return array<mixed>|null Null when nested too deep.
-     */
-    private static function ksesStrings(array $data, int $depth): ?array
-    {
-        if ($depth > self::MAX_DEPTH) {
-            return null;
-        }
-        $out = [];
-        foreach ($data as $key => $value) {
-            if (is_array($value)) {
-                $value = self::ksesStrings($value, $depth + 1);
-                if ($value === null) {
-                    return null;
-                }
-            } elseif (is_string($value)) {
-                $value = wp_kses_post($value);
-            }
-            $out[$key] = $value;
-        }
-
-        return $out;
     }
 
     /**

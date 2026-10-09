@@ -181,24 +181,63 @@ final class ElementorRuntime implements ElementorApi
 
     /**
      * {@inheritDoc}
+     *
+     * Elementor's own Utils::kses_post_deep() is used where the running
+     * Elementor has it. Where it does not, every string goes through
+     * wp_kses_post() here, which is the sanitiser that Elementor's save
+     * applies to a document's strings. A sanitiser Elementor does have is
+     * never replaced by the fallback: if it fails or does not return an
+     * array, the answer is null.
      */
     public function ksesPostDeep(array $data): ?array
     {
         try {
-            $class = $this->utilsClass;
-            if (!class_exists($class, false)) {
+            if ($this->plugin() === null) {
                 return null;
             }
-            $sanitise = [$class, 'kses_post_deep'];
-            if (!is_callable($sanitise)) {
+            $class    = $this->utilsClass;
+            $sanitise = class_exists($class, false) ? [$class, 'kses_post_deep'] : null;
+            if ($sanitise !== null && is_callable($sanitise)) {
+                $clean = $sanitise($data);
+
+                return is_array($clean) ? $clean : null;
+            }
+            if (!function_exists('wp_kses_post')) {
                 return null;
             }
-            $clean = $sanitise($data);
+
+            return self::ksesStrings($data, 1);
         } catch (\Throwable $e) {
             return null;
         }
+    }
 
-        return is_array($clean) ? $clean : null;
+    /**
+     * Every string of $data through wp_kses_post(); other values as they are.
+     *
+     * @param array<mixed> $data  Data.
+     * @param int          $depth Nesting depth of $data.
+     * @return array<mixed>|null Null when nested deeper than ElementorDocument::MAX_DEPTH.
+     */
+    private static function ksesStrings(array $data, int $depth): ?array
+    {
+        if ($depth > ElementorDocument::MAX_DEPTH) {
+            return null;
+        }
+        $out = [];
+        foreach ($data as $key => $value) {
+            if (is_array($value)) {
+                $value = self::ksesStrings($value, $depth + 1);
+                if ($value === null) {
+                    return null;
+                }
+            } elseif (is_string($value)) {
+                $value = wp_kses_post($value);
+            }
+            $out[$key] = $value;
+        }
+
+        return $out;
     }
 
     /**
