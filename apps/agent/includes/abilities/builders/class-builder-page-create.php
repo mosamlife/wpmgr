@@ -44,7 +44,9 @@ if (!defined('ABSPATH')) {
  * the adapter and reads the page back. A draft that fails any step after the
  * insert is moved to the trash and the answer says so ("trashed"). A created
  * draft records its builder_document_v1 fingerprint and the revisions its own
- * save made, which is what revertProblem() checks before an undo.
+ * save made, which is what revertProblem() checks before an undo; a draft
+ * whose record of those cannot be written is moved to the trash too, since
+ * no undo could check it.
  *
  * The undo of a builder draft also covers the wpmgr/page-edit changes WPMgr
  * made to it afterwards: the control plane names them in the undo's signed
@@ -338,8 +340,9 @@ final class BuilderPageCreate
             'after_fp'          => $afterFp,
             'verify'            => ['tree_equal' => true, 'status' => 'draft'],
         ];
-        // The draft exists and its id is recorded, so the caller is told it
-        // was created even when the completed state cannot be recorded.
+        // Undo checks a builder draft against this record: the fingerprint
+        // its save left and the revisions that save made. A draft without
+        // the record could never be undone, so it is not left behind.
         $recorded = $ledgerUpdate([
             'phase'            => 'completed',
             'after_fp'         => $afterFp,
@@ -351,7 +354,7 @@ final class BuilderPageCreate
             'result'           => $result,
         ]);
         if (!$recorded) {
-            $result['ledger_recorded'] = false;
+            return self::failTrashed($postId, 'snapshot_failed', 'the ledger could not record the created draft', $ledgerUpdate);
         }
 
         return $result;
