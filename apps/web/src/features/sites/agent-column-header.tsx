@@ -54,9 +54,10 @@ export const AGENT_FLEET_NOTE_LABEL = "About the Agent column comparison";
 //
 // This popover used to be an information surface only, and the reason given
 // here was that triggering a check is a superadmin operation while a
-// superadmin cannot open the tenant-scoped Sites page at all (see
-// routes/_authed.tsx's isSuperadminAllowedPath guard), so a button here would
-// have been reachable by nobody who could use it. THAT REASONING NO LONGER
+// superadmin cannot open the tenant-scoped Sites page (see
+// routes/_authed.tsx's isSuperadminAllowedPath gate; that still holds for one
+// who belongs to no organisation), so a button here would have been reachable
+// by nobody who could use it. THAT REASONING NO LONGER
 // HOLDS for the case it now serves. The endpoint admits the owner of the only
 // live organisation on an install as well as a superadmin, and an ordinary
 // owner is never redirected off this page. The reporter asked for it exactly
@@ -64,9 +65,11 @@ export const AGENT_FLEET_NOTE_LABEL = "About the Agent column comparison";
 // the moment an operator wants to act, so the action sits with the
 // information rather than a navigation away from it.
 //
-// Two things that did NOT change. A superadmin still cannot see this button,
-// because they still cannot open this page, so the admin console remains
-// their route to the same action. And on any install with more than one live
+// Two things that did NOT change. A superadmin who belongs to no organisation
+// still cannot see this button, because they still cannot open this page, so
+// the admin console remains their route to the same action. (One who also
+// belongs to an organisation can open this page, and the server admits them to
+// the button like any superadmin.) And on any install with more than one live
 // organisation can_check_now is false for every non-superadmin, so nothing
 // appears here on the hosted service. The visibility rule is never guessed
 // from a role in the browser: it is the server's own answer, computed by the

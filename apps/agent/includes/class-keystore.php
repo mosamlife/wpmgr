@@ -66,8 +66,10 @@ final class Keystore implements EmailKeystoreInterface
 
     /**
      * Option name holding the site's age X25519 identity (raw 32-byte secret
-     * scalar), encrypted at rest. This is the PRIVATE backup-decryption key; it
-     * NEVER leaves the keystore and is NEVER transmitted to the control plane.
+     * scalar), encrypted at rest. This is the site's PRIVATE age key: it decrypts
+     * the authenticator-app secrets stored for its users and, if chunk encryption
+     * is ever switched on, its backups. It NEVER leaves the keystore and is NEVER
+     * transmitted to the control plane.
      */
     public const OPTION_AGE_IDENTITY = 'wpmgr_agent_age_identity';
 
@@ -479,10 +481,11 @@ final class Keystore implements EmailKeystoreInterface
      * keypair. Used by the admin "Disconnect" flow so a fresh enrollment
      * (potentially against a different CP) generates a new identity.
      *
-     * Intentionally does NOT touch the age identity (OPTION_AGE_IDENTITY) —
-     * deleting it would orphan ciphertext from any prior backups, making
-     * them undecryptable. The operator can wipe it manually if they want a
-     * true clean slate.
+     * Intentionally does NOT touch the age identity (OPTION_AGE_IDENTITY).
+     * It encrypts the authenticator-app secrets stored for this site's users,
+     * so deleting it would leave those secrets unreadable. Backups are not
+     * encrypted at rest, so they do not depend on it. The operator can wipe
+     * it manually if they want a true clean slate.
      *
      * @return void
      */
@@ -495,7 +498,9 @@ final class Keystore implements EmailKeystoreInterface
     /**
      * Persist the site's age X25519 secret scalar (raw 32 bytes), encrypted.
      *
-     * The secret is the ONLY key that can decrypt this site's backups. It is
+     * The secret is the ONLY key that can decrypt anything encrypted to this
+     * site's age recipient: today the authenticator-app secrets stored for its
+     * users, and its backups if chunk encryption is ever switched on. It is
      * stored AES-256-GCM-encrypted under the master key, exactly like the
      * Ed25519 keypair, and is never logged or transmitted.
      *

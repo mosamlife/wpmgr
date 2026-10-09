@@ -21,7 +21,9 @@ final class ArrayShape
      * True when the keys are exactly 0..n-1, in that order (an empty array
      * is a list). Same result as PHP's own list test.
      *
-     * @param array<mixed> $value Array to test.
+     * @template T
+     * @param array<T> $value Array to test.
+     * @phpstan-assert-if-true list<T> $value
      * @return bool
      */
     public static function isList(array $value): bool
