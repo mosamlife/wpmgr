@@ -206,7 +206,7 @@ make_routes "$WORK/rt-full.tsv" /healthz /readyz /metrics /mcp \
   /api/v1/sites /api/v1/sites/{id} /api/v1/backups/{id}/events \
   /auth/login /agent/v1/checkin /enroll /enroll/{token} \
   /rum /rum/ingest /webhooks/razorpay
-run_case "committed-urlmap-covers-every-surface" 0 "$GUARD_OK" "$GUARD_GAP" --\
+run_case "committed-urlmap-covers-every-surface" 0 "$GUARD_OK" "$GUARD_GAP" -- \
   --routes-file "$WORK/rt-full.tsv" --urlmap "$REPO_ROOT/infra/urlmap.yaml" \
   --allowlist "$REPO_ROOT/infra/urlmap-unrouted-routes.txt"
 
@@ -214,19 +214,19 @@ run_case "committed-urlmap-covers-every-surface" 0 "$GUARD_OK" "$GUARD_GAP" --\
 # route in the API would be reported missing and the guard would be deleted
 # on its first run.
 make_routes "$WORK/rt-params.tsv" /api/v1/sites/{siteId}/backups/{backupId}/restore
-run_case "params-match-prefix-rule" 0 "$GUARD_OK" "$GUARD_GAP" --\
+run_case "params-match-prefix-rule" 0 "$GUARD_OK" "$GUARD_GAP" -- \
   --routes-file "$WORK/rt-params.tsv" --urlmap "$WORK/um-base.yaml" --allowlist "$EMPTY_ALLOW"
 
 # A mid-path wildcard rule matches exactly one segment.
 make_urlmap "$WORK/um-mid.yaml" '/api/v1/backups/*/events'
 make_routes "$WORK/rt-mid.tsv" /api/v1/backups/{id}/events
-run_case "mid-path-wildcard-matches-one-segment" 0 "$GUARD_OK" "$GUARD_GAP" --\
+run_case "mid-path-wildcard-matches-one-segment" 0 "$GUARD_OK" "$GUARD_GAP" -- \
   --routes-file "$WORK/rt-mid.tsv" --urlmap "$WORK/um-mid.yaml" --allowlist "$EMPTY_ALLOW"
 
 # The deliberate-exclusion path: an internal route WITH a reason is green.
 printf '# reason: in-cluster admin probe, never exposed publicly\n/internal/debug\n' > "$WORK/allow-ok.txt"
 make_routes "$WORK/rt-internal.tsv" /healthz /internal/debug
-run_case "allowlisted-internal-route-is-green" 0 "$GUARD_OK" "$GUARD_GAP" --\
+run_case "allowlisted-internal-route-is-green" 0 "$GUARD_OK" "$GUARD_GAP" -- \
   --routes-file "$WORK/rt-internal.tsv" --urlmap "$WORK/um-base.yaml" --allowlist "$WORK/allow-ok.txt"
 
 # ===========================================================================
@@ -257,25 +257,25 @@ run_case "stale-allowlist-entry-fails" 1 "STALE  /gone/route" - -- \
 #    named case here.
 # ===========================================================================
 
-run_case "missing-urlmap-is-fatal" 2 "url-map not found" "$GUARD_OK" --\
+run_case "missing-urlmap-is-fatal" 2 "url-map not found" "$GUARD_OK" -- \
   --routes-file "$WORK/rt-full.tsv" --urlmap "$WORK/does-not-exist.yaml" --allowlist "$EMPTY_ALLOW"
 
-run_case "missing-routes-file-is-fatal" 2 "routes file not found" "$GUARD_OK" --\
+run_case "missing-routes-file-is-fatal" 2 "routes file not found" "$GUARD_OK" -- \
   --routes-file "$WORK/nope.tsv" --urlmap "$WORK/um-base.yaml" --allowlist "$EMPTY_ALLOW"
 
-run_case "missing-allowlist-is-fatal" 2 "allowlist not found" "$GUARD_OK" --\
+run_case "missing-allowlist-is-fatal" 2 "allowlist not found" "$GUARD_OK" -- \
   --routes-file "$WORK/rt-full.tsv" --urlmap "$REPO_ROOT/infra/urlmap.yaml" --allowlist "$WORK/nope.txt"
 
 # An empty route list is the vacuous-green trap: zero routes trivially satisfy
 # "every route is covered".
 : > "$WORK/rt-empty.tsv"
-run_case "empty-route-list-is-fatal" 2 "produced 0 usable routes" "$GUARD_OK" --\
+run_case "empty-route-list-is-fatal" 2 "produced 0 usable routes" "$GUARD_OK" -- \
   --routes-file "$WORK/rt-empty.tsv" --urlmap "$WORK/um-base.yaml" --allowlist "$EMPTY_ALLOW"
 
 # Route source produced output, but none of it parses as METHOD<TAB>PATH — a
 # dumper that changed its format, or printed a banner and exited.
 printf 'building...\nno routes today\n' > "$WORK/rt-garbage.tsv"
-run_case "unparseable-route-output-is-fatal" 2 "produced 0 usable routes" "$GUARD_OK" --\
+run_case "unparseable-route-output-is-fatal" 2 "produced 0 usable routes" "$GUARD_OK" -- \
   --routes-file "$WORK/rt-garbage.tsv" --urlmap "$WORK/um-base.yaml" --allowlist "$EMPTY_ALLOW"
 
 # A url-map with no rule pointing at the API backend at all. Depending on which
@@ -287,25 +287,25 @@ run_case "unparseable-route-output-is-fatal" 2 "produced 0 usable routes" "$GUAR
   printf -- '- defaultService: https://www.googleapis.com/compute/v1/projects/p/global/backendServices/wpmgr-bes-web\n'
   printf '  name: main\n'
 } > "$WORK/um-norules.yaml"
-run_case "urlmap-with-no-api-rules-is-fatal" 2 "parsed 0 path rules" "$GUARD_OK" --\
+run_case "urlmap-with-no-api-rules-is-fatal" 2 "parsed 0 path rules" "$GUARD_OK" -- \
   --routes-file "$WORK/rt-full.tsv" --urlmap "$WORK/um-norules.yaml" --allowlist "$EMPTY_ALLOW"
 
 # A matcher name that does not exist — a typo in the invocation must not pass.
-run_case "unknown-matcher-is-fatal" 2 "parsed 0 path rules" "$GUARD_OK" --\
+run_case "unknown-matcher-is-fatal" 2 "parsed 0 path rules" "$GUARD_OK" -- \
   --routes-file "$WORK/rt-full.tsv" --urlmap "$REPO_ROOT/infra/urlmap.yaml" \
   --allowlist "$REPO_ROOT/infra/urlmap-unrouted-routes.txt" --matcher nosuchmatcher
 
 # A backend name that does not exist, likewise.
-run_case "unknown-backend-is-fatal" 2 "parsed 0 path rules" "$GUARD_OK" --\
+run_case "unknown-backend-is-fatal" 2 "parsed 0 path rules" "$GUARD_OK" -- \
   --routes-file "$WORK/rt-full.tsv" --urlmap "$REPO_ROOT/infra/urlmap.yaml" \
   --allowlist "$REPO_ROOT/infra/urlmap-unrouted-routes.txt" --api-backend wpmgr-bes-nope
 
 # A route dumper that fails must be fatal, never a skip. "A gate that cannot
 # find its binary must fail loudly."
-run_case "failing-route-dumper-is-fatal" 2 "route dumper failed" "$GUARD_OK" --\
+run_case "failing-route-dumper-is-fatal" 2 "route dumper failed" "$GUARD_OK" -- \
   --routes-cmd 'exit 7' --urlmap "$WORK/um-base.yaml" --allowlist "$EMPTY_ALLOW"
 
-run_case "missing-route-dumper-binary-is-fatal" 2 "route dumper failed" "$GUARD_OK" --\
+run_case "missing-route-dumper-binary-is-fatal" 2 "route dumper failed" "$GUARD_OK" -- \
   --routes-cmd 'wpmgr-no-such-binary-xyz' --urlmap "$WORK/um-base.yaml" --allowlist "$EMPTY_ALLOW"
 
 # ===========================================================================
