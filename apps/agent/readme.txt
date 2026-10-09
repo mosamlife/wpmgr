@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.160
+Stable tag: 0.61.161
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
