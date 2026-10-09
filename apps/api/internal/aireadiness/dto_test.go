@@ -383,6 +383,9 @@ func TestSiteDTOOfAnInactiveBuilder(t *testing.T) {
 	if m["status"] != "ready" || m["fix_count"] != float64(0) {
 		t.Fatalf("status %v fix_count %v, want ready 0", m["status"], m["fix_count"])
 	}
+	if got := asList(t, m["warnings"], "warnings"); len(got) != 0 {
+		t.Fatalf("warnings = %v, want an empty list (not null)", got)
+	}
 	el := asMap(t, asList(t, m["groups"], "groups")[1], "elementor group")
 	version := asMap(t, asList(t, el["checks"], "checks")[0], "elementor_version")
 	if version["state"] != "not_applicable" || version["reason"] != "inactive" || version["observed"] != "4.3.4" {
