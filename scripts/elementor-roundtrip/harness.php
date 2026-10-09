@@ -863,6 +863,25 @@ function rt_resolve_refs(array $ops, array $tree): array
 }
 
 /**
+ * The elements of a tree in page order, each as id, element type and widget
+ * type: what a page holds, whatever form its settings are stored in.
+ *
+ * @param array<mixed> $nodes Elements.
+ * @param list<string> $out   Gets one entry per element.
+ */
+function rt_shape(array $nodes, array &$out): void
+{
+    foreach ($nodes as $node) {
+        if (!is_array($node)) {
+            $out[] = '(not an element)';
+            continue;
+        }
+        $out[] = (string) ($node['id'] ?? '') . ':' . (string) ($node['elType'] ?? '') . ':' . (string) ($node['widgetType'] ?? '');
+        rt_shape(is_array($node['elements'] ?? null) ? $node['elements'] : [], $out);
+    }
+}
+
+/**
  * The strings under the keys text and caption of what an operation replaced,
  * from a change in a precheck's preview.
  *
@@ -1194,9 +1213,13 @@ function rt_edit_phase(string $layout, string $stored, int $principal, array $pl
         [$rows, $decoded] = rt_stored_tree($pid);
         $before = $decoded ?? [];
         if ($spec['before'] !== null) {
-            $want = $stored === 'strings' ? rt_scalars_as_strings($spec['before']) : $spec['before'];
-            $d    = $decoded !== null ? rt_diff($want, $decoded, 'tree') : 'expected one _elementor_data row holding a tree, found ' . $rows;
-            $c->ck('before-stored', $d === null, (string) $d);
+            // Elementor stores each element in its own form (a hand-made one is reordered), so the page it
+            // holds is held to the case's page by its elements, not by its bytes.
+            $was = [];
+            $has = [];
+            rt_shape($spec['before'], $was);
+            rt_shape($before, $has);
+            $c->ck('before-shape', $decoded !== null && $was === $has, 'Elementor holds ' . count($has) . ' element(s) of the case\'s ' . count($was) . ', or in another order');
         }
         [$ops, $refWhy] = rt_resolve_refs($spec['ops'], $before);
         if (!$c->ck('refs', $ops !== null, $refWhy)) {
