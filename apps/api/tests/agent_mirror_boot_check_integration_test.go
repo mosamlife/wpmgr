@@ -210,7 +210,11 @@ func TestAgentMirrorBootCheck_RiverUniqueness(t *testing.T) {
 		if bc, err := agentupstream.EnqueueBootCheck(ctx, client, repo, time.Now()); err != nil || !bc.Queued {
 			t.Fatalf("first start: %+v, %v", bc, err)
 		}
-		complete(t, bootRows(t)[0].id)
+		first := bootRows(t)
+		if len(first) != 1 {
+			t.Fatalf("boot check rows after the first start = %d, want 1", len(first))
+		}
+		complete(t, first[0].id)
 		bc, err := agentupstream.EnqueueBootCheck(ctx, client, repo, time.Now())
 		if err != nil || !bc.Queued {
 			t.Fatalf("next start after the first boot check finished: %+v, %v; want queued", bc, err)
