@@ -61,9 +61,10 @@ func parseID(c *gin.Context, name string) (uuid.UUID, bool) {
 	return id, true
 }
 
-// bindBody decodes a small JSON object, refusing unknown fields and trailing
-// data.
-func bindBody(c *gin.Context, dst any) bool {
+// bindJSON decodes a small JSON object, refusing unknown fields and
+// trailing data. It answers the error itself and reports whether dst was
+// filled.
+func bindJSON(c *gin.Context, dst any) bool {
 	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, maxBody+1))
 	if err != nil || len(raw) > maxBody {
 		httpx.Error(c, domain.Validation("invalid_body", "the body is not valid"))
@@ -105,7 +106,7 @@ func (h *Handler) putMode(c *gin.Context) {
 		return
 	}
 	var body PutSiteAIModeBody
-	if !bindBody(c, &body) {
+	if !bindJSON(c, &body) {
 		return
 	}
 	if body.Version == nil {
@@ -147,7 +148,7 @@ func (h *Handler) putAuto(c *gin.Context) {
 		return
 	}
 	var body PutAIConnectionAutoBody
-	if !bindBody(c, &body) {
+	if !bindJSON(c, &body) {
 		return
 	}
 	a, err := h.svc.SetConnectionAuto(c.Request.Context(), p, grantID, aipolicy.ConnectionAuto(body.AIAuto))

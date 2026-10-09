@@ -20,6 +20,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
 	"github.com/mosamlife/wpmgr/apps/api/internal/aireadiness"
+	"github.com/mosamlife/wpmgr/apps/api/internal/aitrust"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/assistantrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
@@ -306,6 +307,12 @@ func buildEngine() (engine *gin.Engine, omittedDepsFields []string, err error) {
 	abilityReqH := abilityrequest.NewHandler(abilityrequest.NewService(pool, mcpRepo, mcpSvc, auditRec, logger))
 	assistantReqH := assistantrequest.NewHandler(
 		assistantrequest.NewService(assistantrequest.NewRepo(pool), mcpRepo, mcpSvc, auditRec, logger))
+	// The AI trust settings and activity feed, built as cmd/wpmgr/main.go
+	// builds them: setter validity through the session authenticator, each
+	// feed item rendered by its own queue's handler.
+	aiTrustSvc := aitrust.NewService(aitrust.NewRepo(pool, auditRec), authn, logger)
+	aiTrustSvc.SetRenderers(abilityReqH, assistantReqH)
+	aiTrustH := aitrust.NewHandler(aiTrustSvc)
 
 	// Track B S1 page-ownership inventory and its superadmin routes.
 	contentH := content.NewHandler(content.NewService(content.NewRepo(pool), nil, logger))
@@ -386,6 +393,7 @@ func buildEngine() (engine *gin.Engine, omittedDepsFields []string, err error) {
 		AbilityRequestH:        abilityReqH,
 		AbilityTenantH:         abilities.NewTenantHandler(abilities.NewTenantRepo(pool, auditRec), admingate.NewPoolStore(pool)),
 		AIReadinessH:           aireadiness.NewHandler(aireadiness.NewService(aireadiness.NewRepo(pool), auditRec, logger)),
+		AITrustH:               aiTrustH,
 		BillingSuspensionGate:  billingSvc.SuspensionGate(),
 		ServiceName:            "wpmgr-dump-routes",
 		Version:                "dump-routes",
