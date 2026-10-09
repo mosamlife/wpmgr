@@ -1116,9 +1116,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	sendEmailWorker := mailer.NewSendEmailWorker(mailerSvc)
 	smtpSettingsSvc := settings.NewService(settings.NewRepo(pool), siteDestAgeID, mailerSvc, logger)
 	// The SMTP relay is install-wide, so its routes are gated on instance-level
-	// authority. instanceEmailGate is built ONCE and handed to both the route
-	// gate here and authH.SetInstanceAuthorityGate below (the Me capability),
-	// so the two read the same hosted flag. It is the admin console's
+	// authority. instanceEmailGate is built ONCE and handed to the route gate
+	// here, the vulnerability-feed key routes (adminH.SetVulnFeed) and
+	// authH.SetInstanceAuthorityGate below (the Me capability), so all of them
+	// read the same hosted flag. It is the admin console's
 	// admingate.PoolStore plus the install-owner arm, which is live only when
 	// WPMGR_HOSTED is not true. The agent-mirror gates keep the plain
 	// admingate.NewPoolStore and never see that arm.
@@ -2808,8 +2809,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	adminH.SetAbilityRoutes(abilityAdminH.RegisterAdmin)
 	// m80 — wire the vuln-feed key management into the admin handler.
 	// vulnFeedKeySvc already has its feed-refresh enqueuer set (wired in the
-	// vuln River block above), so this call sees a fully-wired service.
-	adminH.SetVulnFeed(vulnRepo, vulnFeedKeySvc)
+	// vuln River block above), so this call sees a fully-wired service. The
+	// feed-key routes are gated by the same instanceEmailGate as the SMTP
+	// settings routes and the Me capability, so all three give one answer.
+	adminH.SetVulnFeed(vulnRepo, vulnFeedKeySvc, instanceEmailGate)
 	// GH #322: superadmin manual "check now" for the upstream agent-release
 	// mirror. wired=(agentMirror != nil) mirrors the SAME "object storage
 	// actually configured" gate the periodic worker itself checks, so a

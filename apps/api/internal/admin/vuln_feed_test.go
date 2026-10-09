@@ -275,7 +275,7 @@ func TestVulnFeedStatus_NeverReturnsKey(t *testing.T) {
 	}
 
 	h := NewHandler(&Service{}, nil)
-	h.SetVulnFeed(meta, keySvc)
+	h.SetVulnFeed(meta, keySvc, nil)
 	engine := buildTestEngine(h)
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/vuln-feed/status", nil)
@@ -340,7 +340,7 @@ func TestVulnFeedStatus_ReflectsEnrichmentAvailable(t *testing.T) {
 				lastEnrichmentAt: tc.lastEnrichmentAt,
 			}
 			h := NewHandler(&Service{}, nil)
-			h.SetVulnFeed(meta, keySvc)
+			h.SetVulnFeed(meta, keySvc, nil)
 			engine := buildTestEngine(h)
 
 			req := httptest.NewRequest(http.MethodGet, "/admin/vuln-feed/status", nil)
@@ -381,7 +381,7 @@ func TestVulnFeedSetKey_TriggersSyncViaHandler(t *testing.T) {
 	keySvc := NewVulnFeedKeyService(repo, age, "", enq, nil)
 
 	h := NewHandler(&Service{}, nil)
-	h.SetVulnFeed(nil, keySvc)
+	h.SetVulnFeed(nil, keySvc, nil)
 	engine := buildTestEngine(h)
 
 	body := bytes.NewBufferString(`{"key":"valid-api-key-here"}`)
@@ -426,7 +426,7 @@ func TestVulnFeedClearKey_Handler(t *testing.T) {
 	}
 
 	h := NewHandler(&Service{}, nil)
-	h.SetVulnFeed(nil, keySvc)
+	h.SetVulnFeed(nil, keySvc, nil)
 	engine := buildTestEngine(h)
 
 	req := httptest.NewRequest(http.MethodDelete, "/admin/vuln-feed/key", nil)
@@ -498,7 +498,7 @@ func TestVulnFeedSync_Handler(t *testing.T) {
 	keySvc := NewVulnFeedKeyService(repo, age, "env-key-xyz123", enq, nil)
 
 	h := NewHandler(&Service{}, nil)
-	h.SetVulnFeed(nil, keySvc)
+	h.SetVulnFeed(nil, keySvc, nil)
 	engine := buildTestEngine(h)
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/vuln-feed/sync", nil)
