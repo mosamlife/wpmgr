@@ -4833,7 +4833,9 @@ export type SiteAiReadiness = {
   site_id: string;
   status: AiReadinessStatus;
   /**
-   * Number of rows with state `fail` in `base` and in installed builder groups.
+   * Number of rows with state `fail` in `base` and in installed
+   * builder groups, not counting `bricks_abilities`.
+   *
    */
   fix_count: number;
   /**
@@ -4959,6 +4961,10 @@ export type AiReadinessGroup = {
  * `not_reported` or `needs_elementor`; not_applicable
  * `needs_elementor`.
  *
+ * `bricks_abilities` is inferred from the site's tool list and has not
+ * been confirmed on a licensed Bricks install. It is listed with its
+ * state, but it is not counted in `status`, `fix_count` or `failing`.
+ *
  * A client must render a state or reason it does not recognise as a
  * neutral "not checked", never as a failure.
  *
@@ -4993,7 +4999,9 @@ export type FleetAiReadinessSite = {
   status: AiReadinessStatus;
   fix_count: number;
   /**
-   * Ids of the rows whose state is `fail`.
+   * Ids of the rows that count toward `fix_count`: those whose state
+   * is `fail`, not counting `bricks_abilities`.
+   *
    */
   failing: Array<AiReadinessCheckId>;
   warnings: Array<AiReadinessWarningCode>;

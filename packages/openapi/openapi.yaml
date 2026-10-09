@@ -9746,11 +9746,14 @@ paths:
 
         `status` is `needs_attention` when any row in `base` or in an
         installed builder group fails (`fix_count` counts them), otherwise
-        `incomplete` when any row is unknown, otherwise `ready`. A builder
-        that is not installed contributes nothing, and neither does one that
-        is installed but not active: that is a choice, not a fix, so its
-        version row is `not_applicable` with reason `inactive`. `warnings`
-        never change `status`.
+        `incomplete` when any row is unknown, otherwise `ready`. The one
+        exception is `bricks_abilities`: it is inferred from the site's tool
+        list and has not been confirmed on a licensed Bricks install, so it
+        is listed with its state and never counted, whatever that state is.
+        A builder that is not installed contributes nothing, and neither
+        does one that is installed but not active: that is a choice, not a
+        fix, so its version row is `not_applicable` with reason `inactive`.
+        `warnings` never change `status`.
 
         Advisory only: no tool call, approval or dispatch reads this result.
 
@@ -20607,7 +20610,9 @@ components:
           type: integer
           format: int32
           minimum: 0
-          description: Number of rows with state `fail` in `base` and in installed builder groups.
+          description: |
+            Number of rows with state `fail` in `base` and in installed
+            builder groups, not counting `bricks_abilities`.
         metadata_as_of:
           type: [string, "null"]
           format: date-time
@@ -20724,6 +20729,10 @@ components:
           `not_reported` or `needs_elementor`; not_applicable
           `needs_elementor`.
 
+        `bricks_abilities` is inferred from the site's tool list and has not
+        been confirmed on a licensed Bricks install. It is listed with its
+        state, but it is not counted in `status`, `fix_count` or `failing`.
+
         A client must render a state or reason it does not recognise as a
         neutral "not checked", never as a failure.
       required: [id, state, reason, observed]
@@ -20771,7 +20780,9 @@ components:
           minimum: 0
         failing:
           type: array
-          description: Ids of the rows whose state is `fail`.
+          description: |
+            Ids of the rows that count toward `fix_count`: those whose state
+            is `fail`, not counting `bricks_abilities`.
           items:
             $ref: "#/components/schemas/AIReadinessCheckID"
         warnings:

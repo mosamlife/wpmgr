@@ -1921,10 +1921,12 @@ type Invoker interface {
 	// `observed` is a version string that passed a strict shape check, or null.
 	//
 	// `status` is `needs_attention` when any row in `base` or in an installed builder group fails
-	// (`fix_count` counts them), otherwise `incomplete` when any row is unknown, otherwise `ready`. A
-	// builder that is not installed contributes nothing, and neither does one that is installed but not
-	// active: that is a choice, not a fix, so its version row is `not_applicable` with reason `inactive`.
-	// `warnings` never change `status`.
+	// (`fix_count` counts them), otherwise `incomplete` when any row is unknown, otherwise `ready`. The
+	// one exception is `bricks_abilities`: it is inferred from the site's tool list and has not been
+	// confirmed on a licensed Bricks install, so it is listed with its state and never counted, whatever
+	// that state is. A builder that is not installed contributes nothing, and neither does one that is
+	// installed but not active: that is a choice, not a fix, so its version row is `not_applicable` with
+	// reason `inactive`. `warnings` never change `status`.
 	//
 	// Advisory only: no tool call, approval or dispatch reads this result.
 	//
@@ -24215,10 +24217,12 @@ func (c *Client) sendGetSite(ctx context.Context, params GetSiteParams) (res Get
 // `observed` is a version string that passed a strict shape check, or null.
 //
 // `status` is `needs_attention` when any row in `base` or in an installed builder group fails
-// (`fix_count` counts them), otherwise `incomplete` when any row is unknown, otherwise `ready`. A
-// builder that is not installed contributes nothing, and neither does one that is installed but not
-// active: that is a choice, not a fix, so its version row is `not_applicable` with reason `inactive`.
-// `warnings` never change `status`.
+// (`fix_count` counts them), otherwise `incomplete` when any row is unknown, otherwise `ready`. The
+// one exception is `bricks_abilities`: it is inferred from the site's tool list and has not been
+// confirmed on a licensed Bricks install, so it is listed with its state and never counted, whatever
+// that state is. A builder that is not installed contributes nothing, and neither does one that is
+// installed but not active: that is a choice, not a fix, so its version row is `not_applicable` with
+// reason `inactive`. `warnings` never change `status`.
 //
 // Advisory only: no tool call, approval or dispatch reads this result.
 //

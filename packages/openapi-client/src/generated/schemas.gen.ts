@@ -8406,7 +8406,7 @@ export const SiteAIReadinessSchema = {
       format: "int32",
       minimum: 0,
       description:
-        "Number of rows with state `fail` in `base` and in installed builder groups.",
+        "Number of rows with state `fail` in `base` and in installed\nbuilder groups, not counting `bricks_abilities`.\n",
     },
     metadata_as_of: {
       type: ["string", "null"],
@@ -8538,7 +8538,7 @@ export const AIReadinessGroupSchema = {
 export const AIReadinessCheckSchema = {
   type: "object",
   description:
-    'One row. `state` is `pass`, `fail`, `unknown` (WPMgr could not tell;\nnever a failure) or `not_applicable` (a row this one depends on\nfailed, or the builder is installed but not active). `observed` is\nthe version that was compared, or null.\n\n`reason` is null for `pass`, and for a `fail` with a single way to\nfail. Otherwise, per row:\n\n- `wp_version`, `agent_version`: unknown `not_reported`.\n- `abilities_api`: unknown `inventory_never_run`, `agent_too_old`\n  (the agent cannot read the tool list) or `not_reported`.\n- `content_editing`: only `pass` or `fail`.\n- `elementor_version`, `bricks_version`: fail `too_old`;\n  not_applicable `inactive` (installed but not active, so not a fix;\n  `observed` still carries the installed version); unknown\n  `not_reported`, and for `bricks_version` also\n  `agent_too_old_for_fact` (a child theme may be in use and the agent\n  is too old to report its parent).\n- `elementor_mcp_switch`, `bricks_abilities`: unknown\n  `inventory_never_run` (no tool list yet, or the last one was read\n  while the site lacked the Abilities API), `inventory_truncated` or\n  `needs_elementor` / `needs_bricks`; not_applicable `needs_abilities`\n  or `needs_elementor` / `needs_bricks`.\n- `elementor_atomic`: unknown `agent_too_old_for_fact`,\n  `not_reported` or `needs_elementor`; not_applicable\n  `needs_elementor`.\n\nA client must render a state or reason it does not recognise as a\nneutral "not checked", never as a failure.\n',
+    'One row. `state` is `pass`, `fail`, `unknown` (WPMgr could not tell;\nnever a failure) or `not_applicable` (a row this one depends on\nfailed, or the builder is installed but not active). `observed` is\nthe version that was compared, or null.\n\n`reason` is null for `pass`, and for a `fail` with a single way to\nfail. Otherwise, per row:\n\n- `wp_version`, `agent_version`: unknown `not_reported`.\n- `abilities_api`: unknown `inventory_never_run`, `agent_too_old`\n  (the agent cannot read the tool list) or `not_reported`.\n- `content_editing`: only `pass` or `fail`.\n- `elementor_version`, `bricks_version`: fail `too_old`;\n  not_applicable `inactive` (installed but not active, so not a fix;\n  `observed` still carries the installed version); unknown\n  `not_reported`, and for `bricks_version` also\n  `agent_too_old_for_fact` (a child theme may be in use and the agent\n  is too old to report its parent).\n- `elementor_mcp_switch`, `bricks_abilities`: unknown\n  `inventory_never_run` (no tool list yet, or the last one was read\n  while the site lacked the Abilities API), `inventory_truncated` or\n  `needs_elementor` / `needs_bricks`; not_applicable `needs_abilities`\n  or `needs_elementor` / `needs_bricks`.\n- `elementor_atomic`: unknown `agent_too_old_for_fact`,\n  `not_reported` or `needs_elementor`; not_applicable\n  `needs_elementor`.\n\n`bricks_abilities` is inferred from the site\'s tool list and has not\nbeen confirmed on a licensed Bricks install. It is listed with its\nstate, but it is not counted in `status`, `fix_count` or `failing`.\n\nA client must render a state or reason it does not recognise as a\nneutral "not checked", never as a failure.\n',
   required: ["id", "state", "reason", "observed"],
   properties: {
     id: {
@@ -8603,7 +8603,8 @@ export const FleetAIReadinessSiteSchema = {
     },
     failing: {
       type: "array",
-      description: "Ids of the rows whose state is `fail`.",
+      description:
+        "Ids of the rows that count toward `fix_count`: those whose state\nis `fail`, not counting `bricks_abilities`.\n",
       items: {
         $ref: "#/components/schemas/AIReadinessCheckID",
       },

@@ -40,6 +40,10 @@ import (
 //   - `elementor_atomic`: unknown `agent_too_old_for_fact`, `not_reported` or `needs_elementor`;
 //     not_applicable `needs_elementor`.
 //
+// `bricks_abilities` is inferred from the site's tool list and has not been confirmed on a licensed
+// Bricks install. It is listed with its state, but it is not counted in `status`, `fix_count` or
+// `failing`.
+//
 // A client must render a state or reason it does not recognise as a neutral "not checked", never as a
 // failure.
 // Ref: #/components/schemas/AIReadinessCheck
@@ -24958,7 +24962,8 @@ type FleetAIReadinessSite struct {
 	SiteID   uuid.UUID         `json:"site_id"`
 	Status   AIReadinessStatus `json:"status"`
 	FixCount int32             `json:"fix_count"`
-	// Ids of the rows whose state is `fail`.
+	// Ids of the rows that count toward `fix_count`: those whose state is `fail`, not counting
+	// `bricks_abilities`.
 	Failing  []AIReadinessCheckID     `json:"failing"`
 	Warnings []AIReadinessWarningCode `json:"warnings"`
 }
@@ -54632,7 +54637,8 @@ func (*Site) setSiteTagsRes()   {}
 type SiteAIReadiness struct {
 	SiteID uuid.UUID         `json:"site_id"`
 	Status AIReadinessStatus `json:"status"`
-	// Number of rows with state `fail` in `base` and in installed builder groups.
+	// Number of rows with state `fail` in `base` and in installed builder groups, not counting
+	// `bricks_abilities`.
 	FixCount int32 `json:"fix_count"`
 	// When the site last reported its plugin and theme details. Null when it never has.
 	MetadataAsOf NilDateTime `json:"metadata_as_of"`
