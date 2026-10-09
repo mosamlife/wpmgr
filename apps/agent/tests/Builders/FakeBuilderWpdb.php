@@ -55,8 +55,8 @@ final class FakeBuilderWpdb
 
     /**
      * Stores a posts row. A placement column the fields leave out is 0, as the
-     * table's default is; a driver that returns native types may be given as an
-     * int.
+     * table's default is. A value may be given as text or as an int; a read
+     * answers text unless $nativeInts is set.
      *
      * @param int                          $id     Post ID.
      * @param array<string,string|int|null> $fields Column => stored value.
