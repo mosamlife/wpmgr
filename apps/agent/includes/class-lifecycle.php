@@ -602,16 +602,18 @@ final class Lifecycle
      */
     private function sweepNamespace(bool $multisite): void
     {
-        global $wpdb;
-        if (!is_object($wpdb)) {
+        if (!isset($GLOBALS['wpdb']) || !is_object($GLOBALS['wpdb'])) {
             return;
         }
+
+        /** @var \wpdb $wpdb */
+        $wpdb = $GLOBALS['wpdb'];
 
         foreach (self::OPTIONS_TABLE_FORMS as $form) {
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- uninstall must find every row in the namespace; no API lists options by prefix, and a cached answer could miss rows.
             $names = $wpdb->get_col(
                 $wpdb->prepare(
-                    "SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s",
+                    "SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
                     $wpdb->esc_like($form) . '%'
                 )
             );
@@ -629,7 +631,7 @@ final class Lifecycle
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- uninstall must find every row in the namespace; no API lists network options by prefix, and a cached answer could miss rows.
             $names = $wpdb->get_col(
                 $wpdb->prepare(
-                    "SELECT meta_key FROM {$wpdb->sitemeta} WHERE site_id = %d AND meta_key LIKE %s",
+                    "SELECT meta_key FROM {$wpdb->sitemeta} WHERE site_id = %d AND meta_key LIKE %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
                     $networkId,
                     $wpdb->esc_like($form) . '%'
                 )
