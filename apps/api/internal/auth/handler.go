@@ -81,6 +81,14 @@ type Handler struct {
 	// offered the instance email settings exactly when those routes would
 	// admit the caller. Nil until wired, which reports false.
 	instanceGate admingate.InstanceEmailStore
+	// challengeIssuer is a test seam for the one database write the 2FA gate
+	// makes: creating the challenge row. Nil, which is what every non-test
+	// construction leaves it, means h.svc.RequestTwoFactorChallenge. It cannot
+	// widen the gate: the choice between a session and a challenge is made
+	// before it is called, and a session is never issued on that branch. It
+	// exists so the provider callbacks' challenge redirect can be driven by a
+	// unit test; see requestTwoFactorChallenge.
+	challengeIssuer func(ctx context.Context, userID uuid.UUID, ip *netip.Addr) (TwoFactorChallengeResult, error)
 }
 
 // SetInstanceAuthorityGate wires the store behind Me.can_manage_instance_email.
@@ -428,33 +436,40 @@ func (h *Handler) register(c *gin.Context) {
 // instead of calling sessions.Login. It returns issued=false in that case so
 // the caller knows NOT to write any further response.
 //
-// For the OIDC callback path (a browser redirect, not JSON) the caller must
-// pass oidcRedirectBase as a non-empty string; the handler then redirects to
-// <oidcRedirectBase>/login?two_factor_challenge=<challengeID> instead of
-// writing a JSON 202. For all other paths pass oidcRedirectBase="".
+// For the provider callbacks (a browser redirect, not JSON) the caller passes
+// oidcRedirectBase as a non-empty string; the handler then redirects to the
+// SPA's /2fa-challenge route (see twoFactorChallengeURL) instead of writing a
+// JSON 202. Every caller of this variant passes "": the provider callbacks go
+// through issueProviderSessionOrChallenge, which also carries the return path.
 func (h *Handler) issueSessionOrChallenge(c *gin.Context, res LoginResult, oidcRedirectBase string) (issued bool) {
-	return h.issueSessionOrChallengeThen(c, res, oidcRedirectBase, nil)
+	return h.issueSessionOrChallengeThen(c, res, oidcRedirectBase, "", nil)
 }
 
-// issueSessionOrChallengeThen is issueSessionOrChallenge with one addition: a
-// hook that runs the moment a challenge exists and BEFORE the response carrying
-// it is written.
+// issueSessionOrChallengeThen is issueSessionOrChallenge with two additions:
+// the path a browser-redirect sign-in was heading for, and a hook that runs the
+// moment a challenge exists and BEFORE the response carrying it is written.
 //
-// Both halves of that timing are load-bearing. A caller that needs to remember
-// something ABOUT this challenge (the provider paths park an approved identity
-// link against it) can only bind to the challenge id once it has been minted,
-// and can only put anything in the session before the response is written,
-// because the session middleware saves on write and nothing after it lands.
-// Passing a nil hook is exactly the old behaviour.
+// returnTo only matters on the redirect branch, where it rides along to the
+// challenge page so that answering the second factor still lands on the deep
+// link the sign-in started from. It is re-validated by twoFactorChallengeURL,
+// so a caller cannot turn it into a redirect off this origin.
+//
+// Both halves of the hook's timing are load-bearing. A caller that needs to
+// remember something ABOUT this challenge (the provider paths park an approved
+// identity link against it) can only bind to the challenge id once it has been
+// minted, and can only put anything in the session before the response is
+// written, because the session middleware saves on write and nothing after it
+// lands. Passing a nil hook is exactly the old behaviour.
 func (h *Handler) issueSessionOrChallengeThen(
 	c *gin.Context,
 	res LoginResult,
 	oidcRedirectBase string,
+	returnTo string,
 	onChallengeIssued func(challengeID uuid.UUID),
 ) (issued bool) {
 	if res.User.TwoFactorEnabled {
 		ip := clientAddr(c)
-		result, cherr := h.svc.RequestTwoFactorChallenge(c.Request.Context(), res.User.ID, &ip)
+		result, cherr := h.requestTwoFactorChallenge(c.Request.Context(), res.User.ID, &ip)
 		if cherr != nil {
 			httpx.Error(c, cherr)
 			return false
@@ -463,18 +478,7 @@ func (h *Handler) issueSessionOrChallengeThen(
 			onChallengeIssued(result.ChallengeID)
 		}
 		if oidcRedirectBase != "" {
-			// Browser redirect flow (OIDC callback): redirect to the SPA 2FA
-			// challenge route carrying the challenge ID AND the available factors as
-			// query params, matching the /2fa-challenge route's search schema so the
-			// page renders the right methods without a separate lookup.
-			// Contract documented in docs/2fa-api-contract.md §OIDC redirect.
-			q := url.Values{}
-			q.Set("challenge", result.ChallengeID.String())
-			q.Set("totp", strconv.FormatBool(result.Factors.TOTP))
-			q.Set("webauthn", strconv.FormatBool(result.Factors.WebAuthnCount > 0))
-			q.Set("recovery_factor", "true")
-			target := oidcRedirectBase + "/2fa-challenge?" + q.Encode()
-			c.Redirect(http.StatusFound, target)
+			c.Redirect(http.StatusFound, twoFactorChallengeURL(oidcRedirectBase, result, returnTo))
 		} else {
 			c.JSON(http.StatusAccepted, gin.H{
 				"two_factor_required": true,
@@ -495,6 +499,42 @@ func (h *Handler) issueSessionOrChallengeThen(
 		return false
 	}
 	return true
+}
+
+// requestTwoFactorChallenge creates the challenge a 2FA-enrolled sign-in must
+// answer. It is h.svc.RequestTwoFactorChallenge unless a unit test installed
+// challengeIssuer; see that field.
+func (h *Handler) requestTwoFactorChallenge(ctx context.Context, userID uuid.UUID, ip *netip.Addr) (TwoFactorChallengeResult, error) {
+	if h.challengeIssuer != nil {
+		return h.challengeIssuer(ctx, userID, ip)
+	}
+	return h.svc.RequestTwoFactorChallenge(ctx, userID, ip)
+}
+
+// twoFactorChallengeURL is where a provider callback sends a browser that still
+// owes a second factor: the SPA's /2fa-challenge route, carrying the challenge
+// id and the available factors in the route's own search schema, so the page
+// renders the right methods without a separate lookup.
+//
+// It also carries the path the sign-in was heading for, as redirect, which the
+// challenge page follows once the factor is proven. Without it a person who
+// followed a link (an AI client's consent screen above all) and has 2FA on
+// landed on the default page instead, and the client that sent them never got
+// its answer. The value is re-validated here rather than trusted, because this
+// is the function that writes it into a URL: anything that is not a path on
+// this origin is dropped, and the challenge page falls back to its default.
+//
+// The contract is described in docs/features/2fa.md.
+func twoFactorChallengeURL(base string, result TwoFactorChallengeResult, returnTo string) string {
+	q := url.Values{}
+	q.Set("challenge", result.ChallengeID.String())
+	q.Set("totp", strconv.FormatBool(result.Factors.TOTP))
+	q.Set("webauthn", strconv.FormatBool(result.Factors.WebAuthnCount > 0))
+	q.Set("recovery_factor", "true")
+	if p := safeReturnPath(returnTo); p != "" {
+		q.Set("redirect", p)
+	}
+	return strings.TrimRight(base, "/") + "/2fa-challenge?" + q.Encode()
 }
 
 // verifyEmail handles POST /auth/verify-email. Consumes the token, activates the
@@ -848,7 +888,12 @@ func (h *Handler) oidcLogin(c *gin.Context) {
 		httpx.Error(c, domain.Unavailable("oidc_url_failed", "the identity provider could not be reached").WithCause(err))
 		return
 	}
-	h.sessions.putOAuth(c.Request.Context(), state, nonce, verifier)
+	// Where the person was heading, exactly as socialStart does it: validated
+	// here, where the value is still ours, and kept with the handshake rather
+	// than handed to the identity provider, because a value that comes back off
+	// the callback URL is a value an attacker can choose.
+	returnTo := safeReturnPath(c.Query("redirect"))
+	h.sessions.putOAuth(c.Request.Context(), state, nonce, verifier, returnTo)
 	c.Redirect(http.StatusFound, url)
 }
 
@@ -857,7 +902,7 @@ func (h *Handler) oidcCallback(c *gin.Context) {
 		httpx.Error(c, domain.Unavailable("oidc_disabled", "OIDC is not configured"))
 		return
 	}
-	state, nonce, verifier := h.sessions.takeOAuth(c.Request.Context())
+	state, nonce, verifier, returnTo := h.sessions.takeOAuth(c.Request.Context())
 	if state == "" || c.Query("state") != state {
 		httpx.Error(c, domain.Unauthorized("oidc_state_mismatch", "OIDC state mismatch or expired"))
 		return
@@ -879,25 +924,19 @@ func (h *Handler) oidcCallback(c *gin.Context) {
 	}
 
 	// B2 INVARIANT: if the OIDC user has 2FA enrolled, we must NOT issue a full
-	// session here. The OIDC callback is a browser redirect, so we redirect the
-	// browser to the SPA challenge route instead of writing a JSON 202. The SPA
-	// reads the two_factor_challenge query parameter and enters the challenge UI.
-	// See docs/2fa-api-contract.md §"OIDC callback redirect".
+	// session here. The OIDC callback is a browser redirect, so the browser goes
+	// to the SPA challenge route instead of receiving a JSON 202, carrying the
+	// path it was heading for. See docs/features/2fa.md.
 	//
-	// h.svc.baseURL is the public base URL (WPMGR_PUBLIC_BASE_URL). When 2FA is
-	// not enrolled issueSessionOrChallenge issues the session and returns true;
-	// we then redirect to the SPA home (the callback was always a browser redirect).
-	// Routed through the shared provider helper so this callback also defers an
-	// approved identity link until the second factor is proven, and writes it
-	// once it is. The generic OIDC path goes through the same policy as the
-	// consumer providers, so it must go through the same completion too.
-	if !h.issueProviderSessionOrChallenge(c, res) {
-		// 2FA challenge redirect was already written by issueSessionOrChallenge.
-		return
-	}
-	// Non-2FA path: session was issued; redirect the browser to the SPA home.
-	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant), res.DesiredPlan)
-	c.JSON(http.StatusOK, &out)
+	// The ending is the consumer providers' own, socialComplete, and not merely
+	// a similar one. The generic OIDC path goes through the same policy as the
+	// consumer providers, so it goes through the same completion: the same 2FA
+	// gate, the same deferral of an approved identity link until the second
+	// factor is proven, and the same landing page. When no second factor is
+	// enrolled that is a 302 into the app, because the visitor is a browser
+	// mid-navigation; answering it with the Me body as JSON left a person on a
+	// page of raw text after a successful sign-in.
+	h.socialComplete(c, res, returnTo)
 }
 
 // toMe builds the wire Me response. desiredPlan is the M16 Phase 0 "sign up
