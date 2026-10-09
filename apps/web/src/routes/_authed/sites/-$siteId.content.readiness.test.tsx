@@ -564,8 +564,10 @@ describe("the Bricks AI row is derived and unconfirmed", () => {
   //
   // This is the payload for a site where that row is the only one that is not
   // a pass: status ready and fix_count 0, written out here rather than left to
-  // the fixture's defaults. The header reads those two fields, so a grey row
-  // never sits under a header that counts a thing to fix.
+  // the fixture's defaults. The row keeps its state in the group but is never
+  // counted (Check.unconfirmed and the loop that skips it in evaluate.go;
+  // Result.Failing in model.go leaves it out). The header reads status and
+  // fix_count, so a grey row never sits under a header that counts a fix.
   function bricksWith(abilities: ReturnType<typeof chk>): SiteAiReadiness {
     return readiness({
       status: "ready",

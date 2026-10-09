@@ -104,6 +104,7 @@ const S_FIX = "bbbbbbbb-0000-0000-0000-000000000002";
 const S_UNCHECKED = "cccccccc-0000-0000-0000-000000000003";
 const S_WARNED = "dddddddd-0000-0000-0000-000000000004";
 const S_BUILDERS = "eeeeeeee-0000-0000-0000-000000000005";
+const S_BRICKS_AI = "ffffffff-0000-0000-0000-000000000006";
 
 function buildSite(overrides: Partial<Site> = {}): Site {
   return {
@@ -127,6 +128,7 @@ const SITES: Site[] = [
   buildSite({ id: S_UNCHECKED, name: "Pending Inc", url: "https://pending.example.com" }),
   buildSite({ id: S_WARNED, name: "Beta Co", url: "https://beta.example.com" }),
   buildSite({ id: S_BUILDERS, name: "Builders Ltd", url: "https://builders.example.com" }),
+  buildSite({ id: S_BRICKS_AI, name: "Bricks Works", url: "https://bricks.example.com" }),
 ];
 
 const ROLLUP: FleetAiReadinessSite[] = [
@@ -148,6 +150,12 @@ const ROLLUP: FleetAiReadinessSite[] = [
     fix_count: 2,
     failing: ["elementor_version", "bricks_version"],
   }),
+  // A site whose only row that is not a pass is the Bricks AI row, which is
+  // inferred from the tool list and unconfirmed. The row stays in the site's
+  // groups but is counted nowhere: ready, nothing to fix, and not in `failing`
+  // (Check.unconfirmed in evaluate.go; Result.Failing in model.go, which
+  // toFleetDTO in dto.go writes).
+  fleetSite({ site_id: S_BRICKS_AI, status: "ready", fix_count: 0, failing: [] }),
 ];
 
 function buildSitesRouter(initialPath: string, queryClient: QueryClient) {
@@ -243,6 +251,21 @@ describe("Sites list, table view: the AI column", () => {
     expect(link.getAttribute("title")).not.toMatch(/version/i);
   });
 
+  it("shows a site whose only open row is the unconfirmed Bricks AI row as Ready in green, not as a fix", async () => {
+    renderSitesPage("/sites");
+    const link = await within(await rowFor("Bricks Works")).findByRole("link", { name: /^Ready/ });
+    expect(link).toHaveTextContent("Ready");
+    expect(link).not.toHaveTextContent(/to fix/);
+    expect(link.getAttribute("title")).toBe("Everything the AI needs on this site is in place.");
+    expect(link.querySelector("svg")).toHaveClass("text-[var(--color-success)]");
+    expect(link.querySelector("svg")).not.toHaveClass("text-[var(--color-destructive)]");
+
+    // The control: the same query on a site with fixes finds a red icon, so
+    // the green above is not a selector that can never see red.
+    const fix = await within(await rowFor("Fixit Ltd")).findByRole("link", { name: /to fix/ });
+    expect(fix.querySelector("svg")).toHaveClass("text-[var(--color-destructive)]");
+  });
+
   it("marks an open AI connection point with an amber triangle and names it on hover, leaving Ready alone", async () => {
     renderSitesPage("/sites");
     const row = within(await rowFor("Beta Co"));
@@ -318,6 +341,21 @@ describe("Sites list, grid view: the AI chip", () => {
     ).toHaveTextContent("Not checked");
     const warned = within(await cardFor("Beta Co"));
     expect(await warned.findByRole("img", { name: "Open AI connection point" })).toBeInTheDocument();
+  });
+
+  it("shows a site whose only open row is the unconfirmed Bricks AI row as a green chip, not a red one", async () => {
+    renderSitesPage("/sites?view=grid");
+    const chip = await within(await cardFor("Bricks Works")).findByRole("link", { name: /Ready/ });
+    expect(chip).toHaveTextContent("Ready");
+    expect(chip).not.toHaveTextContent(/to fix/);
+    expect(chip.getAttribute("title")).toBe("Everything the AI needs on this site is in place.");
+    expect(chip).toHaveClass("bg-success-subtle", "text-success-subtle-fg");
+    expect(chip).not.toHaveClass("bg-destructive-subtle");
+    expect(chip).not.toHaveClass("text-destructive-subtle-fg");
+
+    // The control: a site with fixes is a red chip under the same query.
+    const fix = await within(await cardFor("Fixit Ltd")).findByRole("link", { name: /to fix/ });
+    expect(fix).toHaveClass("bg-destructive-subtle", "text-destructive-subtle-fg");
   });
 
   it("shows a dash on every card, and no page error, when the rollup is refused", async () => {
