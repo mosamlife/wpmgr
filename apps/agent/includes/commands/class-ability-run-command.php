@@ -11,7 +11,9 @@ use WPMgr\Agent\Abilities\AbilityLedger;
 use WPMgr\Agent\Abilities\AbilitySideEffects;
 use WPMgr\Agent\Abilities\Builders\BuilderAdapter;
 use WPMgr\Agent\Abilities\Builders\BuilderPageCreate;
+use WPMgr\Agent\Abilities\Builders\BuilderPageStructure;
 use WPMgr\Agent\Abilities\Builders\BuilderRegistry;
+use WPMgr\Agent\Abilities\Builders\DraftEligibility;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
 use WPMgr\Agent\Abilities\OwnAbilities;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
@@ -47,6 +49,8 @@ if (!defined('ABSPATH')) {
  *   entry_sha256 hex sha256 of that text (all but ledger)
  *   input       string, JSON text of an object (default "{}"); revert takes none
  *   expected    object {precheck_digest, preview_digest} (write)
+ *   allowed_draft_ids  list of at most one post id: the drafts the control
+ *               plane names as WPMgr's, for wpmgr/page-structure (optional)
  *
  * WPMgr's own wpmgr/* abilities run through their own handlers. Any other
  * ability (a vendor's or core's) runs only in read mode, only on WordPress
@@ -278,8 +282,36 @@ final class AbilityRunCommand implements CommandInterface
         if ($mode === 'precheck') {
             return $this->precheck($name, (string) $requestId, $entrySha, $inputText, $input);
         }
+        if ($name === OwnAbilities::NAME_PAGE_STRUCTURE) {
+            return $this->pageStructure($entry, $entrySha, $input, $req);
+        }
 
         return $this->read($name, $entrySha, $input);
+    }
+
+    /**
+     * wpmgr/page-structure: the drafts the signed parameters name and the
+     * adapter the entry enables, then the read (BuilderPageStructure).
+     *
+     * @param object $entry    The catalogue entry.
+     * @param string $entrySha Entry hash.
+     * @param object $input    Validated input.
+     * @param object $req      Decoded p.
+     * @return array<string,mixed>
+     */
+    private function pageStructure(object $entry, string $entrySha, object $input, object $req): array
+    {
+        $allowed = DraftEligibility::signedIds($req);
+        if ($allowed === null) {
+            return $this->fail('bad_params', 'allowed_draft_ids must be a list of at most one post id');
+        }
+        $resolved = BuilderPageStructure::adapterFor($entry, $this->builderSeam === null ? null : ($this->builderSeam)());
+        $adapter  = $resolved['adapter'] ?? null;
+        if ($adapter === null) {
+            return $this->fail((string) ($resolved['code'] ?? 'builder_not_enabled'), (string) ($resolved['detail'] ?? 'no page builder can be used'));
+        }
+
+        return $this->read(OwnAbilities::NAME_PAGE_STRUCTURE, $entrySha, $input, static fn (): array => BuilderPageStructure::run($input, $allowed, $adapter));
     }
 
     // ---------------------------------------------------------------------
@@ -2090,12 +2122,13 @@ final class AbilityRunCommand implements CommandInterface
     /**
      * Execute an own read ability, under the interception guards on WP 7.1+.
      *
-     * @param string $name     Ability.
-     * @param string $entrySha Entry hash.
-     * @param object $input    Validated input.
+     * @param string                                 $name     Ability.
+     * @param string                                 $entrySha Entry hash.
+     * @param object                                 $input    Validated input.
+     * @param (\Closure(): array<string,mixed>)|null $run      The read, when it is not OwnAbilities::run().
      * @return array<string,mixed>
      */
-    private function read(string $name, string $entrySha, object $input): array
+    private function read(string $name, string $entrySha, object $input, ?\Closure $run = null): array
     {
         $guards = new AbilityGuards();
         $armed  = AbilityGuards::supported();
@@ -2105,7 +2138,7 @@ final class AbilityRunCommand implements CommandInterface
         $result = null;
         try {
             try {
-                $result = OwnAbilities::run($name, $input);
+                $result = $run === null ? OwnAbilities::run($name, $input) : $run();
             } catch (AbilityInterception $e) {
                 // The guards recorded why; the violations below refuse.
                 $result = null;

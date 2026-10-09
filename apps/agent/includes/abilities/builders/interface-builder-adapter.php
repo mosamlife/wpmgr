@@ -98,6 +98,16 @@ interface BuilderAdapter
     public function buildCreate(array $spec, IdSeed $ids, array $mediaById): array;
 
     /**
+     * The tree a page's stored document rows hold, decoded; null when they
+     * do not hold exactly one document that decodes to this builder's tree.
+     * Pure.
+     *
+     * @param array<mixed> $rowsByKey Descriptor key => the key's stored rows in meta_id order, as BuilderDocumentFingerprint::read() gives them.
+     * @return array<mixed>|null
+     */
+    public function storedTree(array $rowsByKey): ?array;
+
+    /**
      * The builder-neutral projection of a stored tree. Pure.
      *
      * @param array<mixed> $tree Decoded stored tree.

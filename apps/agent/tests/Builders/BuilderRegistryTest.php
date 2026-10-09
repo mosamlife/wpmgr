@@ -280,6 +280,11 @@ final class BuilderRegistryTest extends TestCase
                 return ['code' => 'node_not_supported_by_builder', 'detail' => 'outline[0]'];
             }
 
+            public function storedTree(array $rowsByKey): ?array
+            {
+                return null;
+            }
+
             public function project(array $tree): Projection
             {
                 return new Projection([Projection::FALLBACK_LABEL => 'Element']);

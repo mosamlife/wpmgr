@@ -31,7 +31,8 @@ if (!defined('ABSPATH')) {
  * most a byte cap (default BuilderContract::MAX_STRUCTURE_BYTES, measured as
  * json_encode() with default flags), cut after a whole node so every node it
  * keeps still has its parent. A node that breaks these rules is refused with
- * \InvalidArgumentException and nothing is added.
+ * \InvalidArgumentException and nothing is added. subtree() and readOnly()
+ * answer a new projection and leave this one as it is.
  */
 final class Projection
 {
@@ -152,6 +153,53 @@ final class Projection
     public function nodes(): array
     {
         return $this->nodes;
+    }
+
+    /**
+     * One node and every node under it, in page order: that node first, its
+     * parent as stored, so the first node's parent is not in the answer.
+     * Null when no node has that ref.
+     *
+     * @param string $ref The node's ref.
+     * @return self|null
+     */
+    public function subtree(string $ref): ?self
+    {
+        if (!isset($this->refs[$ref])) {
+            return null;
+        }
+        $out        = clone $this;
+        $out->nodes = [];
+        $out->refs  = [];
+        foreach ($this->nodes as $node) {
+            // A parent is always added before its children, so one pass in
+            // page order finds every node under $ref.
+            if ($node['ref'] !== $ref && !isset($out->refs[$node['parent']])) {
+                continue;
+            }
+            $out->nodes[]             = $node;
+            $out->refs[$node['ref']] = true;
+        }
+
+        return $out;
+    }
+
+    /**
+     * The same nodes with nothing offered as editable: every classified
+     * node's editable list is empty. Locked nodes are as they were.
+     *
+     * @return self
+     */
+    public function readOnly(): self
+    {
+        $out = clone $this;
+        foreach ($out->nodes as $i => $node) {
+            if (array_key_exists('editable', $node)) {
+                $out->nodes[$i]['editable'] = [];
+            }
+        }
+
+        return $out;
     }
 
     /**

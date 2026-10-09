@@ -187,6 +187,19 @@ final class ElementorAdapter implements BuilderAdapter
 
     /**
      * {@inheritDoc}
+     *
+     * The page's one _elementor_data row, decoded at most
+     * ElementorDocument::MAX_DEPTH deep to a list of elements.
+     */
+    public function storedTree(array $rowsByKey): ?array
+    {
+        $rows = $rowsByKey[ElementorDocument::KEY_DATA] ?? [];
+
+        return is_array($rows) ? ElementorDocument::treeOf($rows) : null;
+    }
+
+    /**
+     * {@inheritDoc}
      */
     public function project(array $tree): Projection
     {

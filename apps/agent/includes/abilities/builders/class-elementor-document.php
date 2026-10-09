@@ -733,7 +733,7 @@ final class ElementorDocument
      * @param array<mixed> $rows The rows of the key, in meta_id order.
      * @return array<mixed>|null
      */
-    private static function treeOf(array $rows): ?array
+    public static function treeOf(array $rows): ?array
     {
         if (count($rows) !== 1 || !is_string($rows[0] ?? null)) {
             return null;
