@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
+	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
@@ -194,7 +195,13 @@ func (s *Service) PauseAssistant(ctx context.Context, p domain.Principal, id uui
 // columns (m130 DECISION 2): an organisation that was deliberately off before
 // the incident is still off after it. Releasing the switch never enables a
 // surface nobody chose to enable.
+//
+// Loosening an AI control needs a signed-in person, so this refuses every
+// other caller before anything is written. Pausing stays open to them.
 func (s *Service) ResumeAssistant(ctx context.Context, p domain.Principal, id uuid.UUID, rec AuditRecorder) (AssistantState, error) {
+	if err := authz.AuthorizeLoosening(p); err != nil {
+		return AssistantState{}, err
+	}
 	if err := assertOwnTenant(p, id); err != nil {
 		return AssistantState{}, err
 	}
