@@ -78,6 +78,15 @@ final class LifecycleOwnedOptionsTest extends TestCase
 
     private bool $multisite = false;
 
+    /** Whether a persistent object cache is in use. */
+    private bool $extObjectCache = false;
+
+    /** @var array{transient:array<string,mixed>,site-transient:array<string,mixed>} Transients a persistent object cache holds, by exact key. */
+    private array $cache = ['transient' => [], 'site-transient' => []];
+
+    /** @var list<string> Every wp_cache_delete() call, as "group:key". */
+    private array $cacheDeletes = [];
+
     private bool $hadWpdb = false;
 
     /** @var mixed */
@@ -88,9 +97,12 @@ final class LifecycleOwnedOptionsTest extends TestCase
         parent::set_up();
         Monkey\setUp();
 
-        $this->options   = [];
-        $this->network   = [];
-        $this->multisite = false;
+        $this->options        = [];
+        $this->network        = [];
+        $this->multisite      = false;
+        $this->extObjectCache = false;
+        $this->cache          = ['transient' => [], 'site-transient' => []];
+        $this->cacheDeletes   = [];
 
         $this->hadWpdb      = array_key_exists('wpdb', $GLOBALS);
         $this->previousWpdb = $GLOBALS['wpdb'] ?? null;
@@ -127,9 +139,21 @@ final class LifecycleOwnedOptionsTest extends TestCase
                 : self::deleteRow($this->options, (string) $name);
         });
 
-        // Database-backed transients, with core's order: the timeout row goes
-        // only when the value row did.
+        Functions\when('wp_using_ext_object_cache')->alias(fn (): bool => $this->extObjectCache);
+        Functions\when('wp_cache_delete')->alias(function ($key, $group = ''): bool {
+            $this->cacheDeletes[] = $group . ':' . $key;
+            return true;
+        });
+
+        // Transients as core stores them: in a persistent object cache under
+        // their exact key when one is in use, else as database rows, with
+        // core's order: the timeout row goes only when the value row did.
         Functions\when('delete_transient')->alias(function ($name): bool {
+            if ($this->extObjectCache) {
+                $deleted = array_key_exists((string) $name, $this->cache['transient']);
+                unset($this->cache['transient'][(string) $name]);
+                return $deleted;
+            }
             $deleted = self::deleteRow($this->options, '_transient_' . $name);
             if ($deleted) {
                 self::deleteRow($this->options, '_transient_timeout_' . $name);
@@ -137,6 +161,11 @@ final class LifecycleOwnedOptionsTest extends TestCase
             return $deleted;
         });
         Functions\when('delete_site_transient')->alias(function ($name): bool {
+            if ($this->extObjectCache) {
+                $deleted = array_key_exists((string) $name, $this->cache['site-transient']);
+                unset($this->cache['site-transient'][(string) $name]);
+                return $deleted;
+            }
             if ($this->multisite) {
                 $deleted = self::deleteRow($this->network, '_site_transient_' . $name);
                 if ($deleted) {
@@ -227,14 +256,16 @@ final class LifecycleOwnedOptionsTest extends TestCase
     }
 
     /**
-     * Every option constant in the namespace is removed through the options
-     * API by name, so uninstall stays complete where the database sweep sees
-     * nothing (here: no $wpdb at all).
+     * Every option constant in the namespace is removed by its exact name, not
+     * only by the namespace sweep: here the sweep's LIKE matches nothing, so
+     * the lookup by name is the only way to each row.
      */
-    public function test_every_named_option_is_removed_without_the_database_sweep(): void
+    public function test_every_named_option_is_removed_by_its_exact_name(): void
     {
-        unset($GLOBALS['wpdb']);
         $this->multisite = true;
+        $wpdb            = $GLOBALS['wpdb'];
+        $this->assertInstanceOf(FakeOptionsTableWpdb::class, $wpdb);
+        $wpdb->likeMatchesNothing = true;
 
         $optionConstants = self::namespaceOptionConstants();
         foreach ($optionConstants as $value) {
@@ -247,6 +278,7 @@ final class LifecycleOwnedOptionsTest extends TestCase
 
         $this->lifecycle()->wipeAll();
 
+        $this->assertNotSame([], $wpdb->likePatterns, 'positive control: the sweep ran, and found nothing');
         $left = [];
         foreach ($optionConstants as $constant => $value) {
             if (array_key_exists($value, $this->options)) {
@@ -260,13 +292,14 @@ final class LifecycleOwnedOptionsTest extends TestCase
     }
 
     /**
-     * Transients named by a *TRANSIENT* constant in the namespace are removed
-     * through the transient API, which is the only path that reaches them
-     * when a persistent object cache holds them (here: no $wpdb at all).
+     * With a persistent object cache, transients live in the cache alone, out
+     * of the database's reach. Every transient named by a *TRANSIENT* constant
+     * in the namespace is removed from it by its exact key, as a transient and
+     * as a site transient.
      */
-    public function test_named_transients_are_removed_without_the_database_sweep(): void
+    public function test_named_transients_are_removed_from_a_persistent_object_cache(): void
     {
-        unset($GLOBALS['wpdb']);
+        $this->extObjectCache = true;
 
         $transients = array_filter(
             self::namespaceConstants(),
@@ -276,14 +309,15 @@ final class LifecycleOwnedOptionsTest extends TestCase
         $this->assertArrayHasKey(\WPMgr\Agent\Plugin::class . '::TRANSIENT_KEYSTORE_PROBE', $transients, 'positive control: discovery finds transient constants');
 
         foreach ($transients as $name) {
-            foreach (['_transient_', '_transient_timeout_', '_site_transient_', '_site_transient_timeout_'] as $form) {
-                $this->options[$form . $name] = 'seeded';
-            }
+            $this->cache['transient'][$name]      = 'cached';
+            $this->cache['site-transient'][$name] = 'cached';
         }
+        $this->cache['transient']['other_plugin_feed'] = 'cached';
 
         $this->lifecycle()->wipeAll();
 
-        $this->assertSame([], self::rowsIn($this->options, self::OPTIONS_TABLE_FORMS), 'named transients survived uninstall');
+        $this->assertSame(['other_plugin_feed' => 'cached'], $this->cache['transient'], 'named transients survived in the object cache, or another one went');
+        $this->assertSame([], $this->cache['site-transient'], 'named site transients survived in the object cache');
     }
 
     /**
@@ -336,6 +370,119 @@ final class LifecycleOwnedOptionsTest extends TestCase
             'the sweep query selected names outside the namespace'
         );
         foreach (array_merge($mustNotBeSelected, [$caseVariant]) as $name) {
+            $this->assertSame('keep:' . $name, $this->options[$name] ?? null, "options row {$name} must survive uninstall");
+            $this->assertSame('keep:' . $name, $this->network[$name] ?? null, "network row {$name} must survive uninstall");
+        }
+    }
+
+    /**
+     * Uninstall deletes a row only when its stored name is exactly one the
+     * agent owns. MySQL's default collations compare names regardless of
+     * case, so a lookup or a delete by an owned name also reaches a row that
+     * differs from it only in case: here, rows something else wrote under case
+     * variants of named options, inside and outside the namespace, and of a
+     * named transient's rows.
+     */
+    public function test_wipe_all_spares_case_variants_of_named_options(): void
+    {
+        // Under a case-insensitive collation the options table's unique key
+        // admits one row per name, so each variant stands where the agent's
+        // own row would be.
+        $variants = [
+            strtoupper(Keystore::OPTION_EMAIL_SECRET),
+            ucwords(Keystore::OPTION_SITE_KEYPAIR, '_'),
+            strtoupper(Settings::OPTION_SITE_ID),
+            strtoupper(\WPMgr\Agent\Cache\CacheManager::OPTION_CONFIG),
+            '_TRANSIENT_' . strtoupper(\WPMgr\Agent\Plugin::TRANSIENT_KEYSTORE_PROBE),
+            '_transient_timeout_' . strtoupper(\WPMgr\Agent\Plugin::TRANSIENT_KEYSTORE_PROBE),
+        ];
+        foreach ($variants as $name) {
+            $this->options[$name] = 'keep:' . $name;
+        }
+        $this->options[Settings::OPTION_CP_URL] = 'https://cp.example.test';
+
+        $probe = [strtoupper(Keystore::OPTION_EMAIL_SECRET) => 'x'];
+        $this->assertTrue(self::deleteRow($probe, Keystore::OPTION_EMAIL_SECRET), 'precondition: deleting by name reaches a case variant, as it does in MySQL');
+        $this->assertNotContains(Settings::OPTION_CP_URL, $variants, 'precondition: the agent row is not one of the variants');
+
+        $this->lifecycle()->wipeAll();
+
+        $this->assertArrayNotHasKey(Settings::OPTION_CP_URL, $this->options, "uninstall left the agent's own row");
+        foreach ($variants as $name) {
+            $this->assertSame('keep:' . $name, $this->options[$name] ?? null, "uninstall deleted {$name}, which matches an owned name only regardless of case");
+            $this->assertNotContains('options:' . $name, $this->cacheDeletes, "uninstall dropped the cache entry of {$name}, which it does not own");
+        }
+        $this->assertContains('options:' . Settings::OPTION_CP_URL, $this->cacheDeletes, 'a deleted row must leave the object cache too');
+        $this->assertContains('options:alloptions', $this->cacheDeletes, 'autoloaded options must be reloaded after the delete');
+    }
+
+    /**
+     * The network table has no unique key on meta_key, so the agent's row and
+     * a copy differing only in case can both be there. Uninstall removes the
+     * agent's row and keeps the copy: for named options, names found by the
+     * namespace sweep alone, and a site transient's rows.
+     */
+    public function test_wipe_all_keeps_case_variant_copies_in_the_network_table(): void
+    {
+        $this->multisite = true;
+
+        $agentRows = [
+            Settings::OPTION_SITE_ID,
+            Keystore::OPTION_EMAIL_SECRET,
+            \WPMgr\Agent\Cache\CacheManager::OPTION_CONFIG,
+            'wpmgr_agent_name_from_a_future_release',
+            '_site_transient_wpmgr_agent_update_manifest',
+            '_site_transient_timeout_wpmgr_agent_update_manifest',
+        ];
+        foreach ($agentRows as $name) {
+            $this->network[$name]             = 'agent';
+            $this->network[strtoupper($name)] = 'keep:' . strtoupper($name);
+        }
+        $this->assertCount(2 * count($agentRows), $this->network, 'precondition: every row and its copy are both stored');
+
+        $this->lifecycle()->wipeAll();
+
+        foreach ($agentRows as $name) {
+            $copy = strtoupper($name);
+            $this->assertArrayNotHasKey($name, $this->network, "uninstall left the agent's network row {$name}");
+            $this->assertSame('keep:' . $copy, $this->network[$copy] ?? null, "uninstall deleted {$copy} along with {$name}");
+            $this->assertNotContains('site-options:1:' . $copy, $this->cacheDeletes, "uninstall dropped the cache entry of {$copy}, which it does not own");
+        }
+        $this->assertContains('site-options:1:' . Settings::OPTION_SITE_ID, $this->cacheDeletes, 'a deleted network row must leave the object cache too');
+    }
+
+    /**
+     * Another plugin's rows whose names begin with the namespace prefix in a
+     * different case are outside the namespace. The case-insensitive LIKE
+     * returns them, so the exact prefix check alone keeps them.
+     */
+    public function test_wipe_all_spares_another_plugins_rows_whose_prefix_differs_in_case(): void
+    {
+        $this->multisite = true;
+
+        $foreign = [
+            'WPMgr_Agent_Pro_license',
+            'WPMGR_AGENT_TOOLBAR_STATE',
+            '_transient_WPMGR_AGENT_PRO_FEED',
+            '_site_transient_Wpmgr_Agent_pro_update',
+            '_site_transient_timeout_Wpmgr_Agent_pro_update',
+        ];
+        foreach ($foreign as $name) {
+            $this->options[$name] = 'keep:' . $name;
+            $this->network[$name] = 'keep:' . $name;
+        }
+        $this->options['wpmgr_agent_name_from_a_future_release'] = 'seeded';
+        $this->network['wpmgr_agent_name_from_a_future_release'] = 'seeded';
+
+        $wpdb = $GLOBALS['wpdb'];
+        $this->assertInstanceOf(FakeOptionsTableWpdb::class, $wpdb);
+
+        $this->lifecycle()->wipeAll();
+
+        $this->assertArrayNotHasKey('wpmgr_agent_name_from_a_future_release', $this->options);
+        $this->assertArrayNotHasKey('wpmgr_agent_name_from_a_future_release', $this->network);
+        $this->assertSame([], array_values(array_diff($foreign, $wpdb->selected)), 'precondition: the case-insensitive LIKE returned every one of these rows');
+        foreach ($foreign as $name) {
             $this->assertSame('keep:' . $name, $this->options[$name] ?? null, "options row {$name} must survive uninstall");
             $this->assertSame('keep:' . $name, $this->network[$name] ?? null, "network row {$name} must survive uninstall");
         }
@@ -461,17 +608,23 @@ final class LifecycleOwnedOptionsTest extends TestCase
     }
 
     /**
+     * Delete by name the way core's options API does against MySQL: every row
+     * whose name the collation holds equal goes, so case is ignored.
+     *
      * @param array<string,mixed> $rows Table rows keyed by name.
-     * @param string              $name Row to delete.
+     * @param string              $name Name to delete by.
      * @return bool Whether a row was deleted.
      */
     private static function deleteRow(array &$rows, string $name): bool
     {
-        if (!array_key_exists($name, $rows)) {
-            return false;
+        $deleted = false;
+        foreach (array_keys($rows) as $stored) {
+            if (FakeOptionsTableWpdb::collationEquals((string) $stored, $name)) {
+                unset($rows[$stored]);
+                $deleted = true;
+            }
         }
-        unset($rows[$name]);
 
-        return true;
+        return $deleted;
     }
 }

@@ -391,6 +391,33 @@ if (!function_exists('get_site_option')) {
     }
 }
 
+if (!function_exists('wp_cache_delete')) {
+    /**
+     * Removes an object-cache entry — default stub: nothing is cached.
+     *
+     * @param int|string $key   Cache key.
+     * @param string     $group Cache group.
+     * @return bool
+     */
+    function wp_cache_delete($key, $group = ''): bool
+    {
+        return false;
+    }
+}
+
+if (!function_exists('wp_using_ext_object_cache')) {
+    /**
+     * Whether a persistent object cache is in use — default stub: it is not.
+     *
+     * @param bool|null $using Unused.
+     * @return bool
+     */
+    function wp_using_ext_object_cache($using = null): bool
+    {
+        return false;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WP conditional functions (conservative defaults)
 // ---------------------------------------------------------------------------

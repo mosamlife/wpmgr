@@ -3,13 +3,22 @@
  * In-memory $wpdb double over the two tables WordPress keeps options in: the
  * per-site options table and, on multisite, the network table (sitemeta).
  *
- * It answers only the shape a namespace sweep issues: a prepared SELECT of one
- * name column filtered by LIKE, scoped to one network for the network table.
- * LIKE is evaluated the way MySQL evaluates it under WordPress's default
- * collations: '%' is any run of characters, '_' is any single character, '\'
- * escapes the next character, and the comparison ignores case. A pattern that
- * forgets to escape '_', or is not anchored, over-matches here exactly as it
- * would against a real database.
+ * It answers the statements uninstall issues and nothing else: a prepared
+ * SELECT of rows by name, either the name column alone (get_col) or the row id
+ * and name (get_results with ARRAY_A), and a prepared DELETE. A WHERE clause
+ * is predicates joined by AND, each comparing one column with one placeholder.
+ * A statement on the network table must be scoped to one network.
+ *
+ * Names compare the way MySQL compares them under WordPress's default
+ * collations, which ignore case: '=' and LIKE alike, so a lookup or a delete
+ * by name also reaches a row that differs from it only in case. In LIKE, '%'
+ * is any run of characters, '_' is any single character, and '\' escapes the
+ * next character, so a pattern that forgets to escape '_', or is not anchored,
+ * over-matches here exactly as it would against a real database. Trailing-space
+ * padding and accent folding are not modelled.
+ *
+ * Each row has an id, assigned the first time a statement sees it, as a
+ * primary key would be.
  *
  * @package WPMgr\Agent\Tests
  */
@@ -19,7 +28,7 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Tests;
 
 /**
- * Emulates the wpdb surface Lifecycle's namespace sweep touches.
+ * Emulates the wpdb surface Lifecycle's uninstall touches.
  */
 final class FakeOptionsTableWpdb
 {
@@ -32,8 +41,17 @@ final class FakeOptionsTableWpdb
     /** @var list<string> Every name a SELECT returned, across all calls. */
     public array $selected = [];
 
-    /** @var list<string> Every LIKE pattern bound into a query, across all calls. */
+    /** @var list<string> Every LIKE pattern bound into a statement, across all calls. */
     public array $likePatterns = [];
+
+    /** @var list<string> Every row a DELETE removed, as "table:name", across all calls. */
+    public array $deleted = [];
+
+    /**
+     * When true, LIKE matches no row: a namespace sweep that finds nothing,
+     * leaving a lookup by exact name as the only way to reach a row.
+     */
+    public bool $likeMatchesNothing = false;
 
     /** @var array<string,mixed> Rows of the per-site options table, shared with the test by reference. */
     private array $optionRows;
@@ -42,6 +60,11 @@ final class FakeOptionsTableWpdb
     private array $networkRows;
 
     private int $networkId;
+
+    /** @var array<string,int> Row id by table and name, assigned on first sight. */
+    private array $ids = [];
+
+    private int $lastId = 0;
 
     /**
      * @param array<string,mixed> $optionRows  Per-site options table, by reference.
@@ -56,6 +79,19 @@ final class FakeOptionsTableWpdb
     }
 
     /**
+     * Whether MySQL, under WordPress's default collations, holds two names
+     * equal: case is ignored.
+     *
+     * @param string $a One name.
+     * @param string $b The other.
+     * @return bool
+     */
+    public static function collationEquals(string $a, string $b): bool
+    {
+        return strcasecmp($a, $b) === 0;
+    }
+
+    /**
      * Same escaping as core's wpdb::esc_like().
      *
      * @param string $text Raw text.
@@ -67,9 +103,9 @@ final class FakeOptionsTableWpdb
     }
 
     /**
-     * Carries the query and its bound values through to get_col().
+     * Carries the statement and its bound values through to execution.
      *
-     * @param string $query   Query with %s / %d placeholders.
+     * @param string $query   Statement with %s / %d placeholders.
      * @param mixed  ...$args Bound values (or one array of them, as core accepts).
      * @return string
      */
@@ -83,59 +119,84 @@ final class FakeOptionsTableWpdb
     }
 
     /**
-     * Run a prepared SELECT of one name column filtered by LIKE.
+     * Run SELECT <name column> FROM <table> WHERE ...
      *
      * @param string $prepared Output of prepare().
      * @return list<string>
      */
     public function get_col(string $prepared): array
     {
-        $decoded = json_decode($prepared, true);
-        if (!is_array($decoded) || !isset($decoded['sql'], $decoded['args']) || !is_array($decoded['args'])) {
-            throw new \LogicException('get_col() expects a query built by prepare()');
+        [$sql, $args] = self::decode($prepared);
+        if (preg_match('/^SELECT (\w+) FROM (\S+) WHERE (.+)$/s', $sql, $m) !== 1) {
+            throw new \LogicException('get_col() answers SELECT <name column> FROM <table> WHERE ... only: ' . $sql);
         }
-        $sql = (string) $decoded['sql'];
-        if (stripos(ltrim($sql), 'SELECT') !== 0) {
-            throw new \LogicException('FakeOptionsTableWpdb answers SELECT only: ' . $sql);
+        $table = $this->table($m[2]);
+        if ($m[1] !== $table['name']) {
+            throw new \LogicException('get_col() selects the name column only: ' . $sql);
         }
 
-        preg_match_all('/%[sd]/', $sql, $matches);
-        if (count($matches[0]) !== count($decoded['args'])) {
-            throw new \LogicException('placeholder count does not match bound values: ' . $sql);
-        }
-        $likes    = [];
-        $integers = [];
-        foreach ($matches[0] as $i => $placeholder) {
-            if ($placeholder === '%s') {
-                $likes[] = (string) $decoded['args'][$i];
-            } else {
-                $integers[] = (int) $decoded['args'][$i];
-            }
-        }
-        $this->likePatterns = array_merge($this->likePatterns, $likes);
+        $names = array_column($this->matching($table, $m[3], $args), 'name');
+        $this->selected = array_merge($this->selected, $names);
 
-        if (strpos($sql, $this->sitemeta) !== false) {
-            // The network table holds rows for every network; a query that is
-            // not scoped to exactly this network must not see these rows.
-            $rows = $integers === [$this->networkId] ? $this->networkRows : [];
-        } elseif (strpos($sql, $this->options) !== false) {
-            $rows = $this->optionRows;
-        } else {
-            throw new \LogicException('query names neither table: ' . $sql);
+        return $names;
+    }
+
+    /**
+     * Run SELECT <id column> AS id, <name column> AS name FROM <table> WHERE ...
+     * Values come back as strings, as mysqli returns them.
+     *
+     * @param string $prepared Output of prepare().
+     * @param string $output   Must be ARRAY_A.
+     * @return list<array{id:string,name:string}>
+     */
+    public function get_results(string $prepared, $output = 'OBJECT'): array
+    {
+        if ($output !== ARRAY_A) {
+            throw new \LogicException('get_results() answers ARRAY_A only');
+        }
+        [$sql, $args] = self::decode($prepared);
+        if (preg_match('/^SELECT (\w+) AS id, (\w+) AS name FROM (\S+) WHERE (.+)$/s', $sql, $m) !== 1) {
+            throw new \LogicException('get_results() answers SELECT <id> AS id, <name> AS name FROM <table> WHERE ... only: ' . $sql);
+        }
+        $table = $this->table($m[3]);
+        if ($m[1] !== $table['id'] || $m[2] !== $table['name']) {
+            throw new \LogicException('get_results() selects the id and name columns only: ' . $sql);
         }
 
         $out = [];
-        foreach (array_keys($rows) as $name) {
-            foreach ($likes as $like) {
-                if (self::likeMatches((string) $name, $like)) {
-                    $out[] = (string) $name;
-                    break;
-                }
-            }
+        foreach ($this->matching($table, $m[4], $args) as $row) {
+            $out[]            = ['id' => (string) $row['id'], 'name' => $row['name']];
+            $this->selected[] = $row['name'];
         }
-        $this->selected = array_merge($this->selected, $out);
 
         return $out;
+    }
+
+    /**
+     * Run DELETE FROM <table> WHERE ...
+     *
+     * @param string $prepared Output of prepare().
+     * @return int Rows deleted.
+     */
+    public function query(string $prepared): int
+    {
+        [$sql, $args] = self::decode($prepared);
+        if (preg_match('/^DELETE FROM (\S+) WHERE (.+)$/s', $sql, $m) !== 1) {
+            throw new \LogicException('query() answers DELETE FROM <table> WHERE ... only: ' . $sql);
+        }
+        $table = $this->table($m[1]);
+
+        $rows = $this->matching($table, $m[2], $args);
+        foreach ($rows as $row) {
+            if ($table['scope'] === null) {
+                unset($this->optionRows[$row['name']]);
+            } else {
+                unset($this->networkRows[$row['name']]);
+            }
+            $this->deleted[] = $table['table'] . ':' . $row['name'];
+        }
+
+        return count($rows);
     }
 
     /**
@@ -168,5 +229,117 @@ final class FakeOptionsTableWpdb
         }
 
         return preg_match('/^' . $regex . '$/is', $subject) === 1;
+    }
+
+    /**
+     * @param string $prepared Output of prepare().
+     * @return array{0:string,1:list<mixed>}
+     */
+    private static function decode(string $prepared): array
+    {
+        $decoded = json_decode($prepared, true);
+        if (!is_array($decoded) || !isset($decoded['sql'], $decoded['args']) || !is_array($decoded['args'])) {
+            throw new \LogicException('expected a statement built by prepare()');
+        }
+
+        return [(string) $decoded['sql'], array_values($decoded['args'])];
+    }
+
+    /**
+     * The columns of a table this double knows.
+     *
+     * @param string $name Table name from the statement.
+     * @return array{table:string,id:string,name:string,scope:?string}
+     */
+    private function table(string $name): array
+    {
+        if ($name === $this->options) {
+            return ['table' => $name, 'id' => 'option_id', 'name' => 'option_name', 'scope' => null];
+        }
+        if ($name === $this->sitemeta) {
+            return ['table' => $name, 'id' => 'meta_id', 'name' => 'meta_key', 'scope' => 'site_id'];
+        }
+
+        throw new \LogicException('statement names neither options table: ' . $name);
+    }
+
+    /**
+     * Rows of $table that satisfy every predicate of $where.
+     *
+     * @param array{table:string,id:string,name:string,scope:?string} $table Table columns.
+     * @param string                                                  $where Predicates joined by AND.
+     * @param list<mixed>                                             $args  Bound values, in order.
+     * @return list<array{id:int,name:string}>
+     */
+    private function matching(array $table, string $where, array $args): array
+    {
+        $predicates = explode(' AND ', $where);
+        if (count($predicates) !== count($args)) {
+            throw new \LogicException('placeholder count does not match bound values: ' . $where);
+        }
+
+        $tests  = [];
+        $scoped = false;
+        foreach ($predicates as $i => $predicate) {
+            if (preg_match('/^(\w+) (=|LIKE) (%s|%d)$/', trim($predicate), $p) !== 1) {
+                throw new \LogicException('unsupported predicate: ' . $predicate);
+            }
+            [, $column, $operator, $placeholder] = $p;
+            $value = $args[$i];
+
+            if ($column === $table['name'] && $placeholder === '%s') {
+                $bound = (string) $value;
+                if ($operator === 'LIKE') {
+                    $this->likePatterns[] = $bound;
+                    $tests[] = fn (array $row): bool => !$this->likeMatchesNothing && self::likeMatches($row['name'], $bound);
+                } else {
+                    $tests[] = static fn (array $row): bool => self::collationEquals($row['name'], $bound);
+                }
+            } elseif ($column === $table['id'] && $operator === '=' && $placeholder === '%d') {
+                $id      = (int) $value;
+                $tests[] = static fn (array $row): bool => $row['id'] === $id;
+            } elseif ($table['scope'] !== null && $column === $table['scope'] && $operator === '=' && $placeholder === '%d') {
+                $scoped  = true;
+                $network = (int) $value;
+                $tests[] = fn (array $row): bool => $network === $this->networkId;
+            } else {
+                throw new \LogicException('unsupported predicate: ' . $predicate);
+            }
+        }
+        if ($table['scope'] !== null && !$scoped) {
+            // The network table holds rows for every network.
+            throw new \LogicException('a network-table statement must be scoped to one network: ' . $where);
+        }
+
+        $rows = $table['scope'] === null ? $this->optionRows : $this->networkRows;
+        $hits = [];
+        foreach (array_keys($rows) as $name) {
+            $row = ['id' => $this->idFor($table['table'], (string) $name), 'name' => (string) $name];
+            foreach ($tests as $test) {
+                if (!$test($row)) {
+                    continue 2;
+                }
+            }
+            $hits[] = $row;
+        }
+
+        return $hits;
+    }
+
+    /**
+     * The id of a row, assigned the first time a statement sees it.
+     *
+     * @param string $table Table name.
+     * @param string $name  Row name, exactly as stored.
+     * @return int
+     */
+    private function idFor(string $table, string $name): int
+    {
+        $key = $table . "\0" . $name;
+        if (!isset($this->ids[$key])) {
+            $this->ids[$key] = ++$this->lastId;
+        }
+
+        return $this->ids[$key];
     }
 }

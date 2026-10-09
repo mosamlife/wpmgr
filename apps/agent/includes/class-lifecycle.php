@@ -375,22 +375,19 @@ final class Lifecycle
 
     /**
      * Wipe every key + persisted artefact this plugin owns. Used by uninstall.
-     * Intentionally aggressive (uninstall = clean slate), but the age identity
-     * is preserved by Keystore::clearSiteIdentity()'s contract elsewhere; on
-     * uninstall we remove it too since the install is going away entirely.
+     * Intentionally aggressive (uninstall = clean slate): the age identity,
+     * which Disconnect keeps so older backups stay restorable, goes too, since
+     * the install is going away entirely.
      *
-     * Leaves no row in the agent's namespace ({@see self::NAME_PREFIX}): named
-     * options and transients go through the options API first, then every
-     * remaining row in the namespace is swept from the database.
+     * Leaves no named option ({@see ownedOptions()}) and no row in the agent's
+     * namespace ({@see self::NAME_PREFIX}), and removes nothing else: a row is
+     * deleted only when its stored name is exactly one the agent owns
+     * ({@see deleteOwnedRows()}).
      *
      * @return void
      */
     public function wipeAll(): void
     {
-        $this->keystore->clearSiteIdentity();
-        $this->settings->clearEnrollment();
-        $this->settings->clearLastSyncTimestamps();
-
         // H8: uninstall = drop-in removed + config file deleted + options cleared.
         try {
             $disableCmd = new ObjectcacheDisableCommand();
@@ -406,31 +403,22 @@ final class Lifecycle
             // Best-effort.
         }
 
-        if (!function_exists('delete_option')) {
-            return;
-        }
-
-        $multisite = function_exists('is_multisite') && is_multisite();
-
-        foreach ($this->ownedOptions() as $option) {
-            delete_option($option);
-            // Settings keeps its rows network-wide on multisite.
-            if ($multisite && function_exists('delete_site_option')) {
-                delete_site_option($option);
+        // A persistent object cache keeps transients in the cache alone, where
+        // the transient API removes them by their exact key. Without one, the
+        // API would delete their rows by a name the database matches whatever
+        // its case, so those rows are left to deleteOwnedRows().
+        if (function_exists('wp_using_ext_object_cache') && wp_using_ext_object_cache()) {
+            foreach ($this->ownedTransients() as $transient) {
+                if (function_exists('delete_transient')) {
+                    delete_transient($transient);
+                }
+                if (function_exists('delete_site_transient')) {
+                    delete_site_transient($transient);
+                }
             }
         }
 
-        // Through the transient API, so a persistent object cache drops them too.
-        foreach ($this->ownedTransients() as $transient) {
-            if (function_exists('delete_transient')) {
-                delete_transient($transient);
-            }
-            if (function_exists('delete_site_transient')) {
-                delete_site_transient($transient);
-            }
-        }
-
-        $this->sweepNamespace($multisite);
+        $this->deleteOwnedRows(function_exists('is_multisite') && is_multisite());
 
         // Clear any remaining scheduled events for the agent's hooks.
         if (function_exists('wp_clear_scheduled_hook')) {
@@ -502,9 +490,10 @@ final class Lifecycle
     /**
      * The wp-option keys this plugin owns and removes on uninstall.
      *
-     * Names in the namespace are also swept by prefix ({@see sweepNamespace()}),
-     * but naming them here removes them through the options API even where the
-     * sweep cannot see them. LifecycleOwnedOptionsTest fails when an OPTION_*
+     * Each is looked up by its exact name on uninstall ({@see deleteOwnedRows()}),
+     * in the options table and, on multisite, the network table. Names outside
+     * the namespace are reached only this way; names inside it are also found
+     * by the namespace prefix. LifecycleOwnedOptionsTest fails when an OPTION_*
      * constant in the namespace is missing from this list.
      *
      * @return list<string>
@@ -569,8 +558,10 @@ final class Lifecycle
     }
 
     /**
-     * Transients the agent sets under a fixed name in its namespace. Each is
-     * removed as both a transient and a site transient.
+     * Transients the agent sets under a fixed name in its namespace. With a
+     * persistent object cache, each is removed from the cache as both a
+     * transient and a site transient; their database rows, which exist without
+     * one, are in the namespace and go with it.
      *
      * @return list<string>
      */
@@ -586,85 +577,155 @@ final class Lifecycle
     }
 
     /**
-     * Delete every row left in the agent's namespace: names written by another
-     * release, names built at runtime, and the value and timeout rows of
-     * transients and site transients. On multisite the current network's
-     * network table is swept too.
+     * Delete the rows the agent owns: each named option ({@see ownedOptions()})
+     * and every row in the namespace, from the options table and, on
+     * multisite, from the current network's network table. The namespace
+     * covers names written by another release, names built at runtime, and
+     * the value and timeout rows of transients and site transients.
      *
-     * The database narrows with an anchored, LIKE-escaped prefix; the exact,
-     * case-sensitive prefix check decides. Nothing outside the namespace is
-     * removed: not a name that merely contains the prefix, not one that differs
-     * only by case, and not one that matched only because '_' is a LIKE
-     * wildcard. Each delete goes through the options API, which keeps object
-     * caches coherent.
+     * A row is deleted only when its stored name, byte for byte, is a named
+     * option or begins with a namespace form ({@see ownedRows()}). The queries
+     * only narrow the search: they compare under the column's collation, which
+     * usually ignores case, so they can return WPMGR_AGENT_X for wpmgr_agent_x,
+     * and deleting by name, in SQL or through the options API, would remove
+     * that row as well. Each row that passes is therefore deleted by its
+     * primary key, and its cache entries are dropped so that a persistent
+     * object cache cannot serve it afterwards.
      *
      * @param bool $multisite Whether this is a multisite install.
      * @return void
      */
-    private function sweepNamespace(bool $multisite): void
+    private function deleteOwnedRows(bool $multisite): void
     {
         if (!isset($GLOBALS['wpdb']) || !is_object($GLOBALS['wpdb'])) {
             return;
         }
 
         /** @var \wpdb $wpdb */
-        $wpdb = $GLOBALS['wpdb'];
+        $wpdb         = $GLOBALS['wpdb'];
+        $named        = $this->ownedOptions();
+        $forgetCached = function_exists('wp_cache_delete');
 
+        $rows = [];
+        foreach ($named as $name) {
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- uninstall needs the stored name to compare it exactly; the options API never returns it, and a cached answer could miss rows.
+            $found = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT option_id AS id, option_name AS name FROM {$wpdb->options} WHERE option_name = %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
+                    $name
+                ),
+                ARRAY_A
+            );
+            $rows += self::ownedRows($found, $name, false);
+        }
         foreach (self::OPTIONS_TABLE_FORMS as $form) {
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- uninstall must find every row in the namespace; no API lists options by prefix, and a cached answer could miss rows.
-            $names = $wpdb->get_col(
+            $found = $wpdb->get_results(
                 $wpdb->prepare(
-                    "SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
+                    "SELECT option_id AS id, option_name AS name FROM {$wpdb->options} WHERE option_name LIKE %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
                     $wpdb->esc_like($form) . '%'
+                ),
+                ARRAY_A
+            );
+            $rows += self::ownedRows($found, $form, true);
+        }
+        foreach ($rows as $id => $name) {
+            // The id alone picks the row; the name only refuses an id that has
+            // since been given to another row.
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- only a delete by primary key is exact; the options API deletes every row whose name the collation matches. Cache entries are dropped below.
+            $wpdb->query(
+                $wpdb->prepare(
+                    "DELETE FROM {$wpdb->options} WHERE option_id = %d AND option_name = %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
+                    $id,
+                    $name
                 )
             );
-            foreach (self::namesStartingWith($names, $form) as $name) {
-                delete_option($name);
+            if ($forgetCached) {
+                wp_cache_delete($name, 'options');
             }
         }
+        if ($rows !== [] && $forgetCached) {
+            // Autoloaded options are cached as one entry, rebuilt from the
+            // table on the next read.
+            wp_cache_delete('alloptions', 'options');
+        }
 
-        if (!$multisite || empty($wpdb->sitemeta) || !function_exists('delete_site_option') || !function_exists('get_current_network_id')) {
+        if (!$multisite || empty($wpdb->sitemeta) || !function_exists('get_current_network_id')) {
             return;
         }
 
+        // The network table has no unique key on meta_key, so a row and a
+        // copy differing only in case can both be here.
         $networkId = (int) get_current_network_id();
+        $rows      = [];
+        foreach ($named as $name) {
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- uninstall needs the stored name to compare it exactly; the options API never returns it, and a cached answer could miss rows.
+            $found = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT meta_id AS id, meta_key AS name FROM {$wpdb->sitemeta} WHERE site_id = %d AND meta_key = %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
+                    $networkId,
+                    $name
+                ),
+                ARRAY_A
+            );
+            $rows += self::ownedRows($found, $name, false);
+        }
         foreach (self::NETWORK_TABLE_FORMS as $form) {
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- uninstall must find every row in the namespace; no API lists network options by prefix, and a cached answer could miss rows.
-            $names = $wpdb->get_col(
+            $found = $wpdb->get_results(
                 $wpdb->prepare(
-                    "SELECT meta_key FROM {$wpdb->sitemeta} WHERE site_id = %d AND meta_key LIKE %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
+                    "SELECT meta_id AS id, meta_key AS name FROM {$wpdb->sitemeta} WHERE site_id = %d AND meta_key LIKE %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
                     $networkId,
                     $wpdb->esc_like($form) . '%'
+                ),
+                ARRAY_A
+            );
+            $rows += self::ownedRows($found, $form, true);
+        }
+        foreach ($rows as $id => $name) {
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- only a delete by primary key is exact; the network options API deletes every row whose name the collation matches. Cache entries are dropped below.
+            $wpdb->query(
+                $wpdb->prepare(
+                    "DELETE FROM {$wpdb->sitemeta} WHERE meta_id = %d AND site_id = %d AND meta_key = %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
+                    $id,
+                    $networkId,
+                    $name
                 )
             );
-            foreach (self::namesStartingWith($names, $form) as $name) {
-                delete_site_option($name);
+            if ($forgetCached) {
+                wp_cache_delete($networkId . ':' . $name, 'site-options');
             }
         }
     }
 
     /**
-     * The names in a database column that start, exactly and case-sensitively,
-     * with $prefix. LIKE under the usual collations ignores case, so this is
-     * the check that decides what is deleted.
+     * The rows of a result set whose stored name the agent owns: exactly
+     * $match, or, when $asPrefix, beginning exactly with it. Byte for byte, so
+     * case counts. This check, not the query that found the rows, decides
+     * what uninstall deletes.
      *
-     * @param mixed  $names  Column returned by the database.
-     * @param string $prefix Required prefix.
-     * @return list<string>
+     * @param mixed  $found    Rows from $wpdb->get_results(..., ARRAY_A), each with 'id' and 'name'.
+     * @param string $match    A named option, or a namespace form.
+     * @param bool   $asPrefix Whether $match is a prefix rather than a whole name.
+     * @return array<int,string> Stored name by row id.
      */
-    private static function namesStartingWith($names, string $prefix): array
+    private static function ownedRows($found, string $match, bool $asPrefix): array
     {
-        if (!is_array($names)) {
+        if (!is_array($found)) {
             return [];
         }
 
-        $kept = [];
-        foreach ($names as $name) {
-            if (is_string($name) && str_starts_with($name, $prefix)) {
-                $kept[] = $name;
+        $owned = [];
+        foreach ($found as $row) {
+            if (!is_array($row) || !isset($row['id'], $row['name']) || !is_numeric($row['id']) || !is_string($row['name'])) {
+                continue;
+            }
+            $name = $row['name'];
+            if ($asPrefix ? str_starts_with($name, $match) : $name === $match) {
+                $owned[(int) $row['id']] = $name;
             }
         }
 
-        return $kept;
+        return $owned;
     }
 }
