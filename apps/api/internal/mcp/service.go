@@ -1616,6 +1616,12 @@ func (s *Service) Exchange(ctx context.Context, req TokenRequest) (IssuedToken, 
 	// won, it expired since the lookup, or RLS refused the write. All three mean
 	// refuse. Treating "no row" as "already fine" is exactly how single-use
 	// becomes multi-use, so there is no such branch.
+	//
+	// errGrantNotAuthorized means the grant the code was issued for is not
+	// authorized now: revoked or expired since consent, or the organisation's
+	// assistant is paused. The redeem transaction rolled back, so no token row
+	// exists and the code is unconsumed. RFC 6749 section 5.2 names this case
+	// invalid_grant ("revoked"), and oauthError maps that code to a 400.
 	redeemed, err := s.store.RedeemAuthorizationCode(ctx, row.TenantID, row.ID,
 		sqlc.CreateMCPConnectionTokenParams{
 			TenantID:    row.TenantID,
@@ -1629,6 +1635,12 @@ func (s *Service) Exchange(ctx context.Context, req TokenRequest) (IssuedToken, 
 		if errors.Is(err, pgx.ErrNoRows) {
 			return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidGrant,
 				"the authorization code could not be redeemed; it was already used or has expired")
+		}
+		if errors.Is(err, errGrantNotAuthorized) {
+			// The same wording Authenticate uses for an unauthorized verdict, so
+			// the refusal discloses no more about the grant than a request would.
+			return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidGrant,
+				"this connection has been revoked or has expired")
 		}
 		// The consume rolled back with the failure, so the code is still
 		// redeemable and the client may retry this exact request.
