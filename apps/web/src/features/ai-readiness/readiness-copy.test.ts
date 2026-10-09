@@ -194,19 +194,27 @@ describe("a builder that is installed but not active", () => {
     { id: "bricks_version", observed: "2.4.1", label: "Bricks 2.4 or later" },
   ] as const;
 
-  it.each(BUILDERS)(
-    "$id reads grey 'Installed, not active.' whichever state carries the reason",
-    ({ id, observed, label }) => {
-      for (const state of ["fail", "not_applicable", "unknown"]) {
-        const row = describeCheck(c(id, state, "inactive", observed), OPERATOR);
-        expect(row.tone).toBe("neutral");
-        expect(row.iconLabel).toBe("Not active");
-        expect(row.detail).toBe("Installed, not active.");
-        // The row still says what it is about.
-        expect(row.label).toBe(label);
-      }
-    },
-  );
+  // The control plane sends the version row of an installed, inactive builder
+  // as state not_applicable with reason inactive, and `observed` still carries
+  // the installed version (packages/openapi/openapi.yaml, AIReadinessCheck;
+  // apps/api/internal/aireadiness/evaluate.go, inactive()).
+  it.each(BUILDERS)("$id reads grey 'Installed, not active.'", ({ id, observed, label }) => {
+    const row = describeCheck(c(id, "not_applicable", "inactive", observed), OPERATOR);
+    expect(row.tone).toBe("neutral");
+    expect(row.iconLabel).toBe("Not active");
+    expect(row.detail).toBe("Installed, not active.");
+    // The row still says what it is about.
+    expect(row.label).toBe(label);
+  });
+
+  // An earlier control plane sent the same cause as a fail. Rolling the page
+  // out ahead of the API must not paint it red.
+  it.each(BUILDERS)("$id reads the same when an older control plane still sends a fail", ({ id, observed }) => {
+    const row = describeCheck(c(id, "fail", "inactive", observed), OPERATOR);
+    expect(row.tone).toBe("neutral");
+    expect(row.iconLabel).toBe("Not active");
+    expect(row.detail).toBe("Installed, not active.");
+  });
 
   it.each(BUILDERS)("$id still reads green when it passes, and red when the version is too old", ({ id }) => {
     const pass = describeCheck(c(id, "pass", null, "9.9"), OPERATOR);

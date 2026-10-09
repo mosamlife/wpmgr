@@ -96,9 +96,11 @@ export const INSTALLED_NOT_ACTIVE = "Installed, not active.";
 
 /**
  * Whether a row says its builder is installed but not active. Only the two
- * builder version rows can; the server names the cause with the reason
- * `inactive`. Such a row is grey, whatever state accompanies the reason: a
- * builder the owner has not switched on is not a fault. A pass is never read
+ * builder version rows can. The control plane sends them as not_applicable with
+ * the reason `inactive`, which it does not count as a fix (AIReadinessCheck in
+ * packages/openapi/openapi.yaml). The state is not checked here: a control plane
+ * that still sends the same cause as a fail must not paint the row red, because
+ * a builder the owner has not switched on is not a fault. A pass is never read
  * this way.
  */
 export function isInactiveRow(c: CheckInput): boolean {

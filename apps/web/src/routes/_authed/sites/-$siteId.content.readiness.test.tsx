@@ -440,6 +440,161 @@ describe("builder groups", () => {
   });
 });
 
+describe("a builder that is installed but not active", () => {
+  // The control plane sends the version row as not_applicable with reason
+  // inactive (observed keeps the version), the rows that wait on it as
+  // not_applicable needs_*, and counts none of them as a fix: packages/openapi/
+  // openapi.yaml AIReadinessCheck, apps/api/internal/aireadiness/evaluate.go.
+  function inactiveBuilder(builder: "elementor" | "bricks", version: string): SiteAiReadiness {
+    const dependsOn = builder === "elementor" ? "needs_elementor" : "needs_bricks";
+    const checks =
+      builder === "elementor"
+        ? [
+            chk("elementor_version", "not_applicable", "inactive", version),
+            chk("elementor_mcp_switch", "not_applicable", dependsOn),
+            chk("elementor_atomic", "not_applicable", dependsOn),
+          ]
+        : [
+            chk("bricks_version", "not_applicable", "inactive", version),
+            chk("bricks_abilities", "not_applicable", dependsOn),
+          ];
+    return readiness({
+      status: "ready",
+      fix_count: 0,
+      groups: [
+        baseGroup(),
+        builderGroup("elementor", builder === "elementor" ? { installed: true, version, checks } : { installed: false }),
+        builderGroup("bricks", builder === "bricks" ? { installed: true, version, checks } : { installed: false }),
+      ],
+    });
+  }
+
+  it("shows Elementor as grey 'Installed, not active.' and counts no fix", async () => {
+    getReadiness.mockResolvedValue(okResult(inactiveBuilder("elementor", "4.3.4")));
+    renderTab();
+    const c = await card();
+    expect(c.getByText("Version 4.3.4")).toBeInTheDocument();
+    expect(c.getByText("Installed, not active.")).toBeInTheDocument();
+    expect(c.getByRole("img", { name: "Not active" })).toBeInTheDocument();
+    expect(c.queryAllByRole("img", { name: "Needs fixing" })).toHaveLength(0);
+    expect(c.getByTestId("ai-readiness-status")).toHaveTextContent("Ready.");
+  });
+
+  it("says the rows that wait on Elementor need it active, not a newer version", async () => {
+    getReadiness.mockResolvedValue(okResult(inactiveBuilder("elementor", "4.3.4")));
+    renderTab();
+    const c = await card();
+    expect(c.getAllByText("Needs Elementor to be active first.")).toHaveLength(2);
+    expect(c.getAllByRole("img", { name: "Not applicable" })).toHaveLength(2);
+    expect(c.queryByText(/Needs Elementor 4\.3 or later first/)).not.toBeInTheDocument();
+  });
+
+  it("shows Bricks as grey 'Installed, not active.' and its AI row as waiting for it", async () => {
+    getReadiness.mockResolvedValue(okResult(inactiveBuilder("bricks", "2.4.1")));
+    renderTab();
+    const c = await card();
+    expect(c.getByText("Version 2.4.1")).toBeInTheDocument();
+    expect(c.getByText("Installed, not active.")).toBeInTheDocument();
+    expect(c.getByText("Needs Bricks to be active first.")).toBeInTheDocument();
+    expect(c.queryAllByRole("img", { name: "Needs fixing" })).toHaveLength(0);
+    expect(c.getByTestId("ai-readiness-status")).toHaveTextContent("Ready.");
+  });
+
+  it("still marks a builder that is active but too old red, and asks for the newer version", async () => {
+    getReadiness.mockResolvedValue(
+      okResult(
+        readiness({
+          status: "needs_attention",
+          fix_count: 1,
+          groups: [
+            baseGroup(),
+            builderGroup("elementor", {
+              installed: true,
+              version: "4.2.9",
+              checks: [
+                chk("elementor_version", "fail", "too_old", "4.2.9"),
+                chk("elementor_mcp_switch", "not_applicable", "needs_elementor"),
+                chk("elementor_atomic", "not_applicable", "needs_elementor"),
+              ],
+            }),
+            builderGroup("bricks", { installed: false }),
+          ],
+        }),
+      ),
+    );
+    renderTab();
+    const c = await card();
+    expect(c.getAllByRole("img", { name: "Needs fixing" })).toHaveLength(1);
+    expect(c.getByText("Elementor 4.2.9. Its AI tools need 4.3 or later. Update Elementor.")).toBeInTheDocument();
+    expect(c.getAllByText("Needs Elementor 4.3 or later first.")).toHaveLength(2);
+    expect(c.queryByText("Installed, not active.")).not.toBeInTheDocument();
+    expect(c.queryByText(/to be active first/)).not.toBeInTheDocument();
+  });
+});
+
+describe("the Bricks AI row is derived and unconfirmed", () => {
+  // bricks_abilities is a pass when a tool list read found a Bricks tool and a
+  // fail when it found none (evaluate.go switchCheck). Neither is confirmed
+  // against a licensed Bricks install, so neither reads as On or Off.
+  function bricksWith(abilities: ReturnType<typeof chk>): SiteAiReadiness {
+    return readiness({
+      groups: [
+        baseGroup(),
+        builderGroup("elementor", { installed: false }),
+        builderGroup("bricks", {
+          installed: true,
+          version: "2.4.1",
+          checks: [chk("bricks_version", "pass", null, "2.4.1"), abilities],
+        }),
+      ],
+    });
+  }
+
+  it("is grey with a short note when Bricks tools are listed", async () => {
+    getReadiness.mockResolvedValue(okResult(bricksWith(chk("bricks_abilities", "pass"))));
+    renderTab();
+    const c = await card();
+    const row = within(c.getByText("Bricks AI abilities").closest("li") as HTMLElement);
+    expect(row.getByRole("img", { name: "Unconfirmed" })).toBeInTheDocument();
+    expect(
+      row.getByText(
+        "Derived, unconfirmed. Bricks tools are listed on this site. Not yet checked on a licensed Bricks install.",
+      ),
+    ).toBeInTheDocument();
+    expect(row.queryByRole("img", { name: "Passed" })).not.toBeInTheDocument();
+  });
+
+  it("is grey, not a red cross, when none are listed", async () => {
+    getReadiness.mockResolvedValue(okResult(bricksWith(chk("bricks_abilities", "fail"))));
+    renderTab();
+    const c = await card();
+    const row = within(c.getByText("Bricks AI abilities").closest("li") as HTMLElement);
+    expect(row.getByRole("img", { name: "Unconfirmed" })).toBeInTheDocument();
+    expect(row.queryByRole("img", { name: "Needs fixing" })).not.toBeInTheDocument();
+    expect(
+      row.getByText(
+        "Derived, unconfirmed. No Bricks tools are listed on this site. Not yet checked on a licensed Bricks install.",
+      ),
+    ).toBeInTheDocument();
+    // No row anywhere on the card is red because of it.
+    expect(c.queryAllByRole("img", { name: "Needs fixing" })).toHaveLength(0);
+  });
+
+  it("does not turn the Elementor switch grey: only the Bricks row is a derivation", async () => {
+    getReadiness.mockResolvedValue(
+      okResult(
+        readiness({
+          groups: [baseGroup(), elementorAllPassing(), builderGroup("bricks", { installed: false })],
+        }),
+      ),
+    );
+    renderTab();
+    const c = await card();
+    expect(c.queryByRole("img", { name: "Unconfirmed" })).not.toBeInTheDocument();
+    expect(c.getAllByRole("img", { name: "Passed" }).length).toBeGreaterThan(4);
+  });
+});
+
 describe("warnings", () => {
   it("shows an amber notice for each open AI connection point, and none when there is none", async () => {
     getReadiness.mockResolvedValue(
