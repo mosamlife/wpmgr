@@ -404,16 +404,23 @@ type dispatchPlan struct {
 	routeSum string
 }
 
-// agentFloorFor is the first agent release that runs a request's ability.
-func agentFloorFor(abilityName string) string {
-	if abilityName == mcp.AbilityRestWrite {
+// agentFloorFor is the first agent release that runs a request: its
+// ability's floor, and for wpmgr/page-create the floor of the stored input
+// (a layout outline needs a newer agent than a text-only one). A site whose
+// plugin went below it after approval closes not_sent/agent_outdated and is
+// never sent a write it cannot build.
+func agentFloorFor(r sqlc.AssistantAbilityRequest) string {
+	switch r.AbilityName {
+	case mcp.AbilityRestWrite:
 		return agentcmd.MinAgentVersionForRestCall
+	case mcp.AbilityPageCreate:
+		return mcp.PageCreateAgentFloor([]byte(r.InputJson))
 	}
 	return agentcmd.MinAgentVersionForPageCreate
 }
 
-func agentMeetsFloor(v, abilityName string) bool {
-	return v != "" && wpversion.Compare(v, agentFloorFor(abilityName)) >= 0
+func agentMeetsFloor(v, floor string) bool {
+	return v != "" && wpversion.Compare(v, floor) >= 0
 }
 
 // routeSendable is W1 for a route (m161). It returns the bytes to send for a
@@ -562,7 +569,7 @@ func (s *Service) checkSite(ctx context.Context, p domain.Principal, a DispatchA
 			reason = ReasonRouteDisabled
 		case !row.RouteHashCurrent: // W1, m161
 			reason = ReasonRouteChanged
-		case !agentMeetsFloor(site.AgentVersion, plan.row.AbilityName):
+		case !agentMeetsFloor(site.AgentVersion, agentFloorFor(plan.row)):
 			reason = ReasonAgentOutdated
 		}
 		if reason != "" {

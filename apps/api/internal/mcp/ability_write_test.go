@@ -37,9 +37,9 @@ func TestPHPJSONStringArray_MatchesPHPJSONEncode(t *testing.T) {
 const testPageInput = `{"post_type":"page","editor":"wordpress_blocks","title":"Spring sale","outline":[{"type":"heading","level":2,"text":"Hi"},{"type":"paragraph","text":"Body"},{"type":"list","ordered":false,"items":["a","b"]}]}`
 
 func TestValidatePageCreateInput(t *testing.T) {
-	f, ok := validatePageCreateInput([]byte(testPageInput))
-	if !ok || f.postType != "page" || f.editor != "wordpress_blocks" || f.title != "Spring sale" {
-		t.Fatalf("valid input refused: %+v %v", f, ok)
+	f, code := validatePageCreateInput([]byte(testPageInput))
+	if code != "" || f.postType != "page" || f.editor != "wordpress_blocks" || f.title != "Spring sale" {
+		t.Fatalf("valid input refused: %+v %q", f, code)
 	}
 	bad := []string{
 		`{"post_type":"page","editor":"wordpress_blocks","title":"T","outline":[{"type":"paragraph","text":"x"}],"status":"publish"}`,
@@ -53,7 +53,7 @@ func TestValidatePageCreateInput(t *testing.T) {
 		`{"post_type":"page","editor":"wordpress_blocks","title":"T","outline":[{"type":"image","src":"x"}]}`,
 	}
 	for _, b := range bad {
-		if _, ok := validatePageCreateInput([]byte(b)); ok {
+		if _, code := validatePageCreateInput([]byte(b)); code == "" {
 			t.Errorf("accepted %s", b)
 		}
 	}

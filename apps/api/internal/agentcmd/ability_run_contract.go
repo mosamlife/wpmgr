@@ -54,6 +54,15 @@ const MinAgentVersionForRecoveryUndo = "0.61.157"
 // agent answers ability_unknown; discover, describe and run refuse first.
 const MinAgentVersionForRestCall = "0.61.158"
 
+// MinAgentVersionForPageLayout is the first agent release whose
+// wpmgr/page-create builds outline grammar v2: images from the media
+// library, buttons, quotes, tables, separators, spacers, groups and columns.
+// The entry's own floor stays MinAgentVersionForPageCreate, so an outline of
+// headings, paragraphs and lists still runs on older agents; the control
+// plane applies this floor per input, at run and again at dispatch. The m162
+// usage text names the same release.
+const MinAgentVersionForPageLayout = "0.61.160"
+
 // ErrAbilityRunMalformed marks a 2xx ability_run reply the control plane
 // could not use: a body that did not decode, or an answer for another mode or
 // entry. Resending the same call gets the same answer.

@@ -41,6 +41,11 @@ const AbilityPageCreate = "wpmgr/page-create"
 // request's digest covers. internal/abilityrequest records it on approval.
 const AbilityCardCopyVersion int32 = 1
 
+// AbilityCardCopyVersionLayout is the card wording of a wpmgr/page-create
+// request whose outline holds a block beyond heading, paragraph and list:
+// the layout outline, with the images' facts from card_facts.
+const AbilityCardCopyVersionLayout int32 = 2
+
 // Limits of the ability creation rail (engine v4 §1.4 step 8).
 const (
 	maxPendingAbilityPerConnection   = 10
@@ -70,6 +75,9 @@ const (
 	msgAbilityEditingOff    = "Content editing is not enabled on this site. A person must enable it in WPMgr (the site's Content tab) before the AI can create pages. Nothing was asked."
 	msgAbilityWriteOutdated = "This site's WPMgr agent is too old to create pages. The agent must be updated to " +
 		agentcmd.MinAgentVersionForPageCreate + " or later. Nothing was asked."
+	msgAbilityLayoutOutdated = "Layout blocks need the WPMgr plugin " + agentcmd.MinAgentVersionForPageLayout +
+		" or later on this site. An outline of headings, paragraphs and lists works now."
+	msgAbilityLayoutInput = "the outline does not follow the page layout rules, so nothing was asked"
 )
 
 const reasonAbilityPrecheckRefused refusalReason = "ability_precheck_refused"
@@ -182,91 +190,25 @@ func writeEntryRunnable(e *sqlc.AbilityCatalogue, inv *sqlc.SiteAbilityInventory
 }
 
 // ---------------------------------------------------------------------------
-// Input: wpmgr/page-create (content v3 §3.8.1). Parse, don't strip: an
-// unknown key or a wrong type refuses; nothing is rewritten. The agent
-// re-validates every rule, including the text rules.
+// Input: wpmgr/page-create. The grammar lives in page_create_input.go; these
+// are the refusals the write branch gives for it before anything reaches the
+// site.
 // ---------------------------------------------------------------------------
 
-type pageCreateFacts struct {
-	postType string
-	editor   string
-	title    string
-}
-
-const (
-	pageCreateMaxNodes = 200
-	pageCreateMaxItems = 50
-)
-
-func validatePageCreateInput(input []byte) (pageCreateFacts, bool) {
-	var m map[string]json.RawMessage
-	if json.Unmarshal(input, &m) != nil {
-		return pageCreateFacts{}, false
+// pageCreateInputRefusal refuses an input the grammar refused. A schema
+// mismatch carries the schema; a layout, link or editor problem carries the
+// agent's code and our fixed hint for it (never the site's words).
+func pageCreateInputRefusal(code string) *toolRefusal {
+	if code == pageCreateBadInput {
+		return argRefusal(reasonInvalidArguments, "input", "", msgAbilityArgInput, pageCreateInputSchema)
 	}
-	for k := range m {
-		switch k {
-		case "post_type", "editor", "title", "outline":
-		default:
-			return pageCreateFacts{}, false
-		}
+	return &toolRefusal{
+		reason: reasonInvalidArguments,
+		err: domain.Validation(ErrCodeInvalidToolArguments, msgAbilityLayoutInput).WithDetails(map[string]any{
+			"argument": "input", "code": code, "hint": precheckRefusalHint(code), "retryable": false,
+		}),
+		meta: map[string]any{"argument": "input", "code": code},
 	}
-	var f pageCreateFacts
-	if json.Unmarshal(m["post_type"], &f.postType) != nil || (f.postType != "page" && f.postType != "post") {
-		return pageCreateFacts{}, false
-	}
-	if json.Unmarshal(m["editor"], &f.editor) != nil ||
-		(f.editor != "wordpress_blocks" && f.editor != "wordpress_classic") {
-		return pageCreateFacts{}, false
-	}
-	if json.Unmarshal(m["title"], &f.title) != nil || strings.TrimSpace(f.title) == "" {
-		return pageCreateFacts{}, false
-	}
-	var outline []map[string]json.RawMessage
-	if json.Unmarshal(m["outline"], &outline) != nil || len(outline) == 0 || len(outline) > pageCreateMaxNodes {
-		return pageCreateFacts{}, false
-	}
-	for _, n := range outline {
-		if !validOutlineNode(n) {
-			return pageCreateFacts{}, false
-		}
-	}
-	return f, true
-}
-
-func validOutlineNode(n map[string]json.RawMessage) bool {
-	var kind string
-	if json.Unmarshal(n["type"], &kind) != nil {
-		return false
-	}
-	only := func(keys ...string) bool {
-		if len(n) != len(keys) {
-			return false
-		}
-		for _, k := range keys {
-			if _, ok := n[k]; !ok {
-				return false
-			}
-		}
-		return true
-	}
-	isString := func(raw json.RawMessage) bool {
-		var s string
-		return json.Unmarshal(raw, &s) == nil
-	}
-	switch kind {
-	case "heading":
-		var level int
-		return only("type", "level", "text") && json.Unmarshal(n["level"], &level) == nil &&
-			level >= 2 && level <= 4 && isString(n["text"])
-	case "paragraph":
-		return only("type", "text") && isString(n["text"])
-	case "list":
-		var ordered bool
-		var items []string
-		return only("type", "ordered", "items") && json.Unmarshal(n["ordered"], &ordered) == nil &&
-			json.Unmarshal(n["items"], &items) == nil && len(items) > 0 && len(items) <= pageCreateMaxItems
-	}
-	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -337,13 +279,16 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(s[:])
 }
 
-// pagePreview is precheck's preview member.
+// pagePreview is precheck's preview member. Media is present exactly when
+// the outline has an image (an answer for a text-only outline is the same
+// bytes as before images existed).
 type pagePreview struct {
-	PostType string `json:"post_type"`
-	Editor   string `json:"editor"`
-	Status   string `json:"status"`
-	Title    string `json:"title"`
-	Content  string `json:"content"`
+	PostType string          `json:"post_type"`
+	Editor   string          `json:"editor"`
+	Status   string          `json:"status"`
+	Title    string          `json:"title"`
+	Content  string          `json:"content"`
+	Media    json.RawMessage `json:"media,omitempty"`
 }
 
 // checkedPrecheck is a precheck answer the control plane verified.
@@ -352,12 +297,18 @@ type checkedPrecheck struct {
 	previewDigest   string
 	baseFingerprint string
 	preview         pagePreview
+	// media are the verified image facts, in the outline's media order.
+	media []pageMediaFact
 }
 
 // verifyPageCreatePrecheck checks the site's precheck answer against what
 // this control plane sent: the digests are recomputed from bytes we hold
 // (R2), so a precheck for other input, another entry or another preview is
-// refused before anything is stored.
+// refused before anything is stored. With images, the facts must name the
+// outline's attachment ids in order, each fact must be usable, the base
+// fingerprint must be the one those facts give (so the facts the card shows
+// are the facts the write re-checks), and the content's image tags must carry
+// exactly the facts' addresses.
 func verifyPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum string, input []byte, f pageCreateFacts) (checkedPrecheck, bool) {
 	if !resp.Valid || !hex64Pattern.MatchString(resp.PrecheckDigest) ||
 		!hex64Pattern.MatchString(resp.PreviewDigest) || !fingerprintPattern.MatchString(resp.BaseFingerprint) {
@@ -372,6 +323,29 @@ func verifyPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum string,
 	if pv.PostType != f.postType || pv.Editor != f.editor || pv.Status != "draft" || pv.Title != f.title {
 		return checkedPrecheck{}, false
 	}
+	var media []pageMediaFact
+	if len(f.mediaIDs) == 0 {
+		if pv.Media != nil {
+			return checkedPrecheck{}, false
+		}
+	} else {
+		var ok bool
+		media, ok = parsePageMedia(pv.Media)
+		if !ok || len(media) != len(f.mediaIDs) {
+			return checkedPrecheck{}, false
+		}
+		for i := range media {
+			if media[i].ID != f.mediaIDs[i] {
+				return checkedPrecheck{}, false
+			}
+		}
+	}
+	if base, ok := pageCreateBaseFingerprint(f.postType, media); !ok || base != resp.BaseFingerprint {
+		return checkedPrecheck{}, false
+	}
+	if !pageContentImagesMatch(pv.Content, media) {
+		return checkedPrecheck{}, false
+	}
 	prev, ok := phpJSONStringArray(pv.Editor, pv.PostType, "draft", pv.Title, pv.Content)
 	if !ok || sha256Hex(prev) != resp.PreviewDigest {
 		return checkedPrecheck{}, false
@@ -382,7 +356,7 @@ func verifyPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum string,
 	}
 	return checkedPrecheck{
 		precheckDigest: resp.PrecheckDigest, previewDigest: resp.PreviewDigest,
-		baseFingerprint: resp.BaseFingerprint, preview: pv,
+		baseFingerprint: resp.BaseFingerprint, preview: pv, media: media,
 	}, true
 }
 
@@ -469,10 +443,20 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 	if e.Name == AbilityRestWrite {
 		return s.runRestWrite(ctx, auth, eng, site, e, self.host, input)
 	}
-	// Step 5: our schema.
-	facts, ok := validatePageCreateInput(input)
-	if !ok {
-		return "", argRefusal(reasonInvalidArguments, "input", "", msgAbilityArgInput, ownAbilityInputSchemas[e.Name])
+	// Step 5: our grammar, including a layout the classic editor cannot
+	// hold. Then the per-input floor: a layout outline needs a newer agent
+	// than the entry's own floor, which text-only outlines keep.
+	facts, code := validatePageCreateInput(input)
+	if code != "" {
+		return "", pageCreateInputRefusal(code)
+	}
+	// (The entry's own floor was checked by classify: c.reason above.)
+	if floor := PageCreateAgentFloor(input); floor == agentcmd.MinAgentVersionForPageLayout &&
+		!abilityAgentMeetsFloor(site.row.AgentVersion, &floor) {
+		return "", refuse(reasonAgentOutdated, domain.Conflict(ErrCodeSiteAgentOutdated,
+			msgAbilityLayoutOutdated).WithDetails(map[string]any{
+			"min_agent_version": floor, "retryable": false,
+		}))
 	}
 	// The precheck counts against the read limits (W2).
 	if d := eng.readLimit.allow(auth.GrantID, site.row.ID); !d.allowed {
@@ -546,15 +530,35 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 // they describe the rules the page-create builder enforces on every text
 // value.
 const (
-	hintCreateContentInvalid = "Write the title and every outline text as plain text. " +
-		"Use parentheses instead of square brackets (only a bracketed number such as [1] is allowed). " +
+	hintCreateContentInvalid = "Write the title and every outline text as plain text: headings, paragraphs, list items, " +
+		"alt text, captions, quotes and citations, button text and table cells. " +
+		"Use parentheses instead of square brackets (only a bracketed number such as [1] is allowed, and never in alt text). " +
 		"No HTML, shortcodes, comments or template syntax: none of < > {{ }} {% %} or backticks. " +
 		"No line breaks, control characters or invisible formatting characters; put each paragraph in its own outline node. " +
-		"No empty text. A title is at most 200 characters, each text at most 5000, the whole page at most 60000."
+		"No empty text, except that alt text and a table cell may be empty. A title is at most 200 characters, " +
+		"each text at most 5000, a caption 500, a citation 200, button text 80, a table cell 500 and alt text 300, " +
+		"the whole page at most 60000."
 	hintBadInput = "The input does not match the ability's schema. Call site_ability_describe and send only the fields it lists, " +
 		"with the types it gives."
 	hintSanitiserChanged = "This site would alter the content when saving it. Remove anything that looks like markup, " +
 		"shortcodes, entities or special characters, and write plain sentences."
+	hintLayoutInvalid = "Fix the page layout. A top-level item can be any block, a group (a section) or columns; " +
+		"a group holds blocks or columns; a column holds blocks only. Columns hold 2 to 4 columns, and a group or a column " +
+		"holds 1 to 50 blocks. Widths are optional: one whole number from 10 to 90 per column, adding up to 100. " +
+		"A page holds at most 400 blocks, 20 images, 12 buttons (1 to 3 in each buttons block) and 10 tables. " +
+		"A table has 1 to 50 rows of 1 to 6 cells, with every row and the header the same width. A quote holds 1 to 10 paragraphs."
+	hintLinkInvalid = "Write each button link as an https:// address with a lowercase https, a host name such as " +
+		"example.com and no user name or password, or as a path on this site that starts with a single /. " +
+		"Use only ASCII letters, digits and - . _ ~ : / ? # ! $ & ( ) * + , ; = % @, write every % as % and two hex digits, " +
+		"and keep the link to 2048 characters."
+	hintImageNotAvailable = "An image the outline names is not one WPMgr may use: it must be a JPEG, PNG, GIF, WebP or AVIF " +
+		"in this site's media library that is not attached to a draft, private or password-protected page. " +
+		"Find another attachment id with wpmgr/rest-read route wp-v2-media-list."
+	hintImageURLUnusable = "WordPress gave an address for one of the images that WPMgr cannot use. " +
+		"Pick another image with wpmgr/rest-read route wp-v2-media-list."
+	hintLayoutNeedsBlockEditor = "The classic editor cannot hold groups, columns, buttons, spacers or image captions. " +
+		"With editor wordpress_classic, use only headings, paragraphs, lists, quotes, tables, separators and images " +
+		"without captions. Send editor wordpress_blocks only for a site that uses the block editor."
 )
 
 // precheckRefusalHint maps an input-related refusal code to a fixed hint,
@@ -563,10 +567,20 @@ func precheckRefusalHint(code string) string {
 	switch code {
 	case "create_content_invalid":
 		return hintCreateContentInvalid
-	case "bad_input":
+	case pageCreateBadInput:
 		return hintBadInput
 	case "sanitiser_changed_new_content":
 		return hintSanitiserChanged
+	case pageCreateLayoutInvalid:
+		return hintLayoutInvalid
+	case pageCreateLinkInvalid:
+		return hintLinkInvalid
+	case "image_not_available":
+		return hintImageNotAvailable
+	case "image_url_unusable":
+		return hintImageURLUnusable
+	case pageCreateNeedsBlockEditor:
+		return hintLayoutNeedsBlockEditor
 	}
 	return ""
 }
@@ -582,10 +596,16 @@ type abilityRequestFacts struct {
 	nonce        string
 	digest       string
 	expiresAt    time.Time
+	// card is the stored card_facts (nil when the request has none) and
+	// copyVersion the card wording; the digest covers both.
+	card        []byte
+	copyVersion int32
 }
 
 // buildAbilityRequestFacts computes the card facts and presented_digest over
-// them, the nonce and the card copy version (engine v4 §4.1).
+// them, the nonce and the card copy version (engine v4 §4.1). A page with
+// images stores its images' facts as card_facts; an outline beyond heading,
+// paragraph and list is card copy version 2.
 func buildAbilityRequestFacts(auth AuthorizedRequest, row sqlc.Site, host string, e *sqlc.AbilityCatalogue, entrySum string, input []byte, facts pageCreateFacts, pc checkedPrecheck, now time.Time) (abilityRequestFacts, error) {
 	f := abilityRequestFacts{
 		siteLabel:    humantext.CapRunes(humantext.Clean(row.Name), siteLabelRunes),
@@ -595,6 +615,19 @@ func buildAbilityRequestFacts(auth AuthorizedRequest, row sqlc.Site, host string
 		setupClient:  auth.SetupClient,
 		titleExcerpt: humantext.CapRunes(humantext.Clean(facts.title), abilityTitleExcerptRunes),
 		expiresAt:    now.UTC().Add(abilityRequestWindow).Truncate(time.Microsecond),
+		copyVersion:  AbilityCardCopyVersion,
+	}
+	if facts.usesLayout {
+		f.copyVersion = AbilityCardCopyVersionLayout
+	}
+	card, err := pageCardFactsJSON(pc.media)
+	if err != nil {
+		return abilityRequestFacts{}, err
+	}
+	f.card = card
+	var cardText any // JSON null without a card
+	if card != nil {
+		cardText = string(card)
 	}
 	if strings.TrimSpace(f.grantLabel) == "" {
 		f.grantLabel = unnamedConnectionLabel
@@ -608,7 +641,7 @@ func buildAbilityRequestFacts(auth AuthorizedRequest, row sqlc.Site, host string
 	}
 	f.nonce = hex.EncodeToString(nonce[:])
 	canonical := map[string]any{
-		"copy_version":     AbilityCardCopyVersion,
+		"copy_version":     f.copyVersion,
 		"mode":             "write",
 		"ability_name":     e.Name,
 		"entry_id":         e.EntryID.String(),
@@ -618,6 +651,7 @@ func buildAbilityRequestFacts(auth AuthorizedRequest, row sqlc.Site, host string
 		"input_sha256":     sha256Hex(input),
 		"target":           "new",
 		"title_excerpt":    f.titleExcerpt,
+		"card_facts":       cardText,
 		"editor":           facts.editor,
 		"post_type":        facts.postType,
 		"precheck_digest":  pc.precheckDigest,
@@ -699,8 +733,9 @@ func (s *Service) createAbilityRequest(ctx context.Context, store AbilityRequest
 				PrecheckDigest: pc.precheckDigest, PreviewDigest: &preview, BaseFingerprint: pc.baseFingerprint,
 				SiteLabel: f.siteLabel, SiteHost: f.siteHost, GrantLabel: f.grantLabel, GrantVia: f.grantVia,
 				SetupClient: f.setupClient, TitleExcerpt: &f.titleExcerpt, Editor: &editor, PostType: &postType,
-				EffectCopy: e.EffectCopy, Snapshot: e.Snapshot, CardCopyVersion: AbilityCardCopyVersion,
+				EffectCopy: e.EffectCopy, Snapshot: e.Snapshot, CardCopyVersion: f.copyVersion,
 				DigestNonce: f.nonce, PresentedDigest: f.digest, ExpiresAt: f.expiresAt,
+				CardFacts: f.card,
 			})
 			if err == nil {
 				out = abilityResultFromRow(ins, false)
