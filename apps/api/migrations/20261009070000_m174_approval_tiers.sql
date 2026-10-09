@@ -581,13 +581,20 @@ CREATE TRIGGER "mcp_grants_ai_auto_guard"
 -- (4) mcp_grant_runs_by_setting
 -- ===========================================================================
 
+-- app.site_scope is cleared transaction-locally for the one read and put back
+-- before the function returns; an error aborts the (sub)transaction, which
+-- rolls the setting back with it.
 CREATE OR REPLACE FUNCTION "public"."mcp_grant_runs_by_setting"(p_tenant_id uuid, p_grant_id uuid)
 RETURNS boolean
-LANGUAGE sql
-STABLE
+LANGUAGE plpgsql
+VOLATILE
 SET search_path = public, pg_temp
-SET app.site_scope = ''
 AS $$
+DECLARE
+    v_scope text := current_setting('app.site_scope', true);
+    v_ok    boolean;
+BEGIN
+    PERFORM set_config('app.site_scope', '', true);
     SELECT EXISTS (
         SELECT 1
         FROM mcp_grants g
@@ -595,7 +602,10 @@ AS $$
           AND g.id = p_grant_id
           AND g.status = 'active'
           AND g.ai_auto = 'site_setting'
-    );
+    ) INTO v_ok;
+    PERFORM set_config('app.site_scope', coalesce(v_scope, ''), true);
+    RETURN coalesce(v_ok, false);
+END;
 $$;
 
 REVOKE ALL ON FUNCTION "public"."mcp_grant_runs_by_setting"(uuid, uuid) FROM PUBLIC;

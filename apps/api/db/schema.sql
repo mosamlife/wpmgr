@@ -11804,14 +11804,20 @@ CREATE TRIGGER mcp_grants_ai_auto_guard
 -- One boolean about one grant: is it active and running by the site's
 -- setting? The dispatch reservation runs scoped to one site, where
 -- mcp_grants_site_scope_select hides every grant, so this function clears
--- app.site_scope for its own duration. The tenant policy still applies.
+-- app.site_scope transaction-locally for the one read and puts it back
+-- before returning (an error rolls it back with the transaction). The tenant
+-- policy still applies.
 CREATE OR REPLACE FUNCTION mcp_grant_runs_by_setting(p_tenant_id uuid, p_grant_id uuid)
 RETURNS boolean
-LANGUAGE sql
-STABLE
+LANGUAGE plpgsql
+VOLATILE
 SET search_path = public, pg_temp
-SET app.site_scope = ''
 AS $$
+DECLARE
+    v_scope text := current_setting('app.site_scope', true);
+    v_ok    boolean;
+BEGIN
+    PERFORM set_config('app.site_scope', '', true);
     SELECT EXISTS (
         SELECT 1
         FROM mcp_grants g
@@ -11819,7 +11825,10 @@ AS $$
           AND g.id = p_grant_id
           AND g.status = 'active'
           AND g.ai_auto = 'site_setting'
-    );
+    ) INTO v_ok;
+    PERFORM set_config('app.site_scope', coalesce(v_scope, ''), true);
+    RETURN coalesce(v_ok, false);
+END;
 $$;
 
 REVOKE ALL ON FUNCTION mcp_grant_runs_by_setting(uuid, uuid) FROM PUBLIC;
