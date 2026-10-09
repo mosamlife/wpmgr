@@ -9,6 +9,7 @@ import {
   classifyLink,
   columnsLabel,
   imageAlignLabel,
+  imageAltLabel,
   imageSizeLabel,
   indexPageMedia,
   isSameSiteHost,
@@ -470,5 +471,126 @@ describe("the words on the card", () => {
     expect(imageAlignLabel("center")).toBe("Centred");
     expect(imageAlignLabel("wide")).toBe("Wide");
     expect(imageAlignLabel("full")).toBe("Full width");
+  });
+
+  it("labels an image's alt text, and says when it is the media library's", () => {
+    expect(imageAltLabel("A van", false)).toBe("Alt text:");
+    expect(imageAltLabel("", false)).toBe("No alt text (decorative)");
+    expect(imageAltLabel("A van", true)).toBe("Alt text (from the media library):");
+    expect(imageAltLabel("", true)).toBe("No alt text in the media library");
+  });
+});
+
+// --- a page Elementor builds ---------------------------------------------------
+
+describe("a page Elementor builds", () => {
+  // page_builder as apps/api/internal/mcp/page_create_input.go readPageCardBuilder returns it.
+  const classic = { builder: "elementor", format: "classic", version: "3.35.9", layout: "containers" };
+  const atomic = { ...classic, format: "atomic", version: "4.3.4" };
+  const page = (outline: unknown[], extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ post_type: "page", editor: "builder:elementor", title: "T", outline, ...extra });
+  const para = { type: "paragraph", text: "x" };
+
+  const goldenFiles = ["elementor-classic-containers.json", "elementor-classic-sections.json"];
+  const golden = goldenFiles.flatMap((file) => {
+    const path = join(process.cwd(), "..", "agent", "tests", "fixtures", "ability-run", file);
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { cases: Array<{ name: string; input: unknown[] }> };
+    return parsed.cases.map((c) => [`${file} ${c.name}`, c.input] as const);
+  });
+
+  it("reads the agent's real golden outlines (a missing or emptied file must not pass quietly)", () => {
+    expect(golden.length).toBeGreaterThanOrEqual(20);
+  });
+
+  it.each(golden)("shows every outline the Elementor mapper builds: %s", (_name, outline) => {
+    const input = page(outline);
+    const preview = parsePagePreview(input, factsFor(input), classic);
+    expect(preview).not.toBeNull();
+    expect(preview?.builder).toEqual(classic);
+  });
+
+  it("carries the site's builder facts, and none for a WordPress editor", () => {
+    expect(parsePagePreview(page([para]), [], atomic)?.builder).toEqual(atomic);
+    const blocks = JSON.stringify({ post_type: "page", editor: "wordpress_blocks", title: "T", outline: [para] });
+    expect(parsePagePreview(blocks)?.builder).toBeNull();
+    expect(parsePagePreview(blocks, [], null)?.builder).toBeNull();
+  });
+
+  it.each<[string, unknown]>([
+    ["missing", undefined],
+    ["null", null],
+    ["another builder", { ...classic, builder: "bricks" }],
+    ["the input's site_default, which the site resolves", { ...classic, format: "site_default" }],
+    ["an unknown layout", { ...classic, layout: "grid" }],
+    ["a version with markup", { ...classic, version: "3.35.9<script>" }],
+    ["a version that is a number", { ...classic, version: 3.35 }],
+    ["an empty version", { ...classic, version: "" }],
+    ["a version with a prefix", { ...classic, version: "v3.35.9" }],
+    ["an extra member", { ...classic, kit: 1 }],
+    ["a missing member", { builder: "elementor", format: "classic", version: "3.35.9" }],
+  ])("is not shown with builder facts that are %s", (_name, facts) => {
+    expect(parsePagePreview(page([para]), [], facts)).toBeNull();
+  });
+
+  it.each(["3.20", "3.35.9", "4.3.4", "4.3.4-beta1", "3.35.9.1"])("accepts the version %s", (version) => {
+    expect(parsePagePreview(page([para]), [], { ...classic, version })).not.toBeNull();
+  });
+
+  it("is shown with elementor_format absent, site_default or the site's own format", () => {
+    expect(parsePagePreview(page([para]), [], classic)).not.toBeNull();
+    expect(parsePagePreview(page([para], { elementor_format: "site_default" }), [], classic)).not.toBeNull();
+    expect(parsePagePreview(page([para], { elementor_format: "classic" }), [], classic)).not.toBeNull();
+    expect(parsePagePreview(page([para], { elementor_format: "atomic" }), [], atomic)).not.toBeNull();
+  });
+
+  it("is not shown when elementor_format and the site's format disagree, or the value is unknown", () => {
+    expect(parsePagePreview(page([para], { elementor_format: "atomic" }), [], classic)).toBeNull();
+    expect(parsePagePreview(page([para], { elementor_format: "classic" }), [], atomic)).toBeNull();
+    expect(parsePagePreview(page([para], { elementor_format: "flexbox" }), [], classic)).toBeNull();
+  });
+
+  it("elementor_format or builder facts on a WordPress editor make the request not showable", () => {
+    const blocks = { post_type: "page", editor: "wordpress_blocks", title: "T", outline: [para] };
+    expect(parsePagePreview(JSON.stringify(blocks))).not.toBeNull();
+    expect(parsePagePreview(JSON.stringify({ ...blocks, elementor_format: "classic" }))).toBeNull();
+    expect(parsePagePreview(JSON.stringify(blocks), [], classic)).toBeNull();
+  });
+
+  // The outlines the control plane refuses for Elementor before any card
+  // exists (apps/api/internal/mcp/ability_builder.go, elementorNodeProblem).
+  const columnsOf = (child: unknown) => ({ type: "columns", columns: [{ children: [child] }, { children: [para] }] });
+  it.each<[string, unknown]>([
+    ["a paragraph that is one web address", { type: "paragraph", text: "https://example.com/watch?v=1" }],
+    ["one address with white space and capitals", { type: "paragraph", text: " \tHTTP://EXAMPLE.COM/x \n" }],
+    ["a quote paragraph that is one web address", { type: "quote", paragraphs: ["Hi", "http://example.com"] }],
+    ["a wide image", { type: "image", attachment_id: 5, alt: "a", align: "wide" }],
+    ["a full-width image", { type: "image", attachment_id: 5, alt: "a", align: "full" }],
+    ["an outline button", { type: "buttons", buttons: [{ text: "Go", url: "/go", style: "outline" }] }],
+    ["a button link with &", { type: "buttons", buttons: [{ text: "Go", url: "/go?a=1&b=2" }] }],
+    ["an outline button in a section's columns", { type: "group", children: [columnsOf({ type: "buttons", buttons: [{ text: "Go", url: "/go", style: "outline" }] })] }],
+  ])("is not shown with %s", (_name, node) => {
+    const input = page([node]);
+    expect(parsePagePreview(input, factsFor(input), classic)).toBeNull();
+  });
+
+  it.each<[string, unknown]>([
+    ["an address with words around it", { type: "paragraph", text: "See https://example.com today" }],
+    ["an address followed by words", { type: "paragraph", text: "https://example.com today" }],
+    ["an address preceded by words", { type: "paragraph", text: "See https://example.com" }],
+    ["an image aligned none or centred", { type: "image", attachment_id: 5, alt: "a", align: "center" }],
+    ["a filled button", { type: "buttons", buttons: [{ text: "Go", url: "/go", style: "fill" }] }],
+  ])("is shown with %s", (_name, node) => {
+    const input = page([node]);
+    expect(parsePagePreview(input, factsFor(input), classic)).not.toBeNull();
+  });
+
+  it("a block-editor page may still hold what Elementor refuses", () => {
+    const outline = [
+      { type: "image", attachment_id: 5, alt: "a", align: "wide" },
+      { type: "buttons", buttons: [{ text: "Go", url: "/go?a=1&b=2", style: "outline" }] },
+      { type: "paragraph", text: "https://example.com" },
+    ];
+    const input = JSON.stringify({ post_type: "page", editor: "wordpress_blocks", title: "T", outline });
+    expect(parsePagePreview(input, factsFor(input))).not.toBeNull();
   });
 });

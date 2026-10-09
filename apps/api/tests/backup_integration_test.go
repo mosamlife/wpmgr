@@ -68,7 +68,7 @@ func (e *stubEnqueuer) EnqueueRestore(_ context.Context, _, _ uuid.UUID, sel bac
 
 const testRecipient = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"
 
-// newBackupService wires a backup service against a real DB + real MinIO store.
+// newBackupService wires a backup service against a real DB + real SeaweedFS store.
 func newBackupService(t *testing.T, pool *db.Pool, store *blobstore.Store, lookup backup.SiteLookup, enq backup.Enqueuer) *backup.Service {
 	t.Helper()
 	svc := backup.NewService(backup.NewRepo(pool), lookup, enq, store, domain.SystemClock{}, backup.Config{

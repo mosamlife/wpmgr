@@ -1,4 +1,4 @@
-import { CONFERRABLE_READS, type Capability } from "./capabilities";
+import { CONFERRABLE_READS, type AbilityTicks, type Capability } from "./capabilities";
 
 // The read picker's presets, shared by the connection wizard's step 4 and the
 // consent screen so the two surfaces cannot offer different shortcuts or open
@@ -22,10 +22,22 @@ import { CONFERRABLE_READS, type Capability } from "./capabilities";
 // that quietly stops meaning it.
 //
 // NEITHER PRESET MAY INCLUDE THE WRITE. `mcp.cache.purge` needs its own
-// per-call approval (ADR-061 option B) and is never pre-ticked and never part
-// of a preset (design v7 S2.1, ruling 33). `capabilityPresets` filters its
-// input through CONFERRABLE_READS, the reads-only list, so a caller that hands
-// it a write name or `mcp.content.read` still gets a preset without it.
+// per-call approval (ADR-061 option B) and is never pre-ticked on any surface
+// and never part of a preset (design v7 S2.1, ruling 33). `capabilityPresets`
+// filters its input through CONFERRABLE_READS, the reads-only list, so a caller
+// that hands it a write name or `mcp.content.read` still gets a preset without
+// it.
+//
+// THE TWO SITE-TOOLS ROWS ARE IN NO PRESET EITHER, and their opening state
+// differs by surface: the connection wizard opens them clear, and the consent
+// screen opens them ticked when the requesting app asked for mcp:site and the
+// server offers them.
+//
+// A PRESET CHANGES THE READ ROWS AND NOTHING ELSE (owner ruling 2026-10-09,
+// which supersedes ruling 33 for the site-tools and cache-clear boxes on both
+// surfaces). Pressing one sets the reads and leaves the site-tools ticks and the
+// cache-clear tick exactly as they were, and which preset is active is judged
+// from the read rows alone.
 
 export type CapabilityPresetId = "basics" | "read-everything";
 
@@ -73,18 +85,24 @@ function setKey(names: readonly string[]): string {
  */
 export function capabilityPresets(offered: readonly string[]): readonly CapabilityPreset[] {
   const reads = conferrableReadsIn(offered);
+  // THE DESCRIPTIONS ARE ABOUT THIS LIST ONLY, and say "this list" so. A shortcut
+  // sets the read rows, and the site-tools box (a read that can return page text,
+  // and a request) and the cache-clear box sit outside them and may be ticked
+  // alongside. So a description must not claim anything about the connection as
+  // a whole: not "only", not "nothing else" without the list, not what the
+  // connection "can" or "cannot" do.
   const candidates: readonly CapabilityPreset[] = [
     {
       id: "basics",
       label: "Just the basics",
       capabilities: reads.filter((cap) => (BASICS_READS as readonly string[]).includes(cap)),
-      description: "See which sites are in scope, and nothing else.",
+      description: "See which sites are in scope. Nothing else from this list.",
     },
     {
       id: "read-everything",
       label: "Read everything",
       capabilities: reads,
-      description: "Every read this connection could be given. It still cannot change anything.",
+      description: "Every read in this list. None of them can change anything.",
     },
   ];
   const seen = new Set<string>();
@@ -114,18 +132,33 @@ export function capabilityPresets(offered: readonly string[]): readonly Capabili
  * and re-ticking it makes the preset name come back on its own -- which is
  * correct, because the set genuinely is that preset again.
  *
- * `selected` is the WHOLE tick list, write rows included, so ticking the
- * cache-clear box moves a read-only preset to Custom: the preset's description
- * says "and nothing else", and it would be untrue over a set that holds a
- * write.
+ * THE READ ROWS ONLY. A preset sets the reads and nothing else (owner ruling
+ * 2026-10-09), so the claim is about the reads: the site-tools and cache-clear
+ * ticks in `selected` are not looked at. A screen that opens with site tools
+ * ticked and Sites alone ticked is therefore on "Just the basics", and ticking
+ * or clearing a box further down never moves the chip.
  */
 export function presetFor(
   selected: readonly string[],
   presets: readonly CapabilityPreset[],
 ): CapabilityPresetId | null {
-  const chosen = setKey(selected);
+  const chosen = setKey(conferrableReadsIn(selected));
   const match = presets.find((preset) => setKey(preset.capabilities) === chosen);
   return match?.id ?? null;
+}
+
+/**
+ * `selected` after `preset` is pressed: the read rows become the preset's reads
+ * and every other tick is left exactly as it was (owner ruling 2026-10-09). The
+ * site-tools rows and the cache-clear row are not part of any preset, so a press
+ * neither ticks nor clears them.
+ */
+export function withPreset(
+  selected: readonly string[],
+  preset: CapabilityPreset,
+): readonly string[] {
+  const readRows: readonly string[] = CONFERRABLE_READS;
+  return [...preset.capabilities, ...selected.filter((cap) => !readRows.includes(cap))];
 }
 
 /**
@@ -147,4 +180,21 @@ export function withCapability(
 ): readonly string[] {
   if (ticked) return selected.includes(cap) ? selected : [...selected, cap];
   return selected.filter((c) => c !== cap);
+}
+
+/**
+ * `selected` with both site-tools rows set to `ticks`, in one step. The site-tools
+ * box works out the next state of both rows (see nextAbilityTicks) and its host
+ * applies it here, so a change that moves both rows is a single update rather
+ * than two that could overwrite each other.
+ */
+export function withAbilityTicks(
+  selected: readonly string[],
+  ticks: AbilityTicks,
+): readonly string[] {
+  return withCapability(
+    withCapability(selected, "mcp.ability.read", ticks.read),
+    "mcp.ability.request",
+    ticks.request,
+  );
 }

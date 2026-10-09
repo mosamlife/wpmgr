@@ -219,11 +219,16 @@ const groupNode = z.strictObject({
 });
 const outlineNode = z.discriminatedUnion("type", [...leafOptions, columnsNode, groupNode]);
 
+/** The editor value of a page Elementor builds (ability_builder.go, pageEditorBuilderElementor). */
+export const ELEMENTOR_EDITOR = "builder:elementor";
+
 const pageInputSchema = z.strictObject({
   post_type: z.enum(["page", "post"]),
-  editor: z.enum(["wordpress_blocks", "wordpress_classic"]),
+  editor: z.enum(["wordpress_blocks", "wordpress_classic", ELEMENTOR_EDITOR]),
   title: z.string().refine((t) => t.trim() !== ""),
   outline: z.array(outlineNode).min(1).max(OUTLINE_LIMITS.topLevelNodes),
+  // Only with builder:elementor (page_create_input.go, validatePageCreateInput).
+  elementor_format: z.enum(["site_default", "classic", "atomic"]).optional(),
 });
 
 export type LeafNode = z.infer<typeof leafNode>;
@@ -308,6 +313,58 @@ export function indexPageMedia(raw: unknown): ReadonlyMap<number, PageMediaFact>
   return byId;
 }
 
+// --- The page builder -------------------------------------------------------
+
+// The Elementor version a precheck may name (ability_builder_tree.go,
+// elementorVersionPattern). It is the site's text and is shown as text.
+const ELEMENTOR_VERSION = /^[0-9]{1,4}\.[0-9]{1,4}(\.[0-9]{1,4})?([.-][0-9A-Za-z]{1,16}){0,2}$/;
+
+const pageBuilderSchema = z.strictObject({
+  builder: z.literal("elementor"),
+  // "atomic" is the published elementor_format value for Elementor's Atomic
+  // editor (ability_builder.go, pageElementorFormats).
+  format: z.enum(["classic", "atomic"]),
+  version: z.string().regex(ELEMENTOR_VERSION),
+  layout: z.enum(["containers", "sections"]),
+});
+
+/** The page builder that builds the page, as the site's precheck named it (page_builder). */
+export type PageBuilderFacts = z.infer<typeof pageBuilderSchema>;
+
+/**
+ * The request's page_builder, or null when it is missing, null, or anything
+ * but a builder this card can describe in full.
+ */
+export function parsePageBuilder(raw: unknown): PageBuilderFacts | null {
+  const parsed = pageBuilderSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
+// A paragraph whose whole text is one web address, which Elementor would turn
+// into an embedded player (ability_builder.go, elementorOwnAddress).
+const ADDRESS_ONLY = /^[\t\n\v\f\r ]*https?:\/\/[^\t\n\v\f\r <>"]+[\t\n\v\f\r ]*$/i;
+
+/**
+ * True for a node Elementor does not build as the outline asks, which the
+ * control plane refuses before any card exists (ability_builder.go,
+ * elementorNodeProblem): an address-only paragraph, an image aligned wide or
+ * full, an outline button, or a button link with "&".
+ */
+function elementorRefuses(n: OutlineNode): boolean {
+  switch (n.type) {
+    case "paragraph":
+      return ADDRESS_ONLY.test(n.text);
+    case "quote":
+      return n.paragraphs.some((p) => ADDRESS_ONLY.test(p));
+    case "image":
+      return n.align !== undefined && n.align !== "none" && n.align !== "center";
+    case "buttons":
+      return n.buttons.some((b) => (b.style !== undefined && b.style !== "fill") || b.url.includes("&"));
+    default:
+      return false;
+  }
+}
+
 // --- Reading the input text -------------------------------------------------
 
 /**
@@ -360,31 +417,45 @@ export interface PagePreview {
   readonly outline: readonly OutlineNode[];
   /** The image facts, keyed by attachment id. Every image node has one. */
   readonly media: ReadonlyMap<number, PageMediaFact>;
+  /** The page builder that builds the page; null for a WordPress editor. */
+  readonly builder: PageBuilderFacts | null;
 }
 
 /**
  * Parses the exact AI input. Null when it is not a shape the card can show in
  * full: an unknown block or key, a placement or limit the grammar refuses, a
  * button link it refuses, a block the classic editor cannot hold, or an image
- * with no fact from the site.
+ * with no fact from the site. A page Elementor builds also needs the site's
+ * builder facts (page_builder), an elementor_format they agree with, and no
+ * node Elementor does not build; a page in a WordPress editor has no builder.
  */
-export function parsePagePreview(inputJson: string, pageMedia?: unknown): PagePreview | null {
+export function parsePagePreview(inputJson: string, pageMedia?: unknown, pageBuilder?: unknown): PagePreview | null {
   const raw = readInput(inputJson);
   if (raw === undefined) return null;
   const parsed = pageInputSchema.safeParse(raw);
   if (!parsed.success) return null;
-  const { editor, title, outline } = parsed.data;
+  const { editor, title, outline, elementor_format: format } = parsed.data;
   if (!withinPageLimits(outline)) return null;
+  let builder: PageBuilderFacts | null = null;
+  if (editor === ELEMENTOR_EDITOR) {
+    builder = parsePageBuilder(pageBuilder);
+    if (builder === null) return null;
+    if (format !== undefined && format !== "site_default" && format !== builder.format) return null;
+  } else if (format !== undefined || pageBuilder != null) {
+    return null;
+  }
   let blockOnly = false;
+  let builderRefuses = false;
   let imageWithoutFact = false;
   const media = indexPageMedia(pageMedia);
   visitNodes(outline, (n) => {
     if (needsBlockEditor(n)) blockOnly = true;
+    if (builder !== null && elementorRefuses(n)) builderRefuses = true;
     if (n.type === "image" && !media.has(n.attachment_id)) imageWithoutFact = true;
   });
   if (editor === "wordpress_classic" && blockOnly) return null;
-  if (imageWithoutFact) return null;
-  return { title, outline, media };
+  if (builderRefuses || imageWithoutFact) return null;
+  return { title, outline, media, builder };
 }
 
 // --- Words for the card -----------------------------------------------------
@@ -468,6 +539,16 @@ export function buttonLabel(style: "fill" | "outline" | undefined): string {
 /** "1200 × 800", or null when the site did not report a size. */
 export function imageSizeLabel(width: number, height: number): string | null {
   return width > 0 && height > 0 ? `${width} × ${height}` : null;
+}
+
+/**
+ * Our words before an image's alt text. On a page Elementor builds the alt is
+ * the one saved with the image in the media library, so the line says so; an
+ * empty one is not called decorative there, only absent from the library.
+ */
+export function imageAltLabel(alt: string, fromLibrary: boolean): string {
+  if (alt === "") return fromLibrary ? "No alt text in the media library" : "No alt text (decorative)";
+  return fromLibrary ? "Alt text (from the media library):" : "Alt text:";
 }
 
 export function imageAlignLabel(align: ImageNode["align"]): string | null {

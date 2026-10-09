@@ -36,6 +36,7 @@ const (
 	pageLayoutFixture      = agentAbilityFixtures + "page-create-layout.json"
 	pageSchemaFixture      = agentAbilityFixtures + "page-create-schema.json"
 	m162Migration          = "20261009000000_m162_page_create_layout_copy.sql"
+	m166Migration          = "20261009060000_m166_builder_page_create.sql"
 )
 
 type layoutCase struct {
@@ -172,9 +173,16 @@ func TestPageCreateSchemaIsTheAgentFixture(t *testing.T) {
 // literals joined with ||, as m162 writes its copy.
 func sqlConstantText(t *testing.T, sql, name string) string {
 	t.Helper()
+	return sqlConstantTextIn(t, m162Migration, sql, name)
+}
+
+// sqlConstantTextIn is sqlConstantText for the migration file named, which
+// its failures cite.
+func sqlConstantTextIn(t *testing.T, file, sql, name string) string {
+	t.Helper()
 	i := strings.Index(sql, name+" constant ")
 	if i < 0 {
-		t.Fatalf("%s: no constant %s", m162Migration, name)
+		t.Fatalf("%s: no constant %s", file, name)
 	}
 	rest := sql[i:]
 	rest = rest[strings.Index(rest, ":=")+2:]
@@ -194,17 +202,23 @@ func sqlConstantText(t *testing.T, sql, name string) string {
 			return out.String()
 		}
 	}
-	t.Fatalf("%s: constant %s is not terminated", m162Migration, name)
+	t.Fatalf("%s: constant %s is not terminated", file, name)
 	return ""
+}
+
+// readMigration is the text of a migration file as the binary embeds it.
+func readMigration(t *testing.T, file string) string {
+	t.Helper()
+	b, err := fs.ReadFile(migrations.FS, file)
+	if err != nil {
+		t.Fatalf("read %s: %v", file, err)
+	}
+	return string(b)
 }
 
 func readM162(t *testing.T) string {
 	t.Helper()
-	b, err := fs.ReadFile(migrations.FS, m162Migration)
-	if err != nil {
-		t.Fatalf("read %s: %v", m162Migration, err)
-	}
-	return string(b)
+	return readMigration(t, m162Migration)
 }
 
 // TestPageCreateM162UsageNamesTheLayoutFloor ties the floor constant to the
@@ -220,6 +234,24 @@ func TestPageCreateM162UsageNamesTheLayoutFloor(t *testing.T) {
 	}
 	if !strings.Contains(msgAbilityLayoutOutdated, agentcmd.MinAgentVersionForPageLayout) {
 		t.Fatalf("the refusal does not name the floor: %q", msgAbilityLayoutOutdated)
+	}
+}
+
+// TestPageCreateM166UsageNamesTheBuilderFloor ties the builder floor constant
+// to the release the usage text m166 seeds names. The integration package
+// compares that text with a literal and CI does not run it, so this is the
+// check CI does run: a floor moved without the copy fails here.
+func TestPageCreateM166UsageNamesTheBuilderFloor(t *testing.T) {
+	usage := sqlConstantTextIn(t, m166Migration, readMigration(t, m166Migration), "v_usage")
+	if !strings.HasPrefix(usage, "Build the page as an outline.") || len(usage) > 2000 {
+		t.Fatalf("m166 usage did not read back whole: %q", usage)
+	}
+	want := "Elementor pages need the WPMgr plugin " + agentcmd.MinAgentVersionForBuilderAdapters + " or later"
+	if !strings.Contains(usage, want) {
+		t.Fatalf("m166 usage does not name MinAgentVersionForBuilderAdapters (%s): %q", agentcmd.MinAgentVersionForBuilderAdapters, usage)
+	}
+	if !strings.Contains(msgAbilityBuilderOutdated, agentcmd.MinAgentVersionForBuilderAdapters) {
+		t.Fatalf("the refusal does not name the floor: %q", msgAbilityBuilderOutdated)
 	}
 }
 
@@ -340,7 +372,7 @@ func TestPageCreateLayoutFixtureReplays(t *testing.T) {
 		if len(checked.media) != len(c.MediaIDs) {
 			t.Fatalf("%s: %d facts verified, want %d", c.Name, len(checked.media), len(c.MediaIDs))
 		}
-		card, err := pageCardFactsJSON(checked.media)
+		card, err := pageCardFactsJSON(checked.media, checked.builder)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -708,6 +740,20 @@ func pageCreateRunRouter(t *testing.T, agentVersion, precheckCode string) (*gin.
 
 func pageCreateRunRouterWith(t *testing.T, agentVersion string, agent AbilityAgent) (*gin.Engine, uuid.UUID) {
 	t.Helper()
+	return pageCreateRunRouterLimits(t, agentVersion, agent, []byte(`{}`))
+}
+
+// pageCreateRunRouterLimits is pageCreateRunRouterWith with the catalogue
+// entry's limits given.
+func pageCreateRunRouterLimits(t *testing.T, agentVersion string, agent AbilityAgent, limits []byte) (*gin.Engine, uuid.UUID) {
+	t.Helper()
+	return pageCreateRunRouterStore(t, agentVersion, agent, limits, untouchedRequestStore{t: t})
+}
+
+// pageCreateRunRouterStore is pageCreateRunRouterLimits with the request
+// store given.
+func pageCreateRunRouterStore(t *testing.T, agentVersion string, agent AbilityAgent, limits []byte, store AbilityRequestStore) (*gin.Engine, uuid.UUID) {
+	t.Helper()
 	f := newAbilityFixture(t)
 	f.store.recheck.GrantCapabilities = []string{string(CapSitesRead), string(CapAbilityRead), string(CapAbilityRequest)}
 	f.store.recheck.GrantOauthScopes = []string{string(ScopeRead), string(ScopeSite)}
@@ -717,6 +763,7 @@ func pageCreateRunRouterWith(t *testing.T, agentVersion string, agent AbilityAge
 	entry := catalogueRow(AbilityPageCreate, "wpmgr", "write")
 	entry.ApprovalMode, entry.Snapshot, entry.EffectCopy = "per_call", "created_post_trash", "draft"
 	entry.OperatorPermission, entry.MinAgentVersion = &perm, &minAgent
+	entry.Limits = limits
 	_, sum, _ := testEntryEncoder(entry)
 	entry.EntrySha256 = &sum
 	f.ab.cat = append(f.ab.cat, entry)
@@ -728,7 +775,7 @@ func pageCreateRunRouterWith(t *testing.T, agentVersion string, agent AbilityAge
 	if err := svc.EnableAbilityTools(f.ab, agent, testEntryEncoder, "test-secret"); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.EnableAbilityWrites(untouchedRequestStore{t: t}); err != nil {
+	if err := svc.EnableAbilityWrites(store); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.SetWriteToolsEnabled(true); err != nil {
