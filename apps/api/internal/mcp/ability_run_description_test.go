@@ -13,26 +13,33 @@ import (
 )
 
 var (
-	// sentenceBreak ends a sentence at a full stop, question mark or
-	// exclamation mark followed by white space. A description is plain
-	// sentences with identifiers in backticks, which hold no such break.
-	sentenceBreak = regexp.MustCompile(`[.!?]\s+`)
+	// clauseBreak ends a clause at a full stop, question mark, exclamation
+	// mark, semicolon, colon or comma followed by white space. A description is
+	// plain prose with identifiers in backticks, which hold no such break.
+	clauseBreak = regexp.MustCompile(`[.!?;:,]\s+`)
 
-	// approvalDenied matches, in a lower-cased sentence, wording that takes the
-	// approval away from a person: automatic, not needed, or given without one.
-	approvalDenied = regexp.MustCompile(`\bautomatic|\bno approval\b|\bwithout (an? )?(approval|person)\b|` +
-		`\bno person\b|\bnot (needed|required)\b|\bno need\b`)
+	// negation matches, in a lower-cased clause, any word that can turn a
+	// statement about approval round: not, no, never, without, nobody, none,
+	// cannot, automatic and its forms, and a contraction such as doesn't (with
+	// a straight or a curly apostrophe).
+	negation = regexp.MustCompile(`\b(not|no|never|without|nobody|none|cannot|automatic\w*)\b|n['’]t\b`)
 )
 
-// saysAPersonApproves reports whether a description has a sentence that names
-// a person approving. "person" and "approv" must both be in that one sentence,
-// so a person who can only see a request does not count, and neither does
-// "approved" in some other sentence. A sentence that says the approval is
-// automatic, not needed or given without a person does not count either: put
-// such a statement in a sentence of its own.
+// saysAPersonApproves reports whether a description has a clause that names a
+// person approving. "person" and "approv" must both be in that one clause, and
+// the clause must hold no negation word. So a person who can only see a
+// request does not count, nor does "approved" in some other clause, nor "a
+// person does not approve it", "approved automatically" or "approved without a
+// person".
+//
+// The test is on the clause and on a closed set of negation words, not on a
+// list of phrases. A clause that names a person approving and also holds one
+// of those words fails even when it is honest ("without delay", "cannot ...
+// until"). Put the negation in a clause of its own, after a comma, a semicolon
+// or a full stop.
 func saysAPersonApproves(desc string) bool {
-	for _, s := range sentenceBreak.Split(strings.ToLower(desc), -1) {
-		if strings.Contains(s, "person") && strings.Contains(s, "approv") && !approvalDenied.MatchString(s) {
+	for _, c := range clauseBreak.Split(strings.ToLower(desc), -1) {
+		if strings.Contains(c, "person") && strings.Contains(c, "approv") && !negation.MatchString(c) {
 			return true
 		}
 	}
@@ -41,7 +48,7 @@ func saysAPersonApproves(desc string) bool {
 
 // A tool whose Effect is EffectRequest writes a pending request instead of
 // acting, and a person approves it in WPMgr (registry.go, Effect). Its
-// description has to say so in a sentence that names a person approving
+// description has to say so in a clause that names a person approving
 // (saysAPersonApproves), and has to name the read tool that follows the
 // request by its request_id, or a caller is told something other than what the
 // call does. site_ability_run once said that only reviewed reads run, after
@@ -55,8 +62,8 @@ func TestRequestEffectToolsSayThatAPersonApprovesAndHowToFollow(t *testing.T) {
 		}
 		checked = append(checked, e.Name)
 		if !saysAPersonApproves(e.Description) {
-			t.Errorf("%q writes a request, but no sentence of its description says that a person approves it "+
-				"(a sentence that says the approval is automatic or not needed does not count):\n%s",
+			t.Errorf("%q writes a request, but no clause of its description says that a person approves it "+
+				"(a clause that holds not, no, never, without, nobody, none, cannot, n't or automatic does not count):\n%s",
 				e.Name, e.Description)
 		}
 		followed := false
@@ -107,6 +114,10 @@ func TestSaysAPersonApproves(t *testing.T) {
 		{"any letter case", "A Person APPROVES it in WPMgr", true},
 		{"reads need no approval, in a sentence of their own",
 			"Reads need no approval. A change becomes a request that a person approves.", true},
+		{"reads need no approval, in a clause of their own",
+			"Reads need no approval, but a change becomes a request that a person approves.", true},
+		{"nothing is not a negation word", "Nothing changes until a person approves it.", true},
+		{"note and another are not negation words", "Note that another person approves it.", true},
 
 		// What it must refuse.
 		{"automatic approval", "automatically approved", false},
@@ -118,6 +129,14 @@ func TestSaysAPersonApproves(t *testing.T) {
 		{"a person's approval not needed", "A person's approval is not needed.", false},
 		{"no approval from a person", "No approval from a person is needed.", false},
 		{"person and approval in different sentences", "A person can see the request. It is approved later.", false},
+		{"a person does not approve", "A person does not approve the request.", false},
+		{"a person doesn't approve", "A person doesn't approve it.", false},
+		{"a person doesn't approve, curly apostrophe", "A person doesn’t approve it.", false},
+		{"a person never approves", "A person never approves it.", false},
+		{"a person cannot approve", "A person cannot approve it.", false},
+		{"none of it is approved by a person", "None of it is approved by a person.", false},
+		{"nobody approves, in the same clause as a person", "A person sees it and nobody approves it.", false},
+		{"nobody approves, a person only looks, in two clauses", "Nobody approves it; a person can see it.", false},
 	}
 	for _, c := range cases {
 		if got := saysAPersonApproves(c.desc); got != c.want {
