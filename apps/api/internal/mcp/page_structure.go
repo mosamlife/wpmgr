@@ -94,9 +94,9 @@ var (
 	pageStructureFieldToken   = regexp.MustCompile(`^(?:text|url|alt|caption)$`)
 )
 
-// token is a string leaf the AI uses as given: a value matching re passes
+// tokenLeaf is a string leaf the AI uses as given: a value matching re passes
 // unchanged, any other value is dropped.
-func token(re *regexp.Regexp) *outShape { return &outShape{token: re} }
+func tokenLeaf(re *regexp.Regexp) *outShape { return &outShape{token: re} }
 
 var (
 	intLeaf  = &outShape{scalar: "int"}
@@ -109,12 +109,12 @@ var (
 // kind, level?, editable, from_the_site} or, locked, {ref, parent, kind,
 // label}. Site text is only ever under from_the_site, and fenced.
 var pageStructureOutputShape = obj(map[string]*outShape{
-	"post_id": intLeaf, "builder": token(pageStructureBuilderToken), "builder_version": leaf,
-	"format": token(pageStructureWordToken), "status": leaf, "editable": boolLeaf,
-	"base_fingerprint": token(pageEditFingerprintPattern), "node_count": intLeaf, "truncated": boolLeaf,
+	"post_id": intLeaf, "builder": tokenLeaf(pageStructureBuilderToken), "builder_version": leaf,
+	"format": tokenLeaf(pageStructureWordToken), "status": leaf, "editable": boolLeaf,
+	"base_fingerprint": tokenLeaf(pageEditFingerprintPattern), "node_count": intLeaf, "truncated": boolLeaf,
 	"nodes": list(obj(map[string]*outShape{
-		"ref": token(pageEditRefPattern), "parent": token(pageEditRefPattern), "kind": token(pageStructureWordToken),
-		"level": intLeaf, "editable": list(token(pageStructureFieldToken)), "label": leaf,
+		"ref": tokenLeaf(pageEditRefPattern), "parent": tokenLeaf(pageEditRefPattern), "kind": tokenLeaf(pageStructureWordToken),
+		"level": intLeaf, "editable": list(tokenLeaf(pageStructureFieldToken)), "label": leaf,
 		"from_the_site": obj(map[string]*outShape{"text": leaf, "url": leaf, "alt": leaf, "caption": leaf}),
 	})),
 })
