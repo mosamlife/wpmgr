@@ -853,9 +853,9 @@ export function ConsentScreen({
     return resolveTagIds(selectedTagNames, tags);
   }, [mode, tags, selectedTagNames]);
 
-  // Exactly the ticks, limited to what the server offered. Never a name that is
-  // not ticked.
-  const capabilities = buildApprovalCapabilities(consent.conferrableCapabilities, selected);
+  // Exactly the ticks, limited to what the server offered and the app asked for.
+  // Never a name that is not ticked, and never one whose box is not on the screen.
+  const capabilities = buildApprovalCapabilities(consent, selected);
   // The server offered capabilities but none is ticked (every read cleared, or
   // a cache-only request with the box left clear): an empty list is refused, so
   // Approve is blocked. A server that offers none at all (older deploy) is not

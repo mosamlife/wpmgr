@@ -529,14 +529,19 @@ export function initialSelection(
  * limited to what the server offered. It never adds a name that is not ticked.
  *
  *   - a read is sent when it is ticked and in offeredReads;
- *   - mcp.cache.purge is sent when it is ticked and offered as a request;
- *   - mcp.ability.read and mcp.ability.request are sent when they are ticked and
- *     offered with their own effect;
+ *   - mcp.cache.purge is sent when it is ticked, offered as a request, and the
+ *     scopes ask for mcp:cache;
+ *   - mcp.ability.read and mcp.ability.request are sent when they are ticked,
+ *     offered with their own effect, and the scopes ask for mcp:site;
  *   - mcp.ability.request is sent only together with mcp.ability.read. A
  *     connection holding the request alone cannot call the tool that carries
  *     one, so a request ticked without a read that is itself sent is dropped.
  *     The site-tools box already keeps the two together; this is the same rule
  *     held again where the request is built.
+ *
+ * `consent` supplies what was offered and what the scopes ask for, so a name is
+ * only ever sent for a box that is on the screen: a tick the screen still holds
+ * after a refreshed context narrowed the scopes cannot reach the request.
  *
  * `selected` is the whole tick list of the screen. A name in it that the server
  * did not offer, or offered with a different effect, is dropped here rather
@@ -545,18 +550,21 @@ export function initialSelection(
  * rather than send `[]`, which the server refuses.
  */
 export function buildApprovalCapabilities(
-  conferrable: readonly ConferrableCapability[],
+  consent: Pick<ConsentContext, "conferrableCapabilities" | "scopes">,
   selected: readonly string[],
 ): string[] {
+  const conferrable = consent.conferrableCapabilities;
   const ticked: ReadonlySet<string> = new Set(selected);
   const out = offeredReads(conferrable).filter((name) => ticked.has(name));
-  const askable: readonly (readonly [name: string, effect: string])[] = [
-    ["mcp.cache.purge", CAPABILITY_EFFECT_REQUEST],
-    ["mcp.ability.read", CAPABILITY_EFFECT_READ],
-    ["mcp.ability.request", CAPABILITY_EFFECT_REQUEST],
+  const cacheAsked = consent.scopes.includes(SCOPE_CACHE);
+  const siteToolsAsked = asksForSiteTools(consent.scopes);
+  const askable: readonly (readonly [name: string, effect: string, asked: boolean])[] = [
+    ["mcp.cache.purge", CAPABILITY_EFFECT_REQUEST, cacheAsked],
+    ["mcp.ability.read", CAPABILITY_EFFECT_READ, siteToolsAsked],
+    ["mcp.ability.request", CAPABILITY_EFFECT_REQUEST, siteToolsAsked],
   ];
-  for (const [name, effect] of askable) {
-    if (!ticked.has(name)) continue;
+  for (const [name, effect, asked] of askable) {
+    if (!asked || !ticked.has(name)) continue;
     if (!conferrable.some((c) => c.name === name && c.effect === effect)) continue;
     // askable lists the read before the request, so `out` already holds the read
     // here exactly when the read is itself being sent.

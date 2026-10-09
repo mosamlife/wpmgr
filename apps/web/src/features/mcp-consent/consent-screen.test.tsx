@@ -937,6 +937,45 @@ describe("ConsentScreen, the mcp:site site-tools section", () => {
     expect(requestBox().checked).toBe(false);
   });
 
+  // A TICK THE SCREEN STILL HOLDS FOR A BOX THAT IS NO LONGER SHOWN. The ticks
+  // are worked out when the screen mounts and kept; a refreshed context can then
+  // arrive with fewer scopes, which removes a box but not the tick it held.
+  // Nothing on the screen shows that tick, so the approval must not carry it.
+  it("does not send the site-tools names once a refreshed context no longer asks for site tools", () => {
+    const onApprove = vi.fn();
+    const asked = siteConsent([SCOPE_READ, SCOPE_SITE], undefined, { consent_ticket: "t-1" });
+    const narrowed = siteConsent([SCOPE_READ], undefined, { consent_ticket: "t-2" });
+    const { rerender } = renderWithProviders(
+      <ConsentScreen {...props({ consent: asked, onApprove })} />,
+    );
+    // The positive control: both are ticked, and the box is there.
+    expect(readBox().checked).toBe(true);
+    expect(requestBox().checked).toBe(true);
+
+    rerender(<ConsentScreen {...props({ consent: narrowed, onApprove })} />);
+    expect(screen.queryByTestId("consent-site-capability")).toBeNull();
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read"]);
+  });
+
+  it("does not send the cache clear once a refreshed context no longer asks for mcp:cache", () => {
+    const onApprove = vi.fn();
+    const offered = [READ, { name: "mcp.cache.purge", effect: "request" }];
+    const asked = siteConsent([SCOPE_READ, SCOPE_CACHE], offered, { consent_ticket: "t-1" });
+    const narrowed = siteConsent([SCOPE_READ], offered, { consent_ticket: "t-2" });
+    const { rerender } = renderWithProviders(
+      <ConsentScreen {...props({ consent: asked, onApprove })} />,
+    );
+    const box = within(screen.getByTestId("consent-cache-capability")).getByRole<HTMLInputElement>(
+      "checkbox",
+    );
+    fireEvent.click(box);
+    expect(box.checked).toBe(true);
+
+    rerender(<ConsentScreen {...props({ consent: narrowed, onApprove })} />);
+    expect(screen.queryByTestId("consent-cache-capability")).toBeNull();
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read"]);
+  });
+
   // WHAT THE SCREEN SAYS IT CAN CHANGE FOLLOWS WHAT IS TICKED. The paragraph
   // "It cannot change anything." closes with "This connection is read-only."
   // only while no request capability will be carried, and otherwise names each
