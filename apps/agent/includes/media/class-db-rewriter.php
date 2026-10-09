@@ -11,6 +11,9 @@
  * are handled via preg_replace with a boundary lookahead to avoid false-positive
  * prefix matches on longer filenames (e.g. banner.jpg inside banner.jpg2).
  *
+ * A stored value with no mapped URL in it is returned byte for byte, and a JSON
+ * document keeps every byte apart from the rewritten URLs (see rewriteValue()).
+ *
  * @package WPMgr\Agent\Media
  */
 
@@ -116,15 +119,35 @@ final class DbRewriter
      */
     public function recursiveReplace($data, array $map, array $patterns)
     {
+        $changed = false;
+        return $this->replaceLeaves($data, array_values($map), $patterns, $changed);
+    }
+
+    /**
+     * The walk behind recursiveReplace(), reporting whether it changed anything.
+     *
+     * @param mixed        $data         Any PHP value.
+     * @param list<string> $replacements Replacement for each pattern, same order.
+     * @param list<string> $patterns     Pre-built PCRE patterns (from buildPatterns).
+     * @param bool         $changed      Set to true when any string leaf's bytes
+     *                                   changed; never reset to false.
+     * @return mixed  Same shape/type with string leaves rewritten.
+     */
+    private function replaceLeaves($data, array $replacements, array $patterns, bool &$changed)
+    {
         if (is_string($data)) {
             // Apply boundary-guarded patterns; fall back on regex error.
-            $result = preg_replace($patterns, array_values($map), $data);
-            return is_string($result) ? $result : $data;
+            $result = preg_replace($patterns, $replacements, $data);
+            if (!is_string($result) || $result === $data) {
+                return $data;
+            }
+            $changed = true;
+            return $result;
         }
 
         if (is_array($data)) {
             foreach ($data as $k => $v) {
-                $data[$k] = $this->recursiveReplace($v, $map, $patterns);
+                $data[$k] = $this->replaceLeaves($v, $replacements, $patterns, $changed);
             }
             return $data;
         }
@@ -141,7 +164,7 @@ final class DbRewriter
                 if (is_string($prop) && isset($prop[0]) && $prop[0] === "\0") {
                     continue;
                 }
-                $data->$prop = $this->recursiveReplace($val, $map, $patterns);
+                $data->$prop = $this->replaceLeaves($val, $replacements, $patterns, $changed);
             }
             return $data;
         }
@@ -154,6 +177,18 @@ final class DbRewriter
      * Rewrite URLs in a single meta_value string.
      * Handles PHP-serialized data, JSON arrays, and plain strings.
      * Pure: no DB access; works without a WP runtime.
+     *
+     * When no mapped URL occurs in the value, the value is returned byte for
+     * byte, whatever its format, so the caller writes nothing back.
+     *
+     * A JSON document is edited in place: each mapped URL is replaced where it
+     * appears in the stored text, in its literal form and in its escaped-slash
+     * form, and every other byte (escaping style, number formatting, empty
+     * objects) is kept. The edit is used only when it decodes to exactly the
+     * document a decoded rewrite produces. When it does not, for example where
+     * a URL is written with \u escapes, the decoded document is re-encoded
+     * instead, keeping the original's slash and Unicode escaping style; other
+     * formatting may change in that case.
      *
      * @param string               $value  Raw meta_value string.
      * @param array<string,string> $map    old_url => new_url.
@@ -186,21 +221,29 @@ final class DbRewriter
 
             // Walk the deserialized structure and re-serialize so PHP rewrites
             // every s:<len>: prefix for strings whose byte length changed.
-            $rewritten = $this->recursiveReplace($unserialized, $clean, $patterns);
+            $changed   = false;
+            $rewritten = $this->replaceLeaves($unserialized, $replacements, $patterns, $changed);
+            if (!$changed) {
+                // Nothing matched: return the stored bytes. Re-serializing an
+                // unchanged value can still change them (float precision).
+                return $value;
+            }
             return serialize($rewritten);
         }
 
         // ------------------------------------------------------------------
         // 2. JSON array — Elementor/Gutenberg block attributes stored as JSON
-        //    in postmeta.  Decode, recurse, re-encode.
+        //    in postmeta.  Decode and recurse to learn the rewritten document,
+        //    then produce it from the stored text (see rewriteJsonText()).
         // ------------------------------------------------------------------
         $decoded = json_decode($value, true);
         if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
-            $rewritten = $this->recursiveReplace($decoded, $clean, $patterns);
-            $encoded   = function_exists('wp_json_encode')
-                ? wp_json_encode($rewritten)
-                : json_encode($rewritten);
-            return is_string($encoded) && $encoded !== '' ? $encoded : $value;
+            $changed   = false;
+            $rewritten = $this->replaceLeaves($decoded, $replacements, $patterns, $changed);
+            if (!$changed) {
+                return $value;
+            }
+            return $this->rewriteJsonText($value, $clean, $rewritten);
         }
 
         // ------------------------------------------------------------------
@@ -234,6 +277,55 @@ final class DbRewriter
             $clean[$old] = $new;
         }
         return $clean;
+    }
+
+    /**
+     * Produce the rewritten JSON document from its stored text.
+     *
+     * Replaces each mapped URL in the raw text, in its literal form and in its
+     * escaped-slash form, with the same boundary guard rewriteValue() uses, and
+     * keeps the result only if it decodes to exactly $rewritten. Otherwise
+     * re-encodes $rewritten with the original's slash and Unicode escaping
+     * style.
+     *
+     * @param string               $json      The stored JSON document.
+     * @param array<string,string> $map       Sanitized old => new map.
+     * @param array<mixed>         $rewritten The decoded document with its URLs rewritten.
+     * @return string
+     */
+    private function rewriteJsonText(string $json, array $map, array $rewritten): string
+    {
+        $urls         = [];
+        $replacements = [];
+        foreach ($map as $old => $new) {
+            $urls[]         = $old;
+            $replacements[] = $new;
+
+            $escapedOld = str_replace('/', '\\/', $old);
+            if ($escapedOld !== $old) {
+                $urls[]         = $escapedOld;
+                $replacements[] = str_replace('/', '\\/', $new);
+            }
+        }
+
+        $candidate = preg_replace($this->buildPatterns($urls), $replacements, $json);
+        if (is_string($candidate) && json_decode($candidate, true) === $rewritten) {
+            return $candidate;
+        }
+
+        // The in-place edit does not reproduce the decoded rewrite: re-encode,
+        // in the original's escaping style.
+        $flags = JSON_PRESERVE_ZERO_FRACTION;
+        if (strpos($json, '\\/') === false) {
+            $flags |= JSON_UNESCAPED_SLASHES;
+        }
+        if (preg_match('/[\x80-\xFF]/', $json) === 1) {
+            $flags |= JSON_UNESCAPED_UNICODE;
+        }
+        $encoded = function_exists('wp_json_encode')
+            ? wp_json_encode($rewritten, $flags)
+            : json_encode($rewritten, $flags);
+        return is_string($encoded) && $encoded !== '' ? $encoded : $json;
     }
 
     /**
