@@ -282,6 +282,15 @@ check-urlmap-test: ## Run the url-map route-coverage guard's regression suite
 check-urlmap-drift: ## Compare infra/urlmap.yaml against the live GCP url-map (needs gcloud)
 	scripts/check-urlmap-drift.sh
 
+# GH #650: a PHP fatal error inside an agent test ends PHPUnit partway through
+# the suite, and the red named that one error instead of the tests that never
+# ran. scripts/check-phpunit-complete.sh compares `phpunit --list-tests-xml`
+# with the run's `--log-junit` report; ci.yml's PHP (agent) job runs it after
+# the tests. check-phpunit-complete-test is the guard's own regression suite.
+.PHONY: check-phpunit-complete-test
+check-phpunit-complete-test: ## Run the PHPUnit completeness guard's regression suite
+	scripts/check-phpunit-complete_test.sh
+
 # GH #547: the agent declared MIT in its plugin header and GPLv2 or later in
 # the wp.org readme.txt at the same time. This reconciles every place in
 # apps/agent (plus the repo-root LICENSE-AGENT carve-out) that names the

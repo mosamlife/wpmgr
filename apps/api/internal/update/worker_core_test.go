@@ -273,23 +273,23 @@ func TestRunApply_CoreUpdated_ConfirmedFatal_RollsBackWithDowngradeFlag(t *testi
 		build func(t *testing.T) (Commander, HealthProber, *itemCommander)
 	}{
 		{
-			name: "homepage 5xx on every attempt",
+			name: "homepage 500 on every attempt",
 			build: func(t *testing.T) (Commander, HealthProber, *itemCommander) {
 				c := &itemCommander{result: coreUpdated()}
 				return c, &scriptedProber{script: []probeStep{unhealthyStep(500)}}, c
 			},
 		},
 		{
-			name: "homepage shows a PHP fatal",
+			name: "homepage shows WordPress's error screen",
 			build: func(t *testing.T) (Commander, HealthProber, *itemCommander) {
 				c := &itemCommander{result: coreUpdated()}
-				return c, &scriptedProber{script: []probeStep{{result: agentcmd.ProbeResult{StatusCode: 200, Fatal: true, Detail: "fatal-error signature in response body"}}}}, c
+				return c, &scriptedProber{script: []probeStep{{result: agentcmd.ProbeResult{StatusCode: 200, Fatal: true, Detail: "WordPress error screen in the response"}}}}, c
 			},
 		},
 		{
-			name: "signed agent check returns a server error on every attempt",
+			name: "signed agent check answers 500 on every attempt",
 			build: func(t *testing.T) (Commander, HealthProber, *itemCommander) {
-				c := &verifyingItemCommander{itemCommander: itemCommander{result: coreUpdated()}, reason: agentcmd.ReasonHTTP5xx}
+				c := &verifyingItemCommander{itemCommander: itemCommander{result: coreUpdated()}, reason: agentcmd.ReasonHTTP500}
 				return c, &panicProber{t: t}, &c.itemCommander
 			},
 		},
@@ -350,9 +350,10 @@ func TestRunApply_CoreUpdated_ConfirmedFatal_RollbackUndeliverable_NeedsManualRe
 	}
 }
 
-// TestConfirmedFatal pins what counts as a confirmed fatal for a core
-// rollback: the signed agent check's server error, a homepage 5xx, or a PHP
-// fatal-error page. No answer, a cached answer and a 4xx do not count.
+// TestConfirmedFatal pins what counts as a confirmed crash for a core
+// rollback: an HTTP 500 from the signed agent check, a homepage 500, or
+// WordPress's error screen on the homepage. No answer, a gateway, unavailable
+// or CDN error status, a cached answer and a 4xx do not count.
 func TestConfirmedFatal(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -360,10 +361,15 @@ func TestConfirmedFatal(t *testing.T) {
 		agent bool
 		want  bool
 	}{
-		{"signed agent check returned a server error", agentcmd.ProbeResult{}, true, true},
+		{"signed agent check answered 500", agentcmd.ProbeResult{}, true, true},
 		{"homepage 500", agentcmd.ProbeResult{StatusCode: 500}, false, true},
-		{"homepage 503", agentcmd.ProbeResult{StatusCode: 503}, false, true},
-		{"homepage PHP fatal served with 200", agentcmd.ProbeResult{StatusCode: 200, Fatal: true}, false, true},
+		{"homepage 502", agentcmd.ProbeResult{StatusCode: 502}, false, false},
+		{"homepage 503", agentcmd.ProbeResult{StatusCode: 503}, false, false},
+		{"homepage 504", agentcmd.ProbeResult{StatusCode: 504}, false, false},
+		{"homepage 520", agentcmd.ProbeResult{StatusCode: 520}, false, false},
+		{"homepage 522", agentcmd.ProbeResult{StatusCode: 522}, false, false},
+		{"homepage 524", agentcmd.ProbeResult{StatusCode: 524}, false, false},
+		{"homepage error screen served with 200", agentcmd.ProbeResult{StatusCode: 200, Fatal: true}, false, true},
 		{"no answer (timeout or refused connection)", agentcmd.ProbeResult{}, false, false},
 		{"cached 500", agentcmd.ProbeResult{StatusCode: 500, CacheHit: true}, false, false},
 		{"cached PHP fatal page", agentcmd.ProbeResult{StatusCode: 200, Fatal: true, CacheHit: true}, false, false},
