@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { AbilityRequest } from "@wpmgr/api";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { setUpForLine } from "@/features/ai-requests/request-card-model";
 
+import { LayoutPreview } from "./layout-preview";
+import { layoutSummary, parsePagePreview } from "./outline-model";
 import { isRestWrite } from "./rest-card-model";
 import { StructuredAbilityCard } from "./structured-card";
 import {
@@ -16,14 +18,13 @@ import {
   editDraftHref,
   editorName,
   isPending,
-  parsePagePreview,
-  type PagePreview,
 } from "./ability-card-model";
 
-// The approval card for "AI creates a draft page" (engine slice E2). The AI's
-// words (title, outline) sit in a "Chosen by the AI" slot and the site's words
-// (site name, address) in "From the site". All of it is rendered as React text
-// nodes: no innerHTML, no markup from a model string, no href built from one.
+// The approval card for "AI creates a draft page" (engine slice E2, widened to
+// page layouts). The AI's words (title, outline) sit in a "Chosen by the AI"
+// slot and the site's words (site name, address, image file names) in "From the
+// site". All of it is rendered as React text nodes: no innerHTML, no markup
+// from a model string, no href built from one.
 
 export interface AbilityRequestCardProps {
   request: AbilityRequest;
@@ -63,7 +64,11 @@ function PageCreateCard({
 }: AbilityRequestCardProps & { canUndo: boolean }) {
   const pending = isPending(request);
   const status = abilityStatus(request);
-  const preview = parsePagePreview(request.input_json);
+  // Null unless every node and every image fact can be shown in full; a null
+  // preview also keeps Approve off.
+  const preview = parsePagePreview(request.input_json, request.page_media);
+  const layout = preview ? layoutSummary(preview.outline) : null;
+  const outlineLabelId = useId();
   const setUpFor = setUpForLine(request);
   const busy = approvePending || declinePending;
   const editHref = status.kind === "done" || status.draftMayExist === true ? editDraftHref(siteUrl, request.created_post_id) : null;
@@ -85,6 +90,14 @@ function PageCreateCard({
       <dl className="grid grid-cols-[minmax(7rem,auto)_1fr] gap-x-4 gap-y-1 text-sm">
         <dt className="text-muted-foreground">Editor</dt>
         <dd className="min-w-0 break-words text-foreground">{editorName(request.editor)}</dd>
+        {layout ? (
+          <>
+            <dt className="text-muted-foreground">Layout</dt>
+            <dd data-testid="layout-summary" className="min-w-0 break-words text-foreground">
+              {layout}
+            </dd>
+          </>
+        ) : null}
         <dt className="text-muted-foreground">Asked by</dt>
         <dd className="min-w-0 break-words text-foreground">{request.grant_label}</dd>
         <dt className="text-muted-foreground">Set up for</dt>
@@ -101,9 +114,16 @@ function PageCreateCard({
       {setUpFor.caption ? <p className="text-xs text-muted-foreground">{setUpFor.caption}</p> : null}
 
       <div className="space-y-1">
-        <p className="text-xs font-medium text-muted-foreground">Chosen by the AI</p>
+        <p id={outlineLabelId} className="text-xs font-medium text-muted-foreground">
+          Chosen by the AI
+        </p>
         {preview ? (
-          <OutlinePreview preview={preview} />
+          <LayoutPreview
+            preview={preview}
+            siteHost={request.site_host}
+            siteUrl={siteUrl}
+            labelledBy={outlineLabelId}
+          />
         ) : (
           <p className="text-sm text-muted-foreground">{NOT_SHOWABLE_COPY}</p>
         )}
@@ -183,44 +203,4 @@ function useUndoWindowOpen(offered: boolean, until: string | null | undefined): 
   if (!offered) return false;
   if (end === null) return true;
   return Number.isFinite(end) && end > now;
-}
-
-function OutlinePreview({ preview }: { preview: PagePreview }) {
-  return (
-    <div
-      data-testid="ability-outline"
-      className="max-h-72 space-y-2 overflow-y-auto rounded-md bg-muted/30 p-3 text-sm text-foreground"
-    >
-      <p className="break-words font-semibold">{preview.title}</p>
-      {preview.outline.map((node, i) => {
-        if (node.type === "heading") {
-          return (
-            <p key={i} className="break-words font-medium">
-              {node.text}
-            </p>
-          );
-        }
-        if (node.type === "paragraph") {
-          return (
-            <p key={i} className="break-words text-muted-foreground">
-              {node.text}
-            </p>
-          );
-        }
-        const Tag = node.ordered ? "ol" : "ul";
-        return (
-          <Tag
-            key={i}
-            className={cn("space-y-0.5 pl-5 text-muted-foreground", node.ordered ? "list-decimal" : "list-disc")}
-          >
-            {node.items.map((item, j) => (
-              <li key={j} className="break-words">
-                {item}
-              </li>
-            ))}
-          </Tag>
-        );
-      })}
-    </div>
-  );
 }
