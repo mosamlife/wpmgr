@@ -94,14 +94,33 @@ final class RestoreWatchdog
         $resumeCount = (int) ($row['resume_count'] ?? 0);
         $maxResumes  = (int) ($row['max_resumes'] ?? 6);
         if ($resumeCount >= $maxResumes) {
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct query on plugin-owned table; no core $wpdb helper exists; correctness requires a live read (anti-replay/locking)
-            @$wpdb->update(
-                $table,
-                ['phase' => RestoreRunner::PHASE_FAILED, 'last_progress_at' => time()],
-                ['snapshot_id' => $snapshotId, 'restore_id' => $restoreId],
-                ['%s', '%d'],
-                ['%s', '%s']
+            // The run ends here, so the FAILED row keeps what it held minus
+            // the run params (RestoreRunner::endedSubState()). The write
+            // applies only while last_progress_at is still the value read
+            // above: every runner write moves it, so a sub_state a runner
+            // wrote since is never replaced by the older copy read here.
+            $ended = json_encode(
+                RestoreRunner::endedSubState(self::decodeSubState($row['sub_state'] ?? '')),
+                JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR
             );
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct query on plugin-owned table; no core $wpdb helper exists; correctness requires a live read (anti-replay/locking)
+            $marked = @$wpdb->update(
+                $table,
+                [
+                    'phase'            => RestoreRunner::PHASE_FAILED,
+                    'sub_state'        => is_string($ended) ? $ended : '{}',
+                    'last_progress_at' => time(),
+                ],
+                ['snapshot_id' => $snapshotId, 'restore_id' => $restoreId, 'last_progress_at' => $lastProgress],
+                ['%s', '%s', '%d'],
+                ['%s', '%s', '%d']
+            );
+            if (!$marked) {
+                // The row moved on after it was read, or the write failed:
+                // the run has not been ended, so look at it again later.
+                self::schedule($snapshotId, $restoreId, self::RESCHEDULE_SECONDS);
+                return;
+            }
             \WPMgr\Agent\Support\DebugLog::write(sprintf(
                 'WPMgr Restore: %s/%s exhausted %d resume attempts; marked failed',
                 $snapshotId,

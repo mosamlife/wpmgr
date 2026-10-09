@@ -1,9 +1,11 @@
 package diagnostics
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"time"
@@ -30,17 +32,36 @@ type AgentErrorConfigClient interface {
 	SyncErrorConfig(ctx context.Context, siteID uuid.UUID, siteURL string, req agentcmd.ErrorConfigRequest) (agentcmd.ErrorConfigResult, error)
 }
 
+// repository is the persistence surface the service needs. *Repo satisfies it;
+// declared as an interface so the service is unit-testable with a fake (no DB).
+type repository interface {
+	UpsertDiagnostic(ctx context.Context, tenantID, siteID uuid.UUID, category Category, payload json.RawMessage, collectedAt time.Time) (Diagnostic, error)
+	ListDiagnosticsBySite(ctx context.Context, tenantID, siteID uuid.UUID) ([]Diagnostic, error)
+	UpsertPHPError(ctx context.Context, tenantID, siteID uuid.UUID, in UpsertPHPErrorInput) error
+	ListPHPErrorsBySite(ctx context.Context, tenantID, siteID uuid.UUID, f ListPHPErrorsFilter) ([]PHPError, string, error)
+	SetSilenced(ctx context.Context, tenantID, siteID uuid.UUID, md5 string, silenced bool) error
+	GetErrorConfig(ctx context.Context, tenantID, siteID uuid.UUID) (ErrorConfig, bool, error)
+	UpsertErrorConfig(ctx context.Context, cfg ErrorConfig) (ErrorConfig, error)
+	UpdateSiteTimezone(ctx context.Context, tenantID, siteID uuid.UUID, wpTimezone string, wpGMTOffset float64) error
+	SetSiteHostProvider(ctx context.Context, tenantID, siteID uuid.UUID, provider, org, ip string) error
+}
+
+var _ repository = (*Repo)(nil)
+
 // Service is a thin orchestrator: Repo + RefreshEnqueuer (optional) +
 // AgentErrorConfigClient (optional). Held stateless so handlers can compose
 // it freely.
 type Service struct {
-	repo          *Repo
+	repo          repository
 	enqueuer      RefreshEnqueuer
 	errorClient   AgentErrorConfigClient
 	siteLookup    SiteLookup
 	hostResolver  HostResolver
 	dbSizeHistory DBSizeHistorySink
 	reportedURL   ReportedURLSink
+	// logger is nil in production, which means slog.Default(); tests set it
+	// to capture output.
+	logger *slog.Logger
 }
 
 // ReportedURLSink receives the site address the agent reports in the http
@@ -67,9 +88,17 @@ type RefreshEnqueuer interface {
 	EnqueueRefreshDiagnostics(ctx context.Context, tenantID, siteID uuid.UUID) error
 }
 
-// NewService builds a Service.
-func NewService(repo *Repo) *Service {
+// NewService builds a Service. Production passes *Repo.
+func NewService(repo repository) *Service {
 	return &Service{repo: repo}
+}
+
+// log returns the service's logger, or the process default when none is set.
+func (s *Service) log() *slog.Logger {
+	if s.logger != nil {
+		return s.logger
+	}
+	return slog.Default()
 }
 
 // SetHostResolver wires the offline IP -> hosting-provider resolver (M28).
@@ -230,12 +259,30 @@ func (s *Service) SaveErrorConfig(ctx context.Context, tenantID, siteID uuid.UUI
 //
 // We extract `collected_at` (agent-side Unix seconds) and apply it to every
 // category's row so a tab of cards can render a single "as of" timestamp.
+//
+// collected_at is required (GH #618). A push without a positive integer
+// collected_at is refused whole with a validation error (HTTP 422): no
+// category row, no DB-size trend point, no timezone or address update. A
+// report of unknown age is never stored as if it had just been collected,
+// because the operator view would then show it as fresh.
 func (s *Service) IngestDiagnostics(ctx context.Context, tenantID, siteID uuid.UUID, body []byte) (int, error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return 0, err
 	}
-	collected := agentCollectedAt(raw)
+	collected, err := agentCollectedAt(raw)
+	if err != nil {
+		if de, ok := domain.AsDomain(err); ok && de.Code == codeCollectedAtInvalid {
+			// One line per refused push. The value's length is logged, never
+			// the value: it is request content of unknown shape.
+			s.log().Warn("diagnostics push refused: collected_at is not a positive integer",
+				slog.String("tenant_id", tenantID.String()),
+				slog.String("site_id", siteID.String()),
+				slog.Int("collected_at_len", len(raw["collected_at"])),
+			)
+		}
+		return 0, err
+	}
 	count := 0
 	for _, cat := range AllCategories() {
 		payload, ok := raw[string(cat)]
@@ -480,18 +527,30 @@ func (s *Service) ingestSiteTimezone(ctx context.Context, tenantID, siteID uuid.
 	_ = s.repo.UpdateSiteTimezone(ctx, tenantID, siteID, identity.Timezone, identity.GMTOffset)
 }
 
-// agentCollectedAt pulls the agent-side collection timestamp out of the
-// payload. Falls back to "now" if the agent omitted it.
-func agentCollectedAt(raw map[string]json.RawMessage) time.Time {
+// Error codes for a diagnostics push whose collection time is unusable. The
+// two are told apart so a corrupted value can be logged and an absent one
+// need not be.
+const (
+	codeCollectedAtMissing = "collected_at_missing"
+	codeCollectedAtInvalid = "collected_at_invalid"
+)
+
+// agentCollectedAt pulls the agent-side collection timestamp (Unix seconds)
+// out of the payload. An absent or null value returns a collected_at_missing
+// validation error; anything that is not a positive integer returns
+// collected_at_invalid. There is no fallback to the current time.
+func agentCollectedAt(raw map[string]json.RawMessage) (time.Time, error) {
 	v, ok := raw["collected_at"]
-	if !ok || len(v) == 0 {
-		return time.Now().UTC()
+	if !ok || len(bytes.TrimSpace(v)) == 0 || bytes.Equal(bytes.TrimSpace(v), []byte("null")) {
+		return time.Time{}, domain.Validation(codeCollectedAtMissing,
+			"The diagnostics report has no collection time (collected_at), so it was not saved.")
 	}
 	var ts int64
 	if err := json.Unmarshal(v, &ts); err != nil || ts <= 0 {
-		return time.Now().UTC()
+		return time.Time{}, domain.Validation(codeCollectedAtInvalid,
+			"The diagnostics report has an unreadable collection time (collected_at), so it was not saved.")
 	}
-	return time.Unix(ts, 0).UTC()
+	return time.Unix(ts, 0).UTC(), nil
 }
 
 func coalesce(s, fallback string) string {

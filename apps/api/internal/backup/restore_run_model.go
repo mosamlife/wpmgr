@@ -63,6 +63,16 @@ func isTerminalRestorePhase(phase string) bool {
 	return ok
 }
 
+// restoreRunFinished reports whether a restore run status is final
+// (completed, failed or rolled_back).
+func restoreRunFinished(status string) bool {
+	switch status {
+	case RestoreStatusCompleted, RestoreStatusFailed, RestoreStatusRolledBack:
+		return true
+	}
+	return false
+}
+
 // RestoreRun is one row from restore_runs: the durable record of a restore
 // attempt, created when the operator calls POST /backups/:id/restore.
 type RestoreRun struct {

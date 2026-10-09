@@ -1183,8 +1183,11 @@ func (w *Worker) rollback(ctx context.Context, task Task, siteURL string, item a
 	from := fromOr(res.FromVersion, task.FromVersion)
 	fatal := confirmedFatal(probe, agentConfirmedFatal)
 	isCore := item.Type == TargetCore
+	// Each failed outcome below leaves the update applied and nothing rolled
+	// back, so it finishes through finishSiteChanged: the task stays failed and
+	// the site's inventory is still refreshed.
 	if isCore && !fatal {
-		return w.finish(ctx, task, TaskFailed, from, res.ToVersion, coreLeftAsIsDetail, reason)
+		return w.finishSiteChanged(ctx, task, TaskFailed, from, res.ToVersion, coreLeftAsIsDetail, reason)
 	}
 	rbResp, rbErr := w.cmd.Rollback(ctx, task.SiteID, siteURL, agentcmd.RollbackRequest{
 		Type:               item.Type,
@@ -1200,7 +1203,7 @@ func (w *Worker) rollback(ctx context.Context, task Task, siteURL string, item a
 	// the most dangerous shape of this bug: the site is still broken and the
 	// record says it was recovered. Report it as a failed rollback instead.
 	if rbErr == nil && !rbResp.OK {
-		return w.finish(ctx, task, TaskFailed, from, res.ToVersion,
+		return w.finishSiteChanged(ctx, task, TaskFailed, from, res.ToVersion,
 			"rollback REFUSED by agent after unhealthy update: "+reason,
 			detailOr(rbResp.Log, "agent returned ok=false"))
 	}
@@ -1227,15 +1230,31 @@ func (w *Worker) rollback(ctx context.Context, task Task, siteURL string, item a
 			detail = "site not responding: site-wide PHP fatal after update; rollback command undeliverable. " +
 				"The agent update watchdog will attempt automatic filesystem recovery; if it cannot, manual filesystem recovery is required."
 		}
-		return w.finish(ctx, task, TaskFailed, from, res.ToVersion, detail, rbErr.Error())
+		return w.finishSiteChanged(ctx, task, TaskFailed, from, res.ToVersion, detail, rbErr.Error())
 	}
 	return w.finish(ctx, task, TaskRolledBack, from, from, "rolled back: "+reason, "")
 }
 
 // finish records a terminal task state, publishes it, records an audit event,
 // and completes the run if this was the last outstanding task. It returns nil
-// (the task reached a terminal state; the River job succeeds).
+// (the task reached a terminal state; the River job succeeds). A succeeded or
+// rolled-back task also requests the post-update inventory refresh.
 func (w *Worker) finish(ctx context.Context, task Task, status, fromVersion, toVersion, detail, errMsg string) error {
+	return w.finishTask(ctx, task, status, fromVersion, toVersion, detail, errMsg,
+		status == TaskSucceeded || status == TaskRolledBack)
+}
+
+// finishSiteChanged is finish for an outcome that changed the site whatever
+// the task's status, such as an update that applied and was not rolled back.
+// It requests the post-update inventory refresh, so the dashboard shows the
+// version the site is on now.
+func (w *Worker) finishSiteChanged(ctx context.Context, task Task, status, fromVersion, toVersion, detail, errMsg string) error {
+	return w.finishTask(ctx, task, status, fromVersion, toVersion, detail, errMsg, true)
+}
+
+// finishTask is finish and finishSiteChanged. siteChanged decides whether the
+// post-update inventory refresh is requested.
+func (w *Worker) finishTask(ctx context.Context, task Task, status, fromVersion, toVersion, detail, errMsg string, siteChanged bool) error {
 	finished, err := w.repo.FinishTask(ctx, FinishTaskInput{
 		TenantID:    task.TenantID,
 		TaskID:      task.ID,
@@ -1266,25 +1285,19 @@ func (w *Worker) finish(ctx context.Context, task Task, status, fromVersion, toV
 
 	// Post-update inventory refresh: ask the agent to re-read its plugin/theme
 	// inventory and update transients now that the site state has changed. Only
-	// fires for state-changing terminals (succeeded/rolled_back); skipped/failed
-	// would not have moved the site forward. Debounced per-site (30s window) so
-	// a bulk run does not enqueue N refresh jobs back-to-back.
-	w.maybeEnqueueRefresh(ctx, finished)
+	// fires when the outcome changed the site (siteChanged); an outcome that
+	// left the site as it was needs no fresh inventory. Debounced per-site (30s
+	// window) so a bulk run does not enqueue N refresh jobs back-to-back.
+	w.maybeEnqueueRefresh(ctx, finished, siteChanged)
 	return nil
 }
 
-// maybeEnqueueRefresh enqueues a refresh-inventory job for the task's site, if
-// the refresher is wired and the per-site debouncer allows it. Best-effort: an
-// enqueue failure is logged but never bubbled out of Work (the task already
-// reached a terminal state).
-func (w *Worker) maybeEnqueueRefresh(ctx context.Context, task Task) {
-	if w.refresher == nil {
-		return
-	}
-	// Only state-changing outcomes warrant a fresh inventory pull.
-	switch task.Status {
-	case TaskSucceeded, TaskRolledBack:
-	default:
+// maybeEnqueueRefresh enqueues a refresh-inventory job for the task's site
+// when siteChanged, the refresher is wired and the per-site debouncer allows
+// it. Best-effort: an enqueue failure is logged but never bubbled out of Work
+// (the task already reached a terminal state).
+func (w *Worker) maybeEnqueueRefresh(ctx context.Context, task Task, siteChanged bool) {
+	if w.refresher == nil || !siteChanged {
 		return
 	}
 	if w.refreshSkip != nil && !w.refreshSkip.Allow(task.SiteID) {
