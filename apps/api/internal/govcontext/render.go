@@ -240,7 +240,7 @@ func quotedItem(s string) string {
 func oneLine(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {
-		case '\n', '\r', '\v', '\f', '\u0085', ' ', ' ':
+		case '\n', '\r', '\v', '\f', '\u0085', '\u2028', '\u2029':
 			return ' '
 		}
 		return r
