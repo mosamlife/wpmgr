@@ -561,28 +561,25 @@ const (
 		"without captions. Send editor wordpress_blocks only for a site that uses the block editor."
 )
 
+// precheckRefusalHints are the input-related refusal codes and their fixed
+// hints. Every key is an agent refusal code, so it is in
+// agentcmd.AbilityRunRefusalCodes: a code outside that set arrives as
+// unknown and its hint could never be given.
+var precheckRefusalHints = map[string]string{
+	"create_content_invalid":        hintCreateContentInvalid,
+	pageCreateBadInput:              hintBadInput,
+	"sanitiser_changed_new_content": hintSanitiserChanged,
+	pageCreateLayoutInvalid:         hintLayoutInvalid,
+	pageCreateLinkInvalid:           hintLinkInvalid,
+	"image_not_available":           hintImageNotAvailable,
+	"image_url_unusable":            hintImageURLUnusable,
+	pageCreateNeedsBlockEditor:      hintLayoutNeedsBlockEditor,
+}
+
 // precheckRefusalHint maps an input-related refusal code to a fixed hint,
 // or "" for a code that is not about the input.
 func precheckRefusalHint(code string) string {
-	switch code {
-	case "create_content_invalid":
-		return hintCreateContentInvalid
-	case pageCreateBadInput:
-		return hintBadInput
-	case "sanitiser_changed_new_content":
-		return hintSanitiserChanged
-	case pageCreateLayoutInvalid:
-		return hintLayoutInvalid
-	case pageCreateLinkInvalid:
-		return hintLinkInvalid
-	case "image_not_available":
-		return hintImageNotAvailable
-	case "image_url_unusable":
-		return hintImageURLUnusable
-	case pageCreateNeedsBlockEditor:
-		return hintLayoutNeedsBlockEditor
-	}
-	return ""
+	return precheckRefusalHints[code]
 }
 
 // abilityRequestFacts are the stored facts a request's digest covers.

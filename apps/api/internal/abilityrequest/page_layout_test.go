@@ -51,6 +51,54 @@ func TestAgentFloorFor_PageCreateInput(t *testing.T) {
 	}
 }
 
+// TestWorkerLayoutRequestOldAgentNotSent drives the dispatch check checkSite
+// applies to an approved row: a layout request whose site's plugin went
+// below the layout floor after approval closes not_sent/agent_outdated and
+// is never sent; a text-only request on the same plugin goes on, and so
+// does the layout request once the plugin is at the floor.
+func TestWorkerLayoutRequestOldAgentNotSent(t *testing.T) {
+	approved := func(ability, input string) sqlc.GetApprovedAbilityRequestForDispatchRow {
+		return sqlc.GetApprovedAbilityRequestForDispatchRow{
+			AssistantAbilityRequest: sqlc.AssistantAbilityRequest{AbilityName: ability, InputJson: input},
+			EntryEnabled:            true, EntryHashCurrent: true, RouteEnabled: true, RouteHashCurrent: true,
+		}
+	}
+	on := func(version string) sqlc.Site { return sqlc.Site{AgentVersion: version} }
+	below := "0.61.158"
+	cases := []struct {
+		name string
+		row  sqlc.GetApprovedAbilityRequestForDispatchRow
+		site sqlc.Site
+		want string
+	}{
+		{"layout page below the layout floor", approved(mcp.AbilityPageCreate, layoutInput), on(below), ReasonAgentOutdated},
+		{"layout page on no reported version", approved(mcp.AbilityPageCreate, layoutInput), on(""), ReasonAgentOutdated},
+		{"layout page at the layout floor", approved(mcp.AbilityPageCreate, layoutInput), on(agentcmd.MinAgentVersionForPageLayout), ""},
+		{"text-only page below the layout floor", approved(mcp.AbilityPageCreate, textOnlyInput), on(below), ""},
+		{"text-only page below the page-create floor", approved(mcp.AbilityPageCreate, textOnlyInput), on("0.61.155"), ReasonAgentOutdated},
+		{"rest write below its floor", approved(mcp.AbilityRestWrite, `{}`), on("0.61.157"), ReasonAgentOutdated},
+	}
+	for _, c := range cases {
+		if got := notSentBeforeReserve(c.row, c.site, true); got != c.want {
+			t.Errorf("%s: reason %q, want %q", c.name, got, c.want)
+		}
+	}
+	// The earlier checks keep their order: a site out of scope, a passed
+	// deadline and a changed entry are named before the plugin version.
+	row := approved(mcp.AbilityPageCreate, layoutInput)
+	if got := notSentBeforeReserve(row, on(below), false); got != ReasonSiteAbsent {
+		t.Errorf("site out of scope: %q", got)
+	}
+	row.PastDeadline = true
+	if got := notSentBeforeReserve(row, on(below), true); got != ReasonDispatchDeadlinePassed {
+		t.Errorf("deadline passed: %q", got)
+	}
+	row.PastDeadline, row.EntryHashCurrent = false, false
+	if got := notSentBeforeReserve(row, on(below), true); got != ReasonEntryChanged {
+		t.Errorf("entry changed: %q", got)
+	}
+}
+
 const storedPageCard = `{"kind": "page_create", "media": [{"id": 42, "mime": "image/jpeg", "width": 1200, "height": 800, ` +
 	`"filename": "team-photo.jpg"}, {"id": 7, "mime": "image/png", "width": 0, "height": 0, "filename": "café.png"}]}`
 

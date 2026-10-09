@@ -3,10 +3,14 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -20,6 +24,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/httpclient"
 	"github.com/mosamlife/wpmgr/apps/api/migrations"
 )
 
@@ -658,7 +663,50 @@ func (railReadyStore) ListOpenRequestStatus(context.Context, domain.Principal, u
 	return nil, nil
 }
 
+// wireRefusingAgent answers every call with the agent's own refusal JSON
+// over HTTP, read back by the production client and decoder: a code the
+// control plane does not know arrives as unknown, exactly as from a site.
+type wireRefusingAgent struct {
+	srv    *httptest.Server
+	client *agentcmd.Client
+	calls  []agentcmd.AbilityRunCall
+}
+
+func newWireRefusingAgent(t *testing.T, code string) *wireRefusingAgent {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": false, "outcome": "refused", "code": code, "detail": plantedInstruction, "retryable": false,
+		})
+	}))
+	t.Cleanup(srv.Close)
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := agentcmd.NewSigner(base64.StdEncoding.EncodeToString(priv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Test-only: the agent is a loopback httptest server.
+	hc := httpclient.New(httpclient.Config{AllowPrivateNetworks: true})
+	return &wireRefusingAgent{srv: srv, client: agentcmd.NewClient(hc, signer)}
+}
+
+func (a *wireRefusingAgent) AbilityRun(ctx context.Context, siteID uuid.UUID, _ string, call agentcmd.AbilityRunCall) (agentcmd.AbilityRunResponse, error) {
+	a.calls = append(a.calls, call)
+	return a.client.AbilityRun(ctx, siteID, a.srv.URL, call)
+}
+
 func pageCreateRunRouter(t *testing.T, agentVersion, precheckCode string) (*gin.Engine, *refusingPrecheckAgent, uuid.UUID) {
+	t.Helper()
+	agent := &refusingPrecheckAgent{code: precheckCode}
+	r, site := pageCreateRunRouterWith(t, agentVersion, agent)
+	return r, agent, site
+}
+
+func pageCreateRunRouterWith(t *testing.T, agentVersion string, agent AbilityAgent) (*gin.Engine, uuid.UUID) {
 	t.Helper()
 	f := newAbilityFixture(t)
 	f.store.recheck.GrantCapabilities = []string{string(CapSitesRead), string(CapAbilityRead), string(CapAbilityRequest)}
@@ -674,7 +722,6 @@ func pageCreateRunRouter(t *testing.T, agentVersion, precheckCode string) (*gin.
 	f.ab.cat = append(f.ab.cat, entry)
 	f.ab.rows = append(f.ab.rows, sqlc.SiteAbilityInventory{SiteID: f.siteID, Name: AbilityPageCreate, OwnerKind: "plugin"})
 
-	agent := &refusingPrecheckAgent{code: precheckCode}
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	svc := NewService(railReadyStore{f.store}).WithContextResolver(emptyContextResolver()).withAuditRecorder(&capturingRecorder{})
@@ -688,7 +735,7 @@ func pageCreateRunRouter(t *testing.T, agentVersion, precheckCode string) (*gin.
 		t.Fatal(err)
 	}
 	NewTransportHandler(svc, slog.New(slog.DiscardHandler), "test-version").Register(r)
-	return r, agent, f.siteID
+	return r, f.siteID
 }
 
 type runRefusal struct {
@@ -778,21 +825,51 @@ func TestPageCreateRun_GrammarRefusalsCarryFixedHints(t *testing.T) {
 	}
 }
 
-// A precheck refused over an image or the layout carries our hint, never
-// the site's words.
+// A precheck refused over its input carries our hint, never the site's
+// words. Every hinted code is the agent's own JSON, sent over HTTP and read
+// by the production client and decoder, so a code the decoder does not know
+// (and turns into unknown) fails here.
 func TestPageCreateRun_PrecheckRefusalHints(t *testing.T) {
 	image := `{"post_type":"page","editor":"wordpress_blocks","title":"T","outline":[{"type":"image","attachment_id":42,"alt":""}]}`
-	for code, hint := range map[string]string{
-		"image_not_available": hintImageNotAvailable, "image_url_unusable": hintImageURLUnusable,
-		pageCreateLayoutInvalid: hintLayoutInvalid, pageCreateNeedsBlockEditor: hintLayoutNeedsBlockEditor,
-	} {
-		r, agent, site := pageCreateRunRouter(t, agentcmd.MinAgentVersionForPageLayout, code)
+	for _, code := range []string{"image_not_available", "image_url_unusable", pageCreateLayoutInvalid,
+		pageCreateLinkInvalid, pageCreateNeedsBlockEditor} {
+		if precheckRefusalHints[code] == "" {
+			t.Fatalf("%s: a grammar v2 refusal has no hint", code)
+		}
+	}
+	for code, hint := range precheckRefusalHints {
+		agent := newWireRefusingAgent(t, code)
+		r, site := pageCreateRunRouterWith(t, agentcmd.MinAgentVersionForPageLayout, agent)
 		ref := runPageCreate(t, r, site, image)
 		if len(agent.calls) != 1 || ref.data["code"] != code || ref.data["hint"] != hint {
 			t.Errorf("%s: %s", code, ref.raw)
 		}
 		if strings.Contains(ref.raw, plantedInstruction) {
 			t.Errorf("%s: the site's words reached the AI: %s", code, ref.raw)
+		}
+	}
+}
+
+// Every code the shared case table says the agent answers, and every code
+// with a fixed hint, is in the closed refusal set; outside it a code arrives
+// as unknown.
+func TestPageCreateRefusalCodesAreAgentCodes(t *testing.T) {
+	seen := 0
+	for _, c := range readLayoutCases(t) {
+		if c.Agent == "ok" {
+			continue
+		}
+		seen++
+		if _, ok := agentcmd.AbilityRunRefusalCodes[c.Agent]; !ok {
+			t.Errorf("%s: the agent answers %q, which is not in agentcmd.AbilityRunRefusalCodes", c.Name, c.Agent)
+		}
+	}
+	if seen == 0 {
+		t.Fatal("the case table has no refused case; it proves nothing")
+	}
+	for code := range precheckRefusalHints {
+		if _, ok := agentcmd.AbilityRunRefusalCodes[code]; !ok {
+			t.Errorf("%q has a hint but is not in agentcmd.AbilityRunRefusalCodes", code)
 		}
 	}
 }
