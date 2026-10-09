@@ -4,7 +4,7 @@
 // audit recorder. Only the two enqueuers are fakes, so a queued job can be
 // counted.
 //
-// What is proven here and cannot be proven by the unit tests:
+// What this test asserts, which the unit tests cannot:
 //   - another tenant's GET and POST on a site answer 404 site_not_found, queue
 //     nothing and write no audit row, while the same POST from the owning
 //     tenant queues both reads and writes one;
@@ -181,10 +181,10 @@ func TestAIReadinessAPIIsolation(t *testing.T) {
 	adm := connectAdmin(t, app)
 	defer adm.Close()
 
-	// Every row of the checklist passes for this site, and two of them only
-	// when the reader sees both the site's inventory run and the ability
-	// Elementor registered: without the run the AI tools row is unknown, and
-	// without the ability it fails.
+	// Every row of the checklist passes for this site. Elementor's AI tools row
+	// passes only when the reader sees both the site's inventory run and the
+	// ability Elementor registered: without the run it is unknown, and without
+	// the ability it fails.
 	fl := aireadiness.DefaultFloors()
 	agent := fl.Agent
 	for _, v := range []string{fl.FactsAgent, fl.EngineAgent} {
