@@ -222,4 +222,6 @@ export function settingNotSentLine(reason: string | null | undefined): string | 
   return null;
 }
 
+export const RAN_AUTOMATICALLY = "Ran automatically";
+
 export const UNDO_WINDOW_OVER_LINE = "Undo is no longer available. Its period has ended.";

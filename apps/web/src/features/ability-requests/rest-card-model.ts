@@ -1,7 +1,15 @@
 import { z } from "zod";
 import type { AbilityRequest } from "@wpmgr/api";
 
-import { clockTime, notSentText, refusalAdvice, type AbilityStatus } from "./ability-card-model";
+import { settingNotSentLine } from "@/features/ai-trust/ai-trust-copy";
+
+import {
+  approvedNotStartedText,
+  clockTime,
+  notSentText,
+  refusalAdvice,
+  type AbilityStatus,
+} from "./ability-card-model";
 
 // Pure logic for the structured "AI changes a site field" card (engine slice
 // E3). Every string below is plain data for a text node: the AI's requested
@@ -102,10 +110,7 @@ export function restWriteStatus(r: AbilityRequest): AbilityStatus {
     case "pending":
       return { kind: "pending", text: "Waiting for your decision." };
     case "approved":
-      return {
-        kind: "approved",
-        text: `Approved at ${clockTime(r.decided_at)}. Not started yet. WPMgr sends it to the site shortly.`,
-      };
+      return { kind: "approved", text: approvedNotStartedText(r) };
     case "dispatched":
       return { kind: "running", text: "WPMgr is making the change on the site." };
     case "outcome_unknown":
@@ -142,7 +147,9 @@ export function restWriteStatus(r: AbilityRequest): AbilityStatus {
     case "not_sent":
       return {
         kind: "not_sent",
-        text: `Nothing was sent: ${notSentText(r.not_sent_reason)}. Nothing was changed.`,
+        text:
+          settingNotSentLine(r.not_sent_reason) ??
+          `Nothing was sent: ${notSentText(r.not_sent_reason)}. Nothing was changed.`,
       };
     case "declined":
       return { kind: "declined", text: `Declined at ${clockTime(r.decided_at)}. Nothing was changed.` };

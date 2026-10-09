@@ -2,6 +2,9 @@
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageError } from "@/components/feedback/page-error";
+import { useMe } from "@/features/auth/use-auth";
+import { ENABLE_NOTICE } from "@/features/ai-trust/ai-trust-copy";
+import { SiteAiModeSetting } from "@/features/ai-trust/site-ai-mode-setting";
 
 import { AbilityRequestCard } from "./ability-request-card";
 import { useAbilityCardActions } from "./use-ability-card-actions";
@@ -13,9 +16,10 @@ import {
   useEnableContentEditing,
 } from "./use-ability-requests";
 
-// The "AI editing" part of a site's Content tab: the per-site switch, then the
-// site's AI page-creation requests. The API lists requests per site only, so
-// this lives on the site and not on the organisation-wide /ai/requests page.
+// The "AI editing" part of a site's Content tab: the per-site switch, then,
+// once it is on, the site's AI mode (how much the AI may do here without
+// asking), then the site's AI activity: every change an AI connection asked
+// for, whether it waits for a person or ran under the site's setting.
 
 export const EDITING_OFF_COPY = "AI page creation is off for this site.";
 export const AGENT_OUTDATED_COPY = "Update the WPMgr plugin to 0.61.156 or later, then turn this on.";
@@ -48,6 +52,7 @@ export function AiEditingSection({ siteId, siteUrl, canOperate }: AiEditingSecti
 function AiEditingSwitch({ siteId, canOperate }: { siteId: string; canOperate: boolean }) {
   const state = useContentEditing(siteId);
   const enable = useEnableContentEditing(siteId);
+  const { data: me } = useMe();
 
   if (state.isPending) {
     return <Skeleton aria-label="Loading AI editing" className="h-14 w-full" />;
@@ -63,27 +68,31 @@ function AiEditingSwitch({ siteId, canOperate }: { siteId: string; canOperate: b
     );
   }
 
-  const on = state.data.enabled;
+  if (state.data.enabled) {
+    return <SiteAiModeSetting siteId={siteId} canOperate={canOperate} currentUserId={me?.user.id ?? null} />;
+  }
   return (
     <div className="space-y-2 rounded-lg border border-border bg-card p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-0.5">
           <h2 className="text-sm font-semibold text-foreground">AI editing</h2>
           <p data-testid="ai-editing-state" className="text-sm text-muted-foreground">
-            {on
-              ? "AI page creation is on. Each draft the AI asks for still needs your approval."
-              : EDITING_OFF_COPY}
+            {EDITING_OFF_COPY}
           </p>
         </div>
-        {!on && canOperate ? (
+        {canOperate ? (
           <Button type="button" disabled={enable.isPending} onClick={() => enable.mutate()}>
             {enable.isPending ? "Turning on…" : "Turn on"}
           </Button>
         ) : null}
       </div>
-      {!on && !canOperate ? (
+      {canOperate ? (
+        <p data-testid="ai-editing-enable-notice" className="text-xs text-muted-foreground">
+          {ENABLE_NOTICE}
+        </p>
+      ) : (
         <p className="text-xs text-muted-foreground">An operator can turn this on.</p>
-      ) : null}
+      )}
       {enable.isError ? (
         <p role="alert" className="text-sm text-destructive">
           {enableErrorCopy(enable.error)}
@@ -108,28 +117,28 @@ function AbilityRequestList({ siteId, siteUrl }: { siteId: string; siteUrl?: str
 
   return (
     <div className="space-y-3" data-testid="ability-requests">
-      <h2 className="text-sm font-semibold text-foreground">AI requests</h2>
+      <h2 className="text-sm font-semibold text-foreground">AI activity</h2>
       {query.isPending ? (
         <div aria-hidden="true" className="space-y-3">
           <Skeleton className="h-40 w-full" />
         </div>
       ) : query.isError && loaded.length === 0 ? (
         <PageError
-          what="Could not load AI requests."
+          what="Could not load AI activity."
           why={query.error.message}
           onRetry={() => void query.refetch()}
-          retryLabel="Reload requests"
+          retryLabel="Reload activity"
           isRetrying={query.isFetching}
         />
       ) : requests.length === 0 ? (
         <p data-testid="ability-requests-empty" className="text-sm text-muted-foreground">
-          No AI requests for this site yet.
+          No AI activity for this site yet.
         </p>
       ) : (
         <div className="space-y-4">
           {query.isRefetchError && !query.isFetchNextPageError ? (
             <div role="alert" className="text-sm text-destructive">
-              Couldn&apos;t refresh the requests. What you see may be out of date.
+              Couldn&apos;t refresh the activity. What you see may be out of date.
               <Button
                 type="button"
                 variant="outline"
