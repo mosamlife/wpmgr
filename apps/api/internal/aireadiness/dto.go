@@ -220,20 +220,12 @@ func decodeStoredBuilderFacts(raw []byte) BuilderFacts {
 	return bf
 }
 
-type ownerCountKey struct {
-	site      uuid.UUID
-	namespace string
-}
-
-// assembleFacts joins the facts rows with the per-namespace attributed
-// ability counts. Counts for a site the facts query did not return are
-// ignored. When only is set, rows for any other site are dropped: the SQL
+// assembleFacts maps the combined facts and ability-count rows to Facts. The
+// builder ability counts are the attributed ones: abilities registered by the
+// builder itself. The in-namespace counts are for diagnostics and never reach
+// Facts. When only is set, rows for any other site are dropped: the SQL
 // already narrows to it, and this is the second check.
-func assembleFacts(rows []sqlc.ListAIReadinessSiteFactsRow, counts []sqlc.CountAIReadinessAbilityOwnersRow, only *uuid.UUID) []Facts {
-	attributed := make(map[ownerCountKey]int64, len(counts))
-	for _, c := range counts {
-		attributed[ownerCountKey{c.SiteID, c.Namespace}] = c.Attributed
-	}
+func assembleFacts(rows []sqlc.ListAIReadinessSiteFactsWithAbilityCountsRow, only *uuid.UUID) []Facts {
 	out := make([]Facts, 0, len(rows))
 	for _, r := range rows {
 		if only != nil && r.SiteID != *only {
@@ -257,8 +249,8 @@ func assembleFacts(rows []sqlc.ListAIReadinessSiteFactsRow, counts []sqlc.CountA
 			AbilitiesAsOf:         tsPtr(r.AbilitiesCheckedAt),
 			AbilitiesAPIPresent:   deref(r.AbilitiesApiPresent),
 			AbilitiesTruncated:    deref(r.AbilitiesTruncated),
-			ElementorAbilities:    attributed[ownerCountKey{r.SiteID, "elementor"}],
-			BricksAbilities:       attributed[ownerCountKey{r.SiteID, "bricks"}],
+			ElementorAbilities:    r.ElementorAbilitiesAttributed,
+			BricksAbilities:       r.BricksAbilitiesAttributed,
 		})
 	}
 	return out

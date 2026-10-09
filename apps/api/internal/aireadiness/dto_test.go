@@ -130,14 +130,14 @@ func TestStoredBuilderFactsReachTheChecklistAsStated(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			yes := true
-			rows := []sqlc.ListAIReadinessSiteFactsRow{{
+			rows := []sqlc.ListAIReadinessSiteFactsWithAbilityCountsRow{{
 				SiteID: site, WpVersion: "7.1", AgentVersion: c.agent,
 				ElementorInstalled: true, ElementorVersion: "4.3.4", ElementorActive: true,
 				BuilderFacts:       c.doc,
 				AbilitiesCheckedAt: ts(time.Now()), AbilitiesApiPresent: &yes,
+				ElementorAbilitiesAttributed: 1, ElementorAbilitiesInNamespace: 1,
 			}}
-			counts := []sqlc.CountAIReadinessAbilityOwnersRow{{SiteID: site, Namespace: "elementor", Attributed: 1, InNamespace: 1}}
-			facts := assembleFacts(rows, counts, nil)
+			facts := assembleFacts(rows, nil)
 			if len(facts) != 1 {
 				t.Fatalf("assembleFacts returned %d rows, want 1", len(facts))
 			}
@@ -153,7 +153,9 @@ func TestAssembleFactsMapsEveryColumn(t *testing.T) {
 	yes, no := true, false
 	elementorSite, bricksSite, bareSite := uuid.New(), uuid.New(), uuid.New()
 
-	rows := []sqlc.ListAIReadinessSiteFactsRow{
+	// Every count column holds a different number, so a count read from the
+	// wrong column or the wrong builder cannot land on the right value.
+	rows := []sqlc.ListAIReadinessSiteFactsWithAbilityCountsRow{
 		{
 			SiteID: elementorSite, WpVersion: "7.1.2", AgentVersion: "0.61.159",
 			ComponentsUpdatedAt: ts(pushed), ContentEditingEnabledAt: ts(enabled),
@@ -161,15 +163,19 @@ func TestAssembleFactsMapsEveryColumn(t *testing.T) {
 			McpAdapterActive:   true,
 			BuilderFacts:       []byte(`{"theme_template":"twentytwentyfive","elementor":{"atomic_editor":true}}`),
 			AbilitiesCheckedAt: ts(checked), AbilitiesApiPresent: &yes, AbilitiesTruncated: &no,
+			ElementorAbilitiesAttributed: 3, ElementorAbilitiesInNamespace: 5,
+			BricksAbilitiesAttributed: 0, BricksAbilitiesInNamespace: 2,
 		},
 		{
 			SiteID: bricksSite, WpVersion: "6.9", AgentVersion: "0.61.158",
 			BricksInstalled: true, BricksVersion: "2.4.1", BricksActive: true,
 			AbilitiesCheckedAt: ts(checked), AbilitiesApiPresent: &no, AbilitiesTruncated: &yes,
+			ElementorAbilitiesAttributed: 0, ElementorAbilitiesInNamespace: 7,
+			BricksAbilitiesAttributed: 4, BricksAbilitiesInNamespace: 9,
 		},
 		{SiteID: bareSite},
 	}
-	got := assembleFacts(rows, nil, nil)
+	got := assembleFacts(rows, nil)
 
 	want := []Facts{
 		{
@@ -182,11 +188,13 @@ func TestAssembleFactsMapsEveryColumn(t *testing.T) {
 				Elementor: &ElementorFacts{AtomicEditor: &yes},
 			},
 			InventoryChecked: true, AbilitiesAsOf: &checked, AbilitiesAPIPresent: true, AbilitiesTruncated: false,
+			ElementorAbilities: 3, BricksAbilities: 0,
 		},
 		{
 			SiteID: bricksSite, WPVersion: "6.9", AgentVersion: "0.61.158",
 			BricksInstalled: true, BricksVersion: "2.4.1", BricksActive: true,
 			InventoryChecked: true, AbilitiesAsOf: &checked, AbilitiesAPIPresent: false, AbilitiesTruncated: true,
+			ElementorAbilities: 0, BricksAbilities: 4,
 		},
 		{SiteID: bareSite},
 	}
@@ -200,31 +208,35 @@ func TestAssembleFactsMapsEveryColumn(t *testing.T) {
 	}
 }
 
-func TestAssembleFactsJoinsOwnerCountsBySiteAndNamespace(t *testing.T) {
-	a, b, c, stranger := uuid.New(), uuid.New(), uuid.New(), uuid.New()
-	rows := []sqlc.ListAIReadinessSiteFactsRow{{SiteID: a}, {SiteID: b}, {SiteID: c}}
-	counts := []sqlc.CountAIReadinessAbilityOwnersRow{
-		{SiteID: a, Namespace: "elementor", Attributed: 3, InNamespace: 5},
-		{SiteID: a, Namespace: "bricks", Attributed: 2, InNamespace: 9},
-		{SiteID: b, Namespace: "elementor", Attributed: 7, InNamespace: 7},
-		{SiteID: stranger, Namespace: "elementor", Attributed: 11, InNamespace: 11},
-		{SiteID: stranger, Namespace: "bricks", Attributed: 13, InNamespace: 13},
-		{SiteID: c, Namespace: "core", Attributed: 17, InNamespace: 17},
-		{SiteID: c, Namespace: "Elementor", Attributed: 19, InNamespace: 19},
+// Only the count of abilities registered by the builder itself reaches Facts,
+// per site and per builder. The in-namespace count, which includes a same-named
+// ability from anything else, is read by nothing.
+func TestAssembleFactsTakesTheAttributedCountsOfEachSiteAndBuilder(t *testing.T) {
+	a, b, c := uuid.New(), uuid.New(), uuid.New()
+	rows := []sqlc.ListAIReadinessSiteFactsWithAbilityCountsRow{
+		{SiteID: a,
+			ElementorAbilitiesAttributed: 3, ElementorAbilitiesInNamespace: 5,
+			BricksAbilitiesAttributed: 2, BricksAbilitiesInNamespace: 9},
+		{SiteID: b,
+			ElementorAbilitiesAttributed: 7, ElementorAbilitiesInNamespace: 7},
+		// Abilities in the namespaces, none registered by a builder.
+		{SiteID: c,
+			ElementorAbilitiesAttributed: 0, ElementorAbilitiesInNamespace: 17,
+			BricksAbilitiesAttributed: 0, BricksAbilitiesInNamespace: 19},
 	}
 	byID := map[uuid.UUID]Facts{}
-	for _, f := range assembleFacts(rows, counts, nil) {
+	for _, f := range assembleFacts(rows, nil) {
 		byID[f.SiteID] = f
 	}
 	if len(byID) != 3 {
-		t.Fatalf("got %d sites, want 3 (a count for a site the facts query did not return must not add one)", len(byID))
+		t.Fatalf("got %d sites, want 3", len(byID))
 	}
 	type pair struct{ elementor, bricks int64 }
 	want := map[uuid.UUID]pair{a: {3, 2}, b: {7, 0}, c: {0, 0}}
 	for id, w := range want {
 		g := byID[id]
 		if g.ElementorAbilities != w.elementor || g.BricksAbilities != w.bricks {
-			t.Errorf("site %s: elementor %d bricks %d, want elementor %d bricks %d (only the registered-by-the-builder count counts, per site and per namespace)",
+			t.Errorf("site %s: elementor %d bricks %d, want elementor %d bricks %d (only the registered-by-the-builder count counts, per site and per builder)",
 				id, g.ElementorAbilities, g.BricksAbilities, w.elementor, w.bricks)
 		}
 	}
@@ -232,22 +244,22 @@ func TestAssembleFactsJoinsOwnerCountsBySiteAndNamespace(t *testing.T) {
 
 func TestAssembleFactsOnlyKeepsTheNamedSite(t *testing.T) {
 	a, b := uuid.New(), uuid.New()
-	rows := []sqlc.ListAIReadinessSiteFactsRow{{SiteID: a, WpVersion: "7.1"}, {SiteID: b, WpVersion: "7.2"}}
-	got := assembleFacts(rows, nil, &b)
+	rows := []sqlc.ListAIReadinessSiteFactsWithAbilityCountsRow{{SiteID: a, WpVersion: "7.1"}, {SiteID: b, WpVersion: "7.2"}}
+	got := assembleFacts(rows, &b)
 	if len(got) != 1 || got[0].SiteID != b || got[0].WPVersion != "7.2" {
 		t.Fatalf("got %+v, want only site %s", got, b)
 	}
 	other := uuid.New()
-	if got := assembleFacts(rows, nil, &other); len(got) != 0 {
+	if got := assembleFacts(rows, &other); len(got) != 0 {
 		t.Fatalf("a site the query did not return must yield nothing, got %+v", got)
 	}
-	if got := assembleFacts(rows, nil, nil); len(got) != 2 {
+	if got := assembleFacts(rows, nil); len(got) != 2 {
 		t.Fatalf("no filter must keep every row, got %d", len(got))
 	}
 }
 
 func TestAssembleFactsOfNothingIsAnEmptyList(t *testing.T) {
-	if got := assembleFacts(nil, nil, nil); got == nil || len(got) != 0 {
+	if got := assembleFacts(nil, nil); got == nil || len(got) != 0 {
 		t.Fatalf("got %#v, want an empty non-nil list", got)
 	}
 }

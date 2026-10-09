@@ -44,32 +44,27 @@ func NewRepo(pool *db.Pool) *PGRepo { return &PGRepo{pool: pool} }
 
 var _ Repo = (*PGRepo)(nil)
 
-// LoadFacts reads both readiness queries in one RunTenantTx, so a
-// site-constrained principal runs with the site-scope settings the policies
-// key on. It never opens a transaction by any other route.
+// LoadFacts reads the readiness facts and the ability counts with one
+// statement in one RunTenantTx, so every row's inventory run record and counts
+// describe the same snapshot and a site-constrained principal runs with the
+// site-scope settings the policies key on. It never opens a transaction by any
+// other route.
 func (r *PGRepo) LoadFacts(ctx context.Context, p domain.Principal, siteID *uuid.UUID) ([]Facts, error) {
 	var site pgtype.UUID
 	if siteID != nil {
 		site = pgtype.UUID{Bytes: *siteID, Valid: true}
 	}
-	var (
-		rows   []sqlc.ListAIReadinessSiteFactsRow
-		counts []sqlc.CountAIReadinessAbilityOwnersRow
-	)
+	var rows []sqlc.ListAIReadinessSiteFactsWithAbilityCountsRow
 	err := r.pool.RunTenantTx(ctx, p, func(tx pgx.Tx) error {
-		q := sqlc.New(tx)
 		var err error
-		rows, err = q.ListAIReadinessSiteFacts(ctx, sqlc.ListAIReadinessSiteFactsParams{TenantID: p.TenantID, SiteID: site})
-		if err != nil {
-			return err
-		}
-		counts, err = q.CountAIReadinessAbilityOwners(ctx, sqlc.CountAIReadinessAbilityOwnersParams{TenantID: p.TenantID, SiteID: site})
+		rows, err = sqlc.New(tx).ListAIReadinessSiteFactsWithAbilityCounts(ctx,
+			sqlc.ListAIReadinessSiteFactsWithAbilityCountsParams{TenantID: p.TenantID, SiteID: site})
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	return assembleFacts(rows, counts, siteID), nil
+	return assembleFacts(rows, siteID), nil
 }
 
 // RefreshTarget reads the site row the refresh gating needs.
