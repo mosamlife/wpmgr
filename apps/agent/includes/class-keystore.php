@@ -66,8 +66,10 @@ final class Keystore implements EmailKeystoreInterface
 
     /**
      * Option name holding the site's age X25519 identity (raw 32-byte secret
-     * scalar), encrypted at rest. This is the PRIVATE backup-decryption key; it
-     * NEVER leaves the keystore and is NEVER transmitted to the control plane.
+     * scalar), encrypted at rest. This is the site's PRIVATE age key: it decrypts
+     * the authenticator-app secrets stored for its users and, if chunk encryption
+     * is ever switched on, its backups. It NEVER leaves the keystore and is NEVER
+     * transmitted to the control plane.
      */
     public const OPTION_AGE_IDENTITY = 'wpmgr_agent_age_identity';
 
