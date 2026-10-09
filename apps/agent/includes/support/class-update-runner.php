@@ -1899,12 +1899,13 @@ class UpdateRunner
      *
      * @param string $slug Plugin basename.
      * @return string|null The pending version, '' when a forced fresh check
-     *                confirms none is available, or null when availability
-     *                could not be determined even after that check
-     *                (get_site_transient()/wp_update_plugins() unavailable
-     *                in this runtime, or the transient is not the
-     *                well-formed object WordPress itself always produces
-     *                once a check has actually completed).
+     *                that covered this plugin confirms none is available, or
+     *                null when availability could not be determined even
+     *                after that check (get_site_transient()/
+     *                wp_update_plugins() unavailable in this runtime, the
+     *                transient is not the well-formed object WordPress itself
+     *                always produces once a check has actually completed, or
+     *                the check did not cover this plugin; see checkCovered()).
      */
     private function pluginUpdateVersion(string $slug): ?string
     {
@@ -1922,7 +1923,28 @@ class UpdateRunner
             return (string) $entry->new_version;
         }
 
-        return '';
+        return self::checkCovered($transient, $slug) ? '' : null;
+    }
+
+    /**
+     * Whether a completed WordPress update check covered this plugin or theme.
+     *
+     * WordPress records every installed item's version under `checked` only
+     * once the WordPress.org reply has arrived. A check that failed or ran out
+     * of time leaves a transient without `checked`, and a filter that injects
+     * its own entry can still have given that transient a `response` array.
+     * So a missing `response` entry means "no update" only for an item the
+     * check covered; for any other item availability is undetermined (null).
+     *
+     * @param object $transient The update_plugins or update_themes transient.
+     * @param string $key       Plugin basename or theme stylesheet.
+     * @return bool
+     */
+    private static function checkCovered(object $transient, string $key): bool
+    {
+        return isset($transient->checked)
+            && is_array($transient->checked)
+            && array_key_exists($key, $transient->checked);
     }
 
     /**
@@ -1940,12 +1962,13 @@ class UpdateRunner
      *
      * @param string $slug Theme stylesheet.
      * @return string|null The pending version, '' when a forced fresh check
-     *                confirms none is available, or null when availability
-     *                could not be determined even after that check
-     *                (get_site_transient()/wp_update_themes() unavailable
-     *                in this runtime, or the transient is not the
-     *                well-formed object WordPress itself always produces
-     *                once a check has actually completed).
+     *                that covered this theme confirms none is available, or
+     *                null when availability could not be determined even
+     *                after that check (get_site_transient()/
+     *                wp_update_themes() unavailable in this runtime, the
+     *                transient is not the well-formed object WordPress itself
+     *                always produces once a check has actually completed, or
+     *                the check did not cover this theme; see checkCovered()).
      */
     private function themeUpdateVersion(string $slug): ?string
     {
@@ -1963,7 +1986,7 @@ class UpdateRunner
             return (string) $entry['new_version'];
         }
 
-        return '';
+        return self::checkCovered($transient, $slug) ? '' : null;
     }
 
     /**

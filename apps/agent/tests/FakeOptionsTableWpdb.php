@@ -17,8 +17,21 @@
  * over-matches here exactly as it would against a real database. Trailing-space
  * padding and accent folding are not modelled.
  *
+ * HEX(<name column>) = %s compares bytes: it holds only when the bound value
+ * is the upper-case hex of the stored name, exactly, which is the form HEX()
+ * returns on MySQL, MariaDB and SQLite, and the only form SQLite's default
+ * binary comparison accepts.
+ *
+ * The options table keeps its unique key on option_name by default, as core
+ * creates it: under a case-insensitive collation that admits one row per name
+ * whatever its case, so a statement over a table seeded with two such rows
+ * throws. {@see $optionsUniqueKey} turns the key off, to model a table that
+ * has lost it. The network table has no such key.
+ *
  * Each row has an id, assigned the first time a statement sees it, as a
- * primary key would be.
+ * primary key would be. {@see renameRow()} changes a row's name and keeps its
+ * id, and {@see $beforeDelete} runs before each DELETE, so a test can change
+ * the table between uninstall's read and its delete.
  *
  * @package WPMgr\Agent\Tests
  */
@@ -52,6 +65,20 @@ final class FakeOptionsTableWpdb
      * leaving a lookup by exact name as the only way to reach a row.
      */
     public bool $likeMatchesNothing = false;
+
+    /**
+     * Whether the options table has its unique key on option_name. False
+     * models a table without it, where a row and a copy differing only in
+     * case are both stored.
+     */
+    public bool $optionsUniqueKey = true;
+
+    /**
+     * Runs before each DELETE with this double and the statement's table name.
+     *
+     * @var (\Closure(self, string): void)|null
+     */
+    public ?\Closure $beforeDelete = null;
 
     /** @var array<string,mixed> Rows of the per-site options table, shared with the test by reference. */
     private array $optionRows;
@@ -185,6 +212,9 @@ final class FakeOptionsTableWpdb
             throw new \LogicException('query() answers DELETE FROM <table> WHERE ... only: ' . $sql);
         }
         $table = $this->table($m[1]);
+        if ($this->beforeDelete !== null) {
+            ($this->beforeDelete)($this, $table['table']);
+        }
 
         $rows = $this->matching($table, $m[2], $args);
         foreach ($rows as $row) {
@@ -197,6 +227,35 @@ final class FakeOptionsTableWpdb
         }
 
         return count($rows);
+    }
+
+    /**
+     * Give the row stored as $from the name $to and keep its id, as an UPDATE
+     * of the name column by primary key would.
+     *
+     * @param string $table Table name, as a statement names it.
+     * @param string $from  The row's name, exactly as stored.
+     * @param string $to    Its new name.
+     * @return void
+     */
+    public function renameRow(string $table, string $from, string $to): void
+    {
+        $columns = $this->table($table);
+        if ($columns['scope'] === null) {
+            $rows = &$this->optionRows;
+        } else {
+            $rows = &$this->networkRows;
+        }
+        if (!array_key_exists($from, $rows) || array_key_exists($to, $rows)) {
+            throw new \LogicException('renameRow() needs a stored row and a free name: ' . $from . ' to ' . $to);
+        }
+
+        $id = $this->idFor($columns['table'], $from);
+        unset($this->ids[$columns['table'] . "\0" . $from]);
+        $this->ids[$columns['table'] . "\0" . $to] = $id;
+
+        $rows[$to] = $rows[$from];
+        unset($rows[$from]);
     }
 
     /**
@@ -278,9 +337,21 @@ final class FakeOptionsTableWpdb
             throw new \LogicException('placeholder count does not match bound values: ' . $where);
         }
 
+        if ($table['scope'] === null && $this->optionsUniqueKey) {
+            $this->assertUniqueOptionNames();
+        }
+
         $tests  = [];
         $scoped = false;
         foreach ($predicates as $i => $predicate) {
+            if (preg_match('/^HEX\((\w+)\) = %s$/', trim($predicate), $h) === 1) {
+                if ($h[1] !== $table['name']) {
+                    throw new \LogicException('HEX() compares the name column only: ' . $predicate);
+                }
+                $hex     = (string) $args[$i];
+                $tests[] = static fn (array $row): bool => strtoupper(bin2hex($row['name'])) === $hex;
+                continue;
+            }
             if (preg_match('/^(\w+) (=|LIKE) (%s|%d)$/', trim($predicate), $p) !== 1) {
                 throw new \LogicException('unsupported predicate: ' . $predicate);
             }
@@ -324,6 +395,26 @@ final class FakeOptionsTableWpdb
         }
 
         return $hits;
+    }
+
+    /**
+     * Refuse an options table holding two names its unique key admits only
+     * one of: under a case-insensitive collation, two names equal but for case.
+     *
+     * @return void
+     */
+    private function assertUniqueOptionNames(): void
+    {
+        $seen = [];
+        foreach (array_keys($this->optionRows) as $name) {
+            $folded = strtolower((string) $name);
+            if (isset($seen[$folded])) {
+                throw new \LogicException(
+                    'the options table holds ' . $seen[$folded] . ' and ' . $name . ', which its unique key admits only one of; set $optionsUniqueKey = false to model a table without that key'
+                );
+            }
+            $seen[$folded] = (string) $name;
+        }
     }
 
     /**

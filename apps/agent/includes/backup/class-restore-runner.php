@@ -62,8 +62,10 @@
  *     needed. A MIGRATE_DB phase is intentionally absent from
  *     this state machine. Re-add as a follow-up if the V1 SaaS multi-site
  *     scenario lands.
- *   - rolled_back is absent (we don't yet expose an automatic rollback path;
- *     manual rollback is via the kept `.wpmgr-old-files-<id>/` dir).
+ *   - A run that fails after a destructive swap keeps its rollback
+ *     pointers on the FAILED row, and the RestoreGuard shutdown backstop
+ *     reverts with them (GH #538). `rolled_back` is recorded only when a
+ *     health-check gate rolled back synchronously.
  *
  * @package WPMgr\Agent\Backup
  */
@@ -192,6 +194,14 @@ final class RestoreRunner
     /** Filename of the forced pre-restore DB dump inside the restore's scratch dir. */
     private const PRE_RESTORE_DB_DUMP_FILENAME = 'pre-restore-db.sql.gz';
 
+    /**
+     * GH #538: the sub_state keys performRollback() reads to decide on and
+     * perform a revert. A failed run keeps them on its FAILED row, and the
+     * shutdown rollback falls back to this run's last persisted copy of any
+     * the row no longer carries.
+     */
+    private const ROLLBACK_POINTER_KEYS = ['swap_files', 'swap_db', 'db_rollback'];
+
     /** @var array<string,mixed> Runner params (see class docblock). */
     private array $params;
 
@@ -209,6 +219,22 @@ final class RestoreRunner
      * preflight failure) never arms one.
      */
     private ?RestoreGuard $guard = null;
+
+    /**
+     * GH #538: the sub_state this run last persisted, or loaded when it
+     * started. A failure is recorded on top of it, never in place of it.
+     *
+     * @var array<string,mixed>
+     */
+    private array $persistedSubState = [];
+
+    /**
+     * GH #538: the latest value of each ROLLBACK_POINTER_KEYS entry this run
+     * persisted or loaded.
+     *
+     * @var array<string,mixed>
+     */
+    private array $rollbackPointers = [];
 
     /**
      * Test seam: the sleeper invoked between download retry attempts. Tests
@@ -278,6 +304,7 @@ final class RestoreRunner
             }
             $currentPhase = (string) $task['phase'];
             $subState     = (array) $task['sub_state'];
+            $this->rememberSubState($subState);
 
             if ($currentPhase === self::PHASE_COMPLETED || $currentPhase === self::PHASE_FAILED) {
                 return $currentPhase;
@@ -444,18 +471,24 @@ final class RestoreRunner
             // not just that the restore failed.
             $rolledBack = $e instanceof RestoreHealthCheckFailed ? $e->rolledBack() : null;
 
-            // Best-effort: mark failed, drop maintenance, try to clean up
-            // tmp DB tables. Failures in the cleanup are swallowed.
+            // Best-effort: drop maintenance, mark failed, post progress.
+            // Failures in these steps are swallowed. Tmp DB tables a failed
+            // restore_db created are not dropped here.
             try {
                 $this->maintenanceOff();
             } catch (\Throwable $_) {
             }
 
             try {
-                $failState = [
-                    'last_error' => substr($e->getMessage(), 0, 240),
-                    'failed_in'  => $currentPhase,
-                ];
+                // GH #538: the failure is added to the sub_state this run
+                // last persisted, so the FAILED row keeps every rollback
+                // pointer (ROLLBACK_POINTER_KEYS) the shutdown rollback
+                // reads from it. saveTaskState() leaves the run's params
+                // off, as it does on every row whose run has ended.
+                $failState               = $this->persistedSubState;
+                $failState['last_error'] = substr($e->getMessage(), 0, 240);
+                $failState['failed_in']  = $currentPhase;
+                unset($failState['rolled_back']);
                 if ($rolledBack !== null) {
                     $failState['rolled_back'] = $rolledBack;
                 }
@@ -2172,6 +2205,10 @@ final class RestoreRunner
      * fresh from the DB at fire()-time (not the value captured here) since
      * later phases may have recorded MORE rollback material (e.g. the DB
      * dump path, or the files old-dir) between arming and a crash.
+     *
+     * GH #538: a rollback pointer the row no longer carries, or a row that
+     * cannot be read, falls back to this run's last persisted copy of it
+     * ({@see $rollbackPointers}); a pointer the row does carry wins.
      */
     private function armGuardOnce(): void
     {
@@ -2179,9 +2216,14 @@ final class RestoreRunner
             return;
         }
         $this->guard = new RestoreGuard(function (): array {
-            $task     = $this->loadTask();
-            $subState = $task !== null ? $task['sub_state'] : [];
-            return $this->performRollback($subState);
+            try {
+                $task  = $this->loadTask();
+                $fresh = $task !== null ? $task['sub_state'] : [];
+            } catch (\Throwable $e) {
+                \WPMgr\Agent\Support\DebugLog::write('WPMgr RestoreRunner: shutdown rollback could not read the task row: ' . $e->getMessage());
+                $fresh = [];
+            }
+            return $this->performRollback(array_merge($this->rollbackPointers, $fresh));
         });
         $this->guard->arm();
     }
@@ -2669,6 +2711,25 @@ final class RestoreRunner
     }
 
     /**
+     * The sub_state a task row keeps once its run has ended (completed or
+     * failed): everything except the run params.
+     *
+     * The params (database credentials, destination config, chunk download
+     * URLs, the progress endpoint) are seeded so a stalled run can be
+     * resumed, and a run that has ended is never resumed. Everything else
+     * stays: the rollback pointers (ROLLBACK_POINTER_KEYS) the shutdown
+     * rollback reads, the health-check results, and the failure detail.
+     *
+     * @param array<string,mixed> $subState
+     * @return array<string,mixed>
+     */
+    public static function endedSubState(array $subState): array
+    {
+        unset($subState['params']);
+        return $subState;
+    }
+
+    /**
      * @param array<string,mixed> $subState
      */
     private function saveTaskState(string $phase, array $subState): void
@@ -2681,6 +2742,10 @@ final class RestoreRunner
         $table = $this->tableName();
         if ($table === '') {
             return;
+        }
+
+        if ($phase === self::PHASE_COMPLETED || $phase === self::PHASE_FAILED) {
+            $subState = self::endedSubState($subState);
         }
 
         $now     = time();
@@ -2696,6 +2761,7 @@ final class RestoreRunner
             return;
         }
         $this->lastDbUpdate = $now;
+        $this->rememberSubState($subState);
 
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct query on plugin-owned table; correctness requires a live read
         $wpdb->update(
@@ -2712,6 +2778,22 @@ final class RestoreRunner
             ['%s', '%s', '%d'],
             ['%s', '%s']
         );
+    }
+
+    /**
+     * GH #538: record the sub_state this run persisted (or loaded), and the
+     * latest value of each rollback pointer in it.
+     *
+     * @param array<string,mixed> $subState
+     */
+    private function rememberSubState(array $subState): void
+    {
+        $this->persistedSubState = $subState;
+        foreach (self::ROLLBACK_POINTER_KEYS as $key) {
+            if (array_key_exists($key, $subState)) {
+                $this->rollbackPointers[$key] = $subState[$key];
+            }
+        }
     }
 
     private function touchProgressTimestamp(): void

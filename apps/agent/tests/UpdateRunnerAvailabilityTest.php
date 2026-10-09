@@ -214,10 +214,14 @@ final class UpdateRunnerAvailabilityTest extends TestCase
 
     public function test_plugin_reports_up_to_date_when_the_forced_check_confirms_nothing_pending(): void
     {
-        // A well-formed, forced-fresh response with no entry for this slug —
-        // WordPress's own "nothing pending for this plugin" shape.
-        $transient           = new \stdClass();
-        $transient->response = [];
+        // A completed check with no entry for this slug: WordPress's own
+        // "nothing pending for this plugin" shape. A completed check records
+        // every installed plugin's version under `checked`.
+        $transient               = new \stdClass();
+        $transient->last_checked = 1760000000;
+        $transient->checked      = ['akismet/akismet.php' => '5.3.1'];
+        $transient->response     = [];
+        $transient->no_update    = [];
 
         Functions\expect('wp_update_plugins')->once()->andReturnNull();
         Functions\when('get_site_transient')->alias(static function (string $key) use ($transient) {
@@ -227,6 +231,34 @@ final class UpdateRunnerAvailabilityTest extends TestCase
         $runner = new UpdateRunner();
 
         $this->assertSame('', $runner->availableVersion('plugin', 'akismet/akismet.php', 'latest'));
+    }
+
+    public function test_plugin_reports_undetermined_when_the_forced_check_did_not_complete(): void
+    {
+        // GitHub issue #415: the forced check did not complete (the request to
+        // WordPress.org failed or ran out of time), so WordPress left only its
+        // placeholder: last_checked, no `checked`. A filter that injects its
+        // own entry (another plugin's update checker) still gave it a
+        // `response` array. That array says nothing about this plugin, so the
+        // answer is "could not tell", never "no update".
+        $other              = new \stdClass();
+        $other->new_version = '9.9.9';
+
+        $transient               = new \stdClass();
+        $transient->last_checked = 1760000000;
+        $transient->response     = ['vendor-plugin/vendor-plugin.php' => $other];
+
+        Functions\expect('wp_update_plugins')->once()->andReturnNull();
+        Functions\when('get_site_transient')->alias(static function (string $key) use ($transient) {
+            return $key === 'update_plugins' ? $transient : false;
+        });
+
+        $runner = new UpdateRunner();
+
+        $this->assertNull(
+            $runner->availableVersion('plugin', 'akismet/akismet.php', 'latest'),
+            'a response array from an incomplete check must not read as "no update" for a plugin the check never covered'
+        );
     }
 
     public function test_plugin_forced_check_runs_once_per_run_not_once_per_item_across_multiple_slugs(): void
@@ -316,6 +348,40 @@ final class UpdateRunnerAvailabilityTest extends TestCase
         $this->assertNull(
             $runner->availableVersion('theme', 'twentytwentyfour', 'latest'),
             'theme availability that cannot be determined even after a forced check must be null, not ""'
+        );
+    }
+
+    public function test_theme_reports_up_to_date_when_the_forced_check_confirms_nothing_pending(): void
+    {
+        $transient               = new \stdClass();
+        $transient->last_checked = 1760000000;
+        $transient->checked      = ['twentytwentyfour' => '1.2'];
+        $transient->response     = [];
+        $transient->no_update    = [];
+
+        Functions\expect('wp_update_themes')->once()->andReturnNull();
+        Functions\when('get_site_transient')->alias(static function (string $key) use ($transient) {
+            return $key === 'update_themes' ? $transient : false;
+        });
+
+        $this->assertSame('', (new UpdateRunner())->availableVersion('theme', 'twentytwentyfour', 'latest'));
+    }
+
+    public function test_theme_reports_undetermined_when_the_forced_check_did_not_complete(): void
+    {
+        // GitHub issue #415, theme half: see the plugin test of the same name.
+        $transient               = new \stdClass();
+        $transient->last_checked = 1760000000;
+        $transient->response     = ['vendor-theme' => ['new_version' => '3.0']];
+
+        Functions\expect('wp_update_themes')->once()->andReturnNull();
+        Functions\when('get_site_transient')->alias(static function (string $key) use ($transient) {
+            return $key === 'update_themes' ? $transient : false;
+        });
+
+        $this->assertNull(
+            (new UpdateRunner())->availableVersion('theme', 'twentytwentyfour', 'latest'),
+            'a response array from an incomplete check must not read as "no update" for a theme the check never covered'
         );
     }
 }

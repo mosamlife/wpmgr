@@ -272,6 +272,13 @@ final class UpdateCommand implements CommandInterface
     private ManagedCore $managedCore;
 
     /**
+     * Whether this command has armed the maintenance shutdown backstop. It
+     * arms right before its first apply, once, and never in a command that
+     * applies nothing (see armMaintenanceBackstop()).
+     */
+    private bool $maintenanceArmed = false;
+
+    /**
      * @param SnapshotManager|null $snapshots   Snapshot store (defaults to real one).
      * @param UpdateRunner|null    $runner      Update executor (defaults to real one).
      * @param ManagedCore|null     $managedCore Composer/file-change detector for core
@@ -399,16 +406,13 @@ final class UpdateCommand implements CommandInterface
 
         try {
             // Heal a `.maintenance` flag left behind by a prior interrupted
-            // update/rollback before starting new work, and arm the shutdown
-            // backstop so a fatal error or a timeout mid-update still clears
-            // whatever flag THIS run may leave set.
-            //
-            // BELOW THE LOCK ON PURPOSE (GitHub issue #328): the shutdown
-            // backstop clears ANY .maintenance file it finds, so arming it in a
-            // command that turns out to have nothing to do would silently strip
-            // a flag another in-flight upgrade legitimately owns.
+            // update/rollback before starting new work. Only a stale flag is
+            // removed; a fresh one is left to whoever owns it. BELOW THE LOCK
+            // ON PURPOSE (GitHub issue #328). The shutdown backstop for THIS
+            // run's own flag is armed later, right before the first apply (see
+            // armMaintenanceBackstop()), so a command whose items are all
+            // refused or already current never arms it.
             Maintenance::healStaleIfPresent();
-            Maintenance::armShutdownGuard();
 
             // S4 (adversarial review) — reconcile any update-in-flight marker
             // left stale by a prior request that was hard-killed severely enough
@@ -525,6 +529,26 @@ final class UpdateCommand implements CommandInterface
         }
 
         return ['ok' => false, 'results' => $results];
+    }
+
+    /**
+     * Arm the maintenance shutdown backstop, once per command.
+     *
+     * Called right before an item's snapshot and apply, never earlier. The
+     * backstop clears any `.maintenance` file it finds when the request ends,
+     * so a command whose items are all refused or already current must not
+     * arm it: the flag it would remove may belong to another update still in
+     * flight. One callback covers every later item of the same command.
+     *
+     * @return void
+     */
+    private function armMaintenanceBackstop(): void
+    {
+        if ($this->maintenanceArmed) {
+            return;
+        }
+        $this->maintenanceArmed = true;
+        Maintenance::armShutdownGuard();
     }
 
     /**
@@ -672,6 +696,12 @@ final class UpdateCommand implements CommandInterface
                     'Already up to date; no update applied.'
                 );
             }
+
+            // Every refusal and the up-to-date answer are behind us: this item
+            // applies. Arm the maintenance shutdown backstop now, once per
+            // command, so a fatal error or a timeout mid-update still clears
+            // whatever flag THIS run leaves set.
+            $this->armMaintenanceBackstop();
 
             // GUARANTEE: whatever this item's snapshot/apply work does below —
             // succeed, fail, or throw — a `finally` clears any `.maintenance`

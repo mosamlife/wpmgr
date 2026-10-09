@@ -186,28 +186,18 @@ final class RollbackCommand implements CommandInterface
             );
         }
 
-        // Arm the shutdown backstop only now, once the request has passed the
-        // type and core-permission checks, so a fatal error or a timeout
-        // mid-rollback still clears whatever flag THIS run leaves set. The
-        // backstop clears any `.maintenance` file it finds when the request
-        // ends, so a refused request must not arm it: the flag it would remove
-        // may belong to another update still in flight. It sits above the
-        // try/finally below on purpose: run() is called inside execute()'s
-        // try, so a throw from here still releases the site lock, and no
-        // rollback work has begun that would need maintenance cleared.
-        Maintenance::armShutdownGuard();
-
-        // GUARANTEE: this is precisely the reported incident — a rollback
-        // that itself fails (the new version is already active, the restore
-        // errors, etc.) must still clear maintenance mode. Everything from
-        // here on is wrapped so success, failure, or a thrown exception all
-        // reach the `finally`.
-        try {
-            if ($type === 'core') {
-                return $this->rollbackCore($snapshotId, $toVersion);
+        // Every remaining refusal is made here too, before the shutdown
+        // backstop is armed and before the try/finally below that clears
+        // maintenance mode, so a refused request leaves a `.maintenance` flag
+        // exactly as it found it, during the request and after it ends.
+        $slug       = 'core';
+        $coreTarget = '';
+        if ($type === 'core') {
+            $coreTarget = $this->coreTarget($snapshotId, $toVersion);
+            if ($coreTarget === '') {
+                return $this->fail('No valid target core version.');
             }
-
-            // plugin / theme
+        } else {
             $slug = UpdateCommand::sanitizeSlug($rawSlug);
             if ($slug === '' || $slug !== $rawSlug) {
                 return $this->fail('Invalid or unsafe slug.');
@@ -229,6 +219,28 @@ final class RollbackCommand implements CommandInterface
                 return $this->fail(
                     'Refused: this target is the management agent itself. The agent updates through its own update channel, not through a plugin update or rollback task.'
                 );
+            }
+        }
+
+        // Arm the shutdown backstop only now, once the request has passed
+        // every check, so a fatal error or a timeout mid-rollback still clears
+        // whatever flag THIS run leaves set. The backstop clears any
+        // `.maintenance` file it finds when the request ends, so a refused
+        // request must not arm it: the flag it would remove may belong to
+        // another update still in flight. It sits above the try/finally below
+        // on purpose: run() is called inside execute()'s try, so a throw from
+        // here still releases the site lock, and no rollback work has begun
+        // that would need maintenance cleared.
+        Maintenance::armShutdownGuard();
+
+        // GUARANTEE: this is precisely the reported incident — a rollback
+        // that itself fails (the new version is already active, the restore
+        // errors, etc.) must still clear maintenance mode. Everything from
+        // here on is wrapped so success, failure, or a thrown exception all
+        // reach the `finally`.
+        try {
+            if ($type === 'core') {
+                return $this->rollbackCore($snapshotId, $coreTarget);
             }
 
             try {
@@ -294,23 +306,37 @@ final class RollbackCommand implements CommandInterface
     }
 
     /**
-     * Roll core back to a prior version via a forced downgrade. Reached only
-     * when the request set allow_core_downgrade to true (see run()).
+     * The core version a core rollback targets: to_version when set, else the
+     * version the snapshot recorded.
      *
      * @param string $snapshotId Optional snapshot id holding the prior version.
      * @param string $toVersion  Target version (overrides snapshot when set).
-     * @return array{ok:bool,restored_version:string,log:string}
+     * @return string The target, or '' when there is no valid one.
      */
-    private function rollbackCore(string $snapshotId, string $toVersion): array
+    private function coreTarget(string $snapshotId, string $toVersion): string
     {
         $target = $toVersion !== ''
             ? $toVersion
             : ($snapshotId !== '' ? $this->snapshots->recordedVersion($snapshotId) : '');
 
         if ($target === '' || preg_match('#^[0-9][0-9A-Za-z.\-]*$#', $target) !== 1) {
-            return $this->fail('No valid target core version.');
+            return '';
         }
 
+        return $target;
+    }
+
+    /**
+     * Roll core back to a prior version via a forced downgrade. Reached only
+     * when the request set allow_core_downgrade to true and named a valid
+     * target (see run()).
+     *
+     * @param string $snapshotId Optional snapshot id holding the prior version.
+     * @param string $target     Validated target version, from coreTarget().
+     * @return array{ok:bool,restored_version:string,log:string}
+     */
+    private function rollbackCore(string $snapshotId, string $target): array
+    {
         try {
             $result = $this->runner->forceCore($target);
         } catch (\Throwable $e) {
