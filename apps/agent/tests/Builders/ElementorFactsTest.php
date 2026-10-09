@@ -107,9 +107,6 @@ final class ElementorFactsTest extends TestCase
 
     public function test_version_range_edges(): void
     {
-        $this->assertSame('3.20.0', ElementorFacts::CLASSIC_MIN);
-        $this->assertSame('4.3.99', ElementorFacts::CLASSIC_MAX);
-
         $api = new FakeElementorApi();
         foreach (['3.20.0', '3.35.9', '4.3.4', '4.3.99'] as $version) {
             $api->version = $version;
@@ -139,6 +136,10 @@ final class ElementorFactsTest extends TestCase
         $this->assertFalse($facts['classic_in_range']);
         $this->assertSame(self::refusal('version_unverified'), ElementorFacts::createRefusal($facts, 'page', 'classic'));
         $this->assertSame(self::refusal('version_unverified'), ElementorFacts::status($facts)->refusal());
+
+        // The range itself, as the edges above exercise it.
+        $this->assertSame('3.20.0', ElementorFacts::CLASSIC_MIN);
+        $this->assertSame('4.3.99', ElementorFacts::CLASSIC_MAX);
     }
 
     public function test_excluded_role_refuses(): void
