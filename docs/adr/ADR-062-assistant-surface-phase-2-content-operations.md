@@ -1534,7 +1534,9 @@ and uninstalling the plugin removes every copy.
   featured image a person approved after the change survives the undo, and two
   changes that wrote the same key are undone newest first. Each key and column
   is then read back and must hold the bytes it held before the change, or the
-  answer is `restore_mismatch`.
+  answer is `restore_mismatch`. An undo is refused, and nothing is written,
+  when the page is no longer a draft, when someone else has it open in the
+  editor, or when an autosave of it exists.
 
 **How rows are written.** A restore is a set of direct statements on the posts
 and post meta tables. The reads that decide it and the writes run in one
