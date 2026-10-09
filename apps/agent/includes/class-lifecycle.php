@@ -30,18 +30,67 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent;
 
+use WPMgr\Agent\Commands\AgentSelfUpdateCommand;
 use WPMgr\Agent\Commands\MetadataCommand;
 use WPMgr\Agent\Commands\ObjectcacheDisableCommand;
+use WPMgr\Agent\Diagnostics\SizeProbe;
+use WPMgr\Agent\Media\HtaccessInstaller;
 use WPMgr\Agent\ObjectCache\ObjectCacheConfig;
 use WPMgr\Agent\ObjectCache\ObjectCacheDropinInstaller;
 use WPMgr\Agent\ObjectCache\ObjectCacheHeartbeat;
+use WPMgr\Agent\Support\ActivityLog;
 use WPMgr\Agent\Support\AgeIdentity;
+use WPMgr\Agent\Support\ErrorMonitor;
+use WPMgr\Agent\Support\LoginProtection;
+use WPMgr\Agent\Support\MuPluginInstaller;
 
 /**
  * Connection-lifecycle orchestration for the agent.
  */
 final class Lifecycle
 {
+    /**
+     * Prefix of the agent's own namespace in the options tables.
+     *
+     * A published, versioned contract ("Option namespace contract" in
+     * apps/agent/README.md): the agent keeps its identity and connection state
+     * in options whose names start with this prefix, a transient in the
+     * namespace carries the prefix in its own name, and uninstall removes every
+     * row in the namespace whether or not it is listed anywhere. Store nothing
+     * under it that should outlive the plugin, and never change it without
+     * bumping the contract version.
+     */
+    public const NAME_PREFIX = 'wpmgr_agent_';
+
+    /**
+     * The row names an entry in the namespace can take in the per-site options
+     * table: the option itself, a transient's value and timeout rows, and a site
+     * transient's value and timeout rows (a single-site install keeps site
+     * transients in the options table).
+     *
+     * @var list<string>
+     */
+    private const OPTIONS_TABLE_FORMS = [
+        self::NAME_PREFIX,
+        '_transient_' . self::NAME_PREFIX,
+        '_transient_timeout_' . self::NAME_PREFIX,
+        '_site_transient_' . self::NAME_PREFIX,
+        '_site_transient_timeout_' . self::NAME_PREFIX,
+    ];
+
+    /**
+     * The row names an entry in the namespace can take in the network table on
+     * multisite: a network-wide option, and a site transient's value and
+     * timeout rows.
+     *
+     * @var list<string>
+     */
+    private const NETWORK_TABLE_FORMS = [
+        self::NAME_PREFIX,
+        '_site_transient_' . self::NAME_PREFIX,
+        '_site_transient_timeout_' . self::NAME_PREFIX,
+    ];
+
     /**
      * Option recording that the control plane revoked this site's connection.
      * Shape: ['reason' => string, 'at' => int]. Read by the admin page to show
@@ -329,6 +378,10 @@ final class Lifecycle
      * is preserved by Keystore::clearSiteIdentity()'s contract elsewhere; on
      * uninstall we remove it too since the install is going away entirely.
      *
+     * Leaves no row in the agent's namespace ({@see self::NAME_PREFIX}): named
+     * options and transients go through the options API first, then every
+     * remaining row in the namespace is swept from the database.
+     *
      * @return void
      */
     public function wipeAll(): void
@@ -356,14 +409,27 @@ final class Lifecycle
             return;
         }
 
+        $multisite = function_exists('is_multisite') && is_multisite();
+
         foreach ($this->ownedOptions() as $option) {
             delete_option($option);
+            // Settings keeps its rows network-wide on multisite.
+            if ($multisite && function_exists('delete_site_option')) {
+                delete_site_option($option);
+            }
         }
 
-        // Drop the one-shot admin-notice transient too, if present.
-        if (function_exists('delete_transient')) {
-            delete_transient('wpmgr_agent_notice');
+        // Through the transient API, so a persistent object cache drops them too.
+        foreach ($this->ownedTransients() as $transient) {
+            if (function_exists('delete_transient')) {
+                delete_transient($transient);
+            }
+            if (function_exists('delete_site_transient')) {
+                delete_site_transient($transient);
+            }
         }
+
+        $this->sweepNamespace($multisite);
 
         // Clear any remaining scheduled events for the agent's hooks.
         if (function_exists('wp_clear_scheduled_hook')) {
@@ -435,6 +501,11 @@ final class Lifecycle
     /**
      * The wp-option keys this plugin owns and removes on uninstall.
      *
+     * Names in the namespace are also swept by prefix ({@see sweepNamespace()}),
+     * but naming them here removes them through the options API even where the
+     * sweep cannot see them. LifecycleOwnedOptionsTest fails when an OPTION_*
+     * constant in the namespace is missing from this list.
+     *
      * @return list<string>
      */
     private function ownedOptions(): array
@@ -448,6 +519,9 @@ final class Lifecycle
             // when this install's key lives in the database rather than a
             // file or salts. Must not outlive the plugin.
             Keystore::OPTION_DB_MASTER_KEY,
+            // GH #577: the encrypted email-delivery secrets the dashboard sent.
+            Keystore::OPTION_EMAIL_SECRET,
+            Keystore::OPTION_EMAIL_CONN_SECRETS,
             Settings::OPTION_CP_URL,
             Settings::OPTION_SITE_ID,
             Settings::OPTION_TENANT_ID,
@@ -457,9 +531,25 @@ final class Lifecycle
             Plugin::OPTION_KEYSTORE_ERROR,
             Plugin::OPTION_KEYSTORE_ERROR_KIND,
             Plugin::OPTION_LAST_DIAGNOSTICS_AT,
+            Plugin::OPTION_REPORTED_VERSION,
+            'wpmgr_agent_engine_opcache_version', // Plugin writes it by literal name.
             Admin::OPTION_CONNECTION_KEY,
             Schema::OPTION_DB_VERSION,
             self::OPTION_REVOKED,
+            AgentSelfUpdateCommand::OPTION_RESULT,
+            // Self-update bookkeeping, named by value: the class that writes
+            // them is not part of every build of this plugin.
+            'wpmgr_agent_update_last_iat',
+            'wpmgr_agent_self_update_apply_id',
+            SizeProbe::OPTION_SIZES,
+            HtaccessInstaller::OPTION_NGINX_NOTICE,
+            ActivityLog::OPTION_SEQ,
+            ErrorMonitor::OPTION_SHIP_CURSOR,
+            ErrorMonitor::OPTION_SHIP_TS,
+            LoginProtection::OPTION_SHIP_CURSOR,
+            MuPluginInstaller::OPTION_INSTALLED,
+            MuPluginInstaller::OPTION_WAF_INSTALLED,
+            MuPluginInstaller::OPTION_WATCHDOG_INSTALLED,
             // Phase 3 — page-cache options.
             \WPMgr\Agent\Cache\CacheManager::OPTION_CONFIG,
             \WPMgr\Agent\Cache\CacheManager::OPTION_LAST_ERROR,
@@ -475,5 +565,103 @@ final class Lifecycle
             Plugin::OPTION_BACKUP_JANITOR_LAST, // GH #256 backup-scratch GC (BackupJanitor::gcRuns()) throttle stamp.
             Plugin::OPTION_RESTORE_GC_LAST, // GH #256 restore-rollback-material GC throttle stamp.
         ];
+    }
+
+    /**
+     * Transients the agent sets under a fixed name in its namespace. Each is
+     * removed as both a transient and a site transient.
+     *
+     * @return list<string>
+     */
+    private function ownedTransients(): array
+    {
+        return [
+            'wpmgr_agent_notice', // Admin's one-shot notice (private constant there).
+            Plugin::TRANSIENT_KEYSTORE_PROBE,
+            Scheduler::REFRESH_LOCK_KEY,
+            'wpmgr_agent_exec_probe', // SizeProbe's probe result (private constant there).
+            'wpmgr_agent_update_manifest', // Named by value: its class is not part of every build.
+        ];
+    }
+
+    /**
+     * Delete every row left in the agent's namespace: names written by another
+     * release, names built at runtime, and the value and timeout rows of
+     * transients and site transients. On multisite the current network's
+     * network table is swept too.
+     *
+     * The database narrows with an anchored, LIKE-escaped prefix; the exact,
+     * case-sensitive prefix check decides. Nothing outside the namespace is
+     * removed: not a name that merely contains the prefix, not one that differs
+     * only by case, and not one that matched only because '_' is a LIKE
+     * wildcard. Each delete goes through the options API, which keeps object
+     * caches coherent.
+     *
+     * @param bool $multisite Whether this is a multisite install.
+     * @return void
+     */
+    private function sweepNamespace(bool $multisite): void
+    {
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            return;
+        }
+
+        foreach (self::OPTIONS_TABLE_FORMS as $form) {
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- uninstall must find every row in the namespace; no API lists options by prefix, and a cached answer could miss rows.
+            $names = $wpdb->get_col(
+                $wpdb->prepare(
+                    "SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s",
+                    $wpdb->esc_like($form) . '%'
+                )
+            );
+            foreach (self::namesStartingWith($names, $form) as $name) {
+                delete_option($name);
+            }
+        }
+
+        if (!$multisite || empty($wpdb->sitemeta) || !function_exists('delete_site_option') || !function_exists('get_current_network_id')) {
+            return;
+        }
+
+        $networkId = (int) get_current_network_id();
+        foreach (self::NETWORK_TABLE_FORMS as $form) {
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- uninstall must find every row in the namespace; no API lists network options by prefix, and a cached answer could miss rows.
+            $names = $wpdb->get_col(
+                $wpdb->prepare(
+                    "SELECT meta_key FROM {$wpdb->sitemeta} WHERE site_id = %d AND meta_key LIKE %s",
+                    $networkId,
+                    $wpdb->esc_like($form) . '%'
+                )
+            );
+            foreach (self::namesStartingWith($names, $form) as $name) {
+                delete_site_option($name);
+            }
+        }
+    }
+
+    /**
+     * The names in a database column that start, exactly and case-sensitively,
+     * with $prefix. LIKE under the usual collations ignores case, so this is
+     * the check that decides what is deleted.
+     *
+     * @param mixed  $names  Column returned by the database.
+     * @param string $prefix Required prefix.
+     * @return list<string>
+     */
+    private static function namesStartingWith($names, string $prefix): array
+    {
+        if (!is_array($names)) {
+            return [];
+        }
+
+        $kept = [];
+        foreach ($names as $name) {
+            if (is_string($name) && str_starts_with($name, $prefix)) {
+                $kept[] = $name;
+            }
+        }
+
+        return $kept;
     }
 }
