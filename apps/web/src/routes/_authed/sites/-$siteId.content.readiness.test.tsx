@@ -635,9 +635,19 @@ describe("Check again", () => {
     return { c, button };
   }
 
-  it("is there for a viewer, who may read the site", async () => {
-    const { button } = await pressCheckAgain("viewer");
+  it("is there for an operator", async () => {
+    const { button } = await pressCheckAgain("operator");
     expect(button).toBeEnabled();
+  });
+
+  it("is not there for a viewer, who may read the card but not ask for a refresh", async () => {
+    renderTab("viewer");
+    const c = await card();
+    // The card has loaded: its status line is on screen, so the button is
+    // absent and not merely late.
+    expect(c.getByTestId("ai-readiness-status")).toBeInTheDocument();
+    expect(c.queryByRole("button", { name: /Check again|Checking/ })).not.toBeInTheDocument();
+    expect(refreshReadiness).not.toHaveBeenCalled();
   });
 
   it("posts an empty JSON body to the site's refresh route and says what happened", async () => {

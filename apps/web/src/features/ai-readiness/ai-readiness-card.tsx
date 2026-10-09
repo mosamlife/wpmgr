@@ -42,7 +42,9 @@ import {
 
 // The "AI readiness" card on a site's Content tab, above "AI editing". It lists
 // what an AI assistant connected to WPMgr needs on this site, each row green,
-// red or grey, and lets anyone who can see the site ask it to report again.
+// red or grey. Anyone who can see the site reads it; only a caller who can
+// operate the site gets "Check again", because the server refuses the refresh
+// to anyone else.
 //
 // The card is advice to a person. Nothing it shows is read by the code that
 // decides what the AI may do.
@@ -145,7 +147,10 @@ function Warnings({ warnings }: { warnings: SiteAiReadiness["warnings"] }) {
 
 export interface AiReadinessCardProps {
   siteId: string;
-  /** operator+ on this site: the "Turn on" button in AI editing is present. */
+  /**
+   * operator+ on this site, the server's site.content.refresh gate: "Check
+   * again" here and the "Turn on" button in AI editing are present.
+   */
   canOperate: boolean;
 }
 
@@ -200,16 +205,18 @@ export function AiReadinessCard({ siteId, canOperate }: AiReadinessCardProps) {
             {freshnessLine(data.metadata_as_of, data.abilities_as_of, now)}
           </p>
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={refresh.isPending}
-          onClick={onCheckAgain}
-        >
-          <RefreshCw aria-hidden="true" className="size-4" />
-          {refresh.isPending ? "Checking…" : "Check again"}
-        </Button>
+        {canOperate ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={refresh.isPending}
+            onClick={onCheckAgain}
+          >
+            <RefreshCw aria-hidden="true" className="size-4" />
+            {refresh.isPending ? "Checking…" : "Check again"}
+          </Button>
+        ) : null}
       </div>
 
       {refresh.isSuccess ? (
