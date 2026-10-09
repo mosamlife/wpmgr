@@ -219,7 +219,8 @@ describe("sameOriginPath", () => {
   // is not a host.
   const HONEST: readonly (readonly [why: string, value: string])[] = [
     ["the root", "/"],
-    ["a path", "/sites/abc"],
+    ["a path", "/sites"],
+    ["a deeper path", "/sites/abc"],
     ["a path with a query", "/sites?tab=backups"],
     ["a path with a query and a hash", "/sites?x=1#y"],
     ["the consent link", CONSENT_LINK],
