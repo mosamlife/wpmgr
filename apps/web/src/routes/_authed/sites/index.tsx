@@ -10,7 +10,11 @@ import { AGENT_STATUS_LABEL, type AgentStatus } from "@/components/status";
 
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageError } from "@/components/feedback";
-import { FilterEmpty, SitesPageEmpty } from "@/components/empty";
+import {
+  ArchivedSitesEmpty,
+  FilterEmpty,
+  SitesPageEmpty,
+} from "@/components/empty";
 import { PageHeader } from "@/components/shared/page-header";
 import {
   useSites,
@@ -58,8 +62,10 @@ import {
   useResumeMonitoring,
 } from "@/features/sites/use-site-monitoring";
 import {
+  MONITORING_FILTER_OPTIONS,
   MONITORING_PAUSE_SCOPE_SENTENCE,
   fleetCountLabel,
+  monitoringFilterLabelOf,
   monitoringMenuFor,
   pausedCount,
   refusedSitesSentence,
@@ -79,7 +85,9 @@ import type { Site } from "@wpmgr/api";
 //
 // All filter axes live in the URL so they persist across reload and are
 // shareable. The route writes via `navigate({ search: prev => ({...}) },
-// { replace: true })` with a 200-300ms debounce on the free-text query.
+// { replace: true })` with a 200-300ms debounce on the free-text query. The one
+// exception is the switch between the active and archived lists, which adds a
+// history entry (see handleArchivedChange).
 //
 // CRITICAL INVARIANT: the `selected` set (useSitesSelection) reads the FULL
 // `sites` array, NOT `visibleSites`. Filtering out a selected site must keep
@@ -90,6 +98,10 @@ import type { Site } from "@wpmgr/api";
 const searchSchema = z.object({
   q: z.string().optional(),
   status: z.array(z.string()).optional(),
+  // GH #568. Monitoring state: "Active" and/or "Paused", stored as display
+  // labels like the `status` axis. It is its own axis because a pause is the
+  // row's `monitoring_paused_at`, not one of its connection states.
+  monitoring: z.array(z.string()).optional(),
   tags: z.array(z.string()).optional(),
   // GH #230 "rich tags" — match semantics across `tags`: "any" (OR, default)
   // or "all" (AND). Mirrors the /sites `tags_match` query param.
@@ -155,6 +167,13 @@ function stateLabel(rawState: string): string {
   return CONNECTION_STATE_LABELS[rawState] ?? rawState;
 }
 
+/**
+ * The Status menu's "Archived" entry. Archived sites are a separate server
+ * list, so choosing it is the same switch as the "Show archived" chip, not a
+ * filter over the rows already loaded.
+ */
+const ARCHIVED_STATUS_LABEL = stateLabel("archived");
+
 // ---------------------------------------------------------------------------
 // Page component
 // ---------------------------------------------------------------------------
@@ -213,10 +232,33 @@ function SitesPage() {
     [navigate],
   );
 
+  // Moving between the active and archived lists. Unlike the filter axes above
+  // this is a move between two server lists, so it pushes a history entry (the
+  // Back button returns to the list the operator came from) and it drops the
+  // Status selection, whose labels were chosen against the other list. The
+  // "Show archived" chip, the Status menu's "Archived" entry and the empty
+  // archived list's "Back to active sites" button all write through here.
+  const handleArchivedChange = useCallback(
+    (next: boolean) => {
+      void navigate({
+        search: (prev: SitesSearch) => ({
+          ...prev,
+          archived: next ? true : undefined,
+          status: undefined,
+        }),
+      });
+    },
+    [navigate],
+  );
+
   // Memoize the fallback arrays so their stable references don't force useMemo
   // hooks downstream to re-compute on every render (the ?. [] fallback creates a
   // new array reference each time when status/tags are absent from the URL).
   const selectedStatuses = useMemo(() => search.status ?? [], [search.status]);
+  const selectedMonitoring = useMemo(
+    () => search.monitoring ?? [],
+    [search.monitoring],
+  );
   const selectedTags = useMemo(() => search.tags ?? [], [search.tags]);
   const selectedAgentStatuses = useMemo(
     () => search.agentStatus ?? [],
@@ -286,9 +328,14 @@ function SitesPage() {
   // Active on any filter axis, including the (now server-side) tags filter.
   // A tag filter that matches nothing legitimately returns `sites: []`, // that must render as a filtered-empty state, never the onboarding empty
   // state (which means "this tenant has no sites at all").
+  //
+  // The archived list is deliberately not one of these axes: an empty archived
+  // list is "nothing is archived" (ArchivedSitesEmpty), not a filter result and
+  // not "this tenant has no sites" (SitesPageEmpty).
   const hasActiveFilters =
     Boolean(search.q?.trim()) ||
     selectedStatuses.length > 0 ||
+    selectedMonitoring.length > 0 ||
     hasTagsFilter ||
     Boolean(appliedClientId) ||
     selectedAgentStatuses.length > 0;
@@ -332,6 +379,10 @@ function SitesPage() {
    *
    * The display label is what we store in selectedStatuses (the URL param) so
    * the filter works even if an operator edits the URL by hand.
+   *
+   * GH #568. Operators are always offered "Archived": the archived sites are a
+   * separate server list that the active list never loads, so no loaded row
+   * could ever put it here. Choosing it switches lists (handleArchivedChange).
    */
   const statusOptions = useMemo(() => {
     const set = new Set<string>();
@@ -339,8 +390,19 @@ function SitesPage() {
       const label = stateLabel(connectionStateOf(s));
       set.add(label);
     }
+    if (operate) set.add(ARCHIVED_STATUS_LABEL);
     return Array.from(set).sort();
-  }, [sites]);
+  }, [sites, operate]);
+
+  /**
+   * What the Status menu shows as ticked. "Archived" is ticked exactly when the
+   * archived list is the one on screen, so the menu and the "Show archived"
+   * chip can never disagree: both read the one `archived` search param.
+   */
+  const statusMenuSelection = useMemo(() => {
+    const rest = selectedStatuses.filter((s) => s !== ARCHIVED_STATUS_LABEL);
+    return showArchived ? [...rest, ARCHIVED_STATUS_LABEL] : rest;
+  }, [selectedStatuses, showArchived]);
 
   /**
    * Agent-status options, same live-derivation rule as `statusOptions`: only
@@ -386,10 +448,13 @@ function SitesPage() {
   //     - agent freshness     derived from a SEPARATE fleet rollup
   //                           (useFleetAgentVersions), so the sites endpoint
   //                           has nothing to filter on
+  //     - monitoring          Active / Paused (GH #568), read off each row's
+  //                           monitoring_paused_at; the sites endpoint has no
+  //                           parameter for it
   //
   // A client-side axis over a server-truncated page is only honest while the
   // page is the whole set. That is why DEFAULT_SITES_LIMIT is the contract
-  // maximum and why moving one of these two axes to the server means moving
+  // maximum and why moving one of these axes to the server means moving
   // it to the request, never widening this filter.
   //
   // CRITICAL INVARIANTS (preserve and do not refactor without re-reading):
@@ -404,7 +469,7 @@ function SitesPage() {
   // 3. The header "select all" / grid "select all" must scope to the VISIBLE
   //    (filtered) rows only — handled via visibleIds passed to the toolbar.
   //
-  // 4. useSitesLiveSync is untouched here; the two remaining filters are a
+  // 4. useSitesLiveSync is untouched here; the remaining filters are a
   //    pure client-side derive over the TanStack Query cache, not a re-fetch
   //    trigger. Search and order ARE re-fetch triggers, by design: they change
   //    the query key.
@@ -413,10 +478,11 @@ function SitesPage() {
     if (!sites) return [];
 
     const hasStatus = selectedStatuses.length > 0;
+    const hasMonitoring = selectedMonitoring.length > 0;
     const hasAgentStatus = selectedAgentStatuses.length > 0;
 
     // Fast path: no active client-side filters.
-    if (!hasStatus && !hasAgentStatus) return sites;
+    if (!hasStatus && !hasMonitoring && !hasAgentStatus) return sites;
 
     return sites.filter((s) => {
       // Status filter — OR within selected statuses.
@@ -424,6 +490,13 @@ function SitesPage() {
       if (hasStatus) {
         const label = stateLabel(connectionStateOf(s));
         if (!selectedStatuses.includes(label)) return false;
+      }
+
+      // Monitoring filter (GH #568): same label convention. A site is "Paused"
+      // when it carries monitoring_paused_at, "Active" otherwise.
+      if (hasMonitoring) {
+        if (!selectedMonitoring.includes(monitoringFilterLabelOf(s)))
+          return false;
       }
 
       // Agent-status filter: same "compare against the display label"
@@ -438,7 +511,13 @@ function SitesPage() {
 
       return true;
     });
-  }, [sites, selectedStatuses, selectedAgentStatuses, agentStatusById]);
+  }, [
+    sites,
+    selectedStatuses,
+    selectedMonitoring,
+    selectedAgentStatuses,
+    agentStatusById,
+  ]);
 
   // INVARIANT: read from the FULL sites array, not visibleSites.
   const selectedSites: Site[] = (sites ?? []).filter((s) =>
@@ -457,6 +536,7 @@ function SitesPage() {
     let count = 0;
     if (search.q?.trim()) count++;
     if (selectedStatuses.length > 0) count++;
+    if (selectedMonitoring.length > 0) count++;
     if (selectedTags.length > 0) count++;
     if (appliedClientId) count++;
     if (selectedAgentStatuses.length > 0) count++;
@@ -464,6 +544,7 @@ function SitesPage() {
   }, [
     search.q,
     selectedStatuses,
+    selectedMonitoring,
     selectedTags,
     appliedClientId,
     selectedAgentStatuses,
@@ -475,6 +556,7 @@ function SitesPage() {
         ...prev,
         q: undefined,
         status: undefined,
+        monitoring: undefined,
         tags: undefined,
         tagMode: undefined,
         client: undefined,
@@ -501,6 +583,8 @@ function SitesPage() {
     if (search.q?.trim()) parts.push(`"${search.q.trim()}"`);
     if (selectedStatuses.length > 0)
       parts.push(`status:${selectedStatuses.join(",")}`);
+    if (selectedMonitoring.length > 0)
+      parts.push(`monitoring:${selectedMonitoring.join(",")}`);
     if (selectedTags.length > 0) parts.push(`tags:${selectedTags.join(",")}`);
     if (appliedClientId) {
       const client = clientOptions.find((c) => c.id === appliedClientId);
@@ -512,6 +596,7 @@ function SitesPage() {
   }, [
     search.q,
     selectedStatuses,
+    selectedMonitoring,
     selectedTags,
     appliedClientId,
     clientOptions,
@@ -524,6 +609,15 @@ function SitesPage() {
   // than `sites.length > 0`.
   const showFilterEmpty =
     !isPending && !isError && hasActiveFilters && visibleSites.length === 0;
+
+  // GH #338. The archived list is empty and nothing is narrowing it: there is
+  // simply nothing archived. A filter that emptied it is showFilterEmpty's.
+  const showArchivedEmpty =
+    !isPending &&
+    !isError &&
+    showArchived &&
+    !hasActiveFilters &&
+    (sites?.length ?? 0) === 0;
 
   // ── Page subline ──────────────────────────────────────────────────────────
   //
@@ -1044,7 +1138,10 @@ function SitesPage() {
           retryLabel="Reload sites"
           isRetrying={isFetching}
         />
-      ) : sites.length === 0 && !hasActiveFilters ? (
+      ) : sites.length === 0 && !hasActiveFilters && !showArchived ? (
+        // First-run screen: the tenant has no sites. Never for the archived
+        // list (GH #338): an empty archived list says nothing about the
+        // active sites, and this branch has no toolbar to leave it with.
         <>
           {disconnectedSites ? (
             <DisconnectedSitesPanel
@@ -1103,8 +1200,13 @@ function SitesPage() {
               });
             }}
             statusOptions={statusOptions}
-            selectedStatuses={selectedStatuses}
+            selectedStatuses={statusMenuSelection}
             onStatusToggle={(status) => {
+              // GH #568: "Archived" switches lists, it does not filter rows.
+              if (status === ARCHIVED_STATUS_LABEL) {
+                handleArchivedChange(!showArchived);
+                return;
+              }
               const next = selectedStatuses.includes(status)
                 ? selectedStatuses.filter((s) => s !== status)
                 : [...selectedStatuses, status];
@@ -1114,8 +1216,34 @@ function SitesPage() {
               });
             }}
             onStatusesClear={() => {
+              // "Show all" also leaves the archived list, whose entry is
+              // ticked in this menu while it is on screen.
+              if (showArchived) {
+                handleArchivedChange(false);
+                return;
+              }
               void navigate({
                 search: (prev: SitesSearch) => ({ ...prev, status: undefined }),
+                replace: true,
+              });
+            }}
+            monitoringOptions={MONITORING_FILTER_OPTIONS}
+            selectedMonitoring={selectedMonitoring}
+            onMonitoringToggle={(value) => {
+              const next = selectedMonitoring.includes(value)
+                ? selectedMonitoring.filter((m) => m !== value)
+                : [...selectedMonitoring, value];
+              void navigate({
+                search: (prev: SitesSearch) => ({
+                  ...prev,
+                  monitoring: next.length ? next : undefined,
+                }),
+                replace: true,
+              });
+            }}
+            onMonitoringClear={() => {
+              void navigate({
+                search: (prev: SitesSearch) => ({ ...prev, monitoring: undefined }),
                 replace: true,
               });
             }}
@@ -1187,21 +1315,15 @@ function SitesPage() {
             addSiteSlot={operate ? undefined : <AddSitePlaceholder />}
           />
 
-          {/* Phase 5 — archived filter chip */}
+          {/* Phase 5 — archived filter chip. The same switch as the Status
+              menu's "Archived" entry (GH #568): both write the one `archived`
+              search param, and both add a history entry so Back returns. */}
           {operate ? (
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 aria-pressed={showArchived}
-                onClick={() => {
-                  void navigate({
-                    search: (prev: SitesSearch) => ({
-                      ...prev,
-                      archived: showArchived ? undefined : true,
-                    }),
-                    replace: true,
-                  });
-                }}
+                onClick={() => handleArchivedChange(!showArchived)}
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                   showArchived
@@ -1232,6 +1354,10 @@ function SitesPage() {
                 onClearFilters={handleClearAllFilters}
               />
             )
+          ) : showArchivedEmpty ? (
+            // GH #338: nothing is archived. Every role gets the way back,
+            // including a viewer, who has no archived chip.
+            <ArchivedSitesEmpty onBack={() => handleArchivedChange(false)} />
           ) : view === "grid" ? (
             <SitesGrid
               sites={visibleSites}

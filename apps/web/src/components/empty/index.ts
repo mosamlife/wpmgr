@@ -7,6 +7,9 @@ export type { NoSitesEmptyProps } from "./no-sites-empty";
 export { FilterEmpty } from "./filter-empty";
 export type { FilterEmptyProps } from "./filter-empty";
 
+export { ArchivedSitesEmpty } from "./archived-sites-empty";
+export type { ArchivedSitesEmptyProps } from "./archived-sites-empty";
+
 export { NoBackupsEmpty } from "./no-backups-empty";
 export type { NoBackupsEmptyProps } from "./no-backups-empty";
 

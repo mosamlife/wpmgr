@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { screen, fireEvent } from "@testing-library/react";
+import { act, screen, fireEvent } from "@testing-library/react";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -283,5 +283,215 @@ describe("Sites page: pause/resume control gated behind operate permission (GH #
     expect(
       await screen.findByRole("menuitem", { name: /pause monitoring/i }),
     ).toBeInTheDocument();
+  });
+});
+
+// GH #338. "Show archived" with nothing archived swapped the whole page for the
+// first-run screen ("Connect your first WordPress site.") and removed the chip
+// that gets back, because an empty archived list was read as "this tenant has no
+// sites at all". The operator in the report had 24 sites and saw a page that
+// said they had none, with no control on it that led anywhere.
+//
+// Server state is mocked at the hook boundary like every test above: the
+// archived bucket is the second `useSites` call, told apart by `options.view`
+// (use-sites.ts maps view "archived" to `?state=archived`; packages/openapi/
+// openapi.yaml, operationId listSites).
+//
+// The grid view keeps the cards mountable under jsdom. Cards are found by their
+// name link, which every role sees.
+function activeSites(count: number): Site[] {
+  return Array.from({ length: count }, (_, i) =>
+    buildSite({
+      id: `00000000-0000-0000-0000-${String(i + 1).padStart(12, "0")}`,
+      name: `Site ${i + 1}`,
+      url: `https://site-${i + 1}.example.com`,
+    }),
+  );
+}
+
+function mockBuckets(active: Site[], archived: Site[]): void {
+  mockedUseSites.mockImplementation((options?: UseSitesOptions) =>
+    mockQueryResult<Site[]>({
+      data: options?.view === "archived" ? archived : active,
+    }),
+  );
+}
+
+/** The page heading renders in every branch, so it is the neutral thing to wait
+ *  on: whatever branch the page chose, the assertions after it are synchronous
+ *  and fail with a message about that branch rather than with a timeout. */
+async function pageReady(): Promise<void> {
+  await screen.findByRole(
+    "heading",
+    { name: "Sites" },
+    { timeout: FIND_TIMEOUT },
+  );
+}
+
+describe("Sites page: an empty archived view is not the first-run screen (GH #338)", () => {
+  beforeEach(() => {
+    // Onboarding already dismissed on this browser, so the first-run screen is
+    // the one the reporter saw, "Connect your first WordPress site.", and not
+    // the onboarding wizard.
+    window.localStorage.setItem("wpmgr.onboarding.completed", "true");
+  });
+
+  it("says there are no archived sites and keeps the way back when nothing is archived", async () => {
+    mockBuckets(activeSites(24), []);
+
+    renderSitesPage("/sites?view=grid&archived=true");
+    await pageReady();
+
+    expect(
+      screen.queryByRole("heading", {
+        name: "Connect your first WordPress site.",
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("status", { name: "No archived sites" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Showing archived" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByRole("button", { name: "Back to active sites" }),
+    ).toBeInTheDocument();
+  });
+
+  it("the archived toggle on that page goes back to the active sites", async () => {
+    mockBuckets(activeSites(24), []);
+
+    const router = renderSitesPage("/sites?view=grid&archived=true");
+    await pageReady();
+    fireEvent.click(screen.getByRole("button", { name: "Showing archived" }));
+
+    expect(
+      await screen.findByRole("link", { name: "Site 1" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("status", { name: "No archived sites" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Show archived" }),
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(router.state.location.search).not.toHaveProperty("archived");
+  });
+
+  it("'Back to active sites' in the empty state does the same", async () => {
+    mockBuckets(activeSites(24), []);
+
+    const router = renderSitesPage("/sites?view=grid&archived=true");
+    await pageReady();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Back to active sites" }),
+    );
+
+    expect(
+      await screen.findByRole("link", { name: "Site 1" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("status", { name: "No archived sites" }),
+    ).not.toBeInTheDocument();
+    expect(router.state.location.search).not.toHaveProperty("archived");
+  });
+
+  it("switching to archived adds a history entry, so the browser Back button returns to the active list", async () => {
+    mockBuckets(activeSites(3), []);
+
+    const router = renderSitesPage("/sites?view=grid");
+    await pageReady();
+    fireEvent.click(screen.getByRole("button", { name: "Show archived" }));
+    await screen.findByRole("status", { name: "No archived sites" });
+
+    act(() => router.history.back());
+
+    expect(
+      await screen.findByRole("link", { name: "Site 1" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Show archived" }),
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(router.state.location.search).not.toHaveProperty("archived");
+  });
+
+  it("gives a viewer the way back as well, though a viewer has no archived toggle", async () => {
+    mockBuckets(activeSites(2), []);
+
+    renderSitesPage("/sites?view=grid&archived=true", VIEWER_ME);
+    await pageReady();
+
+    expect(
+      screen.getByRole("status", { name: "No archived sites" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /archived$/i }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Back to active sites" }),
+    );
+    expect(
+      await screen.findByRole("link", { name: "Site 1" }),
+    ).toBeInTheDocument();
+  });
+
+  // The honest cases the new state must not swallow.
+
+  it("still lists archived sites when there are some", async () => {
+    mockBuckets(activeSites(2), [
+      buildSite({
+        id: "00000000-0000-0000-0000-0000000000a1",
+        name: "Retired",
+        url: "https://retired.example.com",
+      }),
+    ]);
+
+    renderSitesPage("/sites?view=grid&archived=true");
+
+    expect(
+      await screen.findByRole("link", { name: "Retired" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("status", { name: "No archived sites" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Showing archived" }),
+    ).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("keeps the filter message when a filter, not the archive, emptied the list", async () => {
+    mockBuckets(activeSites(2), []);
+
+    renderSitesPage("/sites?view=grid&archived=true&q=zzz");
+    await pageReady();
+
+    expect(
+      screen.getByRole("status", { name: "No sites match the current filters" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("status", { name: "No archived sites" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Showing archived" }),
+    ).toBeInTheDocument();
+  });
+
+  it("still shows the first-run screen for a tenant with no sites at all", async () => {
+    // The positive control for the absence asserted above: the heading that must
+    // be gone from the archived view is the same one this state renders.
+    mockBuckets([], []);
+
+    renderSitesPage("/sites?view=grid");
+
+    expect(
+      await screen.findByRole(
+        "heading",
+        { name: "Connect your first WordPress site." },
+        { timeout: FIND_TIMEOUT },
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("status", { name: "No archived sites" }),
+    ).not.toBeInTheDocument();
   });
 });
