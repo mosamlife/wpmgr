@@ -12,10 +12,13 @@ if (!defined('ABSPATH')) {
 /**
  * Exactly which post meta rows make up a page in one builder's format.
  *
- * The post fields (type, status, title, content, modified time) always belong
- * to the document; this names the meta. Snapshot, fingerprint, restore and the
- * write recorder all read the same descriptor, so they agree on what the page
- * is.
+ * The post fields always belong to the document: the fingerprint covers the
+ * type, status, title, content, excerpt, slug, password, modified time (GMT),
+ * parent and menu order (BuilderDocumentFingerprint), and a snapshot keeps
+ * those and the other columns a restore puts back
+ * (BuilderDocumentSnapshot::RESTORE_POST_COLUMNS). This names the meta. A
+ * snapshot keeps every meta row of the post, not only the descriptor's, so a
+ * row any plugin writes during a save can be put back too.
  *
  * - exactKeys    meta keys of the document; the fingerprint covers these.
  * - prefixes     meta key prefixes whose every key belongs to the document.
