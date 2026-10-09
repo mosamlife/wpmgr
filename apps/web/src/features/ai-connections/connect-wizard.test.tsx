@@ -2388,6 +2388,63 @@ describe("the site-tools boxes in the capability step", () => {
     const sent = (capturedBody as Record<string, unknown>).capabilities as string[];
     expect([...sent].sort()).toEqual(["mcp.ability.read", "mcp.sites.read"]);
   });
+
+  it("ticking ask for changes alone also ticks see what the site can do, and the mint sends both", async () => {
+    // "Ask for changes" needs "see what the site can do": a connection holding
+    // the request alone cannot call the tool that carries one.
+    loadedFleet(3);
+    let capturedBody: unknown = null;
+    stubMintFetch((init) => {
+      capturedBody = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : null;
+      return jsonResponse(MINTED, 201);
+    });
+
+    renderWizard();
+    await advanceToCapabilityStep(chooseAllSites);
+    const read = () => screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.read");
+    const request = () => screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.request");
+    expect(read().checked).toBe(false);
+    expect(request().checked).toBe(false);
+
+    fireEvent.click(request());
+    expect(request().checked).toBe(true);
+    expect(read().checked).toBe(true);
+
+    fireEvent.click(await forwardToMintButtonFromCapabilities());
+    await screen.findByText(/this is the only time this token is shown/i);
+    const sent = (capturedBody as Record<string, unknown>).capabilities as string[];
+    expect([...sent].sort()).toEqual([
+      "mcp.ability.read",
+      "mcp.ability.request",
+      "mcp.sites.read",
+    ]);
+  });
+
+  it("clearing see what the site can do clears ask for changes too, and the mint sends neither", async () => {
+    loadedFleet(3);
+    let capturedBody: unknown = null;
+    stubMintFetch((init) => {
+      capturedBody = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : null;
+      return jsonResponse(MINTED, 201);
+    });
+
+    renderWizard();
+    await advanceToCapabilityStep(chooseAllSites);
+    const read = () => screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.read");
+    const request = () => screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.request");
+
+    fireEvent.click(request());
+    expect(read().checked).toBe(true);
+    expect(request().checked).toBe(true);
+    fireEvent.click(read());
+    expect(read().checked).toBe(false);
+    expect(request().checked).toBe(false);
+
+    fireEvent.click(await forwardToMintButtonFromCapabilities());
+    await screen.findByText(/this is the only time this token is shown/i);
+    const sent = (capturedBody as Record<string, unknown>).capabilities as string[];
+    expect([...sent].sort()).toEqual(["mcp.sites.read"]);
+  });
 });
 
 describe("a blocked step's refusal renders exactly once, never twice", () => {

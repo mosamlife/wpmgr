@@ -7,6 +7,7 @@ import {
   conferrableReadsIn,
   defaultCapabilities,
   presetFor,
+  withAbilityTicks,
   withCapability,
 } from "./capability-presets";
 
@@ -183,6 +184,36 @@ describe("withCapability", () => {
     const before = Object.freeze(["mcp.sites.read"]);
     withCapability(before, "mcp.uptime.read", true);
     withCapability(before, "mcp.sites.read", false);
+    expect(before).toEqual(["mcp.sites.read"]);
+  });
+});
+
+describe("withAbilityTicks", () => {
+  it("sets both site-tools rows in one step and leaves every other tick alone", () => {
+    const start = ["mcp.sites.read", "mcp.cache.purge"];
+    expect(withAbilityTicks(start, { read: true, request: true })).toEqual([
+      "mcp.sites.read",
+      "mcp.cache.purge",
+      "mcp.ability.read",
+      "mcp.ability.request",
+    ]);
+    expect(
+      withAbilityTicks(
+        ["mcp.sites.read", "mcp.ability.read", "mcp.ability.request"],
+        { read: false, request: false },
+      ),
+    ).toEqual(["mcp.sites.read"]);
+  });
+
+  it("sets one row without touching the other, and never adds a name twice", () => {
+    const both = ["mcp.ability.read", "mcp.ability.request"];
+    expect(withAbilityTicks(both, { read: true, request: false })).toEqual(["mcp.ability.read"]);
+    expect(withAbilityTicks(both, { read: true, request: true })).toEqual(both);
+  });
+
+  it("leaves the list it was given alone", () => {
+    const before = Object.freeze(["mcp.sites.read"]);
+    withAbilityTicks(before, { read: true, request: true });
     expect(before).toEqual(["mcp.sites.read"]);
   });
 });

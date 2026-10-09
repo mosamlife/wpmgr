@@ -226,14 +226,57 @@ describe("/connect/ai, site tools asked for", () => {
     expect(readBox().checked).toBe(true);
     expect(requestBox().checked).toBe(true);
 
+    // Clearing "see what the site can do" clears "ask for changes" with it.
     fireEvent.click(readBox());
-    fireEvent.click(requestBox());
     expect(readBox().checked).toBe(false);
     expect(requestBox().checked).toBe(false);
 
     submitApproval();
     const body = await approvalBody();
     expect(body.capabilities).toEqual(["mcp.sites.read"]);
+  });
+
+  it("ticking ask for changes while see what the site can do is clear ticks both, and the approval sends both", async () => {
+    const late = lateAnswer(wire("ticket-1"));
+    authorizeAnswers = [late.answer];
+    mount();
+    await screen.findByRole("status", { name: "Loading the connection request" });
+    late.release();
+    await screen.findByTestId("consent-site-capability");
+
+    // Clear the read, which clears the request; then tick only the request.
+    fireEvent.click(readBox());
+    expect(readBox().checked).toBe(false);
+    expect(requestBox().checked).toBe(false);
+    fireEvent.click(requestBox());
+    expect(requestBox().checked).toBe(true);
+    expect(readBox().checked).toBe(true);
+
+    submitApproval();
+    const body = await approvalBody();
+    expect(body.capabilities).toEqual([
+      "mcp.sites.read",
+      "mcp.ability.read",
+      "mcp.ability.request",
+    ]);
+  });
+
+  it("does not send the request after the read is cleared and ticked again", async () => {
+    const late = lateAnswer(wire("ticket-1"));
+    authorizeAnswers = [late.answer];
+    mount();
+    await screen.findByRole("status", { name: "Loading the connection request" });
+    late.release();
+    await screen.findByTestId("consent-site-capability");
+
+    fireEvent.click(readBox());
+    fireEvent.click(readBox());
+    expect(readBox().checked).toBe(true);
+    expect(requestBox().checked).toBe(false);
+
+    submitApproval();
+    const body = await approvalBody();
+    expect(body.capabilities).toEqual(["mcp.sites.read", "mcp.ability.read"]);
   });
 
   it("keeps a cleared box cleared when a refreshed context arrives behind the open screen", async () => {

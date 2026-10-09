@@ -322,16 +322,30 @@ describe("ConsentScreen, the approval sends exactly the ticked reads", () => {
 
   it("adds the site-tools names only while their boxes are ticked, beside the reads that are", async () => {
     // Both site-tools boxes open ticked because the app asked for site tools.
-    // Clearing one takes exactly that name out of the request.
+    // Clearing "ask for changes" takes exactly that name out of the request.
     const onApprove = await renderScreen(
       consentFor([...reads(SERVER_READS), ABILITY_READ, ABILITY_REQUEST], [SCOPE_READ, SCOPE_SITE]),
     );
     expect(screen.getByTestId("ability-box-mcp.ability.read")).toBeChecked();
     expect(screen.getByTestId("ability-box-mcp.ability.request")).toBeChecked();
+    fireEvent.click(screen.getByTestId("ability-box-mcp.ability.request"));
+    expect(screen.getByTestId("ability-box-mcp.ability.request")).not.toBeChecked();
+    expect(screen.getByTestId("ability-box-mcp.ability.read")).toBeChecked();
+    submit();
+    expect(sentCapabilities(onApprove)).toEqual(["mcp.ability.read", "mcp.sites.read"]);
+  });
+
+  it("takes both site-tools names out of the request when see what the site can do is cleared", async () => {
+    // "Ask for changes" needs "see what the site can do", so clearing the read
+    // clears the request with it; neither name is sent.
+    const onApprove = await renderScreen(
+      consentFor([...reads(SERVER_READS), ABILITY_READ, ABILITY_REQUEST], [SCOPE_READ, SCOPE_SITE]),
+    );
     fireEvent.click(screen.getByTestId("ability-box-mcp.ability.read"));
     expect(screen.getByTestId("ability-box-mcp.ability.read")).not.toBeChecked();
+    expect(screen.getByTestId("ability-box-mcp.ability.request")).not.toBeChecked();
     submit();
-    expect(sentCapabilities(onApprove)).toEqual(["mcp.ability.request", "mcp.sites.read"]);
+    expect(sentCapabilities(onApprove)).toEqual(["mcp.sites.read"]);
   });
 
   it("lets the cache-clear box stand alone once every read is cleared", async () => {

@@ -704,7 +704,9 @@ describe("ConsentScreen, the mcp:site site-tools section", () => {
     expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read"]);
   });
 
-  it("sends exactly what is ticked, for every combination of the two boxes", async () => {
+  it("sends exactly what is ticked, for every combination of the two boxes that can stand", async () => {
+    // "Ask for changes" needs "see what the site can do", so the request alone
+    // is not a state the screen can be in: see the tests on that rule below.
     const cases: { read: boolean; request: boolean; want: string[] }[] = [
       {
         read: true,
@@ -712,7 +714,6 @@ describe("ConsentScreen, the mcp:site site-tools section", () => {
         want: ["mcp.sites.read", "mcp.ability.read", "mcp.ability.request"],
       },
       { read: true, request: false, want: ["mcp.sites.read", "mcp.ability.read"] },
-      { read: false, request: true, want: ["mcp.sites.read", "mcp.ability.request"] },
       { read: false, request: false, want: ["mcp.sites.read"] },
     ];
     for (const c of cases) {
@@ -752,18 +753,84 @@ describe("ConsentScreen, the mcp:site site-tools section", () => {
     expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read", "mcp.ability.read"]);
   });
 
-  it("does the same the other way round: the request ticked, the read not offered and not sent", async () => {
+  it("leaves the request clear and unusable when the read it needs is not offered, and sends neither", async () => {
+    // The server offers the request but not the read. A request without the read
+    // cannot stand, so it opens clear, is disabled with the reason, and is not
+    // sent; the fleet read still goes.
     const onApprove = vi.fn();
     const consent = siteConsent([SCOPE_READ, SCOPE_SITE], [READ, ABILITY_REQUEST]);
     renderWithProviders(<ConsentScreen {...props({ consent, onApprove })} />, {
       withRouter: true,
     });
     await screen.findByTestId("consent-site-capability");
-    expect(requestBox().checked).toBe(true);
     expect(readBox().checked).toBe(false);
     expect(readBox().disabled).toBe(true);
     expect(screen.getByTestId("ability-not-offered-mcp.ability.read")).toBeTruthy();
-    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read", "mcp.ability.request"]);
+    expect(requestBox().checked).toBe(false);
+    expect(requestBox().disabled).toBe(true);
+    expect(screen.getByTestId("ability-request-blocked")).toBeTruthy();
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read"]);
+  });
+
+  it("ticking ask for changes while see what the site can do is clear ticks both, and approving sends both", async () => {
+    const onApprove = vi.fn();
+    renderWithProviders(<ConsentScreen {...props({ consent: siteConsent(), onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    // Clear the read: that clears the request with it.
+    setTicked(readBox, false);
+    expect(requestBox().checked).toBe(false);
+
+    // Now tick only the request: the read comes back with it.
+    fireEvent.click(requestBox());
+    expect(requestBox().checked).toBe(true);
+    expect(readBox().checked).toBe(true);
+    expect(approveCall(onApprove).capabilities).toEqual([
+      "mcp.sites.read",
+      "mcp.ability.read",
+      "mcp.ability.request",
+    ]);
+  });
+
+  it("clearing see what the site can do clears ask for changes too, and ticking it again does not bring the request back", async () => {
+    const onApprove = vi.fn();
+    renderWithProviders(<ConsentScreen {...props({ consent: siteConsent(), onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    expect(requestBox().checked).toBe(true);
+
+    fireEvent.click(readBox());
+    expect(readBox().checked).toBe(false);
+    expect(requestBox().checked).toBe(false);
+
+    fireEvent.click(readBox());
+    expect(readBox().checked).toBe(true);
+    expect(requestBox().checked).toBe(false);
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read", "mcp.ability.read"]);
+  });
+
+  it("clearing ask for changes alone leaves see what the site can do ticked and sent", async () => {
+    const onApprove = vi.fn();
+    renderWithProviders(<ConsentScreen {...props({ consent: siteConsent(), onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    fireEvent.click(requestBox());
+    expect(requestBox().checked).toBe(false);
+    expect(readBox().checked).toBe(true);
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read", "mcp.ability.read"]);
+  });
+
+  it("tells the person that ask for changes needs see what the site can do", async () => {
+    renderWithProviders(<ConsentScreen {...props({ consent: siteConsent() })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    expect(screen.getByTestId("ability-request-needs-read")).toHaveTextContent(
+      "Needs “See this site's tools and read its published pages”. Ticking this ticks that too, and clearing that clears this.",
+    );
   });
 
   it("lets a site-only request through as it opens, and blocks Approve only once both boxes are cleared", async () => {

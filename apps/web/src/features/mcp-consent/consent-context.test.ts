@@ -425,17 +425,25 @@ describe("initialSelection, what the consent screen opens ticked", () => {
     ]);
   });
 
-  it("adds only the site tool the server offers", () => {
+  it("adds the read alone when the server offers the read and not the request", () => {
     const readOnly = [...asReads(["mcp.sites.read"]), ABILITY_READ];
-    const requestOnly = [...asReads(["mcp.sites.read"]), ABILITY_REQUEST];
     expect(initialSelection(ctx([SCOPE_READ, SCOPE_SITE], readOnly))).toEqual([
       "mcp.sites.read",
       "mcp.ability.read",
     ]);
+  });
+
+  it("does not tick the request when the read it needs is not on offer", () => {
+    // The request needs the read, so an offer of the request alone opens with
+    // nothing from the site tools ticked.
+    const requestOnly = [...asReads(["mcp.sites.read"]), ABILITY_REQUEST];
     expect(initialSelection(ctx([SCOPE_READ, SCOPE_SITE], requestOnly))).toEqual([
       "mcp.sites.read",
-      "mcp.ability.request",
     ]);
+    // The same request, once the read is on offer too, is ticked beside it.
+    expect(
+      initialSelection(ctx([SCOPE_READ, SCOPE_SITE], [...requestOnly, ABILITY_READ])),
+    ).toEqual(["mcp.sites.read", "mcp.ability.read", "mcp.ability.request"]);
   });
 
   it("adds neither when the server offers neither", () => {
@@ -471,5 +479,75 @@ describe("initialSelection, what the consent screen opens ticked", () => {
   it("opens with nothing ticked for a server that listed nothing", () => {
     expect(initialSelection(ctx([SCOPE_READ, SCOPE_SITE], []))).toEqual([]);
     expect(initialSelection(ctx([SCOPE_READ], []))).toEqual([]);
+  });
+});
+
+// "Ask for changes" needs "see what the site can do": the tool that carries a
+// request is declared with the read capability. The site-tools box keeps the two
+// ticks together; this is the same rule held again where the request is built,
+// so a tick list that somehow holds the request without the read still cannot
+// send it.
+describe("buildApprovalCapabilities, the request travels only with the read", () => {
+  it("sends the request together with the read", () => {
+    expect(
+      buildApprovalCapabilities(EVERYTHING, [
+        "mcp.sites.read",
+        "mcp.ability.read",
+        "mcp.ability.request",
+      ]),
+    ).toEqual(["mcp.sites.read", "mcp.ability.read", "mcp.ability.request"]);
+  });
+
+  it("does not send a ticked request when the read is not ticked", () => {
+    expect(
+      buildApprovalCapabilities(EVERYTHING, ["mcp.sites.read", "mcp.ability.request"]),
+    ).toEqual(["mcp.sites.read"]);
+    // And the read alone is still sent, so the guard is not dropping both.
+    expect(
+      buildApprovalCapabilities(EVERYTHING, ["mcp.sites.read", "mcp.ability.read"]),
+    ).toEqual(["mcp.sites.read", "mcp.ability.read"]);
+  });
+
+  it("does not send the request when the read is ticked but is not on offer", () => {
+    const requestOnly = [...asReads(["mcp.sites.read"]), ABILITY_REQUEST];
+    expect(
+      buildApprovalCapabilities(requestOnly, [
+        "mcp.sites.read",
+        "mcp.ability.read",
+        "mcp.ability.request",
+      ]),
+    ).toEqual(["mcp.sites.read"]);
+  });
+
+  it("does not send the request when the read is offered with the wrong effect", () => {
+    const wrongEffect = [
+      ...asReads(["mcp.sites.read"]),
+      { name: "mcp.ability.read", effect: "request" },
+      ABILITY_REQUEST,
+    ];
+    expect(
+      buildApprovalCapabilities(wrongEffect, [
+        "mcp.sites.read",
+        "mcp.ability.read",
+        "mcp.ability.request",
+      ]),
+    ).toEqual(["mcp.sites.read"]);
+  });
+
+  it("keeps the rule that a request the server did not offer is not sent, read or no read", () => {
+    const readOnly = [...asReads(["mcp.sites.read"]), ABILITY_READ];
+    expect(
+      buildApprovalCapabilities(readOnly, [
+        "mcp.sites.read",
+        "mcp.ability.read",
+        "mcp.ability.request",
+      ]),
+    ).toEqual(["mcp.sites.read", "mcp.ability.read"]);
+  });
+
+  it("does not let the cache-clear stand in for the read", () => {
+    expect(
+      buildApprovalCapabilities(EVERYTHING, ["mcp.cache.purge", "mcp.ability.request"]),
+    ).toEqual(["mcp.cache.purge"]);
   });
 });
