@@ -133,6 +133,18 @@ type RequestDTO struct {
 	// as the site described them at precheck (null when the outline has no
 	// image, and for every other ability). Each filename came from the site.
 	PageMedia []PageMediaDTO `json:"page_media"`
+	// Approval is how the request was approved: by a person, or by the
+	// site's setting with no person deciding (ADR-065). Null until it is
+	// approved, and for a request that never will be.
+	Approval *ApprovalDTO `json:"approval"`
+	// ChangeClass is the kind of change WPMgr decided the request is, from
+	// its own records; ChangeKindName is that kind's name as copy uses it.
+	// Both null before WPMgr decided, and the name null for always_ask.
+	ChangeClass    *string `json:"change_class"`
+	ChangeKindName *string `json:"change_kind_name"`
+	// AskReason is why the request was left for a person instead of being
+	// approved by a setting. It stays set after a person approves it.
+	AskReason *string `json:"ask_reason"`
 }
 
 // PageMediaDTO is one image a page-create request places.
@@ -208,7 +220,7 @@ func ts(t pgtype.Timestamptz) *time.Time {
 	return &v
 }
 
-func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string) RequestDTO {
+func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string, names setterNames) RequestDTO {
 	out := RequestDTO{
 		ID: r.ID, SiteID: r.SiteID, AbilityName: r.AbilityName, InputJSON: r.InputJson,
 		TitleExcerpt: r.TitleExcerpt, Editor: r.Editor, PostType: r.PostType,
@@ -225,6 +237,10 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string)
 		RouteSHA256:        r.RouteSha256,
 		CardFacts:          cardFactsFor(r),
 		PageMedia:          pageMediaFor(r),
+		Approval:           approvalOf(r, names),
+		ChangeClass:        changeClassOf(r),
+		ChangeKindName:     changeKindNameOf(r),
+		AskReason:          askReasonOf(r),
 	}
 	if withDigest {
 		d := r.PresentedDigest
@@ -237,7 +253,8 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string)
 // version when the row could offer a recovery undo.
 func (h *Handler) rowDTO(c *gin.Context, p domain.Principal, row sqlc.AssistantAbilityRequest) RequestDTO {
 	rows := []sqlc.AssistantAbilityRequest{row}
-	return toDTO(row, true, h.svc.AgentVersions(c.Request.Context(), p, rows)[row.SiteID])
+	ctx := c.Request.Context()
+	return toDTO(row, true, h.svc.AgentVersions(ctx, p, rows)[row.SiteID], h.svc.readSetterNames(ctx, p, rows))
 }
 
 func principal(c *gin.Context) (domain.Principal, bool) {
@@ -281,8 +298,9 @@ func (h *Handler) listForSite(c *gin.Context) {
 	out := ListResponse{Requests: make([]RequestDTO, 0, len(rows)), Limit: limit, Offset: offset}
 	withDigest := p.Type == domain.PrincipalUser
 	versions := h.svc.AgentVersions(c.Request.Context(), p, rows)
+	names := h.svc.readSetterNames(c.Request.Context(), p, rows)
 	for _, r := range rows {
-		out.Requests = append(out.Requests, toDTO(r, withDigest, versions[r.SiteID]))
+		out.Requests = append(out.Requests, toDTO(r, withDigest, versions[r.SiteID], names))
 	}
 	c.JSON(http.StatusOK, out)
 }
@@ -322,8 +340,9 @@ func (h *Handler) listForOrg(c *gin.Context) {
 	out := OrgListResponse{Requests: make([]RequestDTO, 0, len(q.Requests)), PendingCount: q.PendingCount, Limit: limit, Offset: offset}
 	withDigest := p.Type == domain.PrincipalUser
 	versions := h.svc.AgentVersions(c.Request.Context(), p, q.Requests)
+	names := h.svc.readSetterNames(c.Request.Context(), p, q.Requests)
 	for _, r := range q.Requests {
-		out.Requests = append(out.Requests, toDTO(r, withDigest, versions[r.SiteID]))
+		out.Requests = append(out.Requests, toDTO(r, withDigest, versions[r.SiteID], names))
 	}
 	c.JSON(http.StatusOK, out)
 }
