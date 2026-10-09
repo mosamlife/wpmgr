@@ -540,20 +540,23 @@ func TestBricksAbilitiesCheck(t *testing.T) {
 }
 
 // bricks_abilities is inferred from the site's tool list and has not been
-// confirmed on a licensed Bricks install, so the row keeps its state to be
-// shown and that state moves nothing: a site whose only non-pass row it is
-// reads ready with nothing to fix, whatever the row says.
+// confirmed on a licensed Bricks install. A pass or a fail keeps its state to
+// be shown and that state moves nothing: a site whose only non-pass row it is
+// reads ready with nothing to fix. An unknown claims nothing, so it is an
+// ordinary unknown: the site reads incomplete. In none of these is the row a
+// fix.
 func TestBricksAbilitiesNeverCountsAsAFix(t *testing.T) {
 	cases := []struct {
 		name   string
 		mutate func(*Facts)
 		state  State
 		reason Reason
+		status Status
 	}{
-		{"off on a complete list", func(f *Facts) { f.BricksAbilities = 0 }, StateFail, ReasonNone},
-		{"never read", func(f *Facts) { f.InventoryChecked = false; f.BricksAbilities = 0 }, StateUnknown, ReasonInventoryNeverRun},
-		{"list cut short", func(f *Facts) { f.BricksAbilities = 0; f.AbilitiesTruncated = true }, StateUnknown, ReasonInventoryTruncated},
-		{"on", func(f *Facts) {}, StatePass, ReasonNone},
+		{"off on a complete list", func(f *Facts) { f.BricksAbilities = 0 }, StateFail, ReasonNone, StatusReady},
+		{"never read", func(f *Facts) { f.InventoryChecked = false; f.BricksAbilities = 0 }, StateUnknown, ReasonInventoryNeverRun, StatusIncomplete},
+		{"list cut short", func(f *Facts) { f.BricksAbilities = 0; f.AbilitiesTruncated = true }, StateUnknown, ReasonInventoryTruncated, StatusIncomplete},
+		{"on", func(f *Facts) {}, StatePass, ReasonNone, StatusReady},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -568,8 +571,8 @@ func TestBricksAbilitiesNeverCountsAsAFix(t *testing.T) {
 					}
 				}
 			}
-			if r.Status != StatusReady || r.FixCount != 0 || len(r.Failing()) != 0 {
-				t.Fatalf("status %q fix_count %d failing %v, want ready 0 []", r.Status, r.FixCount, r.Failing())
+			if r.Status != c.status || r.FixCount != 0 || len(r.Failing()) != 0 {
+				t.Fatalf("status %q fix_count %d failing %v, want %q 0 []", r.Status, r.FixCount, r.Failing(), c.status)
 			}
 		})
 	}
@@ -605,33 +608,32 @@ func TestSwitchRowsAreUnknownWhenTheToolListWasReadWithoutTheAbilitiesAPI(t *tes
 		name  string
 		facts func() Facts
 		id    CheckID
-		// counted is false for a row that is shown but moves no roll-up.
-		counted bool
+		// wantOff and wantFixes are the roll-up when the row is a fail. The
+		// Elementor switch is a fix; bricks_abilities is shown and counted
+		// nowhere, but its unknown is an ordinary unknown for both builders.
+		wantOff   Status
+		wantFixes int
 	}{
 		{"elementor", func() Facts {
 			f := withElementor(readyFacts())
 			f.ElementorAbilities = 0
 			return f
-		}, CheckElementorSwitch, true},
+		}, CheckElementorSwitch, StatusNeedsAttention, 1},
 		{"bricks", func() Facts {
 			f := withBricks(readyFacts())
 			f.BricksAbilities = 0
 			return f
-		}, CheckBricksAbilities, false},
+		}, CheckBricksAbilities, StatusReady, 0},
 	}
 	for _, c := range cases {
-		wantStale, wantOff, wantFixes := StatusIncomplete, StatusNeedsAttention, 1
-		if !c.counted {
-			wantStale, wantOff, wantFixes = StatusReady, StatusReady, 0
-		}
 		t.Run(c.name+": read before WordPress shipped the API", func(t *testing.T) {
 			f := c.facts()
 			f.AbilitiesAPIPresent = false
 			r := Evaluate(f)
 			expect(t, find(t, r, CheckAbilitiesAPI), StatePass, ReasonNone, "")
 			expect(t, find(t, r, c.id), StateUnknown, ReasonInventoryNeverRun, "")
-			if r.Status != wantStale || r.FixCount != 0 {
-				t.Fatalf("a stale read must not be a fix: status %q fix_count %d failing %v, want %q 0", r.Status, r.FixCount, r.Failing(), wantStale)
+			if r.Status != StatusIncomplete || r.FixCount != 0 || len(r.Failing()) != 0 {
+				t.Fatalf("a stale read must not be a fix: status %q fix_count %d failing %v, want incomplete 0 []", r.Status, r.FixCount, r.Failing())
 			}
 			if len(r.Warnings) != 0 {
 				t.Fatalf("an unknown switch must not warn: %v", r.Warnings)
@@ -648,8 +650,8 @@ func TestSwitchRowsAreUnknownWhenTheToolListWasReadWithoutTheAbilitiesAPI(t *tes
 			f.AbilitiesAPIPresent = true
 			r := Evaluate(f)
 			expect(t, find(t, r, c.id), StateFail, ReasonNone, "")
-			if r.Status != wantOff || r.FixCount != wantFixes {
-				t.Fatalf("status %q fix_count %d, want %q %d", r.Status, r.FixCount, wantOff, wantFixes)
+			if r.Status != c.wantOff || r.FixCount != c.wantFixes {
+				t.Fatalf("status %q fix_count %d, want %q %d", r.Status, r.FixCount, c.wantOff, c.wantFixes)
 			}
 		})
 	}

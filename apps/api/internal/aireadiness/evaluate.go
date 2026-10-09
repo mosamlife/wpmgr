@@ -117,7 +117,8 @@ func Evaluate(f Facts) Result { return EvaluateWith(f, DefaultFloors()) }
 //     that depend on it.
 //   - A row whose pass or fail is only inferred (see Check.unconfirmed) is
 //     listed with its state, and counts toward neither Status nor FixCount
-//     and is not in Failing.
+//     and is not in Failing. The same row when unknown is an ordinary
+//     unknown, and makes the site incomplete.
 //   - Warnings are advisory and never change Status or FixCount.
 func EvaluateWith(f Facts, fl Floors) Result {
 	e := &evaluator{f: f, fl: fl}
@@ -235,11 +236,13 @@ func (c Check) blocksDependents() bool {
 // unconfirmed reports whether a row's pass or fail is only inferred from the
 // site's tool list and has not been confirmed on a licensed install. Such a row
 // keeps its state in Groups so it can be shown, but it is not something to fix:
-// it moves neither Status nor FixCount, and Failing leaves it out. A row stops
-// being unconfirmed when the check that confirms it exists; bricks_abilities
-// waits on the Bricks licence check.
+// it moves neither Status nor FixCount, and Failing leaves it out. A row that
+// is unknown or not applicable claims nothing, so it is an ordinary one: an
+// unknown makes the site incomplete. A row stops being unconfirmed when the
+// check that confirms it exists; bricks_abilities waits on the Bricks licence
+// check.
 func (c Check) unconfirmed() bool {
-	return c.ID == CheckBricksAbilities
+	return c.ID == CheckBricksAbilities && (c.State == StatePass || c.State == StateFail)
 }
 
 // agentAtLeast compares two well-formed agent versions.
