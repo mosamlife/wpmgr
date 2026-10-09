@@ -12,6 +12,7 @@ import (
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
 )
 
 // These tests drive the route gates through the real Handler.Register, on a
@@ -59,8 +60,29 @@ func (r *routeRig) principal(role authz.Role, sites ...uuid.UUID) domain.Princip
 
 // serve sends one request through a fresh engine carrying only the readiness
 // routes. A POST carries an empty JSON object with the JSON media type, so
-// RequireJSONBody never decides a test.
+// RequireJSONBody never decides a test that goes through serve.
 func (r *routeRig) serve(p domain.Principal, method, path string) *httptest.ResponseRecorder {
+	if method == http.MethodPost {
+		return r.servePost(p, path, "application/json")
+	}
+	rec := httptest.NewRecorder()
+	r.engine(p).ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+	return rec
+}
+
+// servePost sends a POST whose body is an empty JSON object and whose
+// Content-Type is the one given.
+func (r *routeRig) servePost(p domain.Principal, path, contentType string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}"))
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+	r.engine(p).ServeHTTP(rec, req)
+	return rec
+}
+
+// engine is a fresh engine carrying only the readiness routes, with the
+// principal on every request's context.
+func (r *routeRig) engine(p domain.Principal) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	e := gin.New()
 	e.Use(func(c *gin.Context) {
@@ -68,17 +90,7 @@ func (r *routeRig) serve(p domain.Principal, method, path string) *httptest.Resp
 		c.Next()
 	})
 	NewHandler(r.svc).Register(e.Group("/api/v1"))
-
-	var req *http.Request
-	if method == http.MethodPost {
-		req = httptest.NewRequest(method, path, strings.NewReader("{}"))
-		req.Header.Set("Content-Type", "application/json")
-	} else {
-		req = httptest.NewRequest(method, path, nil)
-	}
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
-	return rec
+	return e
 }
 
 func readinessPath(site string) string { return "/api/v1/sites/" + site + "/ai/readiness" }
@@ -209,6 +221,32 @@ func TestReadinessRefreshRequiresSiteContentRefresh(t *testing.T) {
 					http.StatusForbidden, "insufficient_permission")
 				rig.nothingRan(t)
 			})
+		}
+	})
+}
+
+// The refresh changes state and a session cookie authenticates it, so it takes
+// JSON only (httpx.RequireJSONBody). A body typed as text or a form is the
+// shape a cross-site page can send without a preflight.
+func TestReadinessRefreshTakesJSONOnly(t *testing.T) {
+	t.Run("a text/plain body is refused before anything is queued", func(t *testing.T) {
+		// The caller has the permission and the site, and the body is the same
+		// empty object a JSON request carries, so only the media type can be
+		// what is refused. The control follows on the same rig: the same
+		// request typed as JSON queues the refresh.
+		rig := newRouteRig(t)
+		operator := rig.principal(authz.RoleOperator)
+		wantStatusCode(t, rig.servePost(operator, refreshPath(rig.site.String()), "text/plain"),
+			http.StatusUnsupportedMediaType, httpx.CodeUnsupportedMediaType)
+		rig.nothingRan(t)
+
+		rec := rig.servePost(operator, refreshPath(rig.site.String()), "application/json")
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("the same request typed as JSON: status = %d, want 202 (body %s)", rec.Code, rec.Body.String())
+		}
+		if len(rig.meta.calls) != 1 || len(rig.inv.calls) != 1 || len(rig.audit.events) != 1 {
+			t.Fatalf("want one metadata refresh, one tool-list read and one audit row: meta %+v inventory %+v audit %+v",
+				rig.meta.calls, rig.inv.calls, rig.audit.events)
 		}
 	})
 }
