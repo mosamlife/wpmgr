@@ -261,6 +261,25 @@ describe("/connect/ai, site tools asked for", () => {
     ]);
   });
 
+  it("leaves no request behind when see what the site can do is cleared: the screen is back on Just the basics", async () => {
+    // The preset claim is derived from the raw tick list. Both site tools ticked
+    // is not either shortcut; once the read is cleared, and the request with it,
+    // what is left is Sites alone. A request still held in the list would keep
+    // the screen on Custom while the box showed it clear.
+    const late = lateAnswer(wire("ticket-1"));
+    authorizeAnswers = [late.answer];
+    mount();
+    await screen.findByRole("status", { name: "Loading the connection request" });
+    late.release();
+    await screen.findByTestId("consent-site-capability");
+    expect(screen.getByTestId("preset-custom")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Just the basics", pressed: true })).toBeNull();
+
+    fireEvent.click(readBox());
+    expect(screen.getByRole("button", { name: "Just the basics", pressed: true })).toBeTruthy();
+    expect(screen.queryByTestId("preset-custom")).toBeNull();
+  });
+
   it("does not send the request after the read is cleared and ticked again", async () => {
     const late = lateAnswer(wire("ticket-1"));
     authorizeAnswers = [late.answer];

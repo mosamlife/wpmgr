@@ -335,6 +335,24 @@ describe("ConsentScreen, the approval sends exactly the ticked reads", () => {
     expect(sentCapabilities(onApprove)).toEqual(["mcp.ability.read", "mcp.sites.read"]);
   });
 
+  it("leaves no request behind when see what the site can do is cleared: the screen is back on Just the basics", async () => {
+    // The preset claim is derived from the raw tick list, so a request left in
+    // the list after its read was cleared would show as Custom even though the
+    // box shows it clear. With both site tools ticked the set is not either
+    // shortcut; with the read cleared (and the request with it) it is Sites
+    // alone again.
+    await renderScreen(
+      consentFor([...reads(SERVER_READS), ABILITY_READ, ABILITY_REQUEST], [SCOPE_READ, SCOPE_SITE]),
+    );
+    const picker = readPicker();
+    expect(within(picker).getByTestId("preset-custom")).toBeTruthy();
+    expect(within(picker).queryByRole("button", { name: "Just the basics", pressed: true })).toBeNull();
+
+    fireEvent.click(screen.getByTestId("ability-box-mcp.ability.read"));
+    expect(within(picker).getByRole("button", { name: "Just the basics", pressed: true })).toBeTruthy();
+    expect(within(picker).queryByTestId("preset-custom")).toBeNull();
+  });
+
   it("takes both site-tools names out of the request when see what the site can do is cleared", async () => {
     // "Ask for changes" needs "see what the site can do", so clearing the read
     // clears the request with it; neither name is sent.
