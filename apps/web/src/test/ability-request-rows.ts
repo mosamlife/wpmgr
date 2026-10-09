@@ -19,6 +19,12 @@ import type { AbilityRequest } from "@wpmgr/api";
 //     list, else 1; the editor column is the input's editor; and page_media is
 //     the request's distinct image ids in document order
 //     (apps/api/internal/abilityrequest/handler.go pageMediaFor), or null.
+//   A wpmgr/page-edit row (mcp/page_edit_precheck.go createPageEditRequest,
+//     m169): editor builder:elementor, no post_type, snapshot builder_document,
+//     effect copy draft, no created post and nothing trashed (the post it
+//     changes is the card's, never one the write created), card_facts of kind
+//     builder_edit on the wire as page_edit, an applied outcome on done, and
+//     page_edit null on every other ability.
 //   page_builder (handler.go pageBuilderFor) is null except on a page-create
 //     row whose editor is builder:elementor, and holds what the control
 //     plane's reader returns (mcp/page_create_input.go readPageCardBuilder):
@@ -146,6 +152,19 @@ export function assertDbShape(r: AbilityRequest): void {
   if (!["token", "browser_sign_in"].includes(r.grant_via)) fail("grant_via");
   if (r.presented_digest !== undefined && !/^[0-9a-f]{64}$/.test(r.presented_digest)) fail("presented_digest shape");
 
+  if (r.ability_name === "wpmgr/page-edit") {
+    if (r.editor !== ELEMENTOR) fail("a page edit is an Elementor edit");
+    if (r.post_type != null) fail("a page edit records no post type");
+    if (r.snapshot !== "builder_document") fail("a page edit snapshots the builder document");
+    if (r.effect_copy !== "draft") fail("a page edit changes a draft");
+    if (r.created_post_id != null || r.trashed != null) fail("a page edit created and trashed no post");
+    if (r.state === "done" && r.outcome !== "applied") fail("a done page edit is applied");
+    if (r.state === "outcome_unknown" && r.undo_state != null) fail("an unknown page edit has no undo");
+    if (r.page_media != null || r.page_builder != null) fail("page_media and page_builder are for page-create rows");
+  } else if (r.page_edit != null) {
+    fail("page_edit is for wpmgr/page-edit rows only");
+  }
+
   if (r.ability_name === "wpmgr/page-create") {
     const wantVersion = usesLayoutBlock(r.input_json) ? 2 : 1;
     if (r.card_copy_version !== wantVersion) fail(`card_copy_version must be ${wantVersion} for this outline`);
@@ -250,6 +269,132 @@ export function pageCreateRow(
     resolve_gave_up: false,
     page_media: media === undefined ? null : media,
     page_builder: null,
+    ...rest,
+  };
+  assertDbShape(row);
+  return row;
+}
+
+// --- wpmgr/page-edit rows -----------------------------------------------------
+
+export type PageEditRow = NonNullable<AbilityRequest["page_edit"]>;
+
+/** A page-edit operation of the AI's input, in the schema's shapes. */
+export type EditOpInput = Record<string, unknown>;
+
+const FINGERPRINT = "8".repeat(64);
+
+/**
+ * The AI's input of a page edit (apps/agent/tests/fixtures/ability-run/
+ * page-edit-schema.json). The default is four changes on page 418: the text
+ * of a heading, a paragraph added after one, an image replaced by a heading,
+ * and a paragraph moved after a heading.
+ */
+export function defaultEditOps(): EditOpInput[] {
+  return [
+    { op: "set_text", ref: "h_sale", field: "text", text: "Summer sale" },
+    { op: "insert", after: "p_free", outline: [{ type: "paragraph", text: "Open every day." }] },
+    { op: "replace", ref: "img_team", outline: [{ type: "heading", level: 3, text: "Our team" }] },
+    { op: "move", ref: "p_faq", after: "h_prod" },
+  ];
+}
+
+export function editInput(ops: EditOpInput[] = defaultEditOps(), over: { post_id?: number } = {}): string {
+  return JSON.stringify({ post_id: over.post_id ?? 418, base_fingerprint: FINGERPRINT, operations: ops });
+}
+
+/**
+ * The checked card of the default four changes, as the control plane returns
+ * it (mcp/page_edit_precheck.go, PageEditCardFacts): the page after them is a
+ * flat list, parents first, the way the agent's projection writes it.
+ */
+export function editFacts(over: Partial<PageEditRow> = {}): PageEditRow {
+  const facts: PageEditRow = {
+    kind: "builder_edit",
+    post: { id: 418, from_the_site: { title: "Spring sale" } },
+    builder: { id: "elementor", version: "3.35.9", format: "classic" },
+    changes: [
+      {
+        op: "set_text",
+        ref: "h_sale",
+        kind: "heading",
+        level: 2,
+        field: "text",
+        after: "Summer sale",
+        from_the_site: { before: { text: "Spring sale" } },
+      },
+      { op: "insert", new_refs: ["p_open"], anchor: { ref: "p_free", how: "after", kind: "paragraph" } },
+      {
+        op: "replace",
+        ref: "img_team",
+        kind: "image",
+        new_refs: ["h_team"],
+        from_the_site: { before: { caption: "Team photo" } },
+      },
+      {
+        op: "move",
+        ref: "p_faq",
+        kind: "paragraph",
+        from_the_site: { before: { text: "FAQ: returns in 30 days" } },
+        anchor: { ref: "h_prod", how: "after", kind: "heading", level: 2 },
+      },
+    ],
+    after_outline: {
+      node_count: 9,
+      truncated: false,
+      nodes: [
+        { ref: "g_main", parent: "root", kind: "group", editable: [], from_the_site: {} },
+        { ref: "h_sale", parent: "g_main", kind: "heading", level: 2, editable: ["text"], from_the_site: { text: "Summer sale" } },
+        { ref: "p_free", parent: "g_main", kind: "paragraph", editable: ["text"], from_the_site: { text: "Free delivery" } },
+        { ref: "p_open", parent: "g_main", kind: "paragraph", editable: ["text"], from_the_site: { text: "Open every day." } },
+        { ref: "h_team", parent: "g_main", kind: "heading", level: 3, editable: ["text"], from_the_site: { text: "Our team" } },
+        { ref: "f_form", parent: "g_main", kind: "locked", label: "Elementor element WPMgr does not edit" },
+        { ref: "g_prod", parent: "root", kind: "group", editable: [], from_the_site: {} },
+        { ref: "h_prod", parent: "g_prod", kind: "heading", level: 2, editable: ["text"], from_the_site: { text: "Our products" } },
+        { ref: "p_faq", parent: "g_prod", kind: "paragraph", editable: ["text"], from_the_site: { text: "FAQ: returns in 30 days" } },
+      ],
+    },
+    checked_at: "2026-10-01T09:52:00Z",
+    ...over,
+  };
+  return facts;
+}
+
+/**
+ * A wpmgr/page-edit row as the queue returns it: pending by default, on page
+ * 418. Pass `ops` to change the AI's input (the card is then yours to match),
+ * and `page_edit` to change the checked card. Built from the states the
+ * database allows (assertDbShape).
+ */
+export function pageEditRow(
+  over: Partial<AbilityRequest> & { ops?: EditOpInput[]; post_id?: number } = {},
+): AbilityRequest {
+  const { ops, post_id, ...rest } = over;
+  const row: AbilityRequest = {
+    id: "pe-1",
+    site_id: "site-1",
+    ability_name: "wpmgr/page-edit",
+    input_json: editInput(ops, { post_id }),
+    title_excerpt: "Spring sale",
+    editor: ELEMENTOR,
+    post_type: null,
+    effect_copy: "draft",
+    snapshot: "builder_document",
+    site_label: "Shop One",
+    site_host: SITE_HOST,
+    grant_label: "Claude",
+    grant_via: "token",
+    setup_client: "claude-code",
+    card_copy_version: 1,
+    presented_digest: "e".repeat(64),
+    state: "pending",
+    created_at: "2026-10-01T09:55:00Z",
+    expires_at: "2026-10-01T11:00:00Z",
+    undo_offered: false,
+    resolve_gave_up: false,
+    page_media: null,
+    page_builder: null,
+    page_edit: editFacts(),
     ...rest,
   };
   assertDbShape(row);

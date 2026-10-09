@@ -1104,6 +1104,10 @@ type PatchedAbilityRequestFields = {
   // page_builder is a nil pointer without omitempty in RequestDTO, so the wire
   // carries null for a page in a WordPress editor and every other ability.
   page_builder?: GeneratedAbilityRequest["page_builder"] | null;
+  // page_edit is a raw JSON member of RequestDTO, so the wire carries null for
+  // every ability but wpmgr/page-edit and for an edit whose stored card does
+  // not read back.
+  page_edit?: GeneratedAbilityRequest["page_edit"] | null;
 };
 
 export type AbilityRequest = Omit<GeneratedAbilityRequest, keyof PatchedAbilityRequestFields> &
