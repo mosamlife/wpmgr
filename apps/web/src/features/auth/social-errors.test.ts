@@ -192,6 +192,17 @@ describe("sameOriginPath", () => {
   const origin = window.location.origin;
   const host = window.location.host;
 
+  // A test title that shows every character. JSON.stringify escapes the C0
+  // range but leaves DEL and the C1 range as raw characters, which print as
+  // nothing.
+  const show = (value: string) =>
+    JSON.stringify(value).replace(
+      /[\u007f-\u009f]/g,
+      (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+    );
+  const titled = (rows: readonly (readonly [why: string, value: string])[]) =>
+    rows.map(([why, value]) => [`${why}: ${show(value)}`, value] as const);
+
   // The address an AI app's browser sign-in opens for someone who is signed
   // out, in the order a standard MCP client sends it. The query has to come
   // back byte for byte: its %20 and its parameter order are what the consent
@@ -219,7 +230,7 @@ describe("sameOriginPath", () => {
     ["slashes inside a hash", "/sites#//evil.example"],
   ];
 
-  it.each(HONEST)("keeps %s unchanged: %j", (_why, value) => {
+  it.each(titled(HONEST))("keeps %s", (_title, value) => {
     expect(sameOriginPath(value)).toBe(value);
   });
 
@@ -275,7 +286,7 @@ describe("sameOriginPath", () => {
     ["a protocol-relative reference that names this host", `//${host}/sites`],
   ];
 
-  it.each(HOSTILE)("refuses %s: %j", (_why, value) => {
+  it.each(titled(HOSTILE))("refuses %s", (_title, value) => {
     expect(sameOriginPath(value)).toBeUndefined();
   });
 
