@@ -366,7 +366,7 @@ final class BuilderPageCreate
             return 'the revisions of this draft could not be read';
         }
         foreach ($revisions as $key => $revision) {
-            $id = is_object($revision) && isset($revision->ID) ? $revision->ID : (is_int($revision) ? $revision : $key);
+            $id = is_object($revision) ? (get_object_vars($revision)['ID'] ?? null) : (is_int($revision) ? $revision : $key);
             if (!is_int($id) || !in_array($id, $own, true)) {
                 return 'this draft has revisions its creation did not make; open it in WordPress';
             }
@@ -505,7 +505,7 @@ final class BuilderPageCreate
         $after = get_post($postId);
 
         // With trash disabled core deletes outright; gone counts as undone.
-        return !is_object($after) || (string) ($after->post_status ?? '') === 'trash';
+        return !is_object($after) || (get_object_vars($after)['post_status'] ?? null) === 'trash';
     }
 
     /**
