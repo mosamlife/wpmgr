@@ -39,8 +39,12 @@ const CONTENT_UNAVAILABLE_REASON =
   "Not available yet -- there are no content tools for a connection to call, so there is " +
   "nothing this permission could reach.";
 
-/** Why a read this build can confer is not tickable on this surface. */
-const NOT_OFFERED_REASON = "Not requested by this app";
+/**
+ * Why a read this build can confer is not tickable on this surface. The rows
+ * only appear when the app asked for reading, so the reason says what WPMgr did,
+ * never that the app did not ask.
+ */
+const NOT_OFFERED_REASON = "WPMgr did not offer this for this connection.";
 
 export interface ReadCapabilityPickerProps {
   /** Every capability currently ticked on the host surface, reads and writes. */

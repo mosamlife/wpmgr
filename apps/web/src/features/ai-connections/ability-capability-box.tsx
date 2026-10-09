@@ -111,15 +111,17 @@ function NotOffered({ cap }: { readonly cap: string }) {
       data-testid={`ability-not-offered-${cap}`}
       className="mt-1 block text-xs font-medium text-[var(--color-muted-foreground)]"
     >
-      Not requested by this app
+      WPMgr did not offer this for this connection.
     </span>
   );
 }
 
 /**
- * What the request row says about its dependency: that the app did not ask for
- * it at all, that it cannot be used because the read it needs was not asked for
- * either, or, when it can be used, how it moves with the read.
+ * What the request row says about its dependency: that WPMgr did not offer it
+ * at all, that it cannot be used because the read it needs was not offered
+ * either, or, when it can be used, how it moves with the read. The box only
+ * appears when the app asked for site tools, so the notes say what WPMgr did,
+ * never that the app did not ask.
  */
 function RequestNeedsRead({
   requestOffered,
@@ -136,7 +138,7 @@ function RequestNeedsRead({
         data-testid="ability-request-blocked"
         className="mt-1 block text-xs font-medium text-[var(--color-muted-foreground)]"
       >
-        Needs &ldquo;{readLabel}&rdquo;, which this app did not request.
+        Needs &ldquo;{readLabel}&rdquo;, which WPMgr did not offer for this connection.
       </span>
     );
   }
