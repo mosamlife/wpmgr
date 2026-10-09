@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, fireEvent, within } from "@testing-library/react";
+import { cleanup, screen, fireEvent, within } from "@testing-library/react";
 
 import { renderWithProviders } from "@/test/render";
 
@@ -539,14 +539,30 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
   });
 
-  it("stops claiming the connection is read-only once it can ask to clear a cache", () => {
-    // The mutation this pins: dropping the askedToClearCache branch and
-    // always rendering "This connection is read-only." would be a false
-    // statement the moment mcp:cache is granted.
-    renderWithProviders(<ConsentScreen {...props({ consent: cacheConsent() })} />);
-    const bullet = screen.getByText(/It cannot change anything\./i).closest("li")!;
-    expect(bullet).not.toHaveTextContent(/This connection is read-only/i);
-    expect(bullet).toHaveTextContent(/nothing runs until you approve it/i);
+  it("stops claiming the connection is read-only once the cache-clear box is ticked, and starts again when it is cleared", async () => {
+    // The mutation this pins: always rendering "This connection is read-only."
+    // would be a false statement the moment the cache clear is ticked. The
+    // sentence follows the box, not the scope: asking for mcp:cache without
+    // ticking the box leaves the connection read-only.
+    renderWithProviders(<ConsentScreen {...props({ consent: cacheConsent() })} />, {
+      withRouter: true,
+    });
+    const box = within(await screen.findByTestId("consent-cache-capability")).getByRole<
+      HTMLInputElement
+    >("checkbox");
+    const bullet = () => screen.getByTestId("consent-cannot-change");
+    expect(box.checked).toBe(false);
+    expect(bullet()).toHaveTextContent(/This connection is read-only/i);
+
+    fireEvent.click(box);
+    expect(box.checked).toBe(true);
+    expect(bullet()).not.toHaveTextContent(/read-only/i);
+    expect(bullet()).toHaveTextContent(
+      "Beyond reading, the only thing it can do is ask to clear the site cache. That only creates a request, and nothing runs until a person approves it in WPMgr.",
+    );
+
+    fireEvent.click(box);
+    expect(bullet()).toHaveTextContent(/This connection is read-only/i);
   });
 
   it("keeps the read-only claim for a request that never asked for mcp:cache", () => {
@@ -919,6 +935,134 @@ describe("ConsentScreen, the mcp:site site-tools section", () => {
     // come back.
     expect(readBox().checked).toBe(true);
     expect(requestBox().checked).toBe(false);
+  });
+
+  // WHAT THE SCREEN SAYS IT CAN CHANGE FOLLOWS WHAT IS TICKED. The paragraph
+  // "It cannot change anything." closes with "This connection is read-only."
+  // only while no request capability will be carried, and otherwise names each
+  // one as something that only creates a request a person approves. The
+  // sentences are written out in full here, never taken from the screen.
+  describe("what it says it can change", () => {
+    const CACHE_PURGE = { name: "mcp.cache.purge", effect: "request" };
+    const ALL = [READ, CACHE_PURGE, ABILITY_READ, ABILITY_REQUEST];
+
+    const READ_ONLY = "This connection is read-only.";
+    const SITE_ASK =
+      "Beyond reading, the only thing it can do is ask to make changes through the site's tools. That only creates a request, and nothing runs until a person approves it in WPMgr.";
+    const CACHE_ASK =
+      "Beyond reading, the only thing it can do is ask to clear the site cache. That only creates a request, and nothing runs until a person approves it in WPMgr.";
+    const BOTH_ASK =
+      "Beyond reading, the only things it can do are ask to clear the site cache and ask to make changes through the site's tools. Each only creates a request, and nothing runs until a person approves it in WPMgr.";
+
+    const cannotChange = () => screen.getByTestId("consent-cannot-change");
+    const cacheBox = () =>
+      within(screen.getByTestId("consent-cache-capability")).getByRole<HTMLInputElement>(
+        "checkbox",
+      );
+
+    async function open(scopes: readonly string[], conferrable = ALL) {
+      renderWithProviders(<ConsentScreen {...props({ consent: siteConsent(scopes, conferrable) })} />, {
+        withRouter: true,
+      });
+      await screen.findByTestId("consent-approve");
+    }
+
+    it("says read-only, in full, when the request is for reading alone", async () => {
+      await open([SCOPE_READ], [READ]);
+      expect(cannotChange().textContent).toBe(
+        "It cannot change anything. No updates, no installs, no activations, no deletions, no edits to any site, and no changes to this dashboard or your organisation. " +
+          READ_ONLY,
+      );
+    });
+
+    it("names ask for changes, and not read-only, on a screen that opens with site tools ticked", async () => {
+      await open([SCOPE_READ, SCOPE_SITE]);
+      expect(readBox().checked).toBe(true);
+      expect(requestBox().checked).toBe(true);
+      expect(cannotChange()).toHaveTextContent(SITE_ASK);
+      expect(cannotChange()).not.toHaveTextContent(/read-only/i);
+      expect(cannotChange()).not.toHaveTextContent(/exception/i);
+    });
+
+    it("says read-only for a cache request while the cache box is clear, and names the cache clear once it is ticked", async () => {
+      await open([SCOPE_READ, SCOPE_CACHE], [READ, CACHE_PURGE]);
+      expect(cacheBox().checked).toBe(false);
+      expect(cannotChange()).toHaveTextContent(READ_ONLY);
+      expect(cannotChange()).not.toHaveTextContent(/Beyond reading/);
+
+      fireEvent.click(cacheBox());
+      expect(cannotChange()).toHaveTextContent(CACHE_ASK);
+      expect(cannotChange()).not.toHaveTextContent(/read-only/i);
+    });
+
+    it("names both ask rows when both are ticked, and never says there is one exception", async () => {
+      await open([SCOPE_READ, SCOPE_CACHE, SCOPE_SITE]);
+      // At open only the site tools are ticked: the cache box is clear and so
+      // it is not named. The old wording named the clear cache box and left the
+      // ticked site tools out.
+      expect(cacheBox().checked).toBe(false);
+      expect(cannotChange()).toHaveTextContent(SITE_ASK);
+      expect(cannotChange()).not.toHaveTextContent(/cache/i);
+
+      fireEvent.click(cacheBox());
+      expect(cannotChange()).toHaveTextContent(BOTH_ASK);
+      expect(cannotChange()).not.toHaveTextContent(/read-only/i);
+      expect(cannotChange()).not.toHaveTextContent(/exception/i);
+    });
+
+    it("brings the read-only sentence back when ask for changes is cleared", async () => {
+      await open([SCOPE_READ, SCOPE_SITE]);
+      expect(cannotChange()).toHaveTextContent(SITE_ASK);
+
+      // "See what the site can do" stays ticked: it is a read, so the
+      // connection is read-only again.
+      fireEvent.click(requestBox());
+      expect(requestBox().checked).toBe(false);
+      expect(readBox().checked).toBe(true);
+      expect(cannotChange()).toHaveTextContent(READ_ONLY);
+      expect(cannotChange()).not.toHaveTextContent(/Beyond reading/);
+
+      // And ticking it again takes the read-only claim away again.
+      fireEvent.click(requestBox());
+      expect(cannotChange()).toHaveTextContent(SITE_ASK);
+    });
+
+    it("says read-only again when see what the site can do is cleared, which clears the request with it", async () => {
+      await open([SCOPE_READ, SCOPE_SITE]);
+      fireEvent.click(readBox());
+      expect(requestBox().checked).toBe(false);
+      expect(cannotChange()).toHaveTextContent(READ_ONLY);
+    });
+
+    it("does not name a request the server did not offer, so the screen stays read-only", async () => {
+      // The app asked for site tools; the server offers the read but not the
+      // request. Only the read will be carried, and a read changes nothing.
+      await open([SCOPE_READ, SCOPE_SITE], [READ, ABILITY_READ]);
+      expect(readBox().checked).toBe(true);
+      expect(cannotChange()).toHaveTextContent(READ_ONLY);
+    });
+
+    it("describes the app's request in the page header, and only says reading when that is all it asks", async () => {
+      const READING = "Something is asking to read your fleet through this dashboard.";
+      const BEYOND =
+        "Something is asking to read your fleet, and to ask for changes to it, through this dashboard.";
+      const header = () => screen.getByRole("heading", { level: 1 }).parentElement!;
+
+      await open([SCOPE_READ], [READ]);
+      expect(header()).toHaveTextContent(READING);
+      expect(header()).not.toHaveTextContent(/ask for changes/);
+      cleanup();
+
+      await open([SCOPE_READ, SCOPE_SITE]);
+      expect(header()).toHaveTextContent(BEYOND);
+      // It describes the request, so clearing every box does not change it.
+      fireEvent.click(readBox());
+      expect(header()).toHaveTextContent(BEYOND);
+      cleanup();
+
+      await open([SCOPE_READ, SCOPE_CACHE], [READ, CACHE_PURGE]);
+      expect(header()).toHaveTextContent(BEYOND);
+    });
   });
 });
 

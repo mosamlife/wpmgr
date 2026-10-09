@@ -184,8 +184,8 @@ export function ReadCapabilityPicker({
         })}
       </ul>
       <p className="text-xs text-[var(--color-muted-foreground)]">
-        Every row above this line is read-only. No capability on this screen can change
-        WordPress content or configuration, whichever ones you pick.
+        Every row above this line is read-only. None of them can change WordPress content or
+        configuration, whichever ones you pick.
       </p>
     </div>
   );

@@ -2,14 +2,17 @@ import { describe, it, expect } from "vitest";
 
 import {
   allScopesRecognised,
+  asksBeyondReading,
   asksForSiteTools,
   asSelfAsserted,
   buildApprovalCapabilities,
   consentWireSchema,
+  describeChangeLimit,
   describeScope,
   initialSelection,
   offeredReads,
   parseConsentContext,
+  requestCapabilitiesIn,
   SCOPE_CACHE,
   SCOPE_READ,
   SCOPE_SITE,
@@ -549,5 +552,71 @@ describe("buildApprovalCapabilities, the request travels only with the read", ()
     expect(
       buildApprovalCapabilities(EVERYTHING, ["mcp.cache.purge", "mcp.ability.request"]),
     ).toEqual(["mcp.cache.purge"]);
+  });
+});
+
+describe("asksBeyondReading", () => {
+  it("is true for site tools or the cache clear, and false for reading alone", () => {
+    expect(asksBeyondReading([SCOPE_READ])).toBe(false);
+    expect(asksBeyondReading([])).toBe(false);
+    expect(asksBeyondReading([SCOPE_READ, SCOPE_SITE])).toBe(true);
+    expect(asksBeyondReading([SCOPE_READ, SCOPE_CACHE])).toBe(true);
+    expect(asksBeyondReading([SCOPE_SITE, SCOPE_CACHE])).toBe(true);
+  });
+});
+
+describe("requestCapabilitiesIn", () => {
+  it("keeps the names the server offered with the request effect, in the order given", () => {
+    expect(
+      requestCapabilitiesIn(EVERYTHING, [
+        "mcp.sites.read",
+        "mcp.cache.purge",
+        "mcp.ability.read",
+        "mcp.ability.request",
+      ]),
+    ).toEqual(["mcp.cache.purge", "mcp.ability.request"]);
+  });
+
+  it("leaves out a name offered with a different effect, and a name not offered at all", () => {
+    const conferrable = [
+      ...asReads(["mcp.sites.read"]),
+      { name: "mcp.cache.purge", effect: "read" },
+    ];
+    expect(
+      requestCapabilitiesIn(conferrable, ["mcp.cache.purge", "mcp.ability.request"]),
+    ).toEqual([]);
+  });
+});
+
+// "This connection is read-only." is true only while no request capability will
+// be carried. The sentences are written out in full, never built from the
+// function's own pieces.
+describe("describeChangeLimit", () => {
+  it("says read-only when nothing asks", () => {
+    expect(describeChangeLimit([])).toBe("This connection is read-only.");
+  });
+
+  it("names one ask as the only thing beyond reading, and as only a request", () => {
+    expect(describeChangeLimit(["mcp.ability.request"])).toBe(
+      "Beyond reading, the only thing it can do is ask to make changes through the site's tools. That only creates a request, and nothing runs until a person approves it in WPMgr.",
+    );
+    expect(describeChangeLimit(["mcp.cache.purge"])).toBe(
+      "Beyond reading, the only thing it can do is ask to clear the site cache. That only creates a request, and nothing runs until a person approves it in WPMgr.",
+    );
+  });
+
+  it("names both asks, in the order given, and does not call either the one exception", () => {
+    const both = describeChangeLimit(["mcp.cache.purge", "mcp.ability.request"]);
+    expect(both).toBe(
+      "Beyond reading, the only things it can do are ask to clear the site cache and ask to make changes through the site's tools. Each only creates a request, and nothing runs until a person approves it in WPMgr.",
+    );
+    expect(both).not.toMatch(/exception|read-only/i);
+  });
+
+  it("never says read-only for any non-empty list, and falls back to the label for a name it has no phrase for", () => {
+    for (const asks of [["mcp.cache.purge"], ["mcp.ability.request"], ["mcp.future.request"]]) {
+      expect(describeChangeLimit(asks)).not.toMatch(/read-only/i);
+    }
+    expect(describeChangeLimit(["mcp.future.request"])).toContain("ask to mcp.future.request");
   });
 });

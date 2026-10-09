@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { capabilityLabel } from "@/features/ai-connections/capabilities";
 import {
   conferrableReadsIn,
   defaultCapabilities,
@@ -431,6 +432,56 @@ export function offeredReads(conferrable: readonly ConferrableCapability[]): rea
  */
 export function asksForSiteTools(scopes: readonly string[]): boolean {
   return scopes.includes(SCOPE_SITE);
+}
+
+/**
+ * True when the app asks for more than reading: site tools (mcp:site) or the
+ * cache clear (mcp:cache). This describes the app's request, not what is ticked,
+ * so it does not change as the person ticks and clears boxes.
+ */
+export function asksBeyondReading(scopes: readonly string[]): boolean {
+  return asksForSiteTools(scopes) || scopes.includes(SCOPE_CACHE);
+}
+
+/**
+ * The request capabilities among `names`, in order: the ones the server offered
+ * with the request effect. A request capability only ever creates a request that
+ * a person approves in WPMgr; it is the only kind of capability that is not a
+ * read.
+ */
+export function requestCapabilitiesIn(
+  conferrable: readonly ConferrableCapability[],
+  names: readonly string[],
+): readonly string[] {
+  return names.filter((name) =>
+    conferrable.some((c) => c.name === name && c.effect === CAPABILITY_EFFECT_REQUEST),
+  );
+}
+
+// What each request capability lets the connection ask for, as it reads inside a
+// sentence. Matches the labels the boxes show.
+const ASK_PHRASES: Readonly<Record<string, string>> = {
+  "mcp.cache.purge": "clear the site cache",
+  "mcp.ability.request": "make changes through the site's tools",
+};
+
+/**
+ * The closing sentence of "It cannot change anything.", worded from the request
+ * capabilities the approval will carry. It says "read-only" only when there are
+ * none, and otherwise names each one as something that only creates a request a
+ * person approves. Driven by what will be sent, never by what the app asked for,
+ * so a box the person cleared stops being named.
+ */
+export function describeChangeLimit(asks: readonly string[]): string {
+  if (asks.length === 0) return "This connection is read-only.";
+  const things = asks.map((cap) => `ask to ${ASK_PHRASES[cap] ?? capabilityLabel(cap)}`);
+  const list =
+    things.length === 1
+      ? things[0]!
+      : `${things.slice(0, -1).join(", ")} and ${things[things.length - 1]!}`;
+  return things.length === 1
+    ? `Beyond reading, the only thing it can do is ${list}. That only creates a request, and nothing runs until a person approves it in WPMgr.`
+    : `Beyond reading, the only things it can do are ${list}. Each only creates a request, and nothing runs until a person approves it in WPMgr.`;
 }
 
 // The two site-tools choices, each with the effect the server must offer it

@@ -261,6 +261,32 @@ describe("/connect/ai, site tools asked for", () => {
     ]);
   });
 
+  it("does not call the untouched screen read-only, and says so again once ask for changes is cleared", async () => {
+    // With site tools ticked at open, "This connection is read-only." would be
+    // untrue on a screen nobody has touched. The paragraph follows the ticks.
+    const late = lateAnswer(wire("ticket-1"));
+    authorizeAnswers = [late.answer];
+    mount();
+    await screen.findByRole("status", { name: "Loading the connection request" });
+    late.release();
+    await screen.findByTestId("consent-site-capability");
+
+    const header = screen.getByRole("heading", { level: 1 }).parentElement!;
+    expect(header).toHaveTextContent(
+      "Something is asking to read your fleet, and to ask for changes to it, through this dashboard.",
+    );
+    const cannotChange = () => screen.getByTestId("consent-cannot-change");
+    expect(cannotChange()).toHaveTextContent(
+      "Beyond reading, the only thing it can do is ask to make changes through the site's tools. That only creates a request, and nothing runs until a person approves it in WPMgr.",
+    );
+    expect(cannotChange()).not.toHaveTextContent(/read-only/i);
+
+    fireEvent.click(requestBox());
+    expect(requestBox().checked).toBe(false);
+    expect(cannotChange()).toHaveTextContent("This connection is read-only.");
+    expect(cannotChange()).not.toHaveTextContent(/Beyond reading/);
+  });
+
   it("leaves no request behind when see what the site can do is cleared: the screen is back on Just the basics", async () => {
     // The preset claim is derived from the raw tick list. Both site tools ticked
     // is not either shortcut; once the read is cleared, and the request with it,
@@ -361,6 +387,13 @@ describe("/connect/ai, site tools not asked for", () => {
     await screen.findByTestId("consent-approve");
     expect(screen.queryByTestId("consent-site-capability")).toBeNull();
     expect(screen.queryByTestId("ability-capability-box")).toBeNull();
+    // A request for reading alone is described, and worded, as reading alone.
+    expect(screen.getByRole("heading", { level: 1 }).parentElement!).toHaveTextContent(
+      "Something is asking to read your fleet through this dashboard.",
+    );
+    expect(screen.getByTestId("consent-cannot-change")).toHaveTextContent(
+      "This connection is read-only.",
+    );
 
     submitApproval();
     const body = await approvalBody();

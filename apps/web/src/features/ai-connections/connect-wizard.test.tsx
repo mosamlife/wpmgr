@@ -1781,10 +1781,14 @@ describe("choosing what a token may do (step 4, token path only)", () => {
     ).toBeInTheDocument();
   });
 
-  it("states the negative space once: nothing here can change WordPress content or configuration", async () => {
+  it("states the negative space once: none of the read rows can change WordPress content or configuration", async () => {
+    // Said of the rows above the line only. The wizard's ask boxes sit below
+    // them and can ask for a change, so the sentence must not claim more.
     await reachCapabilityStep();
     expect(
-      screen.getByText(/no capability on this screen can change wordpress content or configuration/i),
+      screen.getByText(
+        "Every row above this line is read-only. None of them can change WordPress content or configuration, whichever ones you pick.",
+      ),
     ).toBeInTheDocument();
   });
 

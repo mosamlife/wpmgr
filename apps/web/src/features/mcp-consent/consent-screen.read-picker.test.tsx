@@ -149,13 +149,16 @@ describe("ConsentScreen, the read picker opens on the wizard's defaults", () => 
     expect(within(picker).queryByText(/not requested by this app/i)).toBeNull();
   });
 
-  it("states that the rows above the line are read-only, as the wizard does", async () => {
+  it("states that the rows above the line are read-only, as the wizard does, and says nothing wider", async () => {
     await renderScreen(consentFor(reads(SERVER_READS)));
     expect(
       within(readPicker()).getByText(
-        /no capability on this screen can change wordpress content or configuration/i,
+        "Every row above this line is read-only. None of them can change WordPress content or configuration, whichever ones you pick.",
       ),
     ).toBeTruthy();
+    // The old wording claimed this of every capability on the screen, which is
+    // false the moment an ask box is ticked below the rows.
+    expect(readPicker().textContent ?? "").not.toMatch(/no capability on this screen/i);
   });
 
   it("sends the default untouched: Sites alone", async () => {
