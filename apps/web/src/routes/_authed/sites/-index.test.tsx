@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  act,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -347,9 +353,17 @@ describe("Sites page: an empty archived view is not the first-run screen (GH #33
         name: "Connect your first WordPress site.",
       }),
     ).not.toBeInTheDocument();
+    const empty = screen.getByRole("status", { name: "No archived sites" });
+    expect(empty).toBeInTheDocument();
+    // The explanation names the real way a site gets here. Disconnect revokes
+    // a site and leaves it in the default list; only the explicit Archive
+    // action moves it into this one, so the copy must not say "disconnect".
     expect(
-      screen.getByRole("status", { name: "No archived sites" }),
+      within(empty).getByText(
+        "Sites you archive are listed here, with their history kept.",
+      ),
     ).toBeInTheDocument();
+    expect(within(empty).queryByText(/disconnect/i)).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Showing archived" }),
     ).toHaveAttribute("aria-pressed", "true");

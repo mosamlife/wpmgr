@@ -28,7 +28,7 @@ export function ArchivedSitesEmpty({ onBack }: ArchivedSitesEmptyProps) {
         No archived sites
       </p>
       <p className="text-balance text-sm text-[var(--color-muted-foreground)]">
-        A site you disconnect is archived here, with its history kept.
+        Sites you archive are listed here, with their history kept.
       </p>
       <button
         type="button"
