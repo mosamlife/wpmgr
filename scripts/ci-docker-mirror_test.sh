@@ -35,6 +35,9 @@
 # Needs bash and jq, nothing else beyond POSIX tools. No Docker, no network, no
 # root. bash 3.2 compatible.
 
+# Every helper and case below is called through run_case or by name from a case
+# function, which shellcheck's static pass reports as never invoked.
+# shellcheck disable=SC2329
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,10 +51,10 @@ fi
 
 BASH_BIN="$(command -v bash)" || { echo "bash not found on PATH" >&2; exit 2; }
 
-# The real tools the script under test needs. The suite links exactly these
-# into each case's PATH, so a case can take one away and see what the script
-# does without it.
-REAL_TOOLS="jq cat tee mkdir dirname basename tr sort uniq head sed grep id sleep"
+# The real tools the script under test and the fakes need. The suite links
+# exactly these into each case's PATH, so a case can take one away and see what
+# the script does without it.
+REAL_TOOLS="jq cat tee mkdir dirname basename tr sort uniq head sed grep id sleep rm"
 for t in $REAL_TOOLS; do
   command -v "$t" >/dev/null 2>&1 || { echo "required tool not found on PATH: $t" >&2; exit 2; }
 done
