@@ -267,3 +267,52 @@ func nullableClass(c aipolicy.Class, ok func(aipolicy.Class) bool) *string {
 // request is never approved automatically minutes after it was made, under
 // a setting that may have changed since.
 const unsettledAge = 2 * time.Minute
+
+// policySendableSQL re-reads, at the reservation, what an approval by a
+// site's setting relied on: the site's mode version it was approved under,
+// whether that mode allows the class, whether the connection still runs by
+// the site's setting, and the class its entry or route stores now.
+const policySendableSQL = `
+SELECT EXISTS (
+           SELECT 1 FROM sites s
+           WHERE s.tenant_id = $1
+             AND s.id = $2
+             AND s.ai_mode_version = $3
+             AND ai_mode_allows(s.ai_mode, $4)
+       )::boolean,
+       mcp_grant_runs_by_setting($1, $5),
+       (CASE WHEN $6::text IS NOT NULL
+             THEN (SELECT rr.change_class FROM rest_route_catalogue rr WHERE rr.route_id = $6::text)
+             ELSE (SELECT c.change_class FROM ability_catalogue c WHERE c.entry_id = $7)
+        END) IS NOT DISTINCT FROM $8::text`
+
+// policyNotSendable is the reason an approved request may not be sent
+// because what approved it no longer holds, or "" when it may. A person's
+// approval is unaffected: the person saw the card.
+func policyNotSendable(ctx context.Context, tx pgx.Tx, r sqlc.AssistantAbilityRequest) (string, error) {
+	switch r.ApprovalSource {
+	case "person":
+		return "", nil
+	case "policy":
+	default:
+		// No other approval is accepted by this build's backstop.
+		return ReasonSettingChanged, nil
+	}
+	if r.ApprovalModeVersion == nil || r.ChangeClass == nil || r.BaseChangeClass == nil {
+		return ReasonSettingChanged, nil
+	}
+	var settingOK, grantOK, classOK bool
+	if err := tx.QueryRow(ctx, policySendableSQL,
+		r.TenantID, r.SiteID, *r.ApprovalModeVersion, *r.ChangeClass, r.ProposedByGrantID,
+		r.RouteID, r.EntryID, *r.BaseChangeClass,
+	).Scan(&settingOK, &grantOK, &classOK); err != nil {
+		return "", err
+	}
+	switch {
+	case !settingOK, !grantOK:
+		return ReasonSettingChanged, nil
+	case !classOK:
+		return ReasonClassChanged, nil
+	}
+	return "", nil
+}

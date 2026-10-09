@@ -92,6 +92,11 @@ const (
 	// m161: the REST route a rest-write request was approved against.
 	ReasonRouteChanged  = "route_changed"
 	ReasonRouteDisabled = "route_disabled"
+	// m174: a request the site's setting approved, whose setting, or whose
+	// connection's switch, no longer allows it when it is sent; or whose
+	// catalogue entry or route was re-classed since.
+	ReasonSettingChanged = "setting_changed"
+	ReasonClassChanged   = "class_changed"
 )
 
 // Transient reasons; the row stays approved.
@@ -701,6 +706,18 @@ func (s *Service) reserve(ctx context.Context, p domain.Principal, a DispatchArg
 		}
 		if busy {
 			return &transientError{code: AttemptSiteBusy}
+		}
+		// A request a setting approved is sent only while that setting, and
+		// the connection's switch, still allow it, and its class is still
+		// the one it was approved under. The settings routes take the site
+		// dispatch lock held here, so neither can move before the
+		// reservation below commits.
+		why, err := policyNotSendable(ctx, tx, plan.row)
+		if err != nil {
+			return fmt.Errorf("re-check the setting that approved the request: %w", err)
+		}
+		if why != "" {
+			return s.closeNotSent(ctx, tx, q, a.TenantID, a.RequestID, why)
 		}
 		n, err := q.ReserveAbilityRequestForDispatch(ctx, sqlc.ReserveAbilityRequestForDispatchParams{
 			TenantID: a.TenantID, ID: a.RequestID,
