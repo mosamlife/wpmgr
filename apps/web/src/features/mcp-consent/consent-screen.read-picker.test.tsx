@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { fireEvent, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 
 import { renderWithProviders } from "@/test/render";
 import { capabilityLabel } from "@/features/ai-connections/capabilities";
@@ -566,5 +566,104 @@ describe("ConsentScreen, a refusal from the server", () => {
     expect(screen.getByText(/is not held by this organisation's default/i)).toBeTruthy();
     expect(screen.getByTestId("consent-approve")).toBeEnabled();
     expect(readPicker()).toBeTruthy();
+  });
+});
+
+// WHAT IS SHOWN TICKED IS WHAT IS SENT, IN EVERY STATE. The operator decides
+// from the boxes, and the approval is built from the tick list, so the two have
+// to be the same set. This walks every combination of what the app asked for
+// (scopes) and what the server offered, in three starting positions: as the
+// screen opens, with every enabled box ticked, and with every enabled box
+// cleared. In each, the capability names read off the ticked boxes must equal
+// the list the approval hands to onApprove, and when nothing is ticked there
+// must be nothing to approve.
+describe("ConsentScreen, what is shown ticked is what is sent", () => {
+  const FULL = [...reads(SERVER_READS), CACHE_PURGE, ABILITY_READ, ABILITY_REQUEST];
+  const without = (name: string) => FULL.filter((c) => c.name !== name);
+  const OFFERS: Record<string, readonly { name: string; effect: string }[]> = {
+    "everything offered": FULL,
+    "no cache clear offered": without("mcp.cache.purge"),
+    "no read for site tools offered": without("mcp.ability.read"),
+    "no ask for changes offered": without("mcp.ability.request"),
+    "no capability list at all (an older server)": [],
+  };
+  const SCOPES: Record<string, readonly string[]> = {
+    "reading only": [SCOPE_READ],
+    "site tools": [SCOPE_READ, SCOPE_SITE],
+    "cache clear": [SCOPE_READ, SCOPE_CACHE],
+    "site tools and cache clear": [SCOPE_READ, SCOPE_SITE, SCOPE_CACHE],
+  };
+
+  const permissions = () =>
+    within(screen.getByRole("region", { name: "What this connection can do" }));
+
+  /** The capability names whose box is ticked on the screen right now. */
+  function shownTicked(): string[] {
+    const names: string[] = [];
+    const picker = screen.queryByRole("group", { name: "It will be able to read" });
+    if (picker !== null) {
+      for (const cap of SERVER_READS) if (rowBox(picker, cap).checked) names.push(cap);
+    }
+    const cache = screen.queryByTestId("consent-cache-capability");
+    if (cache !== null && within(cache).getByRole<HTMLInputElement>("checkbox").checked) {
+      names.push("mcp.cache.purge");
+    }
+    for (const cap of ["mcp.ability.read", "mcp.ability.request"]) {
+      if (screen.queryByTestId<HTMLInputElement>(`ability-box-${cap}`)?.checked === true) {
+        names.push(cap);
+      }
+    }
+    return names.sort();
+  }
+
+  const starts: Record<string, () => void> = {
+    "as it opens": () => undefined,
+    "with every enabled box ticked": () => {
+      for (const box of permissions().queryAllByRole<HTMLInputElement>("checkbox")) {
+        if (!box.disabled && !box.checked) fireEvent.click(box);
+      }
+    },
+    "with every enabled box cleared": () => {
+      for (const box of permissions().queryAllByRole<HTMLInputElement>("checkbox")) {
+        if (!box.disabled && box.checked) fireEvent.click(box);
+      }
+    },
+  };
+
+  for (const [offerName, offered] of Object.entries(OFFERS)) {
+    for (const [scopeName, scopes] of Object.entries(SCOPES)) {
+      it(`${offerName}, app asks for ${scopeName}`, async () => {
+        for (const [startName, start] of Object.entries(starts)) {
+          const onApprove = await renderScreen(consentFor(offered, scopes));
+          start();
+          const shown = shownTicked();
+          const approve = screen.getByTestId("consent-approve");
+          if (approve.hasAttribute("disabled")) {
+            // Nothing to approve is exactly nothing ticked.
+            expect(shown, `${startName}: Approve is off, so nothing may be ticked`).toEqual([]);
+          } else {
+            submit();
+            expect(onApprove).toHaveBeenCalledTimes(1);
+            const input = onApprove.mock.calls[0]![0] as { capabilities?: string[] };
+            expect([...(input.capabilities ?? [])].sort(), startName).toEqual(shown);
+          }
+          cleanup();
+        }
+      });
+    }
+  }
+
+  it("is not satisfied by empty lists: the walk does reach ticked boxes and a request that carries them", async () => {
+    // The positive control for the walk above. If every state came out as
+    // nothing ticked and nothing sent, equality would hold and prove nothing.
+    const onApprove = await renderScreen(consentFor(FULL, [SCOPE_READ, SCOPE_SITE, SCOPE_CACHE]));
+    starts["with every enabled box ticked"]!();
+    const shown = shownTicked();
+    expect(shown).toEqual(
+      [...SERVER_READS, "mcp.cache.purge", "mcp.ability.read", "mcp.ability.request"].sort(),
+    );
+    submit();
+    const input = onApprove.mock.calls[0]![0] as { capabilities?: string[] };
+    expect([...(input.capabilities ?? [])].sort()).toEqual(shown);
   });
 });

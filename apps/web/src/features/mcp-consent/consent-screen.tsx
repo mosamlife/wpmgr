@@ -323,13 +323,19 @@ function PermissionsBlock({
       )}
 
       {/* design v7 S2.2: the same write box and label as 2.1. A live opt-in,
-          unticked by default; the approval sends `capabilities` built from it. */}
+          unticked by default; the approval sends `capabilities` built from it.
+          When the server did not offer the cache clear to this app the row is
+          disabled and shown clear, so the box never shows a tick the approval
+          would leave out. */}
       {askedToClearCache && (
         <div className="mt-4" data-testid="consent-cache-capability">
           <CachePurgeCapabilityBox
             checked={selected.includes("mcp.cache.purge")}
             onChange={tick("mcp.cache.purge")}
             disabled={disabled}
+            offered={consent.conferrableCapabilities.some(
+              (c) => c.name === "mcp.cache.purge" && c.effect === CAPABILITY_EFFECT_REQUEST,
+            )}
           />
         </div>
       )}

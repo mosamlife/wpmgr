@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { act, render, screen, fireEvent } from "@testing-library/react";
 
 import { CachePurgeCapabilityBox, NO_UNGATED_WRITE_TIER_NOTE } from "./cache-purge-capability-box";
 
@@ -56,5 +56,48 @@ describe("CachePurgeCapabilityBox", () => {
   it("disables the checkbox when the caller disables the row", () => {
     render(<CachePurgeCapabilityBox checked={false} onChange={() => {}} disabled />);
     expect(screen.getByRole("checkbox")).toBeDisabled();
+  });
+
+  // The same `offered` handling as the site-tools box: a row the server did not
+  // offer to this app is disabled and shown clear, so what the box shows ticked
+  // is what the approval sends. A tick the host still holds for it is not shown.
+  describe("when the server did not offer the cache clear to this app", () => {
+    it("is disabled and clear, with the plain note, even if the host still holds a tick", () => {
+      render(<CachePurgeCapabilityBox checked={true} onChange={() => {}} offered={false} />);
+      const box = screen.getByRole("checkbox");
+      expect(box).toBeDisabled();
+      expect(box).not.toBeChecked();
+      expect(screen.getByTestId("cache-purge-not-offered")).toHaveTextContent(
+        "Not requested by this app",
+      );
+    });
+
+    it("reports nothing when it is clicked the way a browser delivers a click", () => {
+      // fireEvent.click dispatches straight to a disabled checkbox and jsdom
+      // toggles it, which a browser never does; the element's own click()
+      // honours `disabled`. The same call on an offered box is the positive
+      // control.
+      const offeredChange = vi.fn();
+      const view = render(<CachePurgeCapabilityBox checked={false} onChange={offeredChange} />);
+      act(() => {
+        screen.getByRole("checkbox").click();
+      });
+      expect(offeredChange).toHaveBeenCalledWith(true);
+      view.unmount();
+
+      const onChange = vi.fn();
+      render(<CachePurgeCapabilityBox checked={false} onChange={onChange} offered={false} />);
+      act(() => {
+        screen.getByRole("checkbox").click();
+      });
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("says nothing about being unavailable when it is offered, which is the default", () => {
+      render(<CachePurgeCapabilityBox checked={true} onChange={() => {}} />);
+      expect(screen.getByRole("checkbox")).toBeChecked();
+      expect(screen.getByRole("checkbox")).toBeEnabled();
+      expect(screen.queryByTestId("cache-purge-not-offered")).toBeNull();
+    });
   });
 });

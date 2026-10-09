@@ -612,6 +612,34 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
     expect(screen.queryByTestId("consent-nothing-to-confer")).toBeNull();
   });
 
+  it("shows the cache-clear box disabled and clear when the server did not offer it, and sends only the read", async () => {
+    // The app asked for mcp:cache but the server did not offer the capability
+    // as a request. A box the person could tick and the approval would then
+    // leave out is a lie, so the row is disabled and shown clear, with the note.
+    const onApprove = vi.fn();
+    const notOffered = cacheConsent([{ name: "mcp.sites.read", effect: "read" }]);
+    renderWithProviders(<ConsentScreen {...props({ consent: notOffered, onApprove })} />, {
+      withRouter: true,
+    });
+    const box = within(await screen.findByTestId("consent-cache-capability")).getByRole<
+      HTMLInputElement
+    >("checkbox");
+    expect(box.disabled).toBe(true);
+    expect(box.checked).toBe(false);
+    expect(screen.getByTestId("cache-purge-not-offered")).toHaveTextContent(
+      "Not requested by this app",
+    );
+    // Nothing that asks will be carried, so the screen says read-only.
+    expect(screen.getByTestId("consent-cannot-change")).toHaveTextContent(
+      "This connection is read-only.",
+    );
+    fireEvent.submit(screen.getByTestId("consent-approve").closest("form")!);
+    expect(onApprove).toHaveBeenCalledTimes(1);
+    expect((onApprove.mock.calls[0]![0] as { capabilities?: string[] }).capabilities).toEqual([
+      "mcp.sites.read",
+    ]);
+  });
+
   it("does not disable Approve when the server sent no conferrable_capabilities key at all", () => {
     // Deploy-ordering case (consent-context.ts): an absent key parses to [],
     // and .every over [] is vacuously true, never a false "unknown effect".
