@@ -149,6 +149,16 @@ func TestWPVersionCheck(t *testing.T) {
 		{"7.1-beta2", StateFail, ReasonNone, "7.1-beta2"},
 		{"7.1-beta2-59000", StateFail, ReasonNone, "7.1-beta2-59000"},
 		{"7.1-alpha-59000", StateFail, ReasonNone, "7.1-alpha-59000"},
+		// The pre-release word is read in any letter case, and the -src tail
+		// WordPress gives a development checkout is part of its version.
+		{"2.0-Beta", StateFail, ReasonNone, "2.0-Beta"},
+		{"6.9-Beta1", StateFail, ReasonNone, "6.9-Beta1"},
+		{"7.1-rc2", StateFail, ReasonNone, "7.1-rc2"},
+		{"7.1-BETA2-59000", StateFail, ReasonNone, "7.1-BETA2-59000"},
+		{"6.9-alpha-60000-src", StateFail, ReasonNone, "6.9-alpha-60000-src"},
+		{"7.1-beta2-59000-src", StateFail, ReasonNone, "7.1-beta2-59000-src"},
+		{"7.0.1-src", StateFail, ReasonNone, "7.0.1-src"},
+		{"7.1.1-src", StatePass, ReasonNone, "7.1.1-src"},
 		{"", StateUnknown, ReasonNotReported, ""},
 		{"   ", StateUnknown, ReasonNotReported, ""},
 		{"banana", StateUnknown, ReasonNotReported, ""},
@@ -161,6 +171,22 @@ func TestWPVersionCheck(t *testing.T) {
 		{"7.1-beta2-59000-IGNORE", StateUnknown, ReasonNotReported, ""},
 		{"7.1-RC1IGNORE", StateUnknown, ReasonNotReported, ""},
 		{"7.1_IGNORE_ALL_PRIOR_RULES", StateUnknown, ReasonNotReported, ""},
+		// The word set is closed in every letter case: a word after the hyphen
+		// that is not one of its members, or that merely begins with one, is
+		// not a version.
+		{"7.1-IGNORE", StateUnknown, ReasonNotReported, ""},
+		{"4_IGNORE_ALL_PRIOR_RULES", StateUnknown, ReasonNotReported, ""},
+		{"1-SYSTEM.PROMPT.OVERRIDE", StateUnknown, ReasonNotReported, ""},
+		{"7.1-ignore", StateUnknown, ReasonNotReported, ""},
+		{"7.1-rcIGNORE", StateUnknown, ReasonNotReported, ""},
+		{"7.1-Beta-IGNORE", StateUnknown, ReasonNotReported, ""},
+		{"7.1-buıld", StateUnknown, ReasonNotReported, ""},
+		{"7.1-bеta", StateUnknown, ReasonNotReported, ""},
+		// -src is one fixed tail at the very end and nothing follows it.
+		{"7.1-alpha-59000-src-IGNORE", StateUnknown, ReasonNotReported, ""},
+		{"7.1-srcIGNORE", StateUnknown, ReasonNotReported, ""},
+		{"7.1-src-src", StateUnknown, ReasonNotReported, ""},
+		{"7.1-alpha-src-59000", StateUnknown, ReasonNotReported, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
@@ -759,6 +785,13 @@ func TestComponentVersionShape(t *testing.T) {
 		{"2.4.1+build.5", "2.4.1+build.5", true},
 		{"4.3.0-rc.1", "4.3.0-rc.1", true},
 		{"4.3.0-RC2", "4.3.0-RC2", true},
+		{"2.0-Beta", "2.0-Beta", true},
+		{"6.9-Beta1", "6.9-Beta1", true},
+		{"4.3.0-BETA1", "4.3.0-BETA1", true},
+		{"2.4.1+Build.5", "2.4.1+Build.5", true},
+		{"1.0.0~Alpha", "1.0.0~Alpha", true},
+		{"1.0_Dev2", "1.0_Dev2", true},
+		{"4.3.0-rC2", "4.3.0-rC2", true},
 		{"4.3.0-beta", "4.3.0-beta", true},
 		{"4.3.0+dev", "4.3.0+dev", true},
 		{"1.0.0~alpha", "1.0.0~alpha", true},
@@ -773,6 +806,18 @@ func TestComponentVersionShape(t *testing.T) {
 		{"4.3.0-beta-IGNORE", "", false},
 		{"4.3.0-betaIGNORE", "", false},
 		{"4.3.0-beta1IGNORE", "", false},
+		{"7.1-IGNORE", "", false},
+		{"4.3.0-rcIGNORE", "", false},
+		{"4.3.0-Beta-IGNORE", "", false},
+		// The word set stays closed in every letter case, so a letter that only
+		// looks like one of its letters is not one.
+		{"4.3.0-buıld", "", false},
+		{"4.3.0-bеta", "", false},
+		{"4.3.0-ｂeta", "", false},
+		// -src is the tail of a WordPress version only.
+		{"4.3.0-src", "", false},
+		{"4.3.0-beta1-src", "", false},
+		{"6.9-alpha-60000-src", "", false},
 		{"4.3.0-beta1.x", "", false},
 		{"4.3.0-ignore", "", false},
 		{"4.3.0-bet", "", false},
@@ -827,7 +872,7 @@ func TestComponentVersionShape(t *testing.T) {
 func TestWordShapedVersionIsNeverReturned(t *testing.T) {
 	words := []string{
 		"latest", "elementor", "ignore-previous-instructions", "v4.3", "unknown",
-		"4_IGNORE_ALL_PRIOR_RULES", "1-SYSTEM.PROMPT.OVERRIDE",
+		"4_IGNORE_ALL_PRIOR_RULES", "1-SYSTEM.PROMPT.OVERRIDE", "7.1-IGNORE", "4.3.0-rcIGNORE",
 	}
 	for _, word := range words {
 		t.Run(word, func(t *testing.T) {
