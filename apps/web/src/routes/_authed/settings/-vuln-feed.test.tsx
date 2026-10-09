@@ -127,7 +127,7 @@ function renderSettings(initialPath: string, me: Me) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockedGet.mockResolvedValue(ok(STATUS_NOT_CONFIGURED) as never);
+  mockedGet.mockResolvedValue(ok(STATUS_NOT_CONFIGURED));
 });
 
 describe("Settings > Vulnerability feed for an owner the server admits (can_manage_instance_email)", () => {
@@ -158,7 +158,7 @@ describe("Settings > Vulnerability feed for an owner the server admits (can_mana
   });
 
   it("saves a pasted key through the feed route and clears the field", async () => {
-    mockedPut.mockResolvedValue(ok({ ok: true, syncing: true }) as never);
+    mockedPut.mockResolvedValue(ok({ ok: true, syncing: true }));
 
     renderSettings("/settings/vuln-feed", { ...OWNER_ME, can_manage_instance_email: true });
 

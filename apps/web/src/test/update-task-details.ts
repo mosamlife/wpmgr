@@ -37,7 +37,7 @@ export const CORE_ROLLBACK_UNDELIVERABLE_DETAIL =
 
 export const CORE_LEFT_AS_IS_DETAIL =
   "WordPress core was updated, but the site did not pass the health check afterwards. " +
-  "Core was left as is: an automatic core rollback runs only when the check confirms a server error or a PHP fatal error, " +
+  "Core was left as is: an automatic core rollback runs only when the check confirms a crash (an HTTP 500 or WordPress's error screen), " +
   "and this check did not. Check the site.";
 
 export const CORE_NO_CHANGE_UNHEALTHY_DETAIL =
