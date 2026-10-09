@@ -450,11 +450,19 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 	if code != "" {
 		return "", pageCreateInputRefusal(code)
 	}
+	// A page builder the entry enables, and the builder's node rules.
+	if r := pageCreateBuilderRefusal(facts, e.Limits, input); r != nil {
+		return "", r
+	}
 	// (The entry's own floor was checked by classify: c.reason above.)
-	if floor := PageCreateAgentFloor(input); floor == agentcmd.MinAgentVersionForPageLayout &&
+	if floor := PageCreateAgentFloor(input); floor != agentcmd.MinAgentVersionForPageCreate &&
 		!abilityAgentMeetsFloor(site.row.AgentVersion, &floor) {
+		msg := msgAbilityLayoutOutdated
+		if floor == agentcmd.MinAgentVersionForBuilderAdapters {
+			msg = msgAbilityBuilderOutdated
+		}
 		return "", refuse(reasonAgentOutdated, domain.Conflict(ErrCodeSiteAgentOutdated,
-			msgAbilityLayoutOutdated).WithDetails(map[string]any{
+			msg).WithDetails(map[string]any{
 			"min_agent_version": floor, "retryable": false,
 		}))
 	}
@@ -581,6 +589,10 @@ var precheckRefusalHints = map[string]string{
 	"image_not_available":           hintImageNotAvailable,
 	"image_url_unusable":            hintImageURLUnusable,
 	pageCreateNeedsBlockEditor:      hintLayoutNeedsBlockEditor,
+	pageBuilderNotEnabled:           hintBuilderNotEnabled,
+	pageBuilderNotAvailable:         hintBuilderNotAvailable,
+	pageNodeNotSupported:            hintNodeNotSupportedByBuilder,
+	pageImageAltFromLibrary:         hintImageAltFromLibrary,
 }
 
 // precheckRefusalHint maps an input-related refusal code to a fixed hint,

@@ -79,6 +79,11 @@ type pageCreateFacts struct {
 	postType string
 	editor   string
 	title    string
+	// builder is the page builder a builder editor names ("elementor" for
+	// "builder:elementor"), "" for a WordPress editor; elementorFormat is
+	// that input's elementor_format, site_default when it sends none.
+	builder         string
+	elementorFormat string
 	// usesLayout: the outline holds a block beyond heading, paragraph and
 	// list, so the request needs MinAgentVersionForPageLayout and is shown
 	// with card copy version 2.
@@ -114,7 +119,7 @@ func validatePageCreateInput(input []byte) (pageCreateFacts, string) {
 	}
 	for k := range top {
 		switch k {
-		case "post_type", "editor", "title", "outline":
+		case "post_type", "editor", "title", "outline", "elementor_format":
 		default:
 			return pageCreateFacts{}, pageCreateBadInput
 		}
@@ -123,8 +128,24 @@ func validatePageCreateInput(input []byte) (pageCreateFacts, string) {
 	if f.postType, ok = jsonStringOf(top["post_type"]); !ok || (f.postType != "page" && f.postType != "post") {
 		return pageCreateFacts{}, pageCreateBadInput
 	}
-	if f.editor, ok = jsonStringOf(top["editor"]); !ok || (f.editor != pageEditorBlocks && f.editor != pageEditorClassic) {
+	if f.editor, ok = jsonStringOf(top["editor"]); !ok {
 		return pageCreateFacts{}, pageCreateBadInput
+	}
+	switch f.editor {
+	case pageEditorBlocks, pageEditorClassic:
+	case pageEditorBuilderElementor:
+		f.builder, f.elementorFormat = pageBuilderElementor, pageElementorFormatDefault
+	default:
+		return pageCreateFacts{}, pageCreateBadInput
+	}
+	// elementor_format belongs to builder:elementor alone and holds one of the
+	// published values; the facts of every other editor carry no format.
+	if raw, has := top["elementor_format"]; has {
+		format, ok := jsonStringOf(raw)
+		if !ok || f.builder != pageBuilderElementor || !pageElementorFormatKnown(format) {
+			return pageCreateFacts{}, pageCreateBadInput
+		}
+		f.elementorFormat = format
 	}
 	if f.title, ok = jsonStringOf(top["title"]); !ok || strings.TrimSpace(f.title) == "" {
 		return pageCreateFacts{}, pageCreateBadInput
@@ -714,11 +735,15 @@ func pageCreateUsesLayout(input []byte) bool {
 }
 
 // PageCreateAgentFloor is the first agent release that runs this
-// wpmgr/page-create input: MinAgentVersionForPageLayout when the outline
-// holds a block beyond heading, paragraph and list (or the input cannot be
-// read), MinAgentVersionForPageCreate otherwise. The run path and the
-// dispatch worker both decide with it.
+// wpmgr/page-create input: MinAgentVersionForBuilderAdapters when it asks
+// for a page builder, MinAgentVersionForPageLayout when the outline holds a
+// block beyond heading, paragraph and list (or the input cannot be read),
+// MinAgentVersionForPageCreate otherwise. The run path and the dispatch
+// worker both decide with it.
 func PageCreateAgentFloor(input []byte) string {
+	if pageCreateUsesBuilder(input) {
+		return agentcmd.MinAgentVersionForBuilderAdapters
+	}
 	if pageCreateUsesLayout(input) {
 		return agentcmd.MinAgentVersionForPageLayout
 	}
