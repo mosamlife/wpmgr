@@ -73,6 +73,7 @@ import {
   summarizeMonitoringResult,
 } from "@/features/sites/monitoring-pause";
 import { PauseMonitoringDialog } from "@/features/sites/pause-monitoring-dialog";
+import { DisconnectConsequences } from "@/features/sites/disconnect-consequences";
 import type { MonitoringBulkResult } from "@wpmgr/api";
 import { toast } from "@/components/toast";
 import { cn } from "@/lib/utils";
@@ -1435,19 +1436,7 @@ function SitesPage() {
           cancelLabel="Keep connected"
           isPending={revoke.isPending}
           errorMessage={revoke.isError ? revoke.error.message : null}
-          consequencesBody={
-            <div className="space-y-2">
-              <p>
-                We'll send a revoke to the agent on its next heartbeat
-                (within ~60 seconds). The agent stops accepting commands and
-                clears its credentials.
-              </p>
-              <p>
-                Backups and monitoring stop. The site is archived with its full
-                history kept. You can reconnect later.
-              </p>
-            </div>
-          }
+          consequencesBody={<DisconnectConsequences />}
         />
       ) : null}
 
