@@ -109,13 +109,32 @@ func (s *Service) EnableContentEditing(ctx context.Context, p domain.Principal, 
 		if err != nil {
 			return err
 		}
+		md := map[string]any{"site_id": siteID.String(), "principal_user_id": resp.UserID, "outcome": resp.Outcome}
+		// The site's AI mode starts at Auto for AI drafts, chosen by this
+		// person, only when no mode was ever set on it. Turning AI editing on
+		// again never resets a mode a person chose, the launch default or a
+		// tightening. Same transaction, so the mode and the switch it belongs
+		// to land together or not at all.
+		mode, err := q.ApplySiteAIModeEnableDefault(ctx, sqlc.ApplySiteAIModeEnableDefaultParams{
+			EnabledBy: p.UserID, TenantID: p.TenantID, SiteID: siteID,
+		})
+		switch {
+		case err == nil:
+			md["ai_mode"] = mode.AiMode
+			md["ai_mode_source"] = mode.AiModeSource
+			md["ai_mode_version"] = mode.AiModeVersion
+		case errors.Is(err, pgx.ErrNoRows):
+			// The site already carries a mode; it is kept as it is.
+		default:
+			return err
+		}
 		if s.audit == nil {
 			return errors.New("audit recorder not wired")
 		}
 		_, err = s.audit.RecordInTx(ctx, tx, audit.Event{
 			TenantID: p.TenantID, ActorType: audit.ActorUser, ActorID: p.UserID.String(),
 			Action: audit.ActionSiteContentEditingEnabled, TargetType: "site", TargetID: siteID.String(),
-			Metadata: map[string]any{"site_id": siteID.String(), "principal_user_id": resp.UserID, "outcome": resp.Outcome},
+			Metadata: md,
 		})
 		return err
 	})
