@@ -197,17 +197,17 @@ export function PageEditCard({
         />
       )}
 
-      {view ? (
-        <UndoConfirm
-          open={confirmOpen}
-          title={view.title === "" ? `#${view.postId}` : view.title}
-          onCancel={() => setConfirmOpen(false)}
-          onConfirm={() => {
-            setConfirmOpen(false);
-            onUndo(request);
-          }}
-        />
-      ) : null}
+      {/* The offer to undo is the row's word and does not depend on the card, so
+          the confirmation opens on a card that cannot be shown too. */}
+      <UndoConfirm
+        open={confirmOpen}
+        page={view === null ? null : view.title === "" ? `#${view.postId}` : view.title}
+        onCancel={() => setConfirmOpen(false)}
+        onConfirm={() => {
+          setConfirmOpen(false);
+          onUndo(request);
+        }}
+      />
     </article>
   );
 }
@@ -293,15 +293,19 @@ function UndoArea({
   }
 }
 
-/** Cancel is first in the order and focused: the safe choice is the default. */
+/**
+ * Cancel is first in the order and focused: the safe choice is the default.
+ * page is the draft's title (else its number) from a card the screen could
+ * show in full; null for a card it could not, which names no page.
+ */
 function UndoConfirm({
   open,
-  title,
+  page,
   onCancel,
   onConfirm,
 }: {
   open: boolean;
-  title: string;
+  page: string | null;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -315,9 +319,16 @@ function UndoConfirm({
         </DialogHeader>
         <DialogBody>
           <p id={bodyId} className="text-sm text-foreground">
-            {'WPMgr puts back what this change wrote on "'}
-            <bdi>{title}</bdi>
-            {'". Changes approved after it that touched other parts of the page, like a featured image, stay.'}
+            {page === null ? (
+              "WPMgr puts back what this change wrote on the page."
+            ) : (
+              <>
+                {'WPMgr puts back what this change wrote on "'}
+                <bdi>{page}</bdi>
+                {'".'}
+              </>
+            )}
+            {" Changes approved after it that touched other parts of the page, like a featured image, stay."}
           </p>
         </DialogBody>
         <DialogFooter className="pt-2">
