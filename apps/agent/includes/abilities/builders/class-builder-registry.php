@@ -37,7 +37,9 @@ final class BuilderRegistry
      *
      * @var array<string, class-string<BuilderAdapter>>
      */
-    private const COMPILED = [];
+    private const COMPILED = [
+        'elementor' => ElementorAdapter::class,
+    ];
 
     /**
      * Resolve a page-create editor value to the adapter that builds it.
