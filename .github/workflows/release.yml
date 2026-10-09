@@ -111,6 +111,7 @@ jobs:
 
       - name: "Check media-encoder reaps orphaned processes (GH #290)"
         if: matrix.name == 'media-encoder'
+        timeout-minutes: 10
         run: scripts/check-media-encoder-reaps.sh --image wpmgr-media-encoder:reaper-check
 
       - name: Build + push ${{ matrix.name }}
