@@ -69,7 +69,11 @@ export const KNOWN_CAPABILITIES: readonly Capability[] = Object.keys(
  * the same "one list, derived everywhere else" property CAPABILITY_DESCRIPTIONS
  * already holds, extended to the one distinction that decides which of the two
  * visibly separate groups a row renders in (design v7 S2.1: "write rows
- * visibly distinct, never pre-ticked, in no preset").
+ * visibly distinct, never pre-ticked, in no preset"). That holds exactly for
+ * mcp.cache.purge, on the wizard and on the consent screen. The site-tools rows
+ * are in no preset either, but their opening state differs by surface: the
+ * connection wizard opens them clear, and the consent screen opens them ticked
+ * when the requesting app asked for mcp:site and the server offers them.
  *
  * "write" IS NOT "this runs unattended". Every write capability in this
  * vocabulary gates its own call behind a person approving a specific request
@@ -94,7 +98,9 @@ export const CAPABILITY_KIND: Readonly<Record<Capability, "read" | "write">> = {
 /**
  * The two site-tools capabilities. They render in their own box (see
  * AbilityCapabilityBox), never in the plain read list and never in a preset:
- * the read can return page text, so it is an explicit opt-in like the cache row.
+ * the read can return page text. The connection wizard opens both rows clear.
+ * The consent screen opens both ticked when the requesting app asked for
+ * mcp:site and the server offers them, and the person can clear either one.
  */
 export const ABILITY_CAPABILITIES = ["mcp.ability.read", "mcp.ability.request"] as const;
 
@@ -162,7 +168,9 @@ export const CAPABILITY_DESCRIPTIONS: Readonly<Record<Capability, string>> = {
   // creates a request, and nothing runs until a person allowed to clear
   // caches on that site approves it in WPMgr (ADR-061 option B). The wizard
   // and the consent screen render this row in its own bordered group, never
-  // pre-ticked and never part of a preset (design v7 S2.1, S6 row W1).
+  // pre-ticked on either surface and never part of a preset (design v7 S2.1,
+  // S6 row W1). The two site-tools rows follow a different opening rule: see
+  // ABILITY_CAPABILITIES.
   "mcp.cache.purge":
     "Ask to clear the page cache on one site at a time, for the whole site or one page " +
     "address. Nothing runs until someone allowed to clear caches on that site approves " +

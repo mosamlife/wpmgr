@@ -22,10 +22,17 @@ import { CONFERRABLE_READS, type Capability } from "./capabilities";
 // that quietly stops meaning it.
 //
 // NEITHER PRESET MAY INCLUDE THE WRITE. `mcp.cache.purge` needs its own
-// per-call approval (ADR-061 option B) and is never pre-ticked and never part
-// of a preset (design v7 S2.1, ruling 33). `capabilityPresets` filters its
-// input through CONFERRABLE_READS, the reads-only list, so a caller that hands
-// it a write name or `mcp.content.read` still gets a preset without it.
+// per-call approval (ADR-061 option B) and is never pre-ticked on any surface
+// and never part of a preset (design v7 S2.1, ruling 33). `capabilityPresets`
+// filters its input through CONFERRABLE_READS, the reads-only list, so a caller
+// that hands it a write name or `mcp.content.read` still gets a preset without
+// it.
+//
+// THE TWO SITE-TOOLS ROWS ARE IN NO PRESET EITHER, and their opening state
+// differs by surface: the connection wizard opens them clear, and the consent
+// screen opens them ticked when the requesting app asked for mcp:site and the
+// server offers them. A preset sets the whole tick list, so pressing one on the
+// consent screen clears them again.
 
 export type CapabilityPresetId = "basics" | "read-everything";
 
