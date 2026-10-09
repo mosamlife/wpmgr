@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, screen, fireEvent } from "@testing-library/react";
+import { act, screen, fireEvent, waitFor } from "@testing-library/react";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -493,5 +493,324 @@ describe("Sites page: an empty archived view is not the first-run screen (GH #33
     expect(
       screen.queryByRole("status", { name: "No archived sites" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+// GH #568. The Status filter could not select Paused or Archived. Its options
+// were the connection states of the rows already loaded: a pause is a separate
+// field on the row (monitoring_paused_at), not a connection state, and archived
+// sites are a separate server list that the active view never loads.
+//
+// Paused is now a Monitoring filter (Active / Paused) beside Status, and
+// operators are always offered Archived in Status. Archived is the same switch
+// as the "Show archived" chip: both write the one `archived` search param.
+
+/** A connected site, so the Status menu has a real state to offer. */
+function connectedSite(overrides: Partial<Site> = {}): Site {
+  return buildSite({ enrolled: true, health_status: "healthy", ...overrides });
+}
+
+/** What the server sends for the archived list: connection_state "archived". */
+function archivedSite(overrides: Partial<Site> = {}): Site {
+  return {
+    ...buildSite(overrides),
+    connection_state: "archived",
+  } as unknown as Site;
+}
+
+const LIVE = connectedSite({
+  id: "00000000-0000-0000-0000-0000000000b1",
+  name: "Live",
+  url: "https://live.example.com",
+});
+const FROZEN = connectedSite({
+  id: "00000000-0000-0000-0000-0000000000b2",
+  name: "Frozen",
+  url: "https://frozen.example.com",
+  monitoring_paused_at: "2026-10-01T09:00:00Z",
+});
+const RETIRED = archivedSite({
+  id: "00000000-0000-0000-0000-0000000000b3",
+  name: "Retired",
+  url: "https://retired.example.com",
+});
+
+/** An array-valued search param as TanStack Router writes it into a URL. */
+function arrayParam(...values: string[]): string {
+  return encodeURIComponent(JSON.stringify(values));
+}
+
+function openMenu(trigger: HTMLElement): void {
+  fireEvent.pointerDown(
+    trigger,
+    new PointerEvent("pointerdown", { bubbles: true, button: 0 }),
+  );
+}
+
+/** The filter menus stay open across a toggle by design, and while one is open
+ *  the rest of the page is hidden from assistive technology. Close it the way a
+ *  person would, so what the test reads next is the page as they see it. */
+async function closeMenu(): Promise<void> {
+  fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+  await waitFor(() => {
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+}
+
+async function chooseFromMenu(
+  triggerName: string,
+  optionName: string,
+): Promise<void> {
+  const trigger = await screen.findByRole(
+    "button",
+    { name: triggerName },
+    { timeout: FIND_TIMEOUT },
+  );
+  openMenu(trigger);
+  fireEvent.click(
+    await screen.findByRole("menuitemcheckbox", { name: optionName }),
+  );
+  await closeMenu();
+}
+
+describe("Sites page: the Monitoring filter (GH #568)", () => {
+  it("choosing Monitoring: Paused lists only the paused site", async () => {
+    mockBuckets([LIVE, FROZEN], []);
+
+    const router = renderSitesPage("/sites?view=grid");
+    // Positive control: before the filter both sites are listed.
+    expect(
+      await screen.findByText(
+        "2 sites enrolled, 1 paused",
+        {},
+        { timeout: FIND_TIMEOUT },
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Live" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Frozen" })).toBeInTheDocument();
+
+    await chooseFromMenu("Filter by monitoring", "Paused");
+
+    expect(await screen.findByText("1 matching site")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Frozen" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Live" }),
+    ).not.toBeInTheDocument();
+    expect(router.state.location.search).toMatchObject({
+      monitoring: ["Paused"],
+    });
+  });
+
+  it("choosing Monitoring: Active hides only the paused site", async () => {
+    mockBuckets([LIVE, FROZEN], []);
+
+    renderSitesPage("/sites?view=grid");
+    await screen.findByRole(
+      "link",
+      { name: "Frozen" },
+      { timeout: FIND_TIMEOUT },
+    );
+
+    await chooseFromMenu("Filter by monitoring", "Active");
+
+    expect(await screen.findByText("1 matching site")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Live" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Frozen" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("reads the Monitoring filter back out of the URL", async () => {
+    mockBuckets([LIVE, FROZEN], []);
+
+    renderSitesPage(`/sites?view=grid&monitoring=${arrayParam("Paused")}`);
+
+    expect(
+      await screen.findByRole(
+        "link",
+        { name: "Frozen" },
+        { timeout: FIND_TIMEOUT },
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Live" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Clear 1 active filter" }),
+    ).toBeInTheDocument();
+  });
+
+  it("'Clear filters' resets Monitoring along with the other axes", async () => {
+    mockBuckets([LIVE, FROZEN], []);
+
+    const router = renderSitesPage(
+      `/sites?view=grid&monitoring=${arrayParam("Paused")}`,
+    );
+    await screen.findByRole(
+      "link",
+      { name: "Frozen" },
+      { timeout: FIND_TIMEOUT },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear 1 active filter" }));
+
+    expect(
+      await screen.findByRole("link", { name: "Live" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Frozen" })).toBeInTheDocument();
+    expect(router.state.location.search).not.toHaveProperty("monitoring");
+  });
+
+  it("says which filter left nothing to show when no site is paused", async () => {
+    // Nothing is paused, so Monitoring: Paused matches no row. The page must
+    // call that a filter result and name the filter, not render an empty grid.
+    mockBuckets([LIVE], []);
+
+    renderSitesPage(`/sites?view=grid&monitoring=${arrayParam("Paused")}`);
+
+    const empty = await screen.findByRole(
+      "status",
+      { name: "No sites match the current filters" },
+      { timeout: FIND_TIMEOUT },
+    );
+    expect(empty).toHaveTextContent("monitoring:Paused");
+  });
+});
+
+describe("Sites page: Status offers Archived to operators (GH #568)", () => {
+  beforeEach(() => {
+    window.localStorage.setItem("wpmgr.onboarding.completed", "true");
+  });
+
+  it("an operator with only active sites loaded can choose Archived", async () => {
+    mockBuckets([LIVE, FROZEN], []);
+
+    const router = renderSitesPage("/sites?view=grid");
+    await screen.findByRole(
+      "link",
+      { name: "Live" },
+      { timeout: FIND_TIMEOUT },
+    );
+
+    await chooseFromMenu("Filter by status", "Archived");
+
+    await waitFor(() => {
+      expect(router.state.location.search).toMatchObject({ archived: true });
+    });
+    // The page now asks for the archived list: the mock answers it with none.
+    expect(
+      await screen.findByRole("status", { name: "No archived sites" }),
+    ).toBeInTheDocument();
+  });
+
+  it("a viewer is not offered Archived", async () => {
+    mockBuckets([LIVE, FROZEN], []);
+
+    renderSitesPage("/sites?view=grid", VIEWER_ME);
+    openMenu(
+      await screen.findByRole(
+        "button",
+        { name: "Filter by status" },
+        { timeout: FIND_TIMEOUT },
+      ),
+    );
+
+    // Positive control: the menu is open and lists the real state.
+    expect(
+      await screen.findByRole("menuitemcheckbox", { name: "Connected" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("menuitemcheckbox", { name: "Archived" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("choosing Archived drops a Status selection made against the active list", async () => {
+    mockBuckets([LIVE, FROZEN], []);
+
+    const router = renderSitesPage(
+      `/sites?view=grid&status=${arrayParam("Connected")}`,
+    );
+    await screen.findByRole(
+      "link",
+      { name: "Live" },
+      { timeout: FIND_TIMEOUT },
+    );
+
+    await chooseFromMenu("Filter by status", "Archived");
+
+    await waitFor(() => {
+      expect(router.state.location.search).toMatchObject({ archived: true });
+    });
+    expect(router.state.location.search).not.toHaveProperty("status");
+  });
+
+  it("ticks Archived while the archived list is showing, and unticking it goes back with a history entry", async () => {
+    mockBuckets([LIVE, FROZEN], [RETIRED]);
+
+    const router = renderSitesPage("/sites?view=grid&archived=true");
+    await screen.findByRole(
+      "link",
+      { name: "Retired" },
+      { timeout: FIND_TIMEOUT },
+    );
+
+    openMenu(screen.getByRole("button", { name: "Filter by status" }));
+    const archivedOption = await screen.findByRole("menuitemcheckbox", {
+      name: "Archived",
+    });
+    expect(archivedOption).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(archivedOption);
+    await closeMenu();
+
+    expect(
+      await screen.findByRole("link", { name: "Live" }),
+    ).toBeInTheDocument();
+    expect(router.state.location.search).not.toHaveProperty("archived");
+
+    act(() => router.history.back());
+
+    expect(
+      await screen.findByRole("link", { name: "Retired" }),
+    ).toBeInTheDocument();
+    expect(router.state.location.search).toMatchObject({ archived: true });
+  });
+
+  it("the Show archived chip and the Status entry are one control", async () => {
+    mockBuckets([LIVE, FROZEN], [RETIRED]);
+
+    renderSitesPage("/sites?view=grid");
+    fireEvent.click(
+      await screen.findByRole(
+        "button",
+        { name: "Show archived" },
+        { timeout: FIND_TIMEOUT },
+      ),
+    );
+    await screen.findByRole("link", { name: "Retired" });
+
+    openMenu(screen.getByRole("button", { name: "Filter by status" }));
+    expect(
+      await screen.findByRole("menuitemcheckbox", { name: "Archived" }),
+    ).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("'Show all' in the Status menu leaves the archived list", async () => {
+    mockBuckets([LIVE, FROZEN], [RETIRED]);
+
+    const router = renderSitesPage("/sites?view=grid&archived=true");
+    await screen.findByRole(
+      "link",
+      { name: "Retired" },
+      { timeout: FIND_TIMEOUT },
+    );
+
+    openMenu(screen.getByRole("button", { name: "Filter by status" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Show all" }));
+    await closeMenu();
+
+    expect(
+      await screen.findByRole("link", { name: "Live" }),
+    ).toBeInTheDocument();
+    expect(router.state.location.search).not.toHaveProperty("archived");
   });
 });
