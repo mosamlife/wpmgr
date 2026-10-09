@@ -71,7 +71,10 @@ const shown = () => ({ read: readBox().checked, request: requestBox().checked })
 // there reddens this file.
 const READ_LABEL = "See this site's tools and read its published pages";
 const NEEDS_READ_HINT = `Needs “${READ_LABEL}”. Ticking this ticks that too, and clearing that clears this.`;
-const NEEDS_READ_BLOCKED = `Needs “${READ_LABEL}”, which this app did not request.`;
+const NEEDS_READ_BLOCKED = `Needs “${READ_LABEL}”, which WPMgr did not offer for this connection.`;
+// The box only appears when the app asked for site tools, so a row that is not
+// available says what WPMgr did, never that the app did not ask.
+const NOT_OFFERED = "WPMgr did not offer this for this connection.";
 
 describe("AbilityCapabilityBox, the request needs the read", () => {
   it("ticking ask for changes while see what the site can do is clear ticks both, in one change", () => {
@@ -163,22 +166,23 @@ describe("AbilityCapabilityBox, what the app did not ask for", () => {
     expect(screen.getByTestId("ability-request-blocked")).toHaveTextContent(NEEDS_READ_BLOCKED);
     expect(screen.queryByTestId("ability-request-needs-read")).toBeNull();
     expect(screen.getByTestId("ability-not-offered-mcp.ability.read")).toHaveTextContent(
-      "Not requested by this app",
+      NOT_OFFERED,
     );
     expect(screen.queryByTestId("ability-not-offered-mcp.ability.request")).toBeNull();
+    expect(document.body.textContent ?? "").not.toMatch(/did not request|not requested/i);
 
     press(requestBox());
     expect(onChange).not.toHaveBeenCalled();
     expect(requestBox().checked).toBe(false);
   });
 
-  it("disables ask for changes with the plain note when the app did not request it, and the read moves alone", () => {
+  it("disables ask for changes with the plain note when WPMgr did not offer it, and the read moves alone", () => {
     const first = renderBox(NEITHER, { requestOffered: false });
     const { onChange } = first;
     expect(requestBox().disabled).toBe(true);
     expect(requestBox().checked).toBe(false);
     expect(screen.getByTestId("ability-not-offered-mcp.ability.request")).toHaveTextContent(
-      "Not requested by this app",
+      NOT_OFFERED,
     );
     expect(screen.queryByTestId("ability-request-needs-read")).toBeNull();
     expect(screen.queryByTestId("ability-request-blocked")).toBeNull();

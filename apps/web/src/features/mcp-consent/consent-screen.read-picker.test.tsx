@@ -146,7 +146,7 @@ describe("ConsentScreen, the read picker opens on the wizard's defaults", () => 
       within(picker).getByText(/not available yet.*no content tools.*for a connection to call/i),
     ).toBeTruthy();
     // And it is the reason for Content alone: every other row is on offer.
-    expect(within(picker).queryByText(/not requested by this app/i)).toBeNull();
+    expect(within(picker).queryByText(/did not offer this for this connection/i)).toBeNull();
   });
 
   it("states that the rows above the line are read-only, as the wizard does, and says nothing wider", async () => {
@@ -457,8 +457,10 @@ describe("ConsentScreen, a read the server did not offer", () => {
     for (const cap of SERVER_READS.filter((c) => !OFFERED.includes(c))) {
       expect(rowBox(picker, cap)).toBeDisabled();
       expect(rowBox(picker, cap)).not.toBeChecked();
+      // The rows only appear when the app asked for reading, so the reason says
+      // what WPMgr did, never that the app did not ask.
       expect(within(picker).getByTestId(`read-not-offered-${cap}`)).toHaveTextContent(
-        "Not requested by this app",
+        "WPMgr did not offer this for this connection.",
       );
     }
     expect(rowBox(picker, "mcp.sites.read")).toBeEnabled();

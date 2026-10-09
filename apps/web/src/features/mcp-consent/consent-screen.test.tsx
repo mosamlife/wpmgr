@@ -793,7 +793,7 @@ describe("ConsentScreen, the mcp:site site-tools section", () => {
     expect(requestBox().checked).toBe(false);
     expect(requestBox().disabled).toBe(true);
     expect(screen.getByTestId("ability-not-offered-mcp.ability.request")).toHaveTextContent(
-      /not requested by this app/i,
+      "WPMgr did not offer this for this connection.",
     );
     expect(screen.queryByTestId("ability-not-offered-mcp.ability.read")).toBeNull();
     fireEvent.click(requestBox());
