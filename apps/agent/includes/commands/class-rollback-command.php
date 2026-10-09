@@ -224,13 +224,14 @@ final class RollbackCommand implements CommandInterface
 
         // Arm the shutdown backstop only now, once the request has passed
         // every check, so a fatal error or a timeout mid-rollback still clears
-        // whatever flag THIS run leaves set. A fresh flag already in place
-        // belongs to another updater: the backstop and the finally below leave
-        // it alone while it is unchanged (see Maintenance's class doc). It sits
-        // above the try/finally below on purpose: run() is called inside
-        // execute()'s try, so a throw from here still releases the site lock,
-        // and no rollback work has begun that would need maintenance cleared.
-        $foreignFlag = Maintenance::armShutdownGuard();
+        // whatever flag THIS run leaves set. The backstop clears any
+        // `.maintenance` file it finds when the request ends, so a refused
+        // request must not arm it: the flag it would remove may belong to
+        // another update still in flight. It sits above the try/finally below
+        // on purpose: run() is called inside execute()'s try, so a throw from
+        // here still releases the site lock, and no rollback work has begun
+        // that would need maintenance cleared.
+        Maintenance::armShutdownGuard();
 
         // GUARANTEE: this is precisely the reported incident — a rollback
         // that itself fails (the new version is already active, the restore
@@ -300,7 +301,7 @@ final class RollbackCommand implements CommandInterface
                 'log'              => $restore['log'],
             ];
         } finally {
-            Maintenance::clear(null, $foreignFlag);
+            Maintenance::clear();
         }
     }
 

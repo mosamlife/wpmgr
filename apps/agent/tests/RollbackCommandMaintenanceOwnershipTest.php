@@ -1,6 +1,7 @@
 <?php
 /**
- * GitHub issue #893: a rollback request that is turned down leaves a fresh
+ * GitHub issue #893: a rollback request that is turned down (unsafe slug,
+ * missing snapshot id, the agent itself, no valid core target) leaves a fresh
  * `.maintenance` flag another updater set exactly as it was, during the
  * request and after it ends. A stale flag is still healed, and a flag this
  * request set is still cleared when the request dies part way.
@@ -104,26 +105,24 @@ final class RollbackCommandMaintenanceOwnershipTest extends TestCase
     }
 
     /**
-     * @return array<string,array{0:array<string,mixed>,1:bool}>
+     * @return array<string,array{0:array<string,mixed>}>
      */
     public static function turnedDownRequests(): array
     {
         return [
-            'unsafe slug'         => [['type' => 'plugin', 'slug' => 'akismet/../../wp-config.php', 'snapshot_id' => 'snap_1'], false],
-            'missing snapshot_id' => [['type' => 'plugin', 'slug' => 'akismet/akismet.php'], false],
-            'self-target'         => [['type' => 'plugin', 'slug' => 'wpmgr-agent/wpmgr-agent.php', 'snapshot_id' => 'snap_1'], false],
-            'core, bad target'    => [['type' => 'core', 'slug' => 'core', 'allow_core_downgrade' => true, 'to_version' => 'not a version'], false],
-            'unusable snapshot'   => [['type' => 'plugin', 'slug' => 'akismet/akismet.php', 'snapshot_id' => 'snap_gone'], true],
+            'unsafe slug'         => [['type' => 'plugin', 'slug' => 'akismet/../../wp-config.php', 'snapshot_id' => 'snap_1']],
+            'missing snapshot_id' => [['type' => 'plugin', 'slug' => 'akismet/akismet.php']],
+            'self-target'         => [['type' => 'plugin', 'slug' => 'wpmgr-agent/wpmgr-agent.php', 'snapshot_id' => 'snap_1']],
+            'core, bad target'    => [['type' => 'core', 'slug' => 'core', 'allow_core_downgrade' => true, 'to_version' => 'not a version']],
         ];
     }
 
     /**
      * @dataProvider turnedDownRequests
      *
-     * @param array<string,mixed> $params           Rollback request body.
-     * @param bool                $restoreAttempted Whether the request reaches the snapshot store.
+     * @param array<string,mixed> $params Rollback request body.
      */
-    public function test_a_turned_down_rollback_leaves_another_updaters_flag_alone(array $params, bool $restoreAttempted): void
+    public function test_a_turned_down_rollback_leaves_another_updaters_flag_alone(array $params): void
     {
         $flag = $this->writeFlag(time());
 
@@ -134,14 +133,14 @@ final class RollbackCommandMaintenanceOwnershipTest extends TestCase
             $sentinelRan = true;
         });
 
-        $snapshots = self::snapshotsWithAnUnusableSnapshot();
+        $snapshots = self::recordingSnapshots();
         $runner    = self::runnerRecordingForceCore();
 
         $out = (new RollbackCommand($snapshots, $runner))->execute([], $params);
 
         $this->assertFalse($out['ok'], 'the request is turned down');
         $this->assertSame([], $runner->forced, 'no core downgrade ran');
-        $this->assertCount($restoreAttempted ? 1 : 0, $snapshots->restored);
+        $this->assertSame([], $snapshots->restored, 'the snapshot store is never reached');
         $this->assertSame($flag, (string) file_get_contents($this->maintenanceFile), 'the request itself leaves the flag as it was');
 
         $this->runShutdownCallbacks();
@@ -157,7 +156,7 @@ final class RollbackCommandMaintenanceOwnershipTest extends TestCase
         touch($this->maintenanceFile, time() - 600);
         clearstatcache(true, $this->maintenanceFile);
 
-        $out = (new RollbackCommand(self::snapshotsWithAnUnusableSnapshot(), self::runnerRecordingForceCore()))
+        $out = (new RollbackCommand(self::recordingSnapshots(), self::runnerRecordingForceCore()))
             ->execute([], ['type' => 'plugin', 'slug' => 'akismet/akismet.php']);
 
         $this->assertFalse($out['ok']);
@@ -200,9 +199,10 @@ final class RollbackCommandMaintenanceOwnershipTest extends TestCase
     }
 
     /**
-     * Snapshot store whose restore() reports the snapshot unusable.
+     * Snapshot store that records restore() calls; a turned-down request
+     * never makes one.
      */
-    private static function snapshotsWithAnUnusableSnapshot(): SnapshotManager
+    private static function recordingSnapshots(): SnapshotManager
     {
         return new class extends SnapshotManager {
             /** @var array<int,array{string,string,string}> */

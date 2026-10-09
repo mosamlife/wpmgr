@@ -279,14 +279,6 @@ final class UpdateCommand implements CommandInterface
     private bool $maintenanceArmed = false;
 
     /**
-     * The fresh `.maintenance` flag found in place when the backstop was
-     * armed, which belongs to another updater, or null.
-     *
-     * @var array{mtime:int,hash:string}|null
-     */
-    private ?array $foreignMaintenanceFlag = null;
-
-    /**
      * @param SnapshotManager|null $snapshots   Snapshot store (defaults to real one).
      * @param UpdateRunner|null    $runner      Update executor (defaults to real one).
      * @param ManagedCore|null     $managedCore Composer/file-change detector for core
@@ -542,10 +534,11 @@ final class UpdateCommand implements CommandInterface
     /**
      * Arm the maintenance shutdown backstop, once per command.
      *
-     * Called right before an item's snapshot and apply, never earlier, so a
-     * command whose items are all refused or already current never arms it.
-     * Later items reuse the first arm: arming again would record this
-     * command's own flag as another updater's.
+     * Called right before an item's snapshot and apply, never earlier. The
+     * backstop clears any `.maintenance` file it finds when the request ends,
+     * so a command whose items are all refused or already current must not
+     * arm it: the flag it would remove may belong to another update still in
+     * flight. One callback covers every later item of the same command.
      *
      * @return void
      */
@@ -554,8 +547,8 @@ final class UpdateCommand implements CommandInterface
         if ($this->maintenanceArmed) {
             return;
         }
-        $this->maintenanceArmed       = true;
-        $this->foreignMaintenanceFlag = Maintenance::armShutdownGuard();
+        $this->maintenanceArmed = true;
+        Maintenance::armShutdownGuard();
     }
 
     /**
@@ -712,11 +705,8 @@ final class UpdateCommand implements CommandInterface
 
             // GUARANTEE: whatever this item's snapshot/apply work does below —
             // succeed, fail, or throw — a `finally` clears any `.maintenance`
-            // flag this command set before we move on, so a failed item can
-            // never leave the whole site dark for the rest of the batch (or
-            // indefinitely). A fresh flag that was already in place when the
-            // backstop was armed belongs to another updater and is left alone
-            // while it is unchanged (see Maintenance's class doc).
+            // flag before we move on, so a failed item can never leave the
+            // whole site dark for the rest of the batch (or indefinitely).
             try {
                 $log = '';
 
@@ -1065,7 +1055,7 @@ final class UpdateCommand implements CommandInterface
 
                 return $this->result($type, $slug, $fromVersion, $toVersion, 'failed', $snapshotId, $log);
             } finally {
-                Maintenance::clear(null, $this->foreignMaintenanceFlag);
+                Maintenance::clear();
 
                 // S4 (adversarial review) — every SYNCHRONOUS outcome that
                 // reaches this `finally` (success, a synchronous

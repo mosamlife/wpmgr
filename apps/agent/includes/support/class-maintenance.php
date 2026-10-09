@@ -24,16 +24,6 @@
  *     PRIOR failed run the next time a managed update/rollback starts, without
  *     touching a fresh flag another in-flight process may legitimately own.
  *
- * Ownership: armShutdownGuard() returns the fresh flag it found in place, if
- * any, which belongs to another updater. The shutdown backstop, and a clear()
- * handed that value, leave such a flag alone for as long as its bytes and
- * modification time are unchanged, so a request that never put the site into
- * maintenance mode never takes it out of another updater's. A flag that has
- * been rewritten since is treated as this request's own and cleared. A rewrite
- * with identical bytes in the same second cannot be told apart and is left in
- * place; WordPress stops honouring a flag after ten minutes, and the next
- * managed update or rollback heals it once it is stale.
- *
  * @package WPMgr\Agent\Support
  */
 
@@ -116,24 +106,12 @@ final class Maintenance
      * relies on a WP_Filesystem connection that may be uninitialized or may
      * itself have failed, so it is not trusted on its own.
      *
-     * When $foreign is the value armShutdownGuard() returned and the flag is
-     * still exactly that one, nothing is removed and the upgrader is not
-     * asked to leave maintenance mode: the flag belongs to another updater.
-     *
-     * @param object|null                      $upgrader An upgrader instance exposing
-     *                                                   maintenance_mode(bool), when available.
-     * @param array{mtime:int,hash:string}|null $foreign  The fresh flag found when arming, or null.
+     * @param object|null $upgrader An upgrader instance exposing
+     *                              maintenance_mode(bool), when available.
      * @return void
      */
-    public static function clear(?object $upgrader = null, ?array $foreign = null): void
+    public static function clear(?object $upgrader = null): void
     {
-        if ($foreign !== null && self::isUnchanged($foreign)) {
-            DebugLog::write(
-                'WPMgr Agent: left a fresh .maintenance flag in place; it was set before this request armed and is unchanged.'
-            );
-            return;
-        }
-
         if ($upgrader !== null && method_exists($upgrader, 'maintenance_mode')) {
             try {
                 $upgrader->maintenance_mode(false);
@@ -158,84 +136,13 @@ final class Maintenance
      * and a redundant clear() is a cheap, idempotent no-op when there is
      * nothing left to remove.
      *
-     * Records the fresh flag already in place, if any. The registered callback
-     * leaves that flag alone while it is unchanged (see the class doc), and
-     * the caller passes the returned value to its own clear() for the same
-     * reason. Arm once per request, right before the work that can set the
-     * flag: a later arm would record this request's own flag as another's.
-     *
-     * @return array{mtime:int,hash:string}|null The fresh flag found in place, or null.
+     * @return void
      */
-    public static function armShutdownGuard(): ?array
+    public static function armShutdownGuard(): void
     {
-        $foreign = self::freshFlag();
-        register_shutdown_function(static function () use ($foreign): void {
-            self::clear(null, $foreign);
+        register_shutdown_function(static function (): void {
+            self::clear();
         });
-
-        return $foreign;
-    }
-
-    /**
-     * The flag in place now, when it is younger than STALE_AFTER_SECONDS.
-     *
-     * @return array{mtime:int,hash:string}|null
-     */
-    private static function freshFlag(): ?array
-    {
-        $file = self::path();
-        if ($file === '') {
-            return null;
-        }
-
-        $seen = self::fingerprint($file);
-        if ($seen === null || time() - $seen['mtime'] >= self::STALE_AFTER_SECONDS) {
-            return null;
-        }
-
-        return $seen;
-    }
-
-    /**
-     * Whether the flag in place is still exactly the one recorded.
-     *
-     * @param array{mtime:int,hash:string} $recorded A value freshFlag() returned.
-     * @return bool
-     */
-    private static function isUnchanged(array $recorded): bool
-    {
-        $file = self::path();
-        if ($file === '') {
-            return false;
-        }
-
-        $seen = self::fingerprint($file);
-
-        return $seen !== null
-            && $seen['mtime'] === $recorded['mtime']
-            && hash_equals($recorded['hash'], $seen['hash']);
-    }
-
-    /**
-     * Modification time and content hash of a file, or null when it cannot be read.
-     *
-     * @param string $file Absolute path (already resolved via self::path()).
-     * @return array{mtime:int,hash:string}|null
-     */
-    private static function fingerprint(string $file): ?array
-    {
-        clearstatcache(true, $file);
-        if (!file_exists($file)) {
-            return null;
-        }
-
-        $mtime = @filemtime($file);
-        $hash  = @hash_file('sha256', $file);
-        if ($mtime === false || !is_string($hash)) {
-            return null;
-        }
-
-        return ['mtime' => $mtime, 'hash' => $hash];
     }
 
     /**
