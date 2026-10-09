@@ -91,7 +91,8 @@ const (
 // the same release from scratch, and 1 attempt is the right number.
 //
 // GH #322 (persisting the outcome instead of failing) does not change any of
-// this: MaxAttempts stays 1 for both the periodic AND the manual insert path.
+// this: MaxAttempts stays 1 for the periodic, the manual AND the boot-check
+// insert paths.
 const mirrorMaxAttempts = 1
 
 // MirrorArgs is the River payload for the agent-release mirror. It carries no
@@ -137,7 +138,8 @@ func (MirrorArgs) Kind() string { return "agent_release_mirror" }
 // InsertOpts pins every mirror job to its own queue with a bounded attempt
 // count and the PERIODIC dedupe window. Used for the scheduled tick
 // (PeriodicInsertOpts); the manual check path uses ManualInsertOpts instead,
-// which is deliberately a different (and shorter) unique window, see its doc.
+// which is deliberately a different (and shorter) unique window, and the boot
+// check uses BootInsertOpts, see their docs.
 func (MirrorArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		Queue:       MirrorQueue,
