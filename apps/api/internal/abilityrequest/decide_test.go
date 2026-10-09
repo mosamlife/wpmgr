@@ -382,8 +382,8 @@ func TestDecideModeSourceChangedBetweenCheckAndLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	if res.Outcome != aipolicy.OutcomeAutoBySetting || store.reads != 4 || store.committed != 1 || len(store.approves) != 1 {
-		t.Fatalf("got %+v after %d reads, %d commits and %d approvals; want an approval after a restart",
-			res, store.reads, store.committed, len(store.approves))
+		t.Fatalf("outcome %s after %d reads, %d commits and %d approvals; want an approval after a restart",
+			res.Outcome, store.reads, store.committed, len(store.approves))
 	}
 	if got := store.approves[0].ModeSource; got != "person" {
 		t.Fatalf("approval carries mode source %q, want the source read under the lock (person)", got)
