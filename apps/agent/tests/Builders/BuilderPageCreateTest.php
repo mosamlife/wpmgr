@@ -280,9 +280,9 @@ final class BuilderPageCreateTest extends TestCase
         $approved = $this->precheck($spec, $request, $facts);
         $recheck  = $this->precheck($spec, $request, $facts);
         $this->assertArrayNotHasKey('refusal', $approved, json_encode($approved['refusal'] ?? null));
-        $this->assertSame($golden, $approved['preview']['tree']);
         $this->assertSame($approved['preview_digest'], $recheck['preview_digest'], 'the write builds exactly what was approved');
         $this->assertSame($approved['base_fingerprint'], $recheck['base_fingerprint']);
+        $this->assertSame($golden, $approved['preview']['tree']);
 
         $this->elementorSaves();
         $result = $this->write($spec, $request, $recheck);
