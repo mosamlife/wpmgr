@@ -275,7 +275,7 @@ describe("the page creation of a draft that has had changes since", () => {
     const { newest } = twoEdits();
     renderTab([
       applied("pe-early", { created_at: "2026-10-01T08:00:00Z", decided_at: "2026-10-01T08:05:00Z" }),
-      applied("pe-other", { post_id: 500, page_edit: editFacts({ post: { id: 500, from_the_site: { title: "Other" } } }) }),
+      applied("pe-other", { page_edit: editFacts({ post: { id: 500, from_the_site: { title: "Other" } } }) }),
       {
         ...newest,
         id: "pe-failed",
