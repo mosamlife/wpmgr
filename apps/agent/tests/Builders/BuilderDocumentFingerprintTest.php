@@ -56,10 +56,10 @@ final class BuilderDocumentFingerprintTest extends TestCase
         $raw = file_get_contents(self::FIXTURE);
         $this->assertIsString($raw, 'builder-document-fp.json is missing; regenerate with WPMGR_WRITE_FIXTURES=1');
         $doc = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
-        $this->assertSame(BuilderDocumentFingerprint::DOMAIN, $doc['domain']);
-        $this->assertSame(self::ELEMENTOR_KEYS, $doc['descriptors']['elementor']);
         $this->assertNotEmpty($doc['cases']);
 
+        // The fingerprints first: they must hold on their own, whatever the
+        // labels below say.
         foreach ($doc['cases'] as $case) {
             $rows = [];
             foreach ($case['rows_b64'] as $key => $encoded) {
@@ -75,6 +75,8 @@ final class BuilderDocumentFingerprintTest extends TestCase
                 $case['name']
             );
         }
+        $this->assertSame(BuilderDocumentFingerprint::DOMAIN, $doc['domain']);
+        $this->assertSame(self::ELEMENTOR_KEYS, $doc['descriptors']['elementor']);
     }
 
     public function test_fixture_is_what_the_code_produces(): void
