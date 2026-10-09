@@ -31,6 +31,10 @@ const (
 	sessKeyOAuthState    = "oauth_state"
 	sessKeyOAuthNonce    = "oauth_nonce"
 	sessKeyOAuthVerifier = "oauth_verifier"
+	// sessKeyOAuthReturn is where the person was heading when the OIDC
+	// handshake started, already validated by safeReturnPath. Kept with the
+	// handshake, never sent to the identity provider.
+	sessKeyOAuthReturn = "oauth_return"
 	// sessKeyPendingSocialLink parks an approved-but-unwritten identity link
 	// across the two-factor round trip. See putPendingSocialLink.
 	//
@@ -286,11 +290,17 @@ func (m *SessionManager) Current(ctx context.Context) (userID, activeTenant uuid
 }
 
 // putOAuth stores the transient handshake values for the generic OIDC issuer on
-// the session.
-func (m *SessionManager) putOAuth(ctx context.Context, state, nonce, verifier string) {
+// the session, with the path the sign-in should land on (returnTo, "" for the
+// default page).
+//
+// returnTo is written even when it is empty, so a handshake replaces every
+// value an abandoned earlier one left behind: a sign-in started with no deep
+// link must not land on the one an earlier, unfinished sign-in asked for.
+func (m *SessionManager) putOAuth(ctx context.Context, state, nonce, verifier, returnTo string) {
 	m.scs.Put(ctx, sessKeyOAuthState, state)
 	m.scs.Put(ctx, sessKeyOAuthNonce, nonce)
 	m.scs.Put(ctx, sessKeyOAuthVerifier, verifier)
+	m.scs.Put(ctx, sessKeyOAuthReturn, returnTo)
 	m.clearPendingSocialLink(ctx)
 }
 
@@ -396,9 +406,10 @@ func (m *SessionManager) takePendingSocialLink(ctx context.Context, userID, chal
 }
 
 // takeOAuth reads and clears the transient OIDC handshake values.
-func (m *SessionManager) takeOAuth(ctx context.Context) (state, nonce, verifier string) {
+func (m *SessionManager) takeOAuth(ctx context.Context) (state, nonce, verifier, returnTo string) {
 	state = m.scs.PopString(ctx, sessKeyOAuthState)
 	nonce = m.scs.PopString(ctx, sessKeyOAuthNonce)
 	verifier = m.scs.PopString(ctx, sessKeyOAuthVerifier)
+	returnTo = m.scs.PopString(ctx, sessKeyOAuthReturn)
 	return
 }

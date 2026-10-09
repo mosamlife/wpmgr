@@ -8249,6 +8249,43 @@ export const AbilityRequestSchema = {
       description:
         "The images a wpmgr/page-create request places, in outline order, as\nthe site described them when WPMgr checked the request. Null when\nthe outline has no image, and for every other ability. A card whose\noutline names an image with no entry here cannot be shown in full\nand must not be approvable.\n",
     },
+    page_builder: {
+      allOf: [
+        {
+          $ref: "#/components/schemas/AbilityRequestPageBuilder",
+        },
+      ],
+      nullable: true,
+      description:
+        "The page builder that builds a wpmgr/page-create request's page, as\nthe site's precheck named it. Null for a page in a WordPress\neditor, and for every other ability. A card for a request whose\neditor is a page builder cannot be shown in full without it and\nmust not be approvable.\n",
+    },
+  },
+} as const;
+
+export const AbilityRequestPageBuilderSchema = {
+  type: "object",
+  description:
+    "The page builder of a wpmgr/page-create request. `version` came from\nthe site: render it as plain text.\n",
+  required: ["builder", "format", "version", "layout"],
+  properties: {
+    builder: {
+      type: "string",
+      description: "The page builder, such as `elementor`.",
+    },
+    format: {
+      type: "string",
+      description:
+        "What the builder builds the page from, such as `classic` (Elementor's classic widgets).",
+    },
+    version: {
+      type: "string",
+      description: "The builder's version on the site.",
+    },
+    layout: {
+      type: "string",
+      description:
+        "How the page is laid out, such as `containers` or `sections` (Elementor's two classic layouts).",
+    },
   },
 } as const;
 

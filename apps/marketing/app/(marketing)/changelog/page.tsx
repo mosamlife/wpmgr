@@ -50,6 +50,86 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.183",
+    date: "2026-10-09",
+    summary:
+      "A redirect on a site's address no longer breaks signed commands silently, AI connections gain page layout, page and cache requests you approve, a per-site AI readiness checklist and a Content tab, and loosening an AI control now needs a signed-in person.",
+    items: [
+      {
+        tag: "Added",
+        text: "An AI connected through WPMgr can create a draft page or post from an outline with real layout: headings, paragraphs, lists, quotes, tables, separators and images already in the media library, and in the block editor also buttons, spacing, sections and columns. You approve each request in WPMgr, nothing is published, and undo moves the draft to the trash. Agent 0.61.160; sites get it when the plugin updates. On a self-hosted install, AI page creation, title and excerpt edits and cache clears also need the server started with WPMGR_MCP_WRITE_TOOLS=on; unset or off keeps them off.",
+      },
+      {
+        tag: "Added",
+        text: "An AI connected through WPMgr can read a site's published pages, posts, media, categories and tags through WordPress's own REST API, and with your approval for each request change a page or post title or excerpt, with undo. The dashboard's AI requests list shows the before and after of each change. Agent 0.61.158; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Added",
+        text: "An AI connected through WPMgr can ask to clear one site's page cache. Each request waits for a person to approve it in WPMgr before anything is sent. A site needs agent 0.61.153 or later.",
+      },
+      {
+        tag: "Added",
+        text: "Each site has a Content tab with a read-only inventory of its pages and which editor owns each one, and a superadmin Page editors report counts pages and sites by builder across the install. A site needs agent 0.61.154 or later.",
+      },
+      {
+        tag: "Added",
+        text: "Each site's Content tab has an AI readiness checklist for core WordPress, Elementor and Bricks, with a Check again button, and the Sites list gains an AI column that shows Ready, the number of items to fix, or Not checked.",
+      },
+      {
+        tag: "Added",
+        text: "Opt-in login admission budgets for sign-in. Set WPMGR_AUTH_LOGIN_MODE=enforce to refuse an attempt that is over its budget with 429 too_many_attempts and a Retry-After header. The default, observe, refuses nothing on budget grounds.",
+      },
+      {
+        tag: "Changed",
+        text: "Releasing the organisation's AI pause, removing an item from a forbidden list and rebaselining audit integrity now need a signed-in person. A caller that authenticates with an API key receives 403 with the code session_required for these actions.",
+      },
+      {
+        tag: "Changed",
+        text: "The consent screen lets the person approving choose what a connection may read, with the same presets as the connection wizard. A browser sign-in now starts from Sites alone, and the person approving can tick more.",
+      },
+      {
+        tag: "Changed",
+        text: "The bundled Docker Compose file now publishes the API port to loopback only. Point a reverse proxy on another host at the bundled nginx instead.",
+      },
+      {
+        tag: "Fixed",
+        text: "A redirect on a site's address no longer breaks the dashboard's signed commands silently. A redirect now fails the command at once and names the address it points to, instead of being retried or read as an old agent. The saved address moves to its www or https form automatically, at enrollment and afterwards once a signed ping confirms it, and Add site refuses a spelling of an address you already have.",
+      },
+      {
+        tag: "Fixed",
+        text: "A backup, restore, scan or inventory run now ends at once when the site's agent reports a failure, and shows why. While a backup is being retried after a transient failure, the dashboard shows the last error.",
+      },
+      {
+        tag: "Fixed",
+        text: "A browser that opens the authorization address an AI app advertises now reaches the consent screen, and a normal AI sign-in can offer site tools and cache requests. An AI app connected earlier keeps read access, and the consent screen says how to add the newer permissions.",
+      },
+      {
+        tag: "Fixed",
+        text: "On a self-hosted install, the account that completed first-run setup keeps access to the Email / SMTP settings after a second organisation is created.",
+      },
+      {
+        tag: "Fixed",
+        text: "Upgrades now apply the data steps of several earlier migrations correctly under the database role production installs migrate as. Duplicate in-flight update tasks and duplicate completed backup snapshots no longer abort the boot, existing vulnerability findings do not email the backlog, and daily uptime history that failed to backfill is recovered.",
+      },
+      {
+        tag: "Fixed",
+        text: "The agent detects a keystore that no longer decrypts and says so, in WordPress admin and on the dashboard's Overview and Backups pages, and refuses a backup with a clear explanation instead of failing later. Agent 0.61.152; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Security",
+        text: "The token endpoint no longer issues a token for a connection that has been revoked or has expired, or whose organisation's AI is paused. The two-factor screen follows its redirect only to a path on the dashboard's own address.",
+      },
+      {
+        tag: "Security",
+        text: "Operator context restrictions now reach an AI as quoted values the operator supplied, and every line of operator guidance carries the operator prefix. The 2048-byte limit counts the rendered form, so an organisation near the limit may need to shorten its context on the next save.",
+      },
+      {
+        tag: "Security",
+        text: "The API and media-encoder images are built with Go 1.26.9 and updated golang.org/x/net, golang.org/x/text and gRPC. The marketing site's Next.js dependency is upgraded from 16.3.4 to 16.3.8, the patched release for GHSA-vcvr-r3jv-pc5j. Anyone self-hosting the marketing site should update.",
+      },
+    ],
+  },
+  {
     version: "0.61.164",
     date: "2026-09-28",
     summary:
