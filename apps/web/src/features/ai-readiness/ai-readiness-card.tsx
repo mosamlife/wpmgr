@@ -161,7 +161,23 @@ export function AiReadinessCard({ siteId, canOperate }: AiReadinessCardProps) {
   const headingId = useId();
   const now = useNow(60_000);
 
-  if (query.isPending) {
+  // The error state is for a card with nothing to show. A checklist already in
+  // hand stays on screen when a later refetch fails (a poll, a retry), the way
+  // the Sites list keeps the rollup it has.
+  const data = query.data;
+  if (data === undefined) {
+    if (query.isError) {
+      const notFound = query.error instanceof AiReadinessLoadError && query.error.status === 404;
+      return (
+        <PageError
+          what={LOAD_ERROR_WHAT}
+          why={notFound ? LOAD_ERROR_NOT_FOUND : query.error.message}
+          onRetry={() => void query.refetch()}
+          retryLabel="Retry"
+          isRetrying={query.isFetching}
+        />
+      );
+    }
     return (
       <div role="status" aria-label="Loading AI readiness" className="space-y-2">
         <Skeleton className="h-14 w-full" />
@@ -170,20 +186,6 @@ export function AiReadinessCard({ siteId, canOperate }: AiReadinessCardProps) {
     );
   }
 
-  if (query.isError) {
-    const notFound = query.error instanceof AiReadinessLoadError && query.error.status === 404;
-    return (
-      <PageError
-        what={LOAD_ERROR_WHAT}
-        why={notFound ? LOAD_ERROR_NOT_FOUND : query.error.message}
-        onRetry={() => void query.refetch()}
-        retryLabel="Retry"
-        isRetrying={query.isFetching}
-      />
-    );
-  }
-
-  const data = query.data;
   const ctx: CopyContext = { floors: data.floors, canOperate };
   const status = statusLine(data.status, data.fix_count);
   const StatusIcon = STATUS_ICON[status.tone];
