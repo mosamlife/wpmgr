@@ -6779,10 +6779,10 @@ export const listAbilityRequests = <ThrowOnError extends boolean = false>(
 /**
  * List AI site-change requests for one site
  *
- * Requests an AI connection made through `site_ability_run` for a
- * reviewed write ability (today `wpmgr/page-create`), newest first.
- * Requires `site.content.edit` and access to the site. `presented_digest`
- * is returned only to a signed-in person.
+ * Requests an AI connection made through `site_ability_run` to change
+ * this site, each through a reviewed write ability and in any state,
+ * newest first. Requires `site.content.edit` and access to the site.
+ * `presented_digest` is returned only to a signed-in person.
  *
  */
 export const listSiteAbilityRequests = <ThrowOnError extends boolean = false>(
