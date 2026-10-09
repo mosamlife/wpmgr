@@ -389,6 +389,23 @@ func New(deps Deps) *Server {
 		middleware.Logger(deps.Logger),
 		middleware.Recovery(deps.Logger),
 	)
+	// #847 — a browser that opens the advertised authorization_endpoint is
+	// sent on to the consent screen, which then fetches the same path as JSON
+	// through the gate chain on v1 below. See mcp.AuthorizeNavigationRedirect.
+	//
+	// IT MUST STAY HERE: on the root engine, after the logging and recovery
+	// block so the redirect is logged and traced, and BEFORE sessionAuthGroup
+	// is created. Gin copies a parent's handlers into a group when the group
+	// is created, so this line moved below sessionAuthGroup (or onto v1) is
+	// silently disabled for a signed-out browser, which RequireAuth refuses
+	// first. It also runs before the session is loaded, so the redirect costs
+	// no session read and sets no cookie.
+	// TestNew_AuthorizeNavigationOpensTheConsentScreen fails if it moves.
+	//
+	// Mounted from the same Deps field as the authorize route it serves.
+	if deps.MCPOAuthH != nil {
+		engine.Use(mcp.AuthorizeNavigationRedirect())
+	}
 	// sessionAuthGroup is a zero-prefix group that carries Sessions.LoadAndSave()
 	// and Auth.Authenticate(). All routes that need a session or principal
 	// (auth endpoints, /api/v1, /agent/v1) register through this group or through
