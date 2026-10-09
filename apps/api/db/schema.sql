@@ -9649,10 +9649,11 @@ WHERE NOT EXISTS (
     SELECT 1 FROM ability_catalogue c WHERE c.name = v.name
 );
 
--- m157: wpmgr/page-create, the first admitted write. description, usage and
--- limits are as m166 leaves them (layout outlines, drafts built in Elementor,
--- limits.builders_enabled); m162 and m166 each clear the entry hash, which
--- the boot stamp fills.
+-- m157: wpmgr/page-create, the first admitted write. description and limits
+-- are as m166 leaves them (layout outlines, drafts built in Elementor,
+-- limits.builders_enabled), and usage as m176 leaves it (the Elementor
+-- versions and outline values WPMgr builds); m162, m166 and m176 each clear
+-- the entry hash, which the boot stamp fills.
 INSERT INTO ability_catalogue (
     name, source, class, status, enabled, approval_mode,
     snapshot, effect_copy, operator_permission, min_agent_version,
@@ -9677,10 +9678,10 @@ SELECT 'wpmgr/page-create', 'wpmgr', 'write', 'admitted', true, 'per_call',
        'draft in Elementor from the same outline. The draft is built with Elementor''s classic widgets: leave ' ||
        'elementor_format out or send classic; site_default, the default, builds classic widgets too. Atomic is not ' ||
        'available yet: elementor_format atomic is always refused, whatever the site runs. In Elementor, buttons ' ||
-       'cannot use the outline style, a ' ||
-       'paragraph cannot be only a web address, and an image''s alt text must be exactly the alt text it has in the ' ||
-       'media library. Elementor pages need the WPMgr plugin 0.61.161 or later and Elementor 3.20 or later on the ' ||
-       'site.',
+       'cannot use the outline style, a button link cannot contain &, a paragraph cannot be only a web address, ' ||
+       'an image''s align can only be none or center, and an image''s alt text must be exactly the alt text it has ' ||
+       'in the media library. Elementor pages need the WPMgr plugin 0.61.161 or later and Elementor 3.20 to 4.3 on ' ||
+       'the site; a later Elementor is refused until WPMgr verifies it.',
        ('{"max_top_level_nodes":200,"max_nodes":400,"max_columns":4,"max_children":50,"max_images":20,' ||
         '"max_buttons":12,"max_tables":10,"max_table_rows":50,"max_table_columns":6,"max_title_chars":200,' ||
         '"max_text_chars":5000,"max_total_chars":60000,"max_input_bytes":65536,"builders_enabled":["elementor"]}')::jsonb
