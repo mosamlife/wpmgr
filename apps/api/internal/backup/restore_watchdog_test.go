@@ -4,8 +4,9 @@ package backup
 // running restore runs that stopped reporting, so they stop blocking
 // snapshot and organisation deletion. These are the fake-store halves: the
 // threshold's default and floor, what one pass asks the store to do, and a
-// restore job whose run already finished. The SQL guards are proved against
-// Postgres in tests/restore_stall_watchdog_integration_test.go.
+// restore job whose run already finished or cannot be read. The SQL guards
+// are proved against Postgres in
+// tests/restore_stall_watchdog_integration_test.go.
 
 import (
 	"context"
@@ -206,5 +207,52 @@ func TestRestoreWorker_FinishedRunIsNotDispatched(t *testing.T) {
 				t.Fatalf("restores sent = %d, want 0 for a %s run", cmd.restores, tc.status)
 			}
 		})
+	}
+}
+
+// unreadableRunStore is fakeRestoreRunStore with a GetRestoreRun that fails,
+// as it does while the database is briefly unavailable.
+type unreadableRunStore struct {
+	*fakeRestoreRunStore
+	err error
+}
+
+func (s unreadableRunStore) GetRestoreRun(context.Context, uuid.UUID, uuid.UUID) (RestoreRun, error) {
+	return RestoreRun{}, s.err
+}
+
+// TestRestoreWorker_UnreadableRunIsNotDispatched: a restore job that cannot
+// read its run's status sends nothing to the site, because the run may
+// already be finished and its snapshot no longer protected from deletion.
+// The run is marked failed with the control plane's wording, and the job is
+// cancelled with the read error recorded on it.
+func TestRestoreWorker_UnreadableRunIsNotDispatched(t *testing.T) {
+	_, runStore, tenantID, snapshotID, svc := newRestoreWorkerFixture(t)
+	runID := uuid.New()
+	readErr := errors.New("read restore run: conn closed")
+	svc.SetRestoreRunStore(unreadableRunStore{fakeRestoreRunStore: runStore, err: readErr})
+	cmd := &countingRestoreCommander{}
+
+	err := NewRestoreWorker(svc, cmd, nil, nil, "https://cp.example.com", 0).Work(context.Background(), restoreJobForRun(tenantID, snapshotID, runID, 1, 1))
+	if cmd.restores != 0 {
+		t.Fatalf("restores sent = %d, want 0 when the run's status cannot be read", cmd.restores)
+	}
+	assertJobCancel(t, err)
+	if !errors.Is(err, readErr) {
+		t.Errorf("Work = %v, want the read error recorded on the cancelled job", err)
+	}
+	// The worker marks the run running before it reads it, then finishes it.
+	if n := len(runStore.statusCalls); n != 2 {
+		t.Fatalf("restore run status calls = %+v, want running then failed", runStore.statusCalls)
+	}
+	last := runStore.statusCalls[1]
+	if last.RunID != runID || last.TenantID != tenantID {
+		t.Errorf("final status call targets run %s tenant %s, want run %s tenant %s", last.RunID, last.TenantID, runID, tenantID)
+	}
+	if last.Status != RestoreStatusFailed || !last.SetFinished || last.SetStarted {
+		t.Errorf("final status call = %+v, want failed with finished_at set and started_at untouched", last)
+	}
+	if last.Error != restorePlanFailedMessage {
+		t.Errorf("restore run error = %q, want %q", last.Error, restorePlanFailedMessage)
 	}
 }

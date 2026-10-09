@@ -645,8 +645,8 @@ const restoreMaxAttempts = 1
 const restoreInterruptedMessage = "The restore was interrupted before it finished and was not retried. Start it again from the backup."
 
 // restorePlanFailedMessage is the error a restore run records when the control
-// plane cannot build its plan. The underlying error goes to the log, not to
-// the run.
+// plane cannot prepare it: its plan cannot be built, or its status cannot be
+// read before dispatch. The underlying error goes to the log, not to the run.
 const restorePlanFailedMessage = "WPMgr could not prepare this restore."
 
 // InsertOpts sets the attempt limit on every backup_restore job, whichever
@@ -731,8 +731,9 @@ func (w *RestoreWorker) Timeout(*river.Job[RestoreArgs]) time.Duration { return 
 // A restore runs at most once. A failed restore is not retried automatically;
 // the operator retries it, which creates a new run. Every error finalises the
 // run as failed on the attempt that hit it, and the job ends there: an agent
-// failure or refusal returns nil, and a dispatch or planning error cancels
-// the job (river.JobCancel) with the error recorded on it.
+// failure or refusal returns nil, and a dispatch or planning error, or a run
+// whose status cannot be read, cancels the job (river.JobCancel) with the
+// error recorded on it.
 func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreArgs]) error {
 	a := job.Args
 
@@ -792,9 +793,32 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreArgs]) e
 		// progress watchdog failed while it waited in the queue, is not
 		// dispatched: its snapshot is no longer protected from deletion.
 		// MarkRestoreRunStatus never changes a finished run, so the status
-		// read here is the run's own. A read error keeps the best-effort
-		// behaviour above and the dispatch goes ahead.
-		if run, rerr := w.svc.restoreRuns.GetRestoreRun(ctx, a.TenantID, runID); rerr == nil && restoreRunFinished(run.Status) {
+		// read here is the run's own.
+		run, rerr := w.svc.restoreRuns.GetRestoreRun(ctx, a.TenantID, runID)
+		if rerr != nil {
+			// A run whose status cannot be read may already be finished, so
+			// nothing is sent to the site. The run is marked failed, which
+			// changes it only while it is still queued or running, and the
+			// job is cancelled with the read error recorded on it.
+			w.logger.Warn("restore run status could not be read; not dispatching",
+				slog.String("snapshot_id", a.SnapshotID.String()),
+				slog.String("tenant_id", a.TenantID.String()),
+				slog.String("restore_run_id", runID.String()),
+				slog.Any("error", rerr))
+			if err := w.svc.restoreRuns.MarkRestoreRunStatus(ctx, MarkRestoreRunStatusInput{
+				TenantID:    a.TenantID,
+				RunID:       runID,
+				Status:      RestoreStatusFailed,
+				Error:       restorePlanFailedMessage,
+				SetFinished: true,
+			}); err != nil {
+				w.logger.Warn("restore run could not be marked failed",
+					slog.String("restore_run_id", runID.String()),
+					slog.Any("error", err))
+			}
+			return river.JobCancel(fmt.Errorf("read restore run %s before dispatch: %w", runID, rerr))
+		}
+		if restoreRunFinished(run.Status) {
 			w.logger.Warn("restore run already finished before its job started; not dispatching",
 				slog.String("snapshot_id", a.SnapshotID.String()),
 				slog.String("tenant_id", a.TenantID.String()),
