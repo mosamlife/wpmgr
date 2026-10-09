@@ -1,13 +1,19 @@
--- AI readiness (per-site checklist and fleet column). Two read-only queries
--- over tables that already exist: sites (with its components JSONB) and the
--- m155 ability inventory with its run record. No migration.
+-- AI readiness (per-site checklist and fleet column). Read-only queries over
+-- tables that already exist: sites (with its components JSONB) and the m155
+-- ability inventory with its run record. No migration.
 --
--- WHO CALLS THEM, AND IN WHAT TRANSACTION. Both run inside the request's
--- tenant transaction opened by db.Pool.RunTenantTx, as wpmgr_app, so the
--- tenant and site-scope policies on all three tables apply: a site-scoped
--- collaborator sees only the sites in app.allowed_site_ids, in both queries.
--- One SQL text serves the per-site card (site_id set) and the fleet column
--- (site_id NULL), so the two views cannot disagree about a site.
+-- ListAIReadinessSiteFactsWithAbilityCounts returns, in one statement, what
+-- ListAIReadinessSiteFacts and CountAIReadinessAbilityOwners return as two.
+-- One statement reads one snapshot, so its run-record columns and its counts
+-- always describe the same inventory refresh; the two separate statements
+-- carry no such guarantee under READ COMMITTED.
+--
+-- WHO CALLS THEM, AND IN WHAT TRANSACTION. All of them run inside the
+-- request's tenant transaction opened by db.Pool.RunTenantTx, as wpmgr_app,
+-- so the tenant and site-scope policies on all three tables apply: a
+-- site-scoped collaborator sees only the sites in app.allowed_site_ids, in
+-- every query. One SQL text serves the per-site card (site_id set) and the
+-- fleet column (site_id NULL), so the two views cannot disagree about a site.
 --
 -- THE EXPLICIT TENANT PREDICATE ON sites IS LOAD-BEARING, NOT DECORATION.
 -- sites carries two permissive SELECT policies keyed on app.user_id
@@ -177,3 +183,173 @@ WHERE i.tenant_id = sqlc.arg(tenant_id)::uuid
   AND (sqlc.narg(site_id)::uuid IS NULL OR i.site_id = sqlc.narg(site_id)::uuid)
 GROUP BY i.site_id, i.namespace
 ORDER BY i.site_id, i.namespace;
+
+-- name: ListAIReadinessSiteFactsWithAbilityCounts :many
+-- ListAIReadinessSiteFacts and CountAIReadinessAbilityOwners as ONE
+-- statement: the same sites, the same facts columns computed by the same SQL,
+-- and each site's builder ability counts pivoted onto its row.
+--
+-- ONE STATEMENT, ONE SNAPSHOT. The run-record columns (abilities_checked_at,
+-- abilities_api_present, abilities_truncated) and the four count columns are
+-- read by the same statement, and an inventory refresh writes the run record
+-- and the inventory rows in one transaction, so a row reflects all of a
+-- refresh or none of it.
+--
+-- FILTERS AND RLS ARE THOSE OF THE TWO SEPARATE QUERIES. The sites
+-- predicates are ListAIReadinessSiteFacts's, verbatim, including the
+-- load-bearing explicit tenant predicate; the inventory predicates are
+-- CountAIReadinessAbilityOwners's, verbatim. All three tables are read in the
+-- caller's tenant transaction, so the tenant and site-scope policies apply to
+-- each exactly as they do in the two queries. Counts for a site the sites
+-- predicates drop (archived, never enrolled, another tenant, out of scope) are
+-- never returned.
+--
+-- One row per enrolled, non-archived site of the tenant (or the one site
+-- named by site_id; zero rows when it is archived, never enrolled, in another
+-- tenant or outside the caller's site scope).
+--
+-- Facts columns: exactly ListAIReadinessSiteFacts's. The version and active
+-- columns are NEVER NULL (sqlc types every computed column as non-null, so the
+-- SQL guarantees it, with the same '' convention sites.wp_version uses).
+--   components_updated_at       NULL: the site has never pushed metadata.
+--   content_editing_enabled_at  NULL: AI page creation is off.
+--   elementor_installed         a plugins[] entry whose slug is
+--                               "elementor/<file>" (the directory, exactly;
+--                               "elementor-pro/..." is a different plugin).
+--   elementor_version           that entry's version; '' when not installed
+--                               or the entry carries no version string. When
+--                               the directory holds several entries, an
+--                               active one is preferred, then
+--                               "elementor/elementor.php", then slug order.
+--   elementor_active            some entry in the directory is active; false
+--                               when not installed.
+--   mcp_adapter_active          some plugins[] entry in directory
+--                               "mcp-adapter" is active. Installed but
+--                               inactive is false.
+--   bricks_installed            a themes[] entry whose slug is "bricks". The
+--                               parent theme of an active child theme is not
+--                               in themes[]; that fact is
+--                               builder_facts.theme_template.
+--   bricks_version/_active      from that entry, as for Elementor.
+--   builder_facts               components.builder_facts when it is a JSON
+--                               object, else NULL (nil). NULL means "not
+--                               reported", never "false".
+--   abilities_checked_at,       the site's ability inventory run; all three
+--   abilities_api_present,      NULL when the inventory has never run.
+--   abilities_truncated
+--
+-- Count columns, NEVER NULL: 0 where CountAIReadinessAbilityOwners returns no
+-- row for the (site, namespace). Attribution is that query's rule, unchanged.
+--   elementor_abilities_attributed    its attributed for 'elementor'
+--   elementor_abilities_in_namespace  its in_namespace for 'elementor'
+--   bricks_abilities_attributed       its attributed for 'bricks'
+--   bricks_abilities_in_namespace     its in_namespace for 'bricks'
+-- The *_in_namespace columns are for diagnostics only; nothing may treat them
+-- as attribution.
+SELECT
+    s.id AS site_id,
+    s.wp_version,
+    s.agent_version,
+    s.components_updated_at,
+    s.content_editing_enabled_at,
+    pl.elementor_installed,
+    pl.elementor_version,
+    pl.elementor_active,
+    pl.mcp_adapter_active,
+    th.bricks_installed,
+    th.bricks_version,
+    th.bricks_active,
+    (CASE WHEN jsonb_typeof(s.components -> 'builder_facts') = 'object'
+          THEN s.components -> 'builder_facts'
+     END)::jsonb AS builder_facts,
+    r.checked_at AS abilities_checked_at,
+    r.api_present AS abilities_api_present,
+    r.truncated AS abilities_truncated,
+    coalesce(oc.elementor_attributed, 0)::bigint AS elementor_abilities_attributed,
+    coalesce(oc.elementor_in_namespace, 0)::bigint AS elementor_abilities_in_namespace,
+    coalesce(oc.bricks_attributed, 0)::bigint AS bricks_abilities_attributed,
+    coalesce(oc.bricks_in_namespace, 0)::bigint AS bricks_abilities_in_namespace
+FROM sites s
+CROSS JOIN LATERAL (
+    SELECT
+        (count(*) FILTER (WHERE e.dir = 'elementor') > 0)::boolean AS elementor_installed,
+        coalesce(
+            (array_agg(e.version
+                 ORDER BY e.active DESC NULLS LAST,
+                          (e.slug = 'elementor/elementor.php') DESC,
+                          e.slug)
+                 FILTER (WHERE e.dir = 'elementor'))[1],
+            '')::text AS elementor_version,
+        (count(*) FILTER (WHERE e.dir = 'elementor' AND e.active) > 0)::boolean AS elementor_active,
+        (count(*) FILTER (WHERE e.dir = 'mcp-adapter' AND e.active) > 0)::boolean AS mcp_adapter_active
+    FROM (
+        SELECT
+            split_part(p ->> 'slug', '/', 1) AS dir,
+            p ->> 'slug' AS slug,
+            CASE WHEN jsonb_typeof(p -> 'version') = 'string'
+                 THEN nullif(p ->> 'version', '')
+            END AS version,
+            CASE WHEN jsonb_typeof(p -> 'active') = 'boolean'
+                 THEN (p -> 'active')::boolean
+            END AS active
+        FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof(s.components -> 'plugins') = 'array'
+                 THEN s.components -> 'plugins'
+                 ELSE '[]'::jsonb
+            END
+        ) AS p
+        WHERE starts_with(p ->> 'slug', 'elementor/')
+           OR starts_with(p ->> 'slug', 'mcp-adapter/')
+    ) AS e
+) AS pl
+CROSS JOIN LATERAL (
+    SELECT
+        (count(*) > 0)::boolean AS bricks_installed,
+        coalesce((array_agg(b.version ORDER BY b.active DESC NULLS LAST))[1], '')::text AS bricks_version,
+        (count(*) FILTER (WHERE b.active) > 0)::boolean AS bricks_active
+    FROM (
+        SELECT
+            CASE WHEN jsonb_typeof(t -> 'version') = 'string'
+                 THEN nullif(t ->> 'version', '')
+            END AS version,
+            CASE WHEN jsonb_typeof(t -> 'active') = 'boolean'
+                 THEN (t -> 'active')::boolean
+            END AS active
+        FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof(s.components -> 'themes') = 'array'
+                 THEN s.components -> 'themes'
+                 ELSE '[]'::jsonb
+            END
+        ) AS t
+        WHERE t ->> 'slug' = 'bricks'
+    ) AS b
+) AS th
+LEFT JOIN site_ability_inventory_runs r
+    ON r.site_id = s.id AND r.tenant_id = s.tenant_id
+LEFT JOIN (
+    SELECT
+        i.site_id,
+        count(*) FILTER (
+            WHERE i.namespace = 'elementor'
+              AND i.owner_ok IS NOT FALSE
+              AND i.owner_kind = 'plugin' AND i.owner_dir = 'elementor'
+        ) AS elementor_attributed,
+        count(*) FILTER (WHERE i.namespace = 'elementor') AS elementor_in_namespace,
+        count(*) FILTER (
+            WHERE i.namespace = 'bricks'
+              AND i.owner_ok IS NOT FALSE
+              AND i.owner_kind = 'theme' AND i.owner_dir = 'bricks'
+        ) AS bricks_attributed,
+        count(*) FILTER (WHERE i.namespace = 'bricks') AS bricks_in_namespace
+    FROM site_ability_inventory i
+    WHERE i.tenant_id = sqlc.arg(tenant_id)::uuid
+      AND i.namespace IN ('elementor', 'bricks')
+      AND (sqlc.narg(site_id)::uuid IS NULL OR i.site_id = sqlc.narg(site_id)::uuid)
+    GROUP BY i.site_id
+) AS oc
+    ON oc.site_id = s.id
+WHERE s.tenant_id = sqlc.arg(tenant_id)::uuid
+  AND s.connection_state <> 'archived'
+  AND s.enrolled_at IS NOT NULL
+  AND (sqlc.narg(site_id)::uuid IS NULL OR s.id = sqlc.narg(site_id)::uuid)
+ORDER BY s.id;
