@@ -62,14 +62,17 @@ describe("CachePurgeCapabilityBox", () => {
   // offer to this app is disabled and shown clear, so what the box shows ticked
   // is what the approval sends. A tick the host still holds for it is not shown.
   describe("when the server did not offer the cache clear to this app", () => {
-    it("is disabled and clear, with the plain note, even if the host still holds a tick", () => {
+    it("is disabled and clear, with a note that says what is true, even if the host still holds a tick", () => {
       render(<CachePurgeCapabilityBox checked={true} onChange={() => {}} offered={false} />);
       const box = screen.getByRole("checkbox");
       expect(box).toBeDisabled();
       expect(box).not.toBeChecked();
-      expect(screen.getByTestId("cache-purge-not-offered")).toHaveTextContent(
-        "Not requested by this app",
-      );
+      // The box only appears when the app did ask for the cache clear, so the
+      // old wording "Not requested by this app" was untrue wherever it showed.
+      // What did not happen is that WPMgr offered it.
+      const note = screen.getByTestId("cache-purge-not-offered");
+      expect(note).toHaveTextContent("WPMgr did not offer cache clearing for this connection.");
+      expect(note).not.toHaveTextContent(/requested/i);
     });
 
     it("reports nothing when it is clicked the way a browser delivers a click", () => {

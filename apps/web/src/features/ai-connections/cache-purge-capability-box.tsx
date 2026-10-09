@@ -92,7 +92,7 @@ export function CachePurgeCapabilityBox({
               data-testid="cache-purge-not-offered"
               className="mt-1 block text-xs font-medium text-[var(--color-muted-foreground)]"
             >
-              Not requested by this app
+              WPMgr did not offer cache clearing for this connection.
             </span>
           ) : null}
           <button

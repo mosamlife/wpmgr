@@ -627,7 +627,7 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
     expect(box.disabled).toBe(true);
     expect(box.checked).toBe(false);
     expect(screen.getByTestId("cache-purge-not-offered")).toHaveTextContent(
-      "Not requested by this app",
+      "WPMgr did not offer cache clearing for this connection.",
     );
     // Nothing that asks will be carried, so the screen says read-only.
     expect(screen.getByTestId("consent-cannot-change")).toHaveTextContent(
