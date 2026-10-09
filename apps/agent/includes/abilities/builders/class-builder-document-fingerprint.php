@@ -129,7 +129,7 @@ final class BuilderDocumentFingerprint
         $rows = [];
         if ($keys !== []) {
             $in    = implode(', ', array_fill(0, count($keys), '%s'));
-            $found = $wpdb->get_results($wpdb->prepare('SELECT meta_key, meta_value FROM %i WHERE post_id = %d AND meta_key IN (' . $in . ') ORDER BY meta_id ASC', array_merge([$wpdb->postmeta, $postId], $keys)), ARRAY_A); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- the stored bytes of each row, never the meta cache; table via %i, one %s placeholder per key
+            $found = $wpdb->get_results($wpdb->prepare('SELECT meta_key, meta_value FROM %i WHERE post_id = %d AND meta_key IN (' . $in . ') ORDER BY meta_id ASC', array_merge([$wpdb->postmeta, $postId], $keys)), ARRAY_A); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber -- the stored bytes of each row, never the meta cache; table via %i, $in is one %s placeholder per key and every value goes through prepare() in the one replacements array
             self::assertQueryOk($wpdb);
             if (!is_array($found)) {
                 throw new \RuntimeException('database read failed');
