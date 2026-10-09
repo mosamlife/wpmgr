@@ -175,7 +175,7 @@ function AiRequestsPage() {
           )}
         </div>
       )}
-      <OrgAbilityRequests currentUserId={me?.user.id ?? null} />
+      <OrgAbilityRequests currentUserId={me?.user?.id ?? null} />
     </div>
   );
 }

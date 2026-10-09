@@ -69,7 +69,7 @@ function AiEditingSwitch({ siteId, canOperate }: { siteId: string; canOperate: b
   }
 
   if (state.data.enabled) {
-    return <SiteAiModeSetting siteId={siteId} canOperate={canOperate} currentUserId={me?.user.id ?? null} />;
+    return <SiteAiModeSetting siteId={siteId} canOperate={canOperate} currentUserId={me?.user?.id ?? null} />;
   }
   return (
     <div className="space-y-2 rounded-lg border border-border bg-card p-4">
@@ -157,7 +157,7 @@ function AbilityRequestList({ siteId, siteUrl }: { siteId: string; siteUrl?: str
               key={r.id}
               request={r}
               siteUrl={siteUrl}
-              currentUserId={me?.user.id ?? null}
+              currentUserId={me?.user?.id ?? null}
               notice={actions.notices[r.id] ?? null}
               onApprove={actions.handleApprove}
               onDecline={actions.handleDecline}

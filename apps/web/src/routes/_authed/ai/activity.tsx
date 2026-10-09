@@ -126,7 +126,7 @@ function AiActivityPage() {
 
       <AiActivityList
         filters={{ filter, siteId, grantId }}
-        currentUserId={me?.user.id ?? null}
+        currentUserId={me?.user?.id ?? null}
         refetchInterval={30_000}
       />
     </div>

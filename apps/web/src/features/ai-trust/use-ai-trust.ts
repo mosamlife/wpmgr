@@ -216,7 +216,7 @@ export function useAiActivityPages(
       const status = response?.status;
       if (error) throw toAiTrustError(error, status);
       if (!data) throw new AiTrustError("empty_response", "Empty response", status);
-      return data as AiActivityPage;
+      return data;
     },
     getNextPageParam: (last) => last.next_cursor ?? undefined,
     refetchInterval,
