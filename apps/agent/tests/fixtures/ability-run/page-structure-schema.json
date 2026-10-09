@@ -1,0 +1,1 @@
+{"type":"object","properties":{"post_id":{"type":"integer","minimum":1},"node":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,32}$"},"max_nodes":{"type":"integer","minimum":1,"maximum":500}},"required":["post_id"],"additionalProperties":false}
