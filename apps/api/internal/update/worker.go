@@ -773,7 +773,15 @@ func (w *Worker) runApply(ctx context.Context, task Task, siteURL string, item a
 	if res.Status == agentcmd.ItemFailed {
 		return w.finish(ctx, task, TaskFailed, fromOr(res.FromVersion, task.FromVersion), res.ToVersion, "agent reported update failure", res.Log)
 	}
-	if res.Status == agentcmd.ItemUpToDate || res.Status == agentcmd.ItemSkipped {
+	if res.Status == agentcmd.ItemSkipped {
+		return w.finish(ctx, task, TaskSkipped, fromOr(res.FromVersion, task.FromVersion), res.ToVersion, "already up to date", "")
+	}
+	if res.Status == agentcmd.ItemUpToDate {
+		// GH #415: for WordPress core, up_to_date on an apply is not taken as
+		// proof that nothing changed (see checkCoreReportedNoChange).
+		if item.Type == TargetCore {
+			return w.checkCoreReportedNoChange(ctx, task, siteURL, res)
+		}
 		return w.finish(ctx, task, TaskSkipped, fromOr(res.FromVersion, task.FromVersion), res.ToVersion, "already up to date", "")
 	}
 
@@ -845,6 +853,52 @@ func (w *Worker) runApply(ctx context.Context, task Task, siteURL string, item a
 		}
 		return w.rollback(ctx, task, siteURL, item, res, probe, false, reason)
 	}
+}
+
+// coreNoChangeUnhealthyDetail is the task detail when a core apply the agent
+// reported as up to date is followed by a failed health check. The check's
+// own reason goes to the task's error log.
+const coreNoChangeUnhealthyDetail = "WordPress core reported no change, but the site did not pass the health check that followed. " +
+	"Nothing was rolled back; check the site."
+
+// checkCoreReportedNoChange finishes an apply of WordPress core that the
+// agent answered with up_to_date.
+//
+// For core, that answer is not taken as proof that nothing changed on the
+// site, so the post-update checks runApply uses run here too: the signed
+// agent check, then the public homepage probe, each with its retry ladder. A
+// site that fails either is recorded TaskFailed. No rollback is sent: by the
+// agent's own account there is nothing to roll back to, and a core rollback
+// is a forced downgrade. A site that passes, or whose result is inconclusive,
+// keeps the plain "already up to date".
+//
+// Plugin and theme results never come through here; their up_to_date stays a
+// plain skip.
+func (w *Worker) checkCoreReportedNoChange(ctx context.Context, task Task, siteURL string, res agentcmd.ItemResult) error {
+	from := fromOr(res.FromVersion, task.FromVersion)
+	if reason := w.postUpdateCheckFailure(ctx, task.SiteID, siteURL); reason != "" {
+		return w.finish(ctx, task, TaskFailed, from, res.ToVersion, coreNoChangeUnhealthyDetail, reason)
+	}
+	return w.finish(ctx, task, TaskSkipped, from, res.ToVersion, "already up to date", "")
+}
+
+// postUpdateCheckFailure runs the post-update checks (the signed agent check,
+// then the public homepage probe) and returns why the site failed them, or ""
+// when it passed or the result was inconclusive. It decides pass or fail and
+// nothing else; runApply's own tail keeps its per-verdict handling.
+func (w *Worker) postUpdateCheckFailure(ctx context.Context, siteID uuid.UUID, siteURL string) string {
+	verdict, verifyDetail, agentAttempts := w.verifyAgentHealthWithRetry(ctx, siteID, siteURL)
+	if verdict == agentHealthUnhealthy {
+		return fmt.Sprintf("post-update agent reachability check failed after %d attempt(s): %s", agentAttempts, verifyDetail)
+	}
+	probe, perr, attempts := w.probeHealthWithRetry(ctx, siteURL)
+	if perr != nil {
+		return fmt.Sprintf("post-update probe error after %d attempt(s): %v", attempts, perr)
+	}
+	if classifyPostUpdateProbe(probe) == postUpdateUnhealthy {
+		return fmt.Sprintf("post-update health failed after %d attempt(s): status=%d %s", attempts, probe.StatusCode, probe.Detail)
+	}
+	return ""
 }
 
 // agentVerifyTimeout bounds ONE attempt of the agent-first post-update
