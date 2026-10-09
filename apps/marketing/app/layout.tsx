@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import { MotionConfig } from "motion/react";
 import "@/styles/globals.css";
 import {
@@ -13,16 +13,31 @@ import { PostHogPageViews } from "@/components/analytics/posthog-provider";
 import { TrackSignupClicks } from "@/components/analytics/track-signup-clicks";
 import { GA_MEASUREMENT_ID, GSC_VERIFICATION, analyticsEnabled } from "@/lib/analytics";
 
-const ibmPlexSans = IBM_Plex_Sans({
-  weight: ["400", "500", "600", "700"],
-  subsets: ["latin"],
+// IBM Plex is self-hosted, so a build never needs a network fetch. Fetching it
+// from Google Fonts at build time made the build fail whenever that fetch did,
+// on pull requests that had nothing to do with this site.
+//
+// The files in ./fonts are the latin subset of each weight, the same files the
+// build used to download, under the SIL Open Font License 1.1 (./fonts/OFL.txt).
+// Plex Sans is a single variable file that all four weights share, which is why
+// four entries point at one path. The CSS variable names and display strategy
+// are unchanged.
+const ibmPlexSans = localFont({
+  src: [
+    { path: "./fonts/ibm-plex-sans-latin.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/ibm-plex-sans-latin.woff2", weight: "500", style: "normal" },
+    { path: "./fonts/ibm-plex-sans-latin.woff2", weight: "600", style: "normal" },
+    { path: "./fonts/ibm-plex-sans-latin.woff2", weight: "700", style: "normal" },
+  ],
   display: "swap",
   variable: "--font-ibm-plex-sans",
 });
 
-const ibmPlexMono = IBM_Plex_Mono({
-  weight: ["400", "500"],
-  subsets: ["latin"],
+const ibmPlexMono = localFont({
+  src: [
+    { path: "./fonts/ibm-plex-mono-latin-400.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/ibm-plex-mono-latin-500.woff2", weight: "500", style: "normal" },
+  ],
   display: "swap",
   variable: "--font-ibm-plex-mono",
 });
