@@ -683,7 +683,7 @@ private_path() { # private_path <dir> <tool...>   <dir> is a PATH of its own: a 
   for t in "$@"; do
     p="$(command -v "$t" 2>/dev/null || true)"
     case "$p" in
-      /*) ln -s "$p" "$d/$t" ;;
+      /*) ln -s "$p" "$d/$t" || bad "setup: cannot link $t ($p) into $d" ;;
       *) bad "setup: $t is not on this host's PATH (command -v said: '$p'), so it cannot be put in $d" ;;
     esac
   done
