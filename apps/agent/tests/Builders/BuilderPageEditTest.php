@@ -426,6 +426,21 @@ final class BuilderPageEditTest extends TestCase
         $this->assertSame(['conflict', 'autosave_pending'], self::codeOf($this->plan($input)));
     }
 
+    public function test_page_changed_before_the_snapshot_is_conflict(): void
+    {
+        $input = $this->input(self::ops());
+        $this->wpdb->beforeSnapshotRead = function (): void {
+            $this->rows->update($this->rows->posts, ['post_title' => 'Saved by a person'], ['ID' => self::TARGET]);
+        };
+        $before = $this->rows->metaRowsOf(self::TARGET);
+        $r      = $this->approvedWrite($input);
+        $this->assertSame(['conflict', 'changed_since_read'], [$r['code'] ?? null, $r['detail'] ?? null], (string) json_encode($r));
+        $this->assertSame([], $this->api->documents[self::TARGET]->saves, 'Elementor was never asked to save');
+        $this->assertSame($before, $this->rows->metaRowsOf(self::TARGET));
+        $this->assertSame('Saved by a person', $this->rows->postRow(self::TARGET)['post_title'], 'the person\'s save stands');
+        $this->assertSame('failed', AbilityLedger::get(self::EDIT)['phase'] ?? null);
+    }
+
     public function test_ineligible_target_single_code(): void
     {
         $input = $this->input(self::ops());

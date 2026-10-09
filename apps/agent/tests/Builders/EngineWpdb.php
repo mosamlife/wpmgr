@@ -23,6 +23,13 @@ final class EngineWpdb
     public array $claims = [];
 
     /**
+     * @var (\Closure(): void)|null Runs once, just before the snapshot's
+     *      first read: a write by someone else landing between the checks
+     *      and the snapshot.
+     */
+    public ?\Closure $beforeSnapshotRead = null;
+
+    /**
      * @param FakeBuilderWpdb $rows Posts, postmeta and options rows.
      */
     public function __construct(public readonly FakeBuilderWpdb $rows)
@@ -75,6 +82,11 @@ final class EngineWpdb
         }
         if (str_starts_with($sql, 'SELECT 1 FROM wp_wpmgr_')) {
             return null;
+        }
+        if ($this->beforeSnapshotRead !== null && str_starts_with($sql, 'SELECT COALESCE(SUM(LENGTH(meta_value)), 0)')) {
+            $run                      = $this->beforeSnapshotRead;
+            $this->beforeSnapshotRead = null;
+            $run();
         }
 
         return $this->rows->get_var($prepared);
