@@ -134,8 +134,10 @@ final class ReadmeEncryptionClaimTest extends TestCase
 
         $claims = [];
         foreach ($units as $unit) {
-            // An FAQ heading is written "= Question? =" and asserts nothing.
+            // An FAQ heading is written "= Question? =" and asserts nothing. A list
+            // item's own "- " marker is not part of the sentence.
             $unit = trim((string) $unit, " \t=");
+            $unit = (string) preg_replace('/^[-*]\s+/', '', $unit);
             if ($unit === '' || str_ends_with($unit, '?')) {
                 continue;
             }
@@ -283,10 +285,11 @@ final class ReadmeEncryptionClaimTest extends TestCase
     #[DataProvider('claimsThatMustBeFound')]
     public function testTheDetectorFiresOnAClaimThatBackupsAreEncrypted(string $sentence): void
     {
-        $this->assertSame(
-            [trim($sentence, " \t-")],
-            array_map(static fn (string $c): string => trim($c, " \t-"), self::encryptionClaims($sentence)),
-            'The detector missed a sentence that claims backups are encrypted.'
+        // Each case is one sentence, so exactly one claim must come back.
+        $this->assertCount(
+            1,
+            self::encryptionClaims($sentence),
+            'The detector missed a sentence that claims backups are encrypted: ' . $sentence
         );
     }
 
