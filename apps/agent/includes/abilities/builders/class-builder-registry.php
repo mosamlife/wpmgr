@@ -72,6 +72,7 @@ final class BuilderRegistry
      */
     private static function compiled(string $id): ?BuilderAdapter
     {
+        /** @var array<string, class-string<BuilderAdapter>> $compiled */
         $compiled = self::COMPILED;
         $class    = $compiled[$id] ?? null;
 
