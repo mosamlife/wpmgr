@@ -4,9 +4,10 @@ import { CAPABILITY_DESCRIPTIONS, capabilityLabel } from "./capabilities";
 
 // The site-tools box (scope mcp:site), shared by the wizard's capability step
 // and the consent screen so the two cannot describe it differently. Two
-// explicit ticks, both clear by default and in no preset: the read can return
-// page text, and the request only ever creates a request that a person
-// approves in WPMgr.
+// explicit ticks, in no preset: the read can return page text, and the request
+// only ever creates a request that a person approves in WPMgr. The box keeps no
+// ticks of its own; the host passes them in. The wizard opens both clear, and
+// the consent screen opens both ticked when the app asked for site tools.
 
 const ROWS = ["mcp.ability.read", "mcp.ability.request"] as const;
 

@@ -13,10 +13,12 @@ import { cn } from "@/lib/utils";
 import {
   allCapabilityEffectsKnown,
   allScopesRecognised,
+  asksForSiteTools,
   buildApprovalCapabilities,
   CAPABILITY_EFFECT_READ,
   CAPABILITY_EFFECT_REQUEST,
   describeScope,
+  initialSelection,
   offeredReads,
   SCOPE_CACHE,
   SCOPE_READ,
@@ -37,10 +39,7 @@ import {
 import { SiteEnforcementBox } from "./site-enforcement-box";
 import { AbilityCapabilityBox } from "@/features/ai-connections/ability-capability-box";
 import { CachePurgeCapabilityBox } from "@/features/ai-connections/cache-purge-capability-box";
-import {
-  defaultCapabilities,
-  withCapability,
-} from "@/features/ai-connections/capability-presets";
+import { withCapability } from "@/features/ai-connections/capability-presets";
 import { ReadCapabilityPicker } from "@/features/ai-connections/read-capability-picker";
 
 // The consent screen (design Step 7).
@@ -254,7 +253,7 @@ function PermissionsBlock({
   const bulletScopes = consent.scopes.filter(
     (s) => s !== SCOPE_CACHE && s !== SCOPE_SITE && !(showReadPicker && s === SCOPE_READ),
   );
-  const askedForSiteTools = consent.scopes.includes(SCOPE_SITE);
+  const askedForSiteTools = asksForSiteTools(consent.scopes);
   const askedToClearCache = consent.scopes.includes(SCOPE_CACHE);
   const capabilitiesOk = allCapabilityEffectsKnown(consent.conferrableCapabilities);
   const tick = (cap: string) => (next: boolean) => {
@@ -321,7 +320,8 @@ function PermissionsBlock({
         </div>
       )}
 
-      {/* mcp:site: two explicit ticks, both clear by default. */}
+      {/* mcp:site: two explicit ticks. They open ticked, because the app asked
+          for site tools, and either can be cleared before approving. */}
       {askedForSiteTools && (
         <div className="mt-4" data-testid="consent-site-capability">
           <AbilityCapabilityBox
@@ -786,11 +786,17 @@ export function ConsentScreen({
   // approval is built from, so the screen and the request read one value.
   //
   // IT OPENS ON THE WIZARD'S DEFAULT PRESET, from the same function the wizard
-  // opens on, limited to the reads the server offered: Sites alone, and none of
-  // the write boxes. Never every read, and never a read that is not on offer.
-  const [selected, setSelected] = useState<readonly string[]>(() =>
-    defaultCapabilities(offeredReads(consent.conferrableCapabilities)),
-  );
+  // opens on, limited to the reads the server offered: Sites alone. Never every
+  // read, and never a read that is not on offer. When the app asked for site
+  // tools (mcp:site) the two site-tools choices open ticked as well, each only
+  // if the server offers it. The cache-clear box never opens ticked.
+  //
+  // WORKED OUT ONCE, WHEN THIS SCREEN MOUNTS. The route builds this screen only
+  // after the authorize response has arrived, so these ticks come from the
+  // request the person is looking at. A lazy initial state is deliberate: a
+  // later render, even one that brings a refreshed context object, must not put
+  // back a tick the person has cleared.
+  const [selected, setSelected] = useState<readonly string[]>(() => initialSelection(consent));
 
   const scope = useMemo(
     () =>

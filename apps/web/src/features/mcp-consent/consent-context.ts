@@ -1,6 +1,9 @@
 import { z } from "zod";
 
-import { conferrableReadsIn } from "@/features/ai-connections/capability-presets";
+import {
+  conferrableReadsIn,
+  defaultCapabilities,
+} from "@/features/ai-connections/capability-presets";
 
 // The consent screen's data model (ADR-064 S6b, design Step 7).
 //
@@ -418,6 +421,51 @@ export function offeredReads(conferrable: readonly ConferrableCapability[]): rea
   return conferrableReadsIn(
     conferrable.filter((c) => c.effect === CAPABILITY_EFFECT_READ).map((c) => c.name),
   );
+}
+
+/**
+ * True when the app asked for site tools (mcp:site). This one predicate decides
+ * both whether the site-tools box is shown and whether its choices open ticked,
+ * so the box can never appear without the opening ticks that go with it, nor the
+ * other way round.
+ */
+export function asksForSiteTools(scopes: readonly string[]): boolean {
+  return scopes.includes(SCOPE_SITE);
+}
+
+// The two site-tools choices, each with the effect the server must offer it
+// under. A name offered with a different effect is not the capability this
+// screen describes, so it is not ticked and is not sent (the same test
+// buildApprovalCapabilities applies).
+const SITE_TOOLS: readonly (readonly [name: string, effect: string])[] = [
+  ["mcp.ability.read", CAPABILITY_EFFECT_READ],
+  ["mcp.ability.request", CAPABILITY_EFFECT_REQUEST],
+];
+
+/**
+ * What the consent screen opens with ticked.
+ *
+ *   - the reads of the wizard's default preset, limited to the reads the server
+ *     offered (Sites alone), exactly as before;
+ *   - when the app asked for site tools (mcp:site), the two site-tools choices
+ *     as well, each only if the server offers it. Asking for the scope is asking
+ *     for both, and the person can clear either one before approving.
+ *
+ * The cache-clear choice is never in this list, whatever was asked.
+ *
+ * It is a plain function of the context, called once when the screen mounts
+ * (see ConsentScreen), so the ticks come from the context the person is
+ * looking at and a later re-render cannot put back a tick they cleared.
+ */
+export function initialSelection(
+  consent: Pick<ConsentContext, "scopes" | "conferrableCapabilities">,
+): readonly string[] {
+  const reads = defaultCapabilities(offeredReads(consent.conferrableCapabilities));
+  if (!asksForSiteTools(consent.scopes)) return reads;
+  const siteTools = SITE_TOOLS.filter(([name, effect]) =>
+    consent.conferrableCapabilities.some((c) => c.name === name && c.effect === effect),
+  ).map(([name]) => name);
+  return [...reads, ...siteTools];
 }
 
 /**
