@@ -233,12 +233,19 @@ final class BuilderDocumentRestore
      * A changed key that is a derived key or the edit lock is neither guarded
      * nor restored. A key the snapshot does not hold is deleted.
      *
+     * With $resume, an undo of this change already started and may have put
+     * the page back. When every key and column the change wrote already holds
+     * its bytes from before the change, read with the locking reads, nothing
+     * is written; the caches are dropped and the read-back decides, as after
+     * a restore. Otherwise the undo runs as it does without $resume.
+     *
      * @param int                $postId        Post ID; the snapshot must be of this post.
      * @param array<mixed>       $snapshot      What BuilderDocumentSnapshot::decode() returned.
      * @param array<mixed>       $changedKeys   The change's keys: list of {key, before_sha256, after_sha256}.
      * @param array<mixed>       $changedFields The change's posts columns: list of {field, before_sha256, after_sha256}.
      * @param DocumentDescriptor $d             The adapter's descriptor.
      * @param BuilderAdapter     $a             The adapter.
+     * @param bool               $resume        Whether an undo of this change already started.
      * @return array{code:string,detail:string}|null Null when every key and
      *         column is back. CODE_CONFLICT with DETAIL_CHANGED when one no
      *         longer holds what the change left, and CODE_MISMATCH with a DETAIL_
@@ -247,7 +254,7 @@ final class BuilderDocumentRestore
      *         written nothing.
      * @throws \InvalidArgumentException When the snapshot is not one of this post, or a changed key or field is not well formed.
      */
-    public static function scoped(int $postId, array $snapshot, array $changedKeys, array $changedFields, DocumentDescriptor $d, BuilderAdapter $a): ?array
+    public static function scoped(int $postId, array $snapshot, array $changedKeys, array $changedFields, DocumentDescriptor $d, BuilderAdapter $a, bool $resume = false): ?array
     {
         $snap    = self::snapshot($postId, $snapshot);
         $keys    = self::changedKeys($changedKeys);
@@ -277,7 +284,10 @@ final class BuilderDocumentRestore
         $names  = array_column($restore, 'key');
         $failed = self::apply(
             $postId,
-            static function (array $rows, array $post) use ($snap, $restore, $fields, $names, $derived): array {
+            static function (array $rows, array $post) use ($snap, $restore, $fields, $names, $derived, $resume): array {
+                if ($resume && self::holdsBefore($rows, $post, $restore, $fields)) {
+                    return ['delete' => [], 'insert' => [], 'post' => []];
+                }
                 foreach ($restore as $k) {
                     if (!hash_equals($k['after'], self::rowsSha256(self::currentValues($rows, $k['key'])))) {
                         return ['refuse' => self::refusal(self::CODE_CONFLICT, self::DETAIL_CHANGED)];
@@ -319,21 +329,37 @@ final class BuilderDocumentRestore
         } catch (\Throwable $e) {
             $now = null;
         }
-        if ($now === null) {
+        if ($now === null || !self::holdsBefore($now['rows'], $now['post'], $restore, $fields)) {
             return self::refusal(self::CODE_MISMATCH, self::DETAIL_READ_BACK);
-        }
-        foreach ($restore as $k) {
-            if (!hash_equals($k['before'], self::rowsSha256(self::currentValues($now['rows'], $k['key'])))) {
-                return self::refusal(self::CODE_MISMATCH, self::DETAIL_READ_BACK);
-            }
-        }
-        foreach ($fields as $f) {
-            if (!hash_equals($f['before'], hash('sha256', $now['post'][$f['field']]))) {
-                return self::refusal(self::CODE_MISMATCH, self::DETAIL_READ_BACK);
-            }
         }
 
         return null;
+    }
+
+    /**
+     * Whether every restored key and column of a change holds its bytes from
+     * before the change.
+     *
+     * @param list<array{id:int,key:string,value:string|null}> $rows    Stored rows.
+     * @param array<string,string>                             $post    Stored columns.
+     * @param list<array{key:string,before:string,after:string}> $restore The change's keys a restore puts back.
+     * @param list<array{field:string,before:string,after:string}> $fields The change's columns.
+     * @return bool
+     */
+    private static function holdsBefore(array $rows, array $post, array $restore, array $fields): bool
+    {
+        foreach ($restore as $k) {
+            if (!hash_equals($k['before'], self::rowsSha256(self::currentValues($rows, $k['key'])))) {
+                return false;
+            }
+        }
+        foreach ($fields as $f) {
+            if (!hash_equals($f['before'], hash('sha256', $post[$f['field']]))) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

@@ -127,6 +127,9 @@ final class BuilderPageEdit
     /** revert(): the page is not a draft now, or is gone. */
     public const CODE_NOT_DRAFT = 'target_not_draft';
 
+    /** undo_state of an edit whose undo started and may have put the page back. */
+    public const UNDO_RESTORING = 'restoring';
+
     /** Post statuses a revert answers CODE_PUBLISHED for. */
     private const PUBLISHED = ['publish', 'future', 'private'];
 
@@ -412,6 +415,17 @@ final class BuilderPageEdit
      * read back as they were), and the ledger row records the undo and the
      * page's fingerprint after it.
      *
+     * Immediately before the restore the ledger row's undo_state becomes
+     * UNDO_RESTORING; an undo that cannot record that is data_unreadable and
+     * writes nothing. An undo that put the page back but cannot record it is
+     * never answered as done: it is data_unreadable with restored true, and
+     * the row keeps UNDO_RESTORING. The next undo of the edit then finishes
+     * it: when every key and column the edit wrote already holds what it held
+     * before the edit, nothing is written and the undo is recorded; otherwise
+     * the undo runs as above. A refusal that wrote nothing puts undo_state
+     * back to available. The row's undo_state is read again inside the claim
+     * on the post.
+     *
      * @param string                             $requestId    The token-bound request.
      * @param string                             $signedHash   The snapshot hash the signed parameters carry (revertHash()).
      * @param array<string, BuilderAdapter>|null $compiledSeam Tests only: stands in for the compiled set. Production passes none.
@@ -436,7 +450,7 @@ final class BuilderPageEdit
         $keys    = $row['changed_keys'] ?? null;
         $fields  = $row['changed_fields'] ?? null;
         $builder = $row['builder'] ?? null;
-        if (($row['phase'] ?? null) !== 'completed' || ($row['undo_state'] ?? null) !== 'available'
+        if (($row['phase'] ?? null) !== 'completed' || !in_array($row['undo_state'] ?? null, ['available', self::UNDO_RESTORING], true)
             || !is_array($keys) || !is_array($fields) || !is_string($builder)) {
             return self::fail('not_revertible', 'this request has no change that can be undone');
         }
@@ -455,6 +469,14 @@ final class BuilderPageEdit
             return self::fail('target_in_flight', 'another engine call holds this post');
         }
         try {
+            // Inside the claim: the row as the last undo of this edit left it.
+            $state = (AbilityLedger::get($requestId) ?? [])['undo_state'] ?? null;
+            if ($state === 'restored') {
+                return ['ok' => true, 'outcome' => 'already_reverted', 'mode' => 'revert', 'request_id' => $requestId, 'post_id' => $postId, 'restored' => true];
+            }
+            if ($state !== 'available' && $state !== self::UNDO_RESTORING) {
+                return self::fail('not_revertible', 'this request has no change that can be undone');
+            }
             try {
                 $stored = BuilderDocumentFingerprint::read($postId, []);
             } catch (\Throwable $e) {
@@ -475,12 +497,23 @@ final class BuilderPageEdit
                 return self::fail(self::CODE_CONFLICT, $open);
             }
 
+            // Recorded before anything is written, so an undo whose own record
+            // is lost after the page is back is finished by the next undo.
+            $resume = $state === self::UNDO_RESTORING;
+            if (!$resume && !AbilityLedger::update($requestId, ['undo_state' => self::UNDO_RESTORING])) {
+                return self::fail(LayoutOps::CODE_UNREADABLE, 'the undo could not be recorded; nothing was changed', ['post_id' => $postId]);
+            }
             try {
-                $problem = BuilderDocumentRestore::scoped($postId, $snapshot, $keys, $fields, $a->descriptor(), $a);
+                $problem = BuilderDocumentRestore::scoped($postId, $snapshot, $keys, $fields, $a->descriptor(), $a, $resume);
             } catch (\InvalidArgumentException $e) {
-                return self::fail('not_revertible', 'this request has no change that can be undone');
+                $problem = ['code' => 'not_revertible', 'detail' => 'this request has no change that can be undone'];
             }
             if ($problem !== null) {
+                if (!$resume && $problem['detail'] !== BuilderDocumentRestore::DETAIL_READ_BACK) {
+                    // Nothing was written: the undo is open as it was.
+                    AbilityLedger::update($requestId, ['undo_state' => 'available']);
+                }
+
                 return self::fail($problem['code'], $problem['detail'], ['post_id' => $postId]);
             }
 
@@ -489,7 +522,10 @@ final class BuilderPageEdit
             } catch (\Throwable $e) {
                 $restoredFp = null;
             }
-            AbilityLedger::update($requestId, ['undo_state' => 'restored', 'reverted_at' => time(), 'restored_fp' => $restoredFp]);
+            if (!AbilityLedger::update($requestId, ['undo_state' => 'restored', 'reverted_at' => time(), 'restored_fp' => $restoredFp])) {
+                // The row keeps UNDO_RESTORING: the next undo records it.
+                return self::fail(LayoutOps::CODE_UNREADABLE, 'the page was put back, but the undo could not be recorded; undo again to finish it', ['post_id' => $postId, 'restored' => true]);
+            }
 
             return ['ok' => true, 'outcome' => 'reverted', 'mode' => 'revert', 'request_id' => $requestId, 'post_id' => $postId, 'restored' => true];
         } finally {
