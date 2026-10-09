@@ -490,6 +490,7 @@ func TestM174LaunchNoticeClaimIsPerTenantAndReleasable(t *testing.T) {
 				}
 				_, err := tx.Exec(ctx, `
 UPDATE sites SET content_editing_enabled_at = now(), content_editing_enabled_by = $2,
+    content_editing_principal_user_id = 7,
     ai_mode = 'ai_drafts', ai_mode_source = 'launch_default', ai_mode_set_by = $2,
     ai_mode_set_at = now(), ai_mode_version = 1
 WHERE id = $1`, site, user)
