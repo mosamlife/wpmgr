@@ -328,7 +328,7 @@ final class PageEditRouterTest extends TestCase
             }
         }
         $revert = $this->callP($this->p('revert', '{}', null));
-        $this->assertSame('mode_not_available', $revert['code'] ?? null, 'this agent does not undo an edit');
+        $this->assertSame('bad_params', $revert['code'] ?? null, 'an undo needs the signed snapshot hash');
         $read = $this->callP($this->p('read', $input, [self::DRAFT]));
         $this->assertSame('mode_class_mismatch', $read['code'] ?? null);
         $this->assertSame([], $this->api->documents[self::DRAFT]->saves);

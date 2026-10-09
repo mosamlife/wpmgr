@@ -77,6 +77,16 @@ if (!defined('ABSPATH')) {
  * and the revisions its save made, and answers "applied". The stored
  * result carries the snapshot's hash, so a lost reply recovered from the
  * ledger carries it too.
+ *
+ * revert() is a person's undo of one applied edit. The control plane signs
+ * back the snapshot hash the write answered, and the undo runs only when
+ * that hash, the hash on the ledger row and the hash of the snapshot's
+ * stored bytes are one hash (snapshot_tampered otherwise; nothing is
+ * written). The post, and the keys and columns to put back, come only from
+ * the ledger row. Only what the edit wrote goes back, and only while each
+ * of those keys and columns still holds what the edit left, so edits are
+ * undone newest first and a later change to anything else on the page, a
+ * featured image say, is kept.
  */
 final class BuilderPageEdit
 {
@@ -97,6 +107,21 @@ final class BuilderPageEdit
 
     /** The format every adapter edits in. */
     public const FORMAT = 'classic';
+
+    /** The one member of a revert's signed parameters: the snapshot's hash. */
+    public const REVERT_HASH = 'snapshot_sha256';
+
+    /** revert(): the snapshot, its ledger record and the signed hash are not one. */
+    public const CODE_TAMPERED = 'snapshot_tampered';
+
+    /** revert(): the page is published, scheduled or private now. */
+    public const CODE_PUBLISHED = 'refused_published';
+
+    /** revert(): the page is not a draft now, or is gone. */
+    public const CODE_NOT_DRAFT = 'target_not_draft';
+
+    /** Post statuses a revert answers CODE_PUBLISHED for. */
+    private const PUBLISHED = ['publish', 'future', 'private'];
 
     /** Codes a failed save may answer with; anything else is builder_save_refused. */
     private const SAVE_CODES = [
@@ -325,6 +350,143 @@ final class BuilderPageEdit
     }
 
     /**
+     * The snapshot hash a revert's signed parameters carry: p.revert must be
+     * exactly {"snapshot_sha256": <lowercase sha256 hex>}. Null for anything
+     * else.
+     *
+     * @param mixed $revert The decoded p.revert.
+     * @return string|null
+     */
+    public static function revertHash(mixed $revert): ?string
+    {
+        if (!is_object($revert)) {
+            return null;
+        }
+        $members = get_object_vars($revert);
+        $hash    = $members[self::REVERT_HASH] ?? null;
+        if (array_keys($members) !== [self::REVERT_HASH] || !is_string($hash)) {
+            return null;
+        }
+
+        return preg_match('/^[0-9a-f]{64}$/D', $hash) === 1 ? $hash : null;
+    }
+
+    /**
+     * A person's undo of one applied edit. Runs as the principal. The post,
+     * the snapshot and what goes back come from the request's ledger row and
+     * the snapshot stored under the request, never from the call.
+     *
+     * In order, the first that fails refusing, with nothing written:
+     *
+     *   1. the request has a page-edit ledger row (nothing_to_revert,
+     *      ledger_ability_mismatch); an undone edit answers already_reverted;
+     *   2. the edit completed and its undo is open (not_revertible);
+     *   3. the hash on the ledger row, $signedHash and the hash of the
+     *      snapshot's stored bytes are one hash, and those bytes are this
+     *      request's snapshot of the row's post (snapshot_tampered;
+     *      snapshot_unreadable when the database cannot answer);
+     *   4. this agent has the edit's page builder compiled in
+     *      (builder_not_available);
+     *   5. no other engine call holds the post (target_in_flight);
+     *   6. the post is a draft (refused_published when it is published,
+     *      scheduled or private; target_not_draft otherwise, or when it is
+     *      gone);
+     *   7. nobody has the post open or unsaved changes to it (conflict, with
+     *      editor_open or autosave_pending as detail);
+     *   8. every meta key and posts column the edit wrote still holds what the
+     *      edit left (conflict, changed_after_this_change).
+     *
+     * Then those keys and columns, and nothing else, go back to the snapshot
+     * (BuilderDocumentRestore::scoped(); restore_mismatch when they do not
+     * read back as they were), and the ledger row records the undo and the
+     * page's fingerprint after it.
+     *
+     * @param string                             $requestId    The token-bound request.
+     * @param string                             $signedHash   The snapshot hash the signed parameters carry (revertHash()).
+     * @param array<string, BuilderAdapter>|null $compiledSeam Tests only: stands in for the compiled set. Production passes none.
+     * @return array<string, mixed>
+     */
+    public static function revert(string $requestId, string $signedHash, ?array $compiledSeam = null): array
+    {
+        $row = AbilityLedger::get($requestId);
+        if ($row === null) {
+            return self::fail('nothing_to_revert', 'there is no ledger row for this request');
+        }
+        if (($row['ability'] ?? null) !== OwnAbilities::NAME_PAGE_EDIT) {
+            return self::fail('ledger_ability_mismatch', 'the ledger row is for another ability');
+        }
+        $postId = $row['target_post_id'] ?? null;
+        if (!is_int($postId) || $postId < 1) {
+            return self::fail('not_revertible', 'this request has no change that can be undone');
+        }
+        if (($row['undo_state'] ?? null) === 'restored') {
+            return ['ok' => true, 'outcome' => 'already_reverted', 'mode' => 'revert', 'request_id' => $requestId, 'post_id' => $postId, 'restored' => true];
+        }
+        $keys    = $row['changed_keys'] ?? null;
+        $fields  = $row['changed_fields'] ?? null;
+        $builder = $row['builder'] ?? null;
+        if (($row['phase'] ?? null) !== 'completed' || ($row['undo_state'] ?? null) !== 'available'
+            || !is_array($keys) || !is_array($fields) || !is_string($builder)) {
+            return self::fail('not_revertible', 'this request has no change that can be undone');
+        }
+
+        $echoed   = self::echoedSnapshot($requestId, $postId, $row['snapshot_sha256'] ?? null, $signedHash);
+        $snapshot = $echoed['snapshot'] ?? null;
+        if ($snapshot === null) {
+            return $echoed['refusal'] ?? self::fail(self::CODE_TAMPERED, 'the copy of the page kept for this change is not the one recorded for it; nothing was changed');
+        }
+        $a = BuilderRegistry::compiledAdapter($builder, $compiledSeam);
+        if (!$a instanceof ElementorAdapter) {
+            return self::fail(AdapterStatus::CODE, 'not_compiled');
+        }
+
+        if (!AbilityLedger::claimTarget($postId)) {
+            return self::fail('target_in_flight', 'another engine call holds this post');
+        }
+        try {
+            try {
+                $stored = BuilderDocumentFingerprint::read($postId, []);
+            } catch (\Throwable $e) {
+                return self::fail(LayoutOps::CODE_UNREADABLE, 'the page could not be read');
+            }
+            if ($stored === null) {
+                return self::fail(self::CODE_NOT_DRAFT, 'the page no longer exists');
+            }
+            $status = $stored['post']['post_status'];
+            if (in_array($status, self::PUBLISHED, true)) {
+                return self::fail(self::CODE_PUBLISHED, 'this page is published now; change it in WordPress');
+            }
+            if ($status !== 'draft') {
+                return self::fail(self::CODE_NOT_DRAFT, 'the page is no longer a draft');
+            }
+            $open = $a->document()->openProblem($postId);
+            if ($open !== null) {
+                return self::fail(self::CODE_CONFLICT, $open);
+            }
+
+            try {
+                $problem = BuilderDocumentRestore::scoped($postId, $snapshot, $keys, $fields, $a->descriptor(), $a);
+            } catch (\InvalidArgumentException $e) {
+                return self::fail('not_revertible', 'this request has no change that can be undone');
+            }
+            if ($problem !== null) {
+                return self::fail($problem['code'], $problem['detail'], ['post_id' => $postId]);
+            }
+
+            try {
+                $restoredFp = BuilderDocumentFingerprint::ofPost($postId, $a->descriptor()->exactKeys);
+            } catch (\Throwable $e) {
+                $restoredFp = null;
+            }
+            AbilityLedger::update($requestId, ['undo_state' => 'restored', 'reverted_at' => time(), 'restored_fp' => $restoredFp]);
+
+            return ['ok' => true, 'outcome' => 'reverted', 'mode' => 'revert', 'request_id' => $requestId, 'post_id' => $postId, 'restored' => true];
+        } finally {
+            AbilityLedger::releaseTarget($postId);
+        }
+    }
+
+    /**
      * Snapshot, save, verify and record, after the ledger row exists. Any
      * failure after the snapshot puts the page back.
      *
@@ -514,6 +676,42 @@ final class BuilderPageEdit
         }
 
         return ['by_id' => $byId];
+    }
+
+    /**
+     * The request's snapshot for a revert, decoded, when the hash on its
+     * ledger row, the signed hash and the hash of its stored bytes are one
+     * hash and the bytes are this request's snapshot of $postId; otherwise
+     * the refusal.
+     *
+     * @param string $requestId  The request.
+     * @param int    $postId     The post the ledger row names.
+     * @param mixed  $recorded   The ledger row's snapshot_sha256.
+     * @param string $signedHash The hash the signed parameters carry.
+     * @return array{snapshot?: array<string, mixed>, refusal?: array<string, mixed>}
+     */
+    private static function echoedSnapshot(string $requestId, int $postId, mixed $recorded, string $signedHash): array
+    {
+        try {
+            $loaded = BuilderDocumentSnapshot::load($requestId);
+        } catch (\InvalidArgumentException $e) {
+            $loaded = [];
+        }
+        if (($loaded['code'] ?? null) === 'snapshot_unreadable') {
+            return self::refused('snapshot_unreadable', 'the copy of the page kept for this change could not be read; nothing was changed');
+        }
+        $json     = $loaded['json'] ?? null;
+        $computed = $loaded['sha256'] ?? null;
+        $tampered = self::refused(self::CODE_TAMPERED, 'the copy of the page kept for this change is not the one recorded for it; nothing was changed');
+        if (!is_string($recorded) || !is_string($json) || !is_string($computed)) {
+            return $tampered;
+        }
+        if (!hash_equals($recorded, $signedHash) || !hash_equals($signedHash, $computed) || !hash_equals($recorded, $computed)) {
+            return $tampered;
+        }
+        $snapshot = BuilderDocumentSnapshot::decode($json, $requestId, $postId);
+
+        return $snapshot === null ? $tampered : ['snapshot' => $snapshot];
     }
 
     /**

@@ -54,6 +54,8 @@ if (!defined('ABSPATH')) {
  *   allowed_draft_ids  list of at most one post id: the drafts the control
  *               plane names as WPMgr's, for wpmgr/page-structure and
  *               wpmgr/page-edit (optional)
+ *   revert      object, the undo's signed parameters: exactly
+ *               {snapshot_sha256} for wpmgr/page-edit (revert)
  *
  * WPMgr's own wpmgr/* abilities run through their own handlers. Any other
  * ability (a vendor's or core's) runs only in read mode, only on WordPress
@@ -323,8 +325,9 @@ final class AbilityRunCommand implements CommandInterface
     /**
      * wpmgr/page-edit by mode: the input text, the drafts the signed
      * parameters name, then BuilderPageEdit's precheck, or its write under
-     * the request claim after the replay check. Undo of an edit is not
-     * offered by this agent.
+     * the request claim after the replay check. A revert takes no input and
+     * no draft list: only p.revert's snapshot hash, then BuilderPageEdit's
+     * undo.
      *
      * @param string $mode      Mode.
      * @param string $requestId Request id.
@@ -336,7 +339,19 @@ final class AbilityRunCommand implements CommandInterface
     private function pageEdit(string $mode, string $requestId, string $entrySha, object $req, object $entry): array
     {
         if ($mode === 'revert') {
-            return $this->fail('mode_not_available', 'this agent does not undo a page edit');
+            // W3: the post comes from the ledger row, never from the call.
+            $inputText = $req->input ?? '{}';
+            $decoded   = is_string($inputText) ? json_decode($inputText, false, 4) : null;
+            if (!is_object($decoded) || get_object_vars($decoded) !== []) {
+                return $this->fail('bad_input', 'revert takes no input; the post comes from the ledger');
+            }
+            $hash = BuilderPageEdit::revertHash($req->revert ?? null);
+            if ($hash === null) {
+                return $this->fail('bad_params', 'revert must be {"snapshot_sha256": "<lowercase sha256 hex>"}');
+            }
+            $seam = $this->builderSeam === null ? null : ($this->builderSeam)();
+
+            return $this->asPrincipal(static fn (): array => BuilderPageEdit::revert($requestId, $hash, $seam));
         }
         $inputText = $req->input ?? null;
         if (!is_string($inputText) || strlen($inputText) > self::MAX_INPUT_BYTES) {

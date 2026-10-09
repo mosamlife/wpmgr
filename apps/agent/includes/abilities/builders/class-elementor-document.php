@@ -379,6 +379,27 @@ final class ElementorDocument
             return 'post_type';
         }
 
+        $open = $this->openProblem($postId);
+        if ($open !== null) {
+            return $open;
+        }
+
+        return self::treeOf($stored['rows'][self::KEY_DATA] ?? []) === null ? LayoutOps::CODE_UNREADABLE : null;
+    }
+
+    /**
+     * Whether someone has the post open or unsaved changes to it, as a short
+     * token, or null. In order: anyone has an autosave of it, or Elementor's
+     * document reports a newer autosave (TARGET_AUTOSAVE; autosave_unreadable
+     * when Elementor fails to answer); someone other than the current user
+     * holds its edit lock (TARGET_LOCKED; lock_unreadable when that cannot
+     * be checked).
+     *
+     * @param int $postId Target post.
+     * @return string|null
+     */
+    public function openProblem(int $postId): ?string
+    {
         // User id 0 (the int) means an autosave by any user.
         if (wp_get_post_autosave($postId, 0) !== false) {
             return self::TARGET_AUTOSAVE;
@@ -402,11 +423,8 @@ final class ElementorDocument
         if (!function_exists('wp_check_post_lock')) {
             return 'lock_unreadable';
         }
-        if (wp_check_post_lock($postId) !== false) {
-            return self::TARGET_LOCKED;
-        }
 
-        return self::treeOf($stored['rows'][self::KEY_DATA] ?? []) === null ? LayoutOps::CODE_UNREADABLE : null;
+        return wp_check_post_lock($postId) !== false ? self::TARGET_LOCKED : null;
     }
 
     /**
