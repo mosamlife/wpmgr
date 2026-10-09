@@ -755,6 +755,36 @@ jobs:
       - name: Page markup survives core kses
         run: scripts/check-page-kses.sh
 
+  # ---- Elementor trees under Elementor's own save and render ----
+  # The agent builds Elementor element trees with its own classic mapper. This
+  # boots a real WordPress under the Playground CLI (PHP and SQLite compiled to
+  # WebAssembly, no Docker) with each Elementor version pinned by sha256 in
+  # scripts/elementor-roundtrip/pins.txt, saves every golden-fixture and extra
+  # outline with Elementor's Document::save as the agent's service user (no
+  # unfiltered_html), and requires the stored tree to equal the built one and the
+  # rendered page to show the outline's text with no script element and no on*
+  # attribute. It fails on zero cases, a missing tool and a hash mismatch.
+  # The guard's self-test runs first so a guard that fails open cannot pass; it
+  # also fills the cache of downloads the real run then reuses.
+  elementor-roundtrip:
+    name: Elementor round trip (pinned versions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Elementor round trip self-test
+        run: scripts/elementor-roundtrip_test.sh
+
+      - name: Elementor trees survive save and render
+        run: scripts/elementor-roundtrip/run.sh
+
   # ---- PHP agent ----
   php:
     name: PHP (agent)
