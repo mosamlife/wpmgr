@@ -23,6 +23,8 @@ import {
   type ContentEditingState,
 } from "@wpmgr/api";
 
+import { aiReadinessKeys } from "@/features/ai-readiness/use-ai-readiness";
+
 // AI site-change requests (engine slice E2): the per-site queue, approve,
 // decline, undo, and the per-site "AI editing" switch. The routes are all
 // under /api/v1/sites/:siteId/ai (apps/api/internal/abilityrequest/handler.go).
@@ -227,6 +229,11 @@ export function useEnableContentEditing(
     onSuccess: (data) => {
       qc.setQueryData(abilityRequestKeys.editing(siteId), data);
       void qc.invalidateQueries({ queryKey: abilityRequestKeys.editing(siteId) });
+      // The readiness card's "AI page creation" row and the Sites list column
+      // read this same switch. Turning it on moves neither site report time, so
+      // nothing else would refresh them.
+      void qc.invalidateQueries({ queryKey: aiReadinessKeys.site(siteId) });
+      void qc.invalidateQueries({ queryKey: aiReadinessKeys.fleet() });
     },
   });
 }
