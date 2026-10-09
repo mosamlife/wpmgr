@@ -55,10 +55,20 @@ const (
 // s3TestServerFlags follow "server -s3 -s3.config=<file>" on the container's
 // command line. The image's entrypoint turns "server" into `weed server` with
 // its own data directory and volume defaults, and flags given here come last, so
-// they win. Volumes are not preallocated and are capped small, so one fixture
-// reserves almost no disk (the defaults reserve a gibibyte per volume, several
-// volumes at the first write).
+// they win.
+//
+// The fixture is a one-node cluster. With the default master raft, a lone node
+// sits through a long election before it leads, and every test waits that out
+// before its first byte; the hashicorp raft, bootstrapped, leads at once. The
+// start-up time is logged per test (see startBlobstore), so read the current
+// cost from the log rather than from a number in this comment.
+//
+// Volumes are not preallocated and are capped small, so one fixture reserves
+// almost no disk (the defaults reserve a gibibyte per volume, several volumes at
+// the first write).
 var s3TestServerFlags = []string{
+	"-master.raftHashicorp",
+	"-master.raftBootstrap",
 	"-master.volumePreallocate=false",
 	"-master.volumeSizeLimitMB=64",
 }
