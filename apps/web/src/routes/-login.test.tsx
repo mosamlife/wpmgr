@@ -276,11 +276,7 @@ describe("LoginPage - the ?redirect= deep link reaches the provider handshake", 
       try {
         await beforeLoad({ context: { queryClient }, search: { redirect } });
       } catch (thrown) {
-        // A deep link is thrown as an address (`href`, so its query string
-        // travels with it); the fallback is a route (`to`). Either is the
-        // target this test is about.
-        const options = (thrown as { options?: { href?: string; to?: string } }).options;
-        return options?.href ?? options?.to;
+        return (thrown as { options?: { to?: string } }).options?.to;
       }
       throw new Error("a visitor with a session must be redirected off /login");
     }
