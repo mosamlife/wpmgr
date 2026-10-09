@@ -33,8 +33,10 @@
 #        sleep returns).
 #     3. Every /proc/[0-9]*/stat inside the container is read, and processes
 #        in state Z are counted. The slim runtime image has no ps, so this is
-#        done with the shell. A zombie that lingers across every poll is a
-#        finding; one that vanishes on a re-poll was merely caught mid-reap.
+#        done with the shell. The scan is repeated, and a finding is a zombie
+#        (the same pid and name) that is there on every look. One that has
+#        gone by a later look was merely caught mid-reap, and on a busy
+#        container a different one on each look is the same thing.
 #
 #   check-media-encoder-reaps.sh [--expect-init NAME] --image IMAGE
 #
@@ -65,8 +67,9 @@
 #      an image whose ENTRYPOINT is not the init.
 #   2  The check could not be made: docker missing, container not running,
 #      `docker exec` failing, /proc unreadable or unparseable, output that does
-#      not look like a scan, a blind negative control, bad arguments. A run
-#      that learned nothing must not look like a run that found nothing.
+#      not look like a scan, two looks that cannot be compared, a blind
+#      negative control, bad arguments. A run that learned nothing must not
+#      look like a run that found nothing.
 #
 # WHAT THIS DOES NOT SEE.
 #   * It uses a synthetic orphan (`sleep`), not Chromium's crash handler. What
@@ -261,25 +264,57 @@ scan() {
   [ "$_listed" = "$SCAN_ZOMBIES" ] || broken "the scan of $1 counted $SCAN_ZOMBIES zombies but listed $_listed"
 }
 
+# also_listed A B
+#
+# Prints the lines of A that are also lines of B (whole line, in A's order).
+# One pass, so a container that has leaked thousands of zombies is not a slow
+# case. The lists go through files because awk -v would read the backslashes in
+# a process name as escapes. An empty list has nothing in common with anything
+# and is answered before awk runs, which also means neither file is empty, so
+# NR == FNR is true exactly while the first file is being read.
+also_listed() {
+  [ -n "$1" ] && [ -n "$2" ] || return 0
+  printf '%s\n' "$1" >"$TMP/list.a" || return 1
+  printf '%s\n' "$2" >"$TMP/list.b" || return 1
+  LC_ALL=C awk 'NR == FNR { seen[$0] = 1; next } $0 in seen' "$TMP/list.b" "$TMP/list.a"
+}
+
 # reap_check CONTAINER
 #
 # The container-level check. Sets REPORT (the text to show) and returns 0 for
 # clean or 1 for a finding; a check that could not be made exits 2 through
-# broken().
+# broken(). REAP_ZOMBIES and REAP_DETAIL are the zombies that were there on
+# every look (the count, and one line each).
 reap_check() {
   running "$1" || broken "container $1 is not running, so there is nothing to check"
 
   "$DOCKER" exec "$1" sh -c "$ORPHAN_SCRIPT" wpmgr-orphan-probe >/dev/null 2>"$ERRF" ||
     broken "could not create the orphan inside $1 (docker exec failed): $(cat "$ERRF")"
 
+  # A zombie is a finding only if the same one (pid and name) is there on every
+  # look. A zombie stays until it is reaped, so _stay, the zombies of look 1
+  # that are still there, only shrinks, and once it is empty nothing can
+  # refill it. The orphan made above has exited before look 1, so a PID 1 that
+  # does not reap keeps it in _stay to the end.
   _poll=1
+  _stay=""
   while :; do
     scan "$1"
-    [ "$SCAN_ZOMBIES" = "0" ] && break
+    if [ "$_poll" = "1" ]; then
+      _stay="$SCAN_DETAIL"
+    else
+      _stay="$(also_listed "$_stay" "$SCAN_DETAIL")" ||
+        broken "could not compare the zombies of two looks at $1"
+    fi
+    [ -z "$_stay" ] && break
     [ "$_poll" -ge "$POLLS" ] && break
     _poll=$((_poll + 1))
     sleep "$POLL_SLEEP"
   done
+
+  REAP_DETAIL="$_stay"
+  REAP_ZOMBIES=0
+  if [ -n "$REAP_DETAIL" ]; then REAP_ZOMBIES="$(printf '%s\n' "$REAP_DETAIL" | wc -l | tr -d ' ')"; fi
 
   REPORT=""
   _bad=0
@@ -287,15 +322,19 @@ reap_check() {
     _bad=1
     REPORT="FAIL: PID 1 is '$SCAN_INIT', expected '$EXPECT_INIT': nothing in the container reaps orphaned processes"
   fi
-  if [ "$SCAN_ZOMBIES" != "0" ]; then
+  if [ "$REAP_ZOMBIES" != "0" ]; then
     _bad=1
-    _z="FAIL: $SCAN_ZOMBIES zombie process(es) remained after an orphan was created and exited (seen on all $_poll look(s)):
-$(printf '%s\n' "$SCAN_DETAIL" | sed 's/^/  /')"
+    _z="FAIL: $REAP_ZOMBIES zombie process(es) remained after an orphan was created and exited (seen on all $_poll look(s)):
+$(printf '%s\n' "$REAP_DETAIL" | sed 's/^/  /')"
     if [ -n "$REPORT" ]; then REPORT="$REPORT
 $_z"; else REPORT="$_z"; fi
   fi
   if [ "$_bad" = "0" ]; then
-    REPORT="OK: PID 1 is '$SCAN_INIT'; 0 zombies among $SCAN_SCANNED processes after an orphan exited"
+    if [ "$SCAN_ZOMBIES" = "0" ]; then
+      REPORT="OK: PID 1 is '$SCAN_INIT'; 0 zombies among $SCAN_SCANNED processes after an orphan exited"
+    else
+      REPORT="OK: PID 1 is '$SCAN_INIT'; no zombie stayed across the looks ($SCAN_ZOMBIES caught mid-reap on look $_poll) among $SCAN_SCANNED processes after an orphan exited"
+    fi
   fi
   return "$_bad"
 }
@@ -356,8 +395,8 @@ check_image() {
     broken "could not start the negative-control container from $_img: $(cat "$ERRF")"
   _rc=0
   reap_check "$_name-neg" || _rc=$?
-  if [ "$_rc" = "1" ] && [ "$SCAN_ZOMBIES" != "0" ]; then
-    echo "OK: negative control: a PID 1 that never reaps was reported ($SCAN_ZOMBIES zombie(s)), so this check can see the defect here"
+  if [ "$_rc" = "1" ] && [ "$REAP_ZOMBIES" != "0" ]; then
+    echo "OK: negative control: a PID 1 that never reaps was reported ($REAP_ZOMBIES zombie(s)), so this check can see the defect here"
   else
     broken "negative control: a PID 1 that never reaps showed no zombie, so this environment cannot show the defect and the result above proves nothing"
   fi

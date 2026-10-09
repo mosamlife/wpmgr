@@ -358,6 +358,28 @@ if should_run "$NAME"; then
     pass "$NAME"
 fi
 
+NAME='baseline: a different zombie caught mid-reap on each look is not a finding'
+if should_run "$NAME"; then
+  new_case
+  # A busy container: every look catches some other process between its exit
+  # and its reaping. None of them stays, so none is a leak, and none is the
+  # orphan the check made (that one would be there on the first look).
+  fx_base "$CASEDIR/p1" tini
+  add_proc "$CASEDIR/p1" 60 chromium Z
+  fx_base "$CASEDIR/p2" tini
+  add_proc "$CASEDIR/p2" 61 chromium Z
+  fx_base "$CASEDIR/p3" tini
+  add_proc "$CASEDIR/p3" 62 chromium Z
+  set_proc good "$CASEDIR/p1" "$CASEDIR/p2" "$CASEDIR/p3"
+  run_check fakectr
+  want_rc "$NAME" 0 &&
+    want_says "$NAME" "OK: PID 1 is 'tini'" &&
+    want_says "$NAME" 'no zombie stayed across the looks' &&
+    want_silent_about "$NAME" 'remained' &&
+    want_calls "$NAME" 'wpmgr-proc-scan' 2 &&
+    pass "$NAME"
+fi
+
 NAME='baseline: the orphan is made once, and before any scan'
 if should_run "$NAME"; then
   new_case
@@ -403,6 +425,34 @@ if should_run "$NAME"; then
   want_rc "$NAME" 1 &&
     want_says "$NAME" '3 zombie process(es) remained' &&
     want_says "$NAME" 'zombie pid=23 comm=chrome_crashpad' &&
+    pass "$NAME"
+fi
+
+NAME='finding: the zombie that stays is named alone while others come and go'
+if should_run "$NAME"; then
+  new_case
+  # PID 20 is there on every look. Each look also catches a different process
+  # between its exit and its reaping. Only 20 is a finding, and it is the only
+  # one the report may name.
+  fx_base "$CASEDIR/p1" tini
+  add_proc "$CASEDIR/p1" 20 sleep Z
+  add_proc "$CASEDIR/p1" 61 chromium Z
+  fx_base "$CASEDIR/p2" tini
+  add_proc "$CASEDIR/p2" 20 sleep Z
+  add_proc "$CASEDIR/p2" 62 chromium Z
+  fx_base "$CASEDIR/p3" tini
+  add_proc "$CASEDIR/p3" 20 sleep Z
+  add_proc "$CASEDIR/p3" 63 chromium Z
+  set_proc good "$CASEDIR/p1" "$CASEDIR/p2" "$CASEDIR/p3"
+  run_check fakectr
+  want_rc "$NAME" 1 &&
+    want_says "$NAME" '1 zombie process(es) remained' &&
+    want_says "$NAME" 'seen on all 3 look(s)' &&
+    want_says "$NAME" 'zombie pid=20 comm=sleep' &&
+    want_silent_about "$NAME" 'pid=61' &&
+    want_silent_about "$NAME" 'pid=62' &&
+    want_silent_about "$NAME" 'pid=63' &&
+    want_calls "$NAME" 'wpmgr-proc-scan' 3 &&
     pass "$NAME"
 fi
 
@@ -664,6 +714,24 @@ if should_run "$NAME"; then
   run_check fakectr
   want_rc "$NAME" 2 &&
     want_says "$NAME" 'more than one summary line' &&
+    pass "$NAME"
+fi
+
+NAME='broken: two looks cannot be compared'
+if should_run "$NAME"; then
+  new_case
+  fx_base "$CASEDIR/p1" tini
+  add_proc "$CASEDIR/p1" 20 sleep Z
+  set_proc good "$CASEDIR/p1"
+  # An awk that fails: the comparison learns nothing, and a zombie that was on
+  # the first look must not be forgotten because the second look could not be
+  # read against it.
+  mkdir -p "$CASEDIR/failbin"
+  printf '#!/bin/sh\nexit 1\n' > "$CASEDIR/failbin/awk"
+  chmod +x "$CASEDIR/failbin/awk"
+  PATH="$CASEDIR/failbin:$PATH" run_check fakectr
+  want_rc "$NAME" 2 &&
+    want_says "$NAME" 'could not compare the zombies of two looks' &&
     pass "$NAME"
 fi
 
