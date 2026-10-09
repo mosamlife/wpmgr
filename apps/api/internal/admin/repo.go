@@ -10,11 +10,53 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
+
+// systemAuditWriter appends one event to system_audit_log, the instance trail.
+// The vulnerability-feed key handlers record every admitted change through it.
+type systemAuditWriter interface {
+	RecordSystemAudit(ctx context.Context, actorID uuid.UUID, action string, meta []byte) error
+}
+
+// poolSystemAudit is the production systemAuditWriter.
+type poolSystemAudit struct{ pool *db.Pool }
+
+// errNoSystemAuditPool is returned by a poolSystemAudit built without a pool.
+var errNoSystemAuditPool = errors.New("admin: system audit writer has no database pool")
+
+// RecordSystemAudit appends one event to system_audit_log with the nil tenant
+// id and an empty tenant name, the values every writer of that table uses for
+// "no organisation". It runs under InUserTx as the acting user, as the instance
+// SMTP settings writer does. system_audit_log carries no RLS; its one reader is
+// the superadmin-gated GET /admin/system-audit.
+func (w poolSystemAudit) RecordSystemAudit(ctx context.Context, actorID uuid.UUID, action string, meta []byte) error {
+	if w.pool == nil {
+		return errNoSystemAuditPool
+	}
+	if len(meta) == 0 {
+		meta = []byte("{}")
+	}
+	actor := pgtype.UUID{}
+	if actorID != uuid.Nil {
+		actor = pgtype.UUID{Bytes: actorID, Valid: true}
+	}
+	return w.pool.InUserTx(ctx, actorID, func(tx pgx.Tx) error {
+		return sqlc.New(tx).InsertSystemAuditEvent(ctx, sqlc.InsertSystemAuditEventParams{
+			ActorType:  audit.ActorUser,
+			ActorID:    actor,
+			Action:     action,
+			TenantID:   uuid.Nil,
+			TenantName: "",
+			Metadata:   meta,
+		})
+	})
+}
 
 // Repo provides superadmin data access. All queries run on the bare pool without
 // RLS tenant scope — the users table has no RLS, and the admin area is gated by

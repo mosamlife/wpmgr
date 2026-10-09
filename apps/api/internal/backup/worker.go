@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -644,8 +645,8 @@ const restoreMaxAttempts = 1
 const restoreInterruptedMessage = "The restore was interrupted before it finished and was not retried. Start it again from the backup."
 
 // restorePlanFailedMessage is the error a restore run records when the control
-// plane cannot build its plan. The underlying error goes to the log, not to
-// the run.
+// plane cannot prepare it: its plan cannot be built, or its status cannot be
+// read before dispatch. The underlying error goes to the log, not to the run.
 const restorePlanFailedMessage = "WPMgr could not prepare this restore."
 
 // InsertOpts sets the attempt limit on every backup_restore job, whichever
@@ -730,8 +731,9 @@ func (w *RestoreWorker) Timeout(*river.Job[RestoreArgs]) time.Duration { return 
 // A restore runs at most once. A failed restore is not retried automatically;
 // the operator retries it, which creates a new run. Every error finalises the
 // run as failed on the attempt that hit it, and the job ends there: an agent
-// failure or refusal returns nil, and a dispatch or planning error cancels
-// the job (river.JobCancel) with the error recorded on it.
+// failure or refusal returns nil, and a dispatch or planning error, or a run
+// whose status cannot be read, cancels the job (river.JobCancel) with the
+// error recorded on it.
 func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreArgs]) error {
 	a := job.Args
 
@@ -787,6 +789,43 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreArgs]) e
 			Status:     RestoreStatusRunning,
 			SetStarted: true,
 		})
+		// A run that finished before this job started it, for example one the
+		// progress watchdog failed while it waited in the queue, is not
+		// dispatched: its snapshot is no longer protected from deletion.
+		// MarkRestoreRunStatus never changes a finished run, so the status
+		// read here is the run's own.
+		run, rerr := w.svc.restoreRuns.GetRestoreRun(ctx, a.TenantID, runID)
+		if rerr != nil {
+			// A run whose status cannot be read may already be finished, so
+			// nothing is sent to the site. The run is marked failed, which
+			// changes it only while it is still queued or running, and the
+			// job is cancelled with the read error recorded on it.
+			w.logger.Warn("restore run status could not be read; not dispatching",
+				slog.String("snapshot_id", a.SnapshotID.String()),
+				slog.String("tenant_id", a.TenantID.String()),
+				slog.String("restore_run_id", runID.String()),
+				slog.Any("error", rerr))
+			if err := w.svc.restoreRuns.MarkRestoreRunStatus(ctx, MarkRestoreRunStatusInput{
+				TenantID:    a.TenantID,
+				RunID:       runID,
+				Status:      RestoreStatusFailed,
+				Error:       restorePlanFailedMessage,
+				SetFinished: true,
+			}); err != nil {
+				w.logger.Warn("restore run could not be marked failed",
+					slog.String("restore_run_id", runID.String()),
+					slog.Any("error", err))
+			}
+			return river.JobCancel(fmt.Errorf("read restore run %s before dispatch: %w", runID, rerr))
+		}
+		if restoreRunFinished(run.Status) {
+			w.logger.Warn("restore run already finished before its job started; not dispatching",
+				slog.String("snapshot_id", a.SnapshotID.String()),
+				slog.String("tenant_id", a.TenantID.String()),
+				slog.String("restore_run_id", runID.String()),
+				slog.String("status", run.Status))
+			return river.JobCancel(fmt.Errorf("restore run %s is already %s", runID, run.Status))
+		}
 	}
 
 	plan, snap, si, err := w.svc.PlanRestore(ctx, a.TenantID, a.SnapshotID, sel, restoreID, progressEndpoint)
@@ -1049,12 +1088,61 @@ func (ProgressWatchdogArgs) Kind() string { return "backup_progress_watchdog" }
 // losses that leave the snapshot row stuck in `running` forever, without
 // punishing a slow-but-alive run (e.g. a large ZipArchive finalize with no
 // intermediate progress event — the GH #279 motivating case).
+//
+// The same pass also fails restore runs that have stopped reporting (see
+// failStalledRestoreRuns): a queued or running restore run blocks snapshot
+// and organisation deletion until it finishes.
 type ProgressWatchdogWorker struct {
 	river.WorkerDefaults[ProgressWatchdogArgs]
 	svc           *Service
 	softThreshold time.Duration
 	hardThreshold time.Duration
-	logger        *slog.Logger
+	// restoreStall is how long a queued or running restore run may go
+	// without an update before the watchdog fails it.
+	restoreStall time.Duration
+	logger       *slog.Logger
+}
+
+// defaultRestoreStallTimeout is the restore stall timeout used when
+// backup.restore_stall_timeout is not set.
+const defaultRestoreStallTimeout = 2 * time.Hour
+
+// restoreStallPresignMargin is how far the restore stall timeout must exceed
+// the presign TTL. A restore's download URLs are minted when its job plans
+// it, so a run the watchdog fails has no download URL that is still valid,
+// and the deletes it was blocking cannot pull data from under a download.
+const restoreStallPresignMargin = time.Hour
+
+// restoreStallListLimit bounds how many stalled restore runs one watchdog
+// pass fails; the next pass takes the rest.
+const restoreStallListLimit = 200
+
+// restoreStallMessage is the error a restore run records when the watchdog
+// fails it.
+const restoreStallMessage = "The restore stopped reporting progress and was marked failed. Check the site, then start the restore again from the backup."
+
+// effectiveRestoreStallTimeout returns the restore stall timeout the watchdog
+// uses: configured, or defaultRestoreStallTimeout when configured is not
+// positive, and never less than presignTTL plus restoreStallPresignMargin.
+// raised reports that a positive configured value was below that floor.
+func effectiveRestoreStallTimeout(configured, presignTTL time.Duration) (timeout time.Duration, raised bool) {
+	timeout = configured
+	if timeout <= 0 {
+		timeout = defaultRestoreStallTimeout
+	}
+	if floor := presignTTL + restoreStallPresignMargin; timeout < floor {
+		return floor, configured > 0
+	}
+	return timeout, false
+}
+
+// watchdogPresignTTL is the presign TTL the restore stall floor is measured
+// against: the service's, or one hour (the service default) without one.
+func watchdogPresignTTL(svc *Service) time.Duration {
+	if svc != nil && svc.presignTTL > 0 {
+		return svc.presignTTL
+	}
+	return time.Hour
 }
 
 // NewProgressWatchdogWorker builds the watchdog. soft should be generous
@@ -1086,12 +1174,88 @@ func NewProgressWatchdogWorker(svc *Service, soft, hard time.Duration, logger *s
 			slog.Duration("configured_hard", hard))
 		hard = soft
 	}
-	return &ProgressWatchdogWorker{svc: svc, softThreshold: soft, hardThreshold: hard, logger: logger}
+	restoreStall, _ := effectiveRestoreStallTimeout(0, watchdogPresignTTL(svc))
+	return &ProgressWatchdogWorker{svc: svc, softThreshold: soft, hardThreshold: hard, restoreStall: restoreStall, logger: logger}
 }
 
-// Work runs one watchdog pass. The list query is cross-tenant under app.agent;
-// each mark/fail is tenant-scoped.
+// SetRestoreStallTimeout sets how long a queued or running restore run may go
+// without an update before the watchdog fails it
+// (backup.restore_stall_timeout). A value that is not positive keeps the
+// default of two hours. A value below the presign TTL plus one hour is raised
+// to that, and the raise is logged.
+func (w *ProgressWatchdogWorker) SetRestoreStallTimeout(d time.Duration) {
+	timeout, raised := effectiveRestoreStallTimeout(d, watchdogPresignTTL(w.svc))
+	if raised {
+		w.logger.Warn("backup progress watchdog: restore stall timeout is below the presign TTL plus one hour; raising it",
+			slog.Duration("configured", d),
+			slog.Duration("effective", timeout))
+	}
+	w.restoreStall = timeout
+}
+
+// Work runs one watchdog pass over running snapshots and then over restore
+// runs. Each list query is cross-tenant under app.agent; each mark/fail is
+// tenant-scoped. An error in one pass does not skip the other.
 func (w *ProgressWatchdogWorker) Work(ctx context.Context, _ *river.Job[ProgressWatchdogArgs]) error {
+	snapshotErr := w.watchRunningSnapshots(ctx)
+	restoreErr := w.failStalledRestoreRuns(ctx)
+	return errors.Join(snapshotErr, restoreErr)
+}
+
+// failStalledRestoreRuns fails each queued or running restore run whose last
+// update is older than restoreStall, with restoreStallMessage and a failed
+// event. Each fail repeats the list's conditions, so a run that reports
+// progress or finishes after the list is left as it is. The backup snapshot
+// the run restores from keeps its status.
+func (w *ProgressWatchdogWorker) failStalledRestoreRuns(ctx context.Context) error {
+	if w.svc == nil || w.svc.restoreRuns == nil {
+		return nil
+	}
+	store := w.svc.restoreRuns
+	stalled, err := store.ListStalledRestoreRuns(ctx, w.restoreStall, restoreStallListLimit)
+	if err != nil {
+		w.logger.Warn("restore stall watchdog list error", slog.Any("error", err))
+		return err
+	}
+	failed := 0
+	for _, run := range stalled {
+		ok, err := store.FailStalledRestoreRun(ctx, FailStalledRestoreRunInput{
+			TenantID:   run.TenantID,
+			RunID:      run.ID,
+			StallAfter: w.restoreStall,
+			Message:    restoreStallMessage,
+		})
+		if err != nil {
+			w.logger.Warn("restore stall watchdog fail error",
+				slog.String("restore_run_id", run.ID.String()),
+				slog.String("tenant_id", run.TenantID.String()),
+				slog.Any("error", err))
+			continue
+		}
+		if !ok {
+			w.logger.Info("restore stall watchdog skipped a run that reported progress or finished",
+				slog.String("restore_run_id", run.ID.String()),
+				slog.String("tenant_id", run.TenantID.String()))
+			continue
+		}
+		failed++
+		w.logger.Info("restore run failed by watchdog",
+			slog.String("restore_run_id", run.ID.String()),
+			slog.String("tenant_id", run.TenantID.String()),
+			slog.String("site_id", run.SiteID.String()),
+			slog.String("snapshot_id", run.SnapshotID.String()),
+			slog.String("previous_status", run.Status),
+			slog.Duration("restore_stall_timeout", w.restoreStall))
+	}
+	if failed > 0 {
+		w.logger.Info("restore stall watchdog pass", slog.Int("failed", failed), slog.Int("found", len(stalled)))
+	}
+	return nil
+}
+
+// watchRunningSnapshots is the snapshot half of the watchdog pass: soft-stall
+// stamps and hard fails for running backup snapshots.
+func (w *ProgressWatchdogWorker) watchRunningSnapshots(ctx context.Context) error {
 	stalled, err := w.svc.ListStalledRunningSnapshots(ctx, w.softThreshold, w.hardThreshold)
 	if err != nil {
 		w.logger.Warn("backup progress watchdog list error", slog.Any("error", err))

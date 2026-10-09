@@ -66,6 +66,7 @@ import {
   MonitoringRequestError,
 } from "@/features/sites/use-site-monitoring";
 import { PauseMonitoringDialog } from "@/features/sites/pause-monitoring-dialog";
+import { DisconnectConsequences } from "@/features/sites/disconnect-consequences";
 
 // Site detail page (Sprint 3 → Sprint 5 → restored).
 //
@@ -606,19 +607,7 @@ export function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
           cancelLabel="Keep connected"
           isPending={revoke.isPending}
           errorMessage={revoke.isError ? revoke.error.message : null}
-          consequencesBody={
-            <div className="space-y-2">
-              <p>
-                We'll send a revoke to the agent on its next heartbeat
-                (within ~60 seconds). The agent stops accepting commands and
-                clears its credentials.
-              </p>
-              <p>
-                Backups and monitoring stop. The site is archived with its full
-                history kept — you can reconnect later.
-              </p>
-            </div>
-          }
+          consequencesBody={<DisconnectConsequences />}
         />
 
         {/* Phase 5 — Archive a disconnected/revoked site. */}

@@ -1,7 +1,13 @@
 import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
 
 import { AppShell } from "@/components/layout/app-shell";
-import { ensureMe, useMe, isSuperadmin, isSuperadminAllowedPath } from "@/features/auth/use-auth";
+import {
+  ensureMe,
+  useMe,
+  hasOrg,
+  isSuperadmin,
+  isSuperadminAllowedPath,
+} from "@/features/auth/use-auth";
 import { BulkActionProvider } from "@/features/sites/bulk-action-drawer";
 import { NoOrgScreen } from "@/features/orgs/no-org-screen";
 
@@ -25,12 +31,14 @@ export const Route = createFileRoute("/_authed")({
     if (me.role === "client") {
       throw redirect({ to: "/portal" });
     }
-    // Superadmins are monitoring-only: they have no org and never manage sites,
-    // so keep them inside the Admin area and out of the tenant-scoped shell
+    // A superadmin who belongs to no organisation has nothing to manage, so
+    // keep them inside the Admin area and out of the tenant-scoped shell
     // (which would 403 / bounce them to the create-org screen). They still reach
     // /admin and any future /admin/* routes, PLUS their own per-user account
     // settings (profile + 2FA/security) so they can secure their own login.
-    if (isSuperadmin(me) && !isSuperadminAllowedPath(location.pathname)) {
+    // A superadmin who also belongs to an organisation is not held here: that
+    // organisation's sites are theirs to open like any other member's.
+    if (isSuperadmin(me) && !isSuperadminAllowedPath(me, location.pathname)) {
       throw redirect({ to: "/admin" });
     }
   },
@@ -46,10 +54,11 @@ export const Route = createFileRoute("/_authed")({
 function useHasNoOrg(): boolean {
   const { data: me } = useMe();
   if (!me) return false;
-  // Superadmins intentionally have no org and live in /admin; never show them
-  // the create-organisation onboarding screen.
+  // A superadmin with no organisation is held in /admin by the guard above, so
+  // never show them the create-organisation onboarding screen. One who belongs
+  // to an organisation is not organisation-less either way.
   if (isSuperadmin(me)) return false;
-  return me.memberships.length === 0 && !me.active_tenant_id;
+  return !hasOrg(me);
 }
 
 function AuthedLayout() {

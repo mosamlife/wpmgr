@@ -648,13 +648,15 @@ final class Lifecycle
         }
         foreach ($rows as $id => $name) {
             // The id alone picks the row; the name only refuses an id that has
-            // since been given to another row.
+            // since been given to another row. HEX() compares the stored bytes,
+            // so a name that differs from ours only in case or accents is
+            // refused too; MySQL, MariaDB and SQLite all return it upper-case.
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- only a delete by primary key is exact; the options API deletes every row whose name the collation matches. Cache entries are dropped below.
             $wpdb->query(
                 $wpdb->prepare( // @phpstan-ignore argument.type (prepare() returns null only when placeholders and values disagree, which this fixed statement rules out)
-                    "DELETE FROM {$wpdb->options} WHERE option_id = %d AND option_name = %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
+                    "DELETE FROM {$wpdb->options} WHERE option_id = %d AND HEX(option_name) = %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
                     $id,
-                    $name
+                    strtoupper(bin2hex($name))
                 )
             );
             if ($forgetCached) {
@@ -703,10 +705,10 @@ final class Lifecycle
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- only a delete by primary key is exact; the network options API deletes every row whose name the collation matches. Cache entries are dropped below.
             $wpdb->query(
                 $wpdb->prepare( // @phpstan-ignore argument.type (prepare() returns null only when placeholders and values disagree, which this fixed statement rules out)
-                    "DELETE FROM {$wpdb->sitemeta} WHERE meta_id = %d AND site_id = %d AND meta_key = %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
+                    "DELETE FROM {$wpdb->sitemeta} WHERE meta_id = %d AND site_id = %d AND HEX(meta_key) = %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
                     $id,
                     $networkId,
-                    $name
+                    strtoupper(bin2hex($name))
                 )
             );
             if ($forgetCached) {

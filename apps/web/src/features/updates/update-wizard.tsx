@@ -162,11 +162,19 @@ function targetKey(target: WizardTarget | null): string {
 export function UpdateWizard({
   open,
   onClose,
+  onSubmitted,
   target,
   sites,
 }: {
   open: boolean;
   onClose: () => void;
+  /**
+   * GH #742. Called once the control plane has accepted the run, before the
+   * wizard closes and navigates to it. Never called on cancel and never when the
+   * run is refused, so a caller can read it as "the targets this wizard was
+   * opened for have been used".
+   */
+  onSubmitted?: () => void;
   target: WizardTarget | null;
   // Sites used to seed plugin/theme options (the currently selected/visible
   // sites). May be empty — the user can still add slugs manually.
@@ -182,6 +190,7 @@ export function UpdateWizard({
           target={target}
           sites={sites}
           onClose={onClose}
+          onSubmitted={onSubmitted}
         />
       ) : null}
     </Dialog>
@@ -194,10 +203,12 @@ function WizardForm({
   target,
   sites,
   onClose,
+  onSubmitted,
 }: {
   target: WizardTarget;
   sites: Site[];
   onClose: () => void;
+  onSubmitted?: () => void;
 }) {
   const navigate = useNavigate();
   const create = useCreateUpdateRun();
@@ -418,7 +429,14 @@ function WizardForm({
       ...(scheduleIso ? { schedule_at: scheduleIso } : {}),
     };
 
-    const run = await create.mutateAsync(body, { onError: () => {} });
+    // A refused run (a 422 such as `no_target_sites`) is already on screen: the
+    // mutation's error renders in the dialog below. Stopping here keeps the
+    // wizard open for a retry, and keeps `onSubmitted` for a run that exists.
+    // `mutateAsync` rejects either way, so the rejection is taken here instead
+    // of being left unhandled.
+    const run = await create.mutateAsync(body).catch(() => null);
+    if (!run) return;
+    onSubmitted?.();
     onClose();
     void navigate({ to: "/updates/$runId", params: { runId: run.id } });
   }

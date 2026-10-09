@@ -33,6 +33,14 @@ class UpdateRunner
     private const MAX_HEALTHY_DEFAULT_TEMP_ENTRIES = 2000;
 
     /**
+     * Upper bound on how much of wp-includes/version.php coreVersionOnDisk()
+     * reads. The file core ships is under 2 KB and assigns $wp_version near
+     * its top, so this is generous; a file larger than this is not one core
+     * wrote, and the bound only keeps the read cheap.
+     */
+    private const CORE_VERSION_FILE_MAX_BYTES = 16384;
+
+    /**
      * The reason the most recent isComplete() call returned false, or '' when
      * that call returned true (or isComplete() has not been called yet).
      * Reset to '' at the START of every isComplete() call (see that method)
@@ -79,6 +87,12 @@ class UpdateRunner
     /**
      * Resolve the currently installed version of an item.
      *
+     * Core is read from wp-includes/version.php on disk first (see
+     * coreVersionOnDisk()), because that is the only source that reflects a
+     * core update applied earlier in this same request (GitHub issue #415).
+     * The in-memory version is the fallback, used only when the file cannot
+     * be read or parsed.
+     *
      * @param string $type plugin|theme|core.
      * @param string $slug Sanitized slug (ignored for core).
      * @return string Installed version, or '' when unknown.
@@ -87,6 +101,11 @@ class UpdateRunner
     {
         switch ($type) {
             case 'core':
+                $onDisk = $this->coreVersionOnDisk();
+                if ($onDisk !== '') {
+                    return $onDisk;
+                }
+
                 if (function_exists('get_bloginfo')) {
                     $v = get_bloginfo('version');
                     if (is_string($v) && $v !== '') {
@@ -1721,6 +1740,63 @@ class UpdateRunner
     }
 
     /**
+     * The WordPress core version recorded in wp-includes/version.php on disk,
+     * or '' when that file cannot be read or holds no plain version
+     * assignment.
+     *
+     * WordPress loads $wp_version once, when the request starts. A core update
+     * that runs later in the same request does not replace that global:
+     * update_core() loads the new version file in function scope only. So
+     * get_bloginfo('version') keeps returning the version the site was updated
+     * FROM until the next request. Reading the file is the only way to report
+     * the version an update in this request has just installed (GitHub issue
+     * #415). WordPress copies this file only after every other core file has
+     * copied, so it names the new version only once the new core files are in
+     * place.
+     *
+     * The file is read as text with file_get_contents(), never include or
+     * require. An opcode cache therefore cannot return the pre-update bytes,
+     * and nothing in the file runs. Only a literal assignment at the start of
+     * a line is accepted. Its value must look like a version: a digit, then
+     * digits, letters, dots and dashes. A comment, a computed value or anything
+     * path-like is ignored. Every failure returns '', and the caller then falls
+     * back to the in-memory version. This method never returns a partial or
+     * unvalidated value.
+     *
+     * @return string
+     */
+    private function coreVersionOnDisk(): string
+    {
+        $abspath = defined('ABSPATH') ? rtrim((string) constant('ABSPATH'), '/\\') : '';
+        if ($abspath === '') {
+            // No base path. Never resolve the file against the filesystem root.
+            return '';
+        }
+
+        $includes = defined('WPINC') ? trim((string) constant('WPINC'), '/\\') : 'wp-includes';
+        if ($includes === '') {
+            return '';
+        }
+
+        $source = @file_get_contents( // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- best-effort read of a core file; open_basedir or an unreadable file must fall back to the in-memory version, never warn into the command's JSON response
+            $abspath . '/' . $includes . '/version.php',
+            false,
+            null,
+            0,
+            self::CORE_VERSION_FILE_MAX_BYTES
+        );
+        if (!is_string($source) || $source === '') {
+            return '';
+        }
+
+        if (preg_match('/^[ \t]*\$wp_version[ \t]*=[ \t]*([\'"])([0-9][0-9A-Za-z.\-]{0,63})\1[ \t]*;/m', $source, $match) !== 1) {
+            return '';
+        }
+
+        return $match[2];
+    }
+
+    /**
      * Force exactly one fresh update-check per component-type for the
      * lifetime of this UpdateRunner instance — i.e. once per RUN, not once
      * per item (GitHub issue #218, a regression from #208/#212).
@@ -1823,12 +1899,13 @@ class UpdateRunner
      *
      * @param string $slug Plugin basename.
      * @return string|null The pending version, '' when a forced fresh check
-     *                confirms none is available, or null when availability
-     *                could not be determined even after that check
-     *                (get_site_transient()/wp_update_plugins() unavailable
-     *                in this runtime, or the transient is not the
-     *                well-formed object WordPress itself always produces
-     *                once a check has actually completed).
+     *                that covered this plugin confirms none is available, or
+     *                null when availability could not be determined even
+     *                after that check (get_site_transient()/
+     *                wp_update_plugins() unavailable in this runtime, the
+     *                transient is not the well-formed object WordPress itself
+     *                always produces once a check has actually completed, or
+     *                the check did not cover this plugin; see checkCovered()).
      */
     private function pluginUpdateVersion(string $slug): ?string
     {
@@ -1846,7 +1923,28 @@ class UpdateRunner
             return (string) $entry->new_version;
         }
 
-        return '';
+        return self::checkCovered($transient, $slug) ? '' : null;
+    }
+
+    /**
+     * Whether a completed WordPress update check covered this plugin or theme.
+     *
+     * WordPress records every installed item's version under `checked` only
+     * once the WordPress.org reply has arrived. A check that failed or ran out
+     * of time leaves a transient without `checked`, and a filter that injects
+     * its own entry can still have given that transient a `response` array.
+     * So a missing `response` entry means "no update" only for an item the
+     * check covered; for any other item availability is undetermined (null).
+     *
+     * @param object $transient The update_plugins or update_themes transient.
+     * @param string $key       Plugin basename or theme stylesheet.
+     * @return bool
+     */
+    private static function checkCovered(object $transient, string $key): bool
+    {
+        return isset($transient->checked)
+            && is_array($transient->checked)
+            && array_key_exists($key, $transient->checked);
     }
 
     /**
@@ -1864,12 +1962,13 @@ class UpdateRunner
      *
      * @param string $slug Theme stylesheet.
      * @return string|null The pending version, '' when a forced fresh check
-     *                confirms none is available, or null when availability
-     *                could not be determined even after that check
-     *                (get_site_transient()/wp_update_themes() unavailable
-     *                in this runtime, or the transient is not the
-     *                well-formed object WordPress itself always produces
-     *                once a check has actually completed).
+     *                that covered this theme confirms none is available, or
+     *                null when availability could not be determined even
+     *                after that check (get_site_transient()/
+     *                wp_update_themes() unavailable in this runtime, the
+     *                transient is not the well-formed object WordPress itself
+     *                always produces once a check has actually completed, or
+     *                the check did not cover this theme; see checkCovered()).
      */
     private function themeUpdateVersion(string $slug): ?string
     {
@@ -1887,7 +1986,7 @@ class UpdateRunner
             return (string) $entry['new_version'];
         }
 
-        return '';
+        return self::checkCovered($transient, $slug) ? '' : null;
     }
 
     /**

@@ -176,26 +176,39 @@ final class Router
             // aud (this site's enrollment URL), AND cmd (this command name).
             $claims = $this->connector->verifyCommand($token, $command);
         } catch (\Throwable $e) {
-            // Log the EXACT reason to debug.log (admin-visible, not secret-bearing —
-            // verifyCommand exceptions only contain category messages like "aud
-            // mismatch", "signature verification failed", "exp expired", etc.) and
-            // surface a non-secret CATEGORY in the response so the control plane
-            // (and the human reading logs) can tell aud_mismatch from sig_failed
-            // without giving an attacker any cryptographic oracle beyond what they
-            // already get from the 403 itself.
-            $category = $this->classifyTokenError($e->getMessage());
-            // Build and escape the line only when the channel would actually
-            // write it — escapeControlChars() runs a preg pass over the whole
-            // line, and there is no reason to pay for that on a production
-            // install with debug logging off.
+            // Connector refuses with a typed TokenRejected that names the check
+            // which failed. The response carries that check's code (see
+            // TokenFailure::responseCode()), so the control plane can tell a
+            // site clock that disagrees with its own from a lost key without
+            // being handed anything secret. A Throwable that is not a typed
+            // refusal is a fault rather than a verdict on the token, and
+            // answers the catch-all.
+            if ($e instanceof TokenRejected) {
+                $category = $e->failure()->value;
+                $code     = $e->failure()->responseCode();
+            } else {
+                $category = 'invalid_token';
+                $code     = 'invalid_token';
+            }
+            // The site's own debug log gets the precise category, the code the
+            // response carried, and the reason, with what caused it when
+            // something did. Key material is redacted from the reason by the
+            // same passes the command-failure line uses (logReason()). Build
+            // and escape the line only when the channel would actually write
+            // it — logReason() and escapeControlChars() each run preg passes,
+            // and there is no reason to pay for that on a production install
+            // with debug logging off.
             if (\WPMgr\Agent\Support\DebugLog::isEnabled()) {
                 \WPMgr\Agent\Support\DebugLog::write(
                     self::escapeControlChars(
-                        'WPMgr Agent: command authorize failed: command=' . $command . ' category=' . $category . ' reason=' . $e->getMessage()
+                        'WPMgr Agent: command authorize failed: command=' . $command
+                        . ' category=' . $category
+                        . ' code=wpmgr_' . $code
+                        . ' reason=' . self::logReason(self::authorizeFailureReason($e))
                     ) ?? self::LOG_LINE_WITHHELD
                 );
             }
-            return $this->forbidden($category);
+            return $this->forbidden($code);
         }
 
         // Defense-in-depth: where a WP user context applies, require manage_options.
@@ -322,14 +335,15 @@ final class Router
             // rendered in a dashboard, so it gets a REDACTED, length-capped
             // reason instead.
             //
-            // Why sanitise rather than classify: authorizeCommand() can use a
-            // needle table because Connector::verifyCommand throws a small
-            // CLOSED set of category messages. Commands do not — they throw
-            // from 200+ sites and roughly 40% of those interpolate a runtime
-            // value, very often an absolute path (backup scratch base, restore
-            // staging dir). A needle table over an open set would be guesswork
-            // that silently goes stale, so the reason is sanitised and the
-            // stable machine-readable part is the exception class.
+            // Why sanitise rather than classify: authorizeCommand() can
+            // classify because Connector::verifyCommand throws a typed
+            // TokenRejected that names the failed check. Commands do not —
+            // they throw from 200+ sites and roughly 40% of those interpolate
+            // a runtime value, very often an absolute path (backup scratch
+            // base, restore staging dir). A needle table over an open set
+            // would be guesswork that silently goes stale, so the reason is
+            // sanitised and the stable machine-readable part is the exception
+            // class.
             [$message, $data] = self::fitFailureBody(
                 $class,
                 self::redactReason($e->getMessage()),
@@ -1125,41 +1139,25 @@ final class Router
     }
 
     /**
-     * Map a Connector::verifyCommand RuntimeException message to a non-secret
-     * public category. Exception messages are operator-facing category strings
-     * ("aud mismatch", "signature verification failed", etc.) — exposing them as
-     * codes gives no cryptographic oracle beyond what the 403 status itself
-     * already gives, but it makes "agent rejected the command" diagnosable in
-     * one shot from CP/agent logs.
+     * The reason an authorize failure gives in the site's debug log: the
+     * message, prefixed with the exception class when it is not Connector's
+     * own typed refusal, then what caused it when something did (for a stored
+     * key that cannot be read, the keystore's own reason).
      *
-     * @param string $msg The RuntimeException message text.
-     * @return string Short snake_case code (prefixed with `wpmgr_` by forbidden()).
+     * @param \Throwable $e What verifyCommand() threw.
+     * @return string Unredacted; the caller passes it through logReason().
      */
-    private function classifyTokenError(string $msg): string
+    private static function authorizeFailureReason(\Throwable $e): string
     {
-        $needles = [
-            'signature verification failed' => 'sig_failed',
-            'invalid signature length'      => 'sig_failed',
-            'invalid public key length'     => 'sig_failed',
-            'malformed jwt'                 => 'malformed_jwt',
-            'invalid alg'                   => 'malformed_jwt',
-            'missing exp'                   => 'missing_exp',
-            'expired'                       => 'token_expired',
-            'too far in future'             => 'token_skew',
-            'replay'                        => 'token_replay',
-            'missing jti'                   => 'missing_jti',
-            'site not enrolled'             => 'site_not_enrolled',
-            'missing aud'                   => 'missing_aud',
-            'aud mismatch'                  => 'aud_mismatch',
-            'missing cmd'                   => 'missing_cmd',
-            'cmd mismatch'                  => 'cmd_mismatch',
-        ];
-        $lower = strtolower($msg);
-        foreach ($needles as $needle => $code) {
-            if (strpos($lower, $needle) !== false) {
-                return $code;
-            }
+        $reason = $e instanceof TokenRejected
+            ? $e->getMessage()
+            : self::exceptionClass($e) . ': ' . $e->getMessage();
+
+        $previous = $e->getPrevious();
+        if ($previous !== null) {
+            $reason .= ' Caused by ' . self::exceptionClass($previous) . ': ' . $previous->getMessage();
         }
-        return 'invalid_token';
+
+        return $reason;
     }
 }

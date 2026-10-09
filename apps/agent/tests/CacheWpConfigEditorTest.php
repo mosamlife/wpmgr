@@ -11,6 +11,7 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Tests;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use WPMgr\Agent\Cache\WpConfigEditor;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -199,6 +200,67 @@ final class CacheWpConfigEditorTest extends TestCase
         $after = (string) file_get_contents($this->configPath);
         $this->assertSame($before, $after, 'a Roots\\WPConfig\\Config-managed wp-config.php must be left unchanged');
         $this->assertStringNotContainsString('DISALLOW_FILE_EDIT', $after);
+    }
+
+    // -------------------------------------------------------------------------
+    // GH #884: a commented-out framework line is not configuration
+    // -------------------------------------------------------------------------
+
+    /**
+     * A wp-config.php whose only framework signal sits inside a comment.
+     *
+     * @return array<string, array{0: string}>
+     */
+    public static function commentedOutFrameworkSignals(): array
+    {
+        return [
+            'line comment, slashes' => ["<?php\n// require_once '../config/application.php';\ndefine('DB_NAME', 'wp');\n"],
+            'line comment, hash'    => ["<?php\n# require_once __DIR__ . '/../config/application.php';\ndefine('DB_NAME', 'wp');\n"],
+            'block comment'         => ["<?php\n/* require_once '../config/application.php'; */\ndefine('DB_NAME', 'wp');\n"],
+            'doc comment, class'    => ["<?php\n/**\n * Was Roots\\WPConfig\\Config, see roots/wp-config.\n */\ndefine('DB_NAME', 'wp');\n"],
+        ];
+    }
+
+    #[DataProvider('commentedOutFrameworkSignals')]
+    public function test_commented_out_framework_line_does_not_stop_the_define(string $config): void
+    {
+        $this->assertFalse(defined('WP_CACHE'), 'precondition: WP_CACHE must be undefined in this process');
+        file_put_contents($this->configPath, $config);
+
+        $editor = $this->editor();
+        $this->assertTrue($editor->setConstant('WP_CACHE', true));
+
+        $content = (string) file_get_contents($this->configPath);
+        $this->assertStringContainsString("define('WP_CACHE', true); " . WpConfigEditor::MARKER, $content);
+        $this->assertSame(1, substr_count($content, "define('WP_CACHE'"));
+        $this->assertNull($editor->lastNotice(), 'a real write must not carry the framework notice');
+
+        // The rest of the file, the comment included, survives.
+        $this->assertStringContainsString("define('DB_NAME', 'wp');", $content);
+        $this->assertSame($config, str_replace("\ndefine('WP_CACHE', true); " . WpConfigEditor::MARKER . "\n", '', $content));
+    }
+
+    public function test_real_require_next_to_a_commented_one_still_refuses(): void
+    {
+        $config = "<?php\n// require_once '../config/application.php';\nrequire_once __DIR__ . '/../config/application.php';\n";
+        file_put_contents($this->configPath, $config);
+
+        $editor = $this->editor();
+        $this->assertTrue($editor->setConstant('WP_CACHE', true));
+
+        $this->assertSame($config, (string) file_get_contents($this->configPath), 'a managed wp-config.php must stay byte-for-byte unchanged');
+        $this->assertNotNull($editor->lastNotice());
+    }
+
+    public function test_without_comments_keeps_code_and_strings(): void
+    {
+        $code = WpConfigEditor::withoutComments("<?php\n// a\n# b\n/* c */\n/** d */\n\$x = '// not a comment';\n");
+        $this->assertNotNull($code, 'the tokenizer extension is available in the test runtime');
+        $this->assertStringNotContainsString('// a', $code);
+        $this->assertStringNotContainsString('# b', $code);
+        $this->assertStringNotContainsString('/* c */', $code);
+        $this->assertStringNotContainsString('/** d */', $code);
+        $this->assertStringContainsString("\$x = '// not a comment';", $code);
     }
 
     public function test_remove_constant_on_managed_config_without_our_marker_is_a_safe_noop(): void

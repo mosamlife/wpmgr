@@ -7,7 +7,9 @@
  *   POST /wp-json/wpmgr/v1/command/update
  *   body: { "dry_run": bool, "snapshot": bool, "items": [ { "type", "slug", "version" } ] }
  *   response: { "ok": bool, "results": [ { type, slug, from_version, to_version,
- *               status, snapshot_id, log } ] }
+ *               status, snapshot_id, log, skip_reason? } ] }
+ *   skip_reason appears only on a `skipped` row: not_installed, self_target,
+ *   core_managed or file_mods_disallowed.
  *
  * Execution strategy:
  *   - dry_run: never touches the filesystem; reports would_update / up_to_date
@@ -162,6 +164,14 @@
  *     plane. The agent's own updates travel over its dedicated update channel.
  *     See isSelfTarget() for how a renamed, symlinked or differently-cased
  *     install directory is matched as well as the stock plugin key.
+ *   - Core that WordPress must not update here (GitHub issue #367): a `core`
+ *     item is skipped, with the same placement and contract as the
+ *     self-target refusal, when Composer installs core or when file changes
+ *     are disallowed on the site (WordPress itself does not update core then
+ *     either). See WPMgr\Agent\Support\ManagedCore. Separately, a core
+ *     failure classified as stopping before any core file was replaced now
+ *     says that core was not changed, instead of the snapshot sentence that
+ *     read as a half-updated site.
  *
  * Every input is treated as untrusted: type is whitelisted, slug is sanitized to
  * reject path traversal, and snapshot paths are bounded to wp-content.
@@ -176,6 +186,7 @@ namespace WPMgr\Agent\Commands;
 use WPMgr\Agent\Support\DebugLog;
 use WPMgr\Agent\Support\DestinationVerifier;
 use WPMgr\Agent\Support\Maintenance;
+use WPMgr\Agent\Support\ManagedCore;
 use WPMgr\Agent\Support\SiteUpdateLock;
 use WPMgr\Agent\Support\SnapshotManager;
 use WPMgr\Agent\Support\UpdateGuard;
@@ -244,18 +255,40 @@ final class UpdateCommand implements CommandInterface
      */
     private const STATUS_SITE_BUSY = 'site_busy';
 
+    /**
+     * `skip_reason` values a `skipped` result carries (GitHub issue #367). The
+     * control plane maps each to fixed operator copy and treats any other
+     * value, or none, as a generic skip, so a new value degrades safely.
+     */
+    private const SKIP_NOT_INSTALLED        = 'not_installed';
+    private const SKIP_SELF_TARGET          = 'self_target';
+    private const SKIP_CORE_MANAGED         = 'core_managed';
+    private const SKIP_FILE_MODS_DISALLOWED = 'file_mods_disallowed';
+
     private SnapshotManager $snapshots;
 
     private UpdateRunner $runner;
 
+    private ManagedCore $managedCore;
+
     /**
-     * @param SnapshotManager|null $snapshots Snapshot store (defaults to real one).
-     * @param UpdateRunner|null    $runner    Update executor (defaults to real one).
+     * Whether this command has armed the maintenance shutdown backstop. It
+     * arms right before its first apply, once, and never in a command that
+     * applies nothing (see armMaintenanceBackstop()).
      */
-    public function __construct(?SnapshotManager $snapshots = null, ?UpdateRunner $runner = null)
+    private bool $maintenanceArmed = false;
+
+    /**
+     * @param SnapshotManager|null $snapshots   Snapshot store (defaults to real one).
+     * @param UpdateRunner|null    $runner      Update executor (defaults to real one).
+     * @param ManagedCore|null     $managedCore Composer/file-change detector for core
+     *                                          (defaults to real one; does no I/O until asked).
+     */
+    public function __construct(?SnapshotManager $snapshots = null, ?UpdateRunner $runner = null, ?ManagedCore $managedCore = null)
     {
-        $this->snapshots = $snapshots ?? new SnapshotManager();
-        $this->runner    = $runner ?? new UpdateRunner();
+        $this->snapshots   = $snapshots ?? new SnapshotManager();
+        $this->runner      = $runner ?? new UpdateRunner();
+        $this->managedCore = $managedCore ?? new ManagedCore();
     }
 
     /**
@@ -301,7 +334,7 @@ final class UpdateCommand implements CommandInterface
      *
      * @param array<string,mixed> $claims Validated JWT claims (unused).
      * @param array<string,mixed> $params Request parameters.
-     * @return array{ok:bool,results:array<int,array{type:string,slug:string,from_version:string,to_version:string,status:string,snapshot_id:string,log:string}>}
+     * @return array{ok:bool,results:array<int,array{type:string,slug:string,from_version:string,to_version:string,status:string,snapshot_id:string,log:string,skip_reason?:string}>}
      */
     public function execute(array $claims, array $params): array
     {
@@ -373,16 +406,13 @@ final class UpdateCommand implements CommandInterface
 
         try {
             // Heal a `.maintenance` flag left behind by a prior interrupted
-            // update/rollback before starting new work, and arm the shutdown
-            // backstop so a fatal error or a timeout mid-update still clears
-            // whatever flag THIS run may leave set.
-            //
-            // BELOW THE LOCK ON PURPOSE (GitHub issue #328): the shutdown
-            // backstop clears ANY .maintenance file it finds, so arming it in a
-            // command that turns out to have nothing to do would silently strip
-            // a flag another in-flight upgrade legitimately owns.
+            // update/rollback before starting new work. Only a stale flag is
+            // removed; a fresh one is left to whoever owns it. BELOW THE LOCK
+            // ON PURPOSE (GitHub issue #328). The shutdown backstop for THIS
+            // run's own flag is armed later, right before the first apply (see
+            // armMaintenanceBackstop()), so a command whose items are all
+            // refused or already current never arms it.
             Maintenance::healStaleIfPresent();
-            Maintenance::armShutdownGuard();
 
             // S4 (adversarial review) — reconcile any update-in-flight marker
             // left stale by a prior request that was hard-killed severely enough
@@ -434,7 +464,7 @@ final class UpdateCommand implements CommandInterface
      * @param array<int,mixed> $items    Raw request items.
      * @param bool             $dryRun   Whether to avoid mutation.
      * @param bool             $snapshot Whether a `core` item should record its version.
-     * @return array{ok:bool,results:array<int,array{type:string,slug:string,from_version:string,to_version:string,status:string,snapshot_id:string,log:string}>}
+     * @return array{ok:bool,results:array<int,array{type:string,slug:string,from_version:string,to_version:string,status:string,snapshot_id:string,log:string,skip_reason?:string}>}
      */
     private function runItems(array $items, bool $dryRun, bool $snapshot): array
     {
@@ -469,7 +499,7 @@ final class UpdateCommand implements CommandInterface
      * indistinguishable on disk from a command that never arrived.
      *
      * @param array<int,mixed> $items Raw request items.
-     * @return array{ok:bool,results:array<int,array{type:string,slug:string,from_version:string,to_version:string,status:string,snapshot_id:string,log:string}>}
+     * @return array{ok:bool,results:array<int,array{type:string,slug:string,from_version:string,to_version:string,status:string,snapshot_id:string,log:string,skip_reason?:string}>}
      */
     private function refuseSiteBusy(array $items): array
     {
@@ -502,6 +532,26 @@ final class UpdateCommand implements CommandInterface
     }
 
     /**
+     * Arm the maintenance shutdown backstop, once per command.
+     *
+     * Called right before an item's snapshot and apply, never earlier. The
+     * backstop clears any `.maintenance` file it finds when the request ends,
+     * so a command whose items are all refused or already current must not
+     * arm it: the flag it would remove may belong to another update still in
+     * flight. One callback covers every later item of the same command.
+     *
+     * @return void
+     */
+    private function armMaintenanceBackstop(): void
+    {
+        if ($this->maintenanceArmed) {
+            return;
+        }
+        $this->maintenanceArmed = true;
+        Maintenance::armShutdownGuard();
+    }
+
+    /**
      * Process a single update item, catching errors so the batch continues.
      *
      * @param array<string,mixed> $item     One request item.
@@ -509,7 +559,7 @@ final class UpdateCommand implements CommandInterface
      * @param bool                $snapshot Whether to capture a pre-update snapshot for a
      *                                       `core` item. Ignored for plugin/theme, which
      *                                       always snapshot — see class doc (D2, issue #131).
-     * @return array{type:string,slug:string,from_version:string,to_version:string,status:string,snapshot_id:string,log:string}
+     * @return array{type:string,slug:string,from_version:string,to_version:string,status:string,snapshot_id:string,log:string,skip_reason?:string}
      */
     private function processItem(array $item, bool $dryRun, bool $snapshot): array
     {
@@ -558,8 +608,35 @@ final class UpdateCommand implements CommandInterface
                 '',
                 'skipped',
                 '',
-                'Refused: this target is the management agent itself. The agent updates through its own update channel, not through a plugin update task.'
+                'Refused: this target is the management agent itself. The agent updates through its own update channel, not through a plugin update task.',
+                self::SKIP_SELF_TARGET
             );
+        }
+
+        // --- Core that WordPress must not update here (GitHub issue #367) ---
+        // When Composer installs core (a Roots/Bedrock project and its kin), a
+        // WordPress-side core update either fails part way or is undone by the
+        // next deploy; when file changes are disallowed, WordPress itself
+        // never updates core either. See ManagedCore for what is read and
+        // why. Same placement and contract as the self-target refusal above:
+        // before detection, download, snapshot or write, on dry runs too, and
+        // reported with the existing `skipped` status plus a skip_reason.
+        if ($type === 'core') {
+            $managed = $this->managedCore->detect();
+            if ($managed['reason'] !== '') {
+                return $this->result(
+                    $type,
+                    $slug,
+                    '',
+                    '',
+                    'skipped',
+                    '',
+                    self::managedCoreCopy($managed),
+                    $managed['reason'] === ManagedCore::REASON_COMPOSER
+                        ? self::SKIP_CORE_MANAGED
+                        : self::SKIP_FILE_MODS_DISALLOWED
+                );
+            }
         }
 
         // Declared here (rather than inside the inner try below) so the
@@ -580,7 +657,7 @@ final class UpdateCommand implements CommandInterface
             // skipped, not failed, so it never pollutes the run's failure
             // count — there is nothing here to have failed.
             if (!$this->runner->isInstalled($type, $slug)) {
-                return $this->result($type, $slug, '', '', 'skipped', '', 'Not installed on this site.');
+                return $this->result($type, $slug, '', '', 'skipped', '', 'Not installed on this site.', self::SKIP_NOT_INSTALLED);
             }
 
             $fromVersion = $this->runner->currentVersion($type, $slug);
@@ -619,6 +696,12 @@ final class UpdateCommand implements CommandInterface
                     'Already up to date; no update applied.'
                 );
             }
+
+            // Every refusal and the up-to-date answer are behind us: this item
+            // applies. Arm the maintenance shutdown backstop now, once per
+            // command, so a fatal error or a timeout mid-update still clears
+            // whatever flag THIS run leaves set.
+            $this->armMaintenanceBackstop();
 
             // GUARANTEE: whatever this item's snapshot/apply work does below —
             // succeed, fail, or throw — a `finally` clears any `.maintenance`
@@ -875,7 +958,10 @@ final class UpdateCommand implements CommandInterface
                 // decision can add to the item log is gated on this, so a path
                 // it never looked at (a `core` item, an ok apply that only
                 // failed verification, an unclassified failure) keeps the
-                // previous release's log byte for byte.
+                // previous release's log byte for byte. The one later
+                // exception is a `core` failure classified untouched, which
+                // gets its own sentence at the restore block below (GitHub
+                // issue #367) and never opens this gate.
                 $gateOpen = $type !== 'core' && ($applied['ok'] ?? null) === false && $touched === false;
 
                 if ($gateOpen) {
@@ -952,6 +1038,17 @@ final class UpdateCommand implements CommandInterface
                         // reflects what is actually on disk.
                         $toVersion = $this->runner->currentVersion($type, $slug);
                     }
+                } elseif ($type === 'core' && ($applied['ok'] ?? null) === false && $touched === false) {
+                    // GitHub issue #367. Core never has a directory snapshot
+                    // (D3), so the sentence below always ran for a failed core
+                    // update and read as a half-updated, unprotected site even
+                    // when WordPress had stopped before replacing a single core
+                    // file. Core_Upgrader::upgrade() writes nothing into the
+                    // WordPress directory until download and unpack have both
+                    // succeeded, which is exactly what an untouched
+                    // classification means for it. A touched or unclassified
+                    // core failure keeps the sentence below, byte for byte.
+                    $log .= "\n" . self::coreUntouchedCopy($applied);
                 } else {
                     $log .= "\nUpdate incomplete; no pre-update snapshot was available to auto-restore." . $reasonSuffix;
                 }
@@ -1017,6 +1114,8 @@ final class UpdateCommand implements CommandInterface
      *   D5 gate closed              unchanged, see the restore block
      *   D6 reactivation             reactivationCopy()
      *   D7 site busy                refuseSiteBusy()
+     *   D8 core, untouched failure  coreUntouchedCopy() (GitHub issue #367)
+     *   D9 core managed elsewhere   managedCoreCopy() (GitHub issue #367)
      *
      * @param string                    $type        'plugin'|'theme'.
      * @param array<string,mixed>       $applied     The runner's apply outcome.
@@ -1070,6 +1169,69 @@ final class UpdateCommand implements CommandInterface
         return 'The package failed before installing any file (' . self::failureReason($applied) . '), but this '
             . 'host could not verify the ' . $noun . ' directory afterwards (' . $verify['detail'] . '), so the '
             . 'pre-update snapshot is being restored as a precaution.';
+    }
+
+    /**
+     * D8: a `core` failure classified as stopping before any core file was
+     * replaced. Core has no directory snapshot by design, so without this the
+     * log said "no pre-update snapshot was available to auto-restore", which
+     * reads as a half-updated, unprotected site when nothing had changed.
+     *
+     * For a directory-creation failure it names the folder WordPress reported
+     * and the folder WordPress unpacks into, because that is the one thing the
+     * operator has to fix.
+     *
+     * @param array<string,mixed> $applied The runner's apply outcome.
+     * @return string
+     */
+    private static function coreUntouchedCopy(array $applied): string
+    {
+        $code  = (string) ($applied['failure_code'] ?? '');
+        $stage = (string) ($applied['failure_stage'] ?? '');
+
+        $copy = 'WordPress core was not changed: the update stopped'
+            . ($stage !== '' && $stage !== 'unknown' ? ' at the ' . $stage . ' step' : '')
+            . ($code !== '' ? ' (' . $code . ')' : '')
+            . ' before any core file was replaced.';
+
+        if (!str_starts_with($code, 'mkdir_failed_')) {
+            return $copy;
+        }
+
+        $folder = (string) ($applied['failure_data'] ?? '');
+        $copy  .= $folder !== ''
+            ? ' PHP could not create the folder ' . $folder . '.'
+            : ' PHP could not create a folder it needed.';
+
+        // Never an empty base: without WP_CONTENT_DIR there is no path to name.
+        if (defined('WP_CONTENT_DIR')) {
+            $contentDir = rtrim((string) constant('WP_CONTENT_DIR'), '/\\');
+            if ($contentDir !== '') {
+                $copy .= ' WordPress unpacks every update into ' . $contentDir . '/upgrade/ before it replaces any '
+                    . 'file, so PHP must be able to create folders there.';
+            }
+        }
+
+        return $copy;
+    }
+
+    /**
+     * D9: core on this site must not be updated from inside WordPress. One
+     * sentence per reason, because "managed by Composer" would be false on a
+     * site that only disallows file changes, and the remedies differ.
+     *
+     * @param array{reason:string,evidence:string} $managed ManagedCore::detect() verdict.
+     * @return string
+     */
+    private static function managedCoreCopy(array $managed): string
+    {
+        if ($managed['reason'] === ManagedCore::REASON_COMPOSER) {
+            return 'WordPress core on this site is managed by Composer; update it in composer.json and redeploy. '
+                . 'Core was not changed. Detected: ' . $managed['evidence'] . '.';
+        }
+
+        return 'WordPress core updates are turned off on this site: ' . $managed['evidence'] . ', and WordPress '
+            . 'does not update core in that state either. Core was not changed.';
     }
 
     /**
@@ -1205,7 +1367,7 @@ final class UpdateCommand implements CommandInterface
      * @param string $slug        Sanitized slug.
      * @param string $requested   Requested version ('latest' or x.y.z).
      * @param string $fromVersion Currently installed version.
-     * @return array{type:string,slug:string,from_version:string,to_version:string,status:string,snapshot_id:string,log:string}
+     * @return array{type:string,slug:string,from_version:string,to_version:string,status:string,snapshot_id:string,log:string,skip_reason?:string}
      */
     private function dryRun(string $type, string $slug, string $requested, string $fromVersion): array
     {
@@ -1280,6 +1442,11 @@ final class UpdateCommand implements CommandInterface
     /**
      * Build a single normalized result row matching the contract shape exactly.
      *
+     * `skip_reason` (GitHub issue #367) is present only on a row that sets one,
+     * so every other row is byte-identical to the previous release's. An older
+     * control plane ignores the key; a newer one maps it (see the SKIP_*
+     * constants).
+     *
      * @param string $type        Item type.
      * @param string $slug        Slug.
      * @param string $fromVersion From version.
@@ -1287,7 +1454,8 @@ final class UpdateCommand implements CommandInterface
      * @param string $status      Status enum.
      * @param string $snapshotId  Snapshot id (or empty).
      * @param string $log         Concise log (no secrets).
-     * @return array{type:string,slug:string,from_version:string,to_version:string,status:string,snapshot_id:string,log:string}
+     * @param string $skipReason  Why a `skipped` row was skipped ('' for none).
+     * @return array{type:string,slug:string,from_version:string,to_version:string,status:string,snapshot_id:string,log:string,skip_reason?:string}
      */
     private function result(
         string $type,
@@ -1296,9 +1464,10 @@ final class UpdateCommand implements CommandInterface
         string $toVersion,
         string $status,
         string $snapshotId,
-        string $log
+        string $log,
+        string $skipReason = ''
     ): array {
-        return [
+        $row = [
             'type'         => $type,
             'slug'         => $slug,
             'from_version' => $fromVersion,
@@ -1307,6 +1476,12 @@ final class UpdateCommand implements CommandInterface
             'snapshot_id'  => $snapshotId,
             'log'          => $log,
         ];
+
+        if ($skipReason !== '') {
+            $row['skip_reason'] = $skipReason;
+        }
+
+        return $row;
     }
 
     /**

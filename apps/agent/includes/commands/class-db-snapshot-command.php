@@ -3,9 +3,12 @@
  * DbSnapshotCommand: local database snapshot tool (#189).
  *
  * A db_snapshot is a FAST LOCAL safety-net for the WP server filesystem, distinct
- * from the durable encrypted backups produced by BackupCommand. The dump SQL lives
- * under wp-content/wpmgr-snapshots/db/ (not encrypted, not uploaded to object
- * storage). It is designed for "capture before a risky change, revert in one click".
+ * from the durable backups produced by BackupCommand. The dump SQL lives in
+ * wpmgr-snapshots/db/ under the uploads directory (under wp-content/ only when
+ * no uploads path is available), on the site's own disk, unencrypted and never
+ * uploaded to object storage. An uploads directory that exists but cannot be
+ * written is not replaced: create fails with a "not writable" error. It is
+ * designed for "capture before a risky change, revert in one click".
  *
  * Actions dispatched via the `action` field:
  *   create — dump the database using DbDumper (same engine as backups), write the
@@ -393,7 +396,8 @@ final class DbSnapshotCommand implements CommandInterface
     {
         // Uploads-first (wp.org Guideline compliance): user-generated DB snapshots
         // are stored under uploads/wpmgr-snapshots/db rather than wp-content/.
-        // Falls back to the legacy wp-content location for read-only-uploads hosts.
+        // wp-content is used only when no uploads path is available. An uploads
+        // directory that exists but cannot be written is an error below, not a fallback.
         $base = StoragePaths::dataBase('snapshots');
         if ($base === '') {
             throw new \RuntimeException('WPMgr DB Snapshot: cannot resolve a writable base directory (uploads and WP_CONTENT_DIR both unavailable)');

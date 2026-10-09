@@ -8,8 +8,8 @@ package admin
 //  2. status endpoint never returns the key
 //  3. UI key takes precedence over env
 //  4. clear falls back to env/none
-//  5. superadmin gating (non-superadmin is rejected at middleware level;
-//     tested via handler httptest since the DB check is in requireSuperadmin)
+//  5. gating: who the instance-email gate admits is tested through Register in
+//     vuln_feed_gate_test.go
 //  6. bad key (< 8 chars) returns a validation error, not a crash
 
 import (
@@ -24,6 +24,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
 	"github.com/mosamlife/wpmgr/apps/api/internal/cryptbox"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
@@ -232,16 +233,15 @@ func TestSetKey_Empty_ValidationError(t *testing.T) {
 // Handler endpoint tests
 // ---------------------------------------------------------------------------
 
-// buildTestEngine builds a Gin engine that does NOT check the superadmin DB
-// column but does inject a principal — used to test the vuln-feed handler logic
-// (not the middleware gate, which is tested separately).
+// buildTestEngine builds a Gin engine that injects a user principal and puts
+// the real instance-email gate in front of the vuln-feed handlers, over a fake
+// store that admits the caller as a superadmin. It is for the handler logic;
+// who the gate admits is tested in vuln_feed_gate_test.go through Register.
 func buildTestEngine(h *Handler) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	engine.Use(gin.Recovery())
 
-	// Inject a user principal directly (bypass requireSuperadmin middleware for
-	// service-logic tests; gating is tested in TestVulnFeedRoutes_RequiresSuperadmin).
 	engine.Use(func(c *gin.Context) {
 		ctx := domain.WithPrincipal(c.Request.Context(), domain.Principal{
 			Type:   domain.PrincipalUser,
@@ -251,8 +251,7 @@ func buildTestEngine(h *Handler) *gin.Engine {
 		c.Next()
 	})
 
-	// Mount routes WITHOUT requireSuperadmin so we can test handler logic directly.
-	g := engine.Group("/admin")
+	g := engine.Group("/admin", admingate.RequireInstanceEmailAuthority(&fakeInstanceStore{superadmin: true}, denyAdminGate))
 	g.GET("/vuln-feed/status", h.vulnFeedStatus)
 	g.PUT("/vuln-feed/key", h.vulnFeedSetKey)
 	g.DELETE("/vuln-feed/key", h.vulnFeedClearKey)
@@ -275,7 +274,7 @@ func TestVulnFeedStatus_NeverReturnsKey(t *testing.T) {
 	}
 
 	h := NewHandler(&Service{}, nil)
-	h.SetVulnFeed(meta, keySvc)
+	h.SetVulnFeed(meta, keySvc, nil)
 	engine := buildTestEngine(h)
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/vuln-feed/status", nil)
@@ -340,7 +339,7 @@ func TestVulnFeedStatus_ReflectsEnrichmentAvailable(t *testing.T) {
 				lastEnrichmentAt: tc.lastEnrichmentAt,
 			}
 			h := NewHandler(&Service{}, nil)
-			h.SetVulnFeed(meta, keySvc)
+			h.SetVulnFeed(meta, keySvc, nil)
 			engine := buildTestEngine(h)
 
 			req := httptest.NewRequest(http.MethodGet, "/admin/vuln-feed/status", nil)
@@ -381,7 +380,7 @@ func TestVulnFeedSetKey_TriggersSyncViaHandler(t *testing.T) {
 	keySvc := NewVulnFeedKeyService(repo, age, "", enq, nil)
 
 	h := NewHandler(&Service{}, nil)
-	h.SetVulnFeed(nil, keySvc)
+	h.SetVulnFeed(nil, keySvc, nil)
 	engine := buildTestEngine(h)
 
 	body := bytes.NewBufferString(`{"key":"valid-api-key-here"}`)
@@ -426,7 +425,7 @@ func TestVulnFeedClearKey_Handler(t *testing.T) {
 	}
 
 	h := NewHandler(&Service{}, nil)
-	h.SetVulnFeed(nil, keySvc)
+	h.SetVulnFeed(nil, keySvc, nil)
 	engine := buildTestEngine(h)
 
 	req := httptest.NewRequest(http.MethodDelete, "/admin/vuln-feed/key", nil)
@@ -454,42 +453,6 @@ func TestVulnFeedClearKey_Handler(t *testing.T) {
 	}
 }
 
-// Test 5: superadmin gating — a non-superadmin principal gets 403 when the
-// requireSuperadmin middleware is mounted.  We test this by mounting the
-// routes WITH the real middleware (mocked DB check).
-func TestVulnFeedRoutes_RequiresSuperadmin(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	engine := gin.New()
-	engine.Use(gin.Recovery())
-	// Inject a NON-superadmin principal.
-	engine.Use(func(c *gin.Context) {
-		ctx := domain.WithPrincipal(c.Request.Context(), domain.Principal{
-			Type:   domain.PrincipalUser,
-			UserID: uuid.New(),
-		})
-		c.Request = c.Request.WithContext(ctx)
-		c.Next()
-	})
-	// Mount a stub requireSuperadmin that always rejects (simulates non-SA user).
-	engine.Use(func(c *gin.Context) {
-		// Simulate the requireSuperadmin DB check returning is_superadmin=false.
-		from := domain.Forbidden("superadmin_required", "superadmin access required")
-		c.JSON(http.StatusForbidden, gin.H{"error": from.Error()})
-		c.Abort()
-	})
-	engine.GET("/admin/vuln-feed/status", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"ok": true})
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/admin/vuln-feed/status", nil)
-	w := httptest.NewRecorder()
-	engine.ServeHTTP(w, req)
-
-	if w.Code != http.StatusForbidden {
-		t.Errorf("non-superadmin: got HTTP %d; want 403", w.Code)
-	}
-}
-
 // Test: POST /admin/vuln-feed/sync enqueues a feed refresh job.
 func TestVulnFeedSync_Handler(t *testing.T) {
 	age := newTestAgeIdentity(t)
@@ -498,7 +461,7 @@ func TestVulnFeedSync_Handler(t *testing.T) {
 	keySvc := NewVulnFeedKeyService(repo, age, "env-key-xyz123", enq, nil)
 
 	h := NewHandler(&Service{}, nil)
-	h.SetVulnFeed(nil, keySvc)
+	h.SetVulnFeed(nil, keySvc, nil)
 	engine := buildTestEngine(h)
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/vuln-feed/sync", nil)

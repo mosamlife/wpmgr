@@ -960,8 +960,8 @@ func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.
 	}
 	if !target.BodyStored {
 		return ResendResult{}, domain.Conflict("resend_body_not_stored",
-			"resend is only available when body was captured at send time (body_stored=true); "+
-				"this entry was sent without body capture enabled")
+			"This email can't be resent, because its content was not kept when it was sent. "+
+				"Turn on Store email body in this site's email settings so future emails can be resent.")
 	}
 	if target.AgentSeq == nil || *target.AgentSeq < 1 {
 		return ResendResult{}, domain.Conflict("resend_agent_seq_missing",
@@ -1072,13 +1072,34 @@ func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.
 
 	detail := res.Detail
 	if !verified {
-		detail = strings.TrimSpace(detail + " " + resendUnverifiedNote(askedForCheck, legacyAgent))
+		detail = unverifiedResendDetail(res.Detail, resendUnverifiedNote(askedForCheck, legacyAgent))
 	}
 	return ResendResult{OK: true, Detail: detail, MessageID: res.MessageID, Verified: verified, LegacyAgent: legacyAgent}, nil
 }
 
+// agentResendSucceeded is the detail the agent's resend command answers on
+// success (the agent's resend contract). It is a code, not prose.
+const agentResendSucceeded = "resent"
+
+// unverifiedResendDetail is the operator's sentence for a resend that went out
+// unconfirmed. The dashboard shows it verbatim, so it opens with the outcome:
+// the note, which starts with "Sent". The agent's success code says nothing
+// the note does not, so it is not shown; any other detail the agent sent
+// follows the note rather than preceding it.
+func unverifiedResendDetail(agentDetail, note string) string {
+	agentDetail = strings.TrimSpace(agentDetail)
+	if agentDetail == "" || agentDetail == agentResendSucceeded {
+		return note
+	}
+	return note + " " + agentDetail
+}
+
 // resendUnverifiedNote is what an operator is told when the resend went out
 // without the GH #528 confirmation.
+//
+// GH #546: every variant answers "did it send?" first. It opens with "Sent",
+// then the caveat, then a reason only where the reader can act on it. It names
+// no internal field or identifier.
 //
 // DECISION (GH #528): a row with no recorded Message-ID is resent, not refused,
 // and the absence of confirmation is stated. Refusing would break resend for
@@ -1118,14 +1139,11 @@ func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.
 func resendUnverifiedNote(askedForCheck, legacyAgent bool) string {
 	switch {
 	case !askedForCheck:
-		return "Note: wpmgr could not confirm the site resent this exact message, because no " +
-			"provider message ID was recorded for this entry (usual when the original send failed) " +
-			"— there is nothing to fix here. The message has been sent; if this site's database was " +
-			"restored recently, check the delivery before relying on it."
+		return "Sent. This one could not be double-checked, because the original send left no " +
+			"delivery ID to compare. That is normal for an email whose first send failed."
 	case legacyAgent:
-		return "Note: wpmgr could not confirm the site resent this exact message, because this " +
-			"site's wpmgr plugin is too old to support the check. The message has been sent. " +
-			"Update the plugin on this site so future resends can be confirmed."
+		return "Sent. This site's plugin is too old to double-check that it resent the right " +
+			"message. Update the plugin to enable the check."
 	// default: askedForCheck=true, legacyAgent=false. A provider message ID
 	// WAS sent, and the site's plugin is current and did answer — it ran the
 	// comparison and reported back that it could not confirm the match. This
@@ -1147,10 +1165,7 @@ func resendUnverifiedNote(askedForCheck, legacyAgent bool) string {
 	// runs the check and honestly reports a non-match without refusing — with
 	// wording that states the truth if it is ever hit.
 	default:
-		return "Note: wpmgr could not confirm the site resent this exact message. A provider " +
-			"message ID was sent for this entry, and this site's wpmgr plugin is current and " +
-			"checked it — it reported that it could not confirm the match. There is nothing to " +
-			"fix here. The message has been sent."
+		return "Sent, but the site could not confirm it was the message you selected."
 	}
 }
 
@@ -1177,11 +1192,11 @@ func resendFailureMessage(detail string) string {
 		strings.Contains(detail, agentcmd.ResendDetailBadSeq):
 		return "the site rejected the resend request format; update the wpmgr plugin on this site"
 	case strings.Contains(detail, agentcmd.ResendDetailMessageIDMismatch):
-		return "wpmgr did not send this: it could not confirm that this is still the same email on " +
-			"the site, which can happen after the site's database has been restored. Nothing was " +
-			"sent, and this entry can't be resent from here. If you still need this email delivered, " +
-			"trigger it again on the site itself — for example, resubmit the form, resave the order, " +
-			"or whatever originally sent it"
+		// GH #546: the outcome first, then why, then what the reader can do.
+		return "Not sent. The site could not confirm this is still the same email, which can " +
+			"happen after the site's database is restored, so this entry can't be resent from " +
+			"here. If you still need it delivered, trigger it again on the site itself, for " +
+			"example by resubmitting the form or resaving the order that sent it"
 	case strings.Contains(detail, "status 404"):
 		return "this site's wpmgr plugin is too old to support resending; update the plugin and try again"
 	default:

@@ -4,7 +4,18 @@ import type { UpdateTask } from "@wpmgr/api";
 import { makeUpdateTask, serverRetryFields } from "@/test/update-task-fixtures";
 
 import {
-  isSiteDownRecovery,
+  CORE_LEFT_AS_IS_DETAIL,
+  CORE_NO_CHANGE_UNHEALTHY_DETAIL,
+  CORE_ROLLBACK_UNDELIVERABLE_DETAIL,
+  HEALTH_CHECK_FAILED_REASON,
+  PLUGIN_SITE_DOWN_DETAIL,
+  ROLLBACK_RAW_ERROR,
+} from "@/test/update-task-details";
+
+import {
+  siteDownFallbackDetail,
+  siteDownKind,
+  siteDownLabel,
   isRedirectFailure,
   isTerminalRunStatus,
   isAgentNotEligible,
@@ -100,46 +111,164 @@ describe("summarizeTasks", () => {
 // of truth every rendering surface (TaskStatusBadge, UpdateTasksTable,
 // AvailableUpdatesCard's RowStateLine) keys off.
 
-describe("isSiteDownRecovery", () => {
-  it("is true for a rolled_back task whose detail describes the condition", () => {
+describe("siteDownKind", () => {
+  it("is recovery_attempted for a rolled_back plugin whose detail describes the condition", () => {
     expect(
-      isSiteDownRecovery(
-        "rolled_back",
-        "The site went down site-wide; automatic filesystem recovery was attempted.",
-        undefined,
-      ),
-    ).toBe(true);
+      siteDownKind({
+        status: "rolled_back",
+        target_type: "plugin",
+        detail:
+          "The site went down site-wide; automatic filesystem recovery was attempted.",
+      }),
+    ).toBe("recovery_attempted");
   });
 
-  it("is true for a failed task whose error (not detail) describes the condition", () => {
+  it("is recovery_attempted for a failed theme whose error (not detail) describes the condition", () => {
     expect(
-      isSiteDownRecovery(
-        "failed",
-        undefined,
-        "Site is not responding; the rollback command was undeliverable and an agent watchdog attempted automatic recovery.",
-      ),
-    ).toBe(true);
+      siteDownKind({
+        status: "failed",
+        target_type: "theme",
+        error:
+          "Site is not responding; the rollback command was undeliverable and an agent watchdog attempted automatic recovery.",
+      }),
+    ).toBe("recovery_attempted");
   });
 
-  it("is false for an ordinary rolled_back/failed task with unrelated detail/error text", () => {
+  it("is recovery_attempted for the sentence the control plane writes for a plugin", () => {
     expect(
-      isSiteDownRecovery("rolled_back", "agent reported update failure", "activation check failed"),
-    ).toBe(false);
-    expect(isSiteDownRecovery("failed", "connection timed out", undefined)).toBe(false);
+      siteDownKind({
+        status: "failed",
+        target_type: "plugin",
+        detail: PLUGIN_SITE_DOWN_DETAIL,
+        error: ROLLBACK_RAW_ERROR,
+      }),
+    ).toBe("recovery_attempted");
   });
 
-  it("is false for a non-terminal-failure status even if the text matches (e.g. a stray log line on a running task)", () => {
+  it("is null for an ordinary rolled_back/failed task with unrelated detail/error text", () => {
     expect(
-      isSiteDownRecovery("running", "watchdog check in progress, site-wide scan", undefined),
-    ).toBe(false);
-    expect(isSiteDownRecovery("succeeded", "site-wide cache cleared", undefined)).toBe(false);
-    expect(isSiteDownRecovery("pending", undefined, undefined)).toBe(false);
-    expect(isSiteDownRecovery("skipped", undefined, undefined)).toBe(false);
+      siteDownKind({
+        status: "rolled_back",
+        target_type: "plugin",
+        detail: "agent reported update failure",
+        error: "activation check failed",
+      }),
+    ).toBeNull();
+    expect(
+      siteDownKind({
+        status: "failed",
+        target_type: "plugin",
+        detail: "connection timed out",
+      }),
+    ).toBeNull();
   });
 
-  it("is false when detail/error is empty on a terminal status", () => {
-    expect(isSiteDownRecovery("failed", undefined, undefined)).toBe(false);
-    expect(isSiteDownRecovery("rolled_back", "", "")).toBe(false);
+  it("is null for a non-terminal-failure status even if the text matches (e.g. a stray log line on a running task)", () => {
+    const text = "watchdog check in progress, site-wide scan";
+    for (const status of ["running", "succeeded", "pending", "skipped"]) {
+      expect(
+        siteDownKind({ status, target_type: "plugin", detail: text }),
+        status,
+      ).toBeNull();
+    }
+  });
+
+  it("is null when detail/error is empty on a terminal status", () => {
+    expect(
+      siteDownKind({ status: "failed", target_type: "plugin" }),
+    ).toBeNull();
+    expect(
+      siteDownKind({
+        status: "rolled_back",
+        target_type: "plugin",
+        detail: "",
+        error: "",
+      }),
+    ).toBeNull();
+  });
+
+  // GH #415: the agent's update watchdog exists for plugins and themes.
+  // WordPress core has no automatic recovery, and the control plane says so in
+  // its own sentence when core's rollback cannot be delivered.
+  describe("for WordPress core (GH #415)", () => {
+    it("is manual_recovery for the sentence the control plane writes when core's rollback could not be delivered", () => {
+      expect(
+        siteDownKind({
+          status: "failed",
+          target_type: "core",
+          detail: CORE_ROLLBACK_UNDELIVERABLE_DETAIL,
+          error: ROLLBACK_RAW_ERROR,
+        }),
+      ).toBe("manual_recovery");
+    });
+
+    it("is the same text, a different answer: plugin and core split on the target type alone", () => {
+      const task = { status: "failed", detail: CORE_ROLLBACK_UNDELIVERABLE_DETAIL };
+      expect(siteDownKind({ ...task, target_type: "plugin" })).toBe(
+        "recovery_attempted",
+      );
+      expect(siteDownKind({ ...task, target_type: "core" })).toBe(
+        "manual_recovery",
+      );
+    });
+
+    it.each([
+      ["left as is", CORE_LEFT_AS_IS_DETAIL],
+      ["reported no change but unhealthy", CORE_NO_CHANGE_UNHEALTHY_DETAIL],
+    ])("is null for core that %s: an ordinary failure", (_label, detail) => {
+      expect(
+        siteDownKind({
+          status: "failed",
+          target_type: "core",
+          detail,
+          error: HEALTH_CHECK_FAILED_REASON,
+        }),
+      ).toBeNull();
+    });
+
+    it("is null for a core task that was rolled back: it was restored, so the site is not down", () => {
+      expect(
+        siteDownKind({
+          status: "rolled_back",
+          target_type: "core",
+          detail: CORE_ROLLBACK_UNDELIVERABLE_DETAIL,
+        }),
+      ).toBeNull();
+    });
+
+    it("ignores the error log: for core only the control plane's own detail decides", () => {
+      expect(
+        siteDownKind({
+          status: "failed",
+          target_type: "core",
+          detail: CORE_LEFT_AS_IS_DETAIL,
+          error: "Site is not responding; watchdog attempted automatic recovery.",
+        }),
+      ).toBeNull();
+    });
+  });
+});
+
+describe("siteDownLabel and siteDownFallbackDetail", () => {
+  it("never tells an operator that recovery was attempted for core", () => {
+    expect(siteDownLabel("manual_recovery")).toBe(
+      "Site down, manual recovery needed",
+    );
+    expect(siteDownFallbackDetail("manual_recovery")).toMatch(
+      /nothing restores wordpress core automatically/i,
+    );
+    expect(siteDownFallbackDetail("manual_recovery")).not.toMatch(
+      /recovery was attempted/i,
+    );
+  });
+
+  it("keeps the recovery-attempted copy for a plugin or theme", () => {
+    expect(siteDownLabel("recovery_attempted")).toBe(
+      "Site down, recovery attempted",
+    );
+    expect(siteDownFallbackDetail("recovery_attempted")).toMatch(
+      /automatic filesystem recovery was attempted/i,
+    );
   });
 });
 
