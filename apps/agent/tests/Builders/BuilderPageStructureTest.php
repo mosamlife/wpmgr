@@ -307,17 +307,21 @@ final class BuilderPageStructureTest extends TestCase
         $seven = $this->structure(80, null, 7, []);
         $this->assertSame([600, true, 7], [$seven['node_count'], $seven['truncated'], count($seven['nodes'])], 'max_nodes');
 
-        // 1 + 99 long headings: the byte cap cuts first, over the whole answer.
+        // 1 + 599 headings of 40 characters: the byte cap cuts before the
+        // node cap, and it covers the whole answer, the post's fields too.
         $long = [];
-        for ($i = 1; $i < 100; ++$i) {
-            $long[] = self::widget(sprintf('%07x', 0x200000 + $i), 'heading', ['title' => str_repeat('x', 1000)]);
+        for ($i = 1; $i < 600; ++$i) {
+            $long[] = self::widget(sprintf('%07x', 0x200000 + $i), 'heading', ['title' => str_repeat('x', 40)]);
         }
         $this->page(81, 'publish', [self::element('d000000', 'container', ['flex_direction' => 'column'], $long)]);
         $out   = $this->structure(81, null, 500, []);
         $bytes = strlen((string) json_encode($out));
-        $this->assertSame([100, true], [$out['node_count'], $out['truncated']]);
+        $next  = strlen((string) json_encode(ElementorClassicMapper::project([self::element('d000000', 'container', ['flex_direction' => 'column'], $long)])->readOnly()->nodes()[count($out['nodes'])])) + 1;
+        $this->assertSame(600, $out['node_count']);
+        $this->assertTrue($out['truncated']);
+        $this->assertLessThan(500, count($out['nodes']), 'precondition: the bytes cut first');
         $this->assertLessThanOrEqual(BuilderContract::MAX_STRUCTURE_BYTES, $bytes, 'the whole answer fits the cap');
-        $this->assertGreaterThan(BuilderContract::MAX_STRUCTURE_BYTES - 1100, $bytes, 'cut after the last node that fits, not earlier');
+        $this->assertGreaterThan(BuilderContract::MAX_STRUCTURE_BYTES, $bytes + $next, 'cut after the last node that fits, not earlier');
         $parents = array_merge(['root'], array_column($out['nodes'], 'ref'));
         foreach ($out['nodes'] as $node) {
             $this->assertContains($node['parent'], $parents, 'every kept node keeps its parent');
