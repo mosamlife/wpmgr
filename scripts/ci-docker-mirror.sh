@@ -28,13 +28,19 @@
 # prefix is joined onto it; an image written docker.io/... is left alone). It
 # does not reach the build in the nginx smoke test.
 #
-# WHAT IT DOES. Merges
+# WHAT IT DOES. Logs out of Docker Hub (see forget_hub_credentials: the
+# daemon hands the runner's Docker Hub credentials to the mirror, which rejects
+# them, so a logged-in runner never uses the mirror at all). Then merges
 #   {"registry-mirrors": [<mirror>, ...whatever was there], "debug": true}
 # into the daemon's JSON config, keeping every other key, restarts the daemon,
 # waits for it with a bounded number of polls, and then checks that the RUNNING
 # daemon reports the mirror in `docker info`. `debug` is what makes the daemon
 # log which endpoint each pull tries; --report reads that back, so a run's own
 # log says where its images came from instead of leaving it to inference.
+#
+# CI ONLY. It edits the daemon config, restarts the daemon and logs out of
+# Docker Hub, so configure mode refuses to run unless GITHUB_ACTIONS=true (or
+# WPMGR_DOCKER_MIRROR_ALLOW_LOCAL=1 for a throwaway machine).
 #
 # EXIT CODES
 #   0  the mirror is active (or the report was printed)
@@ -124,11 +130,39 @@ want_json() {
   '
 }
 
+# The daemon forwards the Docker Hub credentials the CLI holds to every endpoint
+# it tries for an image on docker.io, mirrors included. The hosted runners carry
+# some (the token requests name account=githubactions), the mirror's token
+# endpoint answers them with "unauthorized: authentication failed", the daemon
+# gives the mirror up and goes to Docker Hub, and the mirror is never used.
+# Logging out leaves the pulls anonymous, which is all the mirror needs. A
+# failure here is a warning and not an exit: the mirror is then probably
+# useless, but the job can still pull from Docker Hub as it did before.
+forget_hub_credentials() {
+  local out
+  if out="$(docker logout 2>&1)"; then
+    echo "docker logout: ${out}"
+  else
+    echo "::warning title=Docker registry mirror::docker logout failed, so the mirror may reject the runner's Docker Hub credentials: ${out}"
+  fi
+}
+
 configure() {
   need docker
   need jq
+  need systemctl
+
+  # This rewrites the daemon config, restarts the daemon and logs out of Docker
+  # Hub. On a developer machine that is somebody's session, so it is refused
+  # unless this is a GitHub Actions runner or the caller says it is throwaway.
+  if [ "${GITHUB_ACTIONS:-}" != true ] && [ "${WPMGR_DOCKER_MIRROR_ALLOW_LOCAL:-}" != 1 ]; then
+    broken "refusing to rewrite the Docker daemon config and log out of Docker Hub outside GitHub Actions; set WPMGR_DOCKER_MIRROR_ALLOW_LOCAL=1 on a throwaway machine"
+  fi
 
   local current wanted normalized i
+
+  forget_hub_credentials
+
   current='{}'
   if [ -e "$DAEMON_JSON" ]; then
     current="$($SUDO cat "$DAEMON_JSON")" || broken "cannot read ${DAEMON_JSON}"
@@ -150,7 +184,6 @@ configure() {
   echo "wrote ${DAEMON_JSON}:"
   printf '%s\n' "$wanted"
 
-  need systemctl
   $SUDO systemctl restart docker || broken "systemctl restart docker failed"
 
   i=0

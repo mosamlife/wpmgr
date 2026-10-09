@@ -74,15 +74,20 @@ MIRROR='https://mirror.gcr.io'
 # ---------------------------------------------------------------------------
 mkdir -p "$WORK/fakes"
 
-# docker: only `info`, which answers the way a real daemon does: not at all
-# while it is down, and with the mirrors it was STARTED with (null when none)
-# once it is up.
+# docker: `info`, which answers the way a real daemon does: not at all while it
+# is down, and with the mirrors it was STARTED with (null when none) once it is
+# up; and `logout`, which records itself and can be made to fail.
 cat >"$WORK/fakes/docker" <<'EOF'
 #!/bin/sh
 case "$1" in
   info)
     [ -e "$FAKE_STATE/up" ] || exit 1
     if [ -e "$FAKE_STATE/mirrors" ]; then cat "$FAKE_STATE/mirrors"; else echo null; fi
+    ;;
+  logout)
+    echo logout >>"$FAKE_STATE/logouts"
+    if [ -e "$FAKE_STATE/logout-fails" ]; then echo "error: credential helper exploded" >&2; exit 1; fi
+    echo "Removing login credentials for https://index.docker.io/v1/"
     ;;
   *) echo "fake docker: unexpected call: $*" >&2; exit 99 ;;
 esac
@@ -141,6 +146,7 @@ new_runner() {
 run_script() {
   # shellcheck disable=SC2086
   env -i PATH="$E/bin" HOME="$E" FAKE_STATE="$E/state" \
+    GITHUB_ACTIONS="$GHA" \
     WPMGR_DOCKER_DAEMON_JSON="$CFG" \
     WPMGR_DOCKER_MIRROR_POLLS=3 WPMGR_DOCKER_MIRROR_POLL_SLEEP=0 \
     ${WPMGR_EXTRA:-} \
@@ -150,6 +156,10 @@ run_script() {
 
 restarts() {
   if [ -e "$E/state/restarts" ]; then grep -c restart "$E/state/restarts"; else echo 0; fi
+}
+
+logouts() {
+  if [ -e "$E/state/logouts" ]; then grep -c logout "$E/state/logouts"; else echo 0; fi
 }
 
 cfg_get() { jq -r "$1" "$CFG"; }
@@ -168,6 +178,7 @@ run_case() {
   if [ -n "$FILTER" ] && ! printf '%s' "$_name" | grep -Fq -- "$FILTER"; then return 0; fi
   CASE_FAIL=''
   WPMGR_EXTRA=''
+  GHA=true
   "$_fn"
   if [ -z "$CASE_FAIL" ]; then
     PASSED=$((PASSED + 1))
@@ -275,6 +286,47 @@ c_creates_missing_dir() {
 }
 run_case "configure: a missing config directory is created" c_creates_missing_dir
 
+c_logs_out() {
+  new_runner logout
+  run_script
+  expect_rc 0
+  expect_eq "$(logouts)" "1" "docker logout calls"
+  expect_out "docker logout: Removing login credentials"
+}
+run_case "configure: it logs out of Docker Hub so the mirror is not handed its credentials" c_logs_out
+
+c_logs_out_even_when_active() {
+  new_runner logoutactive
+  mkdir -p "$E/etc"
+  printf '{"debug":true,"registry-mirrors":["%s"]}\n' "$MIRROR" >"$CFG"
+  printf '["%s/"]\n' "$MIRROR" >"$E/state/mirrors"
+  run_script
+  expect_rc 0
+  expect_out "already active"
+  expect_eq "$(logouts)" "1" "docker logout calls"
+}
+run_case "configure: an already-active mirror still logs out" c_logs_out_even_when_active
+
+c_logout_failure_is_a_warning() {
+  new_runner logoutfails
+  : >"$E/state/logout-fails"
+  run_script
+  expect_rc 0
+  expect_out "::warning title=Docker registry mirror::docker logout failed"
+  expect_out "docker registry mirror active: $MIRROR"
+}
+run_case "configure: a failing docker logout is a warning and not an exit" c_logout_failure_is_a_warning
+
+c_allow_local() {
+  new_runner local
+  GHA=''
+  WPMGR_EXTRA='WPMGR_DOCKER_MIRROR_ALLOW_LOCAL=1'
+  run_script
+  expect_rc 0
+  expect_out "docker registry mirror active: $MIRROR"
+}
+run_case "configure: WPMGR_DOCKER_MIRROR_ALLOW_LOCAL=1 permits a run outside GitHub Actions" c_allow_local
+
 # ===========================================================================
 # configure: must fire
 # ===========================================================================
@@ -381,6 +433,18 @@ c_daemon_ignores_mirror() {
   expect_out "does not list $MIRROR"
 }
 run_case "fires: a daemon that comes back without the mirror is exit 2, not a pass" c_daemon_ignores_mirror
+
+c_refuses_outside_ci() {
+  new_runner outsideci
+  GHA=''
+  run_script
+  expect_rc 2
+  expect_out "outside GitHub Actions"
+  expect_eq "$(restarts)" "0" "restarts"
+  expect_eq "$(logouts)" "0" "docker logout calls"
+  [ ! -e "$CFG" ] || fail_with "a config was written outside GitHub Actions"
+}
+run_case "fires: configure mode outside GitHub Actions is exit 2 and touches nothing" c_refuses_outside_ci
 
 c_error_is_an_annotation() {
   new_runner annotation
@@ -522,12 +586,15 @@ run_case "report: an unreadable journal is said out loud and does not fail the j
 
 c_report_changes_nothing() {
   new_runner reportnochange
+  GHA=''
   : >"$E/state/journal"
   run_script --report
+  expect_rc 0
   expect_eq "$(restarts)" "0" "restarts"
+  expect_eq "$(logouts)" "0" "docker logout calls"
   [ ! -e "$CFG" ] || fail_with "--report wrote a config"
 }
-run_case "report: it never writes the config or restarts the daemon" c_report_changes_nothing
+run_case "report: it needs no GitHub Actions, never writes the config, restarts or logs out" c_report_changes_nothing
 
 # ===========================================================================
 # Summary
