@@ -24,8 +24,11 @@ encrypted email-delivery secrets. Scripts can rely on the following.
 | Options table (`wp_options`, or the site's own options table) | `wpmgr_agent_*`, `_transient_wpmgr_agent_*`, `_transient_timeout_wpmgr_agent_*`, `_site_transient_wpmgr_agent_*`, `_site_transient_timeout_wpmgr_agent_*` |
 | Network table on multisite (`wp_sitemeta`, column `meta_key`, for the network's `site_id`) | `wpmgr_agent_*`, `_site_transient_wpmgr_agent_*`, `_site_transient_timeout_wpmgr_agent_*` |
 
-- **Uninstall removes every row in the namespace**, including names this page
-  does not list and rows written by other agent releases.
+- **Uninstall removes every row in the namespace** from the options table of
+  the site it runs on (the main site, on multisite) and from the network table,
+  including names this page does not list and rows written by other agent
+  releases. On multisite, rows in other sites' own options tables are not
+  removed.
 - **To reset an install to never connected, remove every row in the namespace,
   in every form above, in one operation.** Never remove a subset: a copied
   site keeps the original site's keys until all of them are gone.

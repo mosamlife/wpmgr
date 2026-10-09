@@ -56,9 +56,10 @@ final class Lifecycle
      * apps/agent/README.md): the agent keeps its identity and connection state
      * in options whose names start with this prefix, a transient in the
      * namespace carries the prefix in its own name, and uninstall removes every
-     * row in the namespace whether or not it is listed anywhere. Store nothing
-     * under it that should outlive the plugin, and never change it without
-     * bumping the contract version.
+     * row in the namespace, listed or not, from the options table of the site it
+     * runs on and from the network table. Store nothing under it that should
+     * outlive the plugin, and never change it without bumping the contract
+     * version.
      */
     public const NAME_PREFIX = 'wpmgr_agent_';
 
