@@ -801,8 +801,8 @@ func (w *Worker) runApply(ctx context.Context, task Task, siteURL string, item a
 	// way; it falls through to the public probe below exactly like a healthy
 	// verdict does.
 	verdict, verifyDetail, agentAttempts := w.verifyAgentHealthWithRetry(ctx, task.SiteID, siteURL)
-	if verdict == agentHealthUnhealthy {
-		return w.rollback(ctx, task, siteURL, item, res, agentcmd.ProbeResult{}, true,
+	if verdict.failed() {
+		return w.rollback(ctx, task, siteURL, item, res, agentcmd.ProbeResult{}, verdict == agentHealthCrashed,
 			fmt.Sprintf("post-update agent reachability check failed after %d attempt(s): %s", agentAttempts, verifyDetail))
 	}
 
@@ -888,7 +888,7 @@ func (w *Worker) checkCoreReportedNoChange(ctx context.Context, task Task, siteU
 // nothing else; runApply's own tail keeps its per-verdict handling.
 func (w *Worker) postUpdateCheckFailure(ctx context.Context, siteID uuid.UUID, siteURL string) string {
 	verdict, verifyDetail, agentAttempts := w.verifyAgentHealthWithRetry(ctx, siteID, siteURL)
-	if verdict == agentHealthUnhealthy {
+	if verdict.failed() {
 		return fmt.Sprintf("post-update agent reachability check failed after %d attempt(s): %s", agentAttempts, verifyDetail)
 	}
 	probe, perr, attempts := w.probeHealthWithRetry(ctx, siteURL)
@@ -936,18 +936,31 @@ const (
 	agentHealthHealthy
 	// agentHealthUnhealthy means the signed command route itself returned a
 	// server error on EVERY attempt across verifyAgentHealthWithRetry's retry
-	// window, not merely once: PHP is persistently fatal-ing on every request,
-	// including the agent's own route. This is the strongest signal available
-	// short of total unreachability, and because it came back over a signed
-	// round trip rather than a cacheable public GET, it cannot be a stale
-	// cached read. A single unhealthy sample is deliberately NOT enough to
-	// reach this verdict (see verifyAgentHealthWithRetry): the agent's ping
-	// route is served by the same PHP and WordPress stack as the homepage, so
-	// it is exposed to the same transient migration-on-activation window,
-	// php-fpm restart, opcache reset, or WAF/CDN origin error that
-	// probeRetryDelays already exists to ride out for the public probe.
+	// window, not merely once, and the last answer was a gateway, unavailable
+	// or CDN error status (502, 503, 504, 52x) rather than HTTP 500. The check
+	// failed, so the update is treated as failed, but it is not a confirmed
+	// crash: like a timeout, it leaves WordPress core where the update put it
+	// (see confirmedFatal). A single unhealthy sample is deliberately NOT
+	// enough to reach this verdict (see verifyAgentHealthWithRetry): the
+	// agent's ping route is served by the same PHP and WordPress stack as the
+	// homepage, so it is exposed to the same transient
+	// migration-on-activation window, php-fpm restart, opcache reset, or
+	// WAF/CDN origin error that probeRetryDelays already exists to ride out
+	// for the public probe.
 	agentHealthUnhealthy
+	// agentHealthCrashed is agentHealthUnhealthy whose last answer was HTTP
+	// 500: PHP is persistently failing on every request, including the
+	// agent's own route. It is the signed check's confirmed crash. Because it
+	// came back over a signed round trip rather than a cacheable public GET,
+	// it cannot be a stale cached read.
+	agentHealthCrashed
 )
+
+// failed reports whether the signed check saw a server error on every
+// attempt, whether or not that confirms a crash.
+func (v agentHealthVerdict) failed() bool {
+	return v == agentHealthUnhealthy || v == agentHealthCrashed
+}
 
 // agentVerifier is the subset of *agentcmd.Client used for the agent-first
 // post-update reachability check. Defined locally, matching the method
@@ -983,8 +996,11 @@ func (w *Worker) verifyAgentHealth(ctx context.Context, siteID uuid.UUID, siteUR
 	if alive {
 		return agentHealthHealthy, "signed agent route reachable"
 	}
+	if reason == agentcmd.ReasonHTTP500 {
+		return agentHealthCrashed, "signed agent route returned a server error (HTTP 500, PHP fatal)"
+	}
 	if reason == agentcmd.ReasonHTTP5xx {
-		return agentHealthUnhealthy, "signed agent route returned a server error (PHP fatal)"
+		return agentHealthUnhealthy, "signed agent route returned a server error (a gateway, unavailable or CDN error status)"
 	}
 	return agentHealthInconclusive, fmt.Sprintf("agent reachability ambiguous (%s)", reason)
 }
@@ -997,10 +1013,11 @@ func (w *Worker) verifyAgentHealth(ctx context.Context, siteID uuid.UUID, siteUR
 // stack as the homepage, so a transient DB-migration-on-activation window (or
 // a php-fpm restart, opcache reset, or WAF/CDN origin error) can make it 5xx
 // for a few seconds exactly like the public homepage. Only a verdict that
-// STAYS agentHealthUnhealthy across the whole retry window reaches that
-// conclusion here; a verdict that resolves to healthy or inconclusive at any
-// attempt returns immediately, mirroring probeHealthWithRetry's early return
-// on postUpdateHealthy.
+// STAYS a server error (agentHealthUnhealthy or agentHealthCrashed) across the
+// whole retry window reaches that conclusion here, and the last attempt's
+// answer decides which of the two it is; a verdict that resolves to healthy
+// or inconclusive at any attempt returns immediately, mirroring
+// probeHealthWithRetry's early return on postUpdateHealthy.
 func (w *Worker) verifyAgentHealthWithRetry(ctx context.Context, siteID uuid.UUID, siteURL string) (verdict agentHealthVerdict, detail string, attempts int) {
 	delays := probeRetryDelays
 	if w.probeDelays != nil {
@@ -1009,7 +1026,7 @@ func (w *Worker) verifyAgentHealthWithRetry(ctx context.Context, siteID uuid.UUI
 	for i := 0; ; i++ {
 		attempts = i + 1
 		verdict, detail = w.verifyAgentHealth(ctx, siteID, siteURL)
-		if verdict != agentHealthUnhealthy {
+		if !verdict.failed() {
 			return verdict, detail, attempts
 		}
 		if i >= len(delays) {
@@ -1045,7 +1062,7 @@ const (
 // for a site the update may never have touched. A CacheHit result is always
 // classified inconclusive, regardless of its status code.
 //
-// A 5xx status or a fatal-error body signature is unhealthy (unchanged from
+// A 5xx status or WordPress's error screen is unhealthy (unchanged from
 // Healthy()). A 401 or 403 is healthy, because those are common and
 // legitimate on the homepage (staging HTTP auth, a members-only site, a
 // security plugin) and rolling back a good update because of one would be its
@@ -1116,23 +1133,25 @@ func (w *Worker) probeHealthWithRetry(ctx context.Context, siteURL string) (prob
 	}
 }
 
-// confirmedFatal reports whether the post-update check itself saw the site
-// fail hard: the signed agent check's own server error (agentConfirmedFatal),
-// a PHP fatal-error page, or a 5xx homepage. A probe that got no answer (a
-// timeout, a refused connection) does not count, and neither does a cached
-// response, which says nothing about the backend as it is now.
+// confirmedFatal reports whether the post-update check itself confirmed a
+// crash, and nothing else does: an HTTP 500 from the signed agent check
+// (agentConfirmedFatal), an HTTP 500 from the homepage, or WordPress's own
+// error screen on the homepage (probe.Fatal). Any other server error status
+// (502, 503, 504, a CDN 52x) counts as a timeout does: the check failed, but
+// no crash is confirmed. Neither counts a cached response, which says nothing
+// about the backend as it is now.
 func confirmedFatal(probe agentcmd.ProbeResult, agentConfirmedFatal bool) bool {
 	if agentConfirmedFatal {
 		return true
 	}
-	return !probe.CacheHit && (probe.Fatal || probe.StatusCode >= 500)
+	return !probe.CacheHit && (probe.Fatal || probe.StatusCode == http.StatusInternalServerError)
 }
 
 // coreLeftAsIsDetail is the task detail when a core update fails its health
 // check without a confirmed fatal. The check's own reason goes to the task's
 // error log.
 const coreLeftAsIsDetail = "WordPress core was updated, but the site did not pass the health check afterwards. " +
-	"Core was left as is: an automatic core rollback runs only when the check confirms a server error or a PHP fatal error, " +
+	"Core was left as is: an automatic core rollback runs only when the check confirms a crash (an HTTP 500 or WordPress's error screen), " +
 	"and this check did not. Check the site."
 
 // coreRollbackUndeliverableDetail is the GH #210 detail for core. The agent
@@ -1148,9 +1167,9 @@ const coreRollbackUndeliverableDetail = "The site is down after the WordPress co
 // the GH #291 Phase 4 agent-first check, rather than a reachable-but-unhealthy
 // public-probe response). agentConfirmedFatal is true when the rollback
 // decision came from the signed agent-first reachability check itself
-// returning a server error (agentHealthUnhealthy), which is exactly as strong
-// a "site-wide PHP fatal" signal as probe.Fatal or probe.StatusCode >= 500,
-// but arrives with no ProbeResult to carry it. Together they decide
+// returning HTTP 500 (agentHealthCrashed), which is exactly as strong a
+// "site-wide PHP fatal" signal as probe.Fatal or a homepage 500, but arrives
+// with no ProbeResult to carry it. Together they decide
 // confirmedFatal, which gates a core rollback and classifies a
 // rollback-transport failure below (GH #210).
 //
@@ -1189,9 +1208,9 @@ func (w *Worker) rollback(ctx context.Context, task Task, siteURL string, item a
 		// both the health reason and the rollback error so the operator is alerted.
 		detail := "rollback FAILED after unhealthy update: " + reason
 		// GH #210: when the post-update health check ITSELF detected a
-		// site-wide PHP fatal (a fatal-error body signature, a 5xx probe
+		// site-wide PHP fatal (WordPress's error screen, a 500 probe
 		// response, or the GH #291 Phase 4 signed agent-first check itself
-		// getting a 5xx, agentConfirmedFatal) AND the rollback command's
+		// getting a 500, agentConfirmedFatal) AND the rollback command's
 		// transport also errored, the site is very likely serving a
 		// site-wide PHP fatal that makes the agent's own REST endpoint
 		// undeliverable, a distinct, more actionable failure mode than a
