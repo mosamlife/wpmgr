@@ -14,8 +14,10 @@ import { z } from "zod";
 // whole request "not showable" instead of being dropped from the screen while
 // the owner approves. A stripping parse here would hide a field the AI sent.
 //
-// Text rules (blank, controls, markup, per-field lengths) are the agent's
-// alone. This side checks that a text value is a string and nothing more.
+// Text rules (blank, controls, markup, character references, per-field
+// lengths) are the agent's alone. This side checks that a text value is a
+// string and nothing more. Links are not text: their rules are the control
+// plane's, and parseLink holds them.
 
 /** Limits of the outline grammar (page_create_input.go, the pageCreate* constants). */
 export const OUTLINE_LIMITS = {
@@ -43,6 +45,9 @@ export const OUTLINE_LIMITS = {
 const URL_CHARSET = /^[A-Za-z0-9\-._~:/?#!$&()*+,;=%@]+$/;
 const LINK_AUTHORITY = /^((?:[A-Za-z0-9-]+\.)+[A-Za-z0-9-]+)(?::([0-9]{1,5}))?$/;
 const HEX_DIGIT = /^[0-9a-fA-F]$/;
+// An "&" that starts a character reference: a name, a decimal number or a hex
+// number, then ";". A link holds none.
+const CHARACTER_REFERENCE = /&(?:[A-Za-z0-9]+|#[0-9]+|#[xX][0-9A-Fa-f]+);/;
 
 /** A button link the grammar accepts, reduced to what the card needs. */
 export type ParsedLink =
@@ -55,9 +60,11 @@ export type ParsedLink =
 
 /**
  * A button link the control plane accepts (pageLinkUsable): a path on the site
- * that starts with one "/", or an https:// address with a lowercase scheme, a
- * dotted DNS host, an optional port 1 to 65535 and no user name or password.
- * Null for anything else, so the request is not shown or approvable here.
+ * that starts with one "/" and holds no colon and no "&#" (a colon is written
+ * %3A), or an https:// address with a lowercase scheme, a dotted DNS host, an
+ * optional port 1 to 65535 and no user name or password. Neither form holds an
+ * "&" that starts a character reference. Null for anything else, so the
+ * request is not shown or approvable here.
  *
  * Hosts are ASCII by the character set, which is why the card needs no bidi
  * isolation for them: punycode ("xn--") hosts are shown exactly as written.
@@ -69,8 +76,10 @@ export function parseLink(url: string): ParsedLink | null {
       return null;
     }
   }
+  if (CHARACTER_REFERENCE.test(url)) return null;
   if (url.startsWith("/")) {
-    return url.length === 1 || (url[1] !== "/" && url[1] !== "\\") ? { kind: "path" } : null;
+    if (url.length > 1 && (url[1] === "/" || url[1] === "\\")) return null;
+    return url.includes(":") || url.includes("&#") ? null : { kind: "path" };
   }
   if (!url.startsWith("https://")) return null;
   const rest = url.slice("https://".length);
