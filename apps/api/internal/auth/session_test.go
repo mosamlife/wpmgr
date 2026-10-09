@@ -50,14 +50,31 @@ func TestSessionOAuthRoundTrip(t *testing.T) {
 	m := NewSessionManagerWithStore(scs.New(), false)
 	ctx := loadCtx(t, m)
 
-	m.putOAuth(ctx, "state-1", "nonce-1", "verifier-1")
-	state, nonce, verifier := m.takeOAuth(ctx)
-	if state != "state-1" || nonce != "nonce-1" || verifier != "verifier-1" {
-		t.Fatalf("oauth round trip mismatch: %q %q %q", state, nonce, verifier)
+	m.putOAuth(ctx, "state-1", "nonce-1", "verifier-1", "/sites/abc")
+	state, nonce, verifier, returnTo := m.takeOAuth(ctx)
+	if state != "state-1" || nonce != "nonce-1" || verifier != "verifier-1" || returnTo != "/sites/abc" {
+		t.Fatalf("oauth round trip mismatch: %q %q %q %q", state, nonce, verifier, returnTo)
 	}
 	// Values are popped (cleared) on read.
-	state2, _, _ := m.takeOAuth(ctx)
-	if state2 != "" {
-		t.Fatal("oauth state should be cleared after take")
+	state2, _, _, returnTo2 := m.takeOAuth(ctx)
+	if state2 != "" || returnTo2 != "" {
+		t.Fatalf("oauth handshake should be cleared after take: state=%q return=%q", state2, returnTo2)
+	}
+}
+
+// A handshake started with no deep link must not inherit the one an abandoned
+// earlier handshake carried: putOAuth replaces the return path too.
+func TestSessionOAuthReplacesAnAbandonedReturnPath(t *testing.T) {
+	m := NewSessionManagerWithStore(scs.New(), false)
+	ctx := loadCtx(t, m)
+
+	m.putOAuth(ctx, "state-1", "nonce-1", "verifier-1", "/sites/abc")
+	m.putOAuth(ctx, "state-2", "nonce-2", "verifier-2", "")
+	state, _, _, returnTo := m.takeOAuth(ctx)
+	if state != "state-2" {
+		t.Fatalf("state = %q, want the second handshake's", state)
+	}
+	if returnTo != "" {
+		t.Fatalf("return path = %q, want the abandoned handshake's deep link gone", returnTo)
 	}
 }
