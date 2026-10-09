@@ -28,6 +28,7 @@
 #   RT_NPX              npx to run (default: npx on PATH)
 #   RT_NODE             node to run (default: node on PATH)
 #   RT_PINS_FILE        the pin table (default: pins.txt beside this script)
+#   RT_BLUEPRINT        the Playground blueprint (default: blueprint.json beside this script)
 #   RT_VERSIONS         space separated Elementor versions to run (default: every
 #                       elementor line in the pins). Set to nothing, it is red.
 #   RT_CACHE            where verified downloads are kept between runs (default
@@ -35,6 +36,8 @@
 #   RT_FIXTURES_DIR     the golden fixtures (default apps/agent/tests/fixtures/ability-run)
 #   RT_AGENT_INCLUDES   the agent's includes dir (default apps/agent/includes)
 #   RT_PLANT            space separated plant=<kind>@<case> tokens for the harness
+#   RT_HARNESS_ARGS     space separated key=value tokens appended to the harness's
+#                       arguments; a later token overrides an earlier one
 #   RT_TIMEOUT          seconds one boot may take (default 600)
 #   RT_ALLOW_FILE_URLS  1 lets a pin name a file:// url
 set -euo pipefail
@@ -178,7 +181,7 @@ pin_of() {
 }
 
 # --- the blueprint must agree with the pins -----------------------------------------
-blueprint="$here/blueprint.json"
+blueprint="${RT_BLUEPRINT:-$here/blueprint.json}"
 [ -f "$blueprint" ] || die "blueprint missing: $blueprint"
 bp_facts="$("$NODE" -e '
   const bp = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
@@ -278,6 +281,10 @@ plants=()
 if [ -n "${RT_PLANT-}" ]; then
   read -r -a plants <<<"$RT_PLANT" || true
 fi
+extra_args=()
+if [ -n "${RT_HARNESS_ARGS-}" ]; then
+  read -r -a extra_args <<<"$RT_HARNESS_ARGS" || true
+fi
 
 # --- one boot per version ----------------------------------------------------------------
 bad=0     # a version found a defect
@@ -304,7 +311,7 @@ for v in "${selected[@]}"; do
     --mount="$fixtures_dir:/rt/fixtures" \
     --mount="$here:/rt/harness" \
     --verbosity=quiet \
-    -- /rt/harness/harness.php "elementor=$v" "wp=$wp_ver" "php=$php_ver" "zip_sha256=$sha" "stored=$form" ${plants[@]+"${plants[@]}"} \
+    -- /rt/harness/harness.php "elementor=$v" "wp=$wp_ver" "php=$php_ver" "zip_sha256=$sha" "stored=$form" ${plants[@]+"${plants[@]}"} ${extra_args[@]+"${extra_args[@]}"} \
     >"$log" 2>&1 &
   child=$!
   set -e
