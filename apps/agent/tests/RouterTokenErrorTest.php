@@ -405,7 +405,7 @@ final class RouterTokenErrorTest extends TestCase
     public function test_the_debug_log_redacts_key_material_from_the_reason(): void
     {
         $padded = 'JpXsrsvpkJ4QU9D43mEqo/DWxzeE2nX9GPs/Zi7BpTA=';
-        $throw  = null;
+        $throw  = new \RuntimeException('replaced before every call');
 
         $lines   = [];
         $handles = [
@@ -642,7 +642,7 @@ final class RouterTokenErrorTest extends TestCase
      * Everything a caller can observe about a refusal.
      *
      * @param bool|\WP_Error $result Permission-callback result.
-     * @return array{0:string,1:string,2:array<mixed>}
+     * @return array{0:int|string,1:string,2:mixed}
      */
     private function describe($result): array
     {
