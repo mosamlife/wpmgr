@@ -350,7 +350,8 @@ describe("a draft Elementor created", () => {
   });
 
   it.each([
-    ["no address", undefined],
+    ["no address", null],
+    ["an empty address", ""],
     ["a javascript address", "javascript:alert(1)"],
     ["an address that is not a URL", "not a url"],
   ])("offers no link with %s", async (_name, siteUrl) => {
