@@ -20526,8 +20526,7 @@ components:
         outcome: { type: string, nullable: true }
         outcome_code: { type: string, nullable: true }
         outcome_detail:
-          type: string
-          nullable: true
+          type: [string, "null"]
           enum: [changed_since_read, editor_open, autosave_pending, null]
           description: |
             Which conflict refused a wpmgr/page-edit (`outcome_code`

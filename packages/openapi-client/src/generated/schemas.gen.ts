@@ -8181,8 +8181,7 @@ export const AbilityRequestSchema = {
       nullable: true,
     },
     outcome_detail: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       enum: ["changed_since_read", "editor_open", "autosave_pending", null],
       description:
         "Which conflict refused a wpmgr/page-edit (`outcome_code`\nconflict): the page changed after the AI read it\n(changed_since_read), someone has it open in Elementor\n(editor_open), or someone has unsaved Elementor changes on it\n(autosave_pending). Null for every other request. A closed\nvalue, never the site's own words.\n",

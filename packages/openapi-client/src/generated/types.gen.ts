@@ -4737,7 +4737,11 @@ export type AbilityRequest = {
    * value, never the site's own words.
    *
    */
-  outcome_detail?: "changed_since_read" | "editor_open" | "autosave_pending";
+  outcome_detail?:
+    | "changed_since_read"
+    | "editor_open"
+    | "autosave_pending"
+    | null;
   not_sent_reason?: string;
   created_post_id?: number;
   trashed?: boolean;
