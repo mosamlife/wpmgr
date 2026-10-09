@@ -260,6 +260,33 @@ final class LifecycleOwnedOptionsTest extends TestCase
     }
 
     /**
+     * Transients named by a *TRANSIENT* constant in the namespace are removed
+     * through the transient API, which is the only path that reaches them
+     * when a persistent object cache holds them (here: no $wpdb at all).
+     */
+    public function test_named_transients_are_removed_without_the_database_sweep(): void
+    {
+        unset($GLOBALS['wpdb']);
+
+        $transients = array_filter(
+            self::namespaceConstants(),
+            static fn (string $key): bool => strpos(substr($key, (int) strrpos($key, '::')), 'TRANSIENT') !== false,
+            ARRAY_FILTER_USE_KEY
+        );
+        $this->assertArrayHasKey(\WPMgr\Agent\Plugin::class . '::TRANSIENT_KEYSTORE_PROBE', $transients, 'positive control: discovery finds transient constants');
+
+        foreach ($transients as $name) {
+            foreach (['_transient_', '_transient_timeout_', '_site_transient_', '_site_transient_timeout_'] as $form) {
+                $this->options[$form . $name] = 'seeded';
+            }
+        }
+
+        $this->lifecycle()->wipeAll();
+
+        $this->assertSame([], self::rowsIn($this->options, self::OPTIONS_TABLE_FORMS), 'named transients survived uninstall');
+    }
+
+    /**
      * The sweep is anchored, escapes LIKE wildcards, and re-checks the exact
      * prefix: nothing outside the namespace is selected or removed.
      */
