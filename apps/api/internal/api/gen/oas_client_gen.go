@@ -1391,6 +1391,23 @@ type Invoker interface {
 	//
 	// POST /api/v1/clients/{clientId}/reports
 	GenerateClientReport(ctx context.Context, request OptGenerateClientReportRequest, params GenerateClientReportParams) (GenerateClientReportRes, error)
+	// GetAIConnectionUsage invokes getAIConnectionUsage operation.
+	//
+	// For one AI connection: whether it may run changes automatically (`ai_auto`), who allowed that and
+	// whether the permission still holds (`auto_setter_valid`), and how much it has run automatically in
+	// the rolling window against the limits WPMgr sets. The limits are fixed by the server and cannot be
+	// edited. Above a limit a change waits for a person instead of running; the connection is not refused.
+	//
+	// `auto_setter_valid` is the check the decision engine runs on every request: the person who allowed
+	// the connection must still be a full member who can manage connections, with an active account. When
+	// it is false, every change from the connection waits for a person until one allows it again with
+	// `PUT .../auto`.
+	//
+	// Requires `apikey:read`. A connection is an organisation-wide credential, so a site-constrained
+	// principal is refused with 403 `org_scope_required`.
+	//
+	// GET /api/v1/ai/connections/{grantId}/usage
+	GetAIConnectionUsage(ctx context.Context, params GetAIConnectionUsageParams) (GetAIConnectionUsageRes, error)
 	// GetAdminAccount invokes getAdminAccount operation.
 	//
 	// Returns the account header, usage-vs-entitlement meters, subscription card, a merged
@@ -1912,6 +1929,25 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites/{siteId}
 	GetSite(ctx context.Context, params GetSiteParams) (GetSiteRes, error)
+	// GetSiteAIMode invokes getSiteAIMode operation.
+	//
+	// A site's mode decides which changes an AI connection makes run at once and which wait for a person
+	// to approve them:
+	//
+	//  - `ask`: every change waits for a person.
+	//  - `ai_drafts`: a draft the AI makes, and an edit to a draft it made, runs at once and can be
+	//    undone. Everything else waits.
+	//  - `full`: reserved. The mode routes never set it.
+	//
+	// The answer also says who chose the mode and when, the `version` a change must echo, whether the
+	// setting would be honoured today (`setter_valid`), which modes the caller may choose and why a mode
+	// is not offered (`options`), and what each mode covers (`kinds`). All of it is WPMgr's own text
+	// except `set_by_name`, a person's name: render it as plain text.
+	//
+	// Requires `site.content.read` and access to the site.
+	//
+	// GET /api/v1/sites/{siteId}/ai/mode
+	GetSiteAIMode(ctx context.Context, params GetSiteAIModeParams) (GetSiteAIModeRes, error)
 	// GetSiteAIReadiness invokes getSiteAIReadiness operation.
 	//
 	// A checklist computed by the control plane from what the site last reported: WordPress and WPMgr
@@ -2203,6 +2239,21 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/media/clean/isolate
 	IsolateUnusedMedia(ctx context.Context, request *MediaCleanIsolateRequest, params IsolateUnusedMediaParams) (*MediaCleanIsolateResult, error)
+	// ListAIActivity invokes listAIActivity operation.
+	//
+	// Every request an AI connection made that a person or a setting approved, newest first, from both
+	// kinds of request (site changes and cache clears) in one list. A request that was never approved
+	// (still waiting, declined, withdrawn or expired) is not listed; the request queues list those. Each
+	// item carries the same request object the queues return, so a card can be shown from it without
+	// another call. For a site change, `approval` says whether a person or a setting approved it.
+	//
+	// Paged by keyset on `(created_at, id)`: pass the previous page's `next_cursor` as `cursor`.
+	// `next_cursor` is null on the last page. A site collaborator sees only requests on their own sites.
+	//
+	// Requires `site.content.edit`.
+	//
+	// GET /api/v1/ai/activity
+	ListAIActivity(ctx context.Context, params ListAIActivityParams) (ListAIActivityRes, error)
 	// ListAbilityRequests invokes listAbilityRequests operation.
 	//
 	// This organisation's AI site-change requests the caller can see, newest first, optionally narrowed to
@@ -2904,6 +2955,28 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/perf/cache/purge
 	PurgeCache(ctx context.Context, request *PurgeRequest, params PurgeCacheParams) (PurgeCacheRes, error)
+	// PutAIConnectionAuto invokes putAIConnectionAuto operation.
+	//
+	// `site_setting` lets the connection run changes automatically wherever a site's mode allows it.
+	// `never` makes every change from the connection wait for a person, whatever any site's mode says. A
+	// connection can only narrow what a site's mode allows, never widen it.
+	//
+	// Saving `site_setting` needs a signed-in person who holds `apikey:manage`, and records that person as
+	// the one who allowed it, even when the connection is already set to `site_setting`; that is how a
+	// connection is allowed again once the person who allowed it lost the access it needs
+	// (`auto_setter_valid` is false). Any other caller, API keys included, is refused with 403
+	// `session_required`, and an MCP bearer token with 401. While the organisation's AI is paused, saving
+	// `site_setting` is refused with 409 `paused`. Saving `never` is open to every caller who holds
+	// `apikey:manage`.
+	//
+	// A connection is an organisation-wide credential, so a site-constrained principal is refused with 403
+	// `org_scope_required`. A connection created with an API key starts on `never`. The change and its
+	// audit row commit together. The body must be JSON.
+	//
+	// Requires `apikey:manage`.
+	//
+	// PUT /api/v1/ai/connections/{grantId}/auto
+	PutAIConnectionAuto(ctx context.Context, request *PutAIConnectionAutoRequest, params PutAIConnectionAutoParams) (PutAIConnectionAutoRes, error)
 	// PutAlertConfig invokes putAlertConfig operation.
 	//
 	// Sets the email recipients, webhook URL + signing secret, and enabled flag for downtime/recovery
@@ -2999,6 +3072,27 @@ type Invoker interface {
 	//
 	// PUT /api/v1/sites/{siteId}/perf/config
 	PutPerfConfig(ctx context.Context, request *PerfConfig, params PutPerfConfigParams) (PutPerfConfigRes, error)
+	// PutSiteAIMode invokes putSiteAIMode operation.
+	//
+	// Sets the site's mode to `ask` or `ai_drafts`. The body carries the `version` the caller last read.
+	// If the mode was changed since, nothing is saved and the answer is 409 `stale_version`, whose
+	// `details` carry the current `mode` and `version`. Saving the mode that is already set is allowed and
+	// records the caller as the person who chose it; that is how a setting is chosen again once the person
+	// who chose it lost the access it needs (`setter_valid` is false).
+	//
+	// Only a signed-in person can raise the mode to `ai_drafts`. Any other caller, API keys included, is
+	// refused with 403 `session_required`, and an MCP bearer token is refused with 401. Lowering to `ask`
+	// is open to every caller who holds `site.content.edit`; made by a caller that is not a signed-in
+	// person it is recorded with source `tightened` and no person. A body that names `full` is refused
+	// with 422 `use_full_auto_route`, because this route does not set it. While the organisation's AI is
+	// paused, raising is refused with 409 `paused`; lowering never is.
+	//
+	// The change and its audit row commit together. The body must be JSON.
+	//
+	// Requires `site.content.edit` and access to the site.
+	//
+	// PUT /api/v1/sites/{siteId}/ai/mode
+	PutSiteAIMode(ctx context.Context, request *PutSiteAIModeRequest, params PutSiteAIModeParams) (PutSiteAIModeRes, error)
 	// PutSiteAppHealthSettings invokes putSiteAppHealthSettings operation.
 	//
 	// Stores `{app_probe_path, app_alerts_disabled}` for the site (GH #291 Phase 3). `app_probe_path` must
@@ -17926,6 +18020,116 @@ func (c *Client) sendGenerateClientReport(ctx context.Context, request OptGenera
 	return result, nil
 }
 
+// GetAIConnectionUsage invokes getAIConnectionUsage operation.
+//
+// For one AI connection: whether it may run changes automatically (`ai_auto`), who allowed that and
+// whether the permission still holds (`auto_setter_valid`), and how much it has run automatically in
+// the rolling window against the limits WPMgr sets. The limits are fixed by the server and cannot be
+// edited. Above a limit a change waits for a person instead of running; the connection is not refused.
+//
+// `auto_setter_valid` is the check the decision engine runs on every request: the person who allowed
+// the connection must still be a full member who can manage connections, with an active account. When
+// it is false, every change from the connection waits for a person until one allows it again with
+// `PUT .../auto`.
+//
+// Requires `apikey:read`. A connection is an organisation-wide credential, so a site-constrained
+// principal is refused with 403 `org_scope_required`.
+//
+// GET /api/v1/ai/connections/{grantId}/usage
+func (c *Client) GetAIConnectionUsage(ctx context.Context, params GetAIConnectionUsageParams) (GetAIConnectionUsageRes, error) {
+	res, err := c.sendGetAIConnectionUsage(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetAIConnectionUsage(ctx context.Context, params GetAIConnectionUsageParams) (res GetAIConnectionUsageRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getAIConnectionUsage"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/ai/connections/{grantId}/usage"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetAIConnectionUsageOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/ai/connections/"
+	{
+		// Encode "grantId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "grantId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.GrantId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/usage"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetAIConnectionUsageResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetAdminAccount invokes getAdminAccount operation.
 //
 // Returns the account header, usage-vs-entitlement meters, subscription card, a merged
@@ -24209,6 +24413,118 @@ func (c *Client) sendGetSite(ctx context.Context, params GetSiteParams) (res Get
 	return result, nil
 }
 
+// GetSiteAIMode invokes getSiteAIMode operation.
+//
+// A site's mode decides which changes an AI connection makes run at once and which wait for a person
+// to approve them:
+//
+//   - `ask`: every change waits for a person.
+//   - `ai_drafts`: a draft the AI makes, and an edit to a draft it made, runs at once and can be
+//     undone. Everything else waits.
+//   - `full`: reserved. The mode routes never set it.
+//
+// The answer also says who chose the mode and when, the `version` a change must echo, whether the
+// setting would be honoured today (`setter_valid`), which modes the caller may choose and why a mode
+// is not offered (`options`), and what each mode covers (`kinds`). All of it is WPMgr's own text
+// except `set_by_name`, a person's name: render it as plain text.
+//
+// Requires `site.content.read` and access to the site.
+//
+// GET /api/v1/sites/{siteId}/ai/mode
+func (c *Client) GetSiteAIMode(ctx context.Context, params GetSiteAIModeParams) (GetSiteAIModeRes, error) {
+	res, err := c.sendGetSiteAIMode(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetSiteAIMode(ctx context.Context, params GetSiteAIModeParams) (res GetSiteAIModeRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getSiteAIMode"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/ai/mode"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetSiteAIModeOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/ai/mode"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetSiteAIModeResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetSiteAIReadiness invokes getSiteAIReadiness operation.
 //
 // A checklist computed by the control plane from what the site last reported: WordPress and WPMgr
@@ -27572,6 +27888,184 @@ func (c *Client) sendIsolateUnusedMedia(ctx context.Context, request *MediaClean
 
 	stage = "DecodeResponse"
 	result, err := decodeIsolateUnusedMediaResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// ListAIActivity invokes listAIActivity operation.
+//
+// Every request an AI connection made that a person or a setting approved, newest first, from both
+// kinds of request (site changes and cache clears) in one list. A request that was never approved
+// (still waiting, declined, withdrawn or expired) is not listed; the request queues list those. Each
+// item carries the same request object the queues return, so a card can be shown from it without
+// another call. For a site change, `approval` says whether a person or a setting approved it.
+//
+// Paged by keyset on `(created_at, id)`: pass the previous page's `next_cursor` as `cursor`.
+// `next_cursor` is null on the last page. A site collaborator sees only requests on their own sites.
+//
+// Requires `site.content.edit`.
+//
+// GET /api/v1/ai/activity
+func (c *Client) ListAIActivity(ctx context.Context, params ListAIActivityParams) (ListAIActivityRes, error) {
+	res, err := c.sendListAIActivity(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendListAIActivity(ctx context.Context, params ListAIActivityParams) (res ListAIActivityRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("listAIActivity"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/ai/activity"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ListAIActivityOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/ai/activity"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeQueryParams"
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "filter" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "filter",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Filter.Get(); ok {
+				return e.EncodeValue(conv.StringToString(string(val)))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "site_id" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "site_id",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.SiteID.Get(); ok {
+				return e.EncodeValue(conv.UUIDToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "grant_id" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "grant_id",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.GrantID.Get(); ok {
+				return e.EncodeValue(conv.UUIDToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "limit" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "limit",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Limit.Get(); ok {
+				return e.EncodeValue(conv.Int32ToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "cursor" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "cursor",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Cursor.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeListAIActivityResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -37352,6 +37846,124 @@ func (c *Client) sendPurgeCache(ctx context.Context, request *PurgeRequest, para
 	return result, nil
 }
 
+// PutAIConnectionAuto invokes putAIConnectionAuto operation.
+//
+// `site_setting` lets the connection run changes automatically wherever a site's mode allows it.
+// `never` makes every change from the connection wait for a person, whatever any site's mode says. A
+// connection can only narrow what a site's mode allows, never widen it.
+//
+// Saving `site_setting` needs a signed-in person who holds `apikey:manage`, and records that person as
+// the one who allowed it, even when the connection is already set to `site_setting`; that is how a
+// connection is allowed again once the person who allowed it lost the access it needs
+// (`auto_setter_valid` is false). Any other caller, API keys included, is refused with 403
+// `session_required`, and an MCP bearer token with 401. While the organisation's AI is paused, saving
+// `site_setting` is refused with 409 `paused`. Saving `never` is open to every caller who holds
+// `apikey:manage`.
+//
+// A connection is an organisation-wide credential, so a site-constrained principal is refused with 403
+// `org_scope_required`. A connection created with an API key starts on `never`. The change and its
+// audit row commit together. The body must be JSON.
+//
+// Requires `apikey:manage`.
+//
+// PUT /api/v1/ai/connections/{grantId}/auto
+func (c *Client) PutAIConnectionAuto(ctx context.Context, request *PutAIConnectionAutoRequest, params PutAIConnectionAutoParams) (PutAIConnectionAutoRes, error) {
+	res, err := c.sendPutAIConnectionAuto(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendPutAIConnectionAuto(ctx context.Context, request *PutAIConnectionAutoRequest, params PutAIConnectionAutoParams) (res PutAIConnectionAutoRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("putAIConnectionAuto"),
+		semconv.HTTPRequestMethodKey.String("PUT"),
+		semconv.URLTemplateKey.String("/api/v1/ai/connections/{grantId}/auto"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, PutAIConnectionAutoOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/ai/connections/"
+	{
+		// Encode "grantId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "grantId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.GrantId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/auto"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "PUT", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodePutAIConnectionAutoRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodePutAIConnectionAutoResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // PutAlertConfig invokes putAlertConfig operation.
 //
 // Sets the email recipients, webhook URL + signing secret, and enabled flag for downtime/recovery
@@ -38438,6 +39050,123 @@ func (c *Client) sendPutPerfConfig(ctx context.Context, request *PerfConfig, par
 
 	stage = "DecodeResponse"
 	result, err := decodePutPerfConfigResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// PutSiteAIMode invokes putSiteAIMode operation.
+//
+// Sets the site's mode to `ask` or `ai_drafts`. The body carries the `version` the caller last read.
+// If the mode was changed since, nothing is saved and the answer is 409 `stale_version`, whose
+// `details` carry the current `mode` and `version`. Saving the mode that is already set is allowed and
+// records the caller as the person who chose it; that is how a setting is chosen again once the person
+// who chose it lost the access it needs (`setter_valid` is false).
+//
+// Only a signed-in person can raise the mode to `ai_drafts`. Any other caller, API keys included, is
+// refused with 403 `session_required`, and an MCP bearer token is refused with 401. Lowering to `ask`
+// is open to every caller who holds `site.content.edit`; made by a caller that is not a signed-in
+// person it is recorded with source `tightened` and no person. A body that names `full` is refused
+// with 422 `use_full_auto_route`, because this route does not set it. While the organisation's AI is
+// paused, raising is refused with 409 `paused`; lowering never is.
+//
+// The change and its audit row commit together. The body must be JSON.
+//
+// Requires `site.content.edit` and access to the site.
+//
+// PUT /api/v1/sites/{siteId}/ai/mode
+func (c *Client) PutSiteAIMode(ctx context.Context, request *PutSiteAIModeRequest, params PutSiteAIModeParams) (PutSiteAIModeRes, error) {
+	res, err := c.sendPutSiteAIMode(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendPutSiteAIMode(ctx context.Context, request *PutSiteAIModeRequest, params PutSiteAIModeParams) (res PutSiteAIModeRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("putSiteAIMode"),
+		semconv.HTTPRequestMethodKey.String("PUT"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/ai/mode"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, PutSiteAIModeOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/ai/mode"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "PUT", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodePutSiteAIModeRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodePutSiteAIModeResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

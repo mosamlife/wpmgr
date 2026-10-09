@@ -16,6 +16,2091 @@ import (
 )
 
 // Encode implements json.Marshaler.
+func (s *AIActivityAbilityRequest) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AIActivityAbilityRequest) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("kind")
+		s.Kind.Encode(e)
+	}
+	{
+		e.FieldStart("request")
+		s.Request.Encode(e)
+	}
+}
+
+var jsonFieldsNameOfAIActivityAbilityRequest = [2]string{
+	0: "kind",
+	1: "request",
+}
+
+// Decode decodes AIActivityAbilityRequest from json.
+func (s *AIActivityAbilityRequest) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIActivityAbilityRequest to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "kind":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				if err := s.Kind.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"kind\"")
+			}
+		case "request":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				if err := s.Request.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"request\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AIActivityAbilityRequest")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000011,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAIActivityAbilityRequest) {
+					name = jsonFieldsNameOfAIActivityAbilityRequest[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AIActivityAbilityRequest) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIActivityAbilityRequest) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AIActivityAbilityRequestKind as json.
+func (s AIActivityAbilityRequestKind) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AIActivityAbilityRequestKind from json.
+func (s *AIActivityAbilityRequestKind) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIActivityAbilityRequestKind to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AIActivityAbilityRequestKind(v) {
+	case AIActivityAbilityRequestKindAbilityRequest:
+		*s = AIActivityAbilityRequestKindAbilityRequest
+	default:
+		*s = AIActivityAbilityRequestKind(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AIActivityAbilityRequestKind) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIActivityAbilityRequestKind) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AIActivityCachePurgeRequest) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AIActivityCachePurgeRequest) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("kind")
+		s.Kind.Encode(e)
+	}
+	{
+		e.FieldStart("request")
+		s.Request.Encode(e)
+	}
+}
+
+var jsonFieldsNameOfAIActivityCachePurgeRequest = [2]string{
+	0: "kind",
+	1: "request",
+}
+
+// Decode decodes AIActivityCachePurgeRequest from json.
+func (s *AIActivityCachePurgeRequest) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIActivityCachePurgeRequest to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "kind":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				if err := s.Kind.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"kind\"")
+			}
+		case "request":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				if err := s.Request.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"request\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AIActivityCachePurgeRequest")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000011,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAIActivityCachePurgeRequest) {
+					name = jsonFieldsNameOfAIActivityCachePurgeRequest[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AIActivityCachePurgeRequest) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIActivityCachePurgeRequest) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AIActivityCachePurgeRequestKind as json.
+func (s AIActivityCachePurgeRequestKind) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AIActivityCachePurgeRequestKind from json.
+func (s *AIActivityCachePurgeRequestKind) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIActivityCachePurgeRequestKind to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AIActivityCachePurgeRequestKind(v) {
+	case AIActivityCachePurgeRequestKindCachePurgeRequest:
+		*s = AIActivityCachePurgeRequestKindCachePurgeRequest
+	default:
+		*s = AIActivityCachePurgeRequestKind(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AIActivityCachePurgeRequestKind) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIActivityCachePurgeRequestKind) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AIActivityItem as json.
+func (s AIActivityItem) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+func (s AIActivityItem) encodeFields(e *jx.Encoder) {
+	switch s.Type {
+	case AIActivityAbilityRequestAIActivityItem:
+		e.FieldStart("kind")
+		e.Str("ability_request")
+		{
+			s := s.AIActivityAbilityRequest
+			{
+				e.FieldStart("request")
+				s.Request.Encode(e)
+			}
+		}
+	case AIActivityCachePurgeRequestAIActivityItem:
+		e.FieldStart("kind")
+		e.Str("cache_purge_request")
+		{
+			s := s.AIActivityCachePurgeRequest
+			{
+				e.FieldStart("request")
+				s.Request.Encode(e)
+			}
+		}
+	}
+}
+
+// Decode decodes AIActivityItem from json.
+func (s *AIActivityItem) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIActivityItem to nil")
+	}
+	// Sum type discriminator.
+	if typ := d.Next(); typ != jx.Object {
+		return errors.Errorf("unexpected json type %q", typ)
+	}
+
+	var found bool
+	if err := d.Capture(func(d *jx.Decoder) error {
+		return d.ObjBytes(func(d *jx.Decoder, key []byte) error {
+			if found {
+				return d.Skip()
+			}
+			switch string(key) {
+			case "kind":
+				typ, err := d.Str()
+				if err != nil {
+					return err
+				}
+				switch typ {
+				case "ability_request":
+					s.Type = AIActivityAbilityRequestAIActivityItem
+					found = true
+				case "cache_purge_request":
+					s.Type = AIActivityCachePurgeRequestAIActivityItem
+					found = true
+				default:
+					return errors.Errorf("unknown type %s", typ)
+				}
+				return nil
+			}
+			return d.Skip()
+		})
+	}); err != nil {
+		return errors.Wrap(err, "capture")
+	}
+	if !found {
+		return errors.New("unable to detect sum type variant")
+	}
+	switch s.Type {
+	case AIActivityAbilityRequestAIActivityItem:
+		if err := s.AIActivityAbilityRequest.Decode(d); err != nil {
+			return err
+		}
+	case AIActivityCachePurgeRequestAIActivityItem:
+		if err := s.AIActivityCachePurgeRequest.Decode(d); err != nil {
+			return err
+		}
+	default:
+		return errors.Errorf("inferred invalid type: %s", s.Type)
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AIActivityItem) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIActivityItem) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AIActivityPage) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AIActivityPage) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("items")
+		e.ArrStart()
+		for _, elem := range s.Items {
+			elem.Encode(e)
+		}
+		e.ArrEnd()
+	}
+	{
+		e.FieldStart("next_cursor")
+		s.NextCursor.Encode(e)
+	}
+}
+
+var jsonFieldsNameOfAIActivityPage = [2]string{
+	0: "items",
+	1: "next_cursor",
+}
+
+// Decode decodes AIActivityPage from json.
+func (s *AIActivityPage) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIActivityPage to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "items":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				s.Items = make([]AIActivityItem, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem AIActivityItem
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.Items = append(s.Items, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"items\"")
+			}
+		case "next_cursor":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				if err := s.NextCursor.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"next_cursor\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AIActivityPage")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000011,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAIActivityPage) {
+					name = jsonFieldsNameOfAIActivityPage[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AIActivityPage) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIActivityPage) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AIApprovalSetting) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AIApprovalSetting) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("mode")
+		s.Mode.Encode(e)
+	}
+	{
+		e.FieldStart("source")
+		s.Source.Encode(e)
+	}
+	{
+		if s.SetByUserID.Set {
+			e.FieldStart("set_by_user_id")
+			s.SetByUserID.Encode(e)
+		}
+	}
+	{
+		if s.SetByName.Set {
+			e.FieldStart("set_by_name")
+			s.SetByName.Encode(e)
+		}
+	}
+	{
+		e.FieldStart("set_by_account_deleted")
+		e.Bool(s.SetByAccountDeleted)
+	}
+	{
+		if s.SetAt.Set {
+			e.FieldStart("set_at")
+			s.SetAt.Encode(e, json.EncodeDateTime)
+		}
+	}
+}
+
+var jsonFieldsNameOfAIApprovalSetting = [6]string{
+	0: "mode",
+	1: "source",
+	2: "set_by_user_id",
+	3: "set_by_name",
+	4: "set_by_account_deleted",
+	5: "set_at",
+}
+
+// Decode decodes AIApprovalSetting from json.
+func (s *AIApprovalSetting) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIApprovalSetting to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "mode":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				if err := s.Mode.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"mode\"")
+			}
+		case "source":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				if err := s.Source.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"source\"")
+			}
+		case "set_by_user_id":
+			if err := func() error {
+				s.SetByUserID.Reset()
+				if err := s.SetByUserID.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"set_by_user_id\"")
+			}
+		case "set_by_name":
+			if err := func() error {
+				s.SetByName.Reset()
+				if err := s.SetByName.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"set_by_name\"")
+			}
+		case "set_by_account_deleted":
+			requiredBitSet[0] |= 1 << 4
+			if err := func() error {
+				v, err := d.Bool()
+				s.SetByAccountDeleted = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"set_by_account_deleted\"")
+			}
+		case "set_at":
+			if err := func() error {
+				s.SetAt.Reset()
+				if err := s.SetAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"set_at\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AIApprovalSetting")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00010011,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAIApprovalSetting) {
+					name = jsonFieldsNameOfAIApprovalSetting[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AIApprovalSetting) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIApprovalSetting) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AIApprovalSettingMode as json.
+func (s AIApprovalSettingMode) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AIApprovalSettingMode from json.
+func (s *AIApprovalSettingMode) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIApprovalSettingMode to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AIApprovalSettingMode(v) {
+	case AIApprovalSettingModeAiDrafts:
+		*s = AIApprovalSettingModeAiDrafts
+	case AIApprovalSettingModeFull:
+		*s = AIApprovalSettingModeFull
+	default:
+		*s = AIApprovalSettingMode(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AIApprovalSettingMode) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIApprovalSettingMode) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AIApprovalSettingSource as json.
+func (s AIApprovalSettingSource) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AIApprovalSettingSource from json.
+func (s *AIApprovalSettingSource) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIApprovalSettingSource to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AIApprovalSettingSource(v) {
+	case AIApprovalSettingSourceLaunchDefault:
+		*s = AIApprovalSettingSourceLaunchDefault
+	case AIApprovalSettingSourceEnableDefault:
+		*s = AIApprovalSettingSourceEnableDefault
+	case AIApprovalSettingSourcePerson:
+		*s = AIApprovalSettingSourcePerson
+	default:
+		*s = AIApprovalSettingSource(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AIApprovalSettingSource) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIApprovalSettingSource) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AIAskReason as json.
+func (s AIAskReason) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AIAskReason from json.
+func (s *AIAskReason) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIAskReason to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AIAskReason(v) {
+	case AIAskReasonKindAlwaysAsks:
+		*s = AIAskReasonKindAlwaysAsks
+	case AIAskReasonUnknownTargetState:
+		*s = AIAskReasonUnknownTargetState
+	case AIAskReasonSiteModeAsk:
+		*s = AIAskReasonSiteModeAsk
+	case AIAskReasonKindNotInMode:
+		*s = AIAskReasonKindNotInMode
+	case AIAskReasonSetterLacksPermission:
+		*s = AIAskReasonSetterLacksPermission
+	case AIAskReasonOverChangeBudget:
+		*s = AIAskReasonOverChangeBudget
+	case AIAskReasonOverSiteCap:
+		*s = AIAskReasonOverSiteCap
+	case AIAskReasonConnectionNeverAuto:
+		*s = AIAskReasonConnectionNeverAuto
+	case AIAskReasonConnectionSetterInvalid:
+		*s = AIAskReasonConnectionSetterInvalid
+	case AIAskReasonNotChecked:
+		*s = AIAskReasonNotChecked
+	default:
+		*s = AIAskReason(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AIAskReason) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIAskReason) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AIAuto as json.
+func (s AIAuto) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AIAuto from json.
+func (s *AIAuto) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIAuto to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AIAuto(v) {
+	case AIAutoSiteSetting:
+		*s = AIAutoSiteSetting
+	case AIAutoNever:
+		*s = AIAutoNever
+	default:
+		*s = AIAuto(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AIAuto) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIAuto) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AIChangeClass as json.
+func (s AIChangeClass) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AIChangeClass from json.
+func (s *AIChangeClass) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIChangeClass to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AIChangeClass(v) {
+	case AIChangeClassAiDraft:
+		*s = AIChangeClassAiDraft
+	case AIChangeClassOperational:
+		*s = AIChangeClassOperational
+	case AIChangeClassUnpublished:
+		*s = AIChangeClassUnpublished
+	case AIChangeClassLive:
+		*s = AIChangeClassLive
+	case AIChangeClassPublish:
+		*s = AIChangeClassPublish
+	case AIChangeClassUpdate:
+		*s = AIChangeClassUpdate
+	case AIChangeClassAlwaysAsk:
+		*s = AIChangeClassAlwaysAsk
+	default:
+		*s = AIChangeClass(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AIChangeClass) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIChangeClass) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AIChangeKind) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AIChangeKind) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("change_class")
+		s.ChangeClass.Encode(e)
+	}
+	{
+		e.FieldStart("name")
+		e.Str(s.Name)
+	}
+	{
+		e.FieldStart("abilities")
+		e.ArrStart()
+		for _, elem := range s.Abilities {
+			elem.Encode(e)
+		}
+		e.ArrEnd()
+	}
+	{
+		e.FieldStart("decisions")
+		e.ArrStart()
+		for _, elem := range s.Decisions {
+			elem.Encode(e)
+		}
+		e.ArrEnd()
+	}
+}
+
+var jsonFieldsNameOfAIChangeKind = [4]string{
+	0: "change_class",
+	1: "name",
+	2: "abilities",
+	3: "decisions",
+}
+
+// Decode decodes AIChangeKind from json.
+func (s *AIChangeKind) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIChangeKind to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "change_class":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				if err := s.ChangeClass.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"change_class\"")
+			}
+		case "name":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Str()
+				s.Name = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"name\"")
+			}
+		case "abilities":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				s.Abilities = make([]AIChangeKindAbility, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem AIChangeKindAbility
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.Abilities = append(s.Abilities, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"abilities\"")
+			}
+		case "decisions":
+			requiredBitSet[0] |= 1 << 3
+			if err := func() error {
+				s.Decisions = make([]AIModeDecision, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem AIModeDecision
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.Decisions = append(s.Decisions, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"decisions\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AIChangeKind")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00001111,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAIChangeKind) {
+					name = jsonFieldsNameOfAIChangeKind[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AIChangeKind) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIChangeKind) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AIChangeKindAbility) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AIChangeKindAbility) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("name")
+		e.Str(s.Name)
+	}
+	{
+		e.FieldStart("title")
+		e.Str(s.Title)
+	}
+}
+
+var jsonFieldsNameOfAIChangeKindAbility = [2]string{
+	0: "name",
+	1: "title",
+}
+
+// Decode decodes AIChangeKindAbility from json.
+func (s *AIChangeKindAbility) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIChangeKindAbility to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "name":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := d.Str()
+				s.Name = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"name\"")
+			}
+		case "title":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Str()
+				s.Title = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"title\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AIChangeKindAbility")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000011,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAIChangeKindAbility) {
+					name = jsonFieldsNameOfAIChangeKindAbility[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AIChangeKindAbility) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIChangeKindAbility) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AIConnectionAuto) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AIConnectionAuto) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("grant_id")
+		json.EncodeUUID(e, s.GrantID)
+	}
+	{
+		e.FieldStart("ai_auto")
+		s.AiAuto.Encode(e)
+	}
+	{
+		if s.AutoSetByUserID.Set {
+			e.FieldStart("auto_set_by_user_id")
+			s.AutoSetByUserID.Encode(e)
+		}
+	}
+	{
+		if s.AutoSetByName.Set {
+			e.FieldStart("auto_set_by_name")
+			s.AutoSetByName.Encode(e)
+		}
+	}
+	{
+		e.FieldStart("auto_set_by_account_deleted")
+		e.Bool(s.AutoSetByAccountDeleted)
+	}
+	{
+		if s.AutoSetAt.Set {
+			e.FieldStart("auto_set_at")
+			s.AutoSetAt.Encode(e, json.EncodeDateTime)
+		}
+	}
+	{
+		e.FieldStart("auto_setter_valid")
+		e.Bool(s.AutoSetterValid)
+	}
+	{
+		e.FieldStart("created_with_api_key")
+		e.Bool(s.CreatedWithAPIKey)
+	}
+}
+
+var jsonFieldsNameOfAIConnectionAuto = [8]string{
+	0: "grant_id",
+	1: "ai_auto",
+	2: "auto_set_by_user_id",
+	3: "auto_set_by_name",
+	4: "auto_set_by_account_deleted",
+	5: "auto_set_at",
+	6: "auto_setter_valid",
+	7: "created_with_api_key",
+}
+
+// Decode decodes AIConnectionAuto from json.
+func (s *AIConnectionAuto) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIConnectionAuto to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "grant_id":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := json.DecodeUUID(d)
+				s.GrantID = v
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"grant_id\"")
+			}
+		case "ai_auto":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				if err := s.AiAuto.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"ai_auto\"")
+			}
+		case "auto_set_by_user_id":
+			if err := func() error {
+				s.AutoSetByUserID.Reset()
+				if err := s.AutoSetByUserID.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"auto_set_by_user_id\"")
+			}
+		case "auto_set_by_name":
+			if err := func() error {
+				s.AutoSetByName.Reset()
+				if err := s.AutoSetByName.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"auto_set_by_name\"")
+			}
+		case "auto_set_by_account_deleted":
+			requiredBitSet[0] |= 1 << 4
+			if err := func() error {
+				v, err := d.Bool()
+				s.AutoSetByAccountDeleted = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"auto_set_by_account_deleted\"")
+			}
+		case "auto_set_at":
+			if err := func() error {
+				s.AutoSetAt.Reset()
+				if err := s.AutoSetAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"auto_set_at\"")
+			}
+		case "auto_setter_valid":
+			requiredBitSet[0] |= 1 << 6
+			if err := func() error {
+				v, err := d.Bool()
+				s.AutoSetterValid = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"auto_setter_valid\"")
+			}
+		case "created_with_api_key":
+			requiredBitSet[0] |= 1 << 7
+			if err := func() error {
+				v, err := d.Bool()
+				s.CreatedWithAPIKey = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"created_with_api_key\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AIConnectionAuto")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b11010011,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAIConnectionAuto) {
+					name = jsonFieldsNameOfAIConnectionAuto[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AIConnectionAuto) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIConnectionAuto) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AIConnectionUsage) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AIConnectionUsage) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("grant_id")
+		json.EncodeUUID(e, s.GrantID)
+	}
+	{
+		e.FieldStart("ai_auto")
+		s.AiAuto.Encode(e)
+	}
+	{
+		if s.AutoSetByUserID.Set {
+			e.FieldStart("auto_set_by_user_id")
+			s.AutoSetByUserID.Encode(e)
+		}
+	}
+	{
+		if s.AutoSetByName.Set {
+			e.FieldStart("auto_set_by_name")
+			s.AutoSetByName.Encode(e)
+		}
+	}
+	{
+		e.FieldStart("auto_set_by_account_deleted")
+		e.Bool(s.AutoSetByAccountDeleted)
+	}
+	{
+		if s.AutoSetAt.Set {
+			e.FieldStart("auto_set_at")
+			s.AutoSetAt.Encode(e, json.EncodeDateTime)
+		}
+	}
+	{
+		e.FieldStart("auto_setter_valid")
+		e.Bool(s.AutoSetterValid)
+	}
+	{
+		e.FieldStart("created_with_api_key")
+		e.Bool(s.CreatedWithAPIKey)
+	}
+	{
+		e.FieldStart("window_minutes")
+		e.Int32(s.WindowMinutes)
+	}
+	{
+		e.FieldStart("draft_changes")
+		s.DraftChanges.Encode(e)
+	}
+	{
+		e.FieldStart("draft_sites")
+		s.DraftSites.Encode(e)
+	}
+}
+
+var jsonFieldsNameOfAIConnectionUsage = [11]string{
+	0:  "grant_id",
+	1:  "ai_auto",
+	2:  "auto_set_by_user_id",
+	3:  "auto_set_by_name",
+	4:  "auto_set_by_account_deleted",
+	5:  "auto_set_at",
+	6:  "auto_setter_valid",
+	7:  "created_with_api_key",
+	8:  "window_minutes",
+	9:  "draft_changes",
+	10: "draft_sites",
+}
+
+// Decode decodes AIConnectionUsage from json.
+func (s *AIConnectionUsage) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIConnectionUsage to nil")
+	}
+	var requiredBitSet [2]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "grant_id":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := json.DecodeUUID(d)
+				s.GrantID = v
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"grant_id\"")
+			}
+		case "ai_auto":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				if err := s.AiAuto.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"ai_auto\"")
+			}
+		case "auto_set_by_user_id":
+			if err := func() error {
+				s.AutoSetByUserID.Reset()
+				if err := s.AutoSetByUserID.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"auto_set_by_user_id\"")
+			}
+		case "auto_set_by_name":
+			if err := func() error {
+				s.AutoSetByName.Reset()
+				if err := s.AutoSetByName.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"auto_set_by_name\"")
+			}
+		case "auto_set_by_account_deleted":
+			requiredBitSet[0] |= 1 << 4
+			if err := func() error {
+				v, err := d.Bool()
+				s.AutoSetByAccountDeleted = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"auto_set_by_account_deleted\"")
+			}
+		case "auto_set_at":
+			if err := func() error {
+				s.AutoSetAt.Reset()
+				if err := s.AutoSetAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"auto_set_at\"")
+			}
+		case "auto_setter_valid":
+			requiredBitSet[0] |= 1 << 6
+			if err := func() error {
+				v, err := d.Bool()
+				s.AutoSetterValid = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"auto_setter_valid\"")
+			}
+		case "created_with_api_key":
+			requiredBitSet[0] |= 1 << 7
+			if err := func() error {
+				v, err := d.Bool()
+				s.CreatedWithAPIKey = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"created_with_api_key\"")
+			}
+		case "window_minutes":
+			requiredBitSet[1] |= 1 << 0
+			if err := func() error {
+				v, err := d.Int32()
+				s.WindowMinutes = int32(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"window_minutes\"")
+			}
+		case "draft_changes":
+			requiredBitSet[1] |= 1 << 1
+			if err := func() error {
+				if err := s.DraftChanges.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"draft_changes\"")
+			}
+		case "draft_sites":
+			requiredBitSet[1] |= 1 << 2
+			if err := func() error {
+				if err := s.DraftSites.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"draft_sites\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AIConnectionUsage")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [2]uint8{
+		0b11010011,
+		0b00000111,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAIConnectionUsage) {
+					name = jsonFieldsNameOfAIConnectionUsage[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AIConnectionUsage) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIConnectionUsage) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AIMode as json.
+func (s AIMode) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AIMode from json.
+func (s *AIMode) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIMode to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AIMode(v) {
+	case AIModeAsk:
+		*s = AIModeAsk
+	case AIModeAiDrafts:
+		*s = AIModeAiDrafts
+	case AIModeFull:
+		*s = AIModeFull
+	default:
+		*s = AIMode(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AIMode) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIMode) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AIModeDecision) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AIModeDecision) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("mode")
+		s.Mode.Encode(e)
+	}
+	{
+		e.FieldStart("outcome")
+		s.Outcome.Encode(e)
+	}
+}
+
+var jsonFieldsNameOfAIModeDecision = [2]string{
+	0: "mode",
+	1: "outcome",
+}
+
+// Decode decodes AIModeDecision from json.
+func (s *AIModeDecision) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIModeDecision to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "mode":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				if err := s.Mode.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"mode\"")
+			}
+		case "outcome":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				if err := s.Outcome.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"outcome\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AIModeDecision")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000011,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAIModeDecision) {
+					name = jsonFieldsNameOfAIModeDecision[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AIModeDecision) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIModeDecision) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AIModeDecisionOutcome as json.
+func (s AIModeDecisionOutcome) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AIModeDecisionOutcome from json.
+func (s *AIModeDecisionOutcome) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIModeDecisionOutcome to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AIModeDecisionOutcome(v) {
+	case AIModeDecisionOutcomeAuto:
+		*s = AIModeDecisionOutcomeAuto
+	case AIModeDecisionOutcomeAsk:
+		*s = AIModeDecisionOutcomeAsk
+	default:
+		*s = AIModeDecisionOutcome(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AIModeDecisionOutcome) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIModeDecisionOutcome) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AIModeOption) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AIModeOption) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("mode")
+		s.Mode.Encode(e)
+	}
+	{
+		e.FieldStart("choosable")
+		e.Bool(s.Choosable)
+	}
+	{
+		e.FieldStart("reason")
+		s.Reason.Encode(e)
+	}
+}
+
+var jsonFieldsNameOfAIModeOption = [3]string{
+	0: "mode",
+	1: "choosable",
+	2: "reason",
+}
+
+// Decode decodes AIModeOption from json.
+func (s *AIModeOption) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIModeOption to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "mode":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				if err := s.Mode.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"mode\"")
+			}
+		case "choosable":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Bool()
+				s.Choosable = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"choosable\"")
+			}
+		case "reason":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				if err := s.Reason.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"reason\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AIModeOption")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000111,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAIModeOption) {
+					name = jsonFieldsNameOfAIModeOption[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AIModeOption) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIModeOption) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AIModeOptionReason as json.
+func (s AIModeOptionReason) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AIModeOptionReason from json.
+func (s *AIModeOptionReason) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIModeOptionReason to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AIModeOptionReason(v) {
+	case AIModeOptionReasonRoleRequired:
+		*s = AIModeOptionReasonRoleRequired
+	case AIModeOptionReasonOrgScopeRequired:
+		*s = AIModeOptionReasonOrgScopeRequired
+	case AIModeOptionReasonSessionRequired:
+		*s = AIModeOptionReasonSessionRequired
+	case AIModeOptionReasonPaused:
+		*s = AIModeOptionReasonPaused
+	case AIModeOptionReasonAgentOutdated:
+		*s = AIModeOptionReasonAgentOutdated
+	default:
+		*s = AIModeOptionReason(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AIModeOptionReason) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIModeOptionReason) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AIModeSource as json.
+func (s AIModeSource) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AIModeSource from json.
+func (s *AIModeSource) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIModeSource to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AIModeSource(v) {
+	case AIModeSourceUnset:
+		*s = AIModeSourceUnset
+	case AIModeSourceMigration:
+		*s = AIModeSourceMigration
+	case AIModeSourceLaunchDefault:
+		*s = AIModeSourceLaunchDefault
+	case AIModeSourceEnableDefault:
+		*s = AIModeSourceEnableDefault
+	case AIModeSourcePerson:
+		*s = AIModeSourcePerson
+	case AIModeSourceTightened:
+		*s = AIModeSourceTightened
+	default:
+		*s = AIModeSource(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AIModeSource) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIModeSource) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
 func (s *AIReadinessCheck) Encode(e *jx.Encoder) {
 	e.ObjStart()
 	s.encodeFields(e)
@@ -1013,6 +3098,119 @@ func (s AIReadinessWarningCode) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AIReadinessWarningCode) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AIUsageBucket) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AIUsageBucket) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("used")
+		e.Int32(s.Used)
+	}
+	{
+		e.FieldStart("limit")
+		e.Int32(s.Limit)
+	}
+}
+
+var jsonFieldsNameOfAIUsageBucket = [2]string{
+	0: "used",
+	1: "limit",
+}
+
+// Decode decodes AIUsageBucket from json.
+func (s *AIUsageBucket) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AIUsageBucket to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "used":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := d.Int32()
+				s.Used = int32(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"used\"")
+			}
+		case "limit":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Int32()
+				s.Limit = int32(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"limit\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AIUsageBucket")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000011,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAIUsageBucket) {
+					name = jsonFieldsNameOfAIUsageBucket[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AIUsageBucket) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AIUsageBucket) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -3305,9 +5503,33 @@ func (s *AbilityRequest) encodeFields(e *jx.Encoder) {
 			s.PageMedia.Encode(e)
 		}
 	}
+	{
+		if s.Approval.Set {
+			e.FieldStart("approval")
+			s.Approval.Encode(e)
+		}
+	}
+	{
+		if s.ChangeClass.Set {
+			e.FieldStart("change_class")
+			s.ChangeClass.Encode(e)
+		}
+	}
+	{
+		if s.ChangeKindName.Set {
+			e.FieldStart("change_kind_name")
+			s.ChangeKindName.Encode(e)
+		}
+	}
+	{
+		if s.AskReason.Set {
+			e.FieldStart("ask_reason")
+			s.AskReason.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfAbilityRequest = [34]string{
+var jsonFieldsNameOfAbilityRequest = [38]string{
 	0:  "id",
 	1:  "site_id",
 	2:  "ability_name",
@@ -3342,6 +5564,10 @@ var jsonFieldsNameOfAbilityRequest = [34]string{
 	31: "route_sha256",
 	32: "card_facts",
 	33: "page_media",
+	34: "approval",
+	35: "change_class",
+	36: "change_kind_name",
+	37: "ask_reason",
 }
 
 // Decode decodes AbilityRequest from json.
@@ -3721,6 +5947,46 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"page_media\"")
 			}
+		case "approval":
+			if err := func() error {
+				s.Approval.Reset()
+				if err := s.Approval.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"approval\"")
+			}
+		case "change_class":
+			if err := func() error {
+				s.ChangeClass.Reset()
+				if err := s.ChangeClass.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"change_class\"")
+			}
+		case "change_kind_name":
+			if err := func() error {
+				s.ChangeKindName.Reset()
+				if err := s.ChangeKindName.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"change_kind_name\"")
+			}
+		case "ask_reason":
+			if err := func() error {
+				s.AskReason.Reset()
+				if err := s.AskReason.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"ask_reason\"")
+			}
 		default:
 			return d.Skip()
 		}
@@ -3777,6 +6043,157 @@ func (s *AbilityRequest) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AbilityRequest) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AbilityRequestApproval) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AbilityRequestApproval) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("source")
+		s.Source.Encode(e)
+	}
+	{
+		if s.Setting.Set {
+			e.FieldStart("setting")
+			s.Setting.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfAbilityRequestApproval = [2]string{
+	0: "source",
+	1: "setting",
+}
+
+// Decode decodes AbilityRequestApproval from json.
+func (s *AbilityRequestApproval) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AbilityRequestApproval to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "source":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				if err := s.Source.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"source\"")
+			}
+		case "setting":
+			if err := func() error {
+				s.Setting.Reset()
+				if err := s.Setting.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"setting\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AbilityRequestApproval")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000001,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAbilityRequestApproval) {
+					name = jsonFieldsNameOfAbilityRequestApproval[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AbilityRequestApproval) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AbilityRequestApproval) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AbilityRequestApprovalSource as json.
+func (s AbilityRequestApprovalSource) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AbilityRequestApprovalSource from json.
+func (s *AbilityRequestApprovalSource) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AbilityRequestApprovalSource to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AbilityRequestApprovalSource(v) {
+	case AbilityRequestApprovalSourcePerson:
+		*s = AbilityRequestApprovalSourcePerson
+	case AbilityRequestApprovalSourcePolicy:
+		*s = AbilityRequestApprovalSourcePolicy
+	default:
+		*s = AbilityRequestApprovalSource(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AbilityRequestApprovalSource) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AbilityRequestApprovalSource) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -70489,6 +72906,120 @@ func (s *GenerateClientReportUnauthorized) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes GetAIConnectionUsageForbidden as json.
+func (s *GetAIConnectionUsageForbidden) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes GetAIConnectionUsageForbidden from json.
+func (s *GetAIConnectionUsageForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode GetAIConnectionUsageForbidden to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = GetAIConnectionUsageForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *GetAIConnectionUsageForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *GetAIConnectionUsageForbidden) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes GetAIConnectionUsageNotFound as json.
+func (s *GetAIConnectionUsageNotFound) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes GetAIConnectionUsageNotFound from json.
+func (s *GetAIConnectionUsageNotFound) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode GetAIConnectionUsageNotFound to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = GetAIConnectionUsageNotFound(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *GetAIConnectionUsageNotFound) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *GetAIConnectionUsageNotFound) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes GetAIConnectionUsageUnauthorized as json.
+func (s *GetAIConnectionUsageUnauthorized) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes GetAIConnectionUsageUnauthorized from json.
+func (s *GetAIConnectionUsageUnauthorized) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode GetAIConnectionUsageUnauthorized to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = GetAIConnectionUsageUnauthorized(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *GetAIConnectionUsageUnauthorized) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *GetAIConnectionUsageUnauthorized) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes GetAdminAccountForbidden as json.
 func (s *GetAdminAccountForbidden) Encode(e *jx.Encoder) {
 	unwrapped := (*Error)(s)
@@ -74518,6 +77049,120 @@ func (s *GetScheduleRunNotFound) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *GetScheduleRunNotFound) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes GetSiteAIModeForbidden as json.
+func (s *GetSiteAIModeForbidden) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes GetSiteAIModeForbidden from json.
+func (s *GetSiteAIModeForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode GetSiteAIModeForbidden to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = GetSiteAIModeForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *GetSiteAIModeForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *GetSiteAIModeForbidden) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes GetSiteAIModeNotFound as json.
+func (s *GetSiteAIModeNotFound) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes GetSiteAIModeNotFound from json.
+func (s *GetSiteAIModeNotFound) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode GetSiteAIModeNotFound to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = GetSiteAIModeNotFound(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *GetSiteAIModeNotFound) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *GetSiteAIModeNotFound) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes GetSiteAIModeUnauthorized as json.
+func (s *GetSiteAIModeUnauthorized) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes GetSiteAIModeUnauthorized from json.
+func (s *GetSiteAIModeUnauthorized) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode GetSiteAIModeUnauthorized to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = GetSiteAIModeUnauthorized(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *GetSiteAIModeUnauthorized) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *GetSiteAIModeUnauthorized) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -78719,6 +81364,120 @@ func (s *InviteRequest) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *InviteRequest) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes ListAIActivityForbidden as json.
+func (s *ListAIActivityForbidden) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes ListAIActivityForbidden from json.
+func (s *ListAIActivityForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ListAIActivityForbidden to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = ListAIActivityForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *ListAIActivityForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ListAIActivityForbidden) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes ListAIActivityUnauthorized as json.
+func (s *ListAIActivityUnauthorized) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes ListAIActivityUnauthorized from json.
+func (s *ListAIActivityUnauthorized) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ListAIActivityUnauthorized to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = ListAIActivityUnauthorized(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *ListAIActivityUnauthorized) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ListAIActivityUnauthorized) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes ListAIActivityUnprocessableEntity as json.
+func (s *ListAIActivityUnprocessableEntity) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes ListAIActivityUnprocessableEntity from json.
+func (s *ListAIActivityUnprocessableEntity) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode ListAIActivityUnprocessableEntity to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = ListAIActivityUnprocessableEntity(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *ListAIActivityUnprocessableEntity) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *ListAIActivityUnprocessableEntity) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -89097,6 +91856,50 @@ func (s *MonitoringResultDetail) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes AIModeOptionReason as json.
+func (o NilAIModeOptionReason) Encode(e *jx.Encoder) {
+	if o.Null {
+		e.Null()
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes AIModeOptionReason from json.
+func (o *NilAIModeOptionReason) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode NilAIModeOptionReason to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AIModeOptionReason
+		o.Value = v
+		o.Null = true
+		return nil
+	}
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s NilAIModeOptionReason) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *NilAIModeOptionReason) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes AIReadinessCheckReason as json.
 func (o NilAIReadinessCheckReason) Encode(e *jx.Encoder) {
 	if o.Null {
@@ -94600,6 +97403,202 @@ func (s OptMediaVariantResultState) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptMediaVariantResultState) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AIApprovalSetting as json.
+func (o OptNilAIApprovalSetting) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	if o.Null {
+		e.Null()
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AIApprovalSetting from json.
+func (o *OptNilAIApprovalSetting) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptNilAIApprovalSetting to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AIApprovalSetting
+		o.Value = v
+		o.Set = true
+		o.Null = true
+		return nil
+	}
+	o.Set = true
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptNilAIApprovalSetting) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptNilAIApprovalSetting) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AIAskReason as json.
+func (o OptNilAIAskReason) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	if o.Null {
+		e.Null()
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes AIAskReason from json.
+func (o *OptNilAIAskReason) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptNilAIAskReason to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AIAskReason
+		o.Value = v
+		o.Set = true
+		o.Null = true
+		return nil
+	}
+	o.Set = true
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptNilAIAskReason) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptNilAIAskReason) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AIChangeClass as json.
+func (o OptNilAIChangeClass) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	if o.Null {
+		e.Null()
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes AIChangeClass from json.
+func (o *OptNilAIChangeClass) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptNilAIChangeClass to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AIChangeClass
+		o.Value = v
+		o.Set = true
+		o.Null = true
+		return nil
+	}
+	o.Set = true
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptNilAIChangeClass) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptNilAIChangeClass) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AbilityRequestApproval as json.
+func (o OptNilAbilityRequestApproval) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	if o.Null {
+		e.Null()
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AbilityRequestApproval from json.
+func (o *OptNilAbilityRequestApproval) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptNilAbilityRequestApproval to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AbilityRequestApproval
+		o.Value = v
+		o.Set = true
+		o.Null = true
+		return nil
+	}
+	o.Set = true
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptNilAbilityRequestApproval) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptNilAbilityRequestApproval) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -107565,6 +110564,328 @@ func (s *PurgeRequestScope) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes PutAIConnectionAutoConflict as json.
+func (s *PutAIConnectionAutoConflict) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes PutAIConnectionAutoConflict from json.
+func (s *PutAIConnectionAutoConflict) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PutAIConnectionAutoConflict to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = PutAIConnectionAutoConflict(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *PutAIConnectionAutoConflict) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PutAIConnectionAutoConflict) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes PutAIConnectionAutoForbidden as json.
+func (s *PutAIConnectionAutoForbidden) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes PutAIConnectionAutoForbidden from json.
+func (s *PutAIConnectionAutoForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PutAIConnectionAutoForbidden to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = PutAIConnectionAutoForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *PutAIConnectionAutoForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PutAIConnectionAutoForbidden) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes PutAIConnectionAutoNotFound as json.
+func (s *PutAIConnectionAutoNotFound) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes PutAIConnectionAutoNotFound from json.
+func (s *PutAIConnectionAutoNotFound) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PutAIConnectionAutoNotFound to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = PutAIConnectionAutoNotFound(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *PutAIConnectionAutoNotFound) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PutAIConnectionAutoNotFound) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *PutAIConnectionAutoRequest) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *PutAIConnectionAutoRequest) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("ai_auto")
+		s.AiAuto.Encode(e)
+	}
+}
+
+var jsonFieldsNameOfPutAIConnectionAutoRequest = [1]string{
+	0: "ai_auto",
+}
+
+// Decode decodes PutAIConnectionAutoRequest from json.
+func (s *PutAIConnectionAutoRequest) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PutAIConnectionAutoRequest to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "ai_auto":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				if err := s.AiAuto.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"ai_auto\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode PutAIConnectionAutoRequest")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000001,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfPutAIConnectionAutoRequest) {
+					name = jsonFieldsNameOfPutAIConnectionAutoRequest[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *PutAIConnectionAutoRequest) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PutAIConnectionAutoRequest) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes PutAIConnectionAutoUnauthorized as json.
+func (s *PutAIConnectionAutoUnauthorized) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes PutAIConnectionAutoUnauthorized from json.
+func (s *PutAIConnectionAutoUnauthorized) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PutAIConnectionAutoUnauthorized to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = PutAIConnectionAutoUnauthorized(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *PutAIConnectionAutoUnauthorized) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PutAIConnectionAutoUnauthorized) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes PutAIConnectionAutoUnprocessableEntity as json.
+func (s *PutAIConnectionAutoUnprocessableEntity) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes PutAIConnectionAutoUnprocessableEntity from json.
+func (s *PutAIConnectionAutoUnprocessableEntity) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PutAIConnectionAutoUnprocessableEntity to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = PutAIConnectionAutoUnprocessableEntity(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *PutAIConnectionAutoUnprocessableEntity) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PutAIConnectionAutoUnprocessableEntity) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes PutAIConnectionAutoUnsupportedMediaType as json.
+func (s *PutAIConnectionAutoUnsupportedMediaType) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes PutAIConnectionAutoUnsupportedMediaType from json.
+func (s *PutAIConnectionAutoUnsupportedMediaType) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PutAIConnectionAutoUnsupportedMediaType to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = PutAIConnectionAutoUnsupportedMediaType(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *PutAIConnectionAutoUnsupportedMediaType) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PutAIConnectionAutoUnsupportedMediaType) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes PutClientReportScheduleBadRequest as json.
 func (s *PutClientReportScheduleBadRequest) Encode(e *jx.Encoder) {
 	unwrapped := (*Error)(s)
@@ -109406,6 +112727,385 @@ func (s *PutOrgEmailWebhookConfigUnauthorized) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *PutOrgEmailWebhookConfigUnauthorized) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes PutSiteAIModeConflict as json.
+func (s *PutSiteAIModeConflict) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes PutSiteAIModeConflict from json.
+func (s *PutSiteAIModeConflict) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PutSiteAIModeConflict to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = PutSiteAIModeConflict(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *PutSiteAIModeConflict) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PutSiteAIModeConflict) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes PutSiteAIModeForbidden as json.
+func (s *PutSiteAIModeForbidden) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes PutSiteAIModeForbidden from json.
+func (s *PutSiteAIModeForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PutSiteAIModeForbidden to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = PutSiteAIModeForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *PutSiteAIModeForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PutSiteAIModeForbidden) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes PutSiteAIModeNotFound as json.
+func (s *PutSiteAIModeNotFound) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes PutSiteAIModeNotFound from json.
+func (s *PutSiteAIModeNotFound) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PutSiteAIModeNotFound to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = PutSiteAIModeNotFound(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *PutSiteAIModeNotFound) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PutSiteAIModeNotFound) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *PutSiteAIModeRequest) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *PutSiteAIModeRequest) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("mode")
+		s.Mode.Encode(e)
+	}
+	{
+		e.FieldStart("version")
+		e.Int64(s.Version)
+	}
+}
+
+var jsonFieldsNameOfPutSiteAIModeRequest = [2]string{
+	0: "mode",
+	1: "version",
+}
+
+// Decode decodes PutSiteAIModeRequest from json.
+func (s *PutSiteAIModeRequest) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PutSiteAIModeRequest to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "mode":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				if err := s.Mode.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"mode\"")
+			}
+		case "version":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Int64()
+				s.Version = int64(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"version\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode PutSiteAIModeRequest")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000011,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfPutSiteAIModeRequest) {
+					name = jsonFieldsNameOfPutSiteAIModeRequest[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *PutSiteAIModeRequest) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PutSiteAIModeRequest) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes PutSiteAIModeRequestMode as json.
+func (s PutSiteAIModeRequestMode) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes PutSiteAIModeRequestMode from json.
+func (s *PutSiteAIModeRequestMode) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PutSiteAIModeRequestMode to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch PutSiteAIModeRequestMode(v) {
+	case PutSiteAIModeRequestModeAsk:
+		*s = PutSiteAIModeRequestModeAsk
+	case PutSiteAIModeRequestModeAiDrafts:
+		*s = PutSiteAIModeRequestModeAiDrafts
+	default:
+		*s = PutSiteAIModeRequestMode(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s PutSiteAIModeRequestMode) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PutSiteAIModeRequestMode) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes PutSiteAIModeUnauthorized as json.
+func (s *PutSiteAIModeUnauthorized) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes PutSiteAIModeUnauthorized from json.
+func (s *PutSiteAIModeUnauthorized) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PutSiteAIModeUnauthorized to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = PutSiteAIModeUnauthorized(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *PutSiteAIModeUnauthorized) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PutSiteAIModeUnauthorized) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes PutSiteAIModeUnprocessableEntity as json.
+func (s *PutSiteAIModeUnprocessableEntity) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes PutSiteAIModeUnprocessableEntity from json.
+func (s *PutSiteAIModeUnprocessableEntity) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PutSiteAIModeUnprocessableEntity to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = PutSiteAIModeUnprocessableEntity(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *PutSiteAIModeUnprocessableEntity) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PutSiteAIModeUnprocessableEntity) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes PutSiteAIModeUnsupportedMediaType as json.
+func (s *PutSiteAIModeUnsupportedMediaType) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes PutSiteAIModeUnsupportedMediaType from json.
+func (s *PutSiteAIModeUnsupportedMediaType) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PutSiteAIModeUnsupportedMediaType to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = PutSiteAIModeUnsupportedMediaType(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *PutSiteAIModeUnsupportedMediaType) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PutSiteAIModeUnsupportedMediaType) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -126489,6 +130189,323 @@ func (s *Site) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *Site) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *SiteAIMode) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *SiteAIMode) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("site_id")
+		json.EncodeUUID(e, s.SiteID)
+	}
+	{
+		e.FieldStart("mode")
+		s.Mode.Encode(e)
+	}
+	{
+		e.FieldStart("source")
+		s.Source.Encode(e)
+	}
+	{
+		e.FieldStart("version")
+		e.Int64(s.Version)
+	}
+	{
+		if s.SetByUserID.Set {
+			e.FieldStart("set_by_user_id")
+			s.SetByUserID.Encode(e)
+		}
+	}
+	{
+		if s.SetByName.Set {
+			e.FieldStart("set_by_name")
+			s.SetByName.Encode(e)
+		}
+	}
+	{
+		e.FieldStart("set_by_account_deleted")
+		e.Bool(s.SetByAccountDeleted)
+	}
+	{
+		if s.SetAt.Set {
+			e.FieldStart("set_at")
+			s.SetAt.Encode(e, json.EncodeDateTime)
+		}
+	}
+	{
+		e.FieldStart("setter_valid")
+		e.Bool(s.SetterValid)
+	}
+	{
+		e.FieldStart("ai_paused")
+		e.Bool(s.AiPaused)
+	}
+	{
+		e.FieldStart("min_agent_version")
+		e.Str(s.MinAgentVersion)
+	}
+	{
+		e.FieldStart("options")
+		e.ArrStart()
+		for _, elem := range s.Options {
+			elem.Encode(e)
+		}
+		e.ArrEnd()
+	}
+	{
+		e.FieldStart("kinds")
+		e.ArrStart()
+		for _, elem := range s.Kinds {
+			elem.Encode(e)
+		}
+		e.ArrEnd()
+	}
+}
+
+var jsonFieldsNameOfSiteAIMode = [13]string{
+	0:  "site_id",
+	1:  "mode",
+	2:  "source",
+	3:  "version",
+	4:  "set_by_user_id",
+	5:  "set_by_name",
+	6:  "set_by_account_deleted",
+	7:  "set_at",
+	8:  "setter_valid",
+	9:  "ai_paused",
+	10: "min_agent_version",
+	11: "options",
+	12: "kinds",
+}
+
+// Decode decodes SiteAIMode from json.
+func (s *SiteAIMode) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode SiteAIMode to nil")
+	}
+	var requiredBitSet [2]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "site_id":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := json.DecodeUUID(d)
+				s.SiteID = v
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"site_id\"")
+			}
+		case "mode":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				if err := s.Mode.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"mode\"")
+			}
+		case "source":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				if err := s.Source.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"source\"")
+			}
+		case "version":
+			requiredBitSet[0] |= 1 << 3
+			if err := func() error {
+				v, err := d.Int64()
+				s.Version = int64(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"version\"")
+			}
+		case "set_by_user_id":
+			if err := func() error {
+				s.SetByUserID.Reset()
+				if err := s.SetByUserID.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"set_by_user_id\"")
+			}
+		case "set_by_name":
+			if err := func() error {
+				s.SetByName.Reset()
+				if err := s.SetByName.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"set_by_name\"")
+			}
+		case "set_by_account_deleted":
+			requiredBitSet[0] |= 1 << 6
+			if err := func() error {
+				v, err := d.Bool()
+				s.SetByAccountDeleted = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"set_by_account_deleted\"")
+			}
+		case "set_at":
+			if err := func() error {
+				s.SetAt.Reset()
+				if err := s.SetAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"set_at\"")
+			}
+		case "setter_valid":
+			requiredBitSet[1] |= 1 << 0
+			if err := func() error {
+				v, err := d.Bool()
+				s.SetterValid = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"setter_valid\"")
+			}
+		case "ai_paused":
+			requiredBitSet[1] |= 1 << 1
+			if err := func() error {
+				v, err := d.Bool()
+				s.AiPaused = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"ai_paused\"")
+			}
+		case "min_agent_version":
+			requiredBitSet[1] |= 1 << 2
+			if err := func() error {
+				v, err := d.Str()
+				s.MinAgentVersion = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"min_agent_version\"")
+			}
+		case "options":
+			requiredBitSet[1] |= 1 << 3
+			if err := func() error {
+				s.Options = make([]AIModeOption, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem AIModeOption
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.Options = append(s.Options, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"options\"")
+			}
+		case "kinds":
+			requiredBitSet[1] |= 1 << 4
+			if err := func() error {
+				s.Kinds = make([]AIChangeKind, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem AIChangeKind
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.Kinds = append(s.Kinds, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"kinds\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode SiteAIMode")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [2]uint8{
+		0b01001111,
+		0b00011111,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfSiteAIMode) {
+					name = jsonFieldsNameOfSiteAIMode[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *SiteAIMode) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *SiteAIMode) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

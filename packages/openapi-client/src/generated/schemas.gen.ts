@@ -8183,6 +8183,8 @@ export const AbilityRequestSchema = {
     not_sent_reason: {
       type: "string",
       nullable: true,
+      description:
+        "Why an approved request was closed without being sent; nothing\nwas changed on the site. Values include `setting_changed` (the\nsite's setting changed after the approval and before the change\nran) and `class_changed` (WPMgr changed how this kind of change is\nhandled after the approval and before it ran).\n",
     },
     created_post_id: {
       type: "integer",
@@ -8248,6 +8250,47 @@ export const AbilityRequestSchema = {
       },
       description:
         "The images a wpmgr/page-create request places, in outline order, as\nthe site described them when WPMgr checked the request. Null when\nthe outline has no image, and for every other ability. A card whose\noutline names an image with no entry here cannot be shown in full\nand must not be approvable.\n",
+    },
+    approval: {
+      anyOf: [
+        {
+          $ref: "#/components/schemas/AbilityRequestApproval",
+        },
+        {
+          type: "null",
+        },
+      ],
+      description:
+        "How the request was approved: by a person, or by the site's\nsetting with no person deciding. Null while the request has not\nbeen approved, and for a request that never will be (declined,\nwithdrawn or expired).\n",
+    },
+    change_class: {
+      anyOf: [
+        {
+          $ref: "#/components/schemas/AIChangeClass",
+        },
+        {
+          type: "null",
+        },
+      ],
+      description:
+        "The kind of change WPMgr decided this request is, from its own\nrecords. Null until WPMgr has decided, and for a request made\nbefore kinds existed.\n",
+    },
+    change_kind_name: {
+      type: ["string", "null"],
+      description:
+        "WPMgr's name for `change_class` as copy uses it, for example\n`edits to published pages`. Null when `change_class` is null or\n`always_ask`.\n",
+    },
+    ask_reason: {
+      anyOf: [
+        {
+          $ref: "#/components/schemas/AIAskReason",
+        },
+        {
+          type: "null",
+        },
+      ],
+      description:
+        "Why this request was left for a person instead of being approved\nby a setting. Stays set after a person approves it. Null when\nWPMgr did not record a reason.\n",
     },
   },
 } as const;
@@ -8421,6 +8464,522 @@ export const ContentEditingStateSchema = {
       type: "string",
       format: "uuid",
       nullable: true,
+    },
+  },
+} as const;
+
+export const AIModeSchema = {
+  type: "string",
+  enum: ["ask", "ai_drafts", "full"],
+  description:
+    "How much AI connections may do on a site without a person's approval.\n`ask`: every change waits. `ai_drafts`: a draft the AI makes, and an\nedit to a draft it made, runs at once; everything else waits. `full`:\nreserved; the mode routes never set it.\n",
+} as const;
+
+export const AIModeSourceSchema = {
+  type: "string",
+  enum: [
+    "unset",
+    "migration",
+    "launch_default",
+    "enable_default",
+    "person",
+    "tightened",
+  ],
+  description:
+    "Where the mode came from. `unset`: nobody has chosen, so the site asks\nevery time. `migration`: AI editing was already on when modes were\nintroduced and no person is on record as having turned it on, so the\nsite asks every time. `launch_default`: set to `ai_drafts` for the\nperson who had turned AI editing on when modes were introduced.\n`enable_default`: set to `ai_drafts` when a person turned AI editing\non. `person`: a signed-in person chose it. `tightened`: lowered to\n`ask` by a caller that was not a signed-in person.\n",
+} as const;
+
+export const AIChangeClassSchema = {
+  type: "string",
+  enum: [
+    "ai_draft",
+    "operational",
+    "unpublished",
+    "live",
+    "publish",
+    "update",
+    "always_ask",
+  ],
+  description:
+    "The kind of a change, as WPMgr classes it from its own records and\nnever from anything the AI sent. `ai_draft`: creates a draft, or edits\na draft the AI made. `operational`: changes no content, such as a cache\nclear. `unpublished`: edits unpublished content the AI did not make.\n`live`: changes something visitors can see now. `publish`: publishes\nor schedules. `update`: updates a plugin or theme. `always_ask`: waits\nfor a person in every mode.\n",
+} as const;
+
+export const AIAskReasonSchema = {
+  type: "string",
+  enum: [
+    "kind_always_asks",
+    "unknown_target_state",
+    "site_mode_ask",
+    "kind_not_in_mode",
+    "setter_lacks_permission",
+    "over_change_budget",
+    "over_site_cap",
+    "connection_never_auto",
+    "connection_setter_invalid",
+    "not_checked",
+  ],
+  description:
+    "Why a request was left for a person instead of being approved by a\nsetting. `kind_always_asks`: this kind of change waits in every mode.\n`unknown_target_state`: WPMgr could not tell whether visitors would\nsee the change. `site_mode_ask`: the site is set to ask every time.\n`kind_not_in_mode`: the site's mode does not run this kind of change\non its own. `setter_lacks_permission`: the person who chose the site's\nmode no longer has the access it needs. `over_change_budget`: the\nconnection used its automatic changes for now. `over_site_cap`: the\nconnection reached its limit on sites changed this hour.\n`connection_never_auto`: the connection is set to `never`.\n`connection_setter_invalid`: the person who allowed the connection to\nrun changes automatically can no longer manage connections.\n`not_checked`: WPMgr could not check the request against the setting\nin time. A client that meets a reason it does not know shows the\nrequest as waiting for a person.\n",
+} as const;
+
+export const AIControlRefusalCodeSchema = {
+  type: "string",
+  enum: [
+    "session_required",
+    "role_required",
+    "org_scope_required",
+    "stale_version",
+    "agent_outdated",
+    "paused",
+    "use_full_auto_route",
+  ],
+  description:
+    "The `code` of a refusal from the AI-trust routes, in the `Error`\nenvelope. `session_required` (403): loosening needs a signed-in\nperson. `role_required`: the caller's role does not allow the choice;\nit appears as an option's `reason`, and a route answers a missing\npermission with the generic `insufficient_permission`.\n`org_scope_required` (403): the action needs full organisation\nmembership, and a site-constrained principal is refused whatever role\nit holds on a site. `stale_version` (409): the mode was changed since\nthe caller read it. `agent_outdated` (409): the site's plugin is older\nthan the choice needs. `paused` (409): the organisation's AI is\npaused, so raising is refused; lowering never is. `use_full_auto_route`\n(422): the mode route does not set `full`.\n",
+} as const;
+
+export const AIModeOptionSchema = {
+  type: "object",
+  description:
+    "One mode the dashboard offers, and whether this caller can choose it now.",
+  required: ["mode", "choosable", "reason"],
+  properties: {
+    mode: {
+      $ref: "#/components/schemas/AIMode",
+    },
+    choosable: {
+      type: "boolean",
+      description:
+        "Whether this caller could save this mode now. The mode that is already set is choosable too.",
+    },
+    reason: {
+      type: ["string", "null"],
+      enum: [
+        "role_required",
+        "org_scope_required",
+        "session_required",
+        "paused",
+        "agent_outdated",
+        null,
+      ],
+      description:
+        "Why the mode is not choosable; null when it is. When several\napply, the first of `role_required`, `org_scope_required`,\n`session_required`, `paused`, `agent_outdated` is given.\n`role_required`: the caller's role does not allow the choice.\n`org_scope_required`: the choice needs full organisation\nmembership. `session_required`: the caller is not a signed-in\nperson. `paused`: the organisation's AI is paused.\n`agent_outdated`: the site's plugin is older than\n`min_agent_version`.\n",
+    },
+  },
+} as const;
+
+export const AIChangeKindAbilitySchema = {
+  type: "object",
+  description: "A reviewed tool whose changes on a site are of one kind.",
+  required: ["name", "title"],
+  properties: {
+    name: {
+      type: "string",
+      description: "The tool's name, for example `wpmgr/page-create`.",
+    },
+    title: {
+      type: "string",
+      description: "WPMgr's title for the tool.",
+    },
+  },
+} as const;
+
+export const AIModeDecisionSchema = {
+  type: "object",
+  description: "What happens to one kind of change under one mode.",
+  required: ["mode", "outcome"],
+  properties: {
+    mode: {
+      $ref: "#/components/schemas/AIMode",
+    },
+    outcome: {
+      type: "string",
+      enum: ["auto", "ask"],
+      description:
+        "`auto`: the change runs at once, and a person can undo it where\nthe card offers Undo. `ask`: it waits for a person.\n",
+    },
+  },
+} as const;
+
+export const AIChangeKindSchema = {
+  type: "object",
+  description: "One row of the table of what each mode covers.",
+  required: ["change_class", "name", "abilities", "decisions"],
+  properties: {
+    change_class: {
+      $ref: "#/components/schemas/AIChangeClass",
+    },
+    name: {
+      type: "string",
+      description:
+        "WPMgr's name for the kind, as copy uses it, for example `edits to published pages`.",
+    },
+    abilities: {
+      type: "array",
+      description:
+        "The reviewed tools whose changes on this site are of this kind.",
+      items: {
+        $ref: "#/components/schemas/AIChangeKindAbility",
+      },
+    },
+    decisions: {
+      type: "array",
+      description:
+        "What happens to a change of this kind under each mode, in `options` order.",
+      items: {
+        $ref: "#/components/schemas/AIModeDecision",
+      },
+    },
+  },
+} as const;
+
+export const SiteAIModeSchema = {
+  type: "object",
+  description:
+    "A site's AI mode: how much AI connections may do on the site without a\nperson's approval, who chose it, and what the dashboard needs to offer\na change. A person's name is the only text in it that did not come\nfrom WPMgr.\n",
+  required: [
+    "site_id",
+    "mode",
+    "source",
+    "version",
+    "set_by_account_deleted",
+    "setter_valid",
+    "ai_paused",
+    "min_agent_version",
+    "options",
+    "kinds",
+  ],
+  properties: {
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    mode: {
+      $ref: "#/components/schemas/AIMode",
+    },
+    source: {
+      $ref: "#/components/schemas/AIModeSource",
+    },
+    version: {
+      type: "integer",
+      format: "int64",
+      minimum: 0,
+      description:
+        "The compare-and-set token. Send it back unchanged with `PUT`. It\nmoves by one whenever the mode, the person who chose it or the\nsource changes, and at no other time.\n",
+    },
+    set_by_user_id: {
+      type: ["string", "null"],
+      format: "uuid",
+      description: "The person who chose the mode. Null when nobody did.",
+    },
+    set_by_name: {
+      type: ["string", "null"],
+      description:
+        "That person's name as WPMgr stores it; render it as plain text.\nNull when nobody chose the mode, or the account was deleted.\n",
+    },
+    set_by_account_deleted: {
+      type: "boolean",
+      description:
+        "True when a person is on record as having chosen the mode and that account has since been deleted.",
+    },
+    set_at: {
+      type: ["string", "null"],
+      format: "date-time",
+      description: "When the mode was chosen. Null when nobody chose it.",
+    },
+    setter_valid: {
+      type: "boolean",
+      description:
+        "Whether the setting would be honoured today. `ask` has nothing to\nhonour and is always valid. For `ai_drafts` this is the check the\ndecision engine runs on every request: the person who chose it must\nstill be allowed to have chosen it, as a member of the organisation\nwith an active account and access to the site. When false, every\nchange on the site waits for a person until someone chooses a mode\nagain.\n",
+    },
+    ai_paused: {
+      type: "boolean",
+      description:
+        "True while the organisation's AI is paused. Nothing runs, automatic or not, until an owner resumes it.",
+    },
+    min_agent_version: {
+      type: "string",
+      description:
+        "The least WPMgr plugin version a site needs for an option whose `reason` is `agent_outdated`.",
+    },
+    options: {
+      type: "array",
+      description: "One entry per mode the dashboard offers, in display order.",
+      items: {
+        $ref: "#/components/schemas/AIModeOption",
+      },
+    },
+    kinds: {
+      type: "array",
+      description:
+        "What each mode covers, one row per kind of change the decision\nengine handles, in display order. `always_ask` never appears: it\nwaits in every mode.\n",
+      items: {
+        $ref: "#/components/schemas/AIChangeKind",
+      },
+    },
+  },
+} as const;
+
+export const PutSiteAIModeRequestSchema = {
+  type: "object",
+  required: ["mode", "version"],
+  properties: {
+    mode: {
+      type: "string",
+      enum: ["ask", "ai_drafts"],
+    },
+    version: {
+      type: "integer",
+      format: "int64",
+      minimum: 0,
+      description: "The `version` the caller last read.",
+    },
+  },
+} as const;
+
+export const AIAutoSchema = {
+  type: "string",
+  enum: ["site_setting", "never"],
+  description:
+    "Whether an AI connection may run changes automatically. `site_setting`:\nwherever a site's mode allows it. `never`: every change from the\nconnection waits for a person.\n",
+} as const;
+
+export const AIUsageBucketSchema = {
+  type: "object",
+  description: "One count against one fixed limit.",
+  required: ["used", "limit"],
+  properties: {
+    used: {
+      type: "integer",
+      format: "int32",
+      minimum: 0,
+      description: "Automatic changes counted in the window.",
+    },
+    limit: {
+      type: "integer",
+      format: "int32",
+      minimum: 1,
+      description:
+        "The server's fixed limit for the window. Above it, a change waits for a person.",
+    },
+  },
+} as const;
+
+export const AIConnectionAutoSchema = {
+  type: "object",
+  description:
+    "An AI connection's switch for automatic changes, and the person whose\nauthority keeps it on.\n",
+  required: [
+    "grant_id",
+    "ai_auto",
+    "auto_set_by_account_deleted",
+    "auto_setter_valid",
+    "created_with_api_key",
+  ],
+  properties: {
+    grant_id: {
+      type: "string",
+      format: "uuid",
+    },
+    ai_auto: {
+      $ref: "#/components/schemas/AIAuto",
+    },
+    auto_set_by_user_id: {
+      type: ["string", "null"],
+      format: "uuid",
+      description:
+        "The person who allowed the connection to run changes automatically. Null when nobody did.",
+    },
+    auto_set_by_name: {
+      type: ["string", "null"],
+      description:
+        "That person's name as WPMgr stores it; render it as plain text.\nNull when nobody allowed it, or the account was deleted.\n",
+    },
+    auto_set_by_account_deleted: {
+      type: "boolean",
+      description:
+        "True when a person is on record as having allowed it and that account has since been deleted.",
+    },
+    auto_set_at: {
+      type: ["string", "null"],
+      format: "date-time",
+      description: "When it was allowed. Null when nobody allowed it.",
+    },
+    auto_setter_valid: {
+      type: "boolean",
+      description:
+        "Whether the permission still holds. `never` has nothing to honour\nand is always valid. For `site_setting` this is the check the\ndecision engine runs on every request: the person who allowed it\nmust still be a full member of the organisation who can manage\nconnections, with an active account. When false, every change from\nthe connection waits for a person until one allows it again.\n",
+    },
+    created_with_api_key: {
+      type: "boolean",
+      description:
+        "True when no person is on record as having created the connection, because it was created with an API key.",
+    },
+  },
+} as const;
+
+export const AIConnectionUsageSchema = {
+  description:
+    "An AI connection's switch and what it has run automatically in the\nrolling window. `draft_changes` counts automatic changes to drafts;\n`draft_sites` counts the distinct sites they were on. Both limits are\nfixed by the server. Above a limit, a change waits for a person.\n",
+  allOf: [
+    {
+      $ref: "#/components/schemas/AIConnectionAuto",
+    },
+    {
+      type: "object",
+      required: ["window_minutes", "draft_changes", "draft_sites"],
+      properties: {
+        window_minutes: {
+          type: "integer",
+          format: "int32",
+          description:
+            "Length in minutes of the rolling window every count covers.",
+        },
+        draft_changes: {
+          $ref: "#/components/schemas/AIUsageBucket",
+        },
+        draft_sites: {
+          $ref: "#/components/schemas/AIUsageBucket",
+        },
+      },
+    },
+  ],
+} as const;
+
+export const PutAIConnectionAutoRequestSchema = {
+  type: "object",
+  required: ["ai_auto"],
+  properties: {
+    ai_auto: {
+      $ref: "#/components/schemas/AIAuto",
+    },
+  },
+} as const;
+
+export const AIApprovalSettingSchema = {
+  type: "object",
+  description:
+    "The site setting an automatic approval relied on, copied onto the\nrequest when it was approved and never read back from the site, so it\nstays true after the setting changes.\n",
+  required: ["mode", "source", "set_by_account_deleted"],
+  properties: {
+    mode: {
+      type: "string",
+      enum: ["ai_drafts", "full"],
+      description: "The mode the site was in.",
+    },
+    source: {
+      type: "string",
+      enum: ["launch_default", "enable_default", "person"],
+      description: "Where that mode came from; see `AIModeSource`.",
+    },
+    set_by_user_id: {
+      type: ["string", "null"],
+      format: "uuid",
+      description: "The person who chose the mode.",
+    },
+    set_by_name: {
+      type: ["string", "null"],
+      description:
+        "That person's name as WPMgr stores it; render it as plain text.\nNull when the account was deleted.\n",
+    },
+    set_by_account_deleted: {
+      type: "boolean",
+      description: "True when that account has since been deleted.",
+    },
+    set_at: {
+      type: ["string", "null"],
+      format: "date-time",
+      description: "When the mode was chosen.",
+    },
+  },
+} as const;
+
+export const AbilityRequestApprovalSchema = {
+  type: "object",
+  description:
+    "How an approved request was approved. A request approved by a setting\nwas not decided by any person; `setting` says which setting and whose.\n",
+  required: ["source"],
+  properties: {
+    source: {
+      type: "string",
+      enum: ["person", "policy"],
+      description:
+        "`person`: a signed-in person approved it from the dashboard.\n`policy`: the site's setting approved it.\n",
+    },
+    setting: {
+      anyOf: [
+        {
+          $ref: "#/components/schemas/AIApprovalSetting",
+        },
+        {
+          type: "null",
+        },
+      ],
+      description:
+        "The setting a `policy` approval relied on. Null for `person`.",
+    },
+  },
+} as const;
+
+export const AIActivityAbilityRequestSchema = {
+  type: "object",
+  required: ["kind", "request"],
+  properties: {
+    kind: {
+      type: "string",
+      enum: ["ability_request"],
+    },
+    request: {
+      $ref: "#/components/schemas/AbilityRequest",
+    },
+  },
+} as const;
+
+export const AIActivityCachePurgeRequestSchema = {
+  type: "object",
+  required: ["kind", "request"],
+  properties: {
+    kind: {
+      type: "string",
+      enum: ["cache_purge_request"],
+    },
+    request: {
+      $ref: "#/components/schemas/AssistantRequest",
+    },
+  },
+} as const;
+
+export const AIActivityItemSchema = {
+  description: "One approved request, of either kind. Switch on `kind`.",
+  oneOf: [
+    {
+      $ref: "#/components/schemas/AIActivityAbilityRequest",
+    },
+    {
+      $ref: "#/components/schemas/AIActivityCachePurgeRequest",
+    },
+  ],
+  discriminator: {
+    propertyName: "kind",
+    mapping: {
+      ability_request: "#/components/schemas/AIActivityAbilityRequest",
+      cache_purge_request: "#/components/schemas/AIActivityCachePurgeRequest",
+    },
+  },
+} as const;
+
+export const AIActivityPageSchema = {
+  type: "object",
+  required: ["items", "next_cursor"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AIActivityItem",
+      },
+    },
+    next_cursor: {
+      type: ["string", "null"],
+      description: "Pass as `cursor` for the next page. Null on the last page.",
     },
   },
 } as const;

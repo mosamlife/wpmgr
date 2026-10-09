@@ -19,6 +19,1267 @@ import (
 	"github.com/ogen-go/ogen/sse"
 )
 
+// Ref: #/components/schemas/AIActivityAbilityRequest
+type AIActivityAbilityRequest struct {
+	Kind    AIActivityAbilityRequestKind `json:"kind"`
+	Request AbilityRequest               `json:"request"`
+}
+
+// GetKind returns the value of Kind.
+func (s *AIActivityAbilityRequest) GetKind() AIActivityAbilityRequestKind {
+	return s.Kind
+}
+
+// GetRequest returns the value of Request.
+func (s *AIActivityAbilityRequest) GetRequest() AbilityRequest {
+	return s.Request
+}
+
+// SetKind sets the value of Kind.
+func (s *AIActivityAbilityRequest) SetKind(val AIActivityAbilityRequestKind) {
+	s.Kind = val
+}
+
+// SetRequest sets the value of Request.
+func (s *AIActivityAbilityRequest) SetRequest(val AbilityRequest) {
+	s.Request = val
+}
+
+type AIActivityAbilityRequestKind string
+
+const (
+	AIActivityAbilityRequestKindAbilityRequest AIActivityAbilityRequestKind = "ability_request"
+)
+
+// AllValues returns all AIActivityAbilityRequestKind values.
+func (AIActivityAbilityRequestKind) AllValues() []AIActivityAbilityRequestKind {
+	return []AIActivityAbilityRequestKind{
+		AIActivityAbilityRequestKindAbilityRequest,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIActivityAbilityRequestKind) MarshalText() ([]byte, error) {
+	switch s {
+	case AIActivityAbilityRequestKindAbilityRequest:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIActivityAbilityRequestKind) UnmarshalText(data []byte) error {
+	switch AIActivityAbilityRequestKind(data) {
+	case AIActivityAbilityRequestKindAbilityRequest:
+		*s = AIActivityAbilityRequestKindAbilityRequest
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/AIActivityCachePurgeRequest
+type AIActivityCachePurgeRequest struct {
+	Kind    AIActivityCachePurgeRequestKind `json:"kind"`
+	Request AssistantRequest                `json:"request"`
+}
+
+// GetKind returns the value of Kind.
+func (s *AIActivityCachePurgeRequest) GetKind() AIActivityCachePurgeRequestKind {
+	return s.Kind
+}
+
+// GetRequest returns the value of Request.
+func (s *AIActivityCachePurgeRequest) GetRequest() AssistantRequest {
+	return s.Request
+}
+
+// SetKind sets the value of Kind.
+func (s *AIActivityCachePurgeRequest) SetKind(val AIActivityCachePurgeRequestKind) {
+	s.Kind = val
+}
+
+// SetRequest sets the value of Request.
+func (s *AIActivityCachePurgeRequest) SetRequest(val AssistantRequest) {
+	s.Request = val
+}
+
+type AIActivityCachePurgeRequestKind string
+
+const (
+	AIActivityCachePurgeRequestKindCachePurgeRequest AIActivityCachePurgeRequestKind = "cache_purge_request"
+)
+
+// AllValues returns all AIActivityCachePurgeRequestKind values.
+func (AIActivityCachePurgeRequestKind) AllValues() []AIActivityCachePurgeRequestKind {
+	return []AIActivityCachePurgeRequestKind{
+		AIActivityCachePurgeRequestKindCachePurgeRequest,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIActivityCachePurgeRequestKind) MarshalText() ([]byte, error) {
+	switch s {
+	case AIActivityCachePurgeRequestKindCachePurgeRequest:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIActivityCachePurgeRequestKind) UnmarshalText(data []byte) error {
+	switch AIActivityCachePurgeRequestKind(data) {
+	case AIActivityCachePurgeRequestKindCachePurgeRequest:
+		*s = AIActivityCachePurgeRequestKindCachePurgeRequest
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// One approved request, of either kind. Switch on `kind`.
+// Ref: #/components/schemas/AIActivityItem
+// AIActivityItem represents sum type.
+type AIActivityItem struct {
+	// Type selects the active sum variant, switch on this field.
+	Type                        AIActivityItemType
+	AIActivityAbilityRequest    AIActivityAbilityRequest
+	AIActivityCachePurgeRequest AIActivityCachePurgeRequest
+}
+
+// AIActivityItemType is oneOf type of AIActivityItem.
+type AIActivityItemType string
+
+// Possible values for AIActivityItemType.
+const (
+	AIActivityAbilityRequestAIActivityItem    AIActivityItemType = "ability_request"
+	AIActivityCachePurgeRequestAIActivityItem AIActivityItemType = "cache_purge_request"
+)
+
+// IsAIActivityAbilityRequest reports whether AIActivityItem is AIActivityAbilityRequest.
+func (s AIActivityItem) IsAIActivityAbilityRequest() bool {
+	return s.Type == AIActivityAbilityRequestAIActivityItem
+}
+
+// IsAIActivityCachePurgeRequest reports whether AIActivityItem is AIActivityCachePurgeRequest.
+func (s AIActivityItem) IsAIActivityCachePurgeRequest() bool {
+	return s.Type == AIActivityCachePurgeRequestAIActivityItem
+}
+
+// SetAIActivityAbilityRequest sets AIActivityItem to AIActivityAbilityRequest.
+func (s *AIActivityItem) SetAIActivityAbilityRequest(v AIActivityAbilityRequest) {
+	s.Type = AIActivityAbilityRequestAIActivityItem
+	s.AIActivityAbilityRequest = v
+}
+
+// GetAIActivityAbilityRequest returns AIActivityAbilityRequest and true boolean if AIActivityItem is AIActivityAbilityRequest.
+func (s AIActivityItem) GetAIActivityAbilityRequest() (v AIActivityAbilityRequest, ok bool) {
+	if !s.IsAIActivityAbilityRequest() {
+		return v, false
+	}
+	return s.AIActivityAbilityRequest, true
+}
+
+// NewAIActivityAbilityRequestAIActivityItem returns new AIActivityItem from AIActivityAbilityRequest.
+func NewAIActivityAbilityRequestAIActivityItem(v AIActivityAbilityRequest) AIActivityItem {
+	var s AIActivityItem
+	s.SetAIActivityAbilityRequest(v)
+	return s
+}
+
+// SetAIActivityCachePurgeRequest sets AIActivityItem to AIActivityCachePurgeRequest.
+func (s *AIActivityItem) SetAIActivityCachePurgeRequest(v AIActivityCachePurgeRequest) {
+	s.Type = AIActivityCachePurgeRequestAIActivityItem
+	s.AIActivityCachePurgeRequest = v
+}
+
+// GetAIActivityCachePurgeRequest returns AIActivityCachePurgeRequest and true boolean if AIActivityItem is AIActivityCachePurgeRequest.
+func (s AIActivityItem) GetAIActivityCachePurgeRequest() (v AIActivityCachePurgeRequest, ok bool) {
+	if !s.IsAIActivityCachePurgeRequest() {
+		return v, false
+	}
+	return s.AIActivityCachePurgeRequest, true
+}
+
+// NewAIActivityCachePurgeRequestAIActivityItem returns new AIActivityItem from AIActivityCachePurgeRequest.
+func NewAIActivityCachePurgeRequestAIActivityItem(v AIActivityCachePurgeRequest) AIActivityItem {
+	var s AIActivityItem
+	s.SetAIActivityCachePurgeRequest(v)
+	return s
+}
+
+// Ref: #/components/schemas/AIActivityPage
+type AIActivityPage struct {
+	Items []AIActivityItem `json:"items"`
+	// Pass as `cursor` for the next page. Null on the last page.
+	NextCursor NilString `json:"next_cursor"`
+}
+
+// GetItems returns the value of Items.
+func (s *AIActivityPage) GetItems() []AIActivityItem {
+	return s.Items
+}
+
+// GetNextCursor returns the value of NextCursor.
+func (s *AIActivityPage) GetNextCursor() NilString {
+	return s.NextCursor
+}
+
+// SetItems sets the value of Items.
+func (s *AIActivityPage) SetItems(val []AIActivityItem) {
+	s.Items = val
+}
+
+// SetNextCursor sets the value of NextCursor.
+func (s *AIActivityPage) SetNextCursor(val NilString) {
+	s.NextCursor = val
+}
+
+func (*AIActivityPage) listAIActivityRes() {}
+
+// The site setting an automatic approval relied on, copied onto the request when it was approved and
+// never read back from the site, so it stays true after the setting changes.
+// Ref: #/components/schemas/AIApprovalSetting
+type AIApprovalSetting struct {
+	// The mode the site was in.
+	Mode AIApprovalSettingMode `json:"mode"`
+	// Where that mode came from; see `AIModeSource`.
+	Source AIApprovalSettingSource `json:"source"`
+	// The person who chose the mode.
+	SetByUserID OptNilUUID `json:"set_by_user_id"`
+	// That person's name as WPMgr stores it; render it as plain text. Null when the account was deleted.
+	SetByName OptNilString `json:"set_by_name"`
+	// True when that account has since been deleted.
+	SetByAccountDeleted bool `json:"set_by_account_deleted"`
+	// When the mode was chosen.
+	SetAt OptNilDateTime `json:"set_at"`
+}
+
+// GetMode returns the value of Mode.
+func (s *AIApprovalSetting) GetMode() AIApprovalSettingMode {
+	return s.Mode
+}
+
+// GetSource returns the value of Source.
+func (s *AIApprovalSetting) GetSource() AIApprovalSettingSource {
+	return s.Source
+}
+
+// GetSetByUserID returns the value of SetByUserID.
+func (s *AIApprovalSetting) GetSetByUserID() OptNilUUID {
+	return s.SetByUserID
+}
+
+// GetSetByName returns the value of SetByName.
+func (s *AIApprovalSetting) GetSetByName() OptNilString {
+	return s.SetByName
+}
+
+// GetSetByAccountDeleted returns the value of SetByAccountDeleted.
+func (s *AIApprovalSetting) GetSetByAccountDeleted() bool {
+	return s.SetByAccountDeleted
+}
+
+// GetSetAt returns the value of SetAt.
+func (s *AIApprovalSetting) GetSetAt() OptNilDateTime {
+	return s.SetAt
+}
+
+// SetMode sets the value of Mode.
+func (s *AIApprovalSetting) SetMode(val AIApprovalSettingMode) {
+	s.Mode = val
+}
+
+// SetSource sets the value of Source.
+func (s *AIApprovalSetting) SetSource(val AIApprovalSettingSource) {
+	s.Source = val
+}
+
+// SetSetByUserID sets the value of SetByUserID.
+func (s *AIApprovalSetting) SetSetByUserID(val OptNilUUID) {
+	s.SetByUserID = val
+}
+
+// SetSetByName sets the value of SetByName.
+func (s *AIApprovalSetting) SetSetByName(val OptNilString) {
+	s.SetByName = val
+}
+
+// SetSetByAccountDeleted sets the value of SetByAccountDeleted.
+func (s *AIApprovalSetting) SetSetByAccountDeleted(val bool) {
+	s.SetByAccountDeleted = val
+}
+
+// SetSetAt sets the value of SetAt.
+func (s *AIApprovalSetting) SetSetAt(val OptNilDateTime) {
+	s.SetAt = val
+}
+
+// The mode the site was in.
+type AIApprovalSettingMode string
+
+const (
+	AIApprovalSettingModeAiDrafts AIApprovalSettingMode = "ai_drafts"
+	AIApprovalSettingModeFull     AIApprovalSettingMode = "full"
+)
+
+// AllValues returns all AIApprovalSettingMode values.
+func (AIApprovalSettingMode) AllValues() []AIApprovalSettingMode {
+	return []AIApprovalSettingMode{
+		AIApprovalSettingModeAiDrafts,
+		AIApprovalSettingModeFull,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIApprovalSettingMode) MarshalText() ([]byte, error) {
+	switch s {
+	case AIApprovalSettingModeAiDrafts:
+		return []byte(s), nil
+	case AIApprovalSettingModeFull:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIApprovalSettingMode) UnmarshalText(data []byte) error {
+	switch AIApprovalSettingMode(data) {
+	case AIApprovalSettingModeAiDrafts:
+		*s = AIApprovalSettingModeAiDrafts
+		return nil
+	case AIApprovalSettingModeFull:
+		*s = AIApprovalSettingModeFull
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Where that mode came from; see `AIModeSource`.
+type AIApprovalSettingSource string
+
+const (
+	AIApprovalSettingSourceLaunchDefault AIApprovalSettingSource = "launch_default"
+	AIApprovalSettingSourceEnableDefault AIApprovalSettingSource = "enable_default"
+	AIApprovalSettingSourcePerson        AIApprovalSettingSource = "person"
+)
+
+// AllValues returns all AIApprovalSettingSource values.
+func (AIApprovalSettingSource) AllValues() []AIApprovalSettingSource {
+	return []AIApprovalSettingSource{
+		AIApprovalSettingSourceLaunchDefault,
+		AIApprovalSettingSourceEnableDefault,
+		AIApprovalSettingSourcePerson,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIApprovalSettingSource) MarshalText() ([]byte, error) {
+	switch s {
+	case AIApprovalSettingSourceLaunchDefault:
+		return []byte(s), nil
+	case AIApprovalSettingSourceEnableDefault:
+		return []byte(s), nil
+	case AIApprovalSettingSourcePerson:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIApprovalSettingSource) UnmarshalText(data []byte) error {
+	switch AIApprovalSettingSource(data) {
+	case AIApprovalSettingSourceLaunchDefault:
+		*s = AIApprovalSettingSourceLaunchDefault
+		return nil
+	case AIApprovalSettingSourceEnableDefault:
+		*s = AIApprovalSettingSourceEnableDefault
+		return nil
+	case AIApprovalSettingSourcePerson:
+		*s = AIApprovalSettingSourcePerson
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Why a request was left for a person instead of being approved by a setting. `kind_always_asks`: this
+// kind of change waits in every mode. `unknown_target_state`: WPMgr could not tell whether visitors
+// would see the change. `site_mode_ask`: the site is set to ask every time. `kind_not_in_mode`: the
+// site's mode does not run this kind of change on its own. `setter_lacks_permission`: the person who
+// chose the site's mode no longer has the access it needs. `over_change_budget`: the connection used
+// its automatic changes for now. `over_site_cap`: the connection reached its limit on sites changed
+// this hour. `connection_never_auto`: the connection is set to `never`. `connection_setter_invalid`:
+// the person who allowed the connection to run changes automatically can no longer manage connections.
+// `not_checked`: WPMgr could not check the request against the setting in time. A client that meets a
+// reason it does not know shows the request as waiting for a person.
+// Ref: #/components/schemas/AIAskReason
+type AIAskReason string
+
+const (
+	AIAskReasonKindAlwaysAsks          AIAskReason = "kind_always_asks"
+	AIAskReasonUnknownTargetState      AIAskReason = "unknown_target_state"
+	AIAskReasonSiteModeAsk             AIAskReason = "site_mode_ask"
+	AIAskReasonKindNotInMode           AIAskReason = "kind_not_in_mode"
+	AIAskReasonSetterLacksPermission   AIAskReason = "setter_lacks_permission"
+	AIAskReasonOverChangeBudget        AIAskReason = "over_change_budget"
+	AIAskReasonOverSiteCap             AIAskReason = "over_site_cap"
+	AIAskReasonConnectionNeverAuto     AIAskReason = "connection_never_auto"
+	AIAskReasonConnectionSetterInvalid AIAskReason = "connection_setter_invalid"
+	AIAskReasonNotChecked              AIAskReason = "not_checked"
+)
+
+// AllValues returns all AIAskReason values.
+func (AIAskReason) AllValues() []AIAskReason {
+	return []AIAskReason{
+		AIAskReasonKindAlwaysAsks,
+		AIAskReasonUnknownTargetState,
+		AIAskReasonSiteModeAsk,
+		AIAskReasonKindNotInMode,
+		AIAskReasonSetterLacksPermission,
+		AIAskReasonOverChangeBudget,
+		AIAskReasonOverSiteCap,
+		AIAskReasonConnectionNeverAuto,
+		AIAskReasonConnectionSetterInvalid,
+		AIAskReasonNotChecked,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIAskReason) MarshalText() ([]byte, error) {
+	switch s {
+	case AIAskReasonKindAlwaysAsks:
+		return []byte(s), nil
+	case AIAskReasonUnknownTargetState:
+		return []byte(s), nil
+	case AIAskReasonSiteModeAsk:
+		return []byte(s), nil
+	case AIAskReasonKindNotInMode:
+		return []byte(s), nil
+	case AIAskReasonSetterLacksPermission:
+		return []byte(s), nil
+	case AIAskReasonOverChangeBudget:
+		return []byte(s), nil
+	case AIAskReasonOverSiteCap:
+		return []byte(s), nil
+	case AIAskReasonConnectionNeverAuto:
+		return []byte(s), nil
+	case AIAskReasonConnectionSetterInvalid:
+		return []byte(s), nil
+	case AIAskReasonNotChecked:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIAskReason) UnmarshalText(data []byte) error {
+	switch AIAskReason(data) {
+	case AIAskReasonKindAlwaysAsks:
+		*s = AIAskReasonKindAlwaysAsks
+		return nil
+	case AIAskReasonUnknownTargetState:
+		*s = AIAskReasonUnknownTargetState
+		return nil
+	case AIAskReasonSiteModeAsk:
+		*s = AIAskReasonSiteModeAsk
+		return nil
+	case AIAskReasonKindNotInMode:
+		*s = AIAskReasonKindNotInMode
+		return nil
+	case AIAskReasonSetterLacksPermission:
+		*s = AIAskReasonSetterLacksPermission
+		return nil
+	case AIAskReasonOverChangeBudget:
+		*s = AIAskReasonOverChangeBudget
+		return nil
+	case AIAskReasonOverSiteCap:
+		*s = AIAskReasonOverSiteCap
+		return nil
+	case AIAskReasonConnectionNeverAuto:
+		*s = AIAskReasonConnectionNeverAuto
+		return nil
+	case AIAskReasonConnectionSetterInvalid:
+		*s = AIAskReasonConnectionSetterInvalid
+		return nil
+	case AIAskReasonNotChecked:
+		*s = AIAskReasonNotChecked
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Whether an AI connection may run changes automatically. `site_setting`: wherever a site's mode
+// allows it. `never`: every change from the connection waits for a person.
+// Ref: #/components/schemas/AIAuto
+type AIAuto string
+
+const (
+	AIAutoSiteSetting AIAuto = "site_setting"
+	AIAutoNever       AIAuto = "never"
+)
+
+// AllValues returns all AIAuto values.
+func (AIAuto) AllValues() []AIAuto {
+	return []AIAuto{
+		AIAutoSiteSetting,
+		AIAutoNever,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIAuto) MarshalText() ([]byte, error) {
+	switch s {
+	case AIAutoSiteSetting:
+		return []byte(s), nil
+	case AIAutoNever:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIAuto) UnmarshalText(data []byte) error {
+	switch AIAuto(data) {
+	case AIAutoSiteSetting:
+		*s = AIAutoSiteSetting
+		return nil
+	case AIAutoNever:
+		*s = AIAutoNever
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// The kind of a change, as WPMgr classes it from its own records and never from anything the AI sent.
+// `ai_draft`: creates a draft, or edits a draft the AI made. `operational`: changes no content, such
+// as a cache clear. `unpublished`: edits unpublished content the AI did not make. `live`: changes
+// something visitors can see now. `publish`: publishes or schedules. `update`: updates a plugin or
+// theme. `always_ask`: waits for a person in every mode.
+// Ref: #/components/schemas/AIChangeClass
+type AIChangeClass string
+
+const (
+	AIChangeClassAiDraft     AIChangeClass = "ai_draft"
+	AIChangeClassOperational AIChangeClass = "operational"
+	AIChangeClassUnpublished AIChangeClass = "unpublished"
+	AIChangeClassLive        AIChangeClass = "live"
+	AIChangeClassPublish     AIChangeClass = "publish"
+	AIChangeClassUpdate      AIChangeClass = "update"
+	AIChangeClassAlwaysAsk   AIChangeClass = "always_ask"
+)
+
+// AllValues returns all AIChangeClass values.
+func (AIChangeClass) AllValues() []AIChangeClass {
+	return []AIChangeClass{
+		AIChangeClassAiDraft,
+		AIChangeClassOperational,
+		AIChangeClassUnpublished,
+		AIChangeClassLive,
+		AIChangeClassPublish,
+		AIChangeClassUpdate,
+		AIChangeClassAlwaysAsk,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIChangeClass) MarshalText() ([]byte, error) {
+	switch s {
+	case AIChangeClassAiDraft:
+		return []byte(s), nil
+	case AIChangeClassOperational:
+		return []byte(s), nil
+	case AIChangeClassUnpublished:
+		return []byte(s), nil
+	case AIChangeClassLive:
+		return []byte(s), nil
+	case AIChangeClassPublish:
+		return []byte(s), nil
+	case AIChangeClassUpdate:
+		return []byte(s), nil
+	case AIChangeClassAlwaysAsk:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIChangeClass) UnmarshalText(data []byte) error {
+	switch AIChangeClass(data) {
+	case AIChangeClassAiDraft:
+		*s = AIChangeClassAiDraft
+		return nil
+	case AIChangeClassOperational:
+		*s = AIChangeClassOperational
+		return nil
+	case AIChangeClassUnpublished:
+		*s = AIChangeClassUnpublished
+		return nil
+	case AIChangeClassLive:
+		*s = AIChangeClassLive
+		return nil
+	case AIChangeClassPublish:
+		*s = AIChangeClassPublish
+		return nil
+	case AIChangeClassUpdate:
+		*s = AIChangeClassUpdate
+		return nil
+	case AIChangeClassAlwaysAsk:
+		*s = AIChangeClassAlwaysAsk
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// One row of the table of what each mode covers.
+// Ref: #/components/schemas/AIChangeKind
+type AIChangeKind struct {
+	ChangeClass AIChangeClass `json:"change_class"`
+	// WPMgr's name for the kind, as copy uses it, for example `edits to published pages`.
+	Name string `json:"name"`
+	// The reviewed tools whose changes on this site are of this kind.
+	Abilities []AIChangeKindAbility `json:"abilities"`
+	// What happens to a change of this kind under each mode, in `options` order.
+	Decisions []AIModeDecision `json:"decisions"`
+}
+
+// GetChangeClass returns the value of ChangeClass.
+func (s *AIChangeKind) GetChangeClass() AIChangeClass {
+	return s.ChangeClass
+}
+
+// GetName returns the value of Name.
+func (s *AIChangeKind) GetName() string {
+	return s.Name
+}
+
+// GetAbilities returns the value of Abilities.
+func (s *AIChangeKind) GetAbilities() []AIChangeKindAbility {
+	return s.Abilities
+}
+
+// GetDecisions returns the value of Decisions.
+func (s *AIChangeKind) GetDecisions() []AIModeDecision {
+	return s.Decisions
+}
+
+// SetChangeClass sets the value of ChangeClass.
+func (s *AIChangeKind) SetChangeClass(val AIChangeClass) {
+	s.ChangeClass = val
+}
+
+// SetName sets the value of Name.
+func (s *AIChangeKind) SetName(val string) {
+	s.Name = val
+}
+
+// SetAbilities sets the value of Abilities.
+func (s *AIChangeKind) SetAbilities(val []AIChangeKindAbility) {
+	s.Abilities = val
+}
+
+// SetDecisions sets the value of Decisions.
+func (s *AIChangeKind) SetDecisions(val []AIModeDecision) {
+	s.Decisions = val
+}
+
+// A reviewed tool whose changes on a site are of one kind.
+// Ref: #/components/schemas/AIChangeKindAbility
+type AIChangeKindAbility struct {
+	// The tool's name, for example `wpmgr/page-create`.
+	Name string `json:"name"`
+	// WPMgr's title for the tool.
+	Title string `json:"title"`
+}
+
+// GetName returns the value of Name.
+func (s *AIChangeKindAbility) GetName() string {
+	return s.Name
+}
+
+// GetTitle returns the value of Title.
+func (s *AIChangeKindAbility) GetTitle() string {
+	return s.Title
+}
+
+// SetName sets the value of Name.
+func (s *AIChangeKindAbility) SetName(val string) {
+	s.Name = val
+}
+
+// SetTitle sets the value of Title.
+func (s *AIChangeKindAbility) SetTitle(val string) {
+	s.Title = val
+}
+
+// An AI connection's switch for automatic changes, and the person whose authority keeps it on.
+// Ref: #/components/schemas/AIConnectionAuto
+type AIConnectionAuto struct {
+	GrantID uuid.UUID `json:"grant_id"`
+	AiAuto  AIAuto    `json:"ai_auto"`
+	// The person who allowed the connection to run changes automatically. Null when nobody did.
+	AutoSetByUserID OptNilUUID `json:"auto_set_by_user_id"`
+	// That person's name as WPMgr stores it; render it as plain text. Null when nobody allowed it, or the
+	// account was deleted.
+	AutoSetByName OptNilString `json:"auto_set_by_name"`
+	// True when a person is on record as having allowed it and that account has since been deleted.
+	AutoSetByAccountDeleted bool `json:"auto_set_by_account_deleted"`
+	// When it was allowed. Null when nobody allowed it.
+	AutoSetAt OptNilDateTime `json:"auto_set_at"`
+	// Whether the permission still holds. `never` has nothing to honour and is always valid. For
+	// `site_setting` this is the check the decision engine runs on every request: the person who allowed
+	// it must still be a full member of the organisation who can manage connections, with an active
+	// account. When false, every change from the connection waits for a person until one allows it again.
+	AutoSetterValid bool `json:"auto_setter_valid"`
+	// True when no person is on record as having created the connection, because it was created with an
+	// API key.
+	CreatedWithAPIKey bool `json:"created_with_api_key"`
+}
+
+// GetGrantID returns the value of GrantID.
+func (s *AIConnectionAuto) GetGrantID() uuid.UUID {
+	return s.GrantID
+}
+
+// GetAiAuto returns the value of AiAuto.
+func (s *AIConnectionAuto) GetAiAuto() AIAuto {
+	return s.AiAuto
+}
+
+// GetAutoSetByUserID returns the value of AutoSetByUserID.
+func (s *AIConnectionAuto) GetAutoSetByUserID() OptNilUUID {
+	return s.AutoSetByUserID
+}
+
+// GetAutoSetByName returns the value of AutoSetByName.
+func (s *AIConnectionAuto) GetAutoSetByName() OptNilString {
+	return s.AutoSetByName
+}
+
+// GetAutoSetByAccountDeleted returns the value of AutoSetByAccountDeleted.
+func (s *AIConnectionAuto) GetAutoSetByAccountDeleted() bool {
+	return s.AutoSetByAccountDeleted
+}
+
+// GetAutoSetAt returns the value of AutoSetAt.
+func (s *AIConnectionAuto) GetAutoSetAt() OptNilDateTime {
+	return s.AutoSetAt
+}
+
+// GetAutoSetterValid returns the value of AutoSetterValid.
+func (s *AIConnectionAuto) GetAutoSetterValid() bool {
+	return s.AutoSetterValid
+}
+
+// GetCreatedWithAPIKey returns the value of CreatedWithAPIKey.
+func (s *AIConnectionAuto) GetCreatedWithAPIKey() bool {
+	return s.CreatedWithAPIKey
+}
+
+// SetGrantID sets the value of GrantID.
+func (s *AIConnectionAuto) SetGrantID(val uuid.UUID) {
+	s.GrantID = val
+}
+
+// SetAiAuto sets the value of AiAuto.
+func (s *AIConnectionAuto) SetAiAuto(val AIAuto) {
+	s.AiAuto = val
+}
+
+// SetAutoSetByUserID sets the value of AutoSetByUserID.
+func (s *AIConnectionAuto) SetAutoSetByUserID(val OptNilUUID) {
+	s.AutoSetByUserID = val
+}
+
+// SetAutoSetByName sets the value of AutoSetByName.
+func (s *AIConnectionAuto) SetAutoSetByName(val OptNilString) {
+	s.AutoSetByName = val
+}
+
+// SetAutoSetByAccountDeleted sets the value of AutoSetByAccountDeleted.
+func (s *AIConnectionAuto) SetAutoSetByAccountDeleted(val bool) {
+	s.AutoSetByAccountDeleted = val
+}
+
+// SetAutoSetAt sets the value of AutoSetAt.
+func (s *AIConnectionAuto) SetAutoSetAt(val OptNilDateTime) {
+	s.AutoSetAt = val
+}
+
+// SetAutoSetterValid sets the value of AutoSetterValid.
+func (s *AIConnectionAuto) SetAutoSetterValid(val bool) {
+	s.AutoSetterValid = val
+}
+
+// SetCreatedWithAPIKey sets the value of CreatedWithAPIKey.
+func (s *AIConnectionAuto) SetCreatedWithAPIKey(val bool) {
+	s.CreatedWithAPIKey = val
+}
+
+func (*AIConnectionAuto) putAIConnectionAutoRes() {}
+
+// Merged schema.
+// Ref: #/components/schemas/AIConnectionUsage
+type AIConnectionUsage struct {
+	GrantID uuid.UUID `json:"grant_id"`
+	AiAuto  AIAuto    `json:"ai_auto"`
+	// The person who allowed the connection to run changes automatically. Null when nobody did.
+	AutoSetByUserID OptNilUUID `json:"auto_set_by_user_id"`
+	// That person's name as WPMgr stores it; render it as plain text. Null when nobody allowed it, or the
+	// account was deleted.
+	AutoSetByName OptNilString `json:"auto_set_by_name"`
+	// True when a person is on record as having allowed it and that account has since been deleted.
+	AutoSetByAccountDeleted bool `json:"auto_set_by_account_deleted"`
+	// When it was allowed. Null when nobody allowed it.
+	AutoSetAt OptNilDateTime `json:"auto_set_at"`
+	// Whether the permission still holds. `never` has nothing to honour and is always valid. For
+	// `site_setting` this is the check the decision engine runs on every request: the person who allowed
+	// it must still be a full member of the organisation who can manage connections, with an active
+	// account. When false, every change from the connection waits for a person until one allows it again.
+	AutoSetterValid bool `json:"auto_setter_valid"`
+	// True when no person is on record as having created the connection, because it was created with an
+	// API key.
+	CreatedWithAPIKey bool `json:"created_with_api_key"`
+	// Length in minutes of the rolling window every count covers.
+	WindowMinutes int32         `json:"window_minutes"`
+	DraftChanges  AIUsageBucket `json:"draft_changes"`
+	DraftSites    AIUsageBucket `json:"draft_sites"`
+}
+
+// GetGrantID returns the value of GrantID.
+func (s *AIConnectionUsage) GetGrantID() uuid.UUID {
+	return s.GrantID
+}
+
+// GetAiAuto returns the value of AiAuto.
+func (s *AIConnectionUsage) GetAiAuto() AIAuto {
+	return s.AiAuto
+}
+
+// GetAutoSetByUserID returns the value of AutoSetByUserID.
+func (s *AIConnectionUsage) GetAutoSetByUserID() OptNilUUID {
+	return s.AutoSetByUserID
+}
+
+// GetAutoSetByName returns the value of AutoSetByName.
+func (s *AIConnectionUsage) GetAutoSetByName() OptNilString {
+	return s.AutoSetByName
+}
+
+// GetAutoSetByAccountDeleted returns the value of AutoSetByAccountDeleted.
+func (s *AIConnectionUsage) GetAutoSetByAccountDeleted() bool {
+	return s.AutoSetByAccountDeleted
+}
+
+// GetAutoSetAt returns the value of AutoSetAt.
+func (s *AIConnectionUsage) GetAutoSetAt() OptNilDateTime {
+	return s.AutoSetAt
+}
+
+// GetAutoSetterValid returns the value of AutoSetterValid.
+func (s *AIConnectionUsage) GetAutoSetterValid() bool {
+	return s.AutoSetterValid
+}
+
+// GetCreatedWithAPIKey returns the value of CreatedWithAPIKey.
+func (s *AIConnectionUsage) GetCreatedWithAPIKey() bool {
+	return s.CreatedWithAPIKey
+}
+
+// GetWindowMinutes returns the value of WindowMinutes.
+func (s *AIConnectionUsage) GetWindowMinutes() int32 {
+	return s.WindowMinutes
+}
+
+// GetDraftChanges returns the value of DraftChanges.
+func (s *AIConnectionUsage) GetDraftChanges() AIUsageBucket {
+	return s.DraftChanges
+}
+
+// GetDraftSites returns the value of DraftSites.
+func (s *AIConnectionUsage) GetDraftSites() AIUsageBucket {
+	return s.DraftSites
+}
+
+// SetGrantID sets the value of GrantID.
+func (s *AIConnectionUsage) SetGrantID(val uuid.UUID) {
+	s.GrantID = val
+}
+
+// SetAiAuto sets the value of AiAuto.
+func (s *AIConnectionUsage) SetAiAuto(val AIAuto) {
+	s.AiAuto = val
+}
+
+// SetAutoSetByUserID sets the value of AutoSetByUserID.
+func (s *AIConnectionUsage) SetAutoSetByUserID(val OptNilUUID) {
+	s.AutoSetByUserID = val
+}
+
+// SetAutoSetByName sets the value of AutoSetByName.
+func (s *AIConnectionUsage) SetAutoSetByName(val OptNilString) {
+	s.AutoSetByName = val
+}
+
+// SetAutoSetByAccountDeleted sets the value of AutoSetByAccountDeleted.
+func (s *AIConnectionUsage) SetAutoSetByAccountDeleted(val bool) {
+	s.AutoSetByAccountDeleted = val
+}
+
+// SetAutoSetAt sets the value of AutoSetAt.
+func (s *AIConnectionUsage) SetAutoSetAt(val OptNilDateTime) {
+	s.AutoSetAt = val
+}
+
+// SetAutoSetterValid sets the value of AutoSetterValid.
+func (s *AIConnectionUsage) SetAutoSetterValid(val bool) {
+	s.AutoSetterValid = val
+}
+
+// SetCreatedWithAPIKey sets the value of CreatedWithAPIKey.
+func (s *AIConnectionUsage) SetCreatedWithAPIKey(val bool) {
+	s.CreatedWithAPIKey = val
+}
+
+// SetWindowMinutes sets the value of WindowMinutes.
+func (s *AIConnectionUsage) SetWindowMinutes(val int32) {
+	s.WindowMinutes = val
+}
+
+// SetDraftChanges sets the value of DraftChanges.
+func (s *AIConnectionUsage) SetDraftChanges(val AIUsageBucket) {
+	s.DraftChanges = val
+}
+
+// SetDraftSites sets the value of DraftSites.
+func (s *AIConnectionUsage) SetDraftSites(val AIUsageBucket) {
+	s.DraftSites = val
+}
+
+func (*AIConnectionUsage) getAIConnectionUsageRes() {}
+
+// How much AI connections may do on a site without a person's approval. `ask`: every change waits.
+// `ai_drafts`: a draft the AI makes, and an edit to a draft it made, runs at once; everything else
+// waits. `full`: reserved; the mode routes never set it.
+// Ref: #/components/schemas/AIMode
+type AIMode string
+
+const (
+	AIModeAsk      AIMode = "ask"
+	AIModeAiDrafts AIMode = "ai_drafts"
+	AIModeFull     AIMode = "full"
+)
+
+// AllValues returns all AIMode values.
+func (AIMode) AllValues() []AIMode {
+	return []AIMode{
+		AIModeAsk,
+		AIModeAiDrafts,
+		AIModeFull,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIMode) MarshalText() ([]byte, error) {
+	switch s {
+	case AIModeAsk:
+		return []byte(s), nil
+	case AIModeAiDrafts:
+		return []byte(s), nil
+	case AIModeFull:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIMode) UnmarshalText(data []byte) error {
+	switch AIMode(data) {
+	case AIModeAsk:
+		*s = AIModeAsk
+		return nil
+	case AIModeAiDrafts:
+		*s = AIModeAiDrafts
+		return nil
+	case AIModeFull:
+		*s = AIModeFull
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// What happens to one kind of change under one mode.
+// Ref: #/components/schemas/AIModeDecision
+type AIModeDecision struct {
+	Mode AIMode `json:"mode"`
+	// `auto`: the change runs at once, and a person can undo it where the card offers Undo. `ask`: it
+	// waits for a person.
+	Outcome AIModeDecisionOutcome `json:"outcome"`
+}
+
+// GetMode returns the value of Mode.
+func (s *AIModeDecision) GetMode() AIMode {
+	return s.Mode
+}
+
+// GetOutcome returns the value of Outcome.
+func (s *AIModeDecision) GetOutcome() AIModeDecisionOutcome {
+	return s.Outcome
+}
+
+// SetMode sets the value of Mode.
+func (s *AIModeDecision) SetMode(val AIMode) {
+	s.Mode = val
+}
+
+// SetOutcome sets the value of Outcome.
+func (s *AIModeDecision) SetOutcome(val AIModeDecisionOutcome) {
+	s.Outcome = val
+}
+
+// `auto`: the change runs at once, and a person can undo it where the card offers Undo. `ask`: it
+// waits for a person.
+type AIModeDecisionOutcome string
+
+const (
+	AIModeDecisionOutcomeAuto AIModeDecisionOutcome = "auto"
+	AIModeDecisionOutcomeAsk  AIModeDecisionOutcome = "ask"
+)
+
+// AllValues returns all AIModeDecisionOutcome values.
+func (AIModeDecisionOutcome) AllValues() []AIModeDecisionOutcome {
+	return []AIModeDecisionOutcome{
+		AIModeDecisionOutcomeAuto,
+		AIModeDecisionOutcomeAsk,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIModeDecisionOutcome) MarshalText() ([]byte, error) {
+	switch s {
+	case AIModeDecisionOutcomeAuto:
+		return []byte(s), nil
+	case AIModeDecisionOutcomeAsk:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIModeDecisionOutcome) UnmarshalText(data []byte) error {
+	switch AIModeDecisionOutcome(data) {
+	case AIModeDecisionOutcomeAuto:
+		*s = AIModeDecisionOutcomeAuto
+		return nil
+	case AIModeDecisionOutcomeAsk:
+		*s = AIModeDecisionOutcomeAsk
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// One mode the dashboard offers, and whether this caller can choose it now.
+// Ref: #/components/schemas/AIModeOption
+type AIModeOption struct {
+	Mode AIMode `json:"mode"`
+	// Whether this caller could save this mode now. The mode that is already set is choosable too.
+	Choosable bool `json:"choosable"`
+	// Why the mode is not choosable; null when it is. When several apply, the first of `role_required`,
+	// `org_scope_required`, `session_required`, `paused`, `agent_outdated` is given. `role_required`: the
+	// caller's role does not allow the choice. `org_scope_required`: the choice needs full organisation
+	// membership. `session_required`: the caller is not a signed-in person. `paused`: the organisation's
+	// AI is paused. `agent_outdated`: the site's plugin is older than `min_agent_version`.
+	Reason NilAIModeOptionReason `json:"reason"`
+}
+
+// GetMode returns the value of Mode.
+func (s *AIModeOption) GetMode() AIMode {
+	return s.Mode
+}
+
+// GetChoosable returns the value of Choosable.
+func (s *AIModeOption) GetChoosable() bool {
+	return s.Choosable
+}
+
+// GetReason returns the value of Reason.
+func (s *AIModeOption) GetReason() NilAIModeOptionReason {
+	return s.Reason
+}
+
+// SetMode sets the value of Mode.
+func (s *AIModeOption) SetMode(val AIMode) {
+	s.Mode = val
+}
+
+// SetChoosable sets the value of Choosable.
+func (s *AIModeOption) SetChoosable(val bool) {
+	s.Choosable = val
+}
+
+// SetReason sets the value of Reason.
+func (s *AIModeOption) SetReason(val NilAIModeOptionReason) {
+	s.Reason = val
+}
+
+// Why the mode is not choosable; null when it is. When several apply, the first of `role_required`,
+// `org_scope_required`, `session_required`, `paused`, `agent_outdated` is given. `role_required`: the
+// caller's role does not allow the choice. `org_scope_required`: the choice needs full organisation
+// membership. `session_required`: the caller is not a signed-in person. `paused`: the organisation's
+// AI is paused. `agent_outdated`: the site's plugin is older than `min_agent_version`.
+type AIModeOptionReason string
+
+const (
+	AIModeOptionReasonRoleRequired     AIModeOptionReason = "role_required"
+	AIModeOptionReasonOrgScopeRequired AIModeOptionReason = "org_scope_required"
+	AIModeOptionReasonSessionRequired  AIModeOptionReason = "session_required"
+	AIModeOptionReasonPaused           AIModeOptionReason = "paused"
+	AIModeOptionReasonAgentOutdated    AIModeOptionReason = "agent_outdated"
+)
+
+// AllValues returns all AIModeOptionReason values.
+func (AIModeOptionReason) AllValues() []AIModeOptionReason {
+	return []AIModeOptionReason{
+		AIModeOptionReasonRoleRequired,
+		AIModeOptionReasonOrgScopeRequired,
+		AIModeOptionReasonSessionRequired,
+		AIModeOptionReasonPaused,
+		AIModeOptionReasonAgentOutdated,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIModeOptionReason) MarshalText() ([]byte, error) {
+	switch s {
+	case AIModeOptionReasonRoleRequired:
+		return []byte(s), nil
+	case AIModeOptionReasonOrgScopeRequired:
+		return []byte(s), nil
+	case AIModeOptionReasonSessionRequired:
+		return []byte(s), nil
+	case AIModeOptionReasonPaused:
+		return []byte(s), nil
+	case AIModeOptionReasonAgentOutdated:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIModeOptionReason) UnmarshalText(data []byte) error {
+	switch AIModeOptionReason(data) {
+	case AIModeOptionReasonRoleRequired:
+		*s = AIModeOptionReasonRoleRequired
+		return nil
+	case AIModeOptionReasonOrgScopeRequired:
+		*s = AIModeOptionReasonOrgScopeRequired
+		return nil
+	case AIModeOptionReasonSessionRequired:
+		*s = AIModeOptionReasonSessionRequired
+		return nil
+	case AIModeOptionReasonPaused:
+		*s = AIModeOptionReasonPaused
+		return nil
+	case AIModeOptionReasonAgentOutdated:
+		*s = AIModeOptionReasonAgentOutdated
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Where the mode came from. `unset`: nobody has chosen, so the site asks every time. `migration`: AI
+// editing was already on when modes were introduced and no person is on record as having turned it on,
+// so the site asks every time. `launch_default`: set to `ai_drafts` for the person who had turned AI
+// editing on when modes were introduced. `enable_default`: set to `ai_drafts` when a person turned AI
+// editing on. `person`: a signed-in person chose it. `tightened`: lowered to `ask` by a caller that
+// was not a signed-in person.
+// Ref: #/components/schemas/AIModeSource
+type AIModeSource string
+
+const (
+	AIModeSourceUnset         AIModeSource = "unset"
+	AIModeSourceMigration     AIModeSource = "migration"
+	AIModeSourceLaunchDefault AIModeSource = "launch_default"
+	AIModeSourceEnableDefault AIModeSource = "enable_default"
+	AIModeSourcePerson        AIModeSource = "person"
+	AIModeSourceTightened     AIModeSource = "tightened"
+)
+
+// AllValues returns all AIModeSource values.
+func (AIModeSource) AllValues() []AIModeSource {
+	return []AIModeSource{
+		AIModeSourceUnset,
+		AIModeSourceMigration,
+		AIModeSourceLaunchDefault,
+		AIModeSourceEnableDefault,
+		AIModeSourcePerson,
+		AIModeSourceTightened,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIModeSource) MarshalText() ([]byte, error) {
+	switch s {
+	case AIModeSourceUnset:
+		return []byte(s), nil
+	case AIModeSourceMigration:
+		return []byte(s), nil
+	case AIModeSourceLaunchDefault:
+		return []byte(s), nil
+	case AIModeSourceEnableDefault:
+		return []byte(s), nil
+	case AIModeSourcePerson:
+		return []byte(s), nil
+	case AIModeSourceTightened:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIModeSource) UnmarshalText(data []byte) error {
+	switch AIModeSource(data) {
+	case AIModeSourceUnset:
+		*s = AIModeSourceUnset
+		return nil
+	case AIModeSourceMigration:
+		*s = AIModeSourceMigration
+		return nil
+	case AIModeSourceLaunchDefault:
+		*s = AIModeSourceLaunchDefault
+		return nil
+	case AIModeSourceEnableDefault:
+		*s = AIModeSourceEnableDefault
+		return nil
+	case AIModeSourcePerson:
+		*s = AIModeSourcePerson
+		return nil
+	case AIModeSourceTightened:
+		*s = AIModeSourceTightened
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // One row. `state` is `pass`, `fail`, `unknown` (WPMgr could not tell; never a failure) or
 // `not_applicable` (a row this one depends on failed, or the builder is installed but not active).
 // `observed` is the version that was compared, or null.
@@ -703,6 +1964,35 @@ func (s *AIReadinessWarningCode) UnmarshalText(data []byte) error {
 	default:
 		return errors.Errorf("invalid value: %q", data)
 	}
+}
+
+// One count against one fixed limit.
+// Ref: #/components/schemas/AIUsageBucket
+type AIUsageBucket struct {
+	// Automatic changes counted in the window.
+	Used int32 `json:"used"`
+	// The server's fixed limit for the window. Above it, a change waits for a person.
+	Limit int32 `json:"limit"`
+}
+
+// GetUsed returns the value of Used.
+func (s *AIUsageBucket) GetUsed() int32 {
+	return s.Used
+}
+
+// GetLimit returns the value of Limit.
+func (s *AIUsageBucket) GetLimit() int32 {
+	return s.Limit
+}
+
+// SetUsed sets the value of Used.
+func (s *AIUsageBucket) SetUsed(val int32) {
+	s.Used = val
+}
+
+// SetLimit sets the value of Limit.
+func (s *AIUsageBucket) SetLimit(val int32) {
+	s.Limit = val
 }
 
 // One reviewed ability in the global catalogue. `entry_sha256` is the sha256 of the exact entry bytes
@@ -2060,9 +3350,13 @@ type AbilityRequest struct {
 	DecidedAt       OptNilDateTime           `json:"decided_at"`
 	Outcome         OptNilString             `json:"outcome"`
 	OutcomeCode     OptNilString             `json:"outcome_code"`
-	NotSentReason   OptNilString             `json:"not_sent_reason"`
-	CreatedPostID   OptNilInt64              `json:"created_post_id"`
-	Trashed         OptNilBool               `json:"trashed"`
+	// Why an approved request was closed without being sent; nothing was changed on the site. Values
+	// include `setting_changed` (the site's setting changed after the approval and before the change ran)
+	// and `class_changed` (WPMgr changed how this kind of change is handled after the approval and before
+	// it ran).
+	NotSentReason OptNilString `json:"not_sent_reason"`
+	CreatedPostID OptNilInt64  `json:"created_post_id"`
+	Trashed       OptNilBool   `json:"trashed"`
 	// A failed wpmgr/rest-write's report on putting the post back. True: the whole post is as it was.
 	// False: WPMgr put back what it could, but the post is not fully as it was; show the request as
 	// needing attention. Null when nothing needed putting back, and for every other ability.
@@ -2085,6 +3379,19 @@ type AbilityRequest struct {
 	// WPMgr checked the request. Null when the outline has no image, and for every other ability. A card
 	// whose outline names an image with no entry here cannot be shown in full and must not be approvable.
 	PageMedia OptNilAbilityRequestPageMediaArray `json:"page_media"`
+	// How the request was approved: by a person, or by the site's setting with no person deciding. Null
+	// while the request has not been approved, and for a request that never will be (declined, withdrawn
+	// or expired).
+	Approval OptNilAbilityRequestApproval `json:"approval"`
+	// The kind of change WPMgr decided this request is, from its own records. Null until WPMgr has
+	// decided, and for a request made before kinds existed.
+	ChangeClass OptNilAIChangeClass `json:"change_class"`
+	// WPMgr's name for `change_class` as copy uses it, for example `edits to published pages`. Null when
+	// `change_class` is null or `always_ask`.
+	ChangeKindName OptNilString `json:"change_kind_name"`
+	// Why this request was left for a person instead of being approved by a setting. Stays set after a
+	// person approves it. Null when WPMgr did not record a reason.
+	AskReason OptNilAIAskReason `json:"ask_reason"`
 }
 
 // GetID returns the value of ID.
@@ -2257,6 +3564,26 @@ func (s *AbilityRequest) GetPageMedia() OptNilAbilityRequestPageMediaArray {
 	return s.PageMedia
 }
 
+// GetApproval returns the value of Approval.
+func (s *AbilityRequest) GetApproval() OptNilAbilityRequestApproval {
+	return s.Approval
+}
+
+// GetChangeClass returns the value of ChangeClass.
+func (s *AbilityRequest) GetChangeClass() OptNilAIChangeClass {
+	return s.ChangeClass
+}
+
+// GetChangeKindName returns the value of ChangeKindName.
+func (s *AbilityRequest) GetChangeKindName() OptNilString {
+	return s.ChangeKindName
+}
+
+// GetAskReason returns the value of AskReason.
+func (s *AbilityRequest) GetAskReason() OptNilAIAskReason {
+	return s.AskReason
+}
+
 // SetID sets the value of ID.
 func (s *AbilityRequest) SetID(val uuid.UUID) {
 	s.ID = val
@@ -2427,9 +3754,103 @@ func (s *AbilityRequest) SetPageMedia(val OptNilAbilityRequestPageMediaArray) {
 	s.PageMedia = val
 }
 
+// SetApproval sets the value of Approval.
+func (s *AbilityRequest) SetApproval(val OptNilAbilityRequestApproval) {
+	s.Approval = val
+}
+
+// SetChangeClass sets the value of ChangeClass.
+func (s *AbilityRequest) SetChangeClass(val OptNilAIChangeClass) {
+	s.ChangeClass = val
+}
+
+// SetChangeKindName sets the value of ChangeKindName.
+func (s *AbilityRequest) SetChangeKindName(val OptNilString) {
+	s.ChangeKindName = val
+}
+
+// SetAskReason sets the value of AskReason.
+func (s *AbilityRequest) SetAskReason(val OptNilAIAskReason) {
+	s.AskReason = val
+}
+
 func (*AbilityRequest) approveAbilityRequestRes() {}
 func (*AbilityRequest) declineAbilityRequestRes() {}
 func (*AbilityRequest) undoAbilityRequestRes()    {}
+
+// How an approved request was approved. A request approved by a setting was not decided by any person;
+// `setting` says which setting and whose.
+// Ref: #/components/schemas/AbilityRequestApproval
+type AbilityRequestApproval struct {
+	// `person`: a signed-in person approved it from the dashboard. `policy`: the site's setting approved
+	// it.
+	Source AbilityRequestApprovalSource `json:"source"`
+	// The setting a `policy` approval relied on. Null for `person`.
+	Setting OptNilAIApprovalSetting `json:"setting"`
+}
+
+// GetSource returns the value of Source.
+func (s *AbilityRequestApproval) GetSource() AbilityRequestApprovalSource {
+	return s.Source
+}
+
+// GetSetting returns the value of Setting.
+func (s *AbilityRequestApproval) GetSetting() OptNilAIApprovalSetting {
+	return s.Setting
+}
+
+// SetSource sets the value of Source.
+func (s *AbilityRequestApproval) SetSource(val AbilityRequestApprovalSource) {
+	s.Source = val
+}
+
+// SetSetting sets the value of Setting.
+func (s *AbilityRequestApproval) SetSetting(val OptNilAIApprovalSetting) {
+	s.Setting = val
+}
+
+// `person`: a signed-in person approved it from the dashboard. `policy`: the site's setting approved
+// it.
+type AbilityRequestApprovalSource string
+
+const (
+	AbilityRequestApprovalSourcePerson AbilityRequestApprovalSource = "person"
+	AbilityRequestApprovalSourcePolicy AbilityRequestApprovalSource = "policy"
+)
+
+// AllValues returns all AbilityRequestApprovalSource values.
+func (AbilityRequestApprovalSource) AllValues() []AbilityRequestApprovalSource {
+	return []AbilityRequestApprovalSource{
+		AbilityRequestApprovalSourcePerson,
+		AbilityRequestApprovalSourcePolicy,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestApprovalSource) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestApprovalSourcePerson:
+		return []byte(s), nil
+	case AbilityRequestApprovalSourcePolicy:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestApprovalSource) UnmarshalText(data []byte) error {
+	switch AbilityRequestApprovalSource(data) {
+	case AbilityRequestApprovalSourcePerson:
+		*s = AbilityRequestApprovalSourcePerson
+		return nil
+	case AbilityRequestApprovalSourcePolicy:
+		*s = AbilityRequestApprovalSourcePolicy
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 // Ref: #/components/schemas/AbilityRequestApproveBody
 type AbilityRequestApproveBody struct {
@@ -27389,6 +28810,18 @@ type GenerateClientReportUnauthorized Error
 
 func (*GenerateClientReportUnauthorized) generateClientReportRes() {}
 
+type GetAIConnectionUsageForbidden Error
+
+func (*GetAIConnectionUsageForbidden) getAIConnectionUsageRes() {}
+
+type GetAIConnectionUsageNotFound Error
+
+func (*GetAIConnectionUsageNotFound) getAIConnectionUsageRes() {}
+
+type GetAIConnectionUsageUnauthorized Error
+
+func (*GetAIConnectionUsageUnauthorized) getAIConnectionUsageRes() {}
+
 type GetAdminAccountForbidden Error
 
 func (*GetAdminAccountForbidden) getAdminAccountRes() {}
@@ -28135,6 +29568,18 @@ func (*GetScheduleRunForbidden) getScheduleRunRes() {}
 type GetScheduleRunNotFound Error
 
 func (*GetScheduleRunNotFound) getScheduleRunRes() {}
+
+type GetSiteAIModeForbidden Error
+
+func (*GetSiteAIModeForbidden) getSiteAIModeRes() {}
+
+type GetSiteAIModeNotFound Error
+
+func (*GetSiteAIModeNotFound) getSiteAIModeRes() {}
+
+type GetSiteAIModeUnauthorized Error
+
+func (*GetSiteAIModeUnauthorized) getSiteAIModeRes() {}
 
 type GetSiteAIReadinessForbidden Error
 
@@ -29702,6 +31147,80 @@ func (s *InviteRequest) SetName(val OptString) {
 func (s *InviteRequest) SetRole(val Role) {
 	s.Role = val
 }
+
+type ListAIActivityFilter string
+
+const (
+	ListAIActivityFilterAll              ListAIActivityFilter = "all"
+	ListAIActivityFilterRanAutomatically ListAIActivityFilter = "ran_automatically"
+	ListAIActivityFilterApprovedByPerson ListAIActivityFilter = "approved_by_person"
+	ListAIActivityFilterFailedOrUnknown  ListAIActivityFilter = "failed_or_unknown"
+	ListAIActivityFilterUndone           ListAIActivityFilter = "undone"
+)
+
+// AllValues returns all ListAIActivityFilter values.
+func (ListAIActivityFilter) AllValues() []ListAIActivityFilter {
+	return []ListAIActivityFilter{
+		ListAIActivityFilterAll,
+		ListAIActivityFilterRanAutomatically,
+		ListAIActivityFilterApprovedByPerson,
+		ListAIActivityFilterFailedOrUnknown,
+		ListAIActivityFilterUndone,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ListAIActivityFilter) MarshalText() ([]byte, error) {
+	switch s {
+	case ListAIActivityFilterAll:
+		return []byte(s), nil
+	case ListAIActivityFilterRanAutomatically:
+		return []byte(s), nil
+	case ListAIActivityFilterApprovedByPerson:
+		return []byte(s), nil
+	case ListAIActivityFilterFailedOrUnknown:
+		return []byte(s), nil
+	case ListAIActivityFilterUndone:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ListAIActivityFilter) UnmarshalText(data []byte) error {
+	switch ListAIActivityFilter(data) {
+	case ListAIActivityFilterAll:
+		*s = ListAIActivityFilterAll
+		return nil
+	case ListAIActivityFilterRanAutomatically:
+		*s = ListAIActivityFilterRanAutomatically
+		return nil
+	case ListAIActivityFilterApprovedByPerson:
+		*s = ListAIActivityFilterApprovedByPerson
+		return nil
+	case ListAIActivityFilterFailedOrUnknown:
+		*s = ListAIActivityFilterFailedOrUnknown
+		return nil
+	case ListAIActivityFilterUndone:
+		*s = ListAIActivityFilterUndone
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type ListAIActivityForbidden Error
+
+func (*ListAIActivityForbidden) listAIActivityRes() {}
+
+type ListAIActivityUnauthorized Error
+
+func (*ListAIActivityUnauthorized) listAIActivityRes() {}
+
+type ListAIActivityUnprocessableEntity Error
+
+func (*ListAIActivityUnprocessableEntity) listAIActivityRes() {}
 
 type ListAbilityRequestsForbidden Error
 
@@ -33407,6 +34926,51 @@ func (s *MonitoringResultDetail) UnmarshalText(data []byte) error {
 	default:
 		return errors.Errorf("invalid value: %q", data)
 	}
+}
+
+// NewNilAIModeOptionReason returns new NilAIModeOptionReason with value set to v.
+func NewNilAIModeOptionReason(v AIModeOptionReason) NilAIModeOptionReason {
+	return NilAIModeOptionReason{
+		Value: v,
+	}
+}
+
+// NilAIModeOptionReason is nullable AIModeOptionReason.
+type NilAIModeOptionReason struct {
+	Value AIModeOptionReason
+	Null  bool
+}
+
+// SetTo sets value to v.
+func (o *NilAIModeOptionReason) SetTo(v AIModeOptionReason) {
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o NilAIModeOptionReason) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *NilAIModeOptionReason) SetToNull() {
+	o.Null = true
+	var v AIModeOptionReason
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o NilAIModeOptionReason) Get() (v AIModeOptionReason, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o NilAIModeOptionReason) Or(d AIModeOptionReason) AIModeOptionReason {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
 }
 
 // NewNilAIReadinessCheckReason returns new NilAIReadinessCheckReason with value set to v.
@@ -38501,6 +40065,52 @@ func (o OptInt64) Or(d int64) int64 {
 	return d
 }
 
+// NewOptListAIActivityFilter returns new OptListAIActivityFilter with value set to v.
+func NewOptListAIActivityFilter(v ListAIActivityFilter) OptListAIActivityFilter {
+	return OptListAIActivityFilter{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptListAIActivityFilter is optional ListAIActivityFilter.
+type OptListAIActivityFilter struct {
+	Value ListAIActivityFilter
+	Set   bool
+}
+
+// IsSet returns true if OptListAIActivityFilter was set.
+func (o OptListAIActivityFilter) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptListAIActivityFilter) Reset() {
+	var v ListAIActivityFilter
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptListAIActivityFilter) SetTo(v ListAIActivityFilter) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptListAIActivityFilter) Get() (v ListAIActivityFilter, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptListAIActivityFilter) Or(d ListAIActivityFilter) ListAIActivityFilter {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptListAbilityRequestsState returns new OptListAbilityRequestsState with value set to v.
 func NewOptListAbilityRequestsState(v ListAbilityRequestsState) OptListAbilityRequestsState {
 	return OptListAbilityRequestsState{
@@ -39691,6 +41301,278 @@ func (o OptMultipartFile) Get() (v ht.MultipartFile, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptMultipartFile) Or(d ht.MultipartFile) ht.MultipartFile {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAIApprovalSetting returns new OptNilAIApprovalSetting with value set to v.
+func NewOptNilAIApprovalSetting(v AIApprovalSetting) OptNilAIApprovalSetting {
+	return OptNilAIApprovalSetting{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAIApprovalSetting is optional nullable AIApprovalSetting.
+type OptNilAIApprovalSetting struct {
+	Value AIApprovalSetting
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAIApprovalSetting was set.
+func (o OptNilAIApprovalSetting) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAIApprovalSetting) Reset() {
+	var v AIApprovalSetting
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAIApprovalSetting) SetTo(v AIApprovalSetting) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAIApprovalSetting) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAIApprovalSetting) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AIApprovalSetting
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAIApprovalSetting) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAIApprovalSetting) Get() (v AIApprovalSetting, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAIApprovalSetting) Or(d AIApprovalSetting) AIApprovalSetting {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAIAskReason returns new OptNilAIAskReason with value set to v.
+func NewOptNilAIAskReason(v AIAskReason) OptNilAIAskReason {
+	return OptNilAIAskReason{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAIAskReason is optional nullable AIAskReason.
+type OptNilAIAskReason struct {
+	Value AIAskReason
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAIAskReason was set.
+func (o OptNilAIAskReason) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAIAskReason) Reset() {
+	var v AIAskReason
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAIAskReason) SetTo(v AIAskReason) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAIAskReason) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAIAskReason) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AIAskReason
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAIAskReason) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAIAskReason) Get() (v AIAskReason, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAIAskReason) Or(d AIAskReason) AIAskReason {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAIChangeClass returns new OptNilAIChangeClass with value set to v.
+func NewOptNilAIChangeClass(v AIChangeClass) OptNilAIChangeClass {
+	return OptNilAIChangeClass{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAIChangeClass is optional nullable AIChangeClass.
+type OptNilAIChangeClass struct {
+	Value AIChangeClass
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAIChangeClass was set.
+func (o OptNilAIChangeClass) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAIChangeClass) Reset() {
+	var v AIChangeClass
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAIChangeClass) SetTo(v AIChangeClass) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAIChangeClass) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAIChangeClass) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AIChangeClass
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAIChangeClass) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAIChangeClass) Get() (v AIChangeClass, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAIChangeClass) Or(d AIChangeClass) AIChangeClass {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAbilityRequestApproval returns new OptNilAbilityRequestApproval with value set to v.
+func NewOptNilAbilityRequestApproval(v AbilityRequestApproval) OptNilAbilityRequestApproval {
+	return OptNilAbilityRequestApproval{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAbilityRequestApproval is optional nullable AbilityRequestApproval.
+type OptNilAbilityRequestApproval struct {
+	Value AbilityRequestApproval
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAbilityRequestApproval was set.
+func (o OptNilAbilityRequestApproval) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAbilityRequestApproval) Reset() {
+	var v AbilityRequestApproval
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAbilityRequestApproval) SetTo(v AbilityRequestApproval) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAbilityRequestApproval) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAbilityRequestApproval) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AbilityRequestApproval
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAbilityRequestApproval) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAbilityRequestApproval) Get() (v AbilityRequestApproval, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAbilityRequestApproval) Or(d AbilityRequestApproval) AbilityRequestApproval {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -48330,6 +50212,45 @@ func (s *PurgeRequestScope) UnmarshalText(data []byte) error {
 	}
 }
 
+type PutAIConnectionAutoConflict Error
+
+func (*PutAIConnectionAutoConflict) putAIConnectionAutoRes() {}
+
+type PutAIConnectionAutoForbidden Error
+
+func (*PutAIConnectionAutoForbidden) putAIConnectionAutoRes() {}
+
+type PutAIConnectionAutoNotFound Error
+
+func (*PutAIConnectionAutoNotFound) putAIConnectionAutoRes() {}
+
+// Ref: #/components/schemas/PutAIConnectionAutoRequest
+type PutAIConnectionAutoRequest struct {
+	AiAuto AIAuto `json:"ai_auto"`
+}
+
+// GetAiAuto returns the value of AiAuto.
+func (s *PutAIConnectionAutoRequest) GetAiAuto() AIAuto {
+	return s.AiAuto
+}
+
+// SetAiAuto sets the value of AiAuto.
+func (s *PutAIConnectionAutoRequest) SetAiAuto(val AIAuto) {
+	s.AiAuto = val
+}
+
+type PutAIConnectionAutoUnauthorized Error
+
+func (*PutAIConnectionAutoUnauthorized) putAIConnectionAutoRes() {}
+
+type PutAIConnectionAutoUnprocessableEntity Error
+
+func (*PutAIConnectionAutoUnprocessableEntity) putAIConnectionAutoRes() {}
+
+type PutAIConnectionAutoUnsupportedMediaType Error
+
+func (*PutAIConnectionAutoUnsupportedMediaType) putAIConnectionAutoRes() {}
+
 type PutClientReportScheduleBadRequest Error
 
 func (*PutClientReportScheduleBadRequest) putClientReportScheduleRes() {}
@@ -48903,6 +50824,98 @@ func (*PutOrgEmailWebhookConfigServiceUnavailable) putOrgEmailWebhookConfigRes()
 type PutOrgEmailWebhookConfigUnauthorized Error
 
 func (*PutOrgEmailWebhookConfigUnauthorized) putOrgEmailWebhookConfigRes() {}
+
+type PutSiteAIModeConflict Error
+
+func (*PutSiteAIModeConflict) putSiteAIModeRes() {}
+
+type PutSiteAIModeForbidden Error
+
+func (*PutSiteAIModeForbidden) putSiteAIModeRes() {}
+
+type PutSiteAIModeNotFound Error
+
+func (*PutSiteAIModeNotFound) putSiteAIModeRes() {}
+
+// Ref: #/components/schemas/PutSiteAIModeRequest
+type PutSiteAIModeRequest struct {
+	Mode PutSiteAIModeRequestMode `json:"mode"`
+	// The `version` the caller last read.
+	Version int64 `json:"version"`
+}
+
+// GetMode returns the value of Mode.
+func (s *PutSiteAIModeRequest) GetMode() PutSiteAIModeRequestMode {
+	return s.Mode
+}
+
+// GetVersion returns the value of Version.
+func (s *PutSiteAIModeRequest) GetVersion() int64 {
+	return s.Version
+}
+
+// SetMode sets the value of Mode.
+func (s *PutSiteAIModeRequest) SetMode(val PutSiteAIModeRequestMode) {
+	s.Mode = val
+}
+
+// SetVersion sets the value of Version.
+func (s *PutSiteAIModeRequest) SetVersion(val int64) {
+	s.Version = val
+}
+
+type PutSiteAIModeRequestMode string
+
+const (
+	PutSiteAIModeRequestModeAsk      PutSiteAIModeRequestMode = "ask"
+	PutSiteAIModeRequestModeAiDrafts PutSiteAIModeRequestMode = "ai_drafts"
+)
+
+// AllValues returns all PutSiteAIModeRequestMode values.
+func (PutSiteAIModeRequestMode) AllValues() []PutSiteAIModeRequestMode {
+	return []PutSiteAIModeRequestMode{
+		PutSiteAIModeRequestModeAsk,
+		PutSiteAIModeRequestModeAiDrafts,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s PutSiteAIModeRequestMode) MarshalText() ([]byte, error) {
+	switch s {
+	case PutSiteAIModeRequestModeAsk:
+		return []byte(s), nil
+	case PutSiteAIModeRequestModeAiDrafts:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *PutSiteAIModeRequestMode) UnmarshalText(data []byte) error {
+	switch PutSiteAIModeRequestMode(data) {
+	case PutSiteAIModeRequestModeAsk:
+		*s = PutSiteAIModeRequestModeAsk
+		return nil
+	case PutSiteAIModeRequestModeAiDrafts:
+		*s = PutSiteAIModeRequestModeAiDrafts
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type PutSiteAIModeUnauthorized Error
+
+func (*PutSiteAIModeUnauthorized) putSiteAIModeRes() {}
+
+type PutSiteAIModeUnprocessableEntity Error
+
+func (*PutSiteAIModeUnprocessableEntity) putSiteAIModeRes() {}
+
+type PutSiteAIModeUnsupportedMediaType Error
+
+func (*PutSiteAIModeUnsupportedMediaType) putSiteAIModeRes() {}
 
 type PutSiteAppHealthSettingsNotFound Error
 
@@ -54850,6 +56863,177 @@ func (*Site) getSiteRes()       {}
 func (*Site) restoreSiteRes()   {}
 func (*Site) revokeSiteRes()    {}
 func (*Site) setSiteTagsRes()   {}
+
+// A site's AI mode: how much AI connections may do on the site without a person's approval, who chose
+// it, and what the dashboard needs to offer a change. A person's name is the only text in it that did
+// not come from WPMgr.
+// Ref: #/components/schemas/SiteAIMode
+type SiteAIMode struct {
+	SiteID uuid.UUID    `json:"site_id"`
+	Mode   AIMode       `json:"mode"`
+	Source AIModeSource `json:"source"`
+	// The compare-and-set token. Send it back unchanged with `PUT`. It moves by one whenever the mode, the
+	// person who chose it or the source changes, and at no other time.
+	Version int64 `json:"version"`
+	// The person who chose the mode. Null when nobody did.
+	SetByUserID OptNilUUID `json:"set_by_user_id"`
+	// That person's name as WPMgr stores it; render it as plain text. Null when nobody chose the mode, or
+	// the account was deleted.
+	SetByName OptNilString `json:"set_by_name"`
+	// True when a person is on record as having chosen the mode and that account has since been deleted.
+	SetByAccountDeleted bool `json:"set_by_account_deleted"`
+	// When the mode was chosen. Null when nobody chose it.
+	SetAt OptNilDateTime `json:"set_at"`
+	// Whether the setting would be honoured today. `ask` has nothing to honour and is always valid. For
+	// `ai_drafts` this is the check the decision engine runs on every request: the person who chose it
+	// must still be allowed to have chosen it, as a member of the organisation with an active account and
+	// access to the site. When false, every change on the site waits for a person until someone chooses a
+	// mode again.
+	SetterValid bool `json:"setter_valid"`
+	// True while the organisation's AI is paused. Nothing runs, automatic or not, until an owner resumes
+	// it.
+	AiPaused bool `json:"ai_paused"`
+	// The least WPMgr plugin version a site needs for an option whose `reason` is `agent_outdated`.
+	MinAgentVersion string `json:"min_agent_version"`
+	// One entry per mode the dashboard offers, in display order.
+	Options []AIModeOption `json:"options"`
+	// What each mode covers, one row per kind of change the decision engine handles, in display order.
+	// `always_ask` never appears: it waits in every mode.
+	Kinds []AIChangeKind `json:"kinds"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *SiteAIMode) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetMode returns the value of Mode.
+func (s *SiteAIMode) GetMode() AIMode {
+	return s.Mode
+}
+
+// GetSource returns the value of Source.
+func (s *SiteAIMode) GetSource() AIModeSource {
+	return s.Source
+}
+
+// GetVersion returns the value of Version.
+func (s *SiteAIMode) GetVersion() int64 {
+	return s.Version
+}
+
+// GetSetByUserID returns the value of SetByUserID.
+func (s *SiteAIMode) GetSetByUserID() OptNilUUID {
+	return s.SetByUserID
+}
+
+// GetSetByName returns the value of SetByName.
+func (s *SiteAIMode) GetSetByName() OptNilString {
+	return s.SetByName
+}
+
+// GetSetByAccountDeleted returns the value of SetByAccountDeleted.
+func (s *SiteAIMode) GetSetByAccountDeleted() bool {
+	return s.SetByAccountDeleted
+}
+
+// GetSetAt returns the value of SetAt.
+func (s *SiteAIMode) GetSetAt() OptNilDateTime {
+	return s.SetAt
+}
+
+// GetSetterValid returns the value of SetterValid.
+func (s *SiteAIMode) GetSetterValid() bool {
+	return s.SetterValid
+}
+
+// GetAiPaused returns the value of AiPaused.
+func (s *SiteAIMode) GetAiPaused() bool {
+	return s.AiPaused
+}
+
+// GetMinAgentVersion returns the value of MinAgentVersion.
+func (s *SiteAIMode) GetMinAgentVersion() string {
+	return s.MinAgentVersion
+}
+
+// GetOptions returns the value of Options.
+func (s *SiteAIMode) GetOptions() []AIModeOption {
+	return s.Options
+}
+
+// GetKinds returns the value of Kinds.
+func (s *SiteAIMode) GetKinds() []AIChangeKind {
+	return s.Kinds
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *SiteAIMode) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetMode sets the value of Mode.
+func (s *SiteAIMode) SetMode(val AIMode) {
+	s.Mode = val
+}
+
+// SetSource sets the value of Source.
+func (s *SiteAIMode) SetSource(val AIModeSource) {
+	s.Source = val
+}
+
+// SetVersion sets the value of Version.
+func (s *SiteAIMode) SetVersion(val int64) {
+	s.Version = val
+}
+
+// SetSetByUserID sets the value of SetByUserID.
+func (s *SiteAIMode) SetSetByUserID(val OptNilUUID) {
+	s.SetByUserID = val
+}
+
+// SetSetByName sets the value of SetByName.
+func (s *SiteAIMode) SetSetByName(val OptNilString) {
+	s.SetByName = val
+}
+
+// SetSetByAccountDeleted sets the value of SetByAccountDeleted.
+func (s *SiteAIMode) SetSetByAccountDeleted(val bool) {
+	s.SetByAccountDeleted = val
+}
+
+// SetSetAt sets the value of SetAt.
+func (s *SiteAIMode) SetSetAt(val OptNilDateTime) {
+	s.SetAt = val
+}
+
+// SetSetterValid sets the value of SetterValid.
+func (s *SiteAIMode) SetSetterValid(val bool) {
+	s.SetterValid = val
+}
+
+// SetAiPaused sets the value of AiPaused.
+func (s *SiteAIMode) SetAiPaused(val bool) {
+	s.AiPaused = val
+}
+
+// SetMinAgentVersion sets the value of MinAgentVersion.
+func (s *SiteAIMode) SetMinAgentVersion(val string) {
+	s.MinAgentVersion = val
+}
+
+// SetOptions sets the value of Options.
+func (s *SiteAIMode) SetOptions(val []AIModeOption) {
+	s.Options = val
+}
+
+// SetKinds sets the value of Kinds.
+func (s *SiteAIMode) SetKinds(val []AIChangeKind) {
+	s.Kinds = val
+}
+
+func (*SiteAIMode) getSiteAIModeRes() {}
+func (*SiteAIMode) putSiteAIModeRes() {}
 
 // Whether an AI assistant connected to WPMgr can work on one site. All values come from WPMgr's own
 // checks; nothing the site wrote reaches this object except version strings that passed a strict shape

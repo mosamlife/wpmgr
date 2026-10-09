@@ -465,6 +465,10 @@ type GenerateClientReportRes interface {
 	generateClientReportRes()
 }
 
+type GetAIConnectionUsageRes interface {
+	getAIConnectionUsageRes()
+}
+
 type GetAdminAccountRes interface {
 	getAdminAccountRes()
 }
@@ -653,6 +657,10 @@ type GetScheduleRunRes interface {
 	getScheduleRunRes()
 }
 
+type GetSiteAIModeRes interface {
+	getSiteAIModeRes()
+}
+
 type GetSiteAIReadinessRes interface {
 	getSiteAIReadinessRes()
 }
@@ -767,6 +775,10 @@ type IngestRumBeaconRes interface {
 
 type InviteMemberRes interface {
 	inviteMemberRes()
+}
+
+type ListAIActivityRes interface {
+	listAIActivityRes()
 }
 
 type ListAbilityRequestsRes interface {
@@ -1017,6 +1029,10 @@ type PurgeCacheRes interface {
 	purgeCacheRes()
 }
 
+type PutAIConnectionAutoRes interface {
+	putAIConnectionAutoRes()
+}
+
 type PutAlertConfigRes interface {
 	putAlertConfigRes()
 }
@@ -1059,6 +1075,10 @@ type PutOrgEmailWebhookConfigRes interface {
 
 type PutPerfConfigRes interface {
 	putPerfConfigRes()
+}
+
+type PutSiteAIModeRes interface {
+	putSiteAIModeRes()
 }
 
 type PutSiteAppHealthSettingsRes interface {

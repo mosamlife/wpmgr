@@ -414,6 +414,12 @@ type GenerateClientReportParams struct {
 	ClientId uuid.UUID
 }
 
+// GetAIConnectionUsageParams is parameters of getAIConnectionUsage operation.
+type GetAIConnectionUsageParams struct {
+	// The AI connection's id, the `id` the connections list returns.
+	GrantId uuid.UUID
+}
+
 // GetAdminAccountParams is parameters of getAdminAccount operation.
 type GetAdminAccountParams struct {
 	ID uuid.UUID
@@ -668,6 +674,11 @@ type GetSiteParams struct {
 	SiteId uuid.UUID
 }
 
+// GetSiteAIModeParams is parameters of getSiteAIMode operation.
+type GetSiteAIModeParams struct {
+	SiteId uuid.UUID
+}
+
 // GetSiteAIReadinessParams is parameters of getSiteAIReadiness operation.
 type GetSiteAIReadinessParams struct {
 	SiteId uuid.UUID
@@ -815,6 +826,21 @@ type HandleEmailProviderWebhookParams struct {
 // IsolateUnusedMediaParams is parameters of isolateUnusedMedia operation.
 type IsolateUnusedMediaParams struct {
 	SiteId uuid.UUID
+}
+
+// ListAIActivityParams is parameters of listAIActivity operation.
+type ListAIActivityParams struct {
+	// `all` lists every approved request. `ran_automatically`: approved by a setting.
+	// `approved_by_person`: approved by a signed-in person. `failed_or_unknown`: the change failed, or
+	// WPMgr could not confirm its result. `undone`: a person undid it.
+	Filter OptListAIActivityFilter `json:",omitempty,omitzero"`
+	// Only requests on this site.
+	SiteID OptUUID `json:",omitempty,omitzero"`
+	// Only requests made through this AI connection.
+	GrantID OptUUID  `json:",omitempty,omitzero"`
+	Limit   OptInt32 `json:",omitempty,omitzero"`
+	// The `next_cursor` of the previous page. Opaque; do not build one.
+	Cursor OptString `json:",omitempty,omitzero"`
 }
 
 // ListAbilityRequestsParams is parameters of listAbilityRequests operation.
@@ -1312,6 +1338,12 @@ type PurgeCacheParams struct {
 	SiteId uuid.UUID
 }
 
+// PutAIConnectionAutoParams is parameters of putAIConnectionAuto operation.
+type PutAIConnectionAutoParams struct {
+	// The AI connection's id, the `id` the connections list returns.
+	GrantId uuid.UUID
+}
+
 // PutBackupScheduleParams is parameters of putBackupSchedule operation.
 type PutBackupScheduleParams struct {
 	SiteId uuid.UUID
@@ -1346,6 +1378,11 @@ type PutObjectCacheConfigParams struct {
 
 // PutPerfConfigParams is parameters of putPerfConfig operation.
 type PutPerfConfigParams struct {
+	SiteId uuid.UUID
+}
+
+// PutSiteAIModeParams is parameters of putSiteAIMode operation.
+type PutSiteAIModeParams struct {
 	SiteId uuid.UUID
 }
 
