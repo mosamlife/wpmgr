@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.158
+Stable tag: 0.61.159
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -286,6 +286,9 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
+= 0.61.159 =
+* Added: The agent now includes two read-only facts in the site details it sends to WPMgr: which parent theme a child theme uses and, on a site running Elementor, whether Elementor's Atomic editor is switched on. It changes nothing on the site.
+
 = 0.61.158 =
 * Added: An AI connected through WPMgr can read the site's published pages, posts, media, categories and tags through WordPress's own REST API, as the dedicated WPMgr content user. With per-request approval in WPMgr it can change a page or post title or excerpt, with undo, and it refuses pages whose other content the WPMgr user may not save.
 * Added: It can use reviewed read tools that other plugins register with the WordPress Abilities API (WordPress 7.1 or later). A read that tries to change settings or contact other servers is refused, and admin-rights changes are put back.
@@ -487,6 +490,9 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 * New: WOFF2 font transcoding. TTF, OTF and WOFF are converted on the control plane; the flag defaults to off.
 
 == Upgrade Notice ==
+
+= 0.61.159 =
+Adds two read-only facts to the site details sent to WPMgr: the parent theme of a child theme and, where Elementor runs, whether its Atomic editor is switched on. It changes nothing on the site.
 
 = 0.61.158 =
 Lets a connected AI read published content and, with your approval in WPMgr, change page and post titles and excerpts, with undo. Also runs reviewed read-only tools from other plugins.

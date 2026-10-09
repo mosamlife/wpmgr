@@ -453,7 +453,7 @@ describe("the AI's words and the site's file names are only ever text", () => {
 describe("a request the card cannot show in full", () => {
   const NOT_SHOWABLE = "WPMgr cannot show this request in full, so it cannot be approved here. Decline it and ask the AI again.";
 
-  async function expectNotApprovable(card: HTMLElement): Promise<void> {
+  function expectNotApprovable(card: HTMLElement): void {
     expect(card).toHaveTextContent(NOT_SHOWABLE);
     expect(within(card).queryByTestId("ability-outline")).toBeNull();
     expect(within(card).queryByTestId("layout-summary")).toBeNull();
@@ -464,14 +464,14 @@ describe("a request the card cannot show in full", () => {
   it("a block this dashboard does not know (the API is newer) cannot be approved", async () => {
     const input_json = pageInput({ outline: [para, { type: "cover", text: "x" }] });
     renderPage([pageCreateRow({ input_json })]);
-    await expectNotApprovable(await openCard());
+    expectNotApprovable(await openCard());
   });
 
   it("an extra key on a known block cannot be approved, and is not dropped from view", async () => {
     const input_json = pageInput({ outline: [{ type: "paragraph", text: "Hello", style: "color:red" }] });
     renderPage([pageCreateRow({ input_json })]);
     const card = await openCard();
-    await expectNotApprovable(card);
+    expectNotApprovable(card);
     expect(card.textContent).not.toContain("Hello");
   });
 
@@ -479,7 +479,7 @@ describe("a request the card cannot show in full", () => {
     // A group inside a group.
     const input_json = pageInput({ outline: [{ type: "group", children: [{ type: "group", children: [para] }] }] });
     renderPage([pageCreateRow({ input_json })]);
-    await expectNotApprovable(await openCard());
+    expectNotApprovable(await openCard());
   });
 
   it("a button link the rules refuse cannot be approved", async () => {
@@ -487,14 +487,14 @@ describe("a request the card cannot show in full", () => {
       outline: [{ type: "buttons", buttons: [{ text: "Go", url: "javascript:alert(1)" }] }],
     });
     renderPage([pageCreateRow({ input_json })]);
-    await expectNotApprovable(await openCard());
+    expectNotApprovable(await openCard());
   });
 
   it("an image with no fact from the site cannot be approved", async () => {
     const input_json = pageInput({ outline: [{ type: "image", attachment_id: 42, alt: "A" }] });
     // page_media is null on the wire when the stored facts are unreadable.
     renderPage([pageCreateRow({ input_json, media: null })]);
-    await expectNotApprovable(await openCard());
+    expectNotApprovable(await openCard());
   });
 
   it("an image whose fact is for another attachment cannot be approved", async () => {
@@ -508,7 +508,7 @@ describe("a request the card cannot show in full", () => {
     // this is the wire after a fact went missing.
     const row = { ...pageCreateRow({ input_json, media: [mediaFact(42), mediaFact(43)] }), page_media: [mediaFact(42)] };
     renderPage([row]);
-    await expectNotApprovable(await openCard());
+    expectNotApprovable(await openCard());
   });
 
   it("a request with a layout and a sound set of facts can be approved", async () => {

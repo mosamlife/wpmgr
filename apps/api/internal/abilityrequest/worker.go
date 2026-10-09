@@ -297,6 +297,10 @@ func (s *Service) runAgentScan(ctx context.Context, fn func(q *sqlc.Queries) err
 	return s.pool.InAgentTx(ctx, func(tx pgx.Tx) error { return fn(sqlc.New(tx)) })
 }
 
+// siteTxRunner runs fn in a transaction scoped to one site: runSiteTx in
+// production; a unit test hands checkSite a stand-in.
+type siteTxRunner func(ctx context.Context, p domain.Principal, siteID uuid.UUID, fn func(tx pgx.Tx, q *sqlc.Queries) error) error
+
 // runSiteTx runs fn under a single-site principal; the first statement
 // proves the transaction admits exactly siteID.
 func (s *Service) runSiteTx(ctx context.Context, p domain.Principal, siteID uuid.UUID, fn func(tx pgx.Tx, q *sqlc.Queries) error) error {
@@ -505,7 +509,7 @@ func (s *Service) dispatch(ctx context.Context, a DispatchArgs) error {
 		return fmt.Errorf("site principal: %w", err)
 	}
 	// (2) The site and entry checks.
-	plan, done, err := s.checkSite(ctx, p, a)
+	plan, done, err := s.checkSite(ctx, s.runSiteTx, p, a)
 	if err != nil || done {
 		return err
 	}
@@ -555,11 +559,14 @@ func derefOr(p *string, d string) string {
 	return *p
 }
 
-func (s *Service) checkSite(ctx context.Context, p domain.Principal, a DispatchArgs) (dispatchPlan, bool, error) {
+// checkSite reads the approved row and its site in run's transaction and
+// decides, before any reservation, whether the request closes not_sent,
+// waits with a recorded attempt, or goes on (done false) with the plan.
+func (s *Service) checkSite(ctx context.Context, run siteTxRunner, p domain.Principal, a DispatchArgs) (dispatchPlan, bool, error) {
 	var plan dispatchPlan
 	var site sqlc.Site
 	done := false
-	err := s.runSiteTx(ctx, p, a.SiteID, func(tx pgx.Tx, q *sqlc.Queries) error {
+	err := run(ctx, p, a.SiteID, func(tx pgx.Tx, q *sqlc.Queries) error {
 		row, err := q.GetApprovedAbilityRequestForDispatch(ctx, sqlc.GetApprovedAbilityRequestForDispatchParams{
 			TenantID: a.TenantID, ID: a.RequestID,
 		})
@@ -644,7 +651,7 @@ func (s *Service) checkSite(ctx context.Context, p domain.Principal, a DispatchA
 	if !forbidden && transient == "" {
 		return plan, false, nil
 	}
-	err = s.runSiteTx(ctx, p, a.SiteID, func(tx pgx.Tx, q *sqlc.Queries) error {
+	err = run(ctx, p, a.SiteID, func(tx pgx.Tx, q *sqlc.Queries) error {
 		if forbidden && ctxErr == nil {
 			return s.closeNotSent(ctx, tx, q, a.TenantID, a.RequestID, ReasonForbiddenByContext)
 		}

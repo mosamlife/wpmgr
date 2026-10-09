@@ -36,7 +36,10 @@ overrides:
   # Raised 0.35.3 -> 0.35.4 for GHSA-rgj7-g3m4-5g8c, which covers two libheif
   # vulnerabilities bundled below 0.35.4 (GHSA-g89c-p67h-r497 and
   # GHSA-2jg2-4ch7-h545). Patch release on the same minor, so no API change.
-  sharp: 0.35.4
+  #
+  # Raised 0.35.4 -> 0.35.5 for GHSA-wq5f-xc86-pv6w, a vulnerability in the
+  # librsvg that sharp bundles below 0.35.5. Patch release on the same minor.
+  sharp: 0.35.5
   # postcss path/source-map advisories (GHSA-6g55-p6wh-862q file read, then
   # GHSA-r28c-9q8g-f849 path traversal in a previous source map, fixed in
   # 8.5.18). Next pulls postcss transitively; these are same-major bug fixes, so
@@ -50,6 +53,20 @@ overrides:
   # it is why no `nanoid:` entry appears in this file. Both advisories published
   # after the pin was written, so this reddened main with no code change at all.
   postcss: 8.5.26
+  # source-map-js from 1.0.0 up to 1.2.1 is an event-loop denial of service
+  # through indexed source-map section offsets (GHSA-68fv-2mgg-jv7q), patched in
+  # 1.2.2. postcss declares ^1.2.1, so the pin stays inside its range; the other
+  # consumers are build tooling. Patch release on the same minor.
+  source-map-js: 1.2.2
+  # seroval from 0.12.0 up to 1.6.0 is critical (GHSA-p6vx-979v-rg4c, promise
+  # handling in fromJSON) and up to 1.6.2 is high (GHSA-jp82-f5mq-hwhp, an
+  # unchecked TypedArray length); both are fixed from 1.6.3. TanStack Router's
+  # router-core declares ^1.5.4 for seroval and for seroval-plugins, so 1.6.8 is
+  # inside its range, and its newest release already requires ^1.6.7.
+  # seroval-plugins takes seroval as a peer and the two are published together,
+  # so they move together.
+  seroval: 1.6.8
+  seroval-plugins: 1.6.8
 # Documented audit exceptions. Every entry must state WHY the advisory cannot be
 # fixed by pinning and WHAT would let us drop the exception, so this list stays
 # short and reviewable rather than becoming a place to silence real findings.

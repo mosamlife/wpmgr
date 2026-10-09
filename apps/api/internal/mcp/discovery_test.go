@@ -282,23 +282,19 @@ func TestDiscoveryVocabularyMatchesTheValidators(t *testing.T) {
 
 // TestScopesComeFromTheRegistryNotALiteral pins S7's exit gate one layer out:
 // discovery must never name authority the closed registry in scope.go does not
-// hold, and it advertises the READ scope only. The cache scope is recognised
-// and requestable by name, and it is not offered to a client that copies
-// scopes_supported back.
+// hold, and it advertises every scope this surface can grant. Advertising a
+// scope offers its capabilities on the consent screen, unticked; it confers
+// nothing by itself.
 func TestScopesComeFromTheRegistryNotALiteral(t *testing.T) {
 	registry := SupportedScopes()
 	if len(registry) == 0 {
 		t.Fatal("SupportedScopes() is empty; this test would pass vacuously")
 	}
-	if !slices.Contains(registry, string(ScopeCache)) {
-		t.Fatal("the registry does not hold mcp:cache, so 'discovery omits it' " +
-			"would pass vacuously")
-	}
 
 	asDoc := NewDiscoveryHandler(testBaseURL).AuthorizationServerMetadata()
 	prDoc := NewDiscoveryHandler(testBaseURL).ProtectedResourceMetadata()
 
-	want := []string{string(ScopeRead)}
+	want := []string{string(ScopeRead), string(ScopeSite), string(ScopeCache)}
 	if !slices.Equal(asDoc.ScopesSupported, want) {
 		t.Errorf("authorization server scopes_supported = %v, want %v", asDoc.ScopesSupported, want)
 	}
@@ -310,7 +306,7 @@ func TestScopesComeFromTheRegistryNotALiteral(t *testing.T) {
 			t.Errorf("discovery advertises %q, which the registry does not hold", s)
 		}
 	}
-	if got, want := bearerChallenge(), `Bearer realm="wpmgr-mcp", scope="mcp:read"`; got != want {
+	if got, want := bearerChallenge(), `Bearer realm="wpmgr-mcp", scope="mcp:read mcp:site mcp:cache"`; got != want {
 		t.Errorf("401 challenge = %q, want %q", got, want)
 	}
 

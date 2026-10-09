@@ -1206,6 +1206,10 @@ final class PageCreateWriteTest extends TestCase
     public function test_an_image_the_principal_may_not_use_is_refused(string $why, array $image, string $code): void
     {
         $this->enable();
+        // What a caller is told when the attachment is not there at all.
+        $absent = $this->precheck(self::REQ_B, $this->imageInput(42));
+        $this->assertSame('image_not_available', $absent['code'] ?? null, 'the reference refusal: ' . json_encode($absent));
+
         if (isset($image['parent_status'])) {
             $image['parent'] = $this->addParent((string) $image['parent_status'], (string) ($image['parent_password'] ?? ''));
         }
@@ -1220,6 +1224,11 @@ final class PageCreateWriteTest extends TestCase
 
         $this->assertFalse($r['ok'], $why . ': ' . json_encode($r));
         $this->assertSame($code, $r['code'], $why);
+        if ($code === 'image_not_available') {
+            // The same bytes for every reason, so the answer never says which
+            // rule refused the image.
+            $this->assertSame((string) json_encode($absent), (string) json_encode($r), $why);
+        }
         $this->assertSame([], $this->meta, 'nothing is created');
     }
 
@@ -1239,6 +1248,7 @@ final class PageCreateWriteTest extends TestCase
             'a password parent'         => ['password parent', ['parent_status' => 'publish', 'parent_password' => 'secret'], 'image_not_available'],
             'a missing parent'          => ['missing parent', ['parent' => 4242], 'image_not_available'],
             'a trashed attachment'      => ['trashed attachment', ['status' => 'trash'], 'image_not_available'],
+            'a password attachment'     => ['password attachment', ['password' => 'secret'], 'image_not_available'],
             'not readable'              => ['unreadable', ['unreadable' => true], 'image_not_available'],
             'javascript address'        => ['javascript src', ['src' => ['javascript:alert(1)', 1, 1, false]], 'image_url_unusable'],
             'quote in the address'      => ['quote src', ['src' => ['https://example.com/a".jpg', 1, 1, false]], 'image_url_unusable'],
@@ -1326,7 +1336,7 @@ final class PageCreateWriteTest extends TestCase
         $p->post_type         = $o['post_type'] ?? 'attachment';
         $p->post_status       = $o['status'] ?? 'inherit';
         $p->post_parent       = (int) ($o['parent'] ?? 0);
-        $p->post_password     = '';
+        $p->post_password     = (string) ($o['password'] ?? '');
         $p->post_title        = 'image ' . $id;
         $p->post_content      = '';
         $p->post_modified_gmt = $o['modified_gmt'] ?? '2026-10-01 09:00:00';

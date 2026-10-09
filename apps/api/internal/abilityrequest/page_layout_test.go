@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -96,6 +97,18 @@ func TestWorkerLayoutRequestOldAgentNotSent(t *testing.T) {
 	row.PastDeadline, row.EntryHashCurrent = false, false
 	if got := notSentBeforeReserve(row, on(below), true); got != ReasonEntryChanged {
 		t.Errorf("entry changed: %q", got)
+	}
+}
+
+// A layout write the site refused, read back from the ledger, keeps the
+// agent's code, so the card shows that code's advice and not unknown.
+func TestOutcomeFromStored_PageLayoutCodes(t *testing.T) {
+	for _, code := range []string{"image_not_available", "image_url_unusable", "layout_needs_block_editor", "layout_invalid", "link_invalid"} {
+		raw := json.RawMessage(`{"ok":false,"outcome":"refused","code":"` + code + `","detail":"attachment_id 42"}`)
+		oc, ok := outcomeFromStored(raw, time.Now())
+		if !ok || oc.outcome != OutcomeRefused || oc.code == nil || *oc.code != code {
+			t.Errorf("%s: outcome %+v (ok %v)", code, oc, ok)
+		}
 	}
 }
 

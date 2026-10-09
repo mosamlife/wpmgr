@@ -537,7 +537,9 @@ const (
 		"No line breaks, control characters or invisible formatting characters; put each paragraph in its own outline node. " +
 		"No empty text, except that alt text and a table cell may be empty. A title is at most 200 characters, " +
 		"each text at most 5000, a caption 500, a citation 200, button text 80, a table cell 500 and alt text 300, " +
-		"the whole page at most 60000."
+		"the whole page at most 60000. " +
+		"Alt text may not contain a character reference such as &amp; or &#47; (an & then a name or a number and a ;): " +
+		"write the character itself, or put a space after the &."
 	hintBadInput = "The input does not match the ability's schema. Call site_ability_describe and send only the fields it lists, " +
 		"with the types it gives."
 	hintSanitiserChanged = "This site would alter the content when saving it. Remove anything that looks like markup, " +
@@ -549,8 +551,13 @@ const (
 		"A table has 1 to 50 rows of 1 to 6 cells, with every row and the header the same width. A quote holds 1 to 10 paragraphs."
 	hintLinkInvalid = "Write each button link as an https:// address with a lowercase https, a host name such as " +
 		"example.com and no user name or password, or as a path on this site that starts with a single /. " +
-		"Use only ASCII letters, digits and - . _ ~ : / ? # ! $ & ( ) * + , ; = % @, write every % as % and two hex digits, " +
-		"and keep the link to 2048 characters."
+		"Use only ASCII letters, digits and - . _ ~ / ? # ! $ ( ) * + , ; = % @, write every % as % and two hex digits, " +
+		"and keep the link to 2048 characters. " +
+		"A colon may appear only in an https:// address: a path on this site may not contain : or &# anywhere, " +
+		"so write a colon in a path as %3A. " +
+		"An & may appear only where it does not start a character reference: a link or an image address may not " +
+		"contain a character reference such as &amp; or &#47; (an & then a name or a number and a ;), " +
+		"so write the character itself."
 	hintImageNotAvailable = "An image the outline names is not one WPMgr may use: it must be a JPEG, PNG, GIF, WebP or AVIF " +
 		"in this site's media library that is not attached to a draft, private or password-protected page. " +
 		"Find another attachment id with wpmgr/rest-read route wp-v2-media-list."

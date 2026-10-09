@@ -8,14 +8,19 @@
 // Usage: php kses-check.php <core-root> <expected-wp-version> <known-file|-> <markup.json>...
 //   <core-root>    holds wordpress/wp-includes/ (the php files are enough)
 //   <known-file>   cases a given core is KNOWN to change, one per line:
-//                  "<version> <markup file name> <case name>"; "-" for none
+//                  "<version> <markup file name> <case name> <pin>"; "-" for none.
+//                  The pin is the sha256 that pinOf() returns for the rewrite.
 //   <markup.json>  {"cases":[{"name","content","title"?}]}
 //
-// A known case must still change (otherwise the entry is stale and the run is
-// red), and every other change is red. Exits non-zero on: an unlisted changed
-// byte, a stale known entry, a core that does not boot or is not the version it
-// claims, a save chain that is missing the sanitiser, an empty markup file, a
-// case with empty content, or zero cases checked.
+// A known case is excused only while it is rewritten exactly as pinned: the
+// pin covers the bytes the builder emitted and the bytes the core returns, so
+// a second rewrite beside the known one, or a change in what the builder emits
+// for the case, is red. A known case that no longer changes is red (stale), and
+// every other change is red. Exits non-zero on: an unlisted changed byte, a
+// listed case rewritten differently from its pin, a stale known entry, a core
+// that does not boot or is not the version it claims, a save chain that is
+// missing the sanitiser, an empty markup file, a case with empty content, or
+// zero cases checked.
 declare(strict_types=1);
 
 // Old cores on a new PHP raise deprecations that say nothing about our bytes.
@@ -40,24 +45,51 @@ $expected  = (string) $argv[2];
 $knownFile = (string) $argv[3];
 $files     = array_slice($argv, 4);
 
-// Known changes for THIS core: "<markup file name>\t<case name>" => seen yet?
+/**
+ * The pin of one case: a sha256 over every path the case goes through, each as
+ * its name, the bytes put in and the bytes that came out, with their lengths.
+ * The input is part of it on purpose. A builder that starts emitting something
+ * the core strips leaves the output as it was, and only the input shows it.
+ *
+ * @param list<array{0:string,1:string,2:string}> $paths [name, input, output]
+ */
+function pinOf(array $paths): string
+{
+    $buf = '';
+    foreach ($paths as [$name, $in, $out]) {
+        $buf .= $name . "\n" . strlen($in) . "\n" . $in . "\n" . strlen($out) . "\n" . $out . "\n";
+    }
+
+    return hash('sha256', $buf);
+}
+
+// Known changes for THIS core: "<markup file name>\t<case name>" => [pin, seen yet?]
 $known = [];
 if ($knownFile !== '-') {
     $lines = is_file($knownFile) ? file($knownFile, FILE_IGNORE_NEW_LINES) : false;
     if ($lines === false) {
         fail("cannot read the known-changes file: $knownFile");
     }
+    $listed = [];
     foreach ($lines as $n => $line) {
         $line = trim($line);
         if ($line === '' || $line[0] === '#') {
             continue;
         }
         $f = preg_split('/\s+/', $line);
-        if ($f === false || count($f) !== 3) {
-            fail('known-changes line ' . ($n + 1) . ' needs "<version> <markup file> <case>": ' . $line);
+        if ($f === false || count($f) !== 4) {
+            fail('known-changes line ' . ($n + 1) . ' needs "<version> <markup file> <case> <pin>": ' . $line);
         }
+        if (preg_match('/^[0-9a-f]{64}$/', $f[3]) !== 1) {
+            fail('known-changes line ' . ($n + 1) . ' has a pin that is not 64 lowercase hex characters: ' . $line);
+        }
+        $id = $f[0] . "\t" . $f[1] . "\t" . $f[2];
+        if (isset($listed[$id])) {
+            fail('known-changes line ' . ($n + 1) . " lists $f[0] $f[1] $f[2] a second time (first on line " . $listed[$id] . ')');
+        }
+        $listed[$id] = $n + 1;
         if ($f[0] === $expected) {
-            $known[$f[1] . "\t" . $f[2]] = false;
+            $known[$f[1] . "\t" . $f[2]] = ['pin' => $f[3], 'seen' => false];
         }
     }
 }
@@ -154,6 +186,7 @@ function firstDiff(string $a, string $b): int
 
 $cases     = 0;
 $changed   = 0;
+$drifted   = 0;
 $knownSeen = 0;
 foreach ($files as $file) {
     if (!is_file($file) || filesize($file) === 0) {
@@ -177,6 +210,7 @@ foreach ($files as $file) {
         // create builder step): the save filters, then a direct kses pass.
         $viaFilters = wp_unslash(apply_filters('content_save_pre', wp_slash($content)));
         $direct     = wp_kses_post($content);
+        $paths      = [['content_save_pre', $content, $viaFilters], ['wp_kses_post', $content, $direct]];
         foreach (['content_save_pre' => $viaFilters, 'wp_kses_post' => $direct] as $via => $out) {
             if ($out !== $content) {
                 $at      = firstDiff($content, $out);
@@ -190,6 +224,7 @@ foreach ($files as $file) {
                 fail("case $name in $file has an empty or non-string title");
             }
             $simTitle = wp_unslash(apply_filters('title_save_pre', wp_slash($title)));
+            $paths[]  = ['title_save_pre', $title, $simTitle];
             if ($simTitle !== $title) {
                 $at      = firstDiff($title, $simTitle);
                 $report .= "  via title_save_pre\n    in : " . around($title, $at) . "\n    out: " . around($simTitle, $at) . "\n";
@@ -199,14 +234,23 @@ foreach ($files as $file) {
             continue;
         }
         $key = $label . "\t" . $name;
-        if (array_key_exists($key, $known)) {
-            $known[$key] = true;
+        $pin = pinOf($paths);
+        // The line that excuses this exact rewrite, to paste once the diff above
+        // it has been read and the refusal it causes is the outcome wanted.
+        $line = "  pin: $wp_version $label $name $pin\n";
+        if (!array_key_exists($key, $known)) {
+            $changed++;
+            echo "KSES-CHANGED $label:$name\n$report$line";
+        } elseif ($known[$key]['pin'] === $pin) {
+            $known[$key]['seen'] = true;
             $knownSeen++;
             // The first difference is evidence enough; the full diff is for a real change.
             echo "KSES-KNOWN $label:$name\n" . implode("\n", array_slice(explode("\n", $report), 0, 3)) . "\n";
         } else {
-            $changed++;
-            echo "KSES-CHANGED $label:$name\n$report";
+            $known[$key]['seen'] = true;
+            $drifted++;
+            echo "KSES-DRIFT $label:$name is listed as a known change on WP $wp_version, but it is no longer rewritten as pinned\n"
+                . "  pinned : " . $known[$key]['pin'] . "\n  rewrite: $pin\n$report$line";
         }
     }
 }
@@ -216,13 +260,13 @@ if ($cases === 0) {
 // A known change that did not happen: the core or the builder moved, and the
 // list must move with it, or it would keep excusing nothing.
 $stale = 0;
-foreach ($known as $key => $seen) {
-    if (!$seen) {
+foreach ($known as $key => $entry) {
+    if (!$entry['seen']) {
         $stale++;
         [$k1, $k2] = explode("\t", (string) $key, 2);
         echo "KSES-STALE $k1:$k2 is listed as a known change on WP $wp_version, but it was not changed (or is not in the markup)\n";
     }
 }
 echo 'kses-check WP ' . $wp_version . ': ' . count($files) . ' file(s), ' . $cases . ' case(s), '
-    . $changed . ' changed, ' . $knownSeen . ' known, ' . $stale . " stale\n";
-exit($changed === 0 && $stale === 0 ? 0 : 1);
+    . $changed . ' changed, ' . $knownSeen . ' known, ' . $drifted . ' drifted, ' . $stale . " stale\n";
+exit($changed === 0 && $drifted === 0 && $stale === 0 ? 0 : 1);

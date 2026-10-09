@@ -26,7 +26,7 @@ final class PageCreateLayoutTest extends TestCase
 {
     private const FIXTURE_DIR = __DIR__ . '/fixtures/ability-run/';
 
-    /** The m157 entry text the existing page-create fixture carries. */
+    /** The entry text Go writes into page-create.json: the page-create row after m162. */
     private static function entryText(): string
     {
         $raw = file_get_contents(self::FIXTURE_DIR . 'page-create.json');
