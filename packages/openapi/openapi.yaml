@@ -1022,6 +1022,20 @@ paths:
       summary: Begin OIDC login (redirect to provider)
       description: Redirects (302) to the OIDC provider. Returns 501 if OIDC is disabled.
       tags: [auth]
+      parameters:
+        - name: redirect
+          in: query
+          required: false
+          description: >
+            Where to land after a successful sign-in, including one that first
+            answers a second factor, so a shared deep link survives the
+            identity provider round trip. Must be a path on this origin;
+            anything else (absolute, protocol-relative, or an encoded form of
+            either) is discarded and the sign-in lands on the default page. The
+            value is kept with the handshake in the session and is never handed
+            to the identity provider or read back off the callback URL.
+          schema:
+            type: string
       responses:
         "302":
           description: Redirect to the OIDC provider
@@ -1035,6 +1049,10 @@ paths:
     get:
       operationId: oidcCallback
       summary: OIDC redirect callback
+      description: >
+        The identity provider's return leg, reached by a browser navigation, so
+        a completed sign-in answers with a redirect into the app rather than a
+        response body.
       tags: [auth]
       parameters:
         - name: code
@@ -1048,12 +1066,15 @@ paths:
           schema:
             type: string
       responses:
-        "200":
-          description: Authenticated via OIDC; session cookie set
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Me"
+        "302":
+          description: >
+            Signed in. Without a second factor the session cookie is set and the
+            browser goes to the path given to oidcLogin as `redirect`, or to the
+            default page. With a second factor enrolled no session is issued
+            yet: the browser goes to the `/2fa-challenge` page carrying
+            `challenge`, `totp`, `webauthn`, `recovery_factor` and, when one was
+            given, `redirect`, which that page follows once the factor is
+            proven.
         "401":
           description: OIDC verification failed
           content:
