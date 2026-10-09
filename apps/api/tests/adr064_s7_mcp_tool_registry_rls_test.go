@@ -138,8 +138,8 @@ func s7GrantWithBearer(
 	if err != nil {
 		t.Fatalf("mint connection token: %v", err)
 	}
-	if tok.Status != "active" {
-		t.Fatalf("minted token status = %q, want active", tok.Status)
+	if tok.Token.Status != "active" {
+		t.Fatalf("minted token status = %q, want active", tok.Token.Status)
 	}
 	return grant, bearer
 }

@@ -39,18 +39,20 @@ const ScopeRead Scope = "mcp:read"
 // page cache. Asking changes nothing: every request waits for a person to
 // approve it in WPMgr, and no automation can approve one (ADR-061).
 //
-// It is never advertised in discovery (AdvertisedScopes) and never stored on a
-// grant the operator did not consent to: the OAuth path stores the scope set
-// the consent ticket sealed, and the token path stores it only when the
+// It is advertised in discovery and in the 401 challenge (AdvertisedScopes),
+// never defaulted, and conferred only by explicit operator consent: a client
+// asking for it gets an unticked box on the consent screen, and the grant holds
+// CapCachePurge only when the operator ticked it. The OAuth path stores the
+// scope set the consent ticket sealed; the token path stores it only when the
 // operator named an explicit capability list (see MintConnection).
 const ScopeCache Scope = "mcp:cache"
 
 // ScopeSite is the third scope, seated by m154. It confers the two ability
 // engine capabilities: CapAbilityRead (list a site's abilities, describe one,
 // run one WPMgr reviewed as a read) and CapAbilityRequest (ask for a reviewed
-// write, and read that request's status). Like ScopeCache it is never
-// advertised in discovery and never stored on a grant the operator did not
-// consent to.
+// write, and read that request's status). Like ScopeCache it is advertised,
+// never defaulted, and conferred only by explicit operator consent: each of
+// its two capabilities is a separate unticked box on the consent screen.
 const ScopeSite Scope = "mcp:site"
 
 // SiteScopeMode says which sites a grant may read. It mirrors
