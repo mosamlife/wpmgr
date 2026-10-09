@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 
+import { useOrgAbilityPendingCount } from "@/features/ability-requests/use-ability-requests";
 import { useAssistantRequests } from "./use-ai-requests";
 
 // The "AI connections [Connections] [Requests · 2]" tab bar (§2.6). Two real
@@ -23,7 +24,14 @@ const TAB_LINK_ACTIVE_CLASS =
 
 export function AiAreaTabs() {
   const query = useAssistantRequests();
-  const pendingCount = query.isSuccess ? query.data.pending_count : null;
+  const pageQuery = useOrgAbilityPendingCount();
+  // Cache-clear and page requests are one badge. A page-request list the
+  // caller may not read (403) adds nothing; one still loading shows no badge.
+  const pendingCount = !query.isSuccess
+    ? null
+    : pageQuery.isPending
+      ? null
+      : query.data.pending_count + (pageQuery.isSuccess ? pageQuery.data.pending_count : 0);
 
   return (
     <nav aria-label="AI connections" className="flex items-center gap-6 border-b border-border">

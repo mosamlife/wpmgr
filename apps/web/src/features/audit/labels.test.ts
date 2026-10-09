@@ -15,6 +15,7 @@
 import { describe, it, expect } from "vitest";
 
 import { actionLabel, classifySeverity } from "./labels";
+import { humanizeTargetType } from "./metadata";
 
 describe("actionLabel", () => {
   it("returns a hand-written label for a known key", () => {
@@ -126,5 +127,41 @@ describe("AI cache-clear request actions", () => {
     expect(classifySeverity("assistant.request.withdrawn")).toBe("read");
     expect(classifySeverity("assistant.request.not_sent")).toBe("read");
     expect(classifySeverity("assistant.request.expired")).toBe("read");
+  });
+});
+
+describe("AI page-creation actions", () => {
+  it("labels the completion, the undo and the switch in plain words", () => {
+    expect(actionLabel("assistant.request.completed")).toBe("AI change applied");
+    expect(actionLabel("assistant.request.undone")).toBe("AI change undone");
+    expect(actionLabel("site.content_editing.enabled")).toBe("AI page creation turned on");
+  });
+
+  it("classifies the applied change and its undo as writes, and the switch as sensitive", () => {
+    expect(classifySeverity("assistant.request.completed")).toBe("write");
+    expect(classifySeverity("assistant.request.undone")).toBe("write");
+    expect(classifySeverity("site.content_editing.enabled")).toBe("sensitive");
+  });
+
+  it("names the assistant_ability_request target type", () => {
+    expect(humanizeTargetType("assistant_ability_request")).toBe("AI change request");
+  });
+});
+
+describe("AI page request lifecycle actions", () => {
+  it("pins each label and severity", () => {
+    const expected: Array<[string, string, string]> = [
+      ["assistant.ability_request.approved", "Approved AI page request", "sensitive"],
+      ["assistant.ability_request.declined", "Declined AI page request", "read"],
+      ["assistant.ability_request.expired", "AI page request expired unanswered", "read"],
+      ["assistant.ability_request.withdrawn", "Withdrew AI page request", "read"],
+      ["assistant.ability_request.not_sent", "AI page request not sent", "read"],
+      ["assistant.ability_request.dispatched", "Sent AI page request to the site", "write"],
+      ["assistant.ability_request.failed", "AI page request failed", "sensitive"],
+    ];
+    for (const [key, label, severity] of expected) {
+      expect(actionLabel(key)).toBe(label);
+      expect(classifySeverity(key)).toBe(severity);
+    }
   });
 });

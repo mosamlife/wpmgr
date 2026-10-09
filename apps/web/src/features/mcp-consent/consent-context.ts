@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-import { CONFERRABLE_READS } from "@/features/ai-connections/capabilities";
+import { capabilityLabel, withoutOrphanedRequest } from "@/features/ai-connections/capabilities";
+import {
+  conferrableReadsIn,
+  defaultCapabilities,
+} from "@/features/ai-connections/capability-presets";
 
 // The consent screen's data model (ADR-064 S6b, design Step 7).
 //
@@ -145,6 +149,25 @@ export const consentWireSchema = z.object({
   conferrable_capabilities: z
     .array(z.object({ name: z.string().min(1), effect: z.string().min(1) }))
     .optional(),
+
+  // Mirrors consentResponseDTO.UnregisteredScopes (dto.go:112-119): the scopes
+  // the client asked for that its own registration does not hold, in the order
+  // it asked. The server leaves them out of `scopes`, out of the ticket and off
+  // the screen's ticks; this list exists only so the screen can say why an app
+  // that asked for site tools is being offered none.
+  //
+  // OPTIONAL ON THE WAY IN, for the same deploy-ordering reason as
+  // conferrable_capabilities above: a server that predates the field sends no
+  // key, and an absent key means nothing was withheld. When the key IS present
+  // it is held to the server's own promise (an array of non-empty strings, `[]`
+  // when nothing was withheld, never null), so a value of any other type is a
+  // failed load rather than a guess.
+  //
+  // COPY ONLY, NEVER AUTHORITY. Nothing here reaches the approval POST, the
+  // capability list or an Approve gate. The scopes that can be approved are
+  // `scopes`, sealed in the ticket; this list can neither add to them nor
+  // remove from them.
+  unregistered_scopes: z.array(z.string().min(1)).optional(),
 });
 
 export type ConsentWire = z.infer<typeof consentWireSchema>;
@@ -247,6 +270,19 @@ export interface ConsentContext {
    *  server did not send this key yet" -- there is no sentence on this screen
    *  that needs to tell those two apart. */
   readonly conferrableCapabilities: readonly ConferrableCapability[];
+
+  /**
+   * What the client asked for and its own registration does not hold, in the
+   * order it asked. `[]` for both "nothing was withheld" and "the server did
+   * not send this key yet"; no sentence on this screen needs to tell those two
+   * apart.
+   *
+   * Never on `scopes`, never behind a tick, never in the approval. A scope
+   * named here cannot be granted from this screen: the client can ask for it
+   * only by registering again. The screen reads this to explain that, and for
+   * nothing else.
+   */
+  readonly unregisteredScopes: readonly string[];
 }
 
 export interface ConferrableCapability {
@@ -308,6 +344,7 @@ export function parseConsentContext(raw: unknown): ConsentContext {
     // the whole requirement.
     consentTicket: orNull(wire.consent_ticket),
     conferrableCapabilities: wire.conferrable_capabilities ?? [],
+    unregisteredScopes: wire.unregistered_scopes ?? [],
   };
 }
 
@@ -324,6 +361,7 @@ export function parseConsentContext(raw: unknown): ConsentContext {
 // (ADR-061 option B, "no automation may ever approve").
 export const SCOPE_READ = "mcp:read";
 export const SCOPE_CACHE = "mcp:cache";
+export const SCOPE_SITE = "mcp:site";
 
 export interface ScopeCopy {
   readonly token: string;
@@ -370,27 +408,167 @@ export function describeScope(token: string): ScopeCopy {
  *  whether by describeScope's own bullet (SCOPE_READ) or by its own dedicated
  *  section (SCOPE_CACHE). */
 export function allScopesRecognised(scopes: readonly string[]): boolean {
-  return scopes.every((s) => s === SCOPE_READ || s === SCOPE_CACHE);
+  return scopes.every((s) => s === SCOPE_READ || s === SCOPE_CACHE || s === SCOPE_SITE);
 }
 
 /**
- * The capability list an approval sends: every conferrable READ the server
- * named that this build knows (CONFERRABLE_READS, the set the connection
- * wizard's presets use), plus mcp.cache.purge only when the operator ticked
- * its box and the server offered it. An empty result is returned as empty;
- * the caller omits the key rather than send `[]`, which the server refuses.
+ * The reads the server offered that this build can confer: the names the read
+ * picker may show as tickable. Only the server decides what is offered, so a
+ * name it did not list is never in this set, and a name this build does not
+ * know (CONFERRABLE_READS is the reads-only list) is left out even when the
+ * server lists it with the read effect. In vocabulary order, once each.
+ */
+export function offeredReads(conferrable: readonly ConferrableCapability[]): readonly string[] {
+  return conferrableReadsIn(
+    conferrable.filter((c) => c.effect === CAPABILITY_EFFECT_READ).map((c) => c.name),
+  );
+}
+
+/**
+ * True when the app asked for site tools (mcp:site). This one predicate decides
+ * both whether the site-tools box is shown and whether its choices open ticked,
+ * so the box can never appear without the opening ticks that go with it, nor the
+ * other way round.
+ */
+export function asksForSiteTools(scopes: readonly string[]): boolean {
+  return scopes.includes(SCOPE_SITE);
+}
+
+/**
+ * True when the app asks for more than reading: site tools (mcp:site) or the
+ * cache clear (mcp:cache). This describes the app's request, not what is ticked,
+ * so it does not change as the person ticks and clears boxes.
+ */
+export function asksBeyondReading(scopes: readonly string[]): boolean {
+  return asksForSiteTools(scopes) || scopes.includes(SCOPE_CACHE);
+}
+
+/**
+ * The request capabilities among `names`, in order: the ones the server offered
+ * with the request effect. A request capability only ever creates a request that
+ * a person approves in WPMgr; it is the only kind of capability that is not a
+ * read.
+ */
+export function requestCapabilitiesIn(
+  conferrable: readonly ConferrableCapability[],
+  names: readonly string[],
+): readonly string[] {
+  return names.filter((name) =>
+    conferrable.some((c) => c.name === name && c.effect === CAPABILITY_EFFECT_REQUEST),
+  );
+}
+
+// What each request capability lets the connection ask for, as it reads inside a
+// sentence. Matches the labels the boxes show.
+const ASK_PHRASES: Readonly<Record<string, string>> = {
+  "mcp.cache.purge": "clear the site cache",
+  "mcp.ability.request": "make changes through the site's tools",
+};
+
+/**
+ * The closing sentence of "It cannot change anything.", worded from the request
+ * capabilities the approval will carry. It says "read-only" only when there are
+ * none, and otherwise names each one as something that only creates a request a
+ * person approves. Driven by what will be sent, never by what the app asked for,
+ * so a box the person cleared stops being named.
+ */
+export function describeChangeLimit(asks: readonly string[]): string {
+  if (asks.length === 0) return "This connection is read-only.";
+  const things = asks.map((cap) => `ask to ${ASK_PHRASES[cap] ?? capabilityLabel(cap)}`);
+  const list =
+    things.length === 1
+      ? things[0]!
+      : `${things.slice(0, -1).join(", ")} and ${things[things.length - 1]!}`;
+  return things.length === 1
+    ? `Beyond reading, the only thing it can do is ${list}. That only creates a request, and nothing runs until a person approves it in WPMgr.`
+    : `Beyond reading, the only things it can do are ${list}. Each only creates a request, and nothing runs until a person approves it in WPMgr.`;
+}
+
+// The two site-tools choices, each with the effect the server must offer it
+// under. A name offered with a different effect is not the capability this
+// screen describes, so it is not ticked and is not sent (the same test
+// buildApprovalCapabilities applies).
+const SITE_TOOLS: readonly (readonly [name: string, effect: string])[] = [
+  ["mcp.ability.read", CAPABILITY_EFFECT_READ],
+  ["mcp.ability.request", CAPABILITY_EFFECT_REQUEST],
+];
+
+/**
+ * What the consent screen opens with ticked.
+ *
+ *   - the reads of the wizard's default preset, limited to the reads the server
+ *     offered (Sites alone), exactly as before;
+ *   - when the app asked for site tools (mcp:site), the two site-tools choices
+ *     as well, each only if the server offers it, and "ask for changes" only
+ *     beside "see what the site can do" because it needs it. Asking for the
+ *     scope is asking for both, and the person can clear either one before
+ *     approving.
+ *
+ * The cache-clear choice is never in this list, whatever was asked.
+ *
+ * It is a plain function of the context, called once when the screen mounts
+ * (see ConsentScreen), so the ticks come from the context the person is
+ * looking at and a later re-render cannot put back a tick they cleared.
+ */
+export function initialSelection(
+  consent: Pick<ConsentContext, "scopes" | "conferrableCapabilities">,
+): readonly string[] {
+  const reads = defaultCapabilities(offeredReads(consent.conferrableCapabilities));
+  if (!asksForSiteTools(consent.scopes)) return reads;
+  const offered = SITE_TOOLS.filter(([name, effect]) =>
+    consent.conferrableCapabilities.some((c) => c.name === name && c.effect === effect),
+  ).map(([name]) => name);
+  // The request is never ticked without the read it needs (nextAbilityTicks), so
+  // an offer of the request alone opens nothing ticked.
+  const siteTools = offered.includes("mcp.ability.read") ? offered : [];
+  return [...reads, ...siteTools];
+}
+
+/**
+ * The capability list an approval sends: EXACTLY what the operator ticked,
+ * limited to what the server offered. It never adds a name that is not ticked.
+ *
+ *   - a read is sent when it is ticked and in offeredReads;
+ *   - mcp.cache.purge is sent when it is ticked, offered as a request, and the
+ *     scopes ask for mcp:cache;
+ *   - mcp.ability.read and mcp.ability.request are sent when they are ticked,
+ *     offered with their own effect, and the scopes ask for mcp:site;
+ *   - mcp.ability.request is sent only together with mcp.ability.read. A
+ *     connection holding the request alone cannot call the tool that carries
+ *     one, so a request ticked without a read that is itself sent is dropped.
+ *     The site-tools box already keeps the two together; this is the same rule
+ *     held again where the request is built.
+ *
+ * `consent` supplies what was offered and what the scopes ask for, so a name is
+ * only ever sent for a box that is on the screen: a tick the screen still holds
+ * after a refreshed context narrowed the scopes cannot reach the request.
+ *
+ * `selected` is the whole tick list of the screen. A name in it that the server
+ * did not offer, or offered with a different effect, is dropped here rather
+ * than sent, so a tick left over from a different request can never widen what
+ * is approved. An empty result is returned as empty; the caller omits the key
+ * rather than send `[]`, which the server refuses.
  */
 export function buildApprovalCapabilities(
-  conferrable: readonly ConferrableCapability[],
-  purgeTicked: boolean,
+  consent: Pick<ConsentContext, "conferrableCapabilities" | "scopes">,
+  selected: readonly string[],
 ): string[] {
-  const known: ReadonlySet<string> = new Set(CONFERRABLE_READS);
-  const out = conferrable
-    .filter((c) => c.effect === CAPABILITY_EFFECT_READ && known.has(c.name))
-    .map((c) => c.name);
-  const offersPurge = conferrable.some(
-    (c) => c.name === "mcp.cache.purge" && c.effect === CAPABILITY_EFFECT_REQUEST,
-  );
-  if (purgeTicked && offersPurge) out.push("mcp.cache.purge");
-  return out;
+  const conferrable = consent.conferrableCapabilities;
+  const ticked: ReadonlySet<string> = new Set(selected);
+  const out = offeredReads(conferrable).filter((name) => ticked.has(name));
+  const cacheAsked = consent.scopes.includes(SCOPE_CACHE);
+  const siteToolsAsked = asksForSiteTools(consent.scopes);
+  const askable: readonly (readonly [name: string, effect: string, asked: boolean])[] = [
+    ["mcp.cache.purge", CAPABILITY_EFFECT_REQUEST, cacheAsked],
+    ["mcp.ability.read", CAPABILITY_EFFECT_READ, siteToolsAsked],
+    ["mcp.ability.request", CAPABILITY_EFFECT_REQUEST, siteToolsAsked],
+  ];
+  for (const [name, effect, asked] of askable) {
+    if (!asked || !ticked.has(name)) continue;
+    if (!conferrable.some((c) => c.name === name && c.effect === effect)) continue;
+    out.push(name);
+  }
+  // The request travels only with the read: the one payload rule, shared with the
+  // wizard's mint request.
+  return [...withoutOrphanedRequest(out)];
 }

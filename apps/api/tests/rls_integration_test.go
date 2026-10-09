@@ -295,6 +295,46 @@ func startPostgres(t testing.TB) *db.Pool {
 		// reason: without it the blanket GRANT above lets a test re-point the
 		// row, which no real install can do.
 		"REVOKE UPDATE, DELETE, TRUNCATE ON install_owner FROM wpmgr_app",
+		// m153's content_integrations and its audit are SELECT-only for
+		// wpmgr_app: the migration revokes every write, and the one write path
+		// is the SECURITY DEFINER admin_upsert_content_integration. Without
+		// this line the blanket GRANT above hands wpmgr_app INSERT, UPDATE and
+		// DELETE that no real install has, and the write-fence proof tests a
+		// database nobody runs.
+		"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON content_integrations, content_integrations_audit FROM wpmgr_app",
+		// m153 site_content_inventory_runs: no DELETE for wpmgr_app in the migration.
+		"REVOKE DELETE, TRUNCATE ON site_content_inventory_runs FROM wpmgr_app",
+		// m155's ability_catalogue and its audit, for the same reason as m153's
+		// content_integrations: SELECT-only for wpmgr_app, written only through
+		// the SECURITY DEFINER admin_upsert_ability_catalogue_entry.
+		"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ability_catalogue, ability_catalogue_audit FROM wpmgr_app",
+		// m160's ability_read_side_effect_reports is definer-only: the
+		// migration revokes ALL from wpmgr_app, and the one path in is the
+		// SECURITY DEFINER record_ability_read_side_effect. Without this line
+		// the blanket GRANT above hands wpmgr_app the four privileges no real
+		// install has, and the refusal proof tests a database nobody runs.
+		"REVOKE ALL ON ability_read_side_effect_reports FROM wpmgr_app",
+		// m160's ability_tenant_disables: SELECT and UPDATE of the two
+		// re-enable columns only. No INSERT (the definer writes it), no DELETE
+		// (the record of a disable is kept). Revoke-then-grant, as m151.
+		"REVOKE ALL ON ability_tenant_disables FROM wpmgr_app",
+		"GRANT SELECT ON ability_tenant_disables TO wpmgr_app",
+		"GRANT UPDATE (reenabled_at, reenabled_by_user_id) ON ability_tenant_disables TO wpmgr_app",
+		// m161's rest_route_catalogue and its audit, for the same reason as
+		// m155's ability_catalogue: SELECT-only for wpmgr_app, written only
+		// through the SECURITY DEFINER admin_upsert_rest_route and
+		// stamp_wpmgr_rest_route_hash.
+		"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON rest_route_catalogue, rest_route_catalogue_audit FROM wpmgr_app",
+		// m155 site_ability_inventory_runs: no DELETE for wpmgr_app in the migration.
+		"REVOKE DELETE, TRUNCATE ON site_ability_inventory_runs FROM wpmgr_app",
+		// m155 site_ability_inventory: TRUNCATE revoked in the migration.
+		"REVOKE TRUNCATE ON site_ability_inventory FROM wpmgr_app",
+		// m156's assistant_ability_requests is m151's shape: the same three
+		// statements, revoke-then-grant, so its immutability and
+		// undeletability proofs run against a real install's privileges.
+		"REVOKE UPDATE ON assistant_ability_requests FROM wpmgr_app",
+		"GRANT UPDATE (state, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at) ON assistant_ability_requests TO wpmgr_app",
+		"REVOKE DELETE, TRUNCATE ON assistant_ability_requests FROM wpmgr_app",
 	} {
 		if _, err := ownerPool.Exec(ctx, stmt); err != nil {
 			setupFatalf(t, err, "postgres: provision app role ("+stmt+")")

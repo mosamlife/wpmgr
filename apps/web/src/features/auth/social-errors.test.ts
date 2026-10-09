@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
 import { socialRefusal, sameOriginPath } from "./social-errors";
 
@@ -179,25 +179,183 @@ describe("the ?social_error= contract", () => {
 
 // 2.31. The redirect target is validated on both sides. The server is the
 // authority (auth.safeReturnPath), but the app must never put an off-site URL
-// in an outbound sign-in link either.
+// in an outbound sign-in link, or navigate to one, either.
+//
+// Each case is its own test so a failure names the value. The clauses of the
+// helper's contract (see its doc comment) are held one group at a time, and the
+// names say which clause a case isolates: a value the URL parser would send to
+// another host is refused by the lexical rules AND by the parser's verdict, so
+// the cases that only one of them can refuse are the ones that show each is
+// wired.
 describe("sameOriginPath", () => {
-  it("keeps a path on this origin", () => {
-    expect(sameOriginPath("/sites/abc")).toBe("/sites/abc");
-    expect(sameOriginPath("/sites?tab=backups")).toBe("/sites?tab=backups");
+  // Read once: the cases below that name this very origin must follow it.
+  const origin = window.location.origin;
+  const host = window.location.host;
+
+  // A test title that shows every character. JSON.stringify escapes the C0
+  // range but leaves DEL and the C1 range as raw characters, which print as
+  // nothing.
+  const show = (value: string) =>
+    JSON.stringify(value).replace(
+      /[\u007f-\u009f]/g,
+      (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+    );
+  const titled = (rows: readonly (readonly [why: string, value: string])[]) =>
+    rows.map(([why, value]) => [`${why}: ${show(value)}`, value] as const);
+
+  // The address an AI app's browser sign-in opens for someone who is signed
+  // out, in the order a standard MCP client sends it. The query has to come
+  // back byte for byte: its %20 and its parameter order are what the consent
+  // screen reads.
+  const CONSENT_LINK =
+    "/connect/ai?response_type=code&client_id=c1-abc" +
+    "&redirect_uri=http%3A%2F%2Flocalhost%3A61695%2Fcallback" +
+    "&state=a~b-_c&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM" +
+    "&code_challenge_method=S256&scope=mcp%3Aread%20mcp%3Asite";
+
+  // Same-origin addresses that must come back exactly as given. The last four
+  // are the over-fire arm: an encoded slash, backslash or tab is plain text to
+  // the URL parser (it does not decode them), and `//` inside a query or hash
+  // is not a host.
+  const HONEST: readonly (readonly [why: string, value: string])[] = [
+    ["the root", "/"],
+    ["a path", "/sites"],
+    ["a deeper path", "/sites/abc"],
+    ["a path with a query", "/sites?tab=backups"],
+    ["a path with a query and a hash", "/sites?x=1#y"],
+    ["the consent link", CONSENT_LINK],
+    ["an encoded slash after the slash", "/%2F/evil.example"],
+    ["an encoded backslash after the slash", "/%5Cevil.example"],
+    ["an encoded tab between the slashes", "/%09/evil.example"],
+    ["slashes inside a query value", "/sites?next=//evil.example"],
+    ["slashes inside a hash", "/sites#//evil.example"],
+  ];
+
+  it.each(titled(HONEST))("keeps %s", (_title, value) => {
+    expect(sameOriginPath(value)).toBe(value);
   });
 
-  it("drops anything that could leave this origin", () => {
-    for (const raw of [
-      undefined,
-      "",
-      "sites/abc",
-      "https://evil.example/steal",
-      "//evil.example/steal",
-      "/\\evil.example/steal",
-      "javascript:alert(1)",
-      "/" + "a".repeat(600),
-    ]) {
-      expect(sameOriginPath(raw), String(raw)).toBeUndefined();
+  // Values that must give nothing. The comments say what the URL parser makes
+  // of each group, because that is why the group is here.
+  const HOSTILE: readonly (readonly [why: string, value: string])[] = [
+    ["an empty value", ""],
+
+    // Not rooted. The parser resolves these two against this origin, so only
+    // the rooted-path rule refuses them.
+    ["a relative path with no leading slash", "sites/abc"],
+    ["a query with no path", "?x=1"],
+    // Not rooted either, and the parser trims a leading space or control
+    // character before it reads the slashes, so these two read as a host.
+    ["a space before a protocol-relative reference", " //evil.example"],
+    ["a NUL before a protocol-relative reference", "\u0000//evil.example"],
+
+    // The parser deletes tab, CR and LF before it reads the slashes, so the
+    // first three read as "//evil.example/x". The last two stay on this origin
+    // once the tab is gone and are refused anyway: the parser reads a different
+    // string than the one shown.
+    ["a tab between the slashes", "/\t/evil.example/x"],
+    ["a line feed between the slashes", "/\n/evil.example/x"],
+    ["a carriage return and line feed between the slashes", "/\r\n/evil.example/x"],
+    ["a tab at the end", "/sites\t"],
+    ["a tab inside a segment", "/si\ttes"],
+
+    // The parser reads "\" as "/". The last one lands on this origin, at
+    // /sites/x, and is refused anyway.
+    ["a backslash after the slash", "/\\evil.example"],
+    ["a backslash first", "\\/evil.example"],
+    ["two backslashes after the slash", "/\\\\evil.example"],
+    ["a backslash inside a path", "/sites\\x"],
+
+    ["a protocol-relative reference", "//evil.example"],
+    ["a protocol-relative reference with a path", "//evil.example/steal"],
+    ["an absolute URL", "https://evil.example/x"],
+    ["a javascript URL", "javascript:alert(1)"],
+    ["a data URL", "data:text/html,x"],
+
+    // Control characters. The parser keeps each of these on this origin (it
+    // percent-encodes them in the middle of a path and trims them from the end
+    // of a value), so only the control-character rule refuses them.
+    ["a NUL after the slash", "/\u0000/evil.example"],
+    ["a NUL at the end", "/sites\u0000"],
+    ["a start-of-heading control", "/sites\u0001"],
+    ["a unit separator", "/\u001f/x"],
+    ["DEL", "/sites\u007f"],
+    ["a C1 control (next line)", "/sites\u0085"],
+
+    // On this origin, and still not a rooted path.
+    ["an absolute URL that names this origin", `${origin}/sites`],
+    ["a protocol-relative reference that names this host", `//${host}/sites`],
+  ];
+
+  it.each(titled(HOSTILE))("refuses %s", (_title, value) => {
+    expect(sameOriginPath(value)).toBeUndefined();
+  });
+
+  it("refuses a missing value", () => {
+    expect(sameOriginPath(undefined)).toBeUndefined();
+  });
+
+  it("caps the length at 512", () => {
+    expect(sameOriginPath("/" + "a".repeat(511))).toBe("/" + "a".repeat(511));
+    expect(sameOriginPath("/" + "a".repeat(512))).toBeUndefined();
+  });
+
+  // The parse-and-compare step. Nothing a lexical rule lets through can be put
+  // on another origin by a real parser, so these three cases are the ones that
+  // reach it: a different page origin, an origin the parser cannot use as a
+  // base, and a parser that disagrees.
+  describe("against the page's own origin", () => {
+    function withLocation(location: object, run: () => void) {
+      const original = window.location;
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        writable: true,
+        value: location,
+      });
+      try {
+        run();
+      } finally {
+        Object.defineProperty(window, "location", {
+          configurable: true,
+          writable: true,
+          value: original,
+        });
+      }
     }
+
+    it("follows the page's origin rather than a fixed one", () => {
+      withLocation({ origin: "https://app.example.test" }, () => {
+        expect(sameOriginPath("/sites?x=1")).toBe("/sites?x=1");
+        expect(sameOriginPath("https://app.example.test/sites")).toBeUndefined();
+      });
+    });
+
+    it("refuses everything when the page has no usable origin", () => {
+      for (const location of [{ origin: "null" }, {}]) {
+        withLocation(location, () => {
+          expect(sameOriginPath("/sites"), JSON.stringify(location)).toBeUndefined();
+        });
+      }
+    });
+
+    it("takes the URL parser's verdict as final", () => {
+      // A parser that resolves a value the lexical rules accept to the same
+      // path on another origin: the path alone is not enough.
+      const RealURL = URL;
+      class OffSiteURL extends RealURL {
+        constructor(url: string | URL, base?: string | URL) {
+          super(url, base);
+          Object.defineProperty(this, "origin", { value: "https://evil.example" });
+        }
+      }
+      let result: string | undefined = "unset";
+      vi.stubGlobal("URL", OffSiteURL);
+      try {
+        result = sameOriginPath("/sites");
+      } finally {
+        vi.unstubAllGlobals();
+      }
+      expect(result).toBeUndefined();
+    });
   });
 });

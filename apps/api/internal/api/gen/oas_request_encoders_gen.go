@@ -486,6 +486,20 @@ func encodeApplySiteFileUploadRequest(
 	return nil
 }
 
+func encodeApproveAbilityRequestRequest(
+	req *AbilityRequestApproveBody,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeApproveAssistantRequestRequest(
 	req *AssistantRequestApproveBody,
 	r *http.Request,
@@ -724,6 +738,20 @@ func encodeComputeRucssRequest(
 
 func encodeConfirmTotpEnrollmentRequest(
 	req *ConfirmTotpEnrollmentReq,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeCreateAdminAbilityCatalogueEntryRequest(
+	req *AbilityCatalogueInput,
 	r *http.Request,
 ) error {
 	const contentType = "application/json"
@@ -1006,6 +1034,20 @@ func encodeCreateUpdateRunRequest(
 	return nil
 }
 
+func encodeDeclineAbilityRequestRequest(
+	req *DeclineAbilityRequestReq,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeDeclineAssistantRequestRequest(
 	req *DeclineAssistantRequestReq,
 	r *http.Request,
@@ -1112,6 +1154,20 @@ func encodeDeleteWebAuthnCredentialRequest(
 
 func encodeDisableTotpRequest(
 	req *DisableTotpReq,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeEnableSiteContentEditingRequest(
+	req *EnableSiteContentEditingReq,
 	r *http.Request,
 ) error {
 	const contentType = "application/json"
@@ -1798,6 +1854,34 @@ func encodeRebaselineAuditIntegrityRequest(
 	return nil
 }
 
+func encodeReenableAbilityForTenantRequest(
+	req *ReenableAbilityForTenantReq,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeRefreshSiteAIReadinessRequest(
+	req *RefreshSiteAIReadinessReq,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeRegenerateRecoveryCodesRequest(
 	req *RegenerateRecoveryCodesReq,
 	r *http.Request,
@@ -2308,6 +2392,48 @@ func encodeUnblockSiteIPRequest(
 	return nil
 }
 
+func encodeUndoAbilityRequestRequest(
+	req *UndoAbilityRequestReq,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeUpdateAdminAbilityCatalogueEntryRequest(
+	req *AbilityCatalogueInput,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeUpdateAdminRestRouteRequest(
+	req *RestRouteInput,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeUpdateClientRequest(
 	req *UpdateAgencyClientRequest,
 	r *http.Request,
@@ -2394,6 +2520,20 @@ func encodeUpdateSmtpSettingsRequest(
 
 func encodeUpdateTagRequest(
 	req *SiteTagUpdate,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeUpsertAdminContentIntegrationRequest(
+	req *ContentIntegrationInput,
 	r *http.Request,
 ) error {
 	const contentType = "application/json"

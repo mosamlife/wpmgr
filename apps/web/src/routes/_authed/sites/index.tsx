@@ -25,9 +25,13 @@ import { useTags } from "@/features/tags/use-tags";
 import { useTagColorMap } from "@/features/tags/use-tag-color-map";
 import { TagChip } from "@/features/sites/tag-chip";
 import { SitesTable } from "@/features/sites/sites-table";
+import { useAiReadinessRollup } from "@/features/ai-readiness/use-ai-readiness";
 import { SitesGrid, SitesGridSkeleton } from "@/features/sites/sites-grid";
 import { SitesToolbar } from "@/features/sites/sites-toolbar";
-import { useSitesSelection } from "@/features/sites/use-sites-selection";
+import {
+  useClearSitesSelectionOnUnmount,
+  useSitesSelection,
+} from "@/features/sites/use-sites-selection";
 import { useSitesDensity } from "@/features/sites/use-sites-density";
 import { useSitesView, useCardSize } from "@/features/sites/use-sites-view";
 import { AddSiteDialog } from "@/features/sites/add-site-dialog";
@@ -274,6 +278,11 @@ function SitesPage() {
   // channel's "ships dark by default" contract.
   const agentSelfUpdateEnabled = fleetAgents?.self_update_enabled === true;
 
+  // Fleet AI readiness rollup, read once for the AI column and the grid chip.
+  // Best-effort like the agent rollup above: a refused or failed rollup is
+  // "unavailable", which renders a dash per site, never a page error.
+  const aiReadiness = useAiReadinessRollup();
+
   // Active on any filter axis, including the (now server-side) tags filter.
   // A tag filter that matches nothing legitimately returns `sites: []`, // that must render as a filtered-empty state, never the onboarding empty
   // state (which means "this tenant has no sites at all").
@@ -304,6 +313,10 @@ function SitesPage() {
   // Selection and density lifted to the route so the toolbar and table share
   // the same instances.
   const selection = useSitesSelection();
+  // GH #742: the selection belongs to this visit. Leaving the page drops it, so
+  // coming back by the sidebar (no filters) never shows a selection that nothing
+  // on screen explains, and no other page's palette can act on it.
+  useClearSitesSelectionOnUnmount();
   const densityState = useSitesDensity();
 
   const [wizardTarget, setWizardTarget] = useState<WizardTarget | null>(null);
@@ -1223,6 +1236,7 @@ function SitesPage() {
             <SitesGrid
               sites={visibleSites}
               cardSize={cardSize}
+              aiReadiness={aiReadiness}
               onOpenAutoLogin={autoLogin ? handleOpenAutoLogin : undefined}
               onOpenDetail={handleOpenDetail}
               onDisconnect={operate ? handleDisconnect : undefined}
@@ -1241,6 +1255,7 @@ function SitesPage() {
               agentStatusById={agentStatusById}
               agentReferenceSource={fleetAgents?.reference_source}
               agentReferenceCheck={fleetAgents?.agent_mirror}
+              aiReadiness={aiReadiness}
               onOpenAutoLogin={autoLogin ? handleOpenAutoLogin : undefined}
               onOpenDetail={handleOpenDetail}
               onDisconnect={operate ? handleDisconnect : undefined}
@@ -1258,6 +1273,12 @@ function SitesPage() {
         <UpdateWizard
           open={wizardTarget !== null}
           onClose={() => setWizardTarget(null)}
+          // GH #742: a run that was created has used the selection the wizard
+          // was opened for, so drop it, as set client, pause and delete do.
+          // The wizard calls this on a created run only, never on cancel.
+          onSubmitted={
+            wizardTarget?.kind === "sites" ? () => selection.clear() : undefined
+          }
           target={wizardTarget}
           sites={
             wizardTarget?.kind === "sites" && selectedSites.length > 0

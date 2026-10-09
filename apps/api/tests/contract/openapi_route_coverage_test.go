@@ -35,11 +35,14 @@ import (
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilities"
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilityrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
+	"github.com/mosamlife/wpmgr/apps/api/internal/aireadiness"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/assistantrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
@@ -49,6 +52,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/billing"
 	clientpkg "github.com/mosamlife/wpmgr/apps/api/internal/client"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
+	"github.com/mosamlife/wpmgr/apps/api/internal/content"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -404,10 +408,19 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 
 	// The AI request queue and its site-nested approve and decline routes.
 	mcpRepo := mcp.NewRepo(pool)
+	abilityReqH := abilityrequest.NewHandler(abilityrequest.NewService(pool, mcpRepo, mcp.NewService(mcpRepo), auditRec, logger))
 	assistantReqH := assistantrequest.NewHandler(assistantrequest.NewService(
 		assistantrequest.NewRepo(pool), mcpRepo, mcp.NewService(mcpRepo), auditRec, logger))
 
+	// Track B S1 page-ownership inventory and its superadmin routes, wired as
+	// in production. Nothing is issued through them: only the route set is read.
+	contentH := content.NewHandler(content.NewService(content.NewRepo(pool), nil, logger))
+	adminH.SetContentRoutes(contentH.RegisterAdmin)
+	// Ability engine: the superadmin catalogue routes, wired as in production.
+	adminH.SetAbilityRoutes(abilities.NewAdminHandler(abilities.NewAdminRepo(pool)).RegisterAdmin)
+
 	deps := server.Deps{
+		ContentH:               contentH,
 		Config:                 config.Config{},
 		Logger:                 logger,
 		Pool:                   pool,
@@ -418,6 +431,9 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 		APIKeyH:                apikey.NewHandler(apiKeySvc, auditRec),
 		AuditH:                 audit.NewHandler(auditRec),
 		AssistantRequestH:      assistantReqH,
+		AbilityRequestH:        abilityReqH,
+		AbilityTenantH:         abilities.NewTenantHandler(abilities.NewTenantRepo(pool, auditRec), admingate.NewPoolStore(pool)),
+		AIReadinessH:           aireadiness.NewHandler(aireadiness.NewService(aireadiness.NewRepo(pool), auditRec, logger)),
 		TenantH:                tenant.NewHandler(tenantSvc, auditRec),
 		SiteH:                  siteH,
 		SiteEventsH:            siteEventsH,

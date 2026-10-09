@@ -31,6 +31,787 @@ export const ReadinessSchema = {
   },
 } as const;
 
+export const ContentInventoryEditorSchema = {
+  type: "object",
+  required: ["integration_id"],
+  properties: {
+    integration_id: {
+      type: "string",
+    },
+    display_name: {
+      type: ["string", "null"],
+      description: "From the platform allowlist, never from the site.",
+    },
+    version: {
+      type: ["string", "null"],
+    },
+  },
+} as const;
+
+export const ContentInventoryRowSchema = {
+  type: "object",
+  required: [
+    "post_id",
+    "post_type",
+    "post_status",
+    "verdict",
+    "route_number",
+    "route_reason",
+    "checked_at",
+  ],
+  properties: {
+    post_id: {
+      type: "integer",
+      format: "int64",
+    },
+    post_type: {
+      type: "string",
+    },
+    post_status: {
+      type: "string",
+    },
+    verdict: {
+      type: "string",
+      description:
+        "Known values: classic, empty, block_document, builder, ambiguous, unrecognised_builder, special_page, template_may_override.",
+    },
+    route_number: {
+      type: "integer",
+      minimum: 1,
+      maximum: 3,
+    },
+    route_reason: {
+      type: "string",
+      description:
+        'A closed set of reason codes; a client renders an unknown code as "Not available yet".',
+    },
+    editor: {
+      oneOf: [
+        {
+          $ref: "#/components/schemas/ContentInventoryEditor",
+        },
+        {
+          type: "null",
+        },
+      ],
+      description: "Null when no builder owns the page.",
+    },
+    title: {
+      type: ["string", "null"],
+      description:
+        "The site's own text, cleaned and capped at 120 bytes. Null unless the caller holds site.content.read.",
+    },
+    checked_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const ContentInventoryPageSchema = {
+  type: "object",
+  required: [
+    "state",
+    "min_agent_version",
+    "titles_included",
+    "truncated",
+    "pages",
+  ],
+  properties: {
+    truncated: {
+      type: "boolean",
+      description:
+        "True when the last check stopped at the page cap, so the list is a sample of the site. From the site's last-check record; false when the site has never been checked.",
+    },
+    state: {
+      type: "string",
+      enum: ["ok", "agent_update_needed", "not_connected"],
+    },
+    agent_version: {
+      type: "string",
+    },
+    min_agent_version: {
+      type: "string",
+    },
+    last_checked_at: {
+      type: ["string", "null"],
+      format: "date-time",
+    },
+    titles_included: {
+      type: "boolean",
+    },
+    next_after_post_id: {
+      type: ["integer", "null"],
+      format: "int64",
+    },
+    pages: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/ContentInventoryRow",
+      },
+    },
+  },
+} as const;
+
+export const ContentFleetVerdictShareSchema = {
+  type: "object",
+  required: ["verdict", "route_number", "pages", "sites"],
+  properties: {
+    verdict: {
+      type: "string",
+    },
+    route_number: {
+      type: "integer",
+    },
+    pages: {
+      type: "integer",
+      format: "int64",
+    },
+    sites: {
+      type: "integer",
+      format: "int64",
+    },
+  },
+} as const;
+
+export const ContentFleetBuilderShareSchema = {
+  type: "object",
+  required: ["integration_id", "pages", "sites"],
+  properties: {
+    integration_id: {
+      type: "string",
+    },
+    version: {
+      type: ["string", "null"],
+    },
+    pages: {
+      type: "integer",
+      format: "int64",
+    },
+    sites: {
+      type: "integer",
+      format: "int64",
+    },
+  },
+} as const;
+
+export const ContentFleetReportSchema = {
+  type: "object",
+  required: ["pages", "by_verdict", "by_builder"],
+  properties: {
+    pages: {
+      type: "integer",
+      format: "int64",
+    },
+    by_verdict: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/ContentFleetVerdictShare",
+      },
+    },
+    by_builder: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/ContentFleetBuilderShare",
+      },
+    },
+  },
+} as const;
+
+export const ContentIntegrationSchema = {
+  type: "object",
+  required: [
+    "integration_id",
+    "display_name",
+    "enabled",
+    "status",
+    "descriptor",
+    "updated_at",
+  ],
+  properties: {
+    integration_id: {
+      type: "string",
+    },
+    display_name: {
+      type: "string",
+    },
+    enabled: {
+      type: "boolean",
+    },
+    status: {
+      type: "string",
+      enum: ["detect_only"],
+    },
+    descriptor: {
+      type: "object",
+      additionalProperties: true,
+    },
+    abilities: {
+      type: ["object", "null"],
+      additionalProperties: true,
+    },
+    min_version: {
+      type: ["string", "null"],
+    },
+    max_tested_version: {
+      type: ["string", "null"],
+    },
+    min_wp_version: {
+      type: ["string", "null"],
+    },
+    integration_entry_sha256: {
+      type: ["string", "null"],
+    },
+    theme_slug: {
+      type: ["string", "null"],
+      description:
+        "The theme directory that signals this builder; sent as a hint only when active.",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const AbilityCatalogueEntrySchema = {
+  type: "object",
+  description:
+    "One reviewed ability in the global catalogue. `entry_sha256` is the\nsha256 of the exact entry bytes sent to a site's agent.\n",
+  required: [
+    "entry_id",
+    "name",
+    "source",
+    "class",
+    "status",
+    "enabled",
+    "approval_mode",
+    "permission_mode",
+    "dynamic_enum_paths",
+    "title",
+    "description",
+    "snapshot",
+    "arg_render",
+    "effect_copy",
+    "limits",
+    "nested_allow",
+    "global_option_keys",
+    "admission",
+    "updated_at",
+  ],
+  properties: {
+    entry_id: {
+      type: "string",
+      format: "uuid",
+    },
+    name: {
+      type: "string",
+    },
+    source: {
+      type: "string",
+      enum: ["wpmgr", "core", "vendor"],
+    },
+    class: {
+      type: "string",
+      enum: ["read", "write", "denied"],
+    },
+    status: {
+      type: "string",
+      enum: ["admitted", "detect_only", "awaiting_vendor_tools"],
+    },
+    enabled: {
+      type: "boolean",
+    },
+    approval_mode: {
+      type: "string",
+      enum: ["none", "per_call"],
+    },
+    permission_mode: {
+      type: "string",
+      enum: ["principal", "asserted"],
+    },
+    integration_id: {
+      type: "string",
+      nullable: true,
+    },
+    owner_dir: {
+      type: "string",
+      nullable: true,
+    },
+    version_min: {
+      type: "string",
+      nullable: true,
+    },
+    version_max_tested: {
+      type: "string",
+      nullable: true,
+    },
+    min_wp_version: {
+      type: "string",
+      nullable: true,
+    },
+    min_agent_version: {
+      type: "string",
+      nullable: true,
+    },
+    schema_struct_sha256: {
+      type: "string",
+      nullable: true,
+    },
+    dynamic_enum_paths: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    title: {
+      type: "string",
+    },
+    description: {
+      type: "string",
+    },
+    usage: {
+      type: "string",
+      nullable: true,
+    },
+    operator_permission: {
+      type: "string",
+      nullable: true,
+    },
+    target: {
+      nullable: true,
+    },
+    snapshot: {
+      type: "string",
+    },
+    preview: {
+      type: "string",
+      nullable: true,
+    },
+    arg_render: {
+      type: "object",
+      additionalProperties: true,
+    },
+    effect_copy: {
+      type: "string",
+      enum: ["draft", "live", "none"],
+    },
+    limits: {
+      type: "object",
+      additionalProperties: true,
+    },
+    nested_allow: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    global_option_keys: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    integration_block: {
+      nullable: true,
+    },
+    admission: {
+      type: "object",
+      additionalProperties: true,
+    },
+    entry_sha256: {
+      type: "string",
+      nullable: true,
+    },
+    output_fields: {
+      nullable: true,
+      description:
+        'The pinned output shape of a read: `{"fields":{key:shape}}`,\n`{"items":shape}`, `"string"`, `"int"` or `"bool"`, at most 8 deep.\nOnly listed keys reach the AI.\n',
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const AbilityCatalogueInputSchema = {
+  type: "object",
+  description:
+    "Every field is optional on update; an omitted field keeps its stored\nvalue. `name` is required on create and cannot change. There is no\nactor field: the actor is the authenticated session.\n",
+  additionalProperties: false,
+  properties: {
+    name: {
+      type: "string",
+      pattern: "^[a-z0-9-]{1,64}/[a-z0-9-]{1,64}$",
+    },
+    source: {
+      type: "string",
+      enum: ["wpmgr", "core", "vendor"],
+    },
+    class: {
+      type: "string",
+      enum: ["read", "write", "denied"],
+    },
+    status: {
+      type: "string",
+      enum: ["admitted", "detect_only", "awaiting_vendor_tools"],
+    },
+    enabled: {
+      type: "boolean",
+    },
+    approval_mode: {
+      type: "string",
+      enum: ["none", "per_call"],
+    },
+    permission_mode: {
+      type: "string",
+      enum: ["principal", "asserted"],
+    },
+    integration_id: {
+      type: "string",
+      maxLength: 64,
+    },
+    owner_dir: {
+      type: "string",
+      maxLength: 100,
+    },
+    version_min: {
+      type: "string",
+      maxLength: 32,
+    },
+    version_max_tested: {
+      type: "string",
+      maxLength: 32,
+    },
+    min_wp_version: {
+      type: "string",
+      maxLength: 32,
+    },
+    min_agent_version: {
+      type: "string",
+      maxLength: 32,
+    },
+    schema_struct_sha256: {
+      type: "string",
+      maxLength: 64,
+    },
+    dynamic_enum_paths: {
+      type: "array",
+      maxItems: 64,
+      items: {
+        type: "string",
+        maxLength: 256,
+      },
+    },
+    title: {
+      type: "string",
+      maxLength: 80,
+    },
+    description: {
+      type: "string",
+      maxLength: 1000,
+    },
+    usage: {
+      type: "string",
+      maxLength: 2000,
+    },
+    operator_permission: {
+      type: "string",
+      maxLength: 64,
+    },
+    target: {
+      nullable: true,
+    },
+    snapshot: {
+      type: "string",
+      maxLength: 32,
+    },
+    preview: {
+      type: "string",
+      maxLength: 32,
+    },
+    arg_render: {
+      type: "object",
+      additionalProperties: true,
+    },
+    effect_copy: {
+      type: "string",
+      enum: ["draft", "live", "none"],
+    },
+    limits: {
+      type: "object",
+      additionalProperties: true,
+    },
+    nested_allow: {
+      type: "array",
+      maxItems: 64,
+      items: {
+        type: "string",
+        maxLength: 256,
+      },
+    },
+    global_option_keys: {
+      type: "array",
+      maxItems: 64,
+      items: {
+        type: "string",
+        maxLength: 256,
+      },
+    },
+    integration_block: {
+      nullable: true,
+    },
+    admission: {
+      type: "object",
+      additionalProperties: true,
+    },
+    output_fields: {
+      nullable: true,
+      description:
+        'The pinned output shape of a read, in the strict grammar\n`{"fields":{key:shape}}` | `{"items":shape}` | `"string"` | `"int"` |\n`"bool"`, keys matching `^[A-Za-z0-9_-]{1,64}$`, at most 8 deep. Any\nother node is refused (400 invalid_output_fields). Required for a\nvendor or core read. `limits.allowed_option_patterns` may not hold an\nempty or wildcard-only (`*`, `**`) pattern.\n',
+    },
+  },
+} as const;
+
+export const RestRouteSchema = {
+  type: "object",
+  description:
+    "One reviewed WordPress REST route (m161). `route_sha256` is the sha256\nof the exact route bytes sent to a site's agent.\n",
+  required: [
+    "route_id",
+    "method",
+    "namespace",
+    "template",
+    "core_pattern",
+    "path_params",
+    "query_keys",
+    "pinned_query",
+    "body_keys",
+    "class",
+    "output_fields",
+    "snapshot",
+    "arg_render",
+    "effect_copy",
+    "enabled",
+    "title",
+    "description",
+    "hash_current",
+    "updated_at",
+  ],
+  properties: {
+    route_id: {
+      type: "string",
+    },
+    method: {
+      type: "string",
+      enum: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+    },
+    namespace: {
+      type: "string",
+    },
+    template: {
+      type: "string",
+    },
+    core_pattern: {
+      type: "string",
+    },
+    path_params: {
+      type: "object",
+      additionalProperties: true,
+    },
+    query_keys: {
+      type: "object",
+      additionalProperties: true,
+    },
+    pinned_query: {
+      type: "object",
+      additionalProperties: true,
+    },
+    body_keys: {
+      type: "object",
+      additionalProperties: true,
+    },
+    class: {
+      type: "string",
+      enum: ["read", "write"],
+    },
+    output_fields: {
+      description: "The pinned output shape",
+      "in the entry grammar.": null,
+    },
+    snapshot: {
+      type: "string",
+    },
+    target: {
+      nullable: true,
+    },
+    arg_render: {
+      type: "object",
+      additionalProperties: true,
+    },
+    operator_permission: {
+      type: "string",
+      nullable: true,
+    },
+    effect_copy: {
+      type: "string",
+      enum: ["draft", "live", "none"],
+    },
+    enabled: {
+      type: "boolean",
+    },
+    min_wp_version: {
+      type: "string",
+      nullable: true,
+    },
+    title: {
+      type: "string",
+    },
+    description: {
+      type: "string",
+    },
+    route_sha256: {
+      type: "string",
+      nullable: true,
+    },
+    hash_current: {
+      type: "boolean",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const RestRouteInputSchema = {
+  type: "object",
+  description:
+    "A route edit. Every field is optional; an omitted field keeps its\nstored value. route_id and route_sha256 are never body fields.\nJSON members hold integers only, written plainly.\n",
+  additionalProperties: false,
+  properties: {
+    method: {
+      type: "string",
+      enum: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+    },
+    namespace: {
+      type: "string",
+      maxLength: 128,
+    },
+    template: {
+      type: "string",
+      maxLength: 255,
+    },
+    core_pattern: {
+      type: "string",
+      maxLength: 255,
+    },
+    path_params: {
+      type: "object",
+      additionalProperties: true,
+    },
+    query_keys: {
+      type: "object",
+      additionalProperties: true,
+    },
+    pinned_query: {
+      type: "object",
+      additionalProperties: true,
+    },
+    body_keys: {
+      type: "object",
+      additionalProperties: true,
+    },
+    class: {
+      type: "string",
+      enum: ["read", "write"],
+    },
+    output_fields: {
+      description: "The pinned output shape",
+      "in the entry grammar.": null,
+    },
+    snapshot: {
+      type: "string",
+      maxLength: 32,
+    },
+    target: {
+      nullable: true,
+    },
+    arg_render: {
+      type: "object",
+      additionalProperties: true,
+    },
+    operator_permission: {
+      type: "string",
+      maxLength: 64,
+    },
+    effect_copy: {
+      type: "string",
+      enum: ["draft", "live", "none"],
+    },
+    enabled: {
+      type: "boolean",
+    },
+    min_wp_version: {
+      type: "string",
+      maxLength: 32,
+    },
+    title: {
+      type: "string",
+      maxLength: 120,
+    },
+    description: {
+      type: "string",
+      maxLength: 1000,
+    },
+  },
+} as const;
+
+export const ContentIntegrationInputSchema = {
+  type: "object",
+  required: ["display_name", "enabled", "status"],
+  additionalProperties: false,
+  properties: {
+    display_name: {
+      type: "string",
+      minLength: 1,
+      maxLength: 80,
+    },
+    enabled: {
+      type: "boolean",
+    },
+    status: {
+      type: "string",
+      enum: ["detect_only"],
+    },
+    descriptor: {
+      type: "object",
+      additionalProperties: true,
+    },
+    abilities: {
+      type: ["object", "null"],
+      additionalProperties: true,
+    },
+    min_version: {
+      type: ["string", "null"],
+      maxLength: 32,
+    },
+    max_tested_version: {
+      type: ["string", "null"],
+      maxLength: 32,
+    },
+    min_wp_version: {
+      type: ["string", "null"],
+      maxLength: 32,
+    },
+    theme_slug: {
+      type: ["string", "null"],
+      maxLength: 100,
+    },
+  },
+} as const;
+
 export const ErrorSchema = {
   type: "object",
   required: ["code", "message"],
@@ -1526,6 +2307,34 @@ export const AgentMetadataSchema = {
             "Convenience list of currently-unreadable item keys. A shape\nthis cannot parse as an array is ignored and the list is left\nunset.\n",
           items: {
             type: "string",
+          },
+        },
+      },
+    },
+    builder_facts: {
+      type: ["object", "null"],
+      description:
+        'Facts about the site\'s page builders that the plugin and theme\nlists do not carry, collected read-only on every metadata report.\nOptional and additive: an agent that predates it omits the whole\nobject, which the control plane stores as "not reported" and never\nreads as "off". Every field is tolerantly decoded: a value of an\nunexpected type is dropped on its own and never rejects the\nreport. Only the fields below are kept; any other key is ignored.\n',
+      properties: {
+        v: {
+          type: "integer",
+          description: "Schema version of this object. 1 today.",
+        },
+        theme_template: {
+          type: "string",
+          description:
+            "Directory name of the active theme's parent (the theme itself\nwhen it has no parent). Kept only when it is 1 to 100\ncharacters of letters, digits, dot, underscore or hyphen;\nomitted by the agent when it cannot be read.\n",
+        },
+        elementor: {
+          type: ["object", "null"],
+          description:
+            'Present only when Elementor is loaded on the site. Absent\nmeans "not installed", never "off".\n',
+          properties: {
+            atomic_editor: {
+              type: ["boolean", "null"],
+              description:
+                "Whether Elementor's Atomic editor is on, asked of\nElementor itself. Null means Elementor is loaded but gave\nno definite answer; unknown is never sent as false.\n",
+            },
           },
         },
       },
@@ -7179,6 +7988,732 @@ export const PurgeRequestSchema = {
       type: "boolean",
       description:
         "With `scope: all`, also clears every cached artifact. Requires the\n`site.cache.delete-everything` permission.\n",
+    },
+  },
+} as const;
+
+export const AbilityRequestApproveBodySchema = {
+  type: "object",
+  required: ["presented_digest"],
+  properties: {
+    presented_digest: {
+      type: "string",
+      description: "The digest the queue returned for this request.",
+    },
+  },
+} as const;
+
+export const AbilityRequestOrgListSchema = {
+  type: "object",
+  required: ["requests", "pending_count", "limit", "offset"],
+  properties: {
+    requests: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AbilityRequest",
+      },
+    },
+    pending_count: {
+      type: "integer",
+      format: "int64",
+      description: "Requests still waiting for a decision (the badge).",
+    },
+    limit: {
+      type: "integer",
+      format: "int32",
+    },
+    offset: {
+      type: "integer",
+      format: "int32",
+    },
+  },
+} as const;
+
+export const AbilityRequestListSchema = {
+  type: "object",
+  required: ["requests", "limit", "offset"],
+  properties: {
+    requests: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AbilityRequest",
+      },
+    },
+    limit: {
+      type: "integer",
+      format: "int32",
+    },
+    offset: {
+      type: "integer",
+      format: "int32",
+    },
+  },
+} as const;
+
+export const AbilityTenantReenableResultSchema = {
+  type: "object",
+  required: ["entry_id", "reenabled"],
+  properties: {
+    entry_id: {
+      type: "string",
+      format: "uuid",
+    },
+    reenabled: {
+      type: "boolean",
+      description: "Always true; a tool that was not off is a 404.",
+    },
+  },
+} as const;
+
+export const AbilityRequestSchema = {
+  type: "object",
+  description:
+    "One AI site-change request. `site_label`, `site_host`, `grant_label`\nand `title_excerpt` came from a site or an AI connection: render each\nas plain text. `input_json` is the exact input the AI chose, shown in\nfull on the card.\n",
+  required: [
+    "id",
+    "site_id",
+    "ability_name",
+    "input_json",
+    "effect_copy",
+    "snapshot",
+    "site_label",
+    "site_host",
+    "grant_label",
+    "grant_via",
+    "card_copy_version",
+    "state",
+    "created_at",
+    "expires_at",
+    "undo_offered",
+    "resolve_gave_up",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    ability_name: {
+      type: "string",
+    },
+    input_json: {
+      type: "string",
+    },
+    title_excerpt: {
+      type: "string",
+      nullable: true,
+    },
+    editor: {
+      type: "string",
+      nullable: true,
+    },
+    post_type: {
+      type: "string",
+      nullable: true,
+    },
+    effect_copy: {
+      type: "string",
+      enum: ["draft", "live", "none"],
+    },
+    snapshot: {
+      type: "string",
+    },
+    site_label: {
+      type: "string",
+    },
+    site_host: {
+      type: "string",
+    },
+    grant_label: {
+      type: "string",
+    },
+    grant_via: {
+      type: "string",
+    },
+    setup_client: {
+      type: "string",
+      nullable: true,
+    },
+    card_copy_version: {
+      type: "integer",
+      format: "int32",
+    },
+    presented_digest: {
+      type: "string",
+    },
+    state: {
+      type: "string",
+      enum: [
+        "pending",
+        "approved",
+        "declined",
+        "withdrawn",
+        "expired",
+        "dispatched",
+        "outcome_unknown",
+        "done",
+        "failed",
+        "not_sent",
+      ],
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    expires_at: {
+      type: "string",
+      format: "date-time",
+    },
+    decided_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+    outcome: {
+      type: "string",
+      nullable: true,
+    },
+    outcome_code: {
+      type: "string",
+      nullable: true,
+    },
+    not_sent_reason: {
+      type: "string",
+      nullable: true,
+    },
+    created_post_id: {
+      type: "integer",
+      format: "int64",
+      nullable: true,
+    },
+    trashed: {
+      type: "boolean",
+      nullable: true,
+    },
+    restored: {
+      type: "boolean",
+      nullable: true,
+      description:
+        "A failed wpmgr/rest-write's report on putting the post back.\nTrue: the whole post is as it was. False: WPMgr put back what it\ncould, but the post is not fully as it was; show the request as\nneeding attention. Null when nothing needed putting back, and for\nevery other ability.\n",
+    },
+    undo_state: {
+      type: "string",
+      nullable: true,
+    },
+    undo_available_until: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+    undo_offered: {
+      type: "boolean",
+      description:
+        "Whether `POST .../undo` would start an undo now: a done request\ninside its undo window, or the draft a failed or given-up page\ncreation left on the site. Show the undo action exactly when\nthis is true.\n",
+    },
+    resolve_gave_up: {
+      type: "boolean",
+      description:
+        "True once WPMgr stopped checking the site for the outcome of a\nwrite whose reply was lost. The result is final: the person\nshould look at the site's drafts.\n",
+    },
+    route_id: {
+      type: "string",
+      nullable: true,
+      description:
+        "The reviewed REST route a wpmgr/rest-write request runs; null otherwise.",
+    },
+    route_sha256: {
+      type: "string",
+      nullable: true,
+      description:
+        "The route hash the request was approved against; null otherwise.",
+    },
+    card_facts: {
+      allOf: [
+        {
+          $ref: "#/components/schemas/AbilityRequestCardFacts",
+        },
+      ],
+      nullable: true,
+      description:
+        "The structured card of a wpmgr/rest-write request; null otherwise.",
+    },
+    page_media: {
+      type: "array",
+      nullable: true,
+      items: {
+        $ref: "#/components/schemas/AbilityRequestPageMedia",
+      },
+      description:
+        "The images a wpmgr/page-create request places, in outline order, as\nthe site described them when WPMgr checked the request. Null when\nthe outline has no image, and for every other ability. A card whose\noutline names an image with no entry here cannot be shown in full\nand must not be approvable.\n",
+    },
+    page_builder: {
+      allOf: [
+        {
+          $ref: "#/components/schemas/AbilityRequestPageBuilder",
+        },
+      ],
+      nullable: true,
+      description:
+        "The page builder that builds a wpmgr/page-create request's page, as\nthe site's precheck named it. Null for a page in a WordPress\neditor, and for every other ability. A card for a request whose\neditor is a page builder cannot be shown in full without it and\nmust not be approvable.\n",
+    },
+  },
+} as const;
+
+export const AbilityRequestPageBuilderSchema = {
+  type: "object",
+  description:
+    "The page builder of a wpmgr/page-create request. `version` came from\nthe site: render it as plain text.\n",
+  required: ["builder", "format", "version", "layout"],
+  properties: {
+    builder: {
+      type: "string",
+      description: "The page builder, such as `elementor`.",
+    },
+    format: {
+      type: "string",
+      description:
+        "What the builder builds the page from, such as `classic` (Elementor's classic widgets).",
+    },
+    version: {
+      type: "string",
+      description: "The builder's version on the site.",
+    },
+    layout: {
+      type: "string",
+      description:
+        "How the page is laid out, such as `containers` or `sections` (Elementor's two classic layouts).",
+    },
+  },
+} as const;
+
+export const AbilityRequestPageMediaSchema = {
+  type: "object",
+  description:
+    "One image a wpmgr/page-create request places. `filename` came from\nthe site: render it as plain text.\n",
+  required: ["id", "filename", "mime", "width", "height"],
+  properties: {
+    id: {
+      type: "integer",
+      format: "int64",
+      description: "The attachment id the outline names.",
+    },
+    filename: {
+      type: "string",
+    },
+    mime: {
+      type: "string",
+      enum: [
+        "image/jpeg",
+        "image/png",
+        "image/gif",
+        "image/webp",
+        "image/avif",
+      ],
+    },
+    width: {
+      type: "integer",
+      format: "int64",
+      description: "Pixels; 0 when the site does not know.",
+    },
+    height: {
+      type: "integer",
+      format: "int64",
+      description: "Pixels; 0 when the site does not know.",
+    },
+  },
+} as const;
+
+export const AbilityRequestCardFactsSchema = {
+  type: "object",
+  description:
+    'A structured approval card. Every value under a `from_the_site`\nmember came from the site: render it as plain text in the "From the\nsite" slot. `after` is the value the AI asked for. The other strings\nare WPMgr\'s.\n',
+  required: [
+    "route_id",
+    "route_title",
+    "method",
+    "target",
+    "changes",
+    "effect_copy",
+    "live",
+    "effect_label",
+    "undo",
+    "undo_exact",
+    "undo_note",
+  ],
+  properties: {
+    route_id: {
+      type: "string",
+    },
+    route_title: {
+      type: "string",
+    },
+    method: {
+      type: "string",
+    },
+    target: {
+      type: "object",
+      required: ["id", "post_type", "from_the_site"],
+      properties: {
+        id: {
+          type: "integer",
+          format: "int64",
+        },
+        post_type: {
+          type: "string",
+        },
+        from_the_site: {
+          type: "object",
+          required: ["status", "title_before"],
+          properties: {
+            status: {
+              type: "string",
+            },
+            title_before: {
+              type: "string",
+            },
+          },
+        },
+      },
+    },
+    changes: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["key", "label", "after", "from_the_site"],
+        properties: {
+          key: {
+            type: "string",
+          },
+          label: {
+            type: "string",
+          },
+          after: {
+            type: "string",
+          },
+          from_the_site: {
+            type: "object",
+            required: ["before"],
+            properties: {
+              before: {
+                type: "string",
+              },
+            },
+          },
+        },
+      },
+    },
+    effect_copy: {
+      type: "string",
+      enum: ["draft", "live", "none"],
+    },
+    live: {
+      type: "boolean",
+    },
+    effect_label: {
+      type: "string",
+      description:
+        '"Published immediately" when live, otherwise "Saved to the post; it is not published".',
+    },
+    undo: {
+      type: "string",
+    },
+    undo_exact: {
+      type: "boolean",
+    },
+    undo_note: {
+      type: "string",
+      nullable: true,
+      description:
+        "Set when undo may not restore the exact characters of the previous value.",
+    },
+  },
+} as const;
+
+export const ContentEditingStateSchema = {
+  type: "object",
+  required: ["site_id", "enabled"],
+  properties: {
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    enabled: {
+      type: "boolean",
+    },
+    enabled_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+    principal_user_id: {
+      type: "integer",
+      format: "int64",
+      nullable: true,
+      description: "The WordPress user id of the site's content service user.",
+    },
+    enabled_by: {
+      type: "string",
+      format: "uuid",
+      nullable: true,
+    },
+  },
+} as const;
+
+export const SiteAIReadinessSchema = {
+  type: "object",
+  description:
+    "Whether an AI assistant connected to WPMgr can work on one site. All\nvalues come from WPMgr's own checks; nothing the site wrote reaches\nthis object except version strings that passed a strict shape check.\n",
+  required: [
+    "site_id",
+    "status",
+    "fix_count",
+    "metadata_as_of",
+    "abilities_as_of",
+    "warnings",
+    "floors",
+    "groups",
+  ],
+  properties: {
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    status: {
+      $ref: "#/components/schemas/AIReadinessStatus",
+    },
+    fix_count: {
+      type: "integer",
+      format: "int32",
+      minimum: 0,
+      description:
+        "Number of rows with state `fail` in `base` and in installed\nbuilder groups. A `bricks_abilities` row is never one of them: as\na `fail` it is unconfirmed, and as an `unknown` it is not a\nfailure (see `status`).\n",
+    },
+    metadata_as_of: {
+      type: ["string", "null"],
+      format: "date-time",
+      description:
+        "When the site last reported its plugin and theme details. Null when it never has.",
+    },
+    abilities_as_of: {
+      type: ["string", "null"],
+      format: "date-time",
+      description:
+        "When the site's tool list was last read. Null when it never has.",
+    },
+    warnings: {
+      type: "array",
+      description:
+        "Advisory notices. They never change `status` or `fix_count`.",
+      items: {
+        $ref: "#/components/schemas/AIReadinessWarning",
+      },
+    },
+    floors: {
+      $ref: "#/components/schemas/AIReadinessFloors",
+    },
+    groups: {
+      type: "array",
+      description: "Always `base`, `elementor`, `bricks`, in that order.",
+      items: {
+        $ref: "#/components/schemas/AIReadinessGroup",
+      },
+    },
+  },
+} as const;
+
+export const AIReadinessStatusSchema = {
+  type: "string",
+  enum: ["ready", "needs_attention", "incomplete"],
+} as const;
+
+export const AIReadinessWarningCodeSchema = {
+  type: "string",
+  enum: ["mcp_adapter_plugin_active", "elementor_mcp_endpoint_open"],
+} as const;
+
+export const AIReadinessWarningSchema = {
+  type: "object",
+  required: ["code"],
+  properties: {
+    code: {
+      $ref: "#/components/schemas/AIReadinessWarningCode",
+    },
+  },
+} as const;
+
+export const AIReadinessFloorsSchema = {
+  type: "object",
+  description:
+    'The versions the checks compare against, so a client can write "needs\n7.1 or later" without hard-coding the number.\n',
+  required: ["wp", "agent", "facts_agent", "elementor", "bricks"],
+  properties: {
+    wp: {
+      type: "string",
+    },
+    agent: {
+      type: "string",
+    },
+    facts_agent: {
+      type: "string",
+      description:
+        "The first WPMgr agent release that reports the Atomic editor and the parent theme.",
+    },
+    elementor: {
+      type: "string",
+    },
+    bricks: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const AIReadinessCheckIDSchema = {
+  type: "string",
+  enum: [
+    "wp_version",
+    "abilities_api",
+    "agent_version",
+    "content_editing",
+    "elementor_version",
+    "elementor_mcp_switch",
+    "elementor_atomic",
+    "bricks_version",
+    "bricks_abilities",
+  ],
+} as const;
+
+export const AIReadinessGroupSchema = {
+  type: "object",
+  required: ["id", "checks"],
+  properties: {
+    id: {
+      type: "string",
+      enum: ["base", "elementor", "bricks"],
+    },
+    installed: {
+      type: "boolean",
+      description:
+        "Builder groups only. False means the builder is not installed on\nthe site and `checks` is empty; the group counts toward nothing.\n",
+    },
+    version: {
+      type: ["string", "null"],
+      description:
+        "Builder groups only. The installed version, or null when it is not\ninstalled or the site did not report a usable version.\n",
+    },
+    wpmgr_support: {
+      type: "string",
+      enum: ["coming", "available"],
+      description:
+        "Builder groups only. `coming` while WPMgr cannot yet build pages\nwith this builder; the checks then show whether the site will be\nready.\n",
+    },
+    checks: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AIReadinessCheck",
+      },
+    },
+  },
+} as const;
+
+export const AIReadinessCheckSchema = {
+  type: "object",
+  description:
+    "One row. `state` is `pass`, `fail`, `unknown` (WPMgr could not tell;\nnever a failure) or `not_applicable` (a row this one depends on\nfailed, or the builder is installed but not active). `observed` is\nthe version that was compared, or null.\n\n`reason` is null for `pass`, and for a `fail` with a single way to\nfail. Otherwise, per row:\n\n- `wp_version`: unknown `not_reported`; fail `prerelease_build` (a\n  development or pre-release build, such as `7.1-RC1` or\n  `7.1.1-src`, whose release number reaches `floors.wp`: WPMgr's AI\n  tools run on a released WordPress only). A released version below\n  `floors.wp` is a `fail` with a null reason.\n- `agent_version`: unknown `not_reported`.\n- `abilities_api`: unknown `inventory_never_run`, `agent_too_old`\n  (the agent cannot read the tool list) or `not_reported`.\n- `content_editing`: only `pass` or `fail`.\n- `elementor_version`, `bricks_version`: fail `too_old`;\n  not_applicable `inactive` (installed but not active, so not a fix;\n  `observed` still carries the installed version); unknown\n  `not_reported`, and for `bricks_version` also\n  `agent_too_old_for_fact` (a child theme may be in use and the agent\n  is too old to report its parent).\n- `elementor_mcp_switch`, `bricks_abilities`: unknown\n  `inventory_never_run` (no tool list yet, or the last one was read\n  while the site lacked the Abilities API), `inventory_truncated` or\n  `needs_elementor` / `needs_bricks`; not_applicable `needs_abilities`\n  or `needs_elementor` / `needs_bricks`.\n- `elementor_atomic`: unknown `agent_too_old_for_fact`,\n  `not_reported` or `needs_elementor`; not_applicable\n  `needs_elementor`.\n\n`bricks_abilities` is inferred from the site's tool list and has not\nbeen confirmed on a licensed Bricks install. When it is `pass` or\n`fail` it is listed with its state, but it is not counted in\n`status`, `fix_count` or `failing`. When it is `unknown` it is an\nordinary unknown: it makes `status` `incomplete`, and it is still not\na fix, so it is not in `failing` either.\n\nA client must render a state or reason it does not recognise as a\nneutral \"not checked\", never as a failure.\n",
+  required: ["id", "state", "reason", "observed"],
+  properties: {
+    id: {
+      $ref: "#/components/schemas/AIReadinessCheckID",
+    },
+    state: {
+      type: "string",
+      enum: ["pass", "fail", "unknown", "not_applicable"],
+    },
+    reason: {
+      type: ["string", "null"],
+      enum: [
+        "not_reported",
+        "inventory_never_run",
+        "inventory_truncated",
+        "agent_too_old",
+        "agent_too_old_for_fact",
+        "needs_abilities",
+        "needs_elementor",
+        "needs_bricks",
+        "inactive",
+        "too_old",
+        "prerelease_build",
+        null,
+      ],
+    },
+    observed: {
+      type: ["string", "null"],
+      description:
+        "A version string that passed a strict shape check, or null.",
+    },
+  },
+} as const;
+
+export const FleetAIReadinessSchema = {
+  type: "object",
+  required: ["sites"],
+  properties: {
+    sites: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/FleetAIReadinessSite",
+      },
+    },
+  },
+} as const;
+
+export const FleetAIReadinessSiteSchema = {
+  type: "object",
+  required: ["site_id", "status", "fix_count", "failing", "warnings"],
+  properties: {
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    status: {
+      $ref: "#/components/schemas/AIReadinessStatus",
+    },
+    fix_count: {
+      type: "integer",
+      format: "int32",
+      minimum: 0,
+    },
+    failing: {
+      type: "array",
+      description:
+        "Ids of the rows that count toward `fix_count`: those whose state\nis `fail`. `bricks_abilities` is never listed, whatever its state;\nwhen it is `unknown` it makes the site `incomplete`, and it is\nstill not a fix.\n",
+      items: {
+        $ref: "#/components/schemas/AIReadinessCheckID",
+      },
+    },
+    warnings: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AIReadinessWarningCode",
+      },
+    },
+  },
+} as const;
+
+export const AIReadinessRefreshResultSchema = {
+  type: "object",
+  required: ["metadata", "abilities"],
+  properties: {
+    metadata: {
+      type: "boolean",
+      description: "A fresh metadata report was requested from the site.",
+    },
+    abilities: {
+      type: "boolean",
+      description:
+        "A tool-list read was queued by this call or already queued within\nthe last two minutes. False when the site's agent is too old to\nrun one.\n",
     },
   },
 } as const;

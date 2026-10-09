@@ -19,12 +19,15 @@ import (
 //
 // THE POINT OF THESE CONSTANTS IS THAT THE DISCOVERY DOCUMENT CANNOT DRIFT
 // FROM THE ROUTER. A discovery document is a promise a client acts on without
-// ever seeing this repository: it opens a browser at authorization_endpoint
-// and posts to token_endpoint. A hand-written list here that fell one rename
-// behind the router would send every GUI client to a 404 at handshake time,
-// which is a failure the server never observes and the user cannot diagnose.
-// Both halves now read the same constants, and TestAdvertisedEndpointsAreMounted
-// walks the real gin route table to prove it.
+// ever seeing this repository: it opens a browser at authorization_endpoint,
+// which AuthorizeNavigationRedirect sends on to the consent screen (the screen
+// then fetches the same path as JSON), and it posts to token_endpoint. A
+// hand-written list here that fell one rename behind the router would send
+// every GUI client to a 404 at handshake time, which is a failure the server
+// never observes and the user cannot diagnose. Both halves now read the same
+// constants: TestAdvertisedEndpointsAreMounted walks the real gin route table
+// to prove it, and TestAdvertisedAuthorizationEndpointOpensInABrowser proves
+// that a browser opening the advertised address reaches the consent screen.
 const APIV1Prefix = "/api/v1"
 
 // oauthGroupPath is the group Handler.RegisterPublic and Handler.Register open
@@ -226,10 +229,11 @@ func (h *DiscoveryHandler) AuthorizationServerMetadata() authorizationServerMeta
 		// refused at /authorize, and have no way to learn why.
 		CodeChallengeMethodsSupported:     SupportedCodeChallengeMethods(),
 		TokenEndpointAuthMethodsSupported: SupportedTokenEndpointAuthMethods(),
-		// AdvertisedScopes, never a literal: the read scope only. The cache scope
-		// is recognised and requestable by name but is not offered to a client
-		// copying this list back (scope.go). S7's exit gate
-		// is that discovery never names authority the registry does not hold.
+		// AdvertisedScopes, never a literal: every scope this surface can grant.
+		// Advertising a scope offers it to the operator on the consent screen; it
+		// confers nothing until the operator ticks its capabilities (scope.go).
+		// S7's exit gate is that discovery never names authority the registry
+		// does not hold.
 		ScopesSupported: AdvertisedScopes(),
 	}
 }
@@ -307,8 +311,10 @@ func (h *DiscoveryHandler) preflight(c *gin.Context) {
 
 // bearerChallenge is the RFC 6750 section 3 challenge the transport answers a
 // missing or invalid token with. Its scope attribute names AdvertisedScopes,
-// the same set the discovery documents carry, so a client that follows the
-// challenge asks for the read scope and nothing else.
+// the same set the discovery documents carry. An MCP client prefers this
+// attribute over scopes_supported when it chooses what to register for and
+// request, so the two must agree, and a client that follows the challenge asks
+// for every grantable scope and is shown each one's capabilities, unticked.
 func bearerChallenge() string {
 	return `Bearer realm="wpmgr-mcp", scope="` + strings.Join(AdvertisedScopes(), " ") + `"`
 }

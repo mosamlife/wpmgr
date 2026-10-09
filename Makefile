@@ -213,6 +213,54 @@ check-versions: ## Check every version-naming surface (docs, marketing, agent)
 check-versions-test: ## Run the version surface guard's regression suite
 	scripts/check-version-surfaces_test.sh
 
+# GH #819: the integration tests' S3 store is one digest-pinned const in
+# apps/api/tests, and api-integration.yml pre-pulls whatever this reads out of
+# it. The same two commands CI runs, suite first.
+.PHONY: check-s3-image
+check-s3-image: ## Check the integration tests' S3 image is digest-pinned, named once, and pre-pulled from the const
+	scripts/test-s3-image.sh --check
+
+.PHONY: check-s3-image-test
+check-s3-image-test: ## Run the S3 image guard's regression suite
+	scripts/test-s3-image_test.sh
+
+# The agent's generated block markup, validated by the real @wordpress/blocks
+# on the pinned WP 6.2 and latest package sets (CI job page-blocks).
+.PHONY: check-page-blocks
+check-page-blocks: ## Validate the page builder's block markup per WordPress version
+	scripts/check-page-blocks.sh
+
+.PHONY: check-page-blocks-test
+check-page-blocks-test: ## Run the page block guard's regression suite
+	scripts/check-page-blocks_test.sh
+
+# The same generated markup, run through the save filters of the pinned
+# WordPress cores as a user without unfiltered_html (CI job page-kses). The
+# first run downloads and sha256-verifies each core into a cache dir; the
+# guard's own regression suite is the second target. Run it after editing.
+.PHONY: check-page-kses
+check-page-kses: ## Run the page builder's markup through core kses per WordPress version
+	scripts/check-page-kses.sh
+
+.PHONY: check-page-kses-test
+check-page-kses-test: ## Run the kses guard's regression suite
+	scripts/check-page-kses_test.sh
+
+# The agent's Elementor trees, saved by a real Elementor as the service user and
+# rendered, and the agent's own create path (precheck, write, undo) run on that
+# Elementor, per pinned Elementor version and per layout (CI job
+# elementor-roundtrip). It runs a real WordPress under the Playground CLI (needs
+# node 22 and network on a first run; downloads are sha256-pinned and cached).
+# RT_VERSIONS and RT_LAYOUTS narrow a run. The second target is the guard's own
+# regression suite; run it after editing the guard or the agent's create path.
+.PHONY: check-elementor-roundtrip
+check-elementor-roundtrip: ## Save and render the agent's Elementor trees, and run its create path, under each pinned Elementor
+	scripts/elementor-roundtrip/run.sh
+
+.PHONY: check-elementor-roundtrip-test
+check-elementor-roundtrip-test: ## Run the Elementor round trip's regression suite
+	scripts/elementor-roundtrip_test.sh
+
 # The load-balancer url-map. Twice in one day a route shipped, deployed and was
 # unreachable because the API mounted it and the LB did not route it — POST
 # /mcp, then very nearly the OAuth discovery documents. Both answer 200
@@ -233,6 +281,15 @@ check-urlmap-test: ## Run the url-map route-coverage guard's regression suite
 .PHONY: check-urlmap-drift
 check-urlmap-drift: ## Compare infra/urlmap.yaml against the live GCP url-map (needs gcloud)
 	scripts/check-urlmap-drift.sh
+
+# GH #650: a PHP fatal error inside an agent test ends PHPUnit partway through
+# the suite, and the red named that one error instead of the tests that never
+# ran. scripts/check-phpunit-complete.sh compares `phpunit --list-tests-xml`
+# with the run's `--log-junit` report; ci.yml's PHP (agent) job runs it after
+# the tests. check-phpunit-complete-test is the guard's own regression suite.
+.PHONY: check-phpunit-complete-test
+check-phpunit-complete-test: ## Run the PHPUnit completeness guard's regression suite
+	scripts/check-phpunit-complete_test.sh
 
 # GH #547: the agent declared MIT in its plugin header and GPLv2 or later in
 # the wp.org readme.txt at the same time. This reconciles every place in
@@ -264,17 +321,35 @@ check-rls-cross-tenant: ## Audit cross-tenant RLS policies against the ledger (D
 check-rls-cross-tenant-test: ## Run the RLS cross-tenant guard's regression suite (hermetic, no DB)
 	scripts/check-rls-cross-tenant_test.sh
 
+# scripts/check-schema-sync.sh (GH #759) replays every migration into one
+# throwaway postgres, loads apps/api/db/schema.sql into a second, and compares
+# what the catalogs say: tables, columns, indexes, constraints, RLS flags and
+# policies, functions. It also checks atlas.sum names exactly the migration
+# files, in order, with the hashes Atlas would write. Needs Docker (the
+# postgres:16-alpine image, no network, nothing published) and openssl; run it
+# before merging anything that touches a migration or schema.sql.
+# check-schema-sync-test is the guard's own regression suite; it needs the same
+# Docker and builds small trees, so it is unaffected by the real tree's state.
+# Run it after editing the guard.
+.PHONY: check-schema-sync
+check-schema-sync: ## Check db/schema.sql and atlas.sum are in step with the migrations (Docker required)
+	scripts/check-schema-sync.sh
+
+.PHONY: check-schema-sync-test
+check-schema-sync-test: ## Run the schema sync guard's regression suite (Docker required)
+	scripts/check-schema-sync_test.sh
+
 # ADR-061 A11 item 4: the containment test. No handler on the assistant surface
 # may take a site id from a request and pass it anywhere but the ONE audited
 # chokepoint, mcp.Repo.ResolveScopeSites. The chokepoint shipped; nothing
 # stopped the next handler going round it, and ADR-060's freeze clause calls
 # that an open auth-boundary item. This is what closes it.
 #
-# It reads the mcp.Store interface through `go doc`, i.e. Go's own parser
-# rather than a grep over repo.go, so it needs the Go toolchain but NO database
-# and NO cloud credentials — which is why it runs on every PR. `go doc` parses
-# and does not type-check, so the guard fires on a bypass in progress before
-# the branch compiles. The reviewed surface is
+# It reads the mcp.Store and requestStore interfaces through `go doc`, i.e.
+# Go's own parser rather than a grep over repo.go, so it needs the Go toolchain
+# but NO database and NO cloud credentials — which is why it runs on every PR.
+# `go doc` parses and does not type-check, so the guard fires on a bypass in
+# progress before the branch compiles. The reviewed surface is
 # infra/mcp-site-containment-allowlist.txt and it is checked in both
 # directions: an unreviewed call site, uuid parameter or tool-argument binding
 # is a violation, and so is an allowlist entry that no longer matches anything.

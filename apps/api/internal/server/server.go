@@ -12,10 +12,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilities"
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilityrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
+	"github.com/mosamlife/wpmgr/apps/api/internal/aireadiness"
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/assistantrequest"
@@ -27,6 +30,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/billing"
 	clientpkg "github.com/mosamlife/wpmgr/apps/api/internal/client"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
+	"github.com/mosamlife/wpmgr/apps/api/internal/content"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/email"
@@ -165,7 +169,9 @@ type Deps struct {
 	// /api/v1/cache/* bulk routes; PerfAgentH serves the agent-authenticated
 	// /agent/v1/cache/* + /agent/v1/perf/* + /agent/v1/rucss callbacks. Either
 	// may be nil.
-	PerfH      *perf.Handler
+	PerfH *perf.Handler
+	// ContentH serves the page-ownership inventory (Track B S1).
+	ContentH   *content.Handler
 	PerfAgentH *perf.AgentHandler
 	// m68 — Object Cache (P0+P1). ObjectCacheH serves the operator-facing
 	// /api/v1/sites/{siteId}/perf/object-cache/... routes.
@@ -272,6 +278,20 @@ type Deps struct {
 	// GET /sites/{siteId}/ai/requests, POST .../ai/requests/{requestId}/approve
 	// and /decline). Nil leaves them unmounted.
 	AssistantRequestH *assistantrequest.Handler
+	// AbilityRequestH serves the ability request queue, approve, decline and
+	// undo, and the site's content-editing state and enable action
+	// (/sites/{siteId}/ai/ability-requests..., /sites/{siteId}/ai/content-editing...).
+	// Nil leaves them unmounted.
+	AbilityRequestH *abilityrequest.Handler
+	// AbilityTenantH serves POST /ai/abilities/{entryId}/reenable: a tenant
+	// admin or owner, or a superadmin, switches back on a vendor read that
+	// was switched off for this tenant (m160). Nil leaves it unmounted.
+	AbilityTenantH *abilities.TenantHandler
+	// AIReadinessH serves the per-site AI readiness checklist, its fleet
+	// rollup and the "check again" request (/sites/{siteId}/ai/readiness...,
+	// /fleet/ai-readiness). Advisory only: nothing reads its result to allow
+	// or refuse anything. Nil leaves the routes unmounted.
+	AIReadinessH *aireadiness.Handler
 	// MCPDiscoveryH serves the two unauthenticated OAuth discovery documents:
 	// GET /.well-known/oauth-authorization-server (RFC 8414) and GET
 	// /.well-known/oauth-protected-resource (RFC 9728), the second also at its
@@ -369,6 +389,26 @@ func New(deps Deps) *Server {
 		middleware.Logger(deps.Logger),
 		middleware.Recovery(deps.Logger),
 	)
+	// #847 — a browser that opens the advertised authorization_endpoint is
+	// sent on to the consent screen, which then fetches the same path as JSON
+	// through the gate chain on v1 below. See mcp.AuthorizeNavigationRedirect.
+	//
+	// IT MUST STAY HERE: on the root engine, after the logging and recovery
+	// block so the redirect is logged and traced, and BEFORE sessionAuthGroup
+	// is created. Gin copies a parent's handlers into a group when the group
+	// is created, so this line moved below sessionAuthGroup is silently
+	// disabled for a signed-out browser, which RequireAuth refuses first. It
+	// also runs before the session is loaded, so the redirect costs no session
+	// read and sets no cookie. A mount on v1 is disabled the same way only when
+	// it comes after the v1.Use(authz.RequireAuth(), ...) line below; ahead of
+	// that line it still redirects.
+	// TestNew_AuthorizeNavigationOpensTheConsentScreen fails if a move
+	// disables it.
+	//
+	// Mounted from the same Deps field as the authorize route it serves.
+	if deps.MCPOAuthH != nil {
+		engine.Use(mcp.AuthorizeNavigationRedirect())
+	}
 	// sessionAuthGroup is a zero-prefix group that carries Sessions.LoadAndSave()
 	// and Auth.Authenticate(). All routes that need a session or principal
 	// (auth endpoints, /api/v1, /agent/v1) register through this group or through
@@ -623,6 +663,15 @@ func New(deps Deps) *Server {
 	if deps.AssistantRequestH != nil {
 		deps.AssistantRequestH.Register(v1)
 	}
+	if deps.AbilityRequestH != nil {
+		deps.AbilityRequestH.Register(v1)
+	}
+	if deps.AbilityTenantH != nil {
+		deps.AbilityTenantH.Register(v1)
+	}
+	if deps.AIReadinessH != nil {
+		deps.AIReadinessH.Register(v1)
+	}
 	deps.TenantH.Register(v1)
 	deps.SiteH.Register(v1)
 	// m100 (GH #230 "rich tags") — tenant-level tag registry.
@@ -741,6 +790,9 @@ func New(deps Deps) *Server {
 	// portfolio bulk cache routes.
 	if deps.PerfH != nil {
 		deps.PerfH.Register(v1)
+	}
+	if deps.ContentH != nil {
+		deps.ContentH.Register(v1)
 	}
 
 	// m68 — Object Cache operator routes: GET/PUT config, POST test/enable/

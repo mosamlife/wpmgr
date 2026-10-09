@@ -1,0 +1,44 @@
+# Cases that a pinned WordPress core is KNOWN to rewrite when it saves them,
+# one per line:  <version> <markup file name> <case name> <pin>
+#
+# scripts/check-page-kses.sh fails on any change to the generated markup. These
+# entries are the exception, and only because of what the agent does about
+# them: before it writes a page it compares its own bytes with what the site's
+# sanitiser would store, and on any difference it refuses the write
+# (sanitiser_changed_new_content). So on a site running one of these cores, the
+# listed input ends in a refusal, never in altered content.
+#
+# What is listed: text that is the literal characters of a numeric character
+# reference (such as an ampersand, a hash and digits), which WordPress 6.2's
+# entity normaliser rewrites. The newer pinned cores keep it as written.
+#
+# What an entry pins. <pin> is a sha256 (64 lowercase hex characters) over the
+# exact rewrite of that case on that core: for each path the case goes through
+# (content_save_pre, wp_kses_post and, when the case has a title,
+# title_save_pre) the name of the path, the bytes the builder emitted and the
+# bytes the core returned, each with its length. A listed case is excused only
+# when the pin of what the core returns today equals the pin written here. So:
+#   - a second rewrite on a listed case, whatever it is, changes the pin: red
+#     (KSES-DRIFT);
+#   - a change in what the builder emits for a listed case changes the pin even
+#     when the core would strip it silently: red;
+#   - a change in what the core returns changes the pin: red.
+#
+# How to regenerate a pin. Run scripts/check-page-kses.sh. A case that is
+# changed and not excused (KSES-CHANGED), or excused with a pin that no longer
+# holds (KSES-DRIFT), prints its in and out lines and then a line starting
+# "pin:". Read the in and out lines first. If the refusal described above is the
+# outcome you want for that input, copy the text after "pin:" over the old line.
+# A pin is never computed by hand and never copied without reading the rewrite.
+#
+# Rules the check enforces, so this list cannot rot into a blanket excuse:
+#   - a listed case that is NOT changed is red ("stale"): delete the line;
+#   - every unlisted change is red;
+#   - a line without a well formed pin, and a case listed twice, are red;
+#   - each listed case holds nothing but that input, so it excuses nothing else.
+# Add a line only when the refusal above is the outcome you want for that input.
+6.2 blocks.json numeric-reference-text 37ccd13a5b37470549349533e5b82353185a4ad50cce9dd04f4f9b5ab96a22bd
+6.2 blocks.json numeric-reference-classic-nodes 7ec5885afa2ccac857677a0f7ae9f2fb7dc81975b15221859fb71294eb2f284d
+6.2 blocks.json numeric-reference-block-nodes 9c3993799655fd2531c7737f6489c0cec71276cf74f7e7b0c7f2296a7f02c4a6
+6.2 classic.json numeric-reference-text 6e754a3d52b354859a993dc96926bf50621bd12961dff9c71d9de463a08a4964
+6.2 classic.json numeric-reference-classic-nodes 737449e65dfffb56faaf6ac00a6db4f8df6e4422e7435c71ee8aa13089b40285

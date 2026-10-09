@@ -82,6 +82,10 @@ function replaceAll(ids: readonly string[]): void {
  * filtering it out keeps the id in the set. Backed by a singleton so the
  * command palette in TopBar reads the same selection as the Sites page.
  *
+ * It does NOT survive leaving the Sites page: see
+ * `useClearSitesSelectionOnUnmount`, which the page that owns the selection
+ * calls.
+ *
  * The optional `initial` arg seeds the store ONCE on first mount; subsequent
  * mounts ignore it (the store is global, not per-instance).
  */
@@ -118,4 +122,23 @@ export function useSitesSelection(initial?: readonly string[]): SitesSelection {
     }),
     [selected, toggle, setMany, clear, replace],
   );
+}
+
+/**
+ * Drops the whole selection when the calling component unmounts. GH #742.
+ *
+ * The store is a module-level singleton so the command palette can read the
+ * selection the Sites page made, which also lets a selection outlive the page:
+ * leave Sites with sites ticked and come back by the sidebar link, which
+ * carries no filters, and the toolbar reports "N sites selected" that nothing
+ * on screen explains. The next bulk action, delete included, then runs on ids
+ * the operator cannot see, and the palette keeps offering "Run on selected" on
+ * every other page.
+ *
+ * The page that owns the selection calls this once. It runs on unmount only,
+ * never on a re-render or on a filter, sort or view change, because those
+ * navigate within the same route and keep the page mounted.
+ */
+export function useClearSitesSelectionOnUnmount(): void {
+  useEffect(() => clearAll, []);
 }

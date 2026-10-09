@@ -19,6 +19,3192 @@ import (
 	"github.com/ogen-go/ogen/sse"
 )
 
+// One row. `state` is `pass`, `fail`, `unknown` (WPMgr could not tell; never a failure) or
+// `not_applicable` (a row this one depends on failed, or the builder is installed but not active).
+// `observed` is the version that was compared, or null.
+//
+// `reason` is null for `pass`, and for a `fail` with a single way to fail. Otherwise, per row:
+//
+//   - `wp_version`: unknown `not_reported`; fail `prerelease_build` (a development or pre-release
+//     build, such as `7.1-RC1` or `7.1.1-src`, whose release number reaches `floors.wp`: WPMgr's AI
+//     tools run on a released WordPress only). A released version below `floors.wp` is a `fail` with a
+//     null reason.
+//   - `agent_version`: unknown `not_reported`.
+//   - `abilities_api`: unknown `inventory_never_run`, `agent_too_old` (the agent cannot read the tool
+//     list) or `not_reported`.
+//   - `content_editing`: only `pass` or `fail`.
+//   - `elementor_version`, `bricks_version`: fail `too_old`; not_applicable `inactive` (installed but
+//     not active, so not a fix; `observed` still carries the installed version); unknown
+//     `not_reported`, and for `bricks_version` also `agent_too_old_for_fact` (a child theme may be in
+//     use and the agent is too old to report its parent).
+//   - `elementor_mcp_switch`, `bricks_abilities`: unknown `inventory_never_run` (no tool list yet, or
+//     the last one was read while the site lacked the Abilities API), `inventory_truncated` or
+//     `needs_elementor` / `needs_bricks`; not_applicable `needs_abilities` or `needs_elementor` /
+//     `needs_bricks`.
+//   - `elementor_atomic`: unknown `agent_too_old_for_fact`, `not_reported` or `needs_elementor`;
+//     not_applicable `needs_elementor`.
+//
+// `bricks_abilities` is inferred from the site's tool list and has not been confirmed on a licensed
+// Bricks install. When it is `pass` or `fail` it is listed with its state, but it is not counted in
+// `status`, `fix_count` or `failing`. When it is `unknown` it is an ordinary unknown: it makes
+// `status` `incomplete`, and it is still not a fix, so it is not in `failing` either.
+//
+// A client must render a state or reason it does not recognise as a neutral "not checked", never as a
+// failure.
+// Ref: #/components/schemas/AIReadinessCheck
+type AIReadinessCheck struct {
+	ID     AIReadinessCheckID        `json:"id"`
+	State  AIReadinessCheckState     `json:"state"`
+	Reason NilAIReadinessCheckReason `json:"reason"`
+	// A version string that passed a strict shape check, or null.
+	Observed NilString `json:"observed"`
+}
+
+// GetID returns the value of ID.
+func (s *AIReadinessCheck) GetID() AIReadinessCheckID {
+	return s.ID
+}
+
+// GetState returns the value of State.
+func (s *AIReadinessCheck) GetState() AIReadinessCheckState {
+	return s.State
+}
+
+// GetReason returns the value of Reason.
+func (s *AIReadinessCheck) GetReason() NilAIReadinessCheckReason {
+	return s.Reason
+}
+
+// GetObserved returns the value of Observed.
+func (s *AIReadinessCheck) GetObserved() NilString {
+	return s.Observed
+}
+
+// SetID sets the value of ID.
+func (s *AIReadinessCheck) SetID(val AIReadinessCheckID) {
+	s.ID = val
+}
+
+// SetState sets the value of State.
+func (s *AIReadinessCheck) SetState(val AIReadinessCheckState) {
+	s.State = val
+}
+
+// SetReason sets the value of Reason.
+func (s *AIReadinessCheck) SetReason(val NilAIReadinessCheckReason) {
+	s.Reason = val
+}
+
+// SetObserved sets the value of Observed.
+func (s *AIReadinessCheck) SetObserved(val NilString) {
+	s.Observed = val
+}
+
+// Ref: #/components/schemas/AIReadinessCheckID
+type AIReadinessCheckID string
+
+const (
+	AIReadinessCheckIDWpVersion          AIReadinessCheckID = "wp_version"
+	AIReadinessCheckIDAbilitiesAPI       AIReadinessCheckID = "abilities_api"
+	AIReadinessCheckIDAgentVersion       AIReadinessCheckID = "agent_version"
+	AIReadinessCheckIDContentEditing     AIReadinessCheckID = "content_editing"
+	AIReadinessCheckIDElementorVersion   AIReadinessCheckID = "elementor_version"
+	AIReadinessCheckIDElementorMcpSwitch AIReadinessCheckID = "elementor_mcp_switch"
+	AIReadinessCheckIDElementorAtomic    AIReadinessCheckID = "elementor_atomic"
+	AIReadinessCheckIDBricksVersion      AIReadinessCheckID = "bricks_version"
+	AIReadinessCheckIDBricksAbilities    AIReadinessCheckID = "bricks_abilities"
+)
+
+// AllValues returns all AIReadinessCheckID values.
+func (AIReadinessCheckID) AllValues() []AIReadinessCheckID {
+	return []AIReadinessCheckID{
+		AIReadinessCheckIDWpVersion,
+		AIReadinessCheckIDAbilitiesAPI,
+		AIReadinessCheckIDAgentVersion,
+		AIReadinessCheckIDContentEditing,
+		AIReadinessCheckIDElementorVersion,
+		AIReadinessCheckIDElementorMcpSwitch,
+		AIReadinessCheckIDElementorAtomic,
+		AIReadinessCheckIDBricksVersion,
+		AIReadinessCheckIDBricksAbilities,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIReadinessCheckID) MarshalText() ([]byte, error) {
+	switch s {
+	case AIReadinessCheckIDWpVersion:
+		return []byte(s), nil
+	case AIReadinessCheckIDAbilitiesAPI:
+		return []byte(s), nil
+	case AIReadinessCheckIDAgentVersion:
+		return []byte(s), nil
+	case AIReadinessCheckIDContentEditing:
+		return []byte(s), nil
+	case AIReadinessCheckIDElementorVersion:
+		return []byte(s), nil
+	case AIReadinessCheckIDElementorMcpSwitch:
+		return []byte(s), nil
+	case AIReadinessCheckIDElementorAtomic:
+		return []byte(s), nil
+	case AIReadinessCheckIDBricksVersion:
+		return []byte(s), nil
+	case AIReadinessCheckIDBricksAbilities:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIReadinessCheckID) UnmarshalText(data []byte) error {
+	switch AIReadinessCheckID(data) {
+	case AIReadinessCheckIDWpVersion:
+		*s = AIReadinessCheckIDWpVersion
+		return nil
+	case AIReadinessCheckIDAbilitiesAPI:
+		*s = AIReadinessCheckIDAbilitiesAPI
+		return nil
+	case AIReadinessCheckIDAgentVersion:
+		*s = AIReadinessCheckIDAgentVersion
+		return nil
+	case AIReadinessCheckIDContentEditing:
+		*s = AIReadinessCheckIDContentEditing
+		return nil
+	case AIReadinessCheckIDElementorVersion:
+		*s = AIReadinessCheckIDElementorVersion
+		return nil
+	case AIReadinessCheckIDElementorMcpSwitch:
+		*s = AIReadinessCheckIDElementorMcpSwitch
+		return nil
+	case AIReadinessCheckIDElementorAtomic:
+		*s = AIReadinessCheckIDElementorAtomic
+		return nil
+	case AIReadinessCheckIDBricksVersion:
+		*s = AIReadinessCheckIDBricksVersion
+		return nil
+	case AIReadinessCheckIDBricksAbilities:
+		*s = AIReadinessCheckIDBricksAbilities
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AIReadinessCheckReason string
+
+const (
+	AIReadinessCheckReasonNotReported        AIReadinessCheckReason = "not_reported"
+	AIReadinessCheckReasonInventoryNeverRun  AIReadinessCheckReason = "inventory_never_run"
+	AIReadinessCheckReasonInventoryTruncated AIReadinessCheckReason = "inventory_truncated"
+	AIReadinessCheckReasonAgentTooOld        AIReadinessCheckReason = "agent_too_old"
+	AIReadinessCheckReasonAgentTooOldForFact AIReadinessCheckReason = "agent_too_old_for_fact"
+	AIReadinessCheckReasonNeedsAbilities     AIReadinessCheckReason = "needs_abilities"
+	AIReadinessCheckReasonNeedsElementor     AIReadinessCheckReason = "needs_elementor"
+	AIReadinessCheckReasonNeedsBricks        AIReadinessCheckReason = "needs_bricks"
+	AIReadinessCheckReasonInactive           AIReadinessCheckReason = "inactive"
+	AIReadinessCheckReasonTooOld             AIReadinessCheckReason = "too_old"
+	AIReadinessCheckReasonPrereleaseBuild    AIReadinessCheckReason = "prerelease_build"
+)
+
+// AllValues returns all AIReadinessCheckReason values.
+func (AIReadinessCheckReason) AllValues() []AIReadinessCheckReason {
+	return []AIReadinessCheckReason{
+		AIReadinessCheckReasonNotReported,
+		AIReadinessCheckReasonInventoryNeverRun,
+		AIReadinessCheckReasonInventoryTruncated,
+		AIReadinessCheckReasonAgentTooOld,
+		AIReadinessCheckReasonAgentTooOldForFact,
+		AIReadinessCheckReasonNeedsAbilities,
+		AIReadinessCheckReasonNeedsElementor,
+		AIReadinessCheckReasonNeedsBricks,
+		AIReadinessCheckReasonInactive,
+		AIReadinessCheckReasonTooOld,
+		AIReadinessCheckReasonPrereleaseBuild,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIReadinessCheckReason) MarshalText() ([]byte, error) {
+	switch s {
+	case AIReadinessCheckReasonNotReported:
+		return []byte(s), nil
+	case AIReadinessCheckReasonInventoryNeverRun:
+		return []byte(s), nil
+	case AIReadinessCheckReasonInventoryTruncated:
+		return []byte(s), nil
+	case AIReadinessCheckReasonAgentTooOld:
+		return []byte(s), nil
+	case AIReadinessCheckReasonAgentTooOldForFact:
+		return []byte(s), nil
+	case AIReadinessCheckReasonNeedsAbilities:
+		return []byte(s), nil
+	case AIReadinessCheckReasonNeedsElementor:
+		return []byte(s), nil
+	case AIReadinessCheckReasonNeedsBricks:
+		return []byte(s), nil
+	case AIReadinessCheckReasonInactive:
+		return []byte(s), nil
+	case AIReadinessCheckReasonTooOld:
+		return []byte(s), nil
+	case AIReadinessCheckReasonPrereleaseBuild:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIReadinessCheckReason) UnmarshalText(data []byte) error {
+	switch AIReadinessCheckReason(data) {
+	case AIReadinessCheckReasonNotReported:
+		*s = AIReadinessCheckReasonNotReported
+		return nil
+	case AIReadinessCheckReasonInventoryNeverRun:
+		*s = AIReadinessCheckReasonInventoryNeverRun
+		return nil
+	case AIReadinessCheckReasonInventoryTruncated:
+		*s = AIReadinessCheckReasonInventoryTruncated
+		return nil
+	case AIReadinessCheckReasonAgentTooOld:
+		*s = AIReadinessCheckReasonAgentTooOld
+		return nil
+	case AIReadinessCheckReasonAgentTooOldForFact:
+		*s = AIReadinessCheckReasonAgentTooOldForFact
+		return nil
+	case AIReadinessCheckReasonNeedsAbilities:
+		*s = AIReadinessCheckReasonNeedsAbilities
+		return nil
+	case AIReadinessCheckReasonNeedsElementor:
+		*s = AIReadinessCheckReasonNeedsElementor
+		return nil
+	case AIReadinessCheckReasonNeedsBricks:
+		*s = AIReadinessCheckReasonNeedsBricks
+		return nil
+	case AIReadinessCheckReasonInactive:
+		*s = AIReadinessCheckReasonInactive
+		return nil
+	case AIReadinessCheckReasonTooOld:
+		*s = AIReadinessCheckReasonTooOld
+		return nil
+	case AIReadinessCheckReasonPrereleaseBuild:
+		*s = AIReadinessCheckReasonPrereleaseBuild
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AIReadinessCheckState string
+
+const (
+	AIReadinessCheckStatePass          AIReadinessCheckState = "pass"
+	AIReadinessCheckStateFail          AIReadinessCheckState = "fail"
+	AIReadinessCheckStateUnknown       AIReadinessCheckState = "unknown"
+	AIReadinessCheckStateNotApplicable AIReadinessCheckState = "not_applicable"
+)
+
+// AllValues returns all AIReadinessCheckState values.
+func (AIReadinessCheckState) AllValues() []AIReadinessCheckState {
+	return []AIReadinessCheckState{
+		AIReadinessCheckStatePass,
+		AIReadinessCheckStateFail,
+		AIReadinessCheckStateUnknown,
+		AIReadinessCheckStateNotApplicable,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIReadinessCheckState) MarshalText() ([]byte, error) {
+	switch s {
+	case AIReadinessCheckStatePass:
+		return []byte(s), nil
+	case AIReadinessCheckStateFail:
+		return []byte(s), nil
+	case AIReadinessCheckStateUnknown:
+		return []byte(s), nil
+	case AIReadinessCheckStateNotApplicable:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIReadinessCheckState) UnmarshalText(data []byte) error {
+	switch AIReadinessCheckState(data) {
+	case AIReadinessCheckStatePass:
+		*s = AIReadinessCheckStatePass
+		return nil
+	case AIReadinessCheckStateFail:
+		*s = AIReadinessCheckStateFail
+		return nil
+	case AIReadinessCheckStateUnknown:
+		*s = AIReadinessCheckStateUnknown
+		return nil
+	case AIReadinessCheckStateNotApplicable:
+		*s = AIReadinessCheckStateNotApplicable
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// The versions the checks compare against, so a client can write "needs 7.1 or later" without
+// hard-coding the number.
+// Ref: #/components/schemas/AIReadinessFloors
+type AIReadinessFloors struct {
+	Wp    string `json:"wp"`
+	Agent string `json:"agent"`
+	// The first WPMgr agent release that reports the Atomic editor and the parent theme.
+	FactsAgent string `json:"facts_agent"`
+	Elementor  string `json:"elementor"`
+	Bricks     string `json:"bricks"`
+}
+
+// GetWp returns the value of Wp.
+func (s *AIReadinessFloors) GetWp() string {
+	return s.Wp
+}
+
+// GetAgent returns the value of Agent.
+func (s *AIReadinessFloors) GetAgent() string {
+	return s.Agent
+}
+
+// GetFactsAgent returns the value of FactsAgent.
+func (s *AIReadinessFloors) GetFactsAgent() string {
+	return s.FactsAgent
+}
+
+// GetElementor returns the value of Elementor.
+func (s *AIReadinessFloors) GetElementor() string {
+	return s.Elementor
+}
+
+// GetBricks returns the value of Bricks.
+func (s *AIReadinessFloors) GetBricks() string {
+	return s.Bricks
+}
+
+// SetWp sets the value of Wp.
+func (s *AIReadinessFloors) SetWp(val string) {
+	s.Wp = val
+}
+
+// SetAgent sets the value of Agent.
+func (s *AIReadinessFloors) SetAgent(val string) {
+	s.Agent = val
+}
+
+// SetFactsAgent sets the value of FactsAgent.
+func (s *AIReadinessFloors) SetFactsAgent(val string) {
+	s.FactsAgent = val
+}
+
+// SetElementor sets the value of Elementor.
+func (s *AIReadinessFloors) SetElementor(val string) {
+	s.Elementor = val
+}
+
+// SetBricks sets the value of Bricks.
+func (s *AIReadinessFloors) SetBricks(val string) {
+	s.Bricks = val
+}
+
+// Ref: #/components/schemas/AIReadinessGroup
+type AIReadinessGroup struct {
+	ID AIReadinessGroupID `json:"id"`
+	// Builder groups only. False means the builder is not installed on the site and `checks` is empty; the
+	// group counts toward nothing.
+	Installed OptBool `json:"installed"`
+	// Builder groups only. The installed version, or null when it is not installed or the site did not
+	// report a usable version.
+	Version OptNilString `json:"version"`
+	// Builder groups only. `coming` while WPMgr cannot yet build pages with this builder; the checks then
+	// show whether the site will be ready.
+	WpmgrSupport OptAIReadinessGroupWpmgrSupport `json:"wpmgr_support"`
+	Checks       []AIReadinessCheck              `json:"checks"`
+}
+
+// GetID returns the value of ID.
+func (s *AIReadinessGroup) GetID() AIReadinessGroupID {
+	return s.ID
+}
+
+// GetInstalled returns the value of Installed.
+func (s *AIReadinessGroup) GetInstalled() OptBool {
+	return s.Installed
+}
+
+// GetVersion returns the value of Version.
+func (s *AIReadinessGroup) GetVersion() OptNilString {
+	return s.Version
+}
+
+// GetWpmgrSupport returns the value of WpmgrSupport.
+func (s *AIReadinessGroup) GetWpmgrSupport() OptAIReadinessGroupWpmgrSupport {
+	return s.WpmgrSupport
+}
+
+// GetChecks returns the value of Checks.
+func (s *AIReadinessGroup) GetChecks() []AIReadinessCheck {
+	return s.Checks
+}
+
+// SetID sets the value of ID.
+func (s *AIReadinessGroup) SetID(val AIReadinessGroupID) {
+	s.ID = val
+}
+
+// SetInstalled sets the value of Installed.
+func (s *AIReadinessGroup) SetInstalled(val OptBool) {
+	s.Installed = val
+}
+
+// SetVersion sets the value of Version.
+func (s *AIReadinessGroup) SetVersion(val OptNilString) {
+	s.Version = val
+}
+
+// SetWpmgrSupport sets the value of WpmgrSupport.
+func (s *AIReadinessGroup) SetWpmgrSupport(val OptAIReadinessGroupWpmgrSupport) {
+	s.WpmgrSupport = val
+}
+
+// SetChecks sets the value of Checks.
+func (s *AIReadinessGroup) SetChecks(val []AIReadinessCheck) {
+	s.Checks = val
+}
+
+type AIReadinessGroupID string
+
+const (
+	AIReadinessGroupIDBase      AIReadinessGroupID = "base"
+	AIReadinessGroupIDElementor AIReadinessGroupID = "elementor"
+	AIReadinessGroupIDBricks    AIReadinessGroupID = "bricks"
+)
+
+// AllValues returns all AIReadinessGroupID values.
+func (AIReadinessGroupID) AllValues() []AIReadinessGroupID {
+	return []AIReadinessGroupID{
+		AIReadinessGroupIDBase,
+		AIReadinessGroupIDElementor,
+		AIReadinessGroupIDBricks,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIReadinessGroupID) MarshalText() ([]byte, error) {
+	switch s {
+	case AIReadinessGroupIDBase:
+		return []byte(s), nil
+	case AIReadinessGroupIDElementor:
+		return []byte(s), nil
+	case AIReadinessGroupIDBricks:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIReadinessGroupID) UnmarshalText(data []byte) error {
+	switch AIReadinessGroupID(data) {
+	case AIReadinessGroupIDBase:
+		*s = AIReadinessGroupIDBase
+		return nil
+	case AIReadinessGroupIDElementor:
+		*s = AIReadinessGroupIDElementor
+		return nil
+	case AIReadinessGroupIDBricks:
+		*s = AIReadinessGroupIDBricks
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Builder groups only. `coming` while WPMgr cannot yet build pages with this builder; the checks then
+// show whether the site will be ready.
+type AIReadinessGroupWpmgrSupport string
+
+const (
+	AIReadinessGroupWpmgrSupportComing    AIReadinessGroupWpmgrSupport = "coming"
+	AIReadinessGroupWpmgrSupportAvailable AIReadinessGroupWpmgrSupport = "available"
+)
+
+// AllValues returns all AIReadinessGroupWpmgrSupport values.
+func (AIReadinessGroupWpmgrSupport) AllValues() []AIReadinessGroupWpmgrSupport {
+	return []AIReadinessGroupWpmgrSupport{
+		AIReadinessGroupWpmgrSupportComing,
+		AIReadinessGroupWpmgrSupportAvailable,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIReadinessGroupWpmgrSupport) MarshalText() ([]byte, error) {
+	switch s {
+	case AIReadinessGroupWpmgrSupportComing:
+		return []byte(s), nil
+	case AIReadinessGroupWpmgrSupportAvailable:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIReadinessGroupWpmgrSupport) UnmarshalText(data []byte) error {
+	switch AIReadinessGroupWpmgrSupport(data) {
+	case AIReadinessGroupWpmgrSupportComing:
+		*s = AIReadinessGroupWpmgrSupportComing
+		return nil
+	case AIReadinessGroupWpmgrSupportAvailable:
+		*s = AIReadinessGroupWpmgrSupportAvailable
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/AIReadinessRefreshResult
+type AIReadinessRefreshResult struct {
+	// A fresh metadata report was requested from the site.
+	Metadata bool `json:"metadata"`
+	// A tool-list read was queued by this call or already queued within the last two minutes. False when
+	// the site's agent is too old to run one.
+	Abilities bool `json:"abilities"`
+}
+
+// GetMetadata returns the value of Metadata.
+func (s *AIReadinessRefreshResult) GetMetadata() bool {
+	return s.Metadata
+}
+
+// GetAbilities returns the value of Abilities.
+func (s *AIReadinessRefreshResult) GetAbilities() bool {
+	return s.Abilities
+}
+
+// SetMetadata sets the value of Metadata.
+func (s *AIReadinessRefreshResult) SetMetadata(val bool) {
+	s.Metadata = val
+}
+
+// SetAbilities sets the value of Abilities.
+func (s *AIReadinessRefreshResult) SetAbilities(val bool) {
+	s.Abilities = val
+}
+
+func (*AIReadinessRefreshResult) refreshSiteAIReadinessRes() {}
+
+// Ref: #/components/schemas/AIReadinessStatus
+type AIReadinessStatus string
+
+const (
+	AIReadinessStatusReady          AIReadinessStatus = "ready"
+	AIReadinessStatusNeedsAttention AIReadinessStatus = "needs_attention"
+	AIReadinessStatusIncomplete     AIReadinessStatus = "incomplete"
+)
+
+// AllValues returns all AIReadinessStatus values.
+func (AIReadinessStatus) AllValues() []AIReadinessStatus {
+	return []AIReadinessStatus{
+		AIReadinessStatusReady,
+		AIReadinessStatusNeedsAttention,
+		AIReadinessStatusIncomplete,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIReadinessStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case AIReadinessStatusReady:
+		return []byte(s), nil
+	case AIReadinessStatusNeedsAttention:
+		return []byte(s), nil
+	case AIReadinessStatusIncomplete:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIReadinessStatus) UnmarshalText(data []byte) error {
+	switch AIReadinessStatus(data) {
+	case AIReadinessStatusReady:
+		*s = AIReadinessStatusReady
+		return nil
+	case AIReadinessStatusNeedsAttention:
+		*s = AIReadinessStatusNeedsAttention
+		return nil
+	case AIReadinessStatusIncomplete:
+		*s = AIReadinessStatusIncomplete
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/AIReadinessWarning
+type AIReadinessWarning struct {
+	Code AIReadinessWarningCode `json:"code"`
+}
+
+// GetCode returns the value of Code.
+func (s *AIReadinessWarning) GetCode() AIReadinessWarningCode {
+	return s.Code
+}
+
+// SetCode sets the value of Code.
+func (s *AIReadinessWarning) SetCode(val AIReadinessWarningCode) {
+	s.Code = val
+}
+
+// Ref: #/components/schemas/AIReadinessWarningCode
+type AIReadinessWarningCode string
+
+const (
+	AIReadinessWarningCodeMcpAdapterPluginActive   AIReadinessWarningCode = "mcp_adapter_plugin_active"
+	AIReadinessWarningCodeElementorMcpEndpointOpen AIReadinessWarningCode = "elementor_mcp_endpoint_open"
+)
+
+// AllValues returns all AIReadinessWarningCode values.
+func (AIReadinessWarningCode) AllValues() []AIReadinessWarningCode {
+	return []AIReadinessWarningCode{
+		AIReadinessWarningCodeMcpAdapterPluginActive,
+		AIReadinessWarningCodeElementorMcpEndpointOpen,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AIReadinessWarningCode) MarshalText() ([]byte, error) {
+	switch s {
+	case AIReadinessWarningCodeMcpAdapterPluginActive:
+		return []byte(s), nil
+	case AIReadinessWarningCodeElementorMcpEndpointOpen:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AIReadinessWarningCode) UnmarshalText(data []byte) error {
+	switch AIReadinessWarningCode(data) {
+	case AIReadinessWarningCodeMcpAdapterPluginActive:
+		*s = AIReadinessWarningCodeMcpAdapterPluginActive
+		return nil
+	case AIReadinessWarningCodeElementorMcpEndpointOpen:
+		*s = AIReadinessWarningCodeElementorMcpEndpointOpen
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// One reviewed ability in the global catalogue. `entry_sha256` is the sha256 of the exact entry bytes
+// sent to a site's agent.
+// Ref: #/components/schemas/AbilityCatalogueEntry
+type AbilityCatalogueEntry struct {
+	EntryID            uuid.UUID                           `json:"entry_id"`
+	Name               string                              `json:"name"`
+	Source             AbilityCatalogueEntrySource         `json:"source"`
+	Class              AbilityCatalogueEntryClass          `json:"class"`
+	Status             AbilityCatalogueEntryStatus         `json:"status"`
+	Enabled            bool                                `json:"enabled"`
+	ApprovalMode       AbilityCatalogueEntryApprovalMode   `json:"approval_mode"`
+	PermissionMode     AbilityCatalogueEntryPermissionMode `json:"permission_mode"`
+	IntegrationID      OptNilString                        `json:"integration_id"`
+	OwnerDir           OptNilString                        `json:"owner_dir"`
+	VersionMin         OptNilString                        `json:"version_min"`
+	VersionMaxTested   OptNilString                        `json:"version_max_tested"`
+	MinWpVersion       OptNilString                        `json:"min_wp_version"`
+	MinAgentVersion    OptNilString                        `json:"min_agent_version"`
+	SchemaStructSHA256 OptNilString                        `json:"schema_struct_sha256"`
+	DynamicEnumPaths   []string                            `json:"dynamic_enum_paths"`
+	Title              string                              `json:"title"`
+	Description        string                              `json:"description"`
+	Usage              OptNilString                        `json:"usage"`
+	OperatorPermission OptNilString                        `json:"operator_permission"`
+	Target             jx.Raw                              `json:"target"`
+	Snapshot           string                              `json:"snapshot"`
+	Preview            OptNilString                        `json:"preview"`
+	ArgRender          AbilityCatalogueEntryArgRender      `json:"arg_render"`
+	EffectCopy         AbilityCatalogueEntryEffectCopy     `json:"effect_copy"`
+	Limits             AbilityCatalogueEntryLimits         `json:"limits"`
+	NestedAllow        []string                            `json:"nested_allow"`
+	GlobalOptionKeys   []string                            `json:"global_option_keys"`
+	IntegrationBlock   jx.Raw                              `json:"integration_block"`
+	Admission          AbilityCatalogueEntryAdmission      `json:"admission"`
+	EntrySHA256        OptNilString                        `json:"entry_sha256"`
+	// The pinned output shape of a read: `{"fields":{key:shape}}`, `{"items":shape}`, `"string"`, `"int"`
+	// or `"bool"`, at most 8 deep. Only listed keys reach the AI.
+	OutputFields jx.Raw    `json:"output_fields"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// GetEntryID returns the value of EntryID.
+func (s *AbilityCatalogueEntry) GetEntryID() uuid.UUID {
+	return s.EntryID
+}
+
+// GetName returns the value of Name.
+func (s *AbilityCatalogueEntry) GetName() string {
+	return s.Name
+}
+
+// GetSource returns the value of Source.
+func (s *AbilityCatalogueEntry) GetSource() AbilityCatalogueEntrySource {
+	return s.Source
+}
+
+// GetClass returns the value of Class.
+func (s *AbilityCatalogueEntry) GetClass() AbilityCatalogueEntryClass {
+	return s.Class
+}
+
+// GetStatus returns the value of Status.
+func (s *AbilityCatalogueEntry) GetStatus() AbilityCatalogueEntryStatus {
+	return s.Status
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *AbilityCatalogueEntry) GetEnabled() bool {
+	return s.Enabled
+}
+
+// GetApprovalMode returns the value of ApprovalMode.
+func (s *AbilityCatalogueEntry) GetApprovalMode() AbilityCatalogueEntryApprovalMode {
+	return s.ApprovalMode
+}
+
+// GetPermissionMode returns the value of PermissionMode.
+func (s *AbilityCatalogueEntry) GetPermissionMode() AbilityCatalogueEntryPermissionMode {
+	return s.PermissionMode
+}
+
+// GetIntegrationID returns the value of IntegrationID.
+func (s *AbilityCatalogueEntry) GetIntegrationID() OptNilString {
+	return s.IntegrationID
+}
+
+// GetOwnerDir returns the value of OwnerDir.
+func (s *AbilityCatalogueEntry) GetOwnerDir() OptNilString {
+	return s.OwnerDir
+}
+
+// GetVersionMin returns the value of VersionMin.
+func (s *AbilityCatalogueEntry) GetVersionMin() OptNilString {
+	return s.VersionMin
+}
+
+// GetVersionMaxTested returns the value of VersionMaxTested.
+func (s *AbilityCatalogueEntry) GetVersionMaxTested() OptNilString {
+	return s.VersionMaxTested
+}
+
+// GetMinWpVersion returns the value of MinWpVersion.
+func (s *AbilityCatalogueEntry) GetMinWpVersion() OptNilString {
+	return s.MinWpVersion
+}
+
+// GetMinAgentVersion returns the value of MinAgentVersion.
+func (s *AbilityCatalogueEntry) GetMinAgentVersion() OptNilString {
+	return s.MinAgentVersion
+}
+
+// GetSchemaStructSHA256 returns the value of SchemaStructSHA256.
+func (s *AbilityCatalogueEntry) GetSchemaStructSHA256() OptNilString {
+	return s.SchemaStructSHA256
+}
+
+// GetDynamicEnumPaths returns the value of DynamicEnumPaths.
+func (s *AbilityCatalogueEntry) GetDynamicEnumPaths() []string {
+	return s.DynamicEnumPaths
+}
+
+// GetTitle returns the value of Title.
+func (s *AbilityCatalogueEntry) GetTitle() string {
+	return s.Title
+}
+
+// GetDescription returns the value of Description.
+func (s *AbilityCatalogueEntry) GetDescription() string {
+	return s.Description
+}
+
+// GetUsage returns the value of Usage.
+func (s *AbilityCatalogueEntry) GetUsage() OptNilString {
+	return s.Usage
+}
+
+// GetOperatorPermission returns the value of OperatorPermission.
+func (s *AbilityCatalogueEntry) GetOperatorPermission() OptNilString {
+	return s.OperatorPermission
+}
+
+// GetTarget returns the value of Target.
+func (s *AbilityCatalogueEntry) GetTarget() jx.Raw {
+	return s.Target
+}
+
+// GetSnapshot returns the value of Snapshot.
+func (s *AbilityCatalogueEntry) GetSnapshot() string {
+	return s.Snapshot
+}
+
+// GetPreview returns the value of Preview.
+func (s *AbilityCatalogueEntry) GetPreview() OptNilString {
+	return s.Preview
+}
+
+// GetArgRender returns the value of ArgRender.
+func (s *AbilityCatalogueEntry) GetArgRender() AbilityCatalogueEntryArgRender {
+	return s.ArgRender
+}
+
+// GetEffectCopy returns the value of EffectCopy.
+func (s *AbilityCatalogueEntry) GetEffectCopy() AbilityCatalogueEntryEffectCopy {
+	return s.EffectCopy
+}
+
+// GetLimits returns the value of Limits.
+func (s *AbilityCatalogueEntry) GetLimits() AbilityCatalogueEntryLimits {
+	return s.Limits
+}
+
+// GetNestedAllow returns the value of NestedAllow.
+func (s *AbilityCatalogueEntry) GetNestedAllow() []string {
+	return s.NestedAllow
+}
+
+// GetGlobalOptionKeys returns the value of GlobalOptionKeys.
+func (s *AbilityCatalogueEntry) GetGlobalOptionKeys() []string {
+	return s.GlobalOptionKeys
+}
+
+// GetIntegrationBlock returns the value of IntegrationBlock.
+func (s *AbilityCatalogueEntry) GetIntegrationBlock() jx.Raw {
+	return s.IntegrationBlock
+}
+
+// GetAdmission returns the value of Admission.
+func (s *AbilityCatalogueEntry) GetAdmission() AbilityCatalogueEntryAdmission {
+	return s.Admission
+}
+
+// GetEntrySHA256 returns the value of EntrySHA256.
+func (s *AbilityCatalogueEntry) GetEntrySHA256() OptNilString {
+	return s.EntrySHA256
+}
+
+// GetOutputFields returns the value of OutputFields.
+func (s *AbilityCatalogueEntry) GetOutputFields() jx.Raw {
+	return s.OutputFields
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *AbilityCatalogueEntry) GetUpdatedAt() time.Time {
+	return s.UpdatedAt
+}
+
+// SetEntryID sets the value of EntryID.
+func (s *AbilityCatalogueEntry) SetEntryID(val uuid.UUID) {
+	s.EntryID = val
+}
+
+// SetName sets the value of Name.
+func (s *AbilityCatalogueEntry) SetName(val string) {
+	s.Name = val
+}
+
+// SetSource sets the value of Source.
+func (s *AbilityCatalogueEntry) SetSource(val AbilityCatalogueEntrySource) {
+	s.Source = val
+}
+
+// SetClass sets the value of Class.
+func (s *AbilityCatalogueEntry) SetClass(val AbilityCatalogueEntryClass) {
+	s.Class = val
+}
+
+// SetStatus sets the value of Status.
+func (s *AbilityCatalogueEntry) SetStatus(val AbilityCatalogueEntryStatus) {
+	s.Status = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *AbilityCatalogueEntry) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetApprovalMode sets the value of ApprovalMode.
+func (s *AbilityCatalogueEntry) SetApprovalMode(val AbilityCatalogueEntryApprovalMode) {
+	s.ApprovalMode = val
+}
+
+// SetPermissionMode sets the value of PermissionMode.
+func (s *AbilityCatalogueEntry) SetPermissionMode(val AbilityCatalogueEntryPermissionMode) {
+	s.PermissionMode = val
+}
+
+// SetIntegrationID sets the value of IntegrationID.
+func (s *AbilityCatalogueEntry) SetIntegrationID(val OptNilString) {
+	s.IntegrationID = val
+}
+
+// SetOwnerDir sets the value of OwnerDir.
+func (s *AbilityCatalogueEntry) SetOwnerDir(val OptNilString) {
+	s.OwnerDir = val
+}
+
+// SetVersionMin sets the value of VersionMin.
+func (s *AbilityCatalogueEntry) SetVersionMin(val OptNilString) {
+	s.VersionMin = val
+}
+
+// SetVersionMaxTested sets the value of VersionMaxTested.
+func (s *AbilityCatalogueEntry) SetVersionMaxTested(val OptNilString) {
+	s.VersionMaxTested = val
+}
+
+// SetMinWpVersion sets the value of MinWpVersion.
+func (s *AbilityCatalogueEntry) SetMinWpVersion(val OptNilString) {
+	s.MinWpVersion = val
+}
+
+// SetMinAgentVersion sets the value of MinAgentVersion.
+func (s *AbilityCatalogueEntry) SetMinAgentVersion(val OptNilString) {
+	s.MinAgentVersion = val
+}
+
+// SetSchemaStructSHA256 sets the value of SchemaStructSHA256.
+func (s *AbilityCatalogueEntry) SetSchemaStructSHA256(val OptNilString) {
+	s.SchemaStructSHA256 = val
+}
+
+// SetDynamicEnumPaths sets the value of DynamicEnumPaths.
+func (s *AbilityCatalogueEntry) SetDynamicEnumPaths(val []string) {
+	s.DynamicEnumPaths = val
+}
+
+// SetTitle sets the value of Title.
+func (s *AbilityCatalogueEntry) SetTitle(val string) {
+	s.Title = val
+}
+
+// SetDescription sets the value of Description.
+func (s *AbilityCatalogueEntry) SetDescription(val string) {
+	s.Description = val
+}
+
+// SetUsage sets the value of Usage.
+func (s *AbilityCatalogueEntry) SetUsage(val OptNilString) {
+	s.Usage = val
+}
+
+// SetOperatorPermission sets the value of OperatorPermission.
+func (s *AbilityCatalogueEntry) SetOperatorPermission(val OptNilString) {
+	s.OperatorPermission = val
+}
+
+// SetTarget sets the value of Target.
+func (s *AbilityCatalogueEntry) SetTarget(val jx.Raw) {
+	s.Target = val
+}
+
+// SetSnapshot sets the value of Snapshot.
+func (s *AbilityCatalogueEntry) SetSnapshot(val string) {
+	s.Snapshot = val
+}
+
+// SetPreview sets the value of Preview.
+func (s *AbilityCatalogueEntry) SetPreview(val OptNilString) {
+	s.Preview = val
+}
+
+// SetArgRender sets the value of ArgRender.
+func (s *AbilityCatalogueEntry) SetArgRender(val AbilityCatalogueEntryArgRender) {
+	s.ArgRender = val
+}
+
+// SetEffectCopy sets the value of EffectCopy.
+func (s *AbilityCatalogueEntry) SetEffectCopy(val AbilityCatalogueEntryEffectCopy) {
+	s.EffectCopy = val
+}
+
+// SetLimits sets the value of Limits.
+func (s *AbilityCatalogueEntry) SetLimits(val AbilityCatalogueEntryLimits) {
+	s.Limits = val
+}
+
+// SetNestedAllow sets the value of NestedAllow.
+func (s *AbilityCatalogueEntry) SetNestedAllow(val []string) {
+	s.NestedAllow = val
+}
+
+// SetGlobalOptionKeys sets the value of GlobalOptionKeys.
+func (s *AbilityCatalogueEntry) SetGlobalOptionKeys(val []string) {
+	s.GlobalOptionKeys = val
+}
+
+// SetIntegrationBlock sets the value of IntegrationBlock.
+func (s *AbilityCatalogueEntry) SetIntegrationBlock(val jx.Raw) {
+	s.IntegrationBlock = val
+}
+
+// SetAdmission sets the value of Admission.
+func (s *AbilityCatalogueEntry) SetAdmission(val AbilityCatalogueEntryAdmission) {
+	s.Admission = val
+}
+
+// SetEntrySHA256 sets the value of EntrySHA256.
+func (s *AbilityCatalogueEntry) SetEntrySHA256(val OptNilString) {
+	s.EntrySHA256 = val
+}
+
+// SetOutputFields sets the value of OutputFields.
+func (s *AbilityCatalogueEntry) SetOutputFields(val jx.Raw) {
+	s.OutputFields = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *AbilityCatalogueEntry) SetUpdatedAt(val time.Time) {
+	s.UpdatedAt = val
+}
+
+func (*AbilityCatalogueEntry) createAdminAbilityCatalogueEntryRes() {}
+func (*AbilityCatalogueEntry) updateAdminAbilityCatalogueEntryRes() {}
+
+type AbilityCatalogueEntryAdmission map[string]jx.Raw
+
+func (s *AbilityCatalogueEntryAdmission) init() AbilityCatalogueEntryAdmission {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type AbilityCatalogueEntryApprovalMode string
+
+const (
+	AbilityCatalogueEntryApprovalModeNone    AbilityCatalogueEntryApprovalMode = "none"
+	AbilityCatalogueEntryApprovalModePerCall AbilityCatalogueEntryApprovalMode = "per_call"
+)
+
+// AllValues returns all AbilityCatalogueEntryApprovalMode values.
+func (AbilityCatalogueEntryApprovalMode) AllValues() []AbilityCatalogueEntryApprovalMode {
+	return []AbilityCatalogueEntryApprovalMode{
+		AbilityCatalogueEntryApprovalModeNone,
+		AbilityCatalogueEntryApprovalModePerCall,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueEntryApprovalMode) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueEntryApprovalModeNone:
+		return []byte(s), nil
+	case AbilityCatalogueEntryApprovalModePerCall:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueEntryApprovalMode) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueEntryApprovalMode(data) {
+	case AbilityCatalogueEntryApprovalModeNone:
+		*s = AbilityCatalogueEntryApprovalModeNone
+		return nil
+	case AbilityCatalogueEntryApprovalModePerCall:
+		*s = AbilityCatalogueEntryApprovalModePerCall
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueEntryArgRender map[string]jx.Raw
+
+func (s *AbilityCatalogueEntryArgRender) init() AbilityCatalogueEntryArgRender {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type AbilityCatalogueEntryClass string
+
+const (
+	AbilityCatalogueEntryClassRead   AbilityCatalogueEntryClass = "read"
+	AbilityCatalogueEntryClassWrite  AbilityCatalogueEntryClass = "write"
+	AbilityCatalogueEntryClassDenied AbilityCatalogueEntryClass = "denied"
+)
+
+// AllValues returns all AbilityCatalogueEntryClass values.
+func (AbilityCatalogueEntryClass) AllValues() []AbilityCatalogueEntryClass {
+	return []AbilityCatalogueEntryClass{
+		AbilityCatalogueEntryClassRead,
+		AbilityCatalogueEntryClassWrite,
+		AbilityCatalogueEntryClassDenied,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueEntryClass) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueEntryClassRead:
+		return []byte(s), nil
+	case AbilityCatalogueEntryClassWrite:
+		return []byte(s), nil
+	case AbilityCatalogueEntryClassDenied:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueEntryClass) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueEntryClass(data) {
+	case AbilityCatalogueEntryClassRead:
+		*s = AbilityCatalogueEntryClassRead
+		return nil
+	case AbilityCatalogueEntryClassWrite:
+		*s = AbilityCatalogueEntryClassWrite
+		return nil
+	case AbilityCatalogueEntryClassDenied:
+		*s = AbilityCatalogueEntryClassDenied
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueEntryEffectCopy string
+
+const (
+	AbilityCatalogueEntryEffectCopyDraft AbilityCatalogueEntryEffectCopy = "draft"
+	AbilityCatalogueEntryEffectCopyLive  AbilityCatalogueEntryEffectCopy = "live"
+	AbilityCatalogueEntryEffectCopyNone  AbilityCatalogueEntryEffectCopy = "none"
+)
+
+// AllValues returns all AbilityCatalogueEntryEffectCopy values.
+func (AbilityCatalogueEntryEffectCopy) AllValues() []AbilityCatalogueEntryEffectCopy {
+	return []AbilityCatalogueEntryEffectCopy{
+		AbilityCatalogueEntryEffectCopyDraft,
+		AbilityCatalogueEntryEffectCopyLive,
+		AbilityCatalogueEntryEffectCopyNone,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueEntryEffectCopy) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueEntryEffectCopyDraft:
+		return []byte(s), nil
+	case AbilityCatalogueEntryEffectCopyLive:
+		return []byte(s), nil
+	case AbilityCatalogueEntryEffectCopyNone:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueEntryEffectCopy) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueEntryEffectCopy(data) {
+	case AbilityCatalogueEntryEffectCopyDraft:
+		*s = AbilityCatalogueEntryEffectCopyDraft
+		return nil
+	case AbilityCatalogueEntryEffectCopyLive:
+		*s = AbilityCatalogueEntryEffectCopyLive
+		return nil
+	case AbilityCatalogueEntryEffectCopyNone:
+		*s = AbilityCatalogueEntryEffectCopyNone
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueEntryLimits map[string]jx.Raw
+
+func (s *AbilityCatalogueEntryLimits) init() AbilityCatalogueEntryLimits {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type AbilityCatalogueEntryPermissionMode string
+
+const (
+	AbilityCatalogueEntryPermissionModePrincipal AbilityCatalogueEntryPermissionMode = "principal"
+	AbilityCatalogueEntryPermissionModeAsserted  AbilityCatalogueEntryPermissionMode = "asserted"
+)
+
+// AllValues returns all AbilityCatalogueEntryPermissionMode values.
+func (AbilityCatalogueEntryPermissionMode) AllValues() []AbilityCatalogueEntryPermissionMode {
+	return []AbilityCatalogueEntryPermissionMode{
+		AbilityCatalogueEntryPermissionModePrincipal,
+		AbilityCatalogueEntryPermissionModeAsserted,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueEntryPermissionMode) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueEntryPermissionModePrincipal:
+		return []byte(s), nil
+	case AbilityCatalogueEntryPermissionModeAsserted:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueEntryPermissionMode) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueEntryPermissionMode(data) {
+	case AbilityCatalogueEntryPermissionModePrincipal:
+		*s = AbilityCatalogueEntryPermissionModePrincipal
+		return nil
+	case AbilityCatalogueEntryPermissionModeAsserted:
+		*s = AbilityCatalogueEntryPermissionModeAsserted
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueEntrySource string
+
+const (
+	AbilityCatalogueEntrySourceWpmgr  AbilityCatalogueEntrySource = "wpmgr"
+	AbilityCatalogueEntrySourceCore   AbilityCatalogueEntrySource = "core"
+	AbilityCatalogueEntrySourceVendor AbilityCatalogueEntrySource = "vendor"
+)
+
+// AllValues returns all AbilityCatalogueEntrySource values.
+func (AbilityCatalogueEntrySource) AllValues() []AbilityCatalogueEntrySource {
+	return []AbilityCatalogueEntrySource{
+		AbilityCatalogueEntrySourceWpmgr,
+		AbilityCatalogueEntrySourceCore,
+		AbilityCatalogueEntrySourceVendor,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueEntrySource) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueEntrySourceWpmgr:
+		return []byte(s), nil
+	case AbilityCatalogueEntrySourceCore:
+		return []byte(s), nil
+	case AbilityCatalogueEntrySourceVendor:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueEntrySource) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueEntrySource(data) {
+	case AbilityCatalogueEntrySourceWpmgr:
+		*s = AbilityCatalogueEntrySourceWpmgr
+		return nil
+	case AbilityCatalogueEntrySourceCore:
+		*s = AbilityCatalogueEntrySourceCore
+		return nil
+	case AbilityCatalogueEntrySourceVendor:
+		*s = AbilityCatalogueEntrySourceVendor
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueEntryStatus string
+
+const (
+	AbilityCatalogueEntryStatusAdmitted            AbilityCatalogueEntryStatus = "admitted"
+	AbilityCatalogueEntryStatusDetectOnly          AbilityCatalogueEntryStatus = "detect_only"
+	AbilityCatalogueEntryStatusAwaitingVendorTools AbilityCatalogueEntryStatus = "awaiting_vendor_tools"
+)
+
+// AllValues returns all AbilityCatalogueEntryStatus values.
+func (AbilityCatalogueEntryStatus) AllValues() []AbilityCatalogueEntryStatus {
+	return []AbilityCatalogueEntryStatus{
+		AbilityCatalogueEntryStatusAdmitted,
+		AbilityCatalogueEntryStatusDetectOnly,
+		AbilityCatalogueEntryStatusAwaitingVendorTools,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueEntryStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueEntryStatusAdmitted:
+		return []byte(s), nil
+	case AbilityCatalogueEntryStatusDetectOnly:
+		return []byte(s), nil
+	case AbilityCatalogueEntryStatusAwaitingVendorTools:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueEntryStatus) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueEntryStatus(data) {
+	case AbilityCatalogueEntryStatusAdmitted:
+		*s = AbilityCatalogueEntryStatusAdmitted
+		return nil
+	case AbilityCatalogueEntryStatusDetectOnly:
+		*s = AbilityCatalogueEntryStatusDetectOnly
+		return nil
+	case AbilityCatalogueEntryStatusAwaitingVendorTools:
+		*s = AbilityCatalogueEntryStatusAwaitingVendorTools
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Every field is optional on update; an omitted field keeps its stored value. `name` is required on
+// create and cannot change. There is no actor field: the actor is the authenticated session.
+// Ref: #/components/schemas/AbilityCatalogueInput
+type AbilityCatalogueInput struct {
+	Name               OptString                              `json:"name"`
+	Source             OptAbilityCatalogueInputSource         `json:"source"`
+	Class              OptAbilityCatalogueInputClass          `json:"class"`
+	Status             OptAbilityCatalogueInputStatus         `json:"status"`
+	Enabled            OptBool                                `json:"enabled"`
+	ApprovalMode       OptAbilityCatalogueInputApprovalMode   `json:"approval_mode"`
+	PermissionMode     OptAbilityCatalogueInputPermissionMode `json:"permission_mode"`
+	IntegrationID      OptString                              `json:"integration_id"`
+	OwnerDir           OptString                              `json:"owner_dir"`
+	VersionMin         OptString                              `json:"version_min"`
+	VersionMaxTested   OptString                              `json:"version_max_tested"`
+	MinWpVersion       OptString                              `json:"min_wp_version"`
+	MinAgentVersion    OptString                              `json:"min_agent_version"`
+	SchemaStructSHA256 OptString                              `json:"schema_struct_sha256"`
+	DynamicEnumPaths   []string                               `json:"dynamic_enum_paths"`
+	Title              OptString                              `json:"title"`
+	Description        OptString                              `json:"description"`
+	Usage              OptString                              `json:"usage"`
+	OperatorPermission OptString                              `json:"operator_permission"`
+	Target             jx.Raw                                 `json:"target"`
+	Snapshot           OptString                              `json:"snapshot"`
+	Preview            OptString                              `json:"preview"`
+	ArgRender          OptAbilityCatalogueInputArgRender      `json:"arg_render"`
+	EffectCopy         OptAbilityCatalogueInputEffectCopy     `json:"effect_copy"`
+	Limits             OptAbilityCatalogueInputLimits         `json:"limits"`
+	NestedAllow        []string                               `json:"nested_allow"`
+	GlobalOptionKeys   []string                               `json:"global_option_keys"`
+	IntegrationBlock   jx.Raw                                 `json:"integration_block"`
+	Admission          OptAbilityCatalogueInputAdmission      `json:"admission"`
+	// The pinned output shape of a read, in the strict grammar `{"fields":{key:shape}}` |
+	// `{"items":shape}` | `"string"` | `"int"` | `"bool"`, keys matching `^[A-Za-z0-9_-]{1,64}$`, at most
+	// 8 deep. Any other node is refused (400 invalid_output_fields). Required for a vendor or core read.
+	// `limits.allowed_option_patterns` may not hold an empty or wildcard-only (`*`, `**`) pattern.
+	OutputFields jx.Raw `json:"output_fields"`
+}
+
+// GetName returns the value of Name.
+func (s *AbilityCatalogueInput) GetName() OptString {
+	return s.Name
+}
+
+// GetSource returns the value of Source.
+func (s *AbilityCatalogueInput) GetSource() OptAbilityCatalogueInputSource {
+	return s.Source
+}
+
+// GetClass returns the value of Class.
+func (s *AbilityCatalogueInput) GetClass() OptAbilityCatalogueInputClass {
+	return s.Class
+}
+
+// GetStatus returns the value of Status.
+func (s *AbilityCatalogueInput) GetStatus() OptAbilityCatalogueInputStatus {
+	return s.Status
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *AbilityCatalogueInput) GetEnabled() OptBool {
+	return s.Enabled
+}
+
+// GetApprovalMode returns the value of ApprovalMode.
+func (s *AbilityCatalogueInput) GetApprovalMode() OptAbilityCatalogueInputApprovalMode {
+	return s.ApprovalMode
+}
+
+// GetPermissionMode returns the value of PermissionMode.
+func (s *AbilityCatalogueInput) GetPermissionMode() OptAbilityCatalogueInputPermissionMode {
+	return s.PermissionMode
+}
+
+// GetIntegrationID returns the value of IntegrationID.
+func (s *AbilityCatalogueInput) GetIntegrationID() OptString {
+	return s.IntegrationID
+}
+
+// GetOwnerDir returns the value of OwnerDir.
+func (s *AbilityCatalogueInput) GetOwnerDir() OptString {
+	return s.OwnerDir
+}
+
+// GetVersionMin returns the value of VersionMin.
+func (s *AbilityCatalogueInput) GetVersionMin() OptString {
+	return s.VersionMin
+}
+
+// GetVersionMaxTested returns the value of VersionMaxTested.
+func (s *AbilityCatalogueInput) GetVersionMaxTested() OptString {
+	return s.VersionMaxTested
+}
+
+// GetMinWpVersion returns the value of MinWpVersion.
+func (s *AbilityCatalogueInput) GetMinWpVersion() OptString {
+	return s.MinWpVersion
+}
+
+// GetMinAgentVersion returns the value of MinAgentVersion.
+func (s *AbilityCatalogueInput) GetMinAgentVersion() OptString {
+	return s.MinAgentVersion
+}
+
+// GetSchemaStructSHA256 returns the value of SchemaStructSHA256.
+func (s *AbilityCatalogueInput) GetSchemaStructSHA256() OptString {
+	return s.SchemaStructSHA256
+}
+
+// GetDynamicEnumPaths returns the value of DynamicEnumPaths.
+func (s *AbilityCatalogueInput) GetDynamicEnumPaths() []string {
+	return s.DynamicEnumPaths
+}
+
+// GetTitle returns the value of Title.
+func (s *AbilityCatalogueInput) GetTitle() OptString {
+	return s.Title
+}
+
+// GetDescription returns the value of Description.
+func (s *AbilityCatalogueInput) GetDescription() OptString {
+	return s.Description
+}
+
+// GetUsage returns the value of Usage.
+func (s *AbilityCatalogueInput) GetUsage() OptString {
+	return s.Usage
+}
+
+// GetOperatorPermission returns the value of OperatorPermission.
+func (s *AbilityCatalogueInput) GetOperatorPermission() OptString {
+	return s.OperatorPermission
+}
+
+// GetTarget returns the value of Target.
+func (s *AbilityCatalogueInput) GetTarget() jx.Raw {
+	return s.Target
+}
+
+// GetSnapshot returns the value of Snapshot.
+func (s *AbilityCatalogueInput) GetSnapshot() OptString {
+	return s.Snapshot
+}
+
+// GetPreview returns the value of Preview.
+func (s *AbilityCatalogueInput) GetPreview() OptString {
+	return s.Preview
+}
+
+// GetArgRender returns the value of ArgRender.
+func (s *AbilityCatalogueInput) GetArgRender() OptAbilityCatalogueInputArgRender {
+	return s.ArgRender
+}
+
+// GetEffectCopy returns the value of EffectCopy.
+func (s *AbilityCatalogueInput) GetEffectCopy() OptAbilityCatalogueInputEffectCopy {
+	return s.EffectCopy
+}
+
+// GetLimits returns the value of Limits.
+func (s *AbilityCatalogueInput) GetLimits() OptAbilityCatalogueInputLimits {
+	return s.Limits
+}
+
+// GetNestedAllow returns the value of NestedAllow.
+func (s *AbilityCatalogueInput) GetNestedAllow() []string {
+	return s.NestedAllow
+}
+
+// GetGlobalOptionKeys returns the value of GlobalOptionKeys.
+func (s *AbilityCatalogueInput) GetGlobalOptionKeys() []string {
+	return s.GlobalOptionKeys
+}
+
+// GetIntegrationBlock returns the value of IntegrationBlock.
+func (s *AbilityCatalogueInput) GetIntegrationBlock() jx.Raw {
+	return s.IntegrationBlock
+}
+
+// GetAdmission returns the value of Admission.
+func (s *AbilityCatalogueInput) GetAdmission() OptAbilityCatalogueInputAdmission {
+	return s.Admission
+}
+
+// GetOutputFields returns the value of OutputFields.
+func (s *AbilityCatalogueInput) GetOutputFields() jx.Raw {
+	return s.OutputFields
+}
+
+// SetName sets the value of Name.
+func (s *AbilityCatalogueInput) SetName(val OptString) {
+	s.Name = val
+}
+
+// SetSource sets the value of Source.
+func (s *AbilityCatalogueInput) SetSource(val OptAbilityCatalogueInputSource) {
+	s.Source = val
+}
+
+// SetClass sets the value of Class.
+func (s *AbilityCatalogueInput) SetClass(val OptAbilityCatalogueInputClass) {
+	s.Class = val
+}
+
+// SetStatus sets the value of Status.
+func (s *AbilityCatalogueInput) SetStatus(val OptAbilityCatalogueInputStatus) {
+	s.Status = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *AbilityCatalogueInput) SetEnabled(val OptBool) {
+	s.Enabled = val
+}
+
+// SetApprovalMode sets the value of ApprovalMode.
+func (s *AbilityCatalogueInput) SetApprovalMode(val OptAbilityCatalogueInputApprovalMode) {
+	s.ApprovalMode = val
+}
+
+// SetPermissionMode sets the value of PermissionMode.
+func (s *AbilityCatalogueInput) SetPermissionMode(val OptAbilityCatalogueInputPermissionMode) {
+	s.PermissionMode = val
+}
+
+// SetIntegrationID sets the value of IntegrationID.
+func (s *AbilityCatalogueInput) SetIntegrationID(val OptString) {
+	s.IntegrationID = val
+}
+
+// SetOwnerDir sets the value of OwnerDir.
+func (s *AbilityCatalogueInput) SetOwnerDir(val OptString) {
+	s.OwnerDir = val
+}
+
+// SetVersionMin sets the value of VersionMin.
+func (s *AbilityCatalogueInput) SetVersionMin(val OptString) {
+	s.VersionMin = val
+}
+
+// SetVersionMaxTested sets the value of VersionMaxTested.
+func (s *AbilityCatalogueInput) SetVersionMaxTested(val OptString) {
+	s.VersionMaxTested = val
+}
+
+// SetMinWpVersion sets the value of MinWpVersion.
+func (s *AbilityCatalogueInput) SetMinWpVersion(val OptString) {
+	s.MinWpVersion = val
+}
+
+// SetMinAgentVersion sets the value of MinAgentVersion.
+func (s *AbilityCatalogueInput) SetMinAgentVersion(val OptString) {
+	s.MinAgentVersion = val
+}
+
+// SetSchemaStructSHA256 sets the value of SchemaStructSHA256.
+func (s *AbilityCatalogueInput) SetSchemaStructSHA256(val OptString) {
+	s.SchemaStructSHA256 = val
+}
+
+// SetDynamicEnumPaths sets the value of DynamicEnumPaths.
+func (s *AbilityCatalogueInput) SetDynamicEnumPaths(val []string) {
+	s.DynamicEnumPaths = val
+}
+
+// SetTitle sets the value of Title.
+func (s *AbilityCatalogueInput) SetTitle(val OptString) {
+	s.Title = val
+}
+
+// SetDescription sets the value of Description.
+func (s *AbilityCatalogueInput) SetDescription(val OptString) {
+	s.Description = val
+}
+
+// SetUsage sets the value of Usage.
+func (s *AbilityCatalogueInput) SetUsage(val OptString) {
+	s.Usage = val
+}
+
+// SetOperatorPermission sets the value of OperatorPermission.
+func (s *AbilityCatalogueInput) SetOperatorPermission(val OptString) {
+	s.OperatorPermission = val
+}
+
+// SetTarget sets the value of Target.
+func (s *AbilityCatalogueInput) SetTarget(val jx.Raw) {
+	s.Target = val
+}
+
+// SetSnapshot sets the value of Snapshot.
+func (s *AbilityCatalogueInput) SetSnapshot(val OptString) {
+	s.Snapshot = val
+}
+
+// SetPreview sets the value of Preview.
+func (s *AbilityCatalogueInput) SetPreview(val OptString) {
+	s.Preview = val
+}
+
+// SetArgRender sets the value of ArgRender.
+func (s *AbilityCatalogueInput) SetArgRender(val OptAbilityCatalogueInputArgRender) {
+	s.ArgRender = val
+}
+
+// SetEffectCopy sets the value of EffectCopy.
+func (s *AbilityCatalogueInput) SetEffectCopy(val OptAbilityCatalogueInputEffectCopy) {
+	s.EffectCopy = val
+}
+
+// SetLimits sets the value of Limits.
+func (s *AbilityCatalogueInput) SetLimits(val OptAbilityCatalogueInputLimits) {
+	s.Limits = val
+}
+
+// SetNestedAllow sets the value of NestedAllow.
+func (s *AbilityCatalogueInput) SetNestedAllow(val []string) {
+	s.NestedAllow = val
+}
+
+// SetGlobalOptionKeys sets the value of GlobalOptionKeys.
+func (s *AbilityCatalogueInput) SetGlobalOptionKeys(val []string) {
+	s.GlobalOptionKeys = val
+}
+
+// SetIntegrationBlock sets the value of IntegrationBlock.
+func (s *AbilityCatalogueInput) SetIntegrationBlock(val jx.Raw) {
+	s.IntegrationBlock = val
+}
+
+// SetAdmission sets the value of Admission.
+func (s *AbilityCatalogueInput) SetAdmission(val OptAbilityCatalogueInputAdmission) {
+	s.Admission = val
+}
+
+// SetOutputFields sets the value of OutputFields.
+func (s *AbilityCatalogueInput) SetOutputFields(val jx.Raw) {
+	s.OutputFields = val
+}
+
+type AbilityCatalogueInputAdmission map[string]jx.Raw
+
+func (s *AbilityCatalogueInputAdmission) init() AbilityCatalogueInputAdmission {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type AbilityCatalogueInputApprovalMode string
+
+const (
+	AbilityCatalogueInputApprovalModeNone    AbilityCatalogueInputApprovalMode = "none"
+	AbilityCatalogueInputApprovalModePerCall AbilityCatalogueInputApprovalMode = "per_call"
+)
+
+// AllValues returns all AbilityCatalogueInputApprovalMode values.
+func (AbilityCatalogueInputApprovalMode) AllValues() []AbilityCatalogueInputApprovalMode {
+	return []AbilityCatalogueInputApprovalMode{
+		AbilityCatalogueInputApprovalModeNone,
+		AbilityCatalogueInputApprovalModePerCall,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueInputApprovalMode) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueInputApprovalModeNone:
+		return []byte(s), nil
+	case AbilityCatalogueInputApprovalModePerCall:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueInputApprovalMode) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueInputApprovalMode(data) {
+	case AbilityCatalogueInputApprovalModeNone:
+		*s = AbilityCatalogueInputApprovalModeNone
+		return nil
+	case AbilityCatalogueInputApprovalModePerCall:
+		*s = AbilityCatalogueInputApprovalModePerCall
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueInputArgRender map[string]jx.Raw
+
+func (s *AbilityCatalogueInputArgRender) init() AbilityCatalogueInputArgRender {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type AbilityCatalogueInputClass string
+
+const (
+	AbilityCatalogueInputClassRead   AbilityCatalogueInputClass = "read"
+	AbilityCatalogueInputClassWrite  AbilityCatalogueInputClass = "write"
+	AbilityCatalogueInputClassDenied AbilityCatalogueInputClass = "denied"
+)
+
+// AllValues returns all AbilityCatalogueInputClass values.
+func (AbilityCatalogueInputClass) AllValues() []AbilityCatalogueInputClass {
+	return []AbilityCatalogueInputClass{
+		AbilityCatalogueInputClassRead,
+		AbilityCatalogueInputClassWrite,
+		AbilityCatalogueInputClassDenied,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueInputClass) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueInputClassRead:
+		return []byte(s), nil
+	case AbilityCatalogueInputClassWrite:
+		return []byte(s), nil
+	case AbilityCatalogueInputClassDenied:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueInputClass) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueInputClass(data) {
+	case AbilityCatalogueInputClassRead:
+		*s = AbilityCatalogueInputClassRead
+		return nil
+	case AbilityCatalogueInputClassWrite:
+		*s = AbilityCatalogueInputClassWrite
+		return nil
+	case AbilityCatalogueInputClassDenied:
+		*s = AbilityCatalogueInputClassDenied
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueInputEffectCopy string
+
+const (
+	AbilityCatalogueInputEffectCopyDraft AbilityCatalogueInputEffectCopy = "draft"
+	AbilityCatalogueInputEffectCopyLive  AbilityCatalogueInputEffectCopy = "live"
+	AbilityCatalogueInputEffectCopyNone  AbilityCatalogueInputEffectCopy = "none"
+)
+
+// AllValues returns all AbilityCatalogueInputEffectCopy values.
+func (AbilityCatalogueInputEffectCopy) AllValues() []AbilityCatalogueInputEffectCopy {
+	return []AbilityCatalogueInputEffectCopy{
+		AbilityCatalogueInputEffectCopyDraft,
+		AbilityCatalogueInputEffectCopyLive,
+		AbilityCatalogueInputEffectCopyNone,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueInputEffectCopy) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueInputEffectCopyDraft:
+		return []byte(s), nil
+	case AbilityCatalogueInputEffectCopyLive:
+		return []byte(s), nil
+	case AbilityCatalogueInputEffectCopyNone:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueInputEffectCopy) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueInputEffectCopy(data) {
+	case AbilityCatalogueInputEffectCopyDraft:
+		*s = AbilityCatalogueInputEffectCopyDraft
+		return nil
+	case AbilityCatalogueInputEffectCopyLive:
+		*s = AbilityCatalogueInputEffectCopyLive
+		return nil
+	case AbilityCatalogueInputEffectCopyNone:
+		*s = AbilityCatalogueInputEffectCopyNone
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueInputLimits map[string]jx.Raw
+
+func (s *AbilityCatalogueInputLimits) init() AbilityCatalogueInputLimits {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type AbilityCatalogueInputPermissionMode string
+
+const (
+	AbilityCatalogueInputPermissionModePrincipal AbilityCatalogueInputPermissionMode = "principal"
+	AbilityCatalogueInputPermissionModeAsserted  AbilityCatalogueInputPermissionMode = "asserted"
+)
+
+// AllValues returns all AbilityCatalogueInputPermissionMode values.
+func (AbilityCatalogueInputPermissionMode) AllValues() []AbilityCatalogueInputPermissionMode {
+	return []AbilityCatalogueInputPermissionMode{
+		AbilityCatalogueInputPermissionModePrincipal,
+		AbilityCatalogueInputPermissionModeAsserted,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueInputPermissionMode) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueInputPermissionModePrincipal:
+		return []byte(s), nil
+	case AbilityCatalogueInputPermissionModeAsserted:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueInputPermissionMode) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueInputPermissionMode(data) {
+	case AbilityCatalogueInputPermissionModePrincipal:
+		*s = AbilityCatalogueInputPermissionModePrincipal
+		return nil
+	case AbilityCatalogueInputPermissionModeAsserted:
+		*s = AbilityCatalogueInputPermissionModeAsserted
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueInputSource string
+
+const (
+	AbilityCatalogueInputSourceWpmgr  AbilityCatalogueInputSource = "wpmgr"
+	AbilityCatalogueInputSourceCore   AbilityCatalogueInputSource = "core"
+	AbilityCatalogueInputSourceVendor AbilityCatalogueInputSource = "vendor"
+)
+
+// AllValues returns all AbilityCatalogueInputSource values.
+func (AbilityCatalogueInputSource) AllValues() []AbilityCatalogueInputSource {
+	return []AbilityCatalogueInputSource{
+		AbilityCatalogueInputSourceWpmgr,
+		AbilityCatalogueInputSourceCore,
+		AbilityCatalogueInputSourceVendor,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueInputSource) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueInputSourceWpmgr:
+		return []byte(s), nil
+	case AbilityCatalogueInputSourceCore:
+		return []byte(s), nil
+	case AbilityCatalogueInputSourceVendor:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueInputSource) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueInputSource(data) {
+	case AbilityCatalogueInputSourceWpmgr:
+		*s = AbilityCatalogueInputSourceWpmgr
+		return nil
+	case AbilityCatalogueInputSourceCore:
+		*s = AbilityCatalogueInputSourceCore
+		return nil
+	case AbilityCatalogueInputSourceVendor:
+		*s = AbilityCatalogueInputSourceVendor
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityCatalogueInputStatus string
+
+const (
+	AbilityCatalogueInputStatusAdmitted            AbilityCatalogueInputStatus = "admitted"
+	AbilityCatalogueInputStatusDetectOnly          AbilityCatalogueInputStatus = "detect_only"
+	AbilityCatalogueInputStatusAwaitingVendorTools AbilityCatalogueInputStatus = "awaiting_vendor_tools"
+)
+
+// AllValues returns all AbilityCatalogueInputStatus values.
+func (AbilityCatalogueInputStatus) AllValues() []AbilityCatalogueInputStatus {
+	return []AbilityCatalogueInputStatus{
+		AbilityCatalogueInputStatusAdmitted,
+		AbilityCatalogueInputStatusDetectOnly,
+		AbilityCatalogueInputStatusAwaitingVendorTools,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityCatalogueInputStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityCatalogueInputStatusAdmitted:
+		return []byte(s), nil
+	case AbilityCatalogueInputStatusDetectOnly:
+		return []byte(s), nil
+	case AbilityCatalogueInputStatusAwaitingVendorTools:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityCatalogueInputStatus) UnmarshalText(data []byte) error {
+	switch AbilityCatalogueInputStatus(data) {
+	case AbilityCatalogueInputStatusAdmitted:
+		*s = AbilityCatalogueInputStatusAdmitted
+		return nil
+	case AbilityCatalogueInputStatusDetectOnly:
+		*s = AbilityCatalogueInputStatusDetectOnly
+		return nil
+	case AbilityCatalogueInputStatusAwaitingVendorTools:
+		*s = AbilityCatalogueInputStatusAwaitingVendorTools
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// One AI site-change request. `site_label`, `site_host`, `grant_label` and `title_excerpt` came from a
+// site or an AI connection: render each as plain text. `input_json` is the exact input the AI chose,
+// shown in full on the card.
+// Ref: #/components/schemas/AbilityRequest
+type AbilityRequest struct {
+	ID              uuid.UUID                `json:"id"`
+	SiteID          uuid.UUID                `json:"site_id"`
+	AbilityName     string                   `json:"ability_name"`
+	InputJSON       string                   `json:"input_json"`
+	TitleExcerpt    OptNilString             `json:"title_excerpt"`
+	Editor          OptNilString             `json:"editor"`
+	PostType        OptNilString             `json:"post_type"`
+	EffectCopy      AbilityRequestEffectCopy `json:"effect_copy"`
+	Snapshot        string                   `json:"snapshot"`
+	SiteLabel       string                   `json:"site_label"`
+	SiteHost        string                   `json:"site_host"`
+	GrantLabel      string                   `json:"grant_label"`
+	GrantVia        string                   `json:"grant_via"`
+	SetupClient     OptNilString             `json:"setup_client"`
+	CardCopyVersion int32                    `json:"card_copy_version"`
+	PresentedDigest OptString                `json:"presented_digest"`
+	State           AbilityRequestState      `json:"state"`
+	CreatedAt       time.Time                `json:"created_at"`
+	ExpiresAt       time.Time                `json:"expires_at"`
+	DecidedAt       OptNilDateTime           `json:"decided_at"`
+	Outcome         OptNilString             `json:"outcome"`
+	OutcomeCode     OptNilString             `json:"outcome_code"`
+	NotSentReason   OptNilString             `json:"not_sent_reason"`
+	CreatedPostID   OptNilInt64              `json:"created_post_id"`
+	Trashed         OptNilBool               `json:"trashed"`
+	// A failed wpmgr/rest-write's report on putting the post back. True: the whole post is as it was.
+	// False: WPMgr put back what it could, but the post is not fully as it was; show the request as
+	// needing attention. Null when nothing needed putting back, and for every other ability.
+	Restored           OptNilBool     `json:"restored"`
+	UndoState          OptNilString   `json:"undo_state"`
+	UndoAvailableUntil OptNilDateTime `json:"undo_available_until"`
+	// Whether `POST .../undo` would start an undo now: a done request inside its undo window, or the draft
+	// a failed or given-up page creation left on the site. Show the undo action exactly when this is true.
+	UndoOffered bool `json:"undo_offered"`
+	// True once WPMgr stopped checking the site for the outcome of a write whose reply was lost. The
+	// result is final: the person should look at the site's drafts.
+	ResolveGaveUp bool `json:"resolve_gave_up"`
+	// The reviewed REST route a wpmgr/rest-write request runs; null otherwise.
+	RouteID OptNilString `json:"route_id"`
+	// The route hash the request was approved against; null otherwise.
+	RouteSHA256 OptNilString `json:"route_sha256"`
+	// The structured card of a wpmgr/rest-write request; null otherwise.
+	CardFacts OptNilAbilityRequestCardFacts `json:"card_facts"`
+	// The images a wpmgr/page-create request places, in outline order, as the site described them when
+	// WPMgr checked the request. Null when the outline has no image, and for every other ability. A card
+	// whose outline names an image with no entry here cannot be shown in full and must not be approvable.
+	PageMedia OptNilAbilityRequestPageMediaArray `json:"page_media"`
+	// The page builder that builds a wpmgr/page-create request's page, as the site's precheck named it.
+	// Null for a page in a WordPress editor, and for every other ability. A card for a request whose
+	// editor is a page builder cannot be shown in full without it and must not be approvable.
+	PageBuilder OptNilAbilityRequestPageBuilder `json:"page_builder"`
+}
+
+// GetID returns the value of ID.
+func (s *AbilityRequest) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *AbilityRequest) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetAbilityName returns the value of AbilityName.
+func (s *AbilityRequest) GetAbilityName() string {
+	return s.AbilityName
+}
+
+// GetInputJSON returns the value of InputJSON.
+func (s *AbilityRequest) GetInputJSON() string {
+	return s.InputJSON
+}
+
+// GetTitleExcerpt returns the value of TitleExcerpt.
+func (s *AbilityRequest) GetTitleExcerpt() OptNilString {
+	return s.TitleExcerpt
+}
+
+// GetEditor returns the value of Editor.
+func (s *AbilityRequest) GetEditor() OptNilString {
+	return s.Editor
+}
+
+// GetPostType returns the value of PostType.
+func (s *AbilityRequest) GetPostType() OptNilString {
+	return s.PostType
+}
+
+// GetEffectCopy returns the value of EffectCopy.
+func (s *AbilityRequest) GetEffectCopy() AbilityRequestEffectCopy {
+	return s.EffectCopy
+}
+
+// GetSnapshot returns the value of Snapshot.
+func (s *AbilityRequest) GetSnapshot() string {
+	return s.Snapshot
+}
+
+// GetSiteLabel returns the value of SiteLabel.
+func (s *AbilityRequest) GetSiteLabel() string {
+	return s.SiteLabel
+}
+
+// GetSiteHost returns the value of SiteHost.
+func (s *AbilityRequest) GetSiteHost() string {
+	return s.SiteHost
+}
+
+// GetGrantLabel returns the value of GrantLabel.
+func (s *AbilityRequest) GetGrantLabel() string {
+	return s.GrantLabel
+}
+
+// GetGrantVia returns the value of GrantVia.
+func (s *AbilityRequest) GetGrantVia() string {
+	return s.GrantVia
+}
+
+// GetSetupClient returns the value of SetupClient.
+func (s *AbilityRequest) GetSetupClient() OptNilString {
+	return s.SetupClient
+}
+
+// GetCardCopyVersion returns the value of CardCopyVersion.
+func (s *AbilityRequest) GetCardCopyVersion() int32 {
+	return s.CardCopyVersion
+}
+
+// GetPresentedDigest returns the value of PresentedDigest.
+func (s *AbilityRequest) GetPresentedDigest() OptString {
+	return s.PresentedDigest
+}
+
+// GetState returns the value of State.
+func (s *AbilityRequest) GetState() AbilityRequestState {
+	return s.State
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *AbilityRequest) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetExpiresAt returns the value of ExpiresAt.
+func (s *AbilityRequest) GetExpiresAt() time.Time {
+	return s.ExpiresAt
+}
+
+// GetDecidedAt returns the value of DecidedAt.
+func (s *AbilityRequest) GetDecidedAt() OptNilDateTime {
+	return s.DecidedAt
+}
+
+// GetOutcome returns the value of Outcome.
+func (s *AbilityRequest) GetOutcome() OptNilString {
+	return s.Outcome
+}
+
+// GetOutcomeCode returns the value of OutcomeCode.
+func (s *AbilityRequest) GetOutcomeCode() OptNilString {
+	return s.OutcomeCode
+}
+
+// GetNotSentReason returns the value of NotSentReason.
+func (s *AbilityRequest) GetNotSentReason() OptNilString {
+	return s.NotSentReason
+}
+
+// GetCreatedPostID returns the value of CreatedPostID.
+func (s *AbilityRequest) GetCreatedPostID() OptNilInt64 {
+	return s.CreatedPostID
+}
+
+// GetTrashed returns the value of Trashed.
+func (s *AbilityRequest) GetTrashed() OptNilBool {
+	return s.Trashed
+}
+
+// GetRestored returns the value of Restored.
+func (s *AbilityRequest) GetRestored() OptNilBool {
+	return s.Restored
+}
+
+// GetUndoState returns the value of UndoState.
+func (s *AbilityRequest) GetUndoState() OptNilString {
+	return s.UndoState
+}
+
+// GetUndoAvailableUntil returns the value of UndoAvailableUntil.
+func (s *AbilityRequest) GetUndoAvailableUntil() OptNilDateTime {
+	return s.UndoAvailableUntil
+}
+
+// GetUndoOffered returns the value of UndoOffered.
+func (s *AbilityRequest) GetUndoOffered() bool {
+	return s.UndoOffered
+}
+
+// GetResolveGaveUp returns the value of ResolveGaveUp.
+func (s *AbilityRequest) GetResolveGaveUp() bool {
+	return s.ResolveGaveUp
+}
+
+// GetRouteID returns the value of RouteID.
+func (s *AbilityRequest) GetRouteID() OptNilString {
+	return s.RouteID
+}
+
+// GetRouteSHA256 returns the value of RouteSHA256.
+func (s *AbilityRequest) GetRouteSHA256() OptNilString {
+	return s.RouteSHA256
+}
+
+// GetCardFacts returns the value of CardFacts.
+func (s *AbilityRequest) GetCardFacts() OptNilAbilityRequestCardFacts {
+	return s.CardFacts
+}
+
+// GetPageMedia returns the value of PageMedia.
+func (s *AbilityRequest) GetPageMedia() OptNilAbilityRequestPageMediaArray {
+	return s.PageMedia
+}
+
+// GetPageBuilder returns the value of PageBuilder.
+func (s *AbilityRequest) GetPageBuilder() OptNilAbilityRequestPageBuilder {
+	return s.PageBuilder
+}
+
+// SetID sets the value of ID.
+func (s *AbilityRequest) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *AbilityRequest) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetAbilityName sets the value of AbilityName.
+func (s *AbilityRequest) SetAbilityName(val string) {
+	s.AbilityName = val
+}
+
+// SetInputJSON sets the value of InputJSON.
+func (s *AbilityRequest) SetInputJSON(val string) {
+	s.InputJSON = val
+}
+
+// SetTitleExcerpt sets the value of TitleExcerpt.
+func (s *AbilityRequest) SetTitleExcerpt(val OptNilString) {
+	s.TitleExcerpt = val
+}
+
+// SetEditor sets the value of Editor.
+func (s *AbilityRequest) SetEditor(val OptNilString) {
+	s.Editor = val
+}
+
+// SetPostType sets the value of PostType.
+func (s *AbilityRequest) SetPostType(val OptNilString) {
+	s.PostType = val
+}
+
+// SetEffectCopy sets the value of EffectCopy.
+func (s *AbilityRequest) SetEffectCopy(val AbilityRequestEffectCopy) {
+	s.EffectCopy = val
+}
+
+// SetSnapshot sets the value of Snapshot.
+func (s *AbilityRequest) SetSnapshot(val string) {
+	s.Snapshot = val
+}
+
+// SetSiteLabel sets the value of SiteLabel.
+func (s *AbilityRequest) SetSiteLabel(val string) {
+	s.SiteLabel = val
+}
+
+// SetSiteHost sets the value of SiteHost.
+func (s *AbilityRequest) SetSiteHost(val string) {
+	s.SiteHost = val
+}
+
+// SetGrantLabel sets the value of GrantLabel.
+func (s *AbilityRequest) SetGrantLabel(val string) {
+	s.GrantLabel = val
+}
+
+// SetGrantVia sets the value of GrantVia.
+func (s *AbilityRequest) SetGrantVia(val string) {
+	s.GrantVia = val
+}
+
+// SetSetupClient sets the value of SetupClient.
+func (s *AbilityRequest) SetSetupClient(val OptNilString) {
+	s.SetupClient = val
+}
+
+// SetCardCopyVersion sets the value of CardCopyVersion.
+func (s *AbilityRequest) SetCardCopyVersion(val int32) {
+	s.CardCopyVersion = val
+}
+
+// SetPresentedDigest sets the value of PresentedDigest.
+func (s *AbilityRequest) SetPresentedDigest(val OptString) {
+	s.PresentedDigest = val
+}
+
+// SetState sets the value of State.
+func (s *AbilityRequest) SetState(val AbilityRequestState) {
+	s.State = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *AbilityRequest) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetExpiresAt sets the value of ExpiresAt.
+func (s *AbilityRequest) SetExpiresAt(val time.Time) {
+	s.ExpiresAt = val
+}
+
+// SetDecidedAt sets the value of DecidedAt.
+func (s *AbilityRequest) SetDecidedAt(val OptNilDateTime) {
+	s.DecidedAt = val
+}
+
+// SetOutcome sets the value of Outcome.
+func (s *AbilityRequest) SetOutcome(val OptNilString) {
+	s.Outcome = val
+}
+
+// SetOutcomeCode sets the value of OutcomeCode.
+func (s *AbilityRequest) SetOutcomeCode(val OptNilString) {
+	s.OutcomeCode = val
+}
+
+// SetNotSentReason sets the value of NotSentReason.
+func (s *AbilityRequest) SetNotSentReason(val OptNilString) {
+	s.NotSentReason = val
+}
+
+// SetCreatedPostID sets the value of CreatedPostID.
+func (s *AbilityRequest) SetCreatedPostID(val OptNilInt64) {
+	s.CreatedPostID = val
+}
+
+// SetTrashed sets the value of Trashed.
+func (s *AbilityRequest) SetTrashed(val OptNilBool) {
+	s.Trashed = val
+}
+
+// SetRestored sets the value of Restored.
+func (s *AbilityRequest) SetRestored(val OptNilBool) {
+	s.Restored = val
+}
+
+// SetUndoState sets the value of UndoState.
+func (s *AbilityRequest) SetUndoState(val OptNilString) {
+	s.UndoState = val
+}
+
+// SetUndoAvailableUntil sets the value of UndoAvailableUntil.
+func (s *AbilityRequest) SetUndoAvailableUntil(val OptNilDateTime) {
+	s.UndoAvailableUntil = val
+}
+
+// SetUndoOffered sets the value of UndoOffered.
+func (s *AbilityRequest) SetUndoOffered(val bool) {
+	s.UndoOffered = val
+}
+
+// SetResolveGaveUp sets the value of ResolveGaveUp.
+func (s *AbilityRequest) SetResolveGaveUp(val bool) {
+	s.ResolveGaveUp = val
+}
+
+// SetRouteID sets the value of RouteID.
+func (s *AbilityRequest) SetRouteID(val OptNilString) {
+	s.RouteID = val
+}
+
+// SetRouteSHA256 sets the value of RouteSHA256.
+func (s *AbilityRequest) SetRouteSHA256(val OptNilString) {
+	s.RouteSHA256 = val
+}
+
+// SetCardFacts sets the value of CardFacts.
+func (s *AbilityRequest) SetCardFacts(val OptNilAbilityRequestCardFacts) {
+	s.CardFacts = val
+}
+
+// SetPageMedia sets the value of PageMedia.
+func (s *AbilityRequest) SetPageMedia(val OptNilAbilityRequestPageMediaArray) {
+	s.PageMedia = val
+}
+
+// SetPageBuilder sets the value of PageBuilder.
+func (s *AbilityRequest) SetPageBuilder(val OptNilAbilityRequestPageBuilder) {
+	s.PageBuilder = val
+}
+
+func (*AbilityRequest) approveAbilityRequestRes() {}
+func (*AbilityRequest) declineAbilityRequestRes() {}
+func (*AbilityRequest) undoAbilityRequestRes()    {}
+
+// Ref: #/components/schemas/AbilityRequestApproveBody
+type AbilityRequestApproveBody struct {
+	// The digest the queue returned for this request.
+	PresentedDigest string `json:"presented_digest"`
+}
+
+// GetPresentedDigest returns the value of PresentedDigest.
+func (s *AbilityRequestApproveBody) GetPresentedDigest() string {
+	return s.PresentedDigest
+}
+
+// SetPresentedDigest sets the value of PresentedDigest.
+func (s *AbilityRequestApproveBody) SetPresentedDigest(val string) {
+	s.PresentedDigest = val
+}
+
+// A structured approval card. Every value under a `from_the_site` member came from the site: render it
+// as plain text in the "From the site" slot. `after` is the value the AI asked for. The other strings
+// are WPMgr's.
+// Ref: #/components/schemas/AbilityRequestCardFacts
+type AbilityRequestCardFacts struct {
+	RouteID    string                               `json:"route_id"`
+	RouteTitle string                               `json:"route_title"`
+	Method     string                               `json:"method"`
+	Target     AbilityRequestCardFactsTarget        `json:"target"`
+	Changes    []AbilityRequestCardFactsChangesItem `json:"changes"`
+	EffectCopy AbilityRequestCardFactsEffectCopy    `json:"effect_copy"`
+	Live       bool                                 `json:"live"`
+	// "Published immediately" when live, otherwise "Saved to the post; it is not published".
+	EffectLabel string `json:"effect_label"`
+	Undo        string `json:"undo"`
+	UndoExact   bool   `json:"undo_exact"`
+	// Set when undo may not restore the exact characters of the previous value.
+	UndoNote NilString `json:"undo_note"`
+}
+
+// GetRouteID returns the value of RouteID.
+func (s *AbilityRequestCardFacts) GetRouteID() string {
+	return s.RouteID
+}
+
+// GetRouteTitle returns the value of RouteTitle.
+func (s *AbilityRequestCardFacts) GetRouteTitle() string {
+	return s.RouteTitle
+}
+
+// GetMethod returns the value of Method.
+func (s *AbilityRequestCardFacts) GetMethod() string {
+	return s.Method
+}
+
+// GetTarget returns the value of Target.
+func (s *AbilityRequestCardFacts) GetTarget() AbilityRequestCardFactsTarget {
+	return s.Target
+}
+
+// GetChanges returns the value of Changes.
+func (s *AbilityRequestCardFacts) GetChanges() []AbilityRequestCardFactsChangesItem {
+	return s.Changes
+}
+
+// GetEffectCopy returns the value of EffectCopy.
+func (s *AbilityRequestCardFacts) GetEffectCopy() AbilityRequestCardFactsEffectCopy {
+	return s.EffectCopy
+}
+
+// GetLive returns the value of Live.
+func (s *AbilityRequestCardFacts) GetLive() bool {
+	return s.Live
+}
+
+// GetEffectLabel returns the value of EffectLabel.
+func (s *AbilityRequestCardFacts) GetEffectLabel() string {
+	return s.EffectLabel
+}
+
+// GetUndo returns the value of Undo.
+func (s *AbilityRequestCardFacts) GetUndo() string {
+	return s.Undo
+}
+
+// GetUndoExact returns the value of UndoExact.
+func (s *AbilityRequestCardFacts) GetUndoExact() bool {
+	return s.UndoExact
+}
+
+// GetUndoNote returns the value of UndoNote.
+func (s *AbilityRequestCardFacts) GetUndoNote() NilString {
+	return s.UndoNote
+}
+
+// SetRouteID sets the value of RouteID.
+func (s *AbilityRequestCardFacts) SetRouteID(val string) {
+	s.RouteID = val
+}
+
+// SetRouteTitle sets the value of RouteTitle.
+func (s *AbilityRequestCardFacts) SetRouteTitle(val string) {
+	s.RouteTitle = val
+}
+
+// SetMethod sets the value of Method.
+func (s *AbilityRequestCardFacts) SetMethod(val string) {
+	s.Method = val
+}
+
+// SetTarget sets the value of Target.
+func (s *AbilityRequestCardFacts) SetTarget(val AbilityRequestCardFactsTarget) {
+	s.Target = val
+}
+
+// SetChanges sets the value of Changes.
+func (s *AbilityRequestCardFacts) SetChanges(val []AbilityRequestCardFactsChangesItem) {
+	s.Changes = val
+}
+
+// SetEffectCopy sets the value of EffectCopy.
+func (s *AbilityRequestCardFacts) SetEffectCopy(val AbilityRequestCardFactsEffectCopy) {
+	s.EffectCopy = val
+}
+
+// SetLive sets the value of Live.
+func (s *AbilityRequestCardFacts) SetLive(val bool) {
+	s.Live = val
+}
+
+// SetEffectLabel sets the value of EffectLabel.
+func (s *AbilityRequestCardFacts) SetEffectLabel(val string) {
+	s.EffectLabel = val
+}
+
+// SetUndo sets the value of Undo.
+func (s *AbilityRequestCardFacts) SetUndo(val string) {
+	s.Undo = val
+}
+
+// SetUndoExact sets the value of UndoExact.
+func (s *AbilityRequestCardFacts) SetUndoExact(val bool) {
+	s.UndoExact = val
+}
+
+// SetUndoNote sets the value of UndoNote.
+func (s *AbilityRequestCardFacts) SetUndoNote(val NilString) {
+	s.UndoNote = val
+}
+
+type AbilityRequestCardFactsChangesItem struct {
+	Key         string                                        `json:"key"`
+	Label       string                                        `json:"label"`
+	After       string                                        `json:"after"`
+	FromTheSite AbilityRequestCardFactsChangesItemFromTheSite `json:"from_the_site"`
+}
+
+// GetKey returns the value of Key.
+func (s *AbilityRequestCardFactsChangesItem) GetKey() string {
+	return s.Key
+}
+
+// GetLabel returns the value of Label.
+func (s *AbilityRequestCardFactsChangesItem) GetLabel() string {
+	return s.Label
+}
+
+// GetAfter returns the value of After.
+func (s *AbilityRequestCardFactsChangesItem) GetAfter() string {
+	return s.After
+}
+
+// GetFromTheSite returns the value of FromTheSite.
+func (s *AbilityRequestCardFactsChangesItem) GetFromTheSite() AbilityRequestCardFactsChangesItemFromTheSite {
+	return s.FromTheSite
+}
+
+// SetKey sets the value of Key.
+func (s *AbilityRequestCardFactsChangesItem) SetKey(val string) {
+	s.Key = val
+}
+
+// SetLabel sets the value of Label.
+func (s *AbilityRequestCardFactsChangesItem) SetLabel(val string) {
+	s.Label = val
+}
+
+// SetAfter sets the value of After.
+func (s *AbilityRequestCardFactsChangesItem) SetAfter(val string) {
+	s.After = val
+}
+
+// SetFromTheSite sets the value of FromTheSite.
+func (s *AbilityRequestCardFactsChangesItem) SetFromTheSite(val AbilityRequestCardFactsChangesItemFromTheSite) {
+	s.FromTheSite = val
+}
+
+type AbilityRequestCardFactsChangesItemFromTheSite struct {
+	Before string `json:"before"`
+}
+
+// GetBefore returns the value of Before.
+func (s *AbilityRequestCardFactsChangesItemFromTheSite) GetBefore() string {
+	return s.Before
+}
+
+// SetBefore sets the value of Before.
+func (s *AbilityRequestCardFactsChangesItemFromTheSite) SetBefore(val string) {
+	s.Before = val
+}
+
+type AbilityRequestCardFactsEffectCopy string
+
+const (
+	AbilityRequestCardFactsEffectCopyDraft AbilityRequestCardFactsEffectCopy = "draft"
+	AbilityRequestCardFactsEffectCopyLive  AbilityRequestCardFactsEffectCopy = "live"
+	AbilityRequestCardFactsEffectCopyNone  AbilityRequestCardFactsEffectCopy = "none"
+)
+
+// AllValues returns all AbilityRequestCardFactsEffectCopy values.
+func (AbilityRequestCardFactsEffectCopy) AllValues() []AbilityRequestCardFactsEffectCopy {
+	return []AbilityRequestCardFactsEffectCopy{
+		AbilityRequestCardFactsEffectCopyDraft,
+		AbilityRequestCardFactsEffectCopyLive,
+		AbilityRequestCardFactsEffectCopyNone,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestCardFactsEffectCopy) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestCardFactsEffectCopyDraft:
+		return []byte(s), nil
+	case AbilityRequestCardFactsEffectCopyLive:
+		return []byte(s), nil
+	case AbilityRequestCardFactsEffectCopyNone:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestCardFactsEffectCopy) UnmarshalText(data []byte) error {
+	switch AbilityRequestCardFactsEffectCopy(data) {
+	case AbilityRequestCardFactsEffectCopyDraft:
+		*s = AbilityRequestCardFactsEffectCopyDraft
+		return nil
+	case AbilityRequestCardFactsEffectCopyLive:
+		*s = AbilityRequestCardFactsEffectCopyLive
+		return nil
+	case AbilityRequestCardFactsEffectCopyNone:
+		*s = AbilityRequestCardFactsEffectCopyNone
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityRequestCardFactsTarget struct {
+	ID          int64                                    `json:"id"`
+	PostType    string                                   `json:"post_type"`
+	FromTheSite AbilityRequestCardFactsTargetFromTheSite `json:"from_the_site"`
+}
+
+// GetID returns the value of ID.
+func (s *AbilityRequestCardFactsTarget) GetID() int64 {
+	return s.ID
+}
+
+// GetPostType returns the value of PostType.
+func (s *AbilityRequestCardFactsTarget) GetPostType() string {
+	return s.PostType
+}
+
+// GetFromTheSite returns the value of FromTheSite.
+func (s *AbilityRequestCardFactsTarget) GetFromTheSite() AbilityRequestCardFactsTargetFromTheSite {
+	return s.FromTheSite
+}
+
+// SetID sets the value of ID.
+func (s *AbilityRequestCardFactsTarget) SetID(val int64) {
+	s.ID = val
+}
+
+// SetPostType sets the value of PostType.
+func (s *AbilityRequestCardFactsTarget) SetPostType(val string) {
+	s.PostType = val
+}
+
+// SetFromTheSite sets the value of FromTheSite.
+func (s *AbilityRequestCardFactsTarget) SetFromTheSite(val AbilityRequestCardFactsTargetFromTheSite) {
+	s.FromTheSite = val
+}
+
+type AbilityRequestCardFactsTargetFromTheSite struct {
+	Status      string `json:"status"`
+	TitleBefore string `json:"title_before"`
+}
+
+// GetStatus returns the value of Status.
+func (s *AbilityRequestCardFactsTargetFromTheSite) GetStatus() string {
+	return s.Status
+}
+
+// GetTitleBefore returns the value of TitleBefore.
+func (s *AbilityRequestCardFactsTargetFromTheSite) GetTitleBefore() string {
+	return s.TitleBefore
+}
+
+// SetStatus sets the value of Status.
+func (s *AbilityRequestCardFactsTargetFromTheSite) SetStatus(val string) {
+	s.Status = val
+}
+
+// SetTitleBefore sets the value of TitleBefore.
+func (s *AbilityRequestCardFactsTargetFromTheSite) SetTitleBefore(val string) {
+	s.TitleBefore = val
+}
+
+type AbilityRequestEffectCopy string
+
+const (
+	AbilityRequestEffectCopyDraft AbilityRequestEffectCopy = "draft"
+	AbilityRequestEffectCopyLive  AbilityRequestEffectCopy = "live"
+	AbilityRequestEffectCopyNone  AbilityRequestEffectCopy = "none"
+)
+
+// AllValues returns all AbilityRequestEffectCopy values.
+func (AbilityRequestEffectCopy) AllValues() []AbilityRequestEffectCopy {
+	return []AbilityRequestEffectCopy{
+		AbilityRequestEffectCopyDraft,
+		AbilityRequestEffectCopyLive,
+		AbilityRequestEffectCopyNone,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestEffectCopy) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestEffectCopyDraft:
+		return []byte(s), nil
+	case AbilityRequestEffectCopyLive:
+		return []byte(s), nil
+	case AbilityRequestEffectCopyNone:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestEffectCopy) UnmarshalText(data []byte) error {
+	switch AbilityRequestEffectCopy(data) {
+	case AbilityRequestEffectCopyDraft:
+		*s = AbilityRequestEffectCopyDraft
+		return nil
+	case AbilityRequestEffectCopyLive:
+		*s = AbilityRequestEffectCopyLive
+		return nil
+	case AbilityRequestEffectCopyNone:
+		*s = AbilityRequestEffectCopyNone
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/AbilityRequestList
+type AbilityRequestList struct {
+	Requests []AbilityRequest `json:"requests"`
+	Limit    int32            `json:"limit"`
+	Offset   int32            `json:"offset"`
+}
+
+// GetRequests returns the value of Requests.
+func (s *AbilityRequestList) GetRequests() []AbilityRequest {
+	return s.Requests
+}
+
+// GetLimit returns the value of Limit.
+func (s *AbilityRequestList) GetLimit() int32 {
+	return s.Limit
+}
+
+// GetOffset returns the value of Offset.
+func (s *AbilityRequestList) GetOffset() int32 {
+	return s.Offset
+}
+
+// SetRequests sets the value of Requests.
+func (s *AbilityRequestList) SetRequests(val []AbilityRequest) {
+	s.Requests = val
+}
+
+// SetLimit sets the value of Limit.
+func (s *AbilityRequestList) SetLimit(val int32) {
+	s.Limit = val
+}
+
+// SetOffset sets the value of Offset.
+func (s *AbilityRequestList) SetOffset(val int32) {
+	s.Offset = val
+}
+
+func (*AbilityRequestList) listSiteAbilityRequestsRes() {}
+
+// Ref: #/components/schemas/AbilityRequestOrgList
+type AbilityRequestOrgList struct {
+	Requests []AbilityRequest `json:"requests"`
+	// Requests still waiting for a decision (the badge).
+	PendingCount int64 `json:"pending_count"`
+	Limit        int32 `json:"limit"`
+	Offset       int32 `json:"offset"`
+}
+
+// GetRequests returns the value of Requests.
+func (s *AbilityRequestOrgList) GetRequests() []AbilityRequest {
+	return s.Requests
+}
+
+// GetPendingCount returns the value of PendingCount.
+func (s *AbilityRequestOrgList) GetPendingCount() int64 {
+	return s.PendingCount
+}
+
+// GetLimit returns the value of Limit.
+func (s *AbilityRequestOrgList) GetLimit() int32 {
+	return s.Limit
+}
+
+// GetOffset returns the value of Offset.
+func (s *AbilityRequestOrgList) GetOffset() int32 {
+	return s.Offset
+}
+
+// SetRequests sets the value of Requests.
+func (s *AbilityRequestOrgList) SetRequests(val []AbilityRequest) {
+	s.Requests = val
+}
+
+// SetPendingCount sets the value of PendingCount.
+func (s *AbilityRequestOrgList) SetPendingCount(val int64) {
+	s.PendingCount = val
+}
+
+// SetLimit sets the value of Limit.
+func (s *AbilityRequestOrgList) SetLimit(val int32) {
+	s.Limit = val
+}
+
+// SetOffset sets the value of Offset.
+func (s *AbilityRequestOrgList) SetOffset(val int32) {
+	s.Offset = val
+}
+
+func (*AbilityRequestOrgList) listAbilityRequestsRes() {}
+
+// The page builder of a wpmgr/page-create request. `version` came from the site: render it as plain
+// text.
+// Ref: #/components/schemas/AbilityRequestPageBuilder
+type AbilityRequestPageBuilder struct {
+	// The page builder, such as `elementor`.
+	Builder string `json:"builder"`
+	// What the builder builds the page from, such as `classic` (Elementor's classic widgets).
+	Format string `json:"format"`
+	// The builder's version on the site.
+	Version string `json:"version"`
+	// How the page is laid out, such as `containers` or `sections` (Elementor's two classic layouts).
+	Layout string `json:"layout"`
+}
+
+// GetBuilder returns the value of Builder.
+func (s *AbilityRequestPageBuilder) GetBuilder() string {
+	return s.Builder
+}
+
+// GetFormat returns the value of Format.
+func (s *AbilityRequestPageBuilder) GetFormat() string {
+	return s.Format
+}
+
+// GetVersion returns the value of Version.
+func (s *AbilityRequestPageBuilder) GetVersion() string {
+	return s.Version
+}
+
+// GetLayout returns the value of Layout.
+func (s *AbilityRequestPageBuilder) GetLayout() string {
+	return s.Layout
+}
+
+// SetBuilder sets the value of Builder.
+func (s *AbilityRequestPageBuilder) SetBuilder(val string) {
+	s.Builder = val
+}
+
+// SetFormat sets the value of Format.
+func (s *AbilityRequestPageBuilder) SetFormat(val string) {
+	s.Format = val
+}
+
+// SetVersion sets the value of Version.
+func (s *AbilityRequestPageBuilder) SetVersion(val string) {
+	s.Version = val
+}
+
+// SetLayout sets the value of Layout.
+func (s *AbilityRequestPageBuilder) SetLayout(val string) {
+	s.Layout = val
+}
+
+// One image a wpmgr/page-create request places. `filename` came from the site: render it as plain
+// text.
+// Ref: #/components/schemas/AbilityRequestPageMedia
+type AbilityRequestPageMedia struct {
+	// The attachment id the outline names.
+	ID       int64                       `json:"id"`
+	Filename string                      `json:"filename"`
+	Mime     AbilityRequestPageMediaMime `json:"mime"`
+	// Pixels; 0 when the site does not know.
+	Width int64 `json:"width"`
+	// Pixels; 0 when the site does not know.
+	Height int64 `json:"height"`
+}
+
+// GetID returns the value of ID.
+func (s *AbilityRequestPageMedia) GetID() int64 {
+	return s.ID
+}
+
+// GetFilename returns the value of Filename.
+func (s *AbilityRequestPageMedia) GetFilename() string {
+	return s.Filename
+}
+
+// GetMime returns the value of Mime.
+func (s *AbilityRequestPageMedia) GetMime() AbilityRequestPageMediaMime {
+	return s.Mime
+}
+
+// GetWidth returns the value of Width.
+func (s *AbilityRequestPageMedia) GetWidth() int64 {
+	return s.Width
+}
+
+// GetHeight returns the value of Height.
+func (s *AbilityRequestPageMedia) GetHeight() int64 {
+	return s.Height
+}
+
+// SetID sets the value of ID.
+func (s *AbilityRequestPageMedia) SetID(val int64) {
+	s.ID = val
+}
+
+// SetFilename sets the value of Filename.
+func (s *AbilityRequestPageMedia) SetFilename(val string) {
+	s.Filename = val
+}
+
+// SetMime sets the value of Mime.
+func (s *AbilityRequestPageMedia) SetMime(val AbilityRequestPageMediaMime) {
+	s.Mime = val
+}
+
+// SetWidth sets the value of Width.
+func (s *AbilityRequestPageMedia) SetWidth(val int64) {
+	s.Width = val
+}
+
+// SetHeight sets the value of Height.
+func (s *AbilityRequestPageMedia) SetHeight(val int64) {
+	s.Height = val
+}
+
+type AbilityRequestPageMediaMime string
+
+const (
+	AbilityRequestPageMediaMimeImageJpeg AbilityRequestPageMediaMime = "image/jpeg"
+	AbilityRequestPageMediaMimeImagePNG  AbilityRequestPageMediaMime = "image/png"
+	AbilityRequestPageMediaMimeImageGIF  AbilityRequestPageMediaMime = "image/gif"
+	AbilityRequestPageMediaMimeImageWEBP AbilityRequestPageMediaMime = "image/webp"
+	AbilityRequestPageMediaMimeImageAvif AbilityRequestPageMediaMime = "image/avif"
+)
+
+// AllValues returns all AbilityRequestPageMediaMime values.
+func (AbilityRequestPageMediaMime) AllValues() []AbilityRequestPageMediaMime {
+	return []AbilityRequestPageMediaMime{
+		AbilityRequestPageMediaMimeImageJpeg,
+		AbilityRequestPageMediaMimeImagePNG,
+		AbilityRequestPageMediaMimeImageGIF,
+		AbilityRequestPageMediaMimeImageWEBP,
+		AbilityRequestPageMediaMimeImageAvif,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestPageMediaMime) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestPageMediaMimeImageJpeg:
+		return []byte(s), nil
+	case AbilityRequestPageMediaMimeImagePNG:
+		return []byte(s), nil
+	case AbilityRequestPageMediaMimeImageGIF:
+		return []byte(s), nil
+	case AbilityRequestPageMediaMimeImageWEBP:
+		return []byte(s), nil
+	case AbilityRequestPageMediaMimeImageAvif:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestPageMediaMime) UnmarshalText(data []byte) error {
+	switch AbilityRequestPageMediaMime(data) {
+	case AbilityRequestPageMediaMimeImageJpeg:
+		*s = AbilityRequestPageMediaMimeImageJpeg
+		return nil
+	case AbilityRequestPageMediaMimeImagePNG:
+		*s = AbilityRequestPageMediaMimeImagePNG
+		return nil
+	case AbilityRequestPageMediaMimeImageGIF:
+		*s = AbilityRequestPageMediaMimeImageGIF
+		return nil
+	case AbilityRequestPageMediaMimeImageWEBP:
+		*s = AbilityRequestPageMediaMimeImageWEBP
+		return nil
+	case AbilityRequestPageMediaMimeImageAvif:
+		*s = AbilityRequestPageMediaMimeImageAvif
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityRequestState string
+
+const (
+	AbilityRequestStatePending        AbilityRequestState = "pending"
+	AbilityRequestStateApproved       AbilityRequestState = "approved"
+	AbilityRequestStateDeclined       AbilityRequestState = "declined"
+	AbilityRequestStateWithdrawn      AbilityRequestState = "withdrawn"
+	AbilityRequestStateExpired        AbilityRequestState = "expired"
+	AbilityRequestStateDispatched     AbilityRequestState = "dispatched"
+	AbilityRequestStateOutcomeUnknown AbilityRequestState = "outcome_unknown"
+	AbilityRequestStateDone           AbilityRequestState = "done"
+	AbilityRequestStateFailed         AbilityRequestState = "failed"
+	AbilityRequestStateNotSent        AbilityRequestState = "not_sent"
+)
+
+// AllValues returns all AbilityRequestState values.
+func (AbilityRequestState) AllValues() []AbilityRequestState {
+	return []AbilityRequestState{
+		AbilityRequestStatePending,
+		AbilityRequestStateApproved,
+		AbilityRequestStateDeclined,
+		AbilityRequestStateWithdrawn,
+		AbilityRequestStateExpired,
+		AbilityRequestStateDispatched,
+		AbilityRequestStateOutcomeUnknown,
+		AbilityRequestStateDone,
+		AbilityRequestStateFailed,
+		AbilityRequestStateNotSent,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestState) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestStatePending:
+		return []byte(s), nil
+	case AbilityRequestStateApproved:
+		return []byte(s), nil
+	case AbilityRequestStateDeclined:
+		return []byte(s), nil
+	case AbilityRequestStateWithdrawn:
+		return []byte(s), nil
+	case AbilityRequestStateExpired:
+		return []byte(s), nil
+	case AbilityRequestStateDispatched:
+		return []byte(s), nil
+	case AbilityRequestStateOutcomeUnknown:
+		return []byte(s), nil
+	case AbilityRequestStateDone:
+		return []byte(s), nil
+	case AbilityRequestStateFailed:
+		return []byte(s), nil
+	case AbilityRequestStateNotSent:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestState) UnmarshalText(data []byte) error {
+	switch AbilityRequestState(data) {
+	case AbilityRequestStatePending:
+		*s = AbilityRequestStatePending
+		return nil
+	case AbilityRequestStateApproved:
+		*s = AbilityRequestStateApproved
+		return nil
+	case AbilityRequestStateDeclined:
+		*s = AbilityRequestStateDeclined
+		return nil
+	case AbilityRequestStateWithdrawn:
+		*s = AbilityRequestStateWithdrawn
+		return nil
+	case AbilityRequestStateExpired:
+		*s = AbilityRequestStateExpired
+		return nil
+	case AbilityRequestStateDispatched:
+		*s = AbilityRequestStateDispatched
+		return nil
+	case AbilityRequestStateOutcomeUnknown:
+		*s = AbilityRequestStateOutcomeUnknown
+		return nil
+	case AbilityRequestStateDone:
+		*s = AbilityRequestStateDone
+		return nil
+	case AbilityRequestStateFailed:
+		*s = AbilityRequestStateFailed
+		return nil
+	case AbilityRequestStateNotSent:
+		*s = AbilityRequestStateNotSent
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/AbilityTenantReenableResult
+type AbilityTenantReenableResult struct {
+	EntryID uuid.UUID `json:"entry_id"`
+	// Always true; a tool that was not off is a 404.
+	Reenabled bool `json:"reenabled"`
+}
+
+// GetEntryID returns the value of EntryID.
+func (s *AbilityTenantReenableResult) GetEntryID() uuid.UUID {
+	return s.EntryID
+}
+
+// GetReenabled returns the value of Reenabled.
+func (s *AbilityTenantReenableResult) GetReenabled() bool {
+	return s.Reenabled
+}
+
+// SetEntryID sets the value of EntryID.
+func (s *AbilityTenantReenableResult) SetEntryID(val uuid.UUID) {
+	s.EntryID = val
+}
+
+// SetReenabled sets the value of Reenabled.
+func (s *AbilityTenantReenableResult) SetReenabled(val bool) {
+	s.Reenabled = val
+}
+
+func (*AbilityTenantReenableResult) reenableAbilityForTenantRes() {}
+
 type AcceptInvitationBadRequest Error
 
 func (*AcceptInvitationBadRequest) acceptInvitationRes() {}
@@ -6316,6 +9502,12 @@ type AgentMetadata struct {
 	// storing them — this schema does not itself enforce that vocabulary, since the handler doesn't
 	// either.
 	Keystore OptNilAgentMetadataKeystore `json:"keystore"`
+	// Facts about the site's page builders that the plugin and theme lists do not carry, collected
+	// read-only on every metadata report. Optional and additive: an agent that predates it omits the whole
+	// object, which the control plane stores as "not reported" and never reads as "off". Every field is
+	// tolerantly decoded: a value of an unexpected type is dropped on its own and never rejects the
+	// report. Only the fields below are kept; any other key is ignored.
+	BuilderFacts OptNilAgentMetadataBuilderFacts `json:"builder_facts"`
 }
 
 // GetWpVersion returns the value of WpVersion.
@@ -6408,6 +9600,11 @@ func (s *AgentMetadata) GetKeystore() OptNilAgentMetadataKeystore {
 	return s.Keystore
 }
 
+// GetBuilderFacts returns the value of BuilderFacts.
+func (s *AgentMetadata) GetBuilderFacts() OptNilAgentMetadataBuilderFacts {
+	return s.BuilderFacts
+}
+
 // SetWpVersion sets the value of WpVersion.
 func (s *AgentMetadata) SetWpVersion(val OptString) {
 	s.WpVersion = val
@@ -6496,6 +9693,11 @@ func (s *AgentMetadata) SetThemes(val []SiteComponent) {
 // SetKeystore sets the value of Keystore.
 func (s *AgentMetadata) SetKeystore(val OptNilAgentMetadataKeystore) {
 	s.Keystore = val
+}
+
+// SetBuilderFacts sets the value of BuilderFacts.
+func (s *AgentMetadata) SetBuilderFacts(val OptNilAgentMetadataBuilderFacts) {
+	s.BuilderFacts = val
 }
 
 // The outcome of the agent's last self-update apply, replayed on the next metadata push. This is the
@@ -6589,6 +9791,69 @@ func (s *AgentMetadataAgentSelfUpdate) SetApplyID(val OptString) {
 // SetRung sets the value of Rung.
 func (s *AgentMetadataAgentSelfUpdate) SetRung(val OptString) {
 	s.Rung = val
+}
+
+// Facts about the site's page builders that the plugin and theme lists do not carry, collected
+// read-only on every metadata report. Optional and additive: an agent that predates it omits the whole
+// object, which the control plane stores as "not reported" and never reads as "off". Every field is
+// tolerantly decoded: a value of an unexpected type is dropped on its own and never rejects the
+// report. Only the fields below are kept; any other key is ignored.
+type AgentMetadataBuilderFacts struct {
+	// Schema version of this object. 1 today.
+	V OptInt `json:"v"`
+	// Directory name of the active theme's parent (the theme itself when it has no parent). Kept only when
+	// it is 1 to 100 characters of letters, digits, dot, underscore or hyphen; omitted by the agent when
+	// it cannot be read.
+	ThemeTemplate OptString `json:"theme_template"`
+	// Present only when Elementor is loaded on the site. Absent means "not installed", never "off".
+	Elementor OptNilAgentMetadataBuilderFactsElementor `json:"elementor"`
+}
+
+// GetV returns the value of V.
+func (s *AgentMetadataBuilderFacts) GetV() OptInt {
+	return s.V
+}
+
+// GetThemeTemplate returns the value of ThemeTemplate.
+func (s *AgentMetadataBuilderFacts) GetThemeTemplate() OptString {
+	return s.ThemeTemplate
+}
+
+// GetElementor returns the value of Elementor.
+func (s *AgentMetadataBuilderFacts) GetElementor() OptNilAgentMetadataBuilderFactsElementor {
+	return s.Elementor
+}
+
+// SetV sets the value of V.
+func (s *AgentMetadataBuilderFacts) SetV(val OptInt) {
+	s.V = val
+}
+
+// SetThemeTemplate sets the value of ThemeTemplate.
+func (s *AgentMetadataBuilderFacts) SetThemeTemplate(val OptString) {
+	s.ThemeTemplate = val
+}
+
+// SetElementor sets the value of Elementor.
+func (s *AgentMetadataBuilderFacts) SetElementor(val OptNilAgentMetadataBuilderFactsElementor) {
+	s.Elementor = val
+}
+
+// Present only when Elementor is loaded on the site. Absent means "not installed", never "off".
+type AgentMetadataBuilderFactsElementor struct {
+	// Whether Elementor's Atomic editor is on, asked of Elementor itself. Null means Elementor is loaded
+	// but gave no definite answer; unknown is never sent as false.
+	AtomicEditor OptNilBool `json:"atomic_editor"`
+}
+
+// GetAtomicEditor returns the value of AtomicEditor.
+func (s *AgentMetadataBuilderFactsElementor) GetAtomicEditor() OptNilBool {
+	return s.AtomicEditor
+}
+
+// SetAtomicEditor sets the value of AtomicEditor.
+func (s *AgentMetadataBuilderFactsElementor) SetAtomicEditor(val OptNilBool) {
+	s.AtomicEditor = val
 }
 
 // Present only when WordPress core has an update available.
@@ -8966,6 +12231,22 @@ func (s *ApplyUploadResult) SetMtime(val int64) {
 }
 
 func (*ApplyUploadResult) applySiteFileUploadRes() {}
+
+type ApproveAbilityRequestConflict Error
+
+func (*ApproveAbilityRequestConflict) approveAbilityRequestRes() {}
+
+type ApproveAbilityRequestForbidden Error
+
+func (*ApproveAbilityRequestForbidden) approveAbilityRequestRes() {}
+
+type ApproveAbilityRequestNotFound Error
+
+func (*ApproveAbilityRequestNotFound) approveAbilityRequestRes() {}
+
+type ApproveAbilityRequestUnsupportedMediaType Error
+
+func (*ApproveAbilityRequestUnsupportedMediaType) approveAbilityRequestRes() {}
 
 type ApproveAssistantRequestConflict Error
 
@@ -15059,6 +18340,865 @@ func (s *ConnectedIdentity) SetLastLoginAt(val OptNilDateTime) {
 	s.LastLoginAt = val
 }
 
+// Ref: #/components/schemas/ContentEditingState
+type ContentEditingState struct {
+	SiteID    uuid.UUID      `json:"site_id"`
+	Enabled   bool           `json:"enabled"`
+	EnabledAt OptNilDateTime `json:"enabled_at"`
+	// The WordPress user id of the site's content service user.
+	PrincipalUserID OptNilInt64 `json:"principal_user_id"`
+	EnabledBy       OptNilUUID  `json:"enabled_by"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *ContentEditingState) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *ContentEditingState) GetEnabled() bool {
+	return s.Enabled
+}
+
+// GetEnabledAt returns the value of EnabledAt.
+func (s *ContentEditingState) GetEnabledAt() OptNilDateTime {
+	return s.EnabledAt
+}
+
+// GetPrincipalUserID returns the value of PrincipalUserID.
+func (s *ContentEditingState) GetPrincipalUserID() OptNilInt64 {
+	return s.PrincipalUserID
+}
+
+// GetEnabledBy returns the value of EnabledBy.
+func (s *ContentEditingState) GetEnabledBy() OptNilUUID {
+	return s.EnabledBy
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *ContentEditingState) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *ContentEditingState) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetEnabledAt sets the value of EnabledAt.
+func (s *ContentEditingState) SetEnabledAt(val OptNilDateTime) {
+	s.EnabledAt = val
+}
+
+// SetPrincipalUserID sets the value of PrincipalUserID.
+func (s *ContentEditingState) SetPrincipalUserID(val OptNilInt64) {
+	s.PrincipalUserID = val
+}
+
+// SetEnabledBy sets the value of EnabledBy.
+func (s *ContentEditingState) SetEnabledBy(val OptNilUUID) {
+	s.EnabledBy = val
+}
+
+func (*ContentEditingState) enableSiteContentEditingRes() {}
+func (*ContentEditingState) getSiteContentEditingRes()    {}
+
+// Ref: #/components/schemas/ContentFleetBuilderShare
+type ContentFleetBuilderShare struct {
+	IntegrationID string       `json:"integration_id"`
+	Version       OptNilString `json:"version"`
+	Pages         int64        `json:"pages"`
+	Sites         int64        `json:"sites"`
+}
+
+// GetIntegrationID returns the value of IntegrationID.
+func (s *ContentFleetBuilderShare) GetIntegrationID() string {
+	return s.IntegrationID
+}
+
+// GetVersion returns the value of Version.
+func (s *ContentFleetBuilderShare) GetVersion() OptNilString {
+	return s.Version
+}
+
+// GetPages returns the value of Pages.
+func (s *ContentFleetBuilderShare) GetPages() int64 {
+	return s.Pages
+}
+
+// GetSites returns the value of Sites.
+func (s *ContentFleetBuilderShare) GetSites() int64 {
+	return s.Sites
+}
+
+// SetIntegrationID sets the value of IntegrationID.
+func (s *ContentFleetBuilderShare) SetIntegrationID(val string) {
+	s.IntegrationID = val
+}
+
+// SetVersion sets the value of Version.
+func (s *ContentFleetBuilderShare) SetVersion(val OptNilString) {
+	s.Version = val
+}
+
+// SetPages sets the value of Pages.
+func (s *ContentFleetBuilderShare) SetPages(val int64) {
+	s.Pages = val
+}
+
+// SetSites sets the value of Sites.
+func (s *ContentFleetBuilderShare) SetSites(val int64) {
+	s.Sites = val
+}
+
+// Ref: #/components/schemas/ContentFleetReport
+type ContentFleetReport struct {
+	Pages     int64                      `json:"pages"`
+	ByVerdict []ContentFleetVerdictShare `json:"by_verdict"`
+	ByBuilder []ContentFleetBuilderShare `json:"by_builder"`
+}
+
+// GetPages returns the value of Pages.
+func (s *ContentFleetReport) GetPages() int64 {
+	return s.Pages
+}
+
+// GetByVerdict returns the value of ByVerdict.
+func (s *ContentFleetReport) GetByVerdict() []ContentFleetVerdictShare {
+	return s.ByVerdict
+}
+
+// GetByBuilder returns the value of ByBuilder.
+func (s *ContentFleetReport) GetByBuilder() []ContentFleetBuilderShare {
+	return s.ByBuilder
+}
+
+// SetPages sets the value of Pages.
+func (s *ContentFleetReport) SetPages(val int64) {
+	s.Pages = val
+}
+
+// SetByVerdict sets the value of ByVerdict.
+func (s *ContentFleetReport) SetByVerdict(val []ContentFleetVerdictShare) {
+	s.ByVerdict = val
+}
+
+// SetByBuilder sets the value of ByBuilder.
+func (s *ContentFleetReport) SetByBuilder(val []ContentFleetBuilderShare) {
+	s.ByBuilder = val
+}
+
+func (*ContentFleetReport) getAdminContentFleetReportRes() {}
+
+// Ref: #/components/schemas/ContentFleetVerdictShare
+type ContentFleetVerdictShare struct {
+	Verdict     string `json:"verdict"`
+	RouteNumber int    `json:"route_number"`
+	Pages       int64  `json:"pages"`
+	Sites       int64  `json:"sites"`
+}
+
+// GetVerdict returns the value of Verdict.
+func (s *ContentFleetVerdictShare) GetVerdict() string {
+	return s.Verdict
+}
+
+// GetRouteNumber returns the value of RouteNumber.
+func (s *ContentFleetVerdictShare) GetRouteNumber() int {
+	return s.RouteNumber
+}
+
+// GetPages returns the value of Pages.
+func (s *ContentFleetVerdictShare) GetPages() int64 {
+	return s.Pages
+}
+
+// GetSites returns the value of Sites.
+func (s *ContentFleetVerdictShare) GetSites() int64 {
+	return s.Sites
+}
+
+// SetVerdict sets the value of Verdict.
+func (s *ContentFleetVerdictShare) SetVerdict(val string) {
+	s.Verdict = val
+}
+
+// SetRouteNumber sets the value of RouteNumber.
+func (s *ContentFleetVerdictShare) SetRouteNumber(val int) {
+	s.RouteNumber = val
+}
+
+// SetPages sets the value of Pages.
+func (s *ContentFleetVerdictShare) SetPages(val int64) {
+	s.Pages = val
+}
+
+// SetSites sets the value of Sites.
+func (s *ContentFleetVerdictShare) SetSites(val int64) {
+	s.Sites = val
+}
+
+// Ref: #/components/schemas/ContentIntegration
+type ContentIntegration struct {
+	IntegrationID          string                            `json:"integration_id"`
+	DisplayName            string                            `json:"display_name"`
+	Enabled                bool                              `json:"enabled"`
+	Status                 ContentIntegrationStatus          `json:"status"`
+	Descriptor             ContentIntegrationDescriptor      `json:"descriptor"`
+	Abilities              OptNilContentIntegrationAbilities `json:"abilities"`
+	MinVersion             OptNilString                      `json:"min_version"`
+	MaxTestedVersion       OptNilString                      `json:"max_tested_version"`
+	MinWpVersion           OptNilString                      `json:"min_wp_version"`
+	IntegrationEntrySHA256 OptNilString                      `json:"integration_entry_sha256"`
+	// The theme directory that signals this builder; sent as a hint only when active.
+	ThemeSlug OptNilString `json:"theme_slug"`
+	UpdatedAt time.Time    `json:"updated_at"`
+}
+
+// GetIntegrationID returns the value of IntegrationID.
+func (s *ContentIntegration) GetIntegrationID() string {
+	return s.IntegrationID
+}
+
+// GetDisplayName returns the value of DisplayName.
+func (s *ContentIntegration) GetDisplayName() string {
+	return s.DisplayName
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *ContentIntegration) GetEnabled() bool {
+	return s.Enabled
+}
+
+// GetStatus returns the value of Status.
+func (s *ContentIntegration) GetStatus() ContentIntegrationStatus {
+	return s.Status
+}
+
+// GetDescriptor returns the value of Descriptor.
+func (s *ContentIntegration) GetDescriptor() ContentIntegrationDescriptor {
+	return s.Descriptor
+}
+
+// GetAbilities returns the value of Abilities.
+func (s *ContentIntegration) GetAbilities() OptNilContentIntegrationAbilities {
+	return s.Abilities
+}
+
+// GetMinVersion returns the value of MinVersion.
+func (s *ContentIntegration) GetMinVersion() OptNilString {
+	return s.MinVersion
+}
+
+// GetMaxTestedVersion returns the value of MaxTestedVersion.
+func (s *ContentIntegration) GetMaxTestedVersion() OptNilString {
+	return s.MaxTestedVersion
+}
+
+// GetMinWpVersion returns the value of MinWpVersion.
+func (s *ContentIntegration) GetMinWpVersion() OptNilString {
+	return s.MinWpVersion
+}
+
+// GetIntegrationEntrySHA256 returns the value of IntegrationEntrySHA256.
+func (s *ContentIntegration) GetIntegrationEntrySHA256() OptNilString {
+	return s.IntegrationEntrySHA256
+}
+
+// GetThemeSlug returns the value of ThemeSlug.
+func (s *ContentIntegration) GetThemeSlug() OptNilString {
+	return s.ThemeSlug
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *ContentIntegration) GetUpdatedAt() time.Time {
+	return s.UpdatedAt
+}
+
+// SetIntegrationID sets the value of IntegrationID.
+func (s *ContentIntegration) SetIntegrationID(val string) {
+	s.IntegrationID = val
+}
+
+// SetDisplayName sets the value of DisplayName.
+func (s *ContentIntegration) SetDisplayName(val string) {
+	s.DisplayName = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *ContentIntegration) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetStatus sets the value of Status.
+func (s *ContentIntegration) SetStatus(val ContentIntegrationStatus) {
+	s.Status = val
+}
+
+// SetDescriptor sets the value of Descriptor.
+func (s *ContentIntegration) SetDescriptor(val ContentIntegrationDescriptor) {
+	s.Descriptor = val
+}
+
+// SetAbilities sets the value of Abilities.
+func (s *ContentIntegration) SetAbilities(val OptNilContentIntegrationAbilities) {
+	s.Abilities = val
+}
+
+// SetMinVersion sets the value of MinVersion.
+func (s *ContentIntegration) SetMinVersion(val OptNilString) {
+	s.MinVersion = val
+}
+
+// SetMaxTestedVersion sets the value of MaxTestedVersion.
+func (s *ContentIntegration) SetMaxTestedVersion(val OptNilString) {
+	s.MaxTestedVersion = val
+}
+
+// SetMinWpVersion sets the value of MinWpVersion.
+func (s *ContentIntegration) SetMinWpVersion(val OptNilString) {
+	s.MinWpVersion = val
+}
+
+// SetIntegrationEntrySHA256 sets the value of IntegrationEntrySHA256.
+func (s *ContentIntegration) SetIntegrationEntrySHA256(val OptNilString) {
+	s.IntegrationEntrySHA256 = val
+}
+
+// SetThemeSlug sets the value of ThemeSlug.
+func (s *ContentIntegration) SetThemeSlug(val OptNilString) {
+	s.ThemeSlug = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *ContentIntegration) SetUpdatedAt(val time.Time) {
+	s.UpdatedAt = val
+}
+
+func (*ContentIntegration) upsertAdminContentIntegrationRes() {}
+
+type ContentIntegrationAbilities map[string]jx.Raw
+
+func (s *ContentIntegrationAbilities) init() ContentIntegrationAbilities {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type ContentIntegrationDescriptor map[string]jx.Raw
+
+func (s *ContentIntegrationDescriptor) init() ContentIntegrationDescriptor {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+// Ref: #/components/schemas/ContentIntegrationInput
+type ContentIntegrationInput struct {
+	DisplayName      string                                 `json:"display_name"`
+	Enabled          bool                                   `json:"enabled"`
+	Status           ContentIntegrationInputStatus          `json:"status"`
+	Descriptor       OptContentIntegrationInputDescriptor   `json:"descriptor"`
+	Abilities        OptNilContentIntegrationInputAbilities `json:"abilities"`
+	MinVersion       OptNilString                           `json:"min_version"`
+	MaxTestedVersion OptNilString                           `json:"max_tested_version"`
+	MinWpVersion     OptNilString                           `json:"min_wp_version"`
+	ThemeSlug        OptNilString                           `json:"theme_slug"`
+}
+
+// GetDisplayName returns the value of DisplayName.
+func (s *ContentIntegrationInput) GetDisplayName() string {
+	return s.DisplayName
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *ContentIntegrationInput) GetEnabled() bool {
+	return s.Enabled
+}
+
+// GetStatus returns the value of Status.
+func (s *ContentIntegrationInput) GetStatus() ContentIntegrationInputStatus {
+	return s.Status
+}
+
+// GetDescriptor returns the value of Descriptor.
+func (s *ContentIntegrationInput) GetDescriptor() OptContentIntegrationInputDescriptor {
+	return s.Descriptor
+}
+
+// GetAbilities returns the value of Abilities.
+func (s *ContentIntegrationInput) GetAbilities() OptNilContentIntegrationInputAbilities {
+	return s.Abilities
+}
+
+// GetMinVersion returns the value of MinVersion.
+func (s *ContentIntegrationInput) GetMinVersion() OptNilString {
+	return s.MinVersion
+}
+
+// GetMaxTestedVersion returns the value of MaxTestedVersion.
+func (s *ContentIntegrationInput) GetMaxTestedVersion() OptNilString {
+	return s.MaxTestedVersion
+}
+
+// GetMinWpVersion returns the value of MinWpVersion.
+func (s *ContentIntegrationInput) GetMinWpVersion() OptNilString {
+	return s.MinWpVersion
+}
+
+// GetThemeSlug returns the value of ThemeSlug.
+func (s *ContentIntegrationInput) GetThemeSlug() OptNilString {
+	return s.ThemeSlug
+}
+
+// SetDisplayName sets the value of DisplayName.
+func (s *ContentIntegrationInput) SetDisplayName(val string) {
+	s.DisplayName = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *ContentIntegrationInput) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetStatus sets the value of Status.
+func (s *ContentIntegrationInput) SetStatus(val ContentIntegrationInputStatus) {
+	s.Status = val
+}
+
+// SetDescriptor sets the value of Descriptor.
+func (s *ContentIntegrationInput) SetDescriptor(val OptContentIntegrationInputDescriptor) {
+	s.Descriptor = val
+}
+
+// SetAbilities sets the value of Abilities.
+func (s *ContentIntegrationInput) SetAbilities(val OptNilContentIntegrationInputAbilities) {
+	s.Abilities = val
+}
+
+// SetMinVersion sets the value of MinVersion.
+func (s *ContentIntegrationInput) SetMinVersion(val OptNilString) {
+	s.MinVersion = val
+}
+
+// SetMaxTestedVersion sets the value of MaxTestedVersion.
+func (s *ContentIntegrationInput) SetMaxTestedVersion(val OptNilString) {
+	s.MaxTestedVersion = val
+}
+
+// SetMinWpVersion sets the value of MinWpVersion.
+func (s *ContentIntegrationInput) SetMinWpVersion(val OptNilString) {
+	s.MinWpVersion = val
+}
+
+// SetThemeSlug sets the value of ThemeSlug.
+func (s *ContentIntegrationInput) SetThemeSlug(val OptNilString) {
+	s.ThemeSlug = val
+}
+
+type ContentIntegrationInputAbilities map[string]jx.Raw
+
+func (s *ContentIntegrationInputAbilities) init() ContentIntegrationInputAbilities {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type ContentIntegrationInputDescriptor map[string]jx.Raw
+
+func (s *ContentIntegrationInputDescriptor) init() ContentIntegrationInputDescriptor {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type ContentIntegrationInputStatus string
+
+const (
+	ContentIntegrationInputStatusDetectOnly ContentIntegrationInputStatus = "detect_only"
+)
+
+// AllValues returns all ContentIntegrationInputStatus values.
+func (ContentIntegrationInputStatus) AllValues() []ContentIntegrationInputStatus {
+	return []ContentIntegrationInputStatus{
+		ContentIntegrationInputStatusDetectOnly,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ContentIntegrationInputStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case ContentIntegrationInputStatusDetectOnly:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ContentIntegrationInputStatus) UnmarshalText(data []byte) error {
+	switch ContentIntegrationInputStatus(data) {
+	case ContentIntegrationInputStatusDetectOnly:
+		*s = ContentIntegrationInputStatusDetectOnly
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type ContentIntegrationStatus string
+
+const (
+	ContentIntegrationStatusDetectOnly ContentIntegrationStatus = "detect_only"
+)
+
+// AllValues returns all ContentIntegrationStatus values.
+func (ContentIntegrationStatus) AllValues() []ContentIntegrationStatus {
+	return []ContentIntegrationStatus{
+		ContentIntegrationStatusDetectOnly,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ContentIntegrationStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case ContentIntegrationStatusDetectOnly:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ContentIntegrationStatus) UnmarshalText(data []byte) error {
+	switch ContentIntegrationStatus(data) {
+	case ContentIntegrationStatusDetectOnly:
+		*s = ContentIntegrationStatusDetectOnly
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/ContentInventoryEditor
+type ContentInventoryEditor struct {
+	IntegrationID string `json:"integration_id"`
+	// From the platform allowlist, never from the site.
+	DisplayName OptNilString `json:"display_name"`
+	Version     OptNilString `json:"version"`
+}
+
+// GetIntegrationID returns the value of IntegrationID.
+func (s *ContentInventoryEditor) GetIntegrationID() string {
+	return s.IntegrationID
+}
+
+// GetDisplayName returns the value of DisplayName.
+func (s *ContentInventoryEditor) GetDisplayName() OptNilString {
+	return s.DisplayName
+}
+
+// GetVersion returns the value of Version.
+func (s *ContentInventoryEditor) GetVersion() OptNilString {
+	return s.Version
+}
+
+// SetIntegrationID sets the value of IntegrationID.
+func (s *ContentInventoryEditor) SetIntegrationID(val string) {
+	s.IntegrationID = val
+}
+
+// SetDisplayName sets the value of DisplayName.
+func (s *ContentInventoryEditor) SetDisplayName(val OptNilString) {
+	s.DisplayName = val
+}
+
+// SetVersion sets the value of Version.
+func (s *ContentInventoryEditor) SetVersion(val OptNilString) {
+	s.Version = val
+}
+
+// Ref: #/components/schemas/ContentInventoryPage
+type ContentInventoryPage struct {
+	// True when the last check stopped at the page cap, so the list is a sample of the site. From the
+	// site's last-check record; false when the site has never been checked.
+	Truncated       bool                      `json:"truncated"`
+	State           ContentInventoryPageState `json:"state"`
+	AgentVersion    OptString                 `json:"agent_version"`
+	MinAgentVersion string                    `json:"min_agent_version"`
+	LastCheckedAt   OptNilDateTime            `json:"last_checked_at"`
+	TitlesIncluded  bool                      `json:"titles_included"`
+	NextAfterPostID OptNilInt64               `json:"next_after_post_id"`
+	Pages           []ContentInventoryRow     `json:"pages"`
+}
+
+// GetTruncated returns the value of Truncated.
+func (s *ContentInventoryPage) GetTruncated() bool {
+	return s.Truncated
+}
+
+// GetState returns the value of State.
+func (s *ContentInventoryPage) GetState() ContentInventoryPageState {
+	return s.State
+}
+
+// GetAgentVersion returns the value of AgentVersion.
+func (s *ContentInventoryPage) GetAgentVersion() OptString {
+	return s.AgentVersion
+}
+
+// GetMinAgentVersion returns the value of MinAgentVersion.
+func (s *ContentInventoryPage) GetMinAgentVersion() string {
+	return s.MinAgentVersion
+}
+
+// GetLastCheckedAt returns the value of LastCheckedAt.
+func (s *ContentInventoryPage) GetLastCheckedAt() OptNilDateTime {
+	return s.LastCheckedAt
+}
+
+// GetTitlesIncluded returns the value of TitlesIncluded.
+func (s *ContentInventoryPage) GetTitlesIncluded() bool {
+	return s.TitlesIncluded
+}
+
+// GetNextAfterPostID returns the value of NextAfterPostID.
+func (s *ContentInventoryPage) GetNextAfterPostID() OptNilInt64 {
+	return s.NextAfterPostID
+}
+
+// GetPages returns the value of Pages.
+func (s *ContentInventoryPage) GetPages() []ContentInventoryRow {
+	return s.Pages
+}
+
+// SetTruncated sets the value of Truncated.
+func (s *ContentInventoryPage) SetTruncated(val bool) {
+	s.Truncated = val
+}
+
+// SetState sets the value of State.
+func (s *ContentInventoryPage) SetState(val ContentInventoryPageState) {
+	s.State = val
+}
+
+// SetAgentVersion sets the value of AgentVersion.
+func (s *ContentInventoryPage) SetAgentVersion(val OptString) {
+	s.AgentVersion = val
+}
+
+// SetMinAgentVersion sets the value of MinAgentVersion.
+func (s *ContentInventoryPage) SetMinAgentVersion(val string) {
+	s.MinAgentVersion = val
+}
+
+// SetLastCheckedAt sets the value of LastCheckedAt.
+func (s *ContentInventoryPage) SetLastCheckedAt(val OptNilDateTime) {
+	s.LastCheckedAt = val
+}
+
+// SetTitlesIncluded sets the value of TitlesIncluded.
+func (s *ContentInventoryPage) SetTitlesIncluded(val bool) {
+	s.TitlesIncluded = val
+}
+
+// SetNextAfterPostID sets the value of NextAfterPostID.
+func (s *ContentInventoryPage) SetNextAfterPostID(val OptNilInt64) {
+	s.NextAfterPostID = val
+}
+
+// SetPages sets the value of Pages.
+func (s *ContentInventoryPage) SetPages(val []ContentInventoryRow) {
+	s.Pages = val
+}
+
+func (*ContentInventoryPage) getSiteContentInventoryRes() {}
+
+type ContentInventoryPageState string
+
+const (
+	ContentInventoryPageStateOk                ContentInventoryPageState = "ok"
+	ContentInventoryPageStateAgentUpdateNeeded ContentInventoryPageState = "agent_update_needed"
+	ContentInventoryPageStateNotConnected      ContentInventoryPageState = "not_connected"
+)
+
+// AllValues returns all ContentInventoryPageState values.
+func (ContentInventoryPageState) AllValues() []ContentInventoryPageState {
+	return []ContentInventoryPageState{
+		ContentInventoryPageStateOk,
+		ContentInventoryPageStateAgentUpdateNeeded,
+		ContentInventoryPageStateNotConnected,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ContentInventoryPageState) MarshalText() ([]byte, error) {
+	switch s {
+	case ContentInventoryPageStateOk:
+		return []byte(s), nil
+	case ContentInventoryPageStateAgentUpdateNeeded:
+		return []byte(s), nil
+	case ContentInventoryPageStateNotConnected:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ContentInventoryPageState) UnmarshalText(data []byte) error {
+	switch ContentInventoryPageState(data) {
+	case ContentInventoryPageStateOk:
+		*s = ContentInventoryPageStateOk
+		return nil
+	case ContentInventoryPageStateAgentUpdateNeeded:
+		*s = ContentInventoryPageStateAgentUpdateNeeded
+		return nil
+	case ContentInventoryPageStateNotConnected:
+		*s = ContentInventoryPageStateNotConnected
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/ContentInventoryRow
+type ContentInventoryRow struct {
+	PostID     int64  `json:"post_id"`
+	PostType   string `json:"post_type"`
+	PostStatus string `json:"post_status"`
+	// Known values: classic, empty, block_document, builder, ambiguous, unrecognised_builder,
+	// special_page, template_may_override.
+	Verdict     string `json:"verdict"`
+	RouteNumber int    `json:"route_number"`
+	// A closed set of reason codes; a client renders an unknown code as "Not available yet".
+	RouteReason string `json:"route_reason"`
+	// Null when no builder owns the page.
+	Editor OptNilContentInventoryEditor `json:"editor"`
+	// The site's own text, cleaned and capped at 120 bytes. Null unless the caller holds
+	// site.content.read.
+	Title     OptNilString `json:"title"`
+	CheckedAt time.Time    `json:"checked_at"`
+}
+
+// GetPostID returns the value of PostID.
+func (s *ContentInventoryRow) GetPostID() int64 {
+	return s.PostID
+}
+
+// GetPostType returns the value of PostType.
+func (s *ContentInventoryRow) GetPostType() string {
+	return s.PostType
+}
+
+// GetPostStatus returns the value of PostStatus.
+func (s *ContentInventoryRow) GetPostStatus() string {
+	return s.PostStatus
+}
+
+// GetVerdict returns the value of Verdict.
+func (s *ContentInventoryRow) GetVerdict() string {
+	return s.Verdict
+}
+
+// GetRouteNumber returns the value of RouteNumber.
+func (s *ContentInventoryRow) GetRouteNumber() int {
+	return s.RouteNumber
+}
+
+// GetRouteReason returns the value of RouteReason.
+func (s *ContentInventoryRow) GetRouteReason() string {
+	return s.RouteReason
+}
+
+// GetEditor returns the value of Editor.
+func (s *ContentInventoryRow) GetEditor() OptNilContentInventoryEditor {
+	return s.Editor
+}
+
+// GetTitle returns the value of Title.
+func (s *ContentInventoryRow) GetTitle() OptNilString {
+	return s.Title
+}
+
+// GetCheckedAt returns the value of CheckedAt.
+func (s *ContentInventoryRow) GetCheckedAt() time.Time {
+	return s.CheckedAt
+}
+
+// SetPostID sets the value of PostID.
+func (s *ContentInventoryRow) SetPostID(val int64) {
+	s.PostID = val
+}
+
+// SetPostType sets the value of PostType.
+func (s *ContentInventoryRow) SetPostType(val string) {
+	s.PostType = val
+}
+
+// SetPostStatus sets the value of PostStatus.
+func (s *ContentInventoryRow) SetPostStatus(val string) {
+	s.PostStatus = val
+}
+
+// SetVerdict sets the value of Verdict.
+func (s *ContentInventoryRow) SetVerdict(val string) {
+	s.Verdict = val
+}
+
+// SetRouteNumber sets the value of RouteNumber.
+func (s *ContentInventoryRow) SetRouteNumber(val int) {
+	s.RouteNumber = val
+}
+
+// SetRouteReason sets the value of RouteReason.
+func (s *ContentInventoryRow) SetRouteReason(val string) {
+	s.RouteReason = val
+}
+
+// SetEditor sets the value of Editor.
+func (s *ContentInventoryRow) SetEditor(val OptNilContentInventoryEditor) {
+	s.Editor = val
+}
+
+// SetTitle sets the value of Title.
+func (s *ContentInventoryRow) SetTitle(val OptNilString) {
+	s.Title = val
+}
+
+// SetCheckedAt sets the value of CheckedAt.
+func (s *ContentInventoryRow) SetCheckedAt(val time.Time) {
+	s.CheckedAt = val
+}
+
+type CreateAdminAbilityCatalogueEntryBadRequest Error
+
+func (*CreateAdminAbilityCatalogueEntryBadRequest) createAdminAbilityCatalogueEntryRes() {}
+
+type CreateAdminAbilityCatalogueEntryConflict Error
+
+func (*CreateAdminAbilityCatalogueEntryConflict) createAdminAbilityCatalogueEntryRes() {}
+
+type CreateAdminAbilityCatalogueEntryForbidden Error
+
+func (*CreateAdminAbilityCatalogueEntryForbidden) createAdminAbilityCatalogueEntryRes() {}
+
+type CreateAdminAbilityCatalogueEntryUnauthorized Error
+
+func (*CreateAdminAbilityCatalogueEntryUnauthorized) createAdminAbilityCatalogueEntryRes() {}
+
 // Ref: #/components/schemas/CreateAgencyClientRequest
 type CreateAgencyClientRequest struct {
 	Name         string    `json:"name"`
@@ -17410,6 +21550,24 @@ func (*DbTableActionResponse) runDbTableActionRes() {}
 // Per-table result, keyed by table name (agent-defined shape).
 type DbTableActionResponseResults struct{}
 
+type DeclineAbilityRequestConflict Error
+
+func (*DeclineAbilityRequestConflict) declineAbilityRequestRes() {}
+
+type DeclineAbilityRequestForbidden Error
+
+func (*DeclineAbilityRequestForbidden) declineAbilityRequestRes() {}
+
+type DeclineAbilityRequestNotFound Error
+
+func (*DeclineAbilityRequestNotFound) declineAbilityRequestRes() {}
+
+type DeclineAbilityRequestReq struct{}
+
+type DeclineAbilityRequestUnsupportedMediaType Error
+
+func (*DeclineAbilityRequestUnsupportedMediaType) declineAbilityRequestRes() {}
+
 type DeclineAssistantRequestConflict Error
 
 func (*DeclineAssistantRequestConflict) declineAssistantRequestRes() {}
@@ -19300,6 +23458,28 @@ func (s *EmailWebhookConfigResponse) SetWebhookRouteToken(val OptNilString) {
 func (*EmailWebhookConfigResponse) putOrgEmailWebhookConfigRes()  {}
 func (*EmailWebhookConfigResponse) putSiteEmailWebhookConfigRes() {}
 
+type EnableSiteContentEditingConflict Error
+
+func (*EnableSiteContentEditingConflict) enableSiteContentEditingRes() {}
+
+type EnableSiteContentEditingForbidden Error
+
+func (*EnableSiteContentEditingForbidden) enableSiteContentEditingRes() {}
+
+type EnableSiteContentEditingNotFound Error
+
+func (*EnableSiteContentEditingNotFound) enableSiteContentEditingRes() {}
+
+type EnableSiteContentEditingReq struct{}
+
+type EnableSiteContentEditingServiceUnavailable Error
+
+func (*EnableSiteContentEditingServiceUnavailable) enableSiteContentEditingRes() {}
+
+type EnableSiteContentEditingUnsupportedMediaType Error
+
+func (*EnableSiteContentEditingUnsupportedMediaType) enableSiteContentEditingRes() {}
+
 type EnrollConflict Error
 
 func (*EnrollConflict) enrollRes() {}
@@ -20979,6 +25159,85 @@ func (*FinishWebAuthnEnrollmentUnauthorized) finishWebAuthnEnrollmentRes() {}
 type FinishWebAuthnEnrollmentUnprocessableEntity Error
 
 func (*FinishWebAuthnEnrollmentUnprocessableEntity) finishWebAuthnEnrollmentRes() {}
+
+// Ref: #/components/schemas/FleetAIReadiness
+type FleetAIReadiness struct {
+	Sites []FleetAIReadinessSite `json:"sites"`
+}
+
+// GetSites returns the value of Sites.
+func (s *FleetAIReadiness) GetSites() []FleetAIReadinessSite {
+	return s.Sites
+}
+
+// SetSites sets the value of Sites.
+func (s *FleetAIReadiness) SetSites(val []FleetAIReadinessSite) {
+	s.Sites = val
+}
+
+func (*FleetAIReadiness) getFleetAIReadinessRes() {}
+
+// Ref: #/components/schemas/FleetAIReadinessSite
+type FleetAIReadinessSite struct {
+	SiteID   uuid.UUID         `json:"site_id"`
+	Status   AIReadinessStatus `json:"status"`
+	FixCount int32             `json:"fix_count"`
+	// Ids of the rows that count toward `fix_count`: those whose state is `fail`. `bricks_abilities` is
+	// never listed, whatever its state; when it is `unknown` it makes the site `incomplete`, and it is
+	// still not a fix.
+	Failing  []AIReadinessCheckID     `json:"failing"`
+	Warnings []AIReadinessWarningCode `json:"warnings"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *FleetAIReadinessSite) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetStatus returns the value of Status.
+func (s *FleetAIReadinessSite) GetStatus() AIReadinessStatus {
+	return s.Status
+}
+
+// GetFixCount returns the value of FixCount.
+func (s *FleetAIReadinessSite) GetFixCount() int32 {
+	return s.FixCount
+}
+
+// GetFailing returns the value of Failing.
+func (s *FleetAIReadinessSite) GetFailing() []AIReadinessCheckID {
+	return s.Failing
+}
+
+// GetWarnings returns the value of Warnings.
+func (s *FleetAIReadinessSite) GetWarnings() []AIReadinessWarningCode {
+	return s.Warnings
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *FleetAIReadinessSite) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetStatus sets the value of Status.
+func (s *FleetAIReadinessSite) SetStatus(val AIReadinessStatus) {
+	s.Status = val
+}
+
+// SetFixCount sets the value of FixCount.
+func (s *FleetAIReadinessSite) SetFixCount(val int32) {
+	s.FixCount = val
+}
+
+// SetFailing sets the value of Failing.
+func (s *FleetAIReadinessSite) SetFailing(val []AIReadinessCheckID) {
+	s.Failing = val
+}
+
+// SetWarnings sets the value of Warnings.
+func (s *FleetAIReadinessSite) SetWarnings(val []AIReadinessWarningCode) {
+	s.Warnings = val
+}
 
 // Ref: #/components/schemas/FleetAgentCounts
 type FleetAgentCounts struct {
@@ -23222,6 +27481,14 @@ type GetAdminAccountsTenancyUnauthorized Error
 
 func (*GetAdminAccountsTenancyUnauthorized) getAdminAccountsTenancyRes() {}
 
+type GetAdminContentFleetReportForbidden Error
+
+func (*GetAdminContentFleetReportForbidden) getAdminContentFleetReportRes() {}
+
+type GetAdminContentFleetReportUnauthorized Error
+
+func (*GetAdminContentFleetReportUnauthorized) getAdminContentFleetReportRes() {}
+
 type GetAdminRevenueForbidden Error
 
 func (*GetAdminRevenueForbidden) getAdminRevenueRes() {}
@@ -23434,6 +27701,14 @@ func (*GetEmailNotifySettingsForbidden) getEmailNotifySettingsRes() {}
 type GetEmailNotifySettingsUnauthorized Error
 
 func (*GetEmailNotifySettingsUnauthorized) getEmailNotifySettingsRes() {}
+
+type GetFleetAIReadinessForbidden Error
+
+func (*GetFleetAIReadinessForbidden) getFleetAIReadinessRes() {}
+
+type GetFleetAIReadinessUnauthorized Error
+
+func (*GetFleetAIReadinessUnauthorized) getFleetAIReadinessRes() {}
 
 type GetFleetAgentVersionsForbidden Error
 
@@ -23929,6 +28204,18 @@ type GetScheduleRunNotFound Error
 
 func (*GetScheduleRunNotFound) getScheduleRunRes() {}
 
+type GetSiteAIReadinessForbidden Error
+
+func (*GetSiteAIReadinessForbidden) getSiteAIReadinessRes() {}
+
+type GetSiteAIReadinessNotFound Error
+
+func (*GetSiteAIReadinessNotFound) getSiteAIReadinessRes() {}
+
+type GetSiteAIReadinessUnauthorized Error
+
+func (*GetSiteAIReadinessUnauthorized) getSiteAIReadinessRes() {}
+
 type GetSiteAutologinPolicyForbidden Error
 
 func (*GetSiteAutologinPolicyForbidden) getSiteAutologinPolicyRes() {}
@@ -23936,6 +28223,30 @@ func (*GetSiteAutologinPolicyForbidden) getSiteAutologinPolicyRes() {}
 type GetSiteAutologinPolicyNotFound Error
 
 func (*GetSiteAutologinPolicyNotFound) getSiteAutologinPolicyRes() {}
+
+type GetSiteContentEditingForbidden Error
+
+func (*GetSiteContentEditingForbidden) getSiteContentEditingRes() {}
+
+type GetSiteContentEditingNotFound Error
+
+func (*GetSiteContentEditingNotFound) getSiteContentEditingRes() {}
+
+type GetSiteContentInventoryBadRequest Error
+
+func (*GetSiteContentInventoryBadRequest) getSiteContentInventoryRes() {}
+
+type GetSiteContentInventoryForbidden Error
+
+func (*GetSiteContentInventoryForbidden) getSiteContentInventoryRes() {}
+
+type GetSiteContentInventoryNotFound Error
+
+func (*GetSiteContentInventoryNotFound) getSiteContentInventoryRes() {}
+
+type GetSiteContentInventoryUnauthorized Error
+
+func (*GetSiteContentInventoryUnauthorized) getSiteContentInventoryRes() {}
 
 type GetSiteContextForbidden Error
 
@@ -25460,6 +29771,135 @@ func (s *InviteRequest) SetRole(val Role) {
 	s.Role = val
 }
 
+type ListAbilityRequestsForbidden Error
+
+func (*ListAbilityRequestsForbidden) listAbilityRequestsRes() {}
+
+type ListAbilityRequestsState string
+
+const (
+	ListAbilityRequestsStatePending        ListAbilityRequestsState = "pending"
+	ListAbilityRequestsStateApproved       ListAbilityRequestsState = "approved"
+	ListAbilityRequestsStateDeclined       ListAbilityRequestsState = "declined"
+	ListAbilityRequestsStateWithdrawn      ListAbilityRequestsState = "withdrawn"
+	ListAbilityRequestsStateExpired        ListAbilityRequestsState = "expired"
+	ListAbilityRequestsStateDispatched     ListAbilityRequestsState = "dispatched"
+	ListAbilityRequestsStateOutcomeUnknown ListAbilityRequestsState = "outcome_unknown"
+	ListAbilityRequestsStateDone           ListAbilityRequestsState = "done"
+	ListAbilityRequestsStateFailed         ListAbilityRequestsState = "failed"
+	ListAbilityRequestsStateNotSent        ListAbilityRequestsState = "not_sent"
+)
+
+// AllValues returns all ListAbilityRequestsState values.
+func (ListAbilityRequestsState) AllValues() []ListAbilityRequestsState {
+	return []ListAbilityRequestsState{
+		ListAbilityRequestsStatePending,
+		ListAbilityRequestsStateApproved,
+		ListAbilityRequestsStateDeclined,
+		ListAbilityRequestsStateWithdrawn,
+		ListAbilityRequestsStateExpired,
+		ListAbilityRequestsStateDispatched,
+		ListAbilityRequestsStateOutcomeUnknown,
+		ListAbilityRequestsStateDone,
+		ListAbilityRequestsStateFailed,
+		ListAbilityRequestsStateNotSent,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ListAbilityRequestsState) MarshalText() ([]byte, error) {
+	switch s {
+	case ListAbilityRequestsStatePending:
+		return []byte(s), nil
+	case ListAbilityRequestsStateApproved:
+		return []byte(s), nil
+	case ListAbilityRequestsStateDeclined:
+		return []byte(s), nil
+	case ListAbilityRequestsStateWithdrawn:
+		return []byte(s), nil
+	case ListAbilityRequestsStateExpired:
+		return []byte(s), nil
+	case ListAbilityRequestsStateDispatched:
+		return []byte(s), nil
+	case ListAbilityRequestsStateOutcomeUnknown:
+		return []byte(s), nil
+	case ListAbilityRequestsStateDone:
+		return []byte(s), nil
+	case ListAbilityRequestsStateFailed:
+		return []byte(s), nil
+	case ListAbilityRequestsStateNotSent:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ListAbilityRequestsState) UnmarshalText(data []byte) error {
+	switch ListAbilityRequestsState(data) {
+	case ListAbilityRequestsStatePending:
+		*s = ListAbilityRequestsStatePending
+		return nil
+	case ListAbilityRequestsStateApproved:
+		*s = ListAbilityRequestsStateApproved
+		return nil
+	case ListAbilityRequestsStateDeclined:
+		*s = ListAbilityRequestsStateDeclined
+		return nil
+	case ListAbilityRequestsStateWithdrawn:
+		*s = ListAbilityRequestsStateWithdrawn
+		return nil
+	case ListAbilityRequestsStateExpired:
+		*s = ListAbilityRequestsStateExpired
+		return nil
+	case ListAbilityRequestsStateDispatched:
+		*s = ListAbilityRequestsStateDispatched
+		return nil
+	case ListAbilityRequestsStateOutcomeUnknown:
+		*s = ListAbilityRequestsStateOutcomeUnknown
+		return nil
+	case ListAbilityRequestsStateDone:
+		*s = ListAbilityRequestsStateDone
+		return nil
+	case ListAbilityRequestsStateFailed:
+		*s = ListAbilityRequestsStateFailed
+		return nil
+	case ListAbilityRequestsStateNotSent:
+		*s = ListAbilityRequestsStateNotSent
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type ListAbilityRequestsUnprocessableEntity Error
+
+func (*ListAbilityRequestsUnprocessableEntity) listAbilityRequestsRes() {}
+
+type ListAdminAbilityCatalogueForbidden Error
+
+func (*ListAdminAbilityCatalogueForbidden) listAdminAbilityCatalogueRes() {}
+
+type ListAdminAbilityCatalogueOK struct {
+	Entries []AbilityCatalogueEntry `json:"entries"`
+}
+
+// GetEntries returns the value of Entries.
+func (s *ListAdminAbilityCatalogueOK) GetEntries() []AbilityCatalogueEntry {
+	return s.Entries
+}
+
+// SetEntries sets the value of Entries.
+func (s *ListAdminAbilityCatalogueOK) SetEntries(val []AbilityCatalogueEntry) {
+	s.Entries = val
+}
+
+func (*ListAdminAbilityCatalogueOK) listAdminAbilityCatalogueRes() {}
+
+type ListAdminAbilityCatalogueUnauthorized Error
+
+func (*ListAdminAbilityCatalogueUnauthorized) listAdminAbilityCatalogueRes() {}
+
 type ListAdminAccountsForbidden Error
 
 func (*ListAdminAccountsForbidden) listAdminAccountsRes() {}
@@ -25471,6 +29911,54 @@ func (*ListAdminAccountsServiceUnavailable) listAdminAccountsRes() {}
 type ListAdminAccountsUnauthorized Error
 
 func (*ListAdminAccountsUnauthorized) listAdminAccountsRes() {}
+
+type ListAdminContentIntegrationsForbidden Error
+
+func (*ListAdminContentIntegrationsForbidden) listAdminContentIntegrationsRes() {}
+
+type ListAdminContentIntegrationsOK struct {
+	Integrations []ContentIntegration `json:"integrations"`
+}
+
+// GetIntegrations returns the value of Integrations.
+func (s *ListAdminContentIntegrationsOK) GetIntegrations() []ContentIntegration {
+	return s.Integrations
+}
+
+// SetIntegrations sets the value of Integrations.
+func (s *ListAdminContentIntegrationsOK) SetIntegrations(val []ContentIntegration) {
+	s.Integrations = val
+}
+
+func (*ListAdminContentIntegrationsOK) listAdminContentIntegrationsRes() {}
+
+type ListAdminContentIntegrationsUnauthorized Error
+
+func (*ListAdminContentIntegrationsUnauthorized) listAdminContentIntegrationsRes() {}
+
+type ListAdminRestRoutesForbidden Error
+
+func (*ListAdminRestRoutesForbidden) listAdminRestRoutesRes() {}
+
+type ListAdminRestRoutesOK struct {
+	Routes []RestRoute `json:"routes"`
+}
+
+// GetRoutes returns the value of Routes.
+func (s *ListAdminRestRoutesOK) GetRoutes() []RestRoute {
+	return s.Routes
+}
+
+// SetRoutes sets the value of Routes.
+func (s *ListAdminRestRoutesOK) SetRoutes(val []RestRoute) {
+	s.Routes = val
+}
+
+func (*ListAdminRestRoutesOK) listAdminRestRoutesRes() {}
+
+type ListAdminRestRoutesUnauthorized Error
+
+func (*ListAdminRestRoutesUnauthorized) listAdminRestRoutesRes() {}
 
 type ListAdminUserSitesForbidden Error
 
@@ -25827,6 +30315,14 @@ func (s *ListScheduleRunsStatus) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+type ListSiteAbilityRequestsForbidden Error
+
+func (*ListSiteAbilityRequestsForbidden) listSiteAbilityRequestsRes() {}
+
+type ListSiteAbilityRequestsNotFound Error
+
+func (*ListSiteAbilityRequestsNotFound) listSiteAbilityRequestsRes() {}
 
 type ListSiteActivitySeverity string
 
@@ -26575,7 +31071,6 @@ func (s *Me) SetDesiredPlan(val OptMeDesiredPlan) {
 func (*Me) finishWebAuthnChallengeRes() {}
 func (*Me) getMeRes()                   {}
 func (*Me) loginRes()                   {}
-func (*Me) oidcCallbackRes()            {}
 func (*Me) registerRes()                {}
 func (*Me) updateMeRes()                {}
 func (*Me) verifyEmailRes()             {}
@@ -28981,6 +33476,51 @@ func (s *MonitoringResultDetail) UnmarshalText(data []byte) error {
 	}
 }
 
+// NewNilAIReadinessCheckReason returns new NilAIReadinessCheckReason with value set to v.
+func NewNilAIReadinessCheckReason(v AIReadinessCheckReason) NilAIReadinessCheckReason {
+	return NilAIReadinessCheckReason{
+		Value: v,
+	}
+}
+
+// NilAIReadinessCheckReason is nullable AIReadinessCheckReason.
+type NilAIReadinessCheckReason struct {
+	Value AIReadinessCheckReason
+	Null  bool
+}
+
+// SetTo sets value to v.
+func (o *NilAIReadinessCheckReason) SetTo(v AIReadinessCheckReason) {
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o NilAIReadinessCheckReason) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *NilAIReadinessCheckReason) SetToNull() {
+	o.Null = true
+	var v AIReadinessCheckReason
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o NilAIReadinessCheckReason) Get() (v AIReadinessCheckReason, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o NilAIReadinessCheckReason) Or(d AIReadinessCheckReason) AIReadinessCheckReason {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewNilAgentMirrorStatusLastAttemptOutcome returns new NilAgentMirrorStatusLastAttemptOutcome with value set to v.
 func NewNilAgentMirrorStatusLastAttemptOutcome(v AgentMirrorStatusLastAttemptOutcome) NilAgentMirrorStatusLastAttemptOutcome {
 	return NilAgentMirrorStatusLastAttemptOutcome{
@@ -30979,6 +35519,11 @@ func (s *ObjectCacheTestResult) SetConfigHash(val OptNilString) {
 	s.ConfigHash = val
 }
 
+// OidcCallbackFound is response for OidcCallback operation.
+type OidcCallbackFound struct{}
+
+func (*OidcCallbackFound) oidcCallbackRes() {}
+
 type OidcCallbackNotImplemented Error
 
 func (*OidcCallbackNotImplemented) oidcCallbackRes() {}
@@ -30991,6 +35536,466 @@ func (*OidcCallbackUnauthorized) oidcCallbackRes() {}
 type OidcLoginFound struct{}
 
 func (*OidcLoginFound) oidcLoginRes() {}
+
+// NewOptAIReadinessGroupWpmgrSupport returns new OptAIReadinessGroupWpmgrSupport with value set to v.
+func NewOptAIReadinessGroupWpmgrSupport(v AIReadinessGroupWpmgrSupport) OptAIReadinessGroupWpmgrSupport {
+	return OptAIReadinessGroupWpmgrSupport{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAIReadinessGroupWpmgrSupport is optional AIReadinessGroupWpmgrSupport.
+type OptAIReadinessGroupWpmgrSupport struct {
+	Value AIReadinessGroupWpmgrSupport
+	Set   bool
+}
+
+// IsSet returns true if OptAIReadinessGroupWpmgrSupport was set.
+func (o OptAIReadinessGroupWpmgrSupport) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAIReadinessGroupWpmgrSupport) Reset() {
+	var v AIReadinessGroupWpmgrSupport
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAIReadinessGroupWpmgrSupport) SetTo(v AIReadinessGroupWpmgrSupport) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAIReadinessGroupWpmgrSupport) Get() (v AIReadinessGroupWpmgrSupport, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAIReadinessGroupWpmgrSupport) Or(d AIReadinessGroupWpmgrSupport) AIReadinessGroupWpmgrSupport {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityCatalogueInputAdmission returns new OptAbilityCatalogueInputAdmission with value set to v.
+func NewOptAbilityCatalogueInputAdmission(v AbilityCatalogueInputAdmission) OptAbilityCatalogueInputAdmission {
+	return OptAbilityCatalogueInputAdmission{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityCatalogueInputAdmission is optional AbilityCatalogueInputAdmission.
+type OptAbilityCatalogueInputAdmission struct {
+	Value AbilityCatalogueInputAdmission
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityCatalogueInputAdmission was set.
+func (o OptAbilityCatalogueInputAdmission) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityCatalogueInputAdmission) Reset() {
+	var v AbilityCatalogueInputAdmission
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityCatalogueInputAdmission) SetTo(v AbilityCatalogueInputAdmission) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityCatalogueInputAdmission) Get() (v AbilityCatalogueInputAdmission, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityCatalogueInputAdmission) Or(d AbilityCatalogueInputAdmission) AbilityCatalogueInputAdmission {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityCatalogueInputApprovalMode returns new OptAbilityCatalogueInputApprovalMode with value set to v.
+func NewOptAbilityCatalogueInputApprovalMode(v AbilityCatalogueInputApprovalMode) OptAbilityCatalogueInputApprovalMode {
+	return OptAbilityCatalogueInputApprovalMode{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityCatalogueInputApprovalMode is optional AbilityCatalogueInputApprovalMode.
+type OptAbilityCatalogueInputApprovalMode struct {
+	Value AbilityCatalogueInputApprovalMode
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityCatalogueInputApprovalMode was set.
+func (o OptAbilityCatalogueInputApprovalMode) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityCatalogueInputApprovalMode) Reset() {
+	var v AbilityCatalogueInputApprovalMode
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityCatalogueInputApprovalMode) SetTo(v AbilityCatalogueInputApprovalMode) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityCatalogueInputApprovalMode) Get() (v AbilityCatalogueInputApprovalMode, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityCatalogueInputApprovalMode) Or(d AbilityCatalogueInputApprovalMode) AbilityCatalogueInputApprovalMode {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityCatalogueInputArgRender returns new OptAbilityCatalogueInputArgRender with value set to v.
+func NewOptAbilityCatalogueInputArgRender(v AbilityCatalogueInputArgRender) OptAbilityCatalogueInputArgRender {
+	return OptAbilityCatalogueInputArgRender{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityCatalogueInputArgRender is optional AbilityCatalogueInputArgRender.
+type OptAbilityCatalogueInputArgRender struct {
+	Value AbilityCatalogueInputArgRender
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityCatalogueInputArgRender was set.
+func (o OptAbilityCatalogueInputArgRender) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityCatalogueInputArgRender) Reset() {
+	var v AbilityCatalogueInputArgRender
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityCatalogueInputArgRender) SetTo(v AbilityCatalogueInputArgRender) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityCatalogueInputArgRender) Get() (v AbilityCatalogueInputArgRender, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityCatalogueInputArgRender) Or(d AbilityCatalogueInputArgRender) AbilityCatalogueInputArgRender {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityCatalogueInputClass returns new OptAbilityCatalogueInputClass with value set to v.
+func NewOptAbilityCatalogueInputClass(v AbilityCatalogueInputClass) OptAbilityCatalogueInputClass {
+	return OptAbilityCatalogueInputClass{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityCatalogueInputClass is optional AbilityCatalogueInputClass.
+type OptAbilityCatalogueInputClass struct {
+	Value AbilityCatalogueInputClass
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityCatalogueInputClass was set.
+func (o OptAbilityCatalogueInputClass) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityCatalogueInputClass) Reset() {
+	var v AbilityCatalogueInputClass
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityCatalogueInputClass) SetTo(v AbilityCatalogueInputClass) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityCatalogueInputClass) Get() (v AbilityCatalogueInputClass, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityCatalogueInputClass) Or(d AbilityCatalogueInputClass) AbilityCatalogueInputClass {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityCatalogueInputEffectCopy returns new OptAbilityCatalogueInputEffectCopy with value set to v.
+func NewOptAbilityCatalogueInputEffectCopy(v AbilityCatalogueInputEffectCopy) OptAbilityCatalogueInputEffectCopy {
+	return OptAbilityCatalogueInputEffectCopy{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityCatalogueInputEffectCopy is optional AbilityCatalogueInputEffectCopy.
+type OptAbilityCatalogueInputEffectCopy struct {
+	Value AbilityCatalogueInputEffectCopy
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityCatalogueInputEffectCopy was set.
+func (o OptAbilityCatalogueInputEffectCopy) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityCatalogueInputEffectCopy) Reset() {
+	var v AbilityCatalogueInputEffectCopy
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityCatalogueInputEffectCopy) SetTo(v AbilityCatalogueInputEffectCopy) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityCatalogueInputEffectCopy) Get() (v AbilityCatalogueInputEffectCopy, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityCatalogueInputEffectCopy) Or(d AbilityCatalogueInputEffectCopy) AbilityCatalogueInputEffectCopy {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityCatalogueInputLimits returns new OptAbilityCatalogueInputLimits with value set to v.
+func NewOptAbilityCatalogueInputLimits(v AbilityCatalogueInputLimits) OptAbilityCatalogueInputLimits {
+	return OptAbilityCatalogueInputLimits{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityCatalogueInputLimits is optional AbilityCatalogueInputLimits.
+type OptAbilityCatalogueInputLimits struct {
+	Value AbilityCatalogueInputLimits
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityCatalogueInputLimits was set.
+func (o OptAbilityCatalogueInputLimits) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityCatalogueInputLimits) Reset() {
+	var v AbilityCatalogueInputLimits
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityCatalogueInputLimits) SetTo(v AbilityCatalogueInputLimits) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityCatalogueInputLimits) Get() (v AbilityCatalogueInputLimits, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityCatalogueInputLimits) Or(d AbilityCatalogueInputLimits) AbilityCatalogueInputLimits {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityCatalogueInputPermissionMode returns new OptAbilityCatalogueInputPermissionMode with value set to v.
+func NewOptAbilityCatalogueInputPermissionMode(v AbilityCatalogueInputPermissionMode) OptAbilityCatalogueInputPermissionMode {
+	return OptAbilityCatalogueInputPermissionMode{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityCatalogueInputPermissionMode is optional AbilityCatalogueInputPermissionMode.
+type OptAbilityCatalogueInputPermissionMode struct {
+	Value AbilityCatalogueInputPermissionMode
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityCatalogueInputPermissionMode was set.
+func (o OptAbilityCatalogueInputPermissionMode) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityCatalogueInputPermissionMode) Reset() {
+	var v AbilityCatalogueInputPermissionMode
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityCatalogueInputPermissionMode) SetTo(v AbilityCatalogueInputPermissionMode) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityCatalogueInputPermissionMode) Get() (v AbilityCatalogueInputPermissionMode, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityCatalogueInputPermissionMode) Or(d AbilityCatalogueInputPermissionMode) AbilityCatalogueInputPermissionMode {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityCatalogueInputSource returns new OptAbilityCatalogueInputSource with value set to v.
+func NewOptAbilityCatalogueInputSource(v AbilityCatalogueInputSource) OptAbilityCatalogueInputSource {
+	return OptAbilityCatalogueInputSource{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityCatalogueInputSource is optional AbilityCatalogueInputSource.
+type OptAbilityCatalogueInputSource struct {
+	Value AbilityCatalogueInputSource
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityCatalogueInputSource was set.
+func (o OptAbilityCatalogueInputSource) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityCatalogueInputSource) Reset() {
+	var v AbilityCatalogueInputSource
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityCatalogueInputSource) SetTo(v AbilityCatalogueInputSource) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityCatalogueInputSource) Get() (v AbilityCatalogueInputSource, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityCatalogueInputSource) Or(d AbilityCatalogueInputSource) AbilityCatalogueInputSource {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityCatalogueInputStatus returns new OptAbilityCatalogueInputStatus with value set to v.
+func NewOptAbilityCatalogueInputStatus(v AbilityCatalogueInputStatus) OptAbilityCatalogueInputStatus {
+	return OptAbilityCatalogueInputStatus{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityCatalogueInputStatus is optional AbilityCatalogueInputStatus.
+type OptAbilityCatalogueInputStatus struct {
+	Value AbilityCatalogueInputStatus
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityCatalogueInputStatus was set.
+func (o OptAbilityCatalogueInputStatus) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityCatalogueInputStatus) Reset() {
+	var v AbilityCatalogueInputStatus
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityCatalogueInputStatus) SetTo(v AbilityCatalogueInputStatus) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityCatalogueInputStatus) Get() (v AbilityCatalogueInputStatus, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityCatalogueInputStatus) Or(d AbilityCatalogueInputStatus) AbilityCatalogueInputStatus {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
 
 // NewOptAdminAccountTimelineEntryMetadata returns new OptAdminAccountTimelineEntryMetadata with value set to v.
 func NewOptAdminAccountTimelineEntryMetadata(v AdminAccountTimelineEntryMetadata) OptAdminAccountTimelineEntryMetadata {
@@ -32136,6 +37141,52 @@ func (o OptComputeRucssReq) Get() (v ComputeRucssReq, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptComputeRucssReq) Or(d ComputeRucssReq) ComputeRucssReq {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptContentIntegrationInputDescriptor returns new OptContentIntegrationInputDescriptor with value set to v.
+func NewOptContentIntegrationInputDescriptor(v ContentIntegrationInputDescriptor) OptContentIntegrationInputDescriptor {
+	return OptContentIntegrationInputDescriptor{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptContentIntegrationInputDescriptor is optional ContentIntegrationInputDescriptor.
+type OptContentIntegrationInputDescriptor struct {
+	Value ContentIntegrationInputDescriptor
+	Set   bool
+}
+
+// IsSet returns true if OptContentIntegrationInputDescriptor was set.
+func (o OptContentIntegrationInputDescriptor) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptContentIntegrationInputDescriptor) Reset() {
+	var v ContentIntegrationInputDescriptor
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptContentIntegrationInputDescriptor) SetTo(v ContentIntegrationInputDescriptor) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptContentIntegrationInputDescriptor) Get() (v ContentIntegrationInputDescriptor, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptContentIntegrationInputDescriptor) Or(d ContentIntegrationInputDescriptor) ContentIntegrationInputDescriptor {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -33522,6 +38573,52 @@ func (o OptInt64) Or(d int64) int64 {
 	return d
 }
 
+// NewOptListAbilityRequestsState returns new OptListAbilityRequestsState with value set to v.
+func NewOptListAbilityRequestsState(v ListAbilityRequestsState) OptListAbilityRequestsState {
+	return OptListAbilityRequestsState{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptListAbilityRequestsState is optional ListAbilityRequestsState.
+type OptListAbilityRequestsState struct {
+	Value ListAbilityRequestsState
+	Set   bool
+}
+
+// IsSet returns true if OptListAbilityRequestsState was set.
+func (o OptListAbilityRequestsState) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptListAbilityRequestsState) Reset() {
+	var v ListAbilityRequestsState
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptListAbilityRequestsState) SetTo(v ListAbilityRequestsState) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptListAbilityRequestsState) Get() (v ListAbilityRequestsState, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptListAbilityRequestsState) Or(d ListAbilityRequestsState) ListAbilityRequestsState {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptListFleetBackupsStatus returns new OptListFleetBackupsStatus with value set to v.
 func NewOptListFleetBackupsStatus(v ListFleetBackupsStatus) OptListFleetBackupsStatus {
 	return OptListFleetBackupsStatus{
@@ -34672,6 +39769,210 @@ func (o OptMultipartFile) Or(d ht.MultipartFile) ht.MultipartFile {
 	return d
 }
 
+// NewOptNilAbilityRequestCardFacts returns new OptNilAbilityRequestCardFacts with value set to v.
+func NewOptNilAbilityRequestCardFacts(v AbilityRequestCardFacts) OptNilAbilityRequestCardFacts {
+	return OptNilAbilityRequestCardFacts{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAbilityRequestCardFacts is optional nullable AbilityRequestCardFacts.
+type OptNilAbilityRequestCardFacts struct {
+	Value AbilityRequestCardFacts
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAbilityRequestCardFacts was set.
+func (o OptNilAbilityRequestCardFacts) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAbilityRequestCardFacts) Reset() {
+	var v AbilityRequestCardFacts
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAbilityRequestCardFacts) SetTo(v AbilityRequestCardFacts) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAbilityRequestCardFacts) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAbilityRequestCardFacts) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AbilityRequestCardFacts
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAbilityRequestCardFacts) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAbilityRequestCardFacts) Get() (v AbilityRequestCardFacts, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAbilityRequestCardFacts) Or(d AbilityRequestCardFacts) AbilityRequestCardFacts {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAbilityRequestPageBuilder returns new OptNilAbilityRequestPageBuilder with value set to v.
+func NewOptNilAbilityRequestPageBuilder(v AbilityRequestPageBuilder) OptNilAbilityRequestPageBuilder {
+	return OptNilAbilityRequestPageBuilder{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAbilityRequestPageBuilder is optional nullable AbilityRequestPageBuilder.
+type OptNilAbilityRequestPageBuilder struct {
+	Value AbilityRequestPageBuilder
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAbilityRequestPageBuilder was set.
+func (o OptNilAbilityRequestPageBuilder) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAbilityRequestPageBuilder) Reset() {
+	var v AbilityRequestPageBuilder
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAbilityRequestPageBuilder) SetTo(v AbilityRequestPageBuilder) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAbilityRequestPageBuilder) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAbilityRequestPageBuilder) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AbilityRequestPageBuilder
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAbilityRequestPageBuilder) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAbilityRequestPageBuilder) Get() (v AbilityRequestPageBuilder, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAbilityRequestPageBuilder) Or(d AbilityRequestPageBuilder) AbilityRequestPageBuilder {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAbilityRequestPageMediaArray returns new OptNilAbilityRequestPageMediaArray with value set to v.
+func NewOptNilAbilityRequestPageMediaArray(v []AbilityRequestPageMedia) OptNilAbilityRequestPageMediaArray {
+	return OptNilAbilityRequestPageMediaArray{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAbilityRequestPageMediaArray is optional nullable []AbilityRequestPageMedia.
+type OptNilAbilityRequestPageMediaArray struct {
+	Value []AbilityRequestPageMedia
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAbilityRequestPageMediaArray was set.
+func (o OptNilAbilityRequestPageMediaArray) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAbilityRequestPageMediaArray) Reset() {
+	var v []AbilityRequestPageMedia
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAbilityRequestPageMediaArray) SetTo(v []AbilityRequestPageMedia) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAbilityRequestPageMediaArray) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAbilityRequestPageMediaArray) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v []AbilityRequestPageMedia
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAbilityRequestPageMediaArray) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAbilityRequestPageMediaArray) Get() (v []AbilityRequestPageMedia, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAbilityRequestPageMediaArray) Or(d []AbilityRequestPageMedia) []AbilityRequestPageMedia {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptNilAgentMetadataAgentSelfUpdate returns new OptNilAgentMetadataAgentSelfUpdate with value set to v.
 func NewOptNilAgentMetadataAgentSelfUpdate(v AgentMetadataAgentSelfUpdate) OptNilAgentMetadataAgentSelfUpdate {
 	return OptNilAgentMetadataAgentSelfUpdate{
@@ -34734,6 +40035,142 @@ func (o OptNilAgentMetadataAgentSelfUpdate) Get() (v AgentMetadataAgentSelfUpdat
 
 // Or returns value if set, or given parameter if does not.
 func (o OptNilAgentMetadataAgentSelfUpdate) Or(d AgentMetadataAgentSelfUpdate) AgentMetadataAgentSelfUpdate {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAgentMetadataBuilderFacts returns new OptNilAgentMetadataBuilderFacts with value set to v.
+func NewOptNilAgentMetadataBuilderFacts(v AgentMetadataBuilderFacts) OptNilAgentMetadataBuilderFacts {
+	return OptNilAgentMetadataBuilderFacts{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAgentMetadataBuilderFacts is optional nullable AgentMetadataBuilderFacts.
+type OptNilAgentMetadataBuilderFacts struct {
+	Value AgentMetadataBuilderFacts
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAgentMetadataBuilderFacts was set.
+func (o OptNilAgentMetadataBuilderFacts) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAgentMetadataBuilderFacts) Reset() {
+	var v AgentMetadataBuilderFacts
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAgentMetadataBuilderFacts) SetTo(v AgentMetadataBuilderFacts) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAgentMetadataBuilderFacts) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAgentMetadataBuilderFacts) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AgentMetadataBuilderFacts
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAgentMetadataBuilderFacts) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAgentMetadataBuilderFacts) Get() (v AgentMetadataBuilderFacts, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAgentMetadataBuilderFacts) Or(d AgentMetadataBuilderFacts) AgentMetadataBuilderFacts {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAgentMetadataBuilderFactsElementor returns new OptNilAgentMetadataBuilderFactsElementor with value set to v.
+func NewOptNilAgentMetadataBuilderFactsElementor(v AgentMetadataBuilderFactsElementor) OptNilAgentMetadataBuilderFactsElementor {
+	return OptNilAgentMetadataBuilderFactsElementor{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAgentMetadataBuilderFactsElementor is optional nullable AgentMetadataBuilderFactsElementor.
+type OptNilAgentMetadataBuilderFactsElementor struct {
+	Value AgentMetadataBuilderFactsElementor
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAgentMetadataBuilderFactsElementor was set.
+func (o OptNilAgentMetadataBuilderFactsElementor) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAgentMetadataBuilderFactsElementor) Reset() {
+	var v AgentMetadataBuilderFactsElementor
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAgentMetadataBuilderFactsElementor) SetTo(v AgentMetadataBuilderFactsElementor) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAgentMetadataBuilderFactsElementor) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAgentMetadataBuilderFactsElementor) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AgentMetadataBuilderFactsElementor
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAgentMetadataBuilderFactsElementor) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAgentMetadataBuilderFactsElementor) Get() (v AgentMetadataBuilderFactsElementor, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAgentMetadataBuilderFactsElementor) Or(d AgentMetadataBuilderFactsElementor) AgentMetadataBuilderFactsElementor {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -35210,6 +40647,210 @@ func (o OptNilChainBreak) Get() (v ChainBreak, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptNilChainBreak) Or(d ChainBreak) ChainBreak {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilContentIntegrationAbilities returns new OptNilContentIntegrationAbilities with value set to v.
+func NewOptNilContentIntegrationAbilities(v ContentIntegrationAbilities) OptNilContentIntegrationAbilities {
+	return OptNilContentIntegrationAbilities{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilContentIntegrationAbilities is optional nullable ContentIntegrationAbilities.
+type OptNilContentIntegrationAbilities struct {
+	Value ContentIntegrationAbilities
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilContentIntegrationAbilities was set.
+func (o OptNilContentIntegrationAbilities) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilContentIntegrationAbilities) Reset() {
+	var v ContentIntegrationAbilities
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilContentIntegrationAbilities) SetTo(v ContentIntegrationAbilities) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilContentIntegrationAbilities) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilContentIntegrationAbilities) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v ContentIntegrationAbilities
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilContentIntegrationAbilities) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilContentIntegrationAbilities) Get() (v ContentIntegrationAbilities, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilContentIntegrationAbilities) Or(d ContentIntegrationAbilities) ContentIntegrationAbilities {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilContentIntegrationInputAbilities returns new OptNilContentIntegrationInputAbilities with value set to v.
+func NewOptNilContentIntegrationInputAbilities(v ContentIntegrationInputAbilities) OptNilContentIntegrationInputAbilities {
+	return OptNilContentIntegrationInputAbilities{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilContentIntegrationInputAbilities is optional nullable ContentIntegrationInputAbilities.
+type OptNilContentIntegrationInputAbilities struct {
+	Value ContentIntegrationInputAbilities
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilContentIntegrationInputAbilities was set.
+func (o OptNilContentIntegrationInputAbilities) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilContentIntegrationInputAbilities) Reset() {
+	var v ContentIntegrationInputAbilities
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilContentIntegrationInputAbilities) SetTo(v ContentIntegrationInputAbilities) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilContentIntegrationInputAbilities) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilContentIntegrationInputAbilities) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v ContentIntegrationInputAbilities
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilContentIntegrationInputAbilities) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilContentIntegrationInputAbilities) Get() (v ContentIntegrationInputAbilities, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilContentIntegrationInputAbilities) Or(d ContentIntegrationInputAbilities) ContentIntegrationInputAbilities {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilContentInventoryEditor returns new OptNilContentInventoryEditor with value set to v.
+func NewOptNilContentInventoryEditor(v ContentInventoryEditor) OptNilContentInventoryEditor {
+	return OptNilContentInventoryEditor{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilContentInventoryEditor is optional nullable ContentInventoryEditor.
+type OptNilContentInventoryEditor struct {
+	Value ContentInventoryEditor
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilContentInventoryEditor was set.
+func (o OptNilContentInventoryEditor) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilContentInventoryEditor) Reset() {
+	var v ContentInventoryEditor
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilContentInventoryEditor) SetTo(v ContentInventoryEditor) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilContentInventoryEditor) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilContentInventoryEditor) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v ContentInventoryEditor
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilContentInventoryEditor) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilContentInventoryEditor) Get() (v ContentInventoryEditor, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilContentInventoryEditor) Or(d ContentInventoryEditor) ContentInventoryEditor {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -37554,6 +43195,374 @@ func (o OptRegisterRequestPlan) Get() (v RegisterRequestPlan, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptRegisterRequestPlan) Or(d RegisterRequestPlan) RegisterRequestPlan {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRestRouteInputArgRender returns new OptRestRouteInputArgRender with value set to v.
+func NewOptRestRouteInputArgRender(v RestRouteInputArgRender) OptRestRouteInputArgRender {
+	return OptRestRouteInputArgRender{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRestRouteInputArgRender is optional RestRouteInputArgRender.
+type OptRestRouteInputArgRender struct {
+	Value RestRouteInputArgRender
+	Set   bool
+}
+
+// IsSet returns true if OptRestRouteInputArgRender was set.
+func (o OptRestRouteInputArgRender) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRestRouteInputArgRender) Reset() {
+	var v RestRouteInputArgRender
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRestRouteInputArgRender) SetTo(v RestRouteInputArgRender) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRestRouteInputArgRender) Get() (v RestRouteInputArgRender, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRestRouteInputArgRender) Or(d RestRouteInputArgRender) RestRouteInputArgRender {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRestRouteInputBodyKeys returns new OptRestRouteInputBodyKeys with value set to v.
+func NewOptRestRouteInputBodyKeys(v RestRouteInputBodyKeys) OptRestRouteInputBodyKeys {
+	return OptRestRouteInputBodyKeys{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRestRouteInputBodyKeys is optional RestRouteInputBodyKeys.
+type OptRestRouteInputBodyKeys struct {
+	Value RestRouteInputBodyKeys
+	Set   bool
+}
+
+// IsSet returns true if OptRestRouteInputBodyKeys was set.
+func (o OptRestRouteInputBodyKeys) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRestRouteInputBodyKeys) Reset() {
+	var v RestRouteInputBodyKeys
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRestRouteInputBodyKeys) SetTo(v RestRouteInputBodyKeys) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRestRouteInputBodyKeys) Get() (v RestRouteInputBodyKeys, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRestRouteInputBodyKeys) Or(d RestRouteInputBodyKeys) RestRouteInputBodyKeys {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRestRouteInputClass returns new OptRestRouteInputClass with value set to v.
+func NewOptRestRouteInputClass(v RestRouteInputClass) OptRestRouteInputClass {
+	return OptRestRouteInputClass{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRestRouteInputClass is optional RestRouteInputClass.
+type OptRestRouteInputClass struct {
+	Value RestRouteInputClass
+	Set   bool
+}
+
+// IsSet returns true if OptRestRouteInputClass was set.
+func (o OptRestRouteInputClass) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRestRouteInputClass) Reset() {
+	var v RestRouteInputClass
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRestRouteInputClass) SetTo(v RestRouteInputClass) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRestRouteInputClass) Get() (v RestRouteInputClass, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRestRouteInputClass) Or(d RestRouteInputClass) RestRouteInputClass {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRestRouteInputEffectCopy returns new OptRestRouteInputEffectCopy with value set to v.
+func NewOptRestRouteInputEffectCopy(v RestRouteInputEffectCopy) OptRestRouteInputEffectCopy {
+	return OptRestRouteInputEffectCopy{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRestRouteInputEffectCopy is optional RestRouteInputEffectCopy.
+type OptRestRouteInputEffectCopy struct {
+	Value RestRouteInputEffectCopy
+	Set   bool
+}
+
+// IsSet returns true if OptRestRouteInputEffectCopy was set.
+func (o OptRestRouteInputEffectCopy) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRestRouteInputEffectCopy) Reset() {
+	var v RestRouteInputEffectCopy
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRestRouteInputEffectCopy) SetTo(v RestRouteInputEffectCopy) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRestRouteInputEffectCopy) Get() (v RestRouteInputEffectCopy, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRestRouteInputEffectCopy) Or(d RestRouteInputEffectCopy) RestRouteInputEffectCopy {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRestRouteInputMethod returns new OptRestRouteInputMethod with value set to v.
+func NewOptRestRouteInputMethod(v RestRouteInputMethod) OptRestRouteInputMethod {
+	return OptRestRouteInputMethod{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRestRouteInputMethod is optional RestRouteInputMethod.
+type OptRestRouteInputMethod struct {
+	Value RestRouteInputMethod
+	Set   bool
+}
+
+// IsSet returns true if OptRestRouteInputMethod was set.
+func (o OptRestRouteInputMethod) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRestRouteInputMethod) Reset() {
+	var v RestRouteInputMethod
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRestRouteInputMethod) SetTo(v RestRouteInputMethod) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRestRouteInputMethod) Get() (v RestRouteInputMethod, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRestRouteInputMethod) Or(d RestRouteInputMethod) RestRouteInputMethod {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRestRouteInputPathParams returns new OptRestRouteInputPathParams with value set to v.
+func NewOptRestRouteInputPathParams(v RestRouteInputPathParams) OptRestRouteInputPathParams {
+	return OptRestRouteInputPathParams{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRestRouteInputPathParams is optional RestRouteInputPathParams.
+type OptRestRouteInputPathParams struct {
+	Value RestRouteInputPathParams
+	Set   bool
+}
+
+// IsSet returns true if OptRestRouteInputPathParams was set.
+func (o OptRestRouteInputPathParams) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRestRouteInputPathParams) Reset() {
+	var v RestRouteInputPathParams
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRestRouteInputPathParams) SetTo(v RestRouteInputPathParams) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRestRouteInputPathParams) Get() (v RestRouteInputPathParams, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRestRouteInputPathParams) Or(d RestRouteInputPathParams) RestRouteInputPathParams {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRestRouteInputPinnedQuery returns new OptRestRouteInputPinnedQuery with value set to v.
+func NewOptRestRouteInputPinnedQuery(v RestRouteInputPinnedQuery) OptRestRouteInputPinnedQuery {
+	return OptRestRouteInputPinnedQuery{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRestRouteInputPinnedQuery is optional RestRouteInputPinnedQuery.
+type OptRestRouteInputPinnedQuery struct {
+	Value RestRouteInputPinnedQuery
+	Set   bool
+}
+
+// IsSet returns true if OptRestRouteInputPinnedQuery was set.
+func (o OptRestRouteInputPinnedQuery) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRestRouteInputPinnedQuery) Reset() {
+	var v RestRouteInputPinnedQuery
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRestRouteInputPinnedQuery) SetTo(v RestRouteInputPinnedQuery) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRestRouteInputPinnedQuery) Get() (v RestRouteInputPinnedQuery, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRestRouteInputPinnedQuery) Or(d RestRouteInputPinnedQuery) RestRouteInputPinnedQuery {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptRestRouteInputQueryKeys returns new OptRestRouteInputQueryKeys with value set to v.
+func NewOptRestRouteInputQueryKeys(v RestRouteInputQueryKeys) OptRestRouteInputQueryKeys {
+	return OptRestRouteInputQueryKeys{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptRestRouteInputQueryKeys is optional RestRouteInputQueryKeys.
+type OptRestRouteInputQueryKeys struct {
+	Value RestRouteInputQueryKeys
+	Set   bool
+}
+
+// IsSet returns true if OptRestRouteInputQueryKeys was set.
+func (o OptRestRouteInputQueryKeys) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptRestRouteInputQueryKeys) Reset() {
+	var v RestRouteInputQueryKeys
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptRestRouteInputQueryKeys) SetTo(v RestRouteInputQueryKeys) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptRestRouteInputQueryKeys) Get() (v RestRouteInputQueryKeys, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptRestRouteInputQueryKeys) Or(d RestRouteInputQueryKeys) RestRouteInputQueryKeys {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -43387,6 +49396,116 @@ func (s *RecoveryCodesResponse) SetRecoveryCodes(val []string) {
 func (*RecoveryCodesResponse) confirmTotpEnrollmentRes()   {}
 func (*RecoveryCodesResponse) regenerateRecoveryCodesRes() {}
 
+type ReenableAbilityForTenantForbidden Error
+
+func (*ReenableAbilityForTenantForbidden) reenableAbilityForTenantRes() {}
+
+type ReenableAbilityForTenantNotFound Error
+
+func (*ReenableAbilityForTenantNotFound) reenableAbilityForTenantRes() {}
+
+type ReenableAbilityForTenantReq struct{}
+
+type ReenableAbilityForTenantUnprocessableEntity Error
+
+func (*ReenableAbilityForTenantUnprocessableEntity) reenableAbilityForTenantRes() {}
+
+type ReenableAbilityForTenantUnsupportedMediaType Error
+
+func (*ReenableAbilityForTenantUnsupportedMediaType) reenableAbilityForTenantRes() {}
+
+type RefreshSiteAIReadinessConflict Error
+
+func (*RefreshSiteAIReadinessConflict) refreshSiteAIReadinessRes() {}
+
+type RefreshSiteAIReadinessForbidden Error
+
+func (*RefreshSiteAIReadinessForbidden) refreshSiteAIReadinessRes() {}
+
+type RefreshSiteAIReadinessNotFound Error
+
+func (*RefreshSiteAIReadinessNotFound) refreshSiteAIReadinessRes() {}
+
+type RefreshSiteAIReadinessReq struct{}
+
+type RefreshSiteAIReadinessServiceUnavailable Error
+
+func (*RefreshSiteAIReadinessServiceUnavailable) refreshSiteAIReadinessRes() {}
+
+type RefreshSiteAIReadinessUnauthorized Error
+
+func (*RefreshSiteAIReadinessUnauthorized) refreshSiteAIReadinessRes() {}
+
+type RefreshSiteAIReadinessUnsupportedMediaType Error
+
+func (*RefreshSiteAIReadinessUnsupportedMediaType) refreshSiteAIReadinessRes() {}
+
+type RefreshSiteContentInventoryAccepted struct {
+	Status RefreshSiteContentInventoryAcceptedStatus `json:"status"`
+}
+
+// GetStatus returns the value of Status.
+func (s *RefreshSiteContentInventoryAccepted) GetStatus() RefreshSiteContentInventoryAcceptedStatus {
+	return s.Status
+}
+
+// SetStatus sets the value of Status.
+func (s *RefreshSiteContentInventoryAccepted) SetStatus(val RefreshSiteContentInventoryAcceptedStatus) {
+	s.Status = val
+}
+
+func (*RefreshSiteContentInventoryAccepted) refreshSiteContentInventoryRes() {}
+
+type RefreshSiteContentInventoryAcceptedStatus string
+
+const (
+	RefreshSiteContentInventoryAcceptedStatusQueued RefreshSiteContentInventoryAcceptedStatus = "queued"
+)
+
+// AllValues returns all RefreshSiteContentInventoryAcceptedStatus values.
+func (RefreshSiteContentInventoryAcceptedStatus) AllValues() []RefreshSiteContentInventoryAcceptedStatus {
+	return []RefreshSiteContentInventoryAcceptedStatus{
+		RefreshSiteContentInventoryAcceptedStatusQueued,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RefreshSiteContentInventoryAcceptedStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case RefreshSiteContentInventoryAcceptedStatusQueued:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RefreshSiteContentInventoryAcceptedStatus) UnmarshalText(data []byte) error {
+	switch RefreshSiteContentInventoryAcceptedStatus(data) {
+	case RefreshSiteContentInventoryAcceptedStatusQueued:
+		*s = RefreshSiteContentInventoryAcceptedStatusQueued
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type RefreshSiteContentInventoryForbidden Error
+
+func (*RefreshSiteContentInventoryForbidden) refreshSiteContentInventoryRes() {}
+
+type RefreshSiteContentInventoryNotFound Error
+
+func (*RefreshSiteContentInventoryNotFound) refreshSiteContentInventoryRes() {}
+
+type RefreshSiteContentInventoryTooManyRequests Error
+
+func (*RefreshSiteContentInventoryTooManyRequests) refreshSiteContentInventoryRes() {}
+
+type RefreshSiteContentInventoryUnauthorized Error
+
+func (*RefreshSiteContentInventoryUnauthorized) refreshSiteContentInventoryRes() {}
+
 // RefreshSiteDiagnosticsAccepted is response for RefreshSiteDiagnostics operation.
 type RefreshSiteDiagnosticsAccepted struct{}
 
@@ -44011,6 +50130,896 @@ func (s *ResetPasswordReq) SetPassword(val string) {
 type ResetPasswordUnprocessableEntity Error
 
 func (*ResetPasswordUnprocessableEntity) resetPasswordRes() {}
+
+// One reviewed WordPress REST route (m161). `route_sha256` is the sha256 of the exact route bytes sent
+// to a site's agent.
+// Ref: #/components/schemas/RestRoute
+type RestRoute struct {
+	RouteID     string               `json:"route_id"`
+	Method      RestRouteMethod      `json:"method"`
+	Namespace   string               `json:"namespace"`
+	Template    string               `json:"template"`
+	CorePattern string               `json:"core_pattern"`
+	PathParams  RestRoutePathParams  `json:"path_params"`
+	QueryKeys   RestRouteQueryKeys   `json:"query_keys"`
+	PinnedQuery RestRoutePinnedQuery `json:"pinned_query"`
+	BodyKeys    RestRouteBodyKeys    `json:"body_keys"`
+	Class       RestRouteClass       `json:"class"`
+	// The pinned output shape.
+	OutputFields       jx.Raw              `json:"output_fields"`
+	Snapshot           string              `json:"snapshot"`
+	Target             jx.Raw              `json:"target"`
+	ArgRender          RestRouteArgRender  `json:"arg_render"`
+	OperatorPermission OptNilString        `json:"operator_permission"`
+	EffectCopy         RestRouteEffectCopy `json:"effect_copy"`
+	Enabled            bool                `json:"enabled"`
+	MinWpVersion       OptNilString        `json:"min_wp_version"`
+	Title              string              `json:"title"`
+	Description        string              `json:"description"`
+	RouteSHA256        OptNilString        `json:"route_sha256"`
+	HashCurrent        bool                `json:"hash_current"`
+	UpdatedAt          time.Time           `json:"updated_at"`
+}
+
+// GetRouteID returns the value of RouteID.
+func (s *RestRoute) GetRouteID() string {
+	return s.RouteID
+}
+
+// GetMethod returns the value of Method.
+func (s *RestRoute) GetMethod() RestRouteMethod {
+	return s.Method
+}
+
+// GetNamespace returns the value of Namespace.
+func (s *RestRoute) GetNamespace() string {
+	return s.Namespace
+}
+
+// GetTemplate returns the value of Template.
+func (s *RestRoute) GetTemplate() string {
+	return s.Template
+}
+
+// GetCorePattern returns the value of CorePattern.
+func (s *RestRoute) GetCorePattern() string {
+	return s.CorePattern
+}
+
+// GetPathParams returns the value of PathParams.
+func (s *RestRoute) GetPathParams() RestRoutePathParams {
+	return s.PathParams
+}
+
+// GetQueryKeys returns the value of QueryKeys.
+func (s *RestRoute) GetQueryKeys() RestRouteQueryKeys {
+	return s.QueryKeys
+}
+
+// GetPinnedQuery returns the value of PinnedQuery.
+func (s *RestRoute) GetPinnedQuery() RestRoutePinnedQuery {
+	return s.PinnedQuery
+}
+
+// GetBodyKeys returns the value of BodyKeys.
+func (s *RestRoute) GetBodyKeys() RestRouteBodyKeys {
+	return s.BodyKeys
+}
+
+// GetClass returns the value of Class.
+func (s *RestRoute) GetClass() RestRouteClass {
+	return s.Class
+}
+
+// GetOutputFields returns the value of OutputFields.
+func (s *RestRoute) GetOutputFields() jx.Raw {
+	return s.OutputFields
+}
+
+// GetSnapshot returns the value of Snapshot.
+func (s *RestRoute) GetSnapshot() string {
+	return s.Snapshot
+}
+
+// GetTarget returns the value of Target.
+func (s *RestRoute) GetTarget() jx.Raw {
+	return s.Target
+}
+
+// GetArgRender returns the value of ArgRender.
+func (s *RestRoute) GetArgRender() RestRouteArgRender {
+	return s.ArgRender
+}
+
+// GetOperatorPermission returns the value of OperatorPermission.
+func (s *RestRoute) GetOperatorPermission() OptNilString {
+	return s.OperatorPermission
+}
+
+// GetEffectCopy returns the value of EffectCopy.
+func (s *RestRoute) GetEffectCopy() RestRouteEffectCopy {
+	return s.EffectCopy
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *RestRoute) GetEnabled() bool {
+	return s.Enabled
+}
+
+// GetMinWpVersion returns the value of MinWpVersion.
+func (s *RestRoute) GetMinWpVersion() OptNilString {
+	return s.MinWpVersion
+}
+
+// GetTitle returns the value of Title.
+func (s *RestRoute) GetTitle() string {
+	return s.Title
+}
+
+// GetDescription returns the value of Description.
+func (s *RestRoute) GetDescription() string {
+	return s.Description
+}
+
+// GetRouteSHA256 returns the value of RouteSHA256.
+func (s *RestRoute) GetRouteSHA256() OptNilString {
+	return s.RouteSHA256
+}
+
+// GetHashCurrent returns the value of HashCurrent.
+func (s *RestRoute) GetHashCurrent() bool {
+	return s.HashCurrent
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *RestRoute) GetUpdatedAt() time.Time {
+	return s.UpdatedAt
+}
+
+// SetRouteID sets the value of RouteID.
+func (s *RestRoute) SetRouteID(val string) {
+	s.RouteID = val
+}
+
+// SetMethod sets the value of Method.
+func (s *RestRoute) SetMethod(val RestRouteMethod) {
+	s.Method = val
+}
+
+// SetNamespace sets the value of Namespace.
+func (s *RestRoute) SetNamespace(val string) {
+	s.Namespace = val
+}
+
+// SetTemplate sets the value of Template.
+func (s *RestRoute) SetTemplate(val string) {
+	s.Template = val
+}
+
+// SetCorePattern sets the value of CorePattern.
+func (s *RestRoute) SetCorePattern(val string) {
+	s.CorePattern = val
+}
+
+// SetPathParams sets the value of PathParams.
+func (s *RestRoute) SetPathParams(val RestRoutePathParams) {
+	s.PathParams = val
+}
+
+// SetQueryKeys sets the value of QueryKeys.
+func (s *RestRoute) SetQueryKeys(val RestRouteQueryKeys) {
+	s.QueryKeys = val
+}
+
+// SetPinnedQuery sets the value of PinnedQuery.
+func (s *RestRoute) SetPinnedQuery(val RestRoutePinnedQuery) {
+	s.PinnedQuery = val
+}
+
+// SetBodyKeys sets the value of BodyKeys.
+func (s *RestRoute) SetBodyKeys(val RestRouteBodyKeys) {
+	s.BodyKeys = val
+}
+
+// SetClass sets the value of Class.
+func (s *RestRoute) SetClass(val RestRouteClass) {
+	s.Class = val
+}
+
+// SetOutputFields sets the value of OutputFields.
+func (s *RestRoute) SetOutputFields(val jx.Raw) {
+	s.OutputFields = val
+}
+
+// SetSnapshot sets the value of Snapshot.
+func (s *RestRoute) SetSnapshot(val string) {
+	s.Snapshot = val
+}
+
+// SetTarget sets the value of Target.
+func (s *RestRoute) SetTarget(val jx.Raw) {
+	s.Target = val
+}
+
+// SetArgRender sets the value of ArgRender.
+func (s *RestRoute) SetArgRender(val RestRouteArgRender) {
+	s.ArgRender = val
+}
+
+// SetOperatorPermission sets the value of OperatorPermission.
+func (s *RestRoute) SetOperatorPermission(val OptNilString) {
+	s.OperatorPermission = val
+}
+
+// SetEffectCopy sets the value of EffectCopy.
+func (s *RestRoute) SetEffectCopy(val RestRouteEffectCopy) {
+	s.EffectCopy = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *RestRoute) SetEnabled(val bool) {
+	s.Enabled = val
+}
+
+// SetMinWpVersion sets the value of MinWpVersion.
+func (s *RestRoute) SetMinWpVersion(val OptNilString) {
+	s.MinWpVersion = val
+}
+
+// SetTitle sets the value of Title.
+func (s *RestRoute) SetTitle(val string) {
+	s.Title = val
+}
+
+// SetDescription sets the value of Description.
+func (s *RestRoute) SetDescription(val string) {
+	s.Description = val
+}
+
+// SetRouteSHA256 sets the value of RouteSHA256.
+func (s *RestRoute) SetRouteSHA256(val OptNilString) {
+	s.RouteSHA256 = val
+}
+
+// SetHashCurrent sets the value of HashCurrent.
+func (s *RestRoute) SetHashCurrent(val bool) {
+	s.HashCurrent = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *RestRoute) SetUpdatedAt(val time.Time) {
+	s.UpdatedAt = val
+}
+
+func (*RestRoute) updateAdminRestRouteRes() {}
+
+type RestRouteArgRender map[string]jx.Raw
+
+func (s *RestRouteArgRender) init() RestRouteArgRender {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type RestRouteBodyKeys map[string]jx.Raw
+
+func (s *RestRouteBodyKeys) init() RestRouteBodyKeys {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type RestRouteClass string
+
+const (
+	RestRouteClassRead  RestRouteClass = "read"
+	RestRouteClassWrite RestRouteClass = "write"
+)
+
+// AllValues returns all RestRouteClass values.
+func (RestRouteClass) AllValues() []RestRouteClass {
+	return []RestRouteClass{
+		RestRouteClassRead,
+		RestRouteClassWrite,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RestRouteClass) MarshalText() ([]byte, error) {
+	switch s {
+	case RestRouteClassRead:
+		return []byte(s), nil
+	case RestRouteClassWrite:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RestRouteClass) UnmarshalText(data []byte) error {
+	switch RestRouteClass(data) {
+	case RestRouteClassRead:
+		*s = RestRouteClassRead
+		return nil
+	case RestRouteClassWrite:
+		*s = RestRouteClassWrite
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type RestRouteEffectCopy string
+
+const (
+	RestRouteEffectCopyDraft RestRouteEffectCopy = "draft"
+	RestRouteEffectCopyLive  RestRouteEffectCopy = "live"
+	RestRouteEffectCopyNone  RestRouteEffectCopy = "none"
+)
+
+// AllValues returns all RestRouteEffectCopy values.
+func (RestRouteEffectCopy) AllValues() []RestRouteEffectCopy {
+	return []RestRouteEffectCopy{
+		RestRouteEffectCopyDraft,
+		RestRouteEffectCopyLive,
+		RestRouteEffectCopyNone,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RestRouteEffectCopy) MarshalText() ([]byte, error) {
+	switch s {
+	case RestRouteEffectCopyDraft:
+		return []byte(s), nil
+	case RestRouteEffectCopyLive:
+		return []byte(s), nil
+	case RestRouteEffectCopyNone:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RestRouteEffectCopy) UnmarshalText(data []byte) error {
+	switch RestRouteEffectCopy(data) {
+	case RestRouteEffectCopyDraft:
+		*s = RestRouteEffectCopyDraft
+		return nil
+	case RestRouteEffectCopyLive:
+		*s = RestRouteEffectCopyLive
+		return nil
+	case RestRouteEffectCopyNone:
+		*s = RestRouteEffectCopyNone
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// A route edit. Every field is optional; an omitted field keeps its stored value. route_id and
+// route_sha256 are never body fields. JSON members hold integers only, written plainly.
+// Ref: #/components/schemas/RestRouteInput
+type RestRouteInput struct {
+	Method      OptRestRouteInputMethod      `json:"method"`
+	Namespace   OptString                    `json:"namespace"`
+	Template    OptString                    `json:"template"`
+	CorePattern OptString                    `json:"core_pattern"`
+	PathParams  OptRestRouteInputPathParams  `json:"path_params"`
+	QueryKeys   OptRestRouteInputQueryKeys   `json:"query_keys"`
+	PinnedQuery OptRestRouteInputPinnedQuery `json:"pinned_query"`
+	BodyKeys    OptRestRouteInputBodyKeys    `json:"body_keys"`
+	Class       OptRestRouteInputClass       `json:"class"`
+	// The pinned output shape.
+	OutputFields       jx.Raw                      `json:"output_fields"`
+	Snapshot           OptString                   `json:"snapshot"`
+	Target             jx.Raw                      `json:"target"`
+	ArgRender          OptRestRouteInputArgRender  `json:"arg_render"`
+	OperatorPermission OptString                   `json:"operator_permission"`
+	EffectCopy         OptRestRouteInputEffectCopy `json:"effect_copy"`
+	Enabled            OptBool                     `json:"enabled"`
+	MinWpVersion       OptString                   `json:"min_wp_version"`
+	Title              OptString                   `json:"title"`
+	Description        OptString                   `json:"description"`
+}
+
+// GetMethod returns the value of Method.
+func (s *RestRouteInput) GetMethod() OptRestRouteInputMethod {
+	return s.Method
+}
+
+// GetNamespace returns the value of Namespace.
+func (s *RestRouteInput) GetNamespace() OptString {
+	return s.Namespace
+}
+
+// GetTemplate returns the value of Template.
+func (s *RestRouteInput) GetTemplate() OptString {
+	return s.Template
+}
+
+// GetCorePattern returns the value of CorePattern.
+func (s *RestRouteInput) GetCorePattern() OptString {
+	return s.CorePattern
+}
+
+// GetPathParams returns the value of PathParams.
+func (s *RestRouteInput) GetPathParams() OptRestRouteInputPathParams {
+	return s.PathParams
+}
+
+// GetQueryKeys returns the value of QueryKeys.
+func (s *RestRouteInput) GetQueryKeys() OptRestRouteInputQueryKeys {
+	return s.QueryKeys
+}
+
+// GetPinnedQuery returns the value of PinnedQuery.
+func (s *RestRouteInput) GetPinnedQuery() OptRestRouteInputPinnedQuery {
+	return s.PinnedQuery
+}
+
+// GetBodyKeys returns the value of BodyKeys.
+func (s *RestRouteInput) GetBodyKeys() OptRestRouteInputBodyKeys {
+	return s.BodyKeys
+}
+
+// GetClass returns the value of Class.
+func (s *RestRouteInput) GetClass() OptRestRouteInputClass {
+	return s.Class
+}
+
+// GetOutputFields returns the value of OutputFields.
+func (s *RestRouteInput) GetOutputFields() jx.Raw {
+	return s.OutputFields
+}
+
+// GetSnapshot returns the value of Snapshot.
+func (s *RestRouteInput) GetSnapshot() OptString {
+	return s.Snapshot
+}
+
+// GetTarget returns the value of Target.
+func (s *RestRouteInput) GetTarget() jx.Raw {
+	return s.Target
+}
+
+// GetArgRender returns the value of ArgRender.
+func (s *RestRouteInput) GetArgRender() OptRestRouteInputArgRender {
+	return s.ArgRender
+}
+
+// GetOperatorPermission returns the value of OperatorPermission.
+func (s *RestRouteInput) GetOperatorPermission() OptString {
+	return s.OperatorPermission
+}
+
+// GetEffectCopy returns the value of EffectCopy.
+func (s *RestRouteInput) GetEffectCopy() OptRestRouteInputEffectCopy {
+	return s.EffectCopy
+}
+
+// GetEnabled returns the value of Enabled.
+func (s *RestRouteInput) GetEnabled() OptBool {
+	return s.Enabled
+}
+
+// GetMinWpVersion returns the value of MinWpVersion.
+func (s *RestRouteInput) GetMinWpVersion() OptString {
+	return s.MinWpVersion
+}
+
+// GetTitle returns the value of Title.
+func (s *RestRouteInput) GetTitle() OptString {
+	return s.Title
+}
+
+// GetDescription returns the value of Description.
+func (s *RestRouteInput) GetDescription() OptString {
+	return s.Description
+}
+
+// SetMethod sets the value of Method.
+func (s *RestRouteInput) SetMethod(val OptRestRouteInputMethod) {
+	s.Method = val
+}
+
+// SetNamespace sets the value of Namespace.
+func (s *RestRouteInput) SetNamespace(val OptString) {
+	s.Namespace = val
+}
+
+// SetTemplate sets the value of Template.
+func (s *RestRouteInput) SetTemplate(val OptString) {
+	s.Template = val
+}
+
+// SetCorePattern sets the value of CorePattern.
+func (s *RestRouteInput) SetCorePattern(val OptString) {
+	s.CorePattern = val
+}
+
+// SetPathParams sets the value of PathParams.
+func (s *RestRouteInput) SetPathParams(val OptRestRouteInputPathParams) {
+	s.PathParams = val
+}
+
+// SetQueryKeys sets the value of QueryKeys.
+func (s *RestRouteInput) SetQueryKeys(val OptRestRouteInputQueryKeys) {
+	s.QueryKeys = val
+}
+
+// SetPinnedQuery sets the value of PinnedQuery.
+func (s *RestRouteInput) SetPinnedQuery(val OptRestRouteInputPinnedQuery) {
+	s.PinnedQuery = val
+}
+
+// SetBodyKeys sets the value of BodyKeys.
+func (s *RestRouteInput) SetBodyKeys(val OptRestRouteInputBodyKeys) {
+	s.BodyKeys = val
+}
+
+// SetClass sets the value of Class.
+func (s *RestRouteInput) SetClass(val OptRestRouteInputClass) {
+	s.Class = val
+}
+
+// SetOutputFields sets the value of OutputFields.
+func (s *RestRouteInput) SetOutputFields(val jx.Raw) {
+	s.OutputFields = val
+}
+
+// SetSnapshot sets the value of Snapshot.
+func (s *RestRouteInput) SetSnapshot(val OptString) {
+	s.Snapshot = val
+}
+
+// SetTarget sets the value of Target.
+func (s *RestRouteInput) SetTarget(val jx.Raw) {
+	s.Target = val
+}
+
+// SetArgRender sets the value of ArgRender.
+func (s *RestRouteInput) SetArgRender(val OptRestRouteInputArgRender) {
+	s.ArgRender = val
+}
+
+// SetOperatorPermission sets the value of OperatorPermission.
+func (s *RestRouteInput) SetOperatorPermission(val OptString) {
+	s.OperatorPermission = val
+}
+
+// SetEffectCopy sets the value of EffectCopy.
+func (s *RestRouteInput) SetEffectCopy(val OptRestRouteInputEffectCopy) {
+	s.EffectCopy = val
+}
+
+// SetEnabled sets the value of Enabled.
+func (s *RestRouteInput) SetEnabled(val OptBool) {
+	s.Enabled = val
+}
+
+// SetMinWpVersion sets the value of MinWpVersion.
+func (s *RestRouteInput) SetMinWpVersion(val OptString) {
+	s.MinWpVersion = val
+}
+
+// SetTitle sets the value of Title.
+func (s *RestRouteInput) SetTitle(val OptString) {
+	s.Title = val
+}
+
+// SetDescription sets the value of Description.
+func (s *RestRouteInput) SetDescription(val OptString) {
+	s.Description = val
+}
+
+type RestRouteInputArgRender map[string]jx.Raw
+
+func (s *RestRouteInputArgRender) init() RestRouteInputArgRender {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type RestRouteInputBodyKeys map[string]jx.Raw
+
+func (s *RestRouteInputBodyKeys) init() RestRouteInputBodyKeys {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type RestRouteInputClass string
+
+const (
+	RestRouteInputClassRead  RestRouteInputClass = "read"
+	RestRouteInputClassWrite RestRouteInputClass = "write"
+)
+
+// AllValues returns all RestRouteInputClass values.
+func (RestRouteInputClass) AllValues() []RestRouteInputClass {
+	return []RestRouteInputClass{
+		RestRouteInputClassRead,
+		RestRouteInputClassWrite,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RestRouteInputClass) MarshalText() ([]byte, error) {
+	switch s {
+	case RestRouteInputClassRead:
+		return []byte(s), nil
+	case RestRouteInputClassWrite:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RestRouteInputClass) UnmarshalText(data []byte) error {
+	switch RestRouteInputClass(data) {
+	case RestRouteInputClassRead:
+		*s = RestRouteInputClassRead
+		return nil
+	case RestRouteInputClassWrite:
+		*s = RestRouteInputClassWrite
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type RestRouteInputEffectCopy string
+
+const (
+	RestRouteInputEffectCopyDraft RestRouteInputEffectCopy = "draft"
+	RestRouteInputEffectCopyLive  RestRouteInputEffectCopy = "live"
+	RestRouteInputEffectCopyNone  RestRouteInputEffectCopy = "none"
+)
+
+// AllValues returns all RestRouteInputEffectCopy values.
+func (RestRouteInputEffectCopy) AllValues() []RestRouteInputEffectCopy {
+	return []RestRouteInputEffectCopy{
+		RestRouteInputEffectCopyDraft,
+		RestRouteInputEffectCopyLive,
+		RestRouteInputEffectCopyNone,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RestRouteInputEffectCopy) MarshalText() ([]byte, error) {
+	switch s {
+	case RestRouteInputEffectCopyDraft:
+		return []byte(s), nil
+	case RestRouteInputEffectCopyLive:
+		return []byte(s), nil
+	case RestRouteInputEffectCopyNone:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RestRouteInputEffectCopy) UnmarshalText(data []byte) error {
+	switch RestRouteInputEffectCopy(data) {
+	case RestRouteInputEffectCopyDraft:
+		*s = RestRouteInputEffectCopyDraft
+		return nil
+	case RestRouteInputEffectCopyLive:
+		*s = RestRouteInputEffectCopyLive
+		return nil
+	case RestRouteInputEffectCopyNone:
+		*s = RestRouteInputEffectCopyNone
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type RestRouteInputMethod string
+
+const (
+	RestRouteInputMethodGET    RestRouteInputMethod = "GET"
+	RestRouteInputMethodPOST   RestRouteInputMethod = "POST"
+	RestRouteInputMethodPUT    RestRouteInputMethod = "PUT"
+	RestRouteInputMethodPATCH  RestRouteInputMethod = "PATCH"
+	RestRouteInputMethodDELETE RestRouteInputMethod = "DELETE"
+)
+
+// AllValues returns all RestRouteInputMethod values.
+func (RestRouteInputMethod) AllValues() []RestRouteInputMethod {
+	return []RestRouteInputMethod{
+		RestRouteInputMethodGET,
+		RestRouteInputMethodPOST,
+		RestRouteInputMethodPUT,
+		RestRouteInputMethodPATCH,
+		RestRouteInputMethodDELETE,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RestRouteInputMethod) MarshalText() ([]byte, error) {
+	switch s {
+	case RestRouteInputMethodGET:
+		return []byte(s), nil
+	case RestRouteInputMethodPOST:
+		return []byte(s), nil
+	case RestRouteInputMethodPUT:
+		return []byte(s), nil
+	case RestRouteInputMethodPATCH:
+		return []byte(s), nil
+	case RestRouteInputMethodDELETE:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RestRouteInputMethod) UnmarshalText(data []byte) error {
+	switch RestRouteInputMethod(data) {
+	case RestRouteInputMethodGET:
+		*s = RestRouteInputMethodGET
+		return nil
+	case RestRouteInputMethodPOST:
+		*s = RestRouteInputMethodPOST
+		return nil
+	case RestRouteInputMethodPUT:
+		*s = RestRouteInputMethodPUT
+		return nil
+	case RestRouteInputMethodPATCH:
+		*s = RestRouteInputMethodPATCH
+		return nil
+	case RestRouteInputMethodDELETE:
+		*s = RestRouteInputMethodDELETE
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type RestRouteInputPathParams map[string]jx.Raw
+
+func (s *RestRouteInputPathParams) init() RestRouteInputPathParams {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type RestRouteInputPinnedQuery map[string]jx.Raw
+
+func (s *RestRouteInputPinnedQuery) init() RestRouteInputPinnedQuery {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type RestRouteInputQueryKeys map[string]jx.Raw
+
+func (s *RestRouteInputQueryKeys) init() RestRouteInputQueryKeys {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type RestRouteMethod string
+
+const (
+	RestRouteMethodGET    RestRouteMethod = "GET"
+	RestRouteMethodPOST   RestRouteMethod = "POST"
+	RestRouteMethodPUT    RestRouteMethod = "PUT"
+	RestRouteMethodPATCH  RestRouteMethod = "PATCH"
+	RestRouteMethodDELETE RestRouteMethod = "DELETE"
+)
+
+// AllValues returns all RestRouteMethod values.
+func (RestRouteMethod) AllValues() []RestRouteMethod {
+	return []RestRouteMethod{
+		RestRouteMethodGET,
+		RestRouteMethodPOST,
+		RestRouteMethodPUT,
+		RestRouteMethodPATCH,
+		RestRouteMethodDELETE,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RestRouteMethod) MarshalText() ([]byte, error) {
+	switch s {
+	case RestRouteMethodGET:
+		return []byte(s), nil
+	case RestRouteMethodPOST:
+		return []byte(s), nil
+	case RestRouteMethodPUT:
+		return []byte(s), nil
+	case RestRouteMethodPATCH:
+		return []byte(s), nil
+	case RestRouteMethodDELETE:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RestRouteMethod) UnmarshalText(data []byte) error {
+	switch RestRouteMethod(data) {
+	case RestRouteMethodGET:
+		*s = RestRouteMethodGET
+		return nil
+	case RestRouteMethodPOST:
+		*s = RestRouteMethodPOST
+		return nil
+	case RestRouteMethodPUT:
+		*s = RestRouteMethodPUT
+		return nil
+	case RestRouteMethodPATCH:
+		*s = RestRouteMethodPATCH
+		return nil
+	case RestRouteMethodDELETE:
+		*s = RestRouteMethodDELETE
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type RestRoutePathParams map[string]jx.Raw
+
+func (s *RestRoutePathParams) init() RestRoutePathParams {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type RestRoutePinnedQuery map[string]jx.Raw
+
+func (s *RestRoutePinnedQuery) init() RestRoutePinnedQuery {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type RestRouteQueryKeys map[string]jx.Raw
+
+func (s *RestRouteQueryKeys) init() RestRouteQueryKeys {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
 
 type RestoreAdminAccountForbidden Error
 
@@ -47981,6 +54990,110 @@ func (*Site) getSiteRes()       {}
 func (*Site) restoreSiteRes()   {}
 func (*Site) revokeSiteRes()    {}
 func (*Site) setSiteTagsRes()   {}
+
+// Whether an AI assistant connected to WPMgr can work on one site. All values come from WPMgr's own
+// checks; nothing the site wrote reaches this object except version strings that passed a strict shape
+// check.
+// Ref: #/components/schemas/SiteAIReadiness
+type SiteAIReadiness struct {
+	SiteID uuid.UUID         `json:"site_id"`
+	Status AIReadinessStatus `json:"status"`
+	// Number of rows with state `fail` in `base` and in installed builder groups. A `bricks_abilities` row
+	// is never one of them: as a `fail` it is unconfirmed, and as an `unknown` it is not a failure (see
+	// `status`).
+	FixCount int32 `json:"fix_count"`
+	// When the site last reported its plugin and theme details. Null when it never has.
+	MetadataAsOf NilDateTime `json:"metadata_as_of"`
+	// When the site's tool list was last read. Null when it never has.
+	AbilitiesAsOf NilDateTime `json:"abilities_as_of"`
+	// Advisory notices. They never change `status` or `fix_count`.
+	Warnings []AIReadinessWarning `json:"warnings"`
+	Floors   AIReadinessFloors    `json:"floors"`
+	// Always `base`, `elementor`, `bricks`, in that order.
+	Groups []AIReadinessGroup `json:"groups"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *SiteAIReadiness) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetStatus returns the value of Status.
+func (s *SiteAIReadiness) GetStatus() AIReadinessStatus {
+	return s.Status
+}
+
+// GetFixCount returns the value of FixCount.
+func (s *SiteAIReadiness) GetFixCount() int32 {
+	return s.FixCount
+}
+
+// GetMetadataAsOf returns the value of MetadataAsOf.
+func (s *SiteAIReadiness) GetMetadataAsOf() NilDateTime {
+	return s.MetadataAsOf
+}
+
+// GetAbilitiesAsOf returns the value of AbilitiesAsOf.
+func (s *SiteAIReadiness) GetAbilitiesAsOf() NilDateTime {
+	return s.AbilitiesAsOf
+}
+
+// GetWarnings returns the value of Warnings.
+func (s *SiteAIReadiness) GetWarnings() []AIReadinessWarning {
+	return s.Warnings
+}
+
+// GetFloors returns the value of Floors.
+func (s *SiteAIReadiness) GetFloors() AIReadinessFloors {
+	return s.Floors
+}
+
+// GetGroups returns the value of Groups.
+func (s *SiteAIReadiness) GetGroups() []AIReadinessGroup {
+	return s.Groups
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *SiteAIReadiness) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetStatus sets the value of Status.
+func (s *SiteAIReadiness) SetStatus(val AIReadinessStatus) {
+	s.Status = val
+}
+
+// SetFixCount sets the value of FixCount.
+func (s *SiteAIReadiness) SetFixCount(val int32) {
+	s.FixCount = val
+}
+
+// SetMetadataAsOf sets the value of MetadataAsOf.
+func (s *SiteAIReadiness) SetMetadataAsOf(val NilDateTime) {
+	s.MetadataAsOf = val
+}
+
+// SetAbilitiesAsOf sets the value of AbilitiesAsOf.
+func (s *SiteAIReadiness) SetAbilitiesAsOf(val NilDateTime) {
+	s.AbilitiesAsOf = val
+}
+
+// SetWarnings sets the value of Warnings.
+func (s *SiteAIReadiness) SetWarnings(val []AIReadinessWarning) {
+	s.Warnings = val
+}
+
+// SetFloors sets the value of Floors.
+func (s *SiteAIReadiness) SetFloors(val AIReadinessFloors) {
+	s.Floors = val
+}
+
+// SetGroups sets the value of Groups.
+func (s *SiteAIReadiness) SetGroups(val []AIReadinessGroup) {
+	s.Groups = val
+}
+
+func (*SiteAIReadiness) getSiteAIReadinessRes() {}
 
 // Ref: #/components/schemas/SiteActivityEvent
 type SiteActivityEvent struct {
@@ -55339,6 +62452,28 @@ type UnblockSiteIPUnprocessableEntity Error
 
 func (*UnblockSiteIPUnprocessableEntity) unblockSiteIPRes() {}
 
+type UndoAbilityRequestConflict Error
+
+func (*UndoAbilityRequestConflict) undoAbilityRequestRes() {}
+
+type UndoAbilityRequestForbidden Error
+
+func (*UndoAbilityRequestForbidden) undoAbilityRequestRes() {}
+
+type UndoAbilityRequestNotFound Error
+
+func (*UndoAbilityRequestNotFound) undoAbilityRequestRes() {}
+
+type UndoAbilityRequestReq struct{}
+
+type UndoAbilityRequestServiceUnavailable Error
+
+func (*UndoAbilityRequestServiceUnavailable) undoAbilityRequestRes() {}
+
+type UndoAbilityRequestUnsupportedMediaType Error
+
+func (*UndoAbilityRequestUnsupportedMediaType) undoAbilityRequestRes() {}
+
 type UnlinkMyIdentityConflict Error
 
 func (*UnlinkMyIdentityConflict) unlinkMyIdentityRes() {}
@@ -55355,6 +62490,46 @@ func (*UnlinkMyIdentityNotFound) unlinkMyIdentityRes() {}
 type UnlinkMyIdentityUnauthorized Error
 
 func (*UnlinkMyIdentityUnauthorized) unlinkMyIdentityRes() {}
+
+type UpdateAdminAbilityCatalogueEntryBadRequest Error
+
+func (*UpdateAdminAbilityCatalogueEntryBadRequest) updateAdminAbilityCatalogueEntryRes() {}
+
+type UpdateAdminAbilityCatalogueEntryConflict Error
+
+func (*UpdateAdminAbilityCatalogueEntryConflict) updateAdminAbilityCatalogueEntryRes() {}
+
+type UpdateAdminAbilityCatalogueEntryForbidden Error
+
+func (*UpdateAdminAbilityCatalogueEntryForbidden) updateAdminAbilityCatalogueEntryRes() {}
+
+type UpdateAdminAbilityCatalogueEntryNotFound Error
+
+func (*UpdateAdminAbilityCatalogueEntryNotFound) updateAdminAbilityCatalogueEntryRes() {}
+
+type UpdateAdminAbilityCatalogueEntryUnauthorized Error
+
+func (*UpdateAdminAbilityCatalogueEntryUnauthorized) updateAdminAbilityCatalogueEntryRes() {}
+
+type UpdateAdminRestRouteConflict Error
+
+func (*UpdateAdminRestRouteConflict) updateAdminRestRouteRes() {}
+
+type UpdateAdminRestRouteForbidden Error
+
+func (*UpdateAdminRestRouteForbidden) updateAdminRestRouteRes() {}
+
+type UpdateAdminRestRouteNotFound Error
+
+func (*UpdateAdminRestRouteNotFound) updateAdminRestRouteRes() {}
+
+type UpdateAdminRestRouteUnauthorized Error
+
+func (*UpdateAdminRestRouteUnauthorized) updateAdminRestRouteRes() {}
+
+type UpdateAdminRestRouteUnprocessableEntity Error
+
+func (*UpdateAdminRestRouteUnprocessableEntity) updateAdminRestRouteRes() {}
 
 // All fields are optional (PATCH semantics).
 // Ref: #/components/schemas/UpdateAgencyClientRequest
@@ -57114,6 +64289,18 @@ func (s *UpdateTaskTargetType) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+type UpsertAdminContentIntegrationBadRequest Error
+
+func (*UpsertAdminContentIntegrationBadRequest) upsertAdminContentIntegrationRes() {}
+
+type UpsertAdminContentIntegrationForbidden Error
+
+func (*UpsertAdminContentIntegrationForbidden) upsertAdminContentIntegrationRes() {}
+
+type UpsertAdminContentIntegrationUnauthorized Error
+
+func (*UpsertAdminContentIntegrationUnauthorized) upsertAdminContentIntegrationRes() {}
 
 // Ref: #/components/schemas/UptimePoint
 type UptimePoint struct {

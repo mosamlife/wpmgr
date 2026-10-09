@@ -1,0 +1,21 @@
+# WordPress cores that scripts/check-page-kses.sh runs the page builder's markup
+# through. One core per line:
+#
+#   <version> <sha256 of the tarball> <url> [<fallback url> ...]
+#
+# <version> must equal $wp_version inside the tarball (the script checks), so a
+# line cannot point at a different release than it claims. Every download is
+# verified against the sha256 before anything is extracted; a mismatch is red.
+# The sha256 was computed from the download and cross-checked against the sha1
+# that wordpress.org publishes beside each tarball.
+#
+# Why these three:
+#   6.2     the oldest WordPress the agent supports ("Requires at least").
+#   6.9.10  the last release before core changed how kses reads attribute
+#           values (7.0), so the check covers both sides of that change.
+#   7.1.3   the current release.
+# Moving a pin is a deliberate edit to this file: re-download, compare the
+# sha1 that wordpress.org publishes, then paste the sha256.
+6.2     143128deb65ced253dcaa02995449c48c516384552d1efcfb2b38f8d2f66f904  https://wordpress.org/wordpress-6.2.tar.gz     https://downloads.wordpress.org/release/wordpress-6.2.tar.gz
+6.9.10  a1c0dc12e2271c6afaabf329d5af7a976f8d2c8c592773178a5baaeafc2d4f4a  https://wordpress.org/wordpress-6.9.10.tar.gz  https://downloads.wordpress.org/release/wordpress-6.9.10.tar.gz
+7.1.3   d2a09acb6a15e3b9c471d72557753c266d6f41a79ed19bfe04cbfe49e283b2a5  https://wordpress.org/wordpress-7.1.3.tar.gz   https://downloads.wordpress.org/release/wordpress-7.1.3.tar.gz

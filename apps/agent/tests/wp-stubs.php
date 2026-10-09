@@ -339,6 +339,44 @@ if (!function_exists('get_option')) {
     }
 }
 
+if (!function_exists('get_current_blog_id')) {
+    /**
+     * Current blog id — default stub is the main site.
+     *
+     * @return int
+     */
+    function get_current_blog_id(): int
+    {
+        return 1;
+    }
+}
+
+if (!function_exists('switch_to_blog')) {
+    /**
+     * Switch blog — default stub does nothing.
+     *
+     * @param int  $new_blog_id Blog id.
+     * @param bool $deprecated  Unused.
+     * @return bool
+     */
+    function switch_to_blog($new_blog_id, $deprecated = null): bool
+    {
+        return true;
+    }
+}
+
+if (!function_exists('restore_current_blog')) {
+    /**
+     * Restore blog — default stub has nothing to restore.
+     *
+     * @return bool
+     */
+    function restore_current_blog(): bool
+    {
+        return false;
+    }
+}
+
 if (!function_exists('get_site_option')) {
     /**
      * Retrieves a network-scoped option — default stub returns $default.
@@ -350,6 +388,19 @@ if (!function_exists('get_site_option')) {
     function get_site_option(string $option, mixed $default = false): mixed
     {
         return $default;
+    }
+}
+
+if (!function_exists('wp_using_ext_object_cache')) {
+    /**
+     * Whether a persistent object cache is in use — default stub: it is not.
+     *
+     * @param bool|null $using Unused.
+     * @return bool
+     */
+    function wp_using_ext_object_cache($using = null): bool
+    {
+        return false;
     }
 }
 
@@ -682,5 +733,90 @@ if (!function_exists('get_file_data')) {
         }
 
         return $out;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Abilities API and REST schema validation
+// ---------------------------------------------------------------------------
+
+if (!function_exists('wp_get_ability')) {
+    /**
+     * Registered ability by name. No registry in the suite: tests override.
+     *
+     * @param string $name Ability name.
+     * @return WP_Ability|null
+     */
+    function wp_get_ability(string $name): ?\WP_Ability
+    {
+        return null;
+    }
+}
+
+if (!function_exists('rest_validate_value_from_schema')) {
+    /**
+     * The subset of core's schema validation the suite exercises: type
+     * (object, array, string, integer, number, boolean, null, or a list of
+     * types), required, properties, additionalProperties false, items and
+     * enum. Returns true or a WP_Error, like core.
+     *
+     * @param mixed               $value Value.
+     * @param array<string,mixed> $args  Schema.
+     * @param string              $param Parameter name.
+     * @return true|\WP_Error
+     */
+    function rest_validate_value_from_schema($value, $args, $param = '')
+    {
+        $fail  = static fn (string $why) => new \WP_Error('rest_invalid_param', $param . ': ' . $why);
+        $types = isset($args['type']) ? (array) $args['type'] : [];
+        if ($types !== []) {
+            $ok = false;
+            foreach ($types as $t) {
+                $ok = $ok || match ($t) {
+                    'object'  => is_array($value) && ($value === [] || !array_is_list($value)),
+                    'array'   => is_array($value) && array_is_list($value),
+                    'string'  => is_string($value),
+                    'integer' => is_int($value),
+                    'number'  => is_int($value) || is_float($value),
+                    'boolean' => is_bool($value),
+                    'null'    => $value === null,
+                    default   => false,
+                };
+            }
+            if (!$ok) {
+                return $fail('wrong type');
+            }
+        }
+        if (isset($args['enum']) && is_array($args['enum']) && !in_array($value, $args['enum'], true)) {
+            return $fail('not in enum');
+        }
+        if (is_array($value) && in_array('object', $types, true)) {
+            foreach ((array) ($args['required'] ?? []) as $req) {
+                if (!array_key_exists($req, $value)) {
+                    return $fail('missing ' . $req);
+                }
+            }
+            $props = (array) ($args['properties'] ?? []);
+            foreach ($value as $k => $v) {
+                if (isset($props[$k])) {
+                    $r = rest_validate_value_from_schema($v, $props[$k], $param . '[' . $k . ']');
+                    if ($r !== true) {
+                        return $r;
+                    }
+                } elseif (($args['additionalProperties'] ?? true) === false) {
+                    return $fail('unexpected ' . $k);
+                }
+            }
+        }
+        if (is_array($value) && in_array('array', $types, true) && isset($args['items'])) {
+            foreach ($value as $i => $v) {
+                $r = rest_validate_value_from_schema($v, $args['items'], $param . '[' . $i . ']');
+                if ($r !== true) {
+                    return $r;
+                }
+            }
+        }
+
+        return true;
     }
 }

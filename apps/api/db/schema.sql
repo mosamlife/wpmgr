@@ -14,12 +14,20 @@
 -- role present, as the first migration provisions it), so a statement goes
 -- below everything it references.
 --
--- NOTHING CHECKS THIS AUTOMATICALLY YET. A migration that forgets to update
--- this file still builds, still generates and still passes CI. So when a
--- security question turns on the answer, such as "is this table site-scoped"
--- or "does this table force RLS", the migrations are the authority, not this
--- file. The most direct answer is a live catalog on a database with every
--- migration applied:
+-- WHAT CHECKS IT. CI's schema-sync job (scripts/check-schema-sync.sh; run it
+-- locally with `make check-schema-sync`) replays every migration into one
+-- throwaway database, loads this file into a second, compares the two
+-- catalogs, and checks the migrations' atlas.sum against the files on disk.
+-- It does not compare privileges, seed rows or comments; the script's header
+-- lists everything it leaves out. So a table, column, index, constraint,
+-- function, trigger or policy this file fails to mirror turns that job red,
+-- and a GRANT, a seed row or a comment it fails to mirror does not.
+--
+-- The migrations are still the authority: they are what runs, and when the
+-- two disagree this file is the one that is wrong. So when a security
+-- question turns on the answer, such as "is this table site-scoped" or "does
+-- this table force RLS", ask the migrations, not this file. The most direct
+-- answer is a live catalog on a database with every migration applied:
 --
 --   SELECT tablename, policyname, permissive, cmd
 --     FROM pg_policies
@@ -342,11 +350,15 @@ CREATE TABLE sites (
     -- populated, i.e. undated inventory data.
     components_updated_at timestamptz,
     tags        text[]      NOT NULL DEFAULT '{}',
-    -- M4 backups: the age PUBLIC recipient (X25519, "age1...") backups for this
-    -- site are encrypted to. Client-side encryption is on the AGENT; the control
-    -- plane stores ONLY this public recipient and never the matching identity
-    -- (private key). Empty until a recipient is set. The CP cannot decrypt
-    -- backups: it never holds the identity (ADR — trust model).
+    -- M4 backups: the site's age PUBLIC recipient (X25519, "age1..."), as the
+    -- agent reports it. The control plane stores ONLY this public recipient
+    -- and never the matching identity (private key), which stays with the
+    -- agent. Empty until the agent first reports one, and a backup does not
+    -- start while it is empty. Backup chunks are NOT encrypted to it today:
+    -- the agent ships with EncryptAndUpload::ENCRYPT_CHUNKS = false, so chunks
+    -- are stored unencrypted at the site's backup destination, and anyone who
+    -- can read that destination can read them. Client-side encryption is
+    -- tracked in GH #725.
     age_recipient text      NOT NULL DEFAULT '',
     -- M17 backup-schedule: timezone fields captured from diagnostics identity
     -- category (timezone_string / gmt_offset). Used by the backup scheduler to
@@ -416,6 +428,13 @@ CREATE TABLE sites (
     monitoring_paused_reason text NOT NULL DEFAULT '',
     -- Optional auto-resume instant; NULL means "until someone resumes it".
     monitoring_resume_at     timestamptz,
+    -- m157: content editing (engine E2). Written only by the enable action.
+    -- NULL enabled_at = not enabled. principal_user_id is the WordPress user
+    -- id the agent returned (a WordPress id: bigint, no FK). enabled_by is the
+    -- WPMgr user; its FK (ON DELETE SET NULL) is added after users below.
+    content_editing_enabled_at        timestamptz,
+    content_editing_principal_user_id bigint,
+    content_editing_enabled_by        uuid,
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now(),
     -- m117: a resume time with no pause is incoherent, and a later phase reads
@@ -430,7 +449,14 @@ CREATE TABLE sites (
     -- nor require an empty reason while active, nor require resume_at to be
     -- after paused_at (a past instant sanely means "due now").
     CONSTRAINT sites_monitoring_resume_requires_pause_check
-        CHECK (monitoring_resume_at IS NULL OR monitoring_paused_at IS NOT NULL)
+        CHECK (monitoring_resume_at IS NULL OR monitoring_paused_at IS NOT NULL),
+    -- m157: enabled_at and the principal move together; the principal is a
+    -- positive WordPress user id.
+    CONSTRAINT sites_content_editing_state_check
+        CHECK (
+            (content_editing_enabled_at IS NULL) = (content_editing_principal_user_id IS NULL)
+            AND (content_editing_principal_user_id IS NULL OR content_editing_principal_user_id > 0)
+        )
 );
 
 CREATE INDEX idx_sites_connection_state ON sites (tenant_id, connection_state);
@@ -616,6 +642,12 @@ CREATE INDEX user_identities_user_id_idx
 ALTER TABLE sites
     ADD CONSTRAINT sites_monitoring_paused_by_fkey
     FOREIGN KEY (monitoring_paused_by) REFERENCES users (id)
+    ON DELETE SET NULL;
+
+-- m157: who enabled content editing, same pattern and same caveat.
+ALTER TABLE sites
+    ADD CONSTRAINT sites_content_editing_enabled_by_fkey
+    FOREIGN KEY (content_editing_enabled_by) REFERENCES users (id)
     ON DELETE SET NULL;
 
 -- m117: the auto-resume sweep's index, and deliberately NOT an index on
@@ -1442,12 +1474,14 @@ CREATE POLICY update_tasks_site_scope ON update_tasks
 -- ---------------------------------------------------------------------------
 -- backup_chunks  (M4 — incremental, content-addressed dedup + GC)
 -- ---------------------------------------------------------------------------
--- One row per UNIQUE (tenant, blake3) ciphertext chunk stored in object
--- storage. Chunks are content-addressed by the BLAKE3 hash of their CIPHERTEXT
--- (the agent encrypts client-side with age, then hashes; the CP and S3 only
--- ever see ciphertext). Tenant-scoped + RLS: a tenant can never see or target
--- another tenant's chunks, and the s3_key is namespaced by tenant so a presign
--- for one tenant cannot address another's chunk prefix.
+-- One row per UNIQUE (tenant, blake3) chunk stored in object storage. A chunk
+-- is content-addressed by the BLAKE3 hash of the bytes the agent uploads,
+-- which are the bytes stored. The agent's age encryption step, which would run
+-- before that hash, is off (EncryptAndUpload::ENCRYPT_CHUNKS is false), so
+-- chunks are stored unencrypted and anyone who can read the storage holding a
+-- chunk can read its contents. Tenant-scoped + RLS: a tenant can never see or
+-- target another tenant's chunks, and the s3_key is namespaced by tenant so a
+-- presign for one tenant cannot address another's chunk prefix.
 --
 -- refcount IS OBSERVABILITY ONLY. It counts ORIGIN references (how many
 -- manifest entries introduced the chunk), not live ones, and ADR-050 retracted
@@ -1780,9 +1814,9 @@ CREATE POLICY tenant_object_reclaim_agent ON tenant_object_reclaim
 -- ---------------------------------------------------------------------------
 -- One backup of a site: files, db, or full. The manifest (ordered per-path
 -- chunk lists) lives in backup_manifest_entries. Status advances pending ->
--- running -> completed | failed. age_recipient records the public recipient the
--- agent encrypted to (provenance; the CP never holds the identity). Tenant-
--- scoped + RLS.
+-- running -> completed | failed. age_recipient is a copy of the site's backup
+-- recipient taken when the snapshot is created, kept for provenance; it does
+-- not mean the chunks are encrypted (see the column). Tenant-scoped + RLS.
 CREATE TABLE backup_snapshots (
     id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id     uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
@@ -1792,8 +1826,13 @@ CREATE TABLE backup_snapshots (
     kind          text        NOT NULL,
     -- status: pending | running | completed | failed.
     status        text        NOT NULL DEFAULT 'pending',
-    -- age_recipient is the public X25519 recipient the chunks were encrypted to
-    -- (echoed from the site at backup time for provenance/restore targeting).
+    -- age_recipient is the site's public X25519 recipient, copied from
+    -- sites.age_recipient when the snapshot is created and sent to the agent
+    -- with the backup command (provenance). A non-empty value does NOT mean
+    -- the chunks are encrypted: the agent does not encrypt them today
+    -- (EncryptAndUpload::ENCRYPT_CHUNKS is false), and no column records
+    -- whether a snapshot's chunks are encrypted, so this one cannot be used to
+    -- tell. Restore does not read it.
     age_recipient text        NOT NULL DEFAULT '',
     total_size    bigint      NOT NULL DEFAULT 0,
     chunk_count   bigint      NOT NULL DEFAULT 0,
@@ -1980,9 +2019,11 @@ CREATE POLICY backup_file_index_agent ON backup_file_index
 -- list of BLAKE3 chunk hashes that reassemble it (a text[] preserving order),
 -- the total size, the file mode, and an optional kind tag ('file' | 'db'). To
 -- restore a path the CP looks up each hash's s3_key in backup_chunks and issues
--- a presigned GET; the agent downloads, decrypts (age), verifies BLAKE3, and
--- concatenates in order. Tenant-scoped + RLS (redundant tenant_id avoids a join
--- in the policy and worker queries).
+-- a presigned GET; the agent downloads each chunk, checks its BLAKE3 against
+-- the downloaded bytes, and concatenates in order. Chunks are stored
+-- unencrypted today, so restore writes the downloaded bytes as they are (see
+-- backup_chunks). Tenant-scoped + RLS (redundant tenant_id avoids a join in
+-- the policy and worker queries).
 CREATE TABLE backup_manifest_entries (
     id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     snapshot_id uuid        NOT NULL REFERENCES backup_snapshots (id) ON DELETE CASCADE,
@@ -7045,6 +7086,8 @@ CREATE TABLE mcp_grants (
     -- constraint NAME -- which is why the name did not change in m131.
     CONSTRAINT mcp_grants_capabilities_vocabulary_check
         CHECK (capabilities <@ ARRAY[
+            'mcp.ability.read',
+            'mcp.ability.request',
             'mcp.activity.read',
             'mcp.backups.read',
             'mcp.cache.purge',
@@ -7135,7 +7178,8 @@ CREATE TABLE mcp_grants (
     CONSTRAINT mcp_grants_oauth_scopes_vocabulary_check
         CHECK (oauth_scopes <@ ARRAY[
             'mcp:cache',
-            'mcp:read'
+            'mcp:read',
+            'mcp:site'
         ]::text[]),
 
     -- The registered OAuth client, or NULL on the headless token path. No
@@ -7475,11 +7519,13 @@ CREATE TABLE mcp_oauth_clients (
     -- Containment alone would admit '{}' -- the empty array is contained by
     -- every array -- which is why emptiness is refused by its own constraint
     -- above rather than by this one. m150 widened both constraints together to
-    -- admit 'mcp:cache', each by dropping and re-adding its own name.
+    -- admit 'mcp:cache', each by dropping and re-adding its own name; m154
+    -- widened both again to admit 'mcp:site'.
     CONSTRAINT mcp_oauth_clients_registered_scopes_vocabulary_check
         CHECK (registered_scopes <@ ARRAY[
             'mcp:cache',
-            'mcp:read'
+            'mcp:read',
+            'mcp:site'
         ]::text[])
 );
 
@@ -8467,3 +8513,2884 @@ GRANT UPDATE (state, decided_at, decided_by_user_id, withdrawn_at,
               hosting_caches_cleared, hosting_caches_skipped,
               origin_only_confirmed, wpmgr_cdn, site_reported_text)
     ON assistant_cache_purge_requests TO wpmgr_app;
+
+-- ---------------------------------------------------------------------------
+-- m153: content_integrations (GLOBAL platform allowlist of page builders,
+-- superadmin-written only through admin_upsert_content_integration, a
+-- SECURITY DEFINER function that audits every change; wpmgr_app has SELECT
+-- only) and site_content_inventory (tenant- and site-scoped, FORCE RLS, no
+-- cross-tenant policy; the fleet report reads counts through definer
+-- functions; the content probe's list-mode rows per site). The migration's header carries
+-- the reasoning; this block mirrors its end state for sqlc.
+-- ---------------------------------------------------------------------------
+-- content_integrations
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS content_integrations (
+    integration_id text PRIMARY KEY
+        CONSTRAINT content_integrations_integration_id_shape_check
+        CHECK (integration_id ~ '^[a-z0-9]+(-[a-z0-9]+)*$'
+               AND length(integration_id) <= 64),
+    display_name text NOT NULL
+        CONSTRAINT content_integrations_display_name_check
+        CHECK (length(btrim(display_name)) > 0
+               AND char_length(display_name) <= 80),
+    enabled boolean NOT NULL DEFAULT true,
+    status text NOT NULL
+        CONSTRAINT content_integrations_status_check
+        CHECK (status IN ('detect_only')),
+    -- Detection: namespace, version_constant, mode_flag, payload_keys,
+    -- draft_keys, shortcode_prefixes, special_page_options,
+    -- singular_override, override_check, plugin_dir (design 3.3).
+    descriptor jsonb NOT NULL DEFAULT '{}'::jsonb
+        CONSTRAINT content_integrations_descriptor_object_check
+        CHECK (jsonb_typeof(descriptor) = 'object'),
+    -- Ability names and structural schema hashes. NULL until S5.
+    abilities jsonb NULL
+        CONSTRAINT content_integrations_abilities_object_check
+        CHECK (abilities IS NULL OR jsonb_typeof(abilities) = 'object'),
+    min_version text NULL
+        CONSTRAINT content_integrations_min_version_check
+        CHECK (min_version ~ '^[0-9A-Za-z.+-]{1,32}$'),
+    max_tested_version text NULL
+        CONSTRAINT content_integrations_max_tested_version_check
+        CHECK (max_tested_version ~ '^[0-9A-Za-z.+-]{1,32}$'),
+    min_wp_version text NULL
+        CONSTRAINT content_integrations_min_wp_version_check
+        CHECK (min_wp_version ~ '^[0-9]+(\.[0-9]+){0,2}$'),
+    integration_entry_sha256 text NULL
+        CONSTRAINT content_integrations_entry_sha256_check
+        CHECK (integration_entry_sha256 ~ '^[0-9a-f]{64}$'),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    -- NULL only for a row the migration seeded.
+    updated_by_user_id uuid NULL,
+    -- The theme folder for a builder that ships as a THEME, so the control
+    -- plane sends theme hints only for builder themes. NULL for plugins. Kept
+    -- out of descriptor because the agent refuses unknown descriptor keys.
+    theme_slug text NULL
+        CONSTRAINT content_integrations_theme_slug_check
+        CHECK (theme_slug ~ '^[A-Za-z0-9._-]{1,100}$')
+);
+
+ALTER TABLE content_integrations ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY content_integrations_read
+    ON content_integrations
+    FOR SELECT
+    USING (true);
+
+
+-- ---------------------------------------------------------------------------
+-- content_integrations_audit: append-only, written only by the definer
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS content_integrations_audit (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    integration_id text NOT NULL,
+    action text NOT NULL
+        CONSTRAINT content_integrations_audit_action_check
+        CHECK (action IN ('insert', 'update')),
+    actor_user_id uuid NOT NULL,
+    before_sha256 text NULL
+        CONSTRAINT content_integrations_audit_before_check
+        CHECK (before_sha256 ~ '^[0-9a-f]{64}$'),
+    after_sha256 text NOT NULL
+        CONSTRAINT content_integrations_audit_after_check
+        CHECK (after_sha256 ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT content_integrations_audit_before_iff_update_check
+        CHECK ((action = 'update') = (before_sha256 IS NOT NULL)),
+    before_enabled boolean NULL,
+    after_enabled boolean NOT NULL,
+    at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS content_integrations_audit_integration_idx
+    ON content_integrations_audit (integration_id, id DESC);
+
+ALTER TABLE content_integrations_audit ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY content_integrations_audit_read
+    ON content_integrations_audit
+    FOR SELECT
+    USING (true);
+
+
+-- The row hash the audit records. Computed in SQL from the stored row, so the
+-- audit does not trust a hash the caller supplied. jsonb's text form is
+-- deterministic for equal values.
+CREATE OR REPLACE FUNCTION content_integration_row_sha256(
+    r content_integrations
+)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+SET search_path = public, pg_temp
+AS $$
+    SELECT encode(sha256(convert_to(jsonb_build_object(
+        'integration_id', r.integration_id,
+        'display_name', r.display_name,
+        'enabled', r.enabled,
+        'status', r.status,
+        'descriptor', r.descriptor,
+        'abilities', r.abilities,
+        'min_version', r.min_version,
+        'max_tested_version', r.max_tested_version,
+        'min_wp_version', r.min_wp_version,
+        'integration_entry_sha256', r.integration_entry_sha256,
+        'theme_slug', r.theme_slug
+    )::text, 'UTF8')), 'hex');
+$$;
+
+-- The one write path. See section 1 of the header.
+CREATE OR REPLACE FUNCTION admin_upsert_content_integration(
+    p_actor_user_id uuid,
+    p_integration_id text,
+    p_display_name text,
+    p_enabled boolean,
+    p_status text,
+    p_descriptor jsonb,
+    p_abilities jsonb,
+    p_min_version text,
+    p_max_tested_version text,
+    p_min_wp_version text,
+    p_integration_entry_sha256 text,
+    p_theme_slug text
+)
+RETURNS content_integrations
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_before content_integrations;
+    v_after  content_integrations;
+BEGIN
+    IF p_actor_user_id IS NULL OR NOT EXISTS (
+        SELECT 1 FROM users u
+        WHERE u.id = p_actor_user_id AND u.is_superadmin
+    ) THEN
+        RAISE EXCEPTION 'content_integrations: actor is not a superadmin'
+            USING ERRCODE = '42501';
+    END IF;
+
+    -- Serialise writers of one integration, so two concurrent first inserts
+    -- cannot both read no row and both audit an 'insert'.
+    PERFORM pg_advisory_xact_lock(hashtext('content_integrations'), hashtext(p_integration_id));
+
+    SELECT * INTO v_before FROM content_integrations
+        WHERE integration_id = p_integration_id
+        FOR UPDATE;
+
+    INSERT INTO content_integrations AS ci (
+        integration_id, display_name, enabled, status, descriptor, abilities,
+        min_version, max_tested_version, min_wp_version,
+        integration_entry_sha256, updated_at, updated_by_user_id, theme_slug
+    ) VALUES (
+        p_integration_id, p_display_name, p_enabled, p_status,
+        coalesce(p_descriptor, '{}'::jsonb), p_abilities,
+        p_min_version, p_max_tested_version, p_min_wp_version,
+        p_integration_entry_sha256, now(), p_actor_user_id, p_theme_slug
+    )
+    ON CONFLICT (integration_id) DO UPDATE SET
+        display_name = EXCLUDED.display_name,
+        enabled = EXCLUDED.enabled,
+        status = EXCLUDED.status,
+        descriptor = EXCLUDED.descriptor,
+        abilities = EXCLUDED.abilities,
+        min_version = EXCLUDED.min_version,
+        max_tested_version = EXCLUDED.max_tested_version,
+        min_wp_version = EXCLUDED.min_wp_version,
+        integration_entry_sha256 = EXCLUDED.integration_entry_sha256,
+        theme_slug = EXCLUDED.theme_slug,
+        updated_at = now(),
+        updated_by_user_id = EXCLUDED.updated_by_user_id
+    RETURNING ci.* INTO v_after;
+
+    INSERT INTO content_integrations_audit (
+        integration_id, action, actor_user_id,
+        before_sha256, after_sha256, before_enabled, after_enabled
+    ) VALUES (
+        p_integration_id,
+        CASE WHEN v_before.integration_id IS NULL THEN 'insert' ELSE 'update' END,
+        p_actor_user_id,
+        CASE WHEN v_before.integration_id IS NULL THEN NULL
+             ELSE content_integration_row_sha256(v_before) END,
+        content_integration_row_sha256(v_after),
+        v_before.enabled,
+        v_after.enabled
+    );
+
+    RETURN v_after;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION admin_upsert_content_integration(
+    uuid, text, text, boolean, text, jsonb, jsonb, text, text, text, text, text
+) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION admin_upsert_content_integration(
+    uuid, text, text, boolean, text, jsonb, jsonb, text, text, text, text, text
+) TO wpmgr_app;
+
+-- ---------------------------------------------------------------------------
+-- Seed: the builders ADR-062 names, plus Breakdance and Oxygen,
+-- detect_only, every descriptor verified: false.
+-- ---------------------------------------------------------------------------
+--
+-- S1 only reports; nothing here admits a write. Detection data is taken from
+-- the builders' own documentation where it states it, and otherwise is the
+-- CONSERVATIVE choice, meaning the one that flags MORE pages as builder
+-- pages: the probe routes any page with a matching payload key away from
+-- route 1, so an over-broad key costs a report line, and a missing key would
+-- let a builder page look classic. Every row is re-verified on a scratch
+-- site (S1b) before any field is trusted.
+--
+--   * Content-column builders (Divi 4, WPBakery) keep their document in
+--     post_content, which the fingerprint already covers; their payload key
+--     is the builder flag itself, so a flagged page is detected.
+--   * Breakdance and Oxygen have no documented on/off flag. Their mode_flag
+--     value is the literal __wpmgr_unverified__, which no site stores, so a
+--     page carrying their payload reports as ambiguous (route 3) until S1b
+--     finds the real flag.
+--   * Bricks and Divi ship as themes: theme_slug names the theme folder and
+--     plugin_dir is NULL.
+--
+-- The table is ENABLE (not FORCE) RLS, so the owner running this migration
+-- bypasses RLS and the INSERT lands. The REVOKE comes after the INSERT, the
+-- m40.1 order, so the seed also succeeds in the single-DSN model where the
+-- migration runner is wpmgr_app and still holds m1's default INSERT grant.
+
+INSERT INTO content_integrations
+    (integration_id, display_name, enabled, status, theme_slug, descriptor)
+VALUES
+    ('beaver-builder', 'Beaver Builder', true, 'detect_only', NULL,
+     '{"verified": false, "version_constant": "FL_BUILDER_VERSION", "mode_flag": {"meta_key": "_fl_builder_enabled", "on_values": ["1"]}, "payload_keys": ["_fl_builder_data"], "draft_keys": ["_fl_builder_draft"], "singular_override": "unknown", "plugin_dir": "bb-plugin"}'::jsonb),
+    ('breakdance', 'Breakdance', true, 'detect_only', NULL,
+     '{"verified": false, "mode_flag": {"meta_key": "_breakdance_data", "on_values": ["__wpmgr_unverified__"]}, "payload_keys": ["_breakdance_data"], "singular_override": "unknown", "plugin_dir": "breakdance"}'::jsonb),
+    ('bricks', 'Bricks', true, 'detect_only', 'bricks',
+     '{"verified": false, "version_constant": "BRICKS_VERSION", "mode_flag": {"meta_key": "_bricks_editor_mode", "on_values": ["bricks"]}, "payload_keys": ["_bricks_page_content_2", "_bricks_page_header_2", "_bricks_page_footer_2"], "singular_override": "unknown"}'::jsonb),
+    ('divi', 'Divi', true, 'detect_only', 'Divi',
+     '{"verified": false, "version_constant": "ET_BUILDER_VERSION", "mode_flag": {"meta_key": "_et_pb_use_builder", "on_values": ["on"]}, "payload_keys": ["_et_pb_use_builder"], "shortcode_prefixes": ["et_pb_"], "singular_override": "unknown"}'::jsonb),
+    ('elementor', 'Elementor', true, 'detect_only', NULL,
+     '{"verified": false, "version_constant": "ELEMENTOR_VERSION", "mode_flag": {"meta_key": "_elementor_edit_mode", "on_values": ["builder"]}, "payload_keys": ["_elementor_data"], "singular_override": "unknown", "plugin_dir": "elementor"}'::jsonb),
+    ('oxygen', 'Oxygen', true, 'detect_only', NULL,
+     '{"verified": false, "mode_flag": {"meta_key": "_oxygen_data", "on_values": ["__wpmgr_unverified__"]}, "payload_keys": ["_oxygen_data", "ct_builder_shortcodes"], "shortcode_prefixes": ["ct_"], "singular_override": "unknown", "plugin_dir": "oxygen"}'::jsonb),
+    ('wpbakery', 'WPBakery', true, 'detect_only', NULL,
+     '{"verified": false, "version_constant": "WPB_VC_VERSION", "mode_flag": {"meta_key": "_wpb_vc_js_status", "on_values": ["true"]}, "payload_keys": ["_wpb_vc_js_status"], "shortcode_prefixes": ["vc_"], "singular_override": "unknown", "plugin_dir": "js_composer"}'::jsonb)
+ON CONFLICT (integration_id) DO NOTHING;
+
+-- Skipped when the migration role is wpmgr_app itself; see the header.
+-- (In the migration: skipped when the migration role is wpmgr_app.)
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON content_integrations FROM wpmgr_app;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON content_integrations_audit FROM wpmgr_app;
+
+GRANT SELECT ON content_integrations TO wpmgr_app;
+GRANT SELECT ON content_integrations_audit TO wpmgr_app;
+
+-- ---------------------------------------------------------------------------
+-- site_content_inventory
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS site_content_inventory (
+    tenant_id uuid NOT NULL
+        REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id uuid NOT NULL,
+    CONSTRAINT site_content_inventory_site_within_tenant_fkey
+        FOREIGN KEY (tenant_id, site_id)
+        REFERENCES sites (tenant_id, id) ON DELETE CASCADE,
+
+    post_id bigint NOT NULL
+        CONSTRAINT site_content_inventory_post_id_check
+        CHECK (post_id > 0),
+    CONSTRAINT site_content_inventory_pkey PRIMARY KEY (site_id, post_id),
+
+    post_type text NOT NULL
+        CONSTRAINT site_content_inventory_post_type_check
+        CHECK (post_type ~ '^[a-z0-9_-]{1,20}$'),
+    post_status text NOT NULL
+        CONSTRAINT site_content_inventory_post_status_check
+        CHECK (post_status ~ '^[a-z0-9_-]{1,20}$'),
+
+    verdict text NOT NULL
+        CONSTRAINT site_content_inventory_verdict_check
+        CHECK (verdict IN (
+            'classic', 'empty', 'block_document', 'builder', 'ambiguous',
+            'unrecognised_builder', 'special_page', 'template_may_override'
+        )),
+    route_number smallint NOT NULL
+        CONSTRAINT site_content_inventory_route_number_check
+        CHECK (route_number IN (1, 2, 3)),
+    route_reason text NOT NULL
+        CONSTRAINT site_content_inventory_route_reason_check
+        CHECK (route_reason IN (
+            'content_column', 'unrecognised_builder', 'template_may_override',
+            'special_page', 'empty_page', 'block_editor_unsupported',
+            'vendor_ability', 'unpublished_draft_exists', 'ai_draft_pending',
+            'draft_unreadable', 'builder_version_below_floor',
+            'builder_version_unverified', 'builder_ability_missing',
+            'builder_ability_changed', 'ability_owner_mismatch',
+            'vendor_requires_admin', 'builder_access_not_granted',
+            'builder_not_supported', 'ambiguous_owner'
+        )),
+
+    -- The owning editor as the probe named it. No foreign key: the probe may
+    -- report an entry that was later disabled, and this row is a record of
+    -- what the site said.
+    owner_integration_id text NULL
+        CONSTRAINT site_content_inventory_owner_integration_id_check
+        CHECK (owner_integration_id ~ '^[a-z0-9]+(-[a-z0-9]+)*$'
+               AND length(owner_integration_id) <= 64),
+    owner_display_name text NULL
+        CONSTRAINT site_content_inventory_owner_display_name_check
+        CHECK (char_length(owner_display_name) <= 80),
+    owner_version text NULL
+        CONSTRAINT site_content_inventory_owner_version_check
+        CHECK (owner_version ~ '^[0-9A-Za-z.+-]{1,32}$'),
+
+    fingerprint text NULL
+        CONSTRAINT site_content_inventory_fingerprint_check
+        CHECK (fingerprint ~ '^sha256:[0-9a-f]{64}$'),
+
+    title text NULL
+        CONSTRAINT site_content_inventory_title_length_check
+        CHECK (octet_length(title) <= 120),
+    CONSTRAINT site_content_inventory_title_only_when_published_check
+        CHECK (title IS NULL OR post_status = 'publish'),
+
+    checked_at timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS site_content_inventory_tenant_idx
+    ON site_content_inventory (tenant_id);
+CREATE INDEX IF NOT EXISTS site_content_inventory_site_owner_idx
+    ON site_content_inventory (site_id, owner_integration_id, post_id);
+
+ALTER TABLE site_content_inventory ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_content_inventory FORCE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON site_content_inventory TO wpmgr_app;
+REVOKE TRUNCATE ON site_content_inventory FROM wpmgr_app;
+
+CREATE POLICY site_content_inventory_tenant_isolation
+    ON site_content_inventory
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+
+CREATE POLICY site_content_inventory_site_scope
+    ON site_content_inventory
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+
+-- ---------------------------------------------------------------------------
+-- Fleet report: counts only, through SECURITY DEFINER functions
+-- ---------------------------------------------------------------------------
+--
+-- content_inventory_fleet_rows visits every tenant under that tenant's own
+-- app.tenant_id, so tenant_isolation admits exactly that tenant's rows, and
+-- returns per-site counts. It is private: EXECUTE is revoked from PUBLIC and
+-- granted to nobody, so only the two definer functions below, running as the
+-- same owner, call it. It restores app.tenant_id before returning. The
+-- caller's app.site_scope is left alone, so a site-scoped caller still counts
+-- only its own sites.
+CREATE OR REPLACE FUNCTION content_inventory_fleet_rows()
+RETURNS TABLE (
+    o_verdict text, o_route_number smallint,
+    o_owner_integration_id text, o_owner_version text,
+    o_site_id uuid, o_pages bigint
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_tenant uuid;
+    v_prev   text := coalesce(current_setting('app.tenant_id', true), '');
+BEGIN
+    FOR v_tenant IN SELECT t.id FROM tenants t LOOP
+        PERFORM set_config('app.tenant_id', v_tenant::text, true);
+        RETURN QUERY
+            SELECT i.verdict, i.route_number, i.owner_integration_id,
+                   i.owner_version, i.site_id, count(*)::bigint
+            FROM site_content_inventory i
+            WHERE i.tenant_id = v_tenant
+            GROUP BY i.verdict, i.route_number, i.owner_integration_id,
+                     i.owner_version, i.site_id;
+    END LOOP;
+    PERFORM set_config('app.tenant_id', v_prev, true);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION content_inventory_fleet_rows() FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION fleet_content_share_by_verdict()
+RETURNS TABLE (verdict text, route_number smallint, pages bigint, sites bigint)
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+    SELECT r.o_verdict, r.o_route_number,
+           sum(r.o_pages)::bigint, count(DISTINCT r.o_site_id)::bigint
+    FROM content_inventory_fleet_rows() r
+    GROUP BY r.o_verdict, r.o_route_number
+    ORDER BY r.o_verdict, r.o_route_number;
+$$;
+
+CREATE OR REPLACE FUNCTION fleet_content_share_by_builder()
+RETURNS TABLE (owner_integration_id text, owner_version text, pages bigint, sites bigint)
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+    SELECT r.o_owner_integration_id, r.o_owner_version,
+           sum(r.o_pages)::bigint, count(DISTINCT r.o_site_id)::bigint
+    FROM content_inventory_fleet_rows() r
+    WHERE r.o_owner_integration_id IS NOT NULL
+    GROUP BY r.o_owner_integration_id, r.o_owner_version
+    ORDER BY r.o_owner_integration_id, r.o_owner_version NULLS FIRST;
+$$;
+
+REVOKE ALL ON FUNCTION fleet_content_share_by_verdict() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION fleet_content_share_by_verdict() TO wpmgr_app;
+REVOKE ALL ON FUNCTION fleet_content_share_by_builder() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION fleet_content_share_by_builder() TO wpmgr_app;
+
+-- ---------------------------------------------------------------------------
+-- site_content_inventory_runs: the last refresh per site
+-- ---------------------------------------------------------------------------
+--
+-- One row per site, written in the SAME tenant transaction as that refresh's
+-- inventory upsert, so the API can say truthfully whether the stored list was
+-- cut off at the page cap, on every instance and after a restart. Same
+-- tenancy as site_content_inventory: FORCE RLS, tenant_isolation, the
+-- RESTRICTIVE site_scope, no cross-tenant policy. Cascades with the site: it
+-- describes rows that cascade with it. No DELETE for wpmgr_app (the row is
+-- replaced by upsert, and goes with its site); TRUNCATE revoked.
+
+CREATE TABLE IF NOT EXISTS site_content_inventory_runs (
+    tenant_id uuid NOT NULL
+        REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id uuid PRIMARY KEY,
+    CONSTRAINT site_content_inventory_runs_site_within_tenant_fkey
+        FOREIGN KEY (tenant_id, site_id)
+        REFERENCES sites (tenant_id, id) ON DELETE CASCADE,
+    checked_at timestamptz NOT NULL,
+    pages_stored integer NOT NULL
+        CONSTRAINT site_content_inventory_runs_pages_stored_check
+        CHECK (pages_stored >= 0),
+    truncated boolean NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS site_content_inventory_runs_tenant_idx
+    ON site_content_inventory_runs (tenant_id);
+
+ALTER TABLE site_content_inventory_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_content_inventory_runs FORCE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, UPDATE ON site_content_inventory_runs TO wpmgr_app;
+REVOKE DELETE, TRUNCATE ON site_content_inventory_runs FROM wpmgr_app;
+
+CREATE POLICY site_content_inventory_runs_tenant_isolation
+    ON site_content_inventory_runs
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+
+CREATE POLICY site_content_inventory_runs_site_scope
+    ON site_content_inventory_runs
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+
+-- ---------------------------------------------------------------------------
+-- m155: ability_catalogue (GLOBAL allowlist of reviewed abilities,
+-- superadmin-written only through admin_upsert_ability_catalogue_entry, a
+-- SECURITY DEFINER function that audits every change; wpmgr_app has SELECT
+-- only), site_ability_inventory and site_ability_inventory_runs (tenant- and
+-- site-scoped, FORCE RLS, RESTRICTIVE site_scope, no cross-tenant policy).
+-- The migration's header carries the reasoning; this block mirrors its end
+-- state for sqlc.
+-- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- ability_catalogue
+-- ---------------------------------------------------------------------------
+
+-- m159: plugin version ordering (matches Go wpversion.Compare) and the
+-- output_fields shape grammar, both used by ability_catalogue CHECKs.
+CREATE OR REPLACE FUNCTION wpmgr_version_tokens(v text)
+RETURNS text[]
+LANGUAGE plpgsql
+IMMUTABLE STRICT PARALLEL SAFE
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+    part text;
+    out  text[] := '{}';
+BEGIN
+    IF v = '' THEN
+        RETURN ARRAY['#'];
+    END IF;
+    v := translate(v, '_-+', '...');
+    FOREACH part IN ARRAY string_to_array(v, '.') LOOP
+        IF part = '' THEN
+            out := out || '#'::text;
+        ELSE
+            out := out || ARRAY(
+                SELECT m[1] FROM regexp_matches(part, '([0-9]+|[^0-9]+)', 'g') AS m
+            );
+        END IF;
+    END LOOP;
+    RETURN out;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION wpmgr_version_rank(tok text)
+RETURNS int
+LANGUAGE sql
+IMMUTABLE STRICT PARALLEL SAFE
+SET search_path = pg_catalog, pg_temp
+AS $$
+    SELECT CASE lower(tok)
+        WHEN 'dev' THEN 0
+        WHEN 'alpha' THEN 1 WHEN 'a' THEN 1
+        WHEN 'beta' THEN 2 WHEN 'b' THEN 2
+        WHEN 'rc' THEN 3
+        WHEN '#' THEN 4
+        WHEN 'pl' THEN 6 WHEN 'p' THEN 6
+        ELSE 5
+    END;
+$$;
+
+CREATE OR REPLACE FUNCTION wpmgr_version_cmp(a text, b text)
+RETURNS int
+LANGUAGE plpgsql
+IMMUTABLE STRICT PARALLEL SAFE
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    ta text[];
+    tb text[];
+    x  text;
+    y  text;
+    xn boolean;
+    yn boolean;
+    rx int;
+    ry int;
+    i  int;
+    n  int;
+BEGIN
+    IF a = '*' THEN a := ''; END IF;
+    IF b = '*' THEN b := ''; END IF;
+    ta := wpmgr_version_tokens(a);
+    tb := wpmgr_version_tokens(b);
+    n := greatest(coalesce(array_length(ta, 1), 0), coalesce(array_length(tb, 1), 0));
+    FOR i IN 1..n LOOP
+        x := coalesce(ta[i], '0');
+        y := coalesce(tb[i], '0');
+        xn := x ~ '^[0-9]+$';
+        yn := y ~ '^[0-9]+$';
+        IF xn AND yn THEN
+            x := ltrim(x, '0');
+            y := ltrim(y, '0');
+            IF length(x) <> length(y) THEN
+                RETURN sign(length(x) - length(y))::int;
+            END IF;
+            IF x COLLATE "C" < y COLLATE "C" THEN RETURN -1; END IF;
+            IF x COLLATE "C" > y COLLATE "C" THEN RETURN 1; END IF;
+        ELSE
+            rx := CASE WHEN xn THEN 5 ELSE wpmgr_version_rank(x) END;
+            ry := CASE WHEN yn THEN 5 ELSE wpmgr_version_rank(y) END;
+            IF rx <> ry THEN
+                RETURN sign(rx - ry)::int;
+            END IF;
+        END IF;
+    END LOOP;
+    RETURN 0;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION wpmgr_version_tokens(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION wpmgr_version_rank(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION wpmgr_version_cmp(text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION wpmgr_version_tokens(text) TO wpmgr_app;
+GRANT EXECUTE ON FUNCTION wpmgr_version_rank(text) TO wpmgr_app;
+GRANT EXECUTE ON FUNCTION wpmgr_version_cmp(text, text) TO wpmgr_app;
+
+CREATE OR REPLACE FUNCTION ability_output_shape_valid(s jsonb, depth int)
+RETURNS boolean
+LANGUAGE plpgsql
+IMMUTABLE STRICT PARALLEL SAFE
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    k text;
+    v jsonb;
+BEGIN
+    IF depth > 8 THEN
+        RETURN false;
+    END IF;
+    IF jsonb_typeof(s) = 'string' THEN
+        RETURN s #>> '{}' IN ('string', 'int', 'bool');
+    END IF;
+    IF jsonb_typeof(s) <> 'object' THEN
+        RETURN false;
+    END IF;
+    IF s ?& ARRAY['fields'] AND (SELECT count(*) FROM jsonb_object_keys(s)) = 1 THEN
+        IF jsonb_typeof(s -> 'fields') <> 'object' THEN
+            RETURN false;
+        END IF;
+        FOR k, v IN SELECT * FROM jsonb_each(s -> 'fields') LOOP
+            IF k !~ '^[A-Za-z0-9_-]{1,64}$' OR NOT ability_output_shape_valid(v, depth + 1) THEN
+                RETURN false;
+            END IF;
+        END LOOP;
+        RETURN true;
+    END IF;
+    IF s ?& ARRAY['items'] AND (SELECT count(*) FROM jsonb_object_keys(s)) = 1 THEN
+        RETURN ability_output_shape_valid(s -> 'items', depth + 1);
+    END IF;
+    RETURN false;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION ability_output_shape_valid(jsonb, int) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION ability_output_shape_valid(jsonb, int) TO wpmgr_app;
+
+CREATE TABLE IF NOT EXISTS ability_catalogue (
+    entry_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name text NOT NULL
+        CONSTRAINT ability_catalogue_name_check
+        CHECK (name ~ '^[a-z0-9-]{1,64}/[a-z0-9-]{1,64}$'),
+    source text NOT NULL
+        CONSTRAINT ability_catalogue_source_check
+        CHECK (source IN ('wpmgr', 'core', 'vendor')),
+    class text NOT NULL
+        CONSTRAINT ability_catalogue_class_check
+        CHECK (class IN ('read', 'write', 'denied')),
+    status text NOT NULL
+        CONSTRAINT ability_catalogue_status_check
+        CHECK (status IN ('admitted', 'detect_only', 'awaiting_vendor_tools')),
+    enabled boolean NOT NULL DEFAULT true,
+    approval_mode text NOT NULL
+        CONSTRAINT ability_catalogue_approval_mode_check
+        CHECK (approval_mode IN ('none', 'per_call')),
+    permission_mode text NOT NULL DEFAULT 'principal'
+        CONSTRAINT ability_catalogue_permission_mode_check
+        CHECK (permission_mode IN ('principal', 'asserted')),
+
+    -- Vendor: the builder descriptor this entry belongs to, the owning plugin
+    -- or theme directory, and the tested version range. Present only for
+    -- source = 'vendor'.
+    integration_id text NULL
+        REFERENCES content_integrations (integration_id),
+    owner_dir text NULL
+        CONSTRAINT ability_catalogue_owner_dir_check
+        CHECK (owner_dir ~ '^[A-Za-z0-9._-]{1,100}$'),
+    version_min text NULL
+        CONSTRAINT ability_catalogue_version_min_check
+        CHECK (version_min ~ '^[0-9A-Za-z.+-]{1,32}$'),
+    version_max_tested text NULL
+        CONSTRAINT ability_catalogue_version_max_tested_check
+        CHECK (version_max_tested ~ '^[0-9A-Za-z.+-]{1,32}$'),
+    CONSTRAINT ability_catalogue_vendor_fields_check
+        CHECK (source = 'vendor' OR (
+            integration_id IS NULL AND owner_dir IS NULL
+            AND version_min IS NULL AND version_max_tested IS NULL)),
+    CONSTRAINT ability_catalogue_vendor_owner_check
+        CHECK (source <> 'vendor' OR owner_dir IS NOT NULL),
+
+    min_wp_version text NULL
+        CONSTRAINT ability_catalogue_min_wp_version_check
+        CHECK (min_wp_version ~ '^[0-9]+(\.[0-9]+){0,2}$'),
+    min_agent_version text NULL
+        CONSTRAINT ability_catalogue_min_agent_version_check
+        CHECK (min_agent_version ~ '^[0-9]+(\.[0-9]+){0,2}$'),
+
+    schema_struct_sha256 text NULL
+        CONSTRAINT ability_catalogue_schema_struct_sha256_check
+        CHECK (schema_struct_sha256 ~ '^[0-9a-f]{64}$'),
+    dynamic_enum_paths text[] NOT NULL DEFAULT '{}'::text[]
+        CONSTRAINT ability_catalogue_dynamic_enum_paths_check
+        CHECK (cardinality(dynamic_enum_paths) <= 64),
+
+    -- OUR plain-language copy. Never site text.
+    title text NOT NULL
+        CONSTRAINT ability_catalogue_title_check
+        CHECK (length(btrim(title)) > 0 AND char_length(title) <= 80),
+    description text NOT NULL
+        CONSTRAINT ability_catalogue_description_check
+        CHECK (length(btrim(description)) > 0 AND char_length(description) <= 1000),
+    usage text NULL
+        CONSTRAINT ability_catalogue_usage_check
+        CHECK (char_length(usage) <= 2000),
+
+    operator_permission text NULL
+        CONSTRAINT ability_catalogue_operator_permission_check
+        CHECK (operator_permission ~ '^[a-z]+(\.[a-z_]+){1,3}$'),
+    target jsonb NULL
+        CONSTRAINT ability_catalogue_target_check
+        CHECK (target IS NULL OR jsonb_typeof(target) = 'object'),
+    snapshot text NOT NULL DEFAULT 'none'
+        CONSTRAINT ability_catalogue_snapshot_check
+        CHECK (snapshot IN (
+            'none', 'created_post_trash', 'wp_revision', 'vendor_draft_discard',
+            'vendor_tree_rewrite', 'post_fields', 'own_attachment_delete',
+            'menu_items', 'option_values'
+        )),
+    preview text NULL
+        CONSTRAINT ability_catalogue_preview_check
+        CHECK (preview IN ('rich_create', 'rich_edit', 'structured')),
+    arg_render jsonb NOT NULL DEFAULT '{}'::jsonb
+        CONSTRAINT ability_catalogue_arg_render_check
+        CHECK (jsonb_typeof(arg_render) = 'object'),
+    effect_copy text NOT NULL DEFAULT 'none'
+        CONSTRAINT ability_catalogue_effect_copy_check
+        CHECK (effect_copy IN ('draft', 'live', 'none')),
+    limits jsonb NOT NULL DEFAULT '{}'::jsonb
+        CONSTRAINT ability_catalogue_limits_check
+        CHECK (jsonb_typeof(limits) = 'object'),
+    nested_allow text[] NOT NULL DEFAULT '{}'::text[],
+    global_option_keys text[] NOT NULL DEFAULT '{}'::text[],
+    integration_block jsonb NULL
+        CONSTRAINT ability_catalogue_integration_block_check
+        CHECK (integration_block IS NULL OR jsonb_typeof(integration_block) = 'object'),
+    admission jsonb NOT NULL DEFAULT '{}'::jsonb
+        CONSTRAINT ability_catalogue_admission_check
+        CHECK (jsonb_typeof(admission) = 'object'),
+
+    entry_sha256 text NULL
+        CONSTRAINT ability_catalogue_entry_sha256_check
+        CHECK (entry_sha256 ~ '^[0-9a-f]{64}$'),
+
+    -- m159 (C1): a non-wpmgr entry pins its schema unless it is denied; a
+    -- non-wpmgr read pins its output; a range is ordered.
+    CONSTRAINT ability_catalogue_schema_pinned_check
+        CHECK (source = 'wpmgr' OR class = 'denied' OR schema_struct_sha256 IS NOT NULL),
+    CONSTRAINT ability_catalogue_output_fields_check
+        CHECK (class <> 'read' OR source = 'wpmgr' OR output_fields IS NOT NULL),
+    CONSTRAINT ability_catalogue_version_order_check
+        CHECK (version_min IS NULL OR version_max_tested IS NULL
+               OR wpmgr_version_cmp(version_min, version_max_tested) <= 0),
+
+    -- A write is approved per call, has an undo, and names the permission
+    -- its approver must hold.
+    CONSTRAINT ability_catalogue_write_rules_check
+        CHECK (class <> 'write' OR (
+            approval_mode = 'per_call'
+            AND snapshot <> 'none'
+            AND operator_permission IS NOT NULL)),
+
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    -- NULL only for a row the migration seeded.
+    updated_by_user_id uuid NULL,
+    -- m159: the pinned output shape of a read. Last, as ADD COLUMN placed it,
+    -- so SELECT * through the definer scans in the physical order.
+    output_fields jsonb NULL
+        CONSTRAINT ability_catalogue_output_fields_shape_check
+        CHECK (output_fields IS NULL OR (
+            octet_length(output_fields::text) <= 16384
+            AND ability_output_shape_valid(output_fields, 0)))
+);
+
+-- One entry per name and range start. NULLS NOT DISTINCT so two wpmgr or core
+-- entries (version_min NULL) for one name collide.
+CREATE UNIQUE INDEX IF NOT EXISTS ability_catalogue_name_version_key
+    ON ability_catalogue (name, version_min) NULLS NOT DISTINCT;
+
+ALTER TABLE ability_catalogue ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY ability_catalogue_read
+    ON ability_catalogue
+    FOR SELECT
+    USING (true);
+
+-- ---------------------------------------------------------------------------
+-- ability_catalogue_audit: append-only, written only by the definer
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS ability_catalogue_audit (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    entry_id uuid NOT NULL,
+    name text NOT NULL,
+    action text NOT NULL
+        CONSTRAINT ability_catalogue_audit_action_check
+        CHECK (action IN ('insert', 'update')),
+    -- NULL only for a system write: m157's stamp by
+    -- stamp_wpmgr_ability_entry_hash, or m160's read side-effect auto-disable
+    -- by record_ability_read_side_effect.
+    actor_user_id uuid NULL,
+    CONSTRAINT ability_catalogue_audit_null_actor_is_system_check
+        CHECK (actor_user_id IS NOT NULL OR (action = 'update' AND (
+            (before_entry_sha256 IS NULL
+             AND after_entry_sha256 IS NOT NULL
+             AND before_enabled IS NOT DISTINCT FROM after_enabled)
+            OR
+            (before_entry_sha256 IS NOT DISTINCT FROM after_entry_sha256
+             AND before_enabled IS TRUE
+             AND after_enabled IS FALSE)))),
+    before_row_sha256 text NULL
+        CONSTRAINT ability_catalogue_audit_before_row_check
+        CHECK (before_row_sha256 ~ '^[0-9a-f]{64}$'),
+    after_row_sha256 text NOT NULL
+        CONSTRAINT ability_catalogue_audit_after_row_check
+        CHECK (after_row_sha256 ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT ability_catalogue_audit_before_iff_update_check
+        CHECK ((action = 'update') = (before_row_sha256 IS NOT NULL)),
+    before_entry_sha256 text NULL,
+    after_entry_sha256 text NULL,
+    before_enabled boolean NULL,
+    after_enabled boolean NOT NULL,
+    at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ability_catalogue_audit_entry_idx
+    ON ability_catalogue_audit (entry_id, id DESC);
+
+ALTER TABLE ability_catalogue_audit ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY ability_catalogue_audit_read
+    ON ability_catalogue_audit
+    FOR SELECT
+    USING (true);
+
+-- The row hash the audit records, computed in SQL from the stored row so the
+-- audit does not trust a caller-supplied hash. Timestamps and the actor are
+-- excluded: the hash describes the entry, not who touched it when.
+CREATE OR REPLACE FUNCTION ability_catalogue_row_sha256(
+    r ability_catalogue
+)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+SET search_path = public, pg_temp
+AS $$
+    SELECT encode(sha256(convert_to(jsonb_build_object(
+        'entry_id', r.entry_id,
+        'name', r.name,
+        'source', r.source,
+        'class', r.class,
+        'status', r.status,
+        'enabled', r.enabled,
+        'approval_mode', r.approval_mode,
+        'permission_mode', r.permission_mode,
+        'integration_id', r.integration_id,
+        'owner_dir', r.owner_dir,
+        'version_min', r.version_min,
+        'version_max_tested', r.version_max_tested,
+        'min_wp_version', r.min_wp_version,
+        'min_agent_version', r.min_agent_version,
+        'schema_struct_sha256', r.schema_struct_sha256,
+        'dynamic_enum_paths', to_jsonb(r.dynamic_enum_paths),
+        'title', r.title,
+        'description', r.description,
+        'usage', r.usage,
+        'operator_permission', r.operator_permission,
+        'target', r.target,
+        'snapshot', r.snapshot,
+        'preview', r.preview,
+        'arg_render', r.arg_render,
+        'effect_copy', r.effect_copy,
+        'limits', r.limits,
+        'nested_allow', to_jsonb(r.nested_allow),
+        'global_option_keys', to_jsonb(r.global_option_keys),
+        'integration_block', r.integration_block,
+        'admission', r.admission,
+        'entry_sha256', r.entry_sha256,
+        'output_fields', r.output_fields
+    )::text, 'UTF8')), 'hex');
+$$;
+
+-- The one write path. p_entry_id NULL inserts a new entry; a non-NULL
+-- p_entry_id updates that entry and refuses (P0002) if it does not exist, so
+-- an update can never silently become an insert.
+CREATE OR REPLACE FUNCTION admin_upsert_ability_catalogue_entry(
+    p_actor_user_id uuid,
+    p_entry_id uuid,
+    p_name text,
+    p_source text,
+    p_class text,
+    p_status text,
+    p_enabled boolean,
+    p_approval_mode text,
+    p_permission_mode text,
+    p_integration_id text,
+    p_owner_dir text,
+    p_version_min text,
+    p_version_max_tested text,
+    p_min_wp_version text,
+    p_min_agent_version text,
+    p_schema_struct_sha256 text,
+    p_dynamic_enum_paths text[],
+    p_title text,
+    p_description text,
+    p_usage text,
+    p_operator_permission text,
+    p_target jsonb,
+    p_snapshot text,
+    p_preview text,
+    p_arg_render jsonb,
+    p_effect_copy text,
+    p_limits jsonb,
+    p_nested_allow text[],
+    p_global_option_keys text[],
+    p_integration_block jsonb,
+    p_admission jsonb,
+    p_entry_sha256 text,
+    p_output_fields jsonb
+)
+RETURNS ability_catalogue
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_before ability_catalogue;
+    v_after  ability_catalogue;
+    v_clash  uuid;
+BEGIN
+    IF p_actor_user_id IS NULL OR NOT EXISTS (
+        SELECT 1 FROM users u
+        WHERE u.id = p_actor_user_id AND u.is_superadmin
+    ) THEN
+        RAISE EXCEPTION 'ability_catalogue: actor is not a superadmin'
+            USING ERRCODE = '42501';
+    END IF;
+
+    -- Serialise writers of one ability name (m155's key, which the Go admin
+    -- repo and m157's stamp also take): the overlap check below and the write
+    -- that follows it see no concurrent writer of this name.
+    PERFORM pg_advisory_xact_lock(hashtext('ability_catalogue'), hashtext(p_name));
+
+    IF p_entry_id IS NOT NULL THEN
+        SELECT * INTO v_before FROM ability_catalogue
+            WHERE entry_id = p_entry_id
+            FOR UPDATE;
+        IF v_before.entry_id IS NULL THEN
+            RAISE EXCEPTION 'ability_catalogue: no entry %', p_entry_id
+                USING ERRCODE = 'P0002';
+        END IF;
+        IF v_before.name <> p_name THEN
+            -- The lock above is keyed on p_name; renaming would escape it.
+            RAISE EXCEPTION 'ability_catalogue: an entry''s name cannot change'
+                USING ERRCODE = '22023';
+        END IF;
+    END IF;
+
+    -- One admitted version range per name at any version.
+    IF p_status = 'admitted' THEN
+        SELECT c.entry_id INTO v_clash
+        FROM ability_catalogue c
+        WHERE c.name = p_name
+          AND c.status = 'admitted'
+          AND c.entry_id IS DISTINCT FROM p_entry_id
+          AND (c.version_min IS NULL OR p_version_max_tested IS NULL
+               OR wpmgr_version_cmp(c.version_min, p_version_max_tested) <= 0)
+          AND (p_version_min IS NULL OR c.version_max_tested IS NULL
+               OR wpmgr_version_cmp(p_version_min, c.version_max_tested) <= 0)
+        LIMIT 1;
+        IF v_clash IS NOT NULL THEN
+            RAISE EXCEPTION 'ability_catalogue_range_overlap'
+                USING ERRCODE = '23P01',
+                      DETAIL = format('admitted entry %s of %s overlaps this version range', v_clash, p_name);
+        END IF;
+    END IF;
+
+    IF p_entry_id IS NULL THEN
+        INSERT INTO ability_catalogue AS ac (
+            name, source, class, status, enabled, approval_mode, permission_mode,
+            integration_id, owner_dir, version_min, version_max_tested,
+            min_wp_version, min_agent_version, schema_struct_sha256,
+            dynamic_enum_paths, title, description, usage, operator_permission,
+            target, snapshot, preview, arg_render, effect_copy, limits,
+            nested_allow, global_option_keys, integration_block, admission,
+            entry_sha256, output_fields, updated_at, updated_by_user_id
+        ) VALUES (
+            p_name, p_source, p_class, p_status, p_enabled, p_approval_mode,
+            coalesce(p_permission_mode, 'principal'),
+            p_integration_id, p_owner_dir, p_version_min, p_version_max_tested,
+            p_min_wp_version, p_min_agent_version, p_schema_struct_sha256,
+            coalesce(p_dynamic_enum_paths, '{}'::text[]), p_title, p_description,
+            p_usage, p_operator_permission, p_target,
+            coalesce(p_snapshot, 'none'), p_preview,
+            coalesce(p_arg_render, '{}'::jsonb), coalesce(p_effect_copy, 'none'),
+            coalesce(p_limits, '{}'::jsonb),
+            coalesce(p_nested_allow, '{}'::text[]),
+            coalesce(p_global_option_keys, '{}'::text[]),
+            p_integration_block, coalesce(p_admission, '{}'::jsonb),
+            p_entry_sha256, p_output_fields, now(), p_actor_user_id
+        )
+        RETURNING ac.* INTO v_after;
+    ELSE
+        UPDATE ability_catalogue AS ac SET
+            source = p_source,
+            class = p_class,
+            status = p_status,
+            enabled = p_enabled,
+            approval_mode = p_approval_mode,
+            permission_mode = coalesce(p_permission_mode, 'principal'),
+            integration_id = p_integration_id,
+            owner_dir = p_owner_dir,
+            version_min = p_version_min,
+            version_max_tested = p_version_max_tested,
+            min_wp_version = p_min_wp_version,
+            min_agent_version = p_min_agent_version,
+            schema_struct_sha256 = p_schema_struct_sha256,
+            dynamic_enum_paths = coalesce(p_dynamic_enum_paths, '{}'::text[]),
+            title = p_title,
+            description = p_description,
+            usage = p_usage,
+            operator_permission = p_operator_permission,
+            target = p_target,
+            snapshot = coalesce(p_snapshot, 'none'),
+            preview = p_preview,
+            arg_render = coalesce(p_arg_render, '{}'::jsonb),
+            effect_copy = coalesce(p_effect_copy, 'none'),
+            limits = coalesce(p_limits, '{}'::jsonb),
+            nested_allow = coalesce(p_nested_allow, '{}'::text[]),
+            global_option_keys = coalesce(p_global_option_keys, '{}'::text[]),
+            integration_block = p_integration_block,
+            admission = coalesce(p_admission, '{}'::jsonb),
+            entry_sha256 = p_entry_sha256,
+            output_fields = p_output_fields,
+            updated_at = now(),
+            updated_by_user_id = p_actor_user_id
+        WHERE ac.entry_id = p_entry_id
+        RETURNING ac.* INTO v_after;
+    END IF;
+
+    INSERT INTO ability_catalogue_audit (
+        entry_id, name, action, actor_user_id,
+        before_row_sha256, after_row_sha256,
+        before_entry_sha256, after_entry_sha256,
+        before_enabled, after_enabled
+    ) VALUES (
+        v_after.entry_id,
+        v_after.name,
+        CASE WHEN v_before.entry_id IS NULL THEN 'insert' ELSE 'update' END,
+        p_actor_user_id,
+        CASE WHEN v_before.entry_id IS NULL THEN NULL
+             ELSE ability_catalogue_row_sha256(v_before) END,
+        ability_catalogue_row_sha256(v_after),
+        v_before.entry_sha256,
+        v_after.entry_sha256,
+        v_before.enabled,
+        v_after.enabled
+    );
+
+    RETURN v_after;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION admin_upsert_ability_catalogue_entry(
+    uuid, uuid, text, text, text, text, boolean, text, text, text, text, text,
+    text, text, text, text, text[], text, text, text, text, jsonb, text, text,
+    jsonb, text, jsonb, text[], text[], jsonb, jsonb, text, jsonb
+) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION admin_upsert_ability_catalogue_entry(
+    uuid, uuid, text, text, text, text, boolean, text, text, text, text, text,
+    text, text, text, text, text[], text, text, text, text, jsonb, text, text,
+    jsonb, text, jsonb, text[], text[], jsonb, jsonb, text, jsonb
+) TO wpmgr_app;
+
+-- ---------------------------------------------------------------------------
+-- Seed: the three E1 own read abilities, admitted.
+-- ---------------------------------------------------------------------------
+--
+-- source wpmgr, class read, approval none, snapshot none. Their code ships in
+-- the agent, so no vendor fields and no schema hash. entry_sha256 stays NULL
+-- until the Go admin path stamps it (see the header). Inserted before the
+-- REVOKE (the m40.1 order) so the seed also lands where the migration runner
+-- is wpmgr_app.
+
+INSERT INTO ability_catalogue
+    (name, source, class, status, enabled, approval_mode, title, description)
+SELECT v.name, 'wpmgr', 'read', 'admitted', true, 'none', v.title, v.description
+FROM (VALUES
+    ('wpmgr/abilities-inventory', 'List the site''s abilities',
+     'Lists every ability registered on the site: its name, which plugin, theme or WordPress itself registered it, its version and the shape of its input. Changes nothing.'),
+    ('wpmgr/site-facts', 'Read site facts',
+     'Reads the site''s WordPress and agent versions, the page builders it has, and which editors it can create pages with. Changes nothing.'),
+    ('wpmgr/content-read', 'Read a page''s text',
+     'Reads the text of one page or post on the site, as the content inventory reports it. Changes nothing.')
+) AS v(name, title, description)
+WHERE NOT EXISTS (
+    SELECT 1 FROM ability_catalogue c WHERE c.name = v.name
+);
+
+-- m157: wpmgr/page-create, the first admitted write. description, usage and
+-- limits are as m166 leaves them (layout outlines, drafts built in Elementor,
+-- limits.builders_enabled); m162 and m166 each clear the entry hash, which
+-- the boot stamp fills.
+INSERT INTO ability_catalogue (
+    name, source, class, status, enabled, approval_mode,
+    snapshot, effect_copy, operator_permission, min_agent_version,
+    title, description, usage, limits
+)
+SELECT 'wpmgr/page-create', 'wpmgr', 'write', 'admitted', true, 'per_call',
+       'created_post_trash', 'draft', 'site.content.edit', '0.61.156',
+       'Create a draft page',
+       'Creates a new draft page or post from an outline: headings, paragraphs, lists, quotes, tables, separators, ' ||
+       'images already in the site''s media library, and, in the block editor or Elementor, buttons, spacing, ' ||
+       'sections and columns. With editor builder:elementor the draft is built in Elementor, from Elementor''s own ' ||
+       'layout elements and widgets. Nothing is published. Undo moves the draft to the trash.',
+       'Build the page as an outline. A top-level item can be any block, a group (a section) or columns. A group ' ||
+       'holds blocks or columns; a column holds blocks only. Use 2 to 4 columns; widths are optional whole ' ||
+       'percentages that add up to 100. Images must already be in the media library: find an attachment id with ' ||
+       'wpmgr/rest-read route wp-v2-media-list, and write alt text that describes the picture, or an empty alt for ' ||
+       'a decorative one. Button links are https:// addresses or paths on this site that start with /. All text is ' ||
+       'plain: no HTML, shortcodes or template syntax; square brackets only around a number such as [1], and never ' ||
+       'in alt text. On a site that uses the classic editor, send editor wordpress_classic and only headings, ' ||
+       'paragraphs, lists, quotes, tables, separators and images without captions. Layout blocks need the WPMgr ' ||
+       'plugin 0.61.160 or later on the site. On a site with Elementor, send editor builder:elementor to build the ' ||
+       'draft in Elementor from the same outline. The draft is built with Elementor''s classic widgets: leave ' ||
+       'elementor_format out or send classic; site_default, the default, builds classic widgets too. Atomic is not ' ||
+       'available yet: elementor_format atomic is always refused, whatever the site runs. In Elementor, buttons ' ||
+       'cannot use the outline style, a ' ||
+       'paragraph cannot be only a web address, and an image''s alt text must be exactly the alt text it has in the ' ||
+       'media library. Elementor pages need the WPMgr plugin 0.61.161 or later and Elementor 3.20 or later on the ' ||
+       'site.',
+       ('{"max_top_level_nodes":200,"max_nodes":400,"max_columns":4,"max_children":50,"max_images":20,' ||
+        '"max_buttons":12,"max_tables":10,"max_table_rows":50,"max_table_columns":6,"max_title_chars":200,' ||
+        '"max_text_chars":5000,"max_total_chars":60000,"max_input_bytes":65536,"builders_enabled":["elementor"]}')::jsonb
+WHERE NOT EXISTS (
+    SELECT 1 FROM ability_catalogue c WHERE c.name = 'wpmgr/page-create'
+);
+
+-- m159: the three core abilities, seeded denied with our copy.
+INSERT INTO ability_catalogue
+    (name, source, class, status, enabled, approval_mode,
+     title, description, admission)
+SELECT v.name, 'core', 'denied', 'detect_only', true, 'none',
+       v.title, v.description, jsonb_build_object('denied_reason', v.reason)
+FROM (VALUES
+    ('core/get-site-info', 'Site information (not available)',
+     'WordPress offers this only to administrators. WPMgr''s site connection deliberately is not one, so it cannot use it. WPMgr reads the same facts its own way.',
+     'principal_lacks_permission'),
+    ('core/get-environment-info', 'Server environment (not available)',
+     'WordPress offers this only to administrators. WPMgr''s site connection deliberately is not one, so it cannot use it. WPMgr reads the same facts its own way.',
+     'principal_lacks_permission'),
+    ('core/get-user-info', 'Current user profile (not available)',
+     'This would only describe WPMgr''s own connection account on the site, not any person, so WPMgr never runs it.',
+     'discloses_service_account')
+) AS v(name, title, description, reason)
+WHERE NOT EXISTS (
+    SELECT 1 FROM ability_catalogue c WHERE c.name = v.name
+);
+
+-- m157: the narrow stamp path for WPMgr's own entries. Sets entry_sha256 only
+-- on a source = 'wpmgr' row whose hash is NULL, only to 64 lowercase hex, and
+-- audits it with a NULL actor. P0002 no entry, 22023 malformed hash, 42501 not
+-- a wpmgr row, 55000 already stamped.
+CREATE OR REPLACE FUNCTION stamp_wpmgr_ability_entry_hash(
+    p_entry_id uuid,
+    p_sha text
+)
+RETURNS ability_catalogue
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_name   text;
+    v_before ability_catalogue;
+    v_after  ability_catalogue;
+BEGIN
+    IF p_sha IS NULL OR p_sha !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'ability_catalogue: entry hash is not 64 lowercase hex'
+            USING ERRCODE = '22023';
+    END IF;
+
+    SELECT name INTO v_name FROM ability_catalogue WHERE entry_id = p_entry_id;
+    IF v_name IS NULL THEN
+        RAISE EXCEPTION 'ability_catalogue: no entry %', p_entry_id
+            USING ERRCODE = 'P0002';
+    END IF;
+
+    PERFORM pg_advisory_xact_lock(hashtext('ability_catalogue'), hashtext(v_name));
+    SELECT * INTO v_before FROM ability_catalogue
+        WHERE entry_id = p_entry_id
+        FOR UPDATE;
+
+    IF v_before.source IS DISTINCT FROM 'wpmgr' THEN
+        RAISE EXCEPTION 'ability_catalogue: only a wpmgr entry is stamped here'
+            USING ERRCODE = '42501';
+    END IF;
+    IF v_before.entry_sha256 IS NOT NULL THEN
+        RAISE EXCEPTION 'ability_catalogue: entry % is already stamped', p_entry_id
+            USING ERRCODE = '55000';
+    END IF;
+
+    UPDATE ability_catalogue AS ac SET
+        entry_sha256 = p_sha,
+        updated_at = now()
+    WHERE ac.entry_id = p_entry_id
+      AND ac.source = 'wpmgr'
+      AND ac.entry_sha256 IS NULL
+    RETURNING ac.* INTO v_after;
+
+    INSERT INTO ability_catalogue_audit (
+        entry_id, name, action, actor_user_id,
+        before_row_sha256, after_row_sha256,
+        before_entry_sha256, after_entry_sha256,
+        before_enabled, after_enabled
+    ) VALUES (
+        v_after.entry_id, v_after.name, 'update', NULL,
+        ability_catalogue_row_sha256(v_before),
+        ability_catalogue_row_sha256(v_after),
+        v_before.entry_sha256, v_after.entry_sha256,
+        v_before.enabled, v_after.enabled
+    );
+
+    RETURN v_after;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION stamp_wpmgr_ability_entry_hash(uuid, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION stamp_wpmgr_ability_entry_hash(uuid, text) TO wpmgr_app;
+
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ability_catalogue FROM wpmgr_app;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ability_catalogue_audit FROM wpmgr_app;
+GRANT SELECT ON ability_catalogue TO wpmgr_app;
+GRANT SELECT ON ability_catalogue_audit TO wpmgr_app;
+
+-- ---------------------------------------------------------------------------
+-- m160 (owner ruling 4, amended 2026-10-02): vendor read side-effect disable.
+-- Per tenant at once (ability_tenant_disables, FORCE RLS, tenant isolation);
+-- fleet-wide on 3 distinct qualified (paid or aged) tenants per epoch
+-- (ability_read_side_effect_reports, global, definer-only). See the migration
+-- header for the rules, the epoch and the single-DSN caveat.
+-- ---------------------------------------------------------------------------
+-- 1. Qualification
+-- ---------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION ability_side_effect_tenant_min_age()
+RETURNS interval
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT interval '30 days' $$;
+
+CREATE OR REPLACE FUNCTION ability_side_effect_tenant_qualifies(p_tenant_id uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SET search_path = public, pg_temp
+AS $$
+    SELECT COALESCE((
+        SELECT t.deleted_at IS NULL
+           AND t.suspended_at IS NULL
+           AND (
+                (t.plan <> 'free'
+                 AND (t.plan_status = 'active'
+                      OR (t.plan_status = 'past_due' AND t.grace_until > now())))
+             OR t.created_at <= now() - ability_side_effect_tenant_min_age()
+           )
+        FROM tenants AS t
+        WHERE t.id = p_tenant_id
+    ), false)
+$$;
+
+REVOKE ALL ON FUNCTION ability_side_effect_tenant_qualifies(uuid) FROM PUBLIC;
+
+-- ---------------------------------------------------------------------------
+-- 2. The fleet counting table
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS ability_read_side_effect_reports (
+    entry_id uuid NOT NULL
+        REFERENCES ability_catalogue (entry_id),
+    epoch bigint NOT NULL
+        CONSTRAINT ability_read_side_effect_reports_epoch_check CHECK (epoch >= 0),
+    tenant_id uuid NOT NULL,
+    first_site_id uuid NOT NULL,
+    qualified boolean NOT NULL,
+    first_seen timestamptz NOT NULL DEFAULT now(),
+    qualified_at timestamptz NULL,
+    CONSTRAINT ability_read_side_effect_reports_qualified_at_check
+        CHECK (qualified = (qualified_at IS NOT NULL)),
+    PRIMARY KEY (entry_id, epoch, tenant_id)
+);
+
+CREATE INDEX IF NOT EXISTS ability_read_side_effect_reports_tenant_idx
+    ON ability_read_side_effect_reports (tenant_id);
+
+ALTER TABLE ability_read_side_effect_reports ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON ability_read_side_effect_reports FROM PUBLIC;
+
+-- ---------------------------------------------------------------------------
+-- 3. The per-tenant disable
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS ability_tenant_disables (
+    tenant_id uuid NOT NULL
+        REFERENCES tenants (id) ON DELETE CASCADE,
+    entry_id uuid NOT NULL
+        REFERENCES ability_catalogue (entry_id),
+    disabled_at timestamptz NOT NULL DEFAULT now(),
+    reenabled_at timestamptz NULL,
+    reenabled_by_user_id uuid NULL,
+    CONSTRAINT ability_tenant_disables_reenabled_check
+        CHECK ((reenabled_at IS NULL) = (reenabled_by_user_id IS NULL)),
+    PRIMARY KEY (tenant_id, entry_id)
+);
+
+CREATE INDEX IF NOT EXISTS ability_tenant_disables_tenant_id_idx
+    ON ability_tenant_disables (tenant_id);
+
+ALTER TABLE ability_tenant_disables ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ability_tenant_disables FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY ability_tenant_disables_tenant_isolation
+    ON ability_tenant_disables
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+REVOKE ALL ON ability_tenant_disables FROM PUBLIC;
+
+-- The migration skips these when it runs as wpmgr_app (single-DSN).
+REVOKE ALL ON ability_read_side_effect_reports FROM wpmgr_app;
+REVOKE ALL ON ability_tenant_disables FROM wpmgr_app;
+GRANT SELECT ON ability_tenant_disables TO wpmgr_app;
+GRANT UPDATE (reenabled_at, reenabled_by_user_id)
+    ON ability_tenant_disables TO wpmgr_app;
+
+-- ---------------------------------------------------------------------------
+-- 4. The function
+-- ---------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION record_ability_read_side_effect(
+    p_entry_id uuid,
+    p_site_id uuid,
+    p_tenant_id uuid
+)
+RETURNS int
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_tenant uuid;
+    v_name   text;
+    v_epoch  bigint;
+    v_qual   boolean;
+    v_newly  boolean;
+    v_count  int;
+    v_before ability_catalogue;
+    v_after  ability_catalogue;
+BEGIN
+    IF p_entry_id IS NULL OR p_site_id IS NULL OR p_tenant_id IS NULL THEN
+        RAISE EXCEPTION 'ability_read_side_effect: entry, site and tenant are required'
+            USING ERRCODE = '22023';
+    END IF;
+
+    -- R5: the tenant is the transaction's, never the parameter's.
+    v_tenant := nullif(current_setting('app.tenant_id', true), '')::uuid;
+    IF v_tenant IS NULL OR v_tenant <> p_tenant_id THEN
+        RAISE EXCEPTION 'ability_read_side_effect: not the tenant of this transaction'
+            USING ERRCODE = '42501';
+    END IF;
+    PERFORM 1 FROM sites WHERE id = p_site_id AND tenant_id = v_tenant;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'ability_read_side_effect: not a site of this tenant'
+            USING ERRCODE = '42501';
+    END IF;
+
+    SELECT name INTO v_name FROM ability_catalogue WHERE entry_id = p_entry_id;
+    IF v_name IS NULL THEN
+        RAISE EXCEPTION 'ability_catalogue: no entry %', p_entry_id
+            USING ERRCODE = 'P0002';
+    END IF;
+
+    -- m155's writer lock, then the row: serialises every reporter and every
+    -- admin write of this name, including a superadmin re-enable.
+    PERFORM pg_advisory_xact_lock(hashtext('ability_catalogue'), hashtext(v_name));
+    SELECT * INTO v_before FROM ability_catalogue
+        WHERE entry_id = p_entry_id
+        FOR UPDATE;
+
+    IF v_before.source IS DISTINCT FROM 'vendor' OR v_before.class IS DISTINCT FROM 'read' THEN
+        RAISE EXCEPTION 'ability_read_side_effect: only a vendor read is recorded'
+            USING ERRCODE = '42501';
+    END IF;
+
+    -- R4: off for this tenant at once. A re-enabled row is disabled again; a
+    -- row already disabled keeps its first disabled_at.
+    INSERT INTO ability_tenant_disables (tenant_id, entry_id)
+    VALUES (v_tenant, p_entry_id)
+    ON CONFLICT (tenant_id, entry_id) DO UPDATE SET
+        disabled_at = now(),
+        reenabled_at = NULL,
+        reenabled_by_user_id = NULL
+    WHERE ability_tenant_disables.reenabled_at IS NOT NULL;
+
+    -- R3: the epoch is the latest superadmin re-enable.
+    SELECT COALESCE(max(a.id), 0) INTO v_epoch
+    FROM ability_catalogue_audit AS a
+    WHERE a.entry_id = p_entry_id
+      AND a.before_enabled IS FALSE
+      AND a.after_enabled IS TRUE;
+
+    -- R1 + R2: one row per tenant per epoch; qualified only moves to true.
+    v_qual := ability_side_effect_tenant_qualifies(v_tenant);
+    INSERT INTO ability_read_side_effect_reports AS r
+        (entry_id, epoch, tenant_id, first_site_id, qualified, qualified_at)
+    VALUES (p_entry_id, v_epoch, v_tenant, p_site_id, v_qual,
+            CASE WHEN v_qual THEN now() END)
+    ON CONFLICT (entry_id, epoch, tenant_id) DO UPDATE SET
+        qualified = true,
+        qualified_at = now()
+    WHERE NOT r.qualified AND EXCLUDED.qualified;
+    v_newly := FOUND AND v_qual;
+
+    SELECT count(*) INTO v_count
+    FROM ability_read_side_effect_reports
+    WHERE entry_id = p_entry_id AND epoch = v_epoch AND qualified;
+
+    IF v_newly AND v_count >= 3 AND v_before.enabled THEN
+        UPDATE ability_catalogue AS ac SET
+            enabled = false,
+            updated_at = now(),
+            updated_by_user_id = NULL
+        WHERE ac.entry_id = p_entry_id
+        RETURNING ac.* INTO v_after;
+
+        INSERT INTO ability_catalogue_audit (
+            entry_id, name, action, actor_user_id,
+            before_row_sha256, after_row_sha256,
+            before_entry_sha256, after_entry_sha256,
+            before_enabled, after_enabled
+        ) VALUES (
+            v_after.entry_id,
+            v_after.name,
+            'update',
+            NULL,
+            ability_catalogue_row_sha256(v_before),
+            ability_catalogue_row_sha256(v_after),
+            v_before.entry_sha256,
+            v_after.entry_sha256,
+            v_before.enabled,
+            v_after.enabled
+        );
+    END IF;
+
+    RETURN v_count;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION record_ability_read_side_effect(uuid, uuid, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION record_ability_read_side_effect(uuid, uuid, uuid) TO wpmgr_app;
+
+-- ---------------------------------------------------------------------------
+-- site_ability_inventory
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS site_ability_inventory (
+    tenant_id uuid NOT NULL
+        REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id uuid NOT NULL,
+    CONSTRAINT site_ability_inventory_site_within_tenant_fkey
+        FOREIGN KEY (tenant_id, site_id)
+        REFERENCES sites (tenant_id, id) ON DELETE CASCADE,
+
+    name text NOT NULL
+        CONSTRAINT site_ability_inventory_name_check
+        CHECK (name ~ '^[a-z0-9-]{1,64}/[a-z0-9-]{1,64}$'),
+    CONSTRAINT site_ability_inventory_pkey PRIMARY KEY (site_id, name),
+    namespace text GENERATED ALWAYS AS (split_part(name, '/', 1)) STORED,
+
+    -- Who registered it, as the agent resolved it.
+    owner_kind text NOT NULL
+        CONSTRAINT site_ability_inventory_owner_kind_check
+        CHECK (owner_kind IN ('core', 'plugin', 'theme', 'mu-plugin', 'unknown')),
+    owner_dir text NULL
+        CONSTRAINT site_ability_inventory_owner_dir_check
+        CHECK (owner_dir ~ '^[A-Za-z0-9._-]{1,100}$'),
+    owner_ok boolean NULL,
+    owner_version text NULL
+        CONSTRAINT site_ability_inventory_owner_version_check
+        CHECK (owner_version ~ '^[0-9A-Za-z.+-]{1,32}$'),
+
+    schema_struct_sha256 text NULL
+        CONSTRAINT site_ability_inventory_schema_struct_sha256_check
+        CHECK (schema_struct_sha256 ~ '^[0-9a-f]{64}$'),
+    -- Structural projections, capped. Site-origin; never returned raw.
+    input_schema jsonb NULL
+        CONSTRAINT site_ability_inventory_input_schema_check
+        CHECK (input_schema IS NULL OR (
+            jsonb_typeof(input_schema) = 'object'
+            AND octet_length(input_schema::text) <= 32768)),
+    output_schema jsonb NULL
+        CONSTRAINT site_ability_inventory_output_schema_check
+        CHECK (output_schema IS NULL OR (
+            jsonb_typeof(output_schema) = 'object'
+            AND octet_length(output_schema::text) <= 32768)),
+    annotations jsonb NULL
+        CONSTRAINT site_ability_inventory_annotations_check
+        CHECK (annotations IS NULL OR (
+            jsonb_typeof(annotations) = 'object'
+            AND octet_length(annotations::text) <= 4096)),
+
+    -- Site text: the label and description the registrant supplied. Cleaned
+    -- and capped by Go; capped again here.
+    site_label text NULL
+        CONSTRAINT site_ability_inventory_site_label_check
+        CHECK (char_length(site_label) <= 200),
+    site_description text NULL
+        CONSTRAINT site_ability_inventory_site_description_check
+        CHECK (char_length(site_description) <= 1000),
+
+    checked_at timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS site_ability_inventory_tenant_idx
+    ON site_ability_inventory (tenant_id);
+CREATE INDEX IF NOT EXISTS site_ability_inventory_site_namespace_idx
+    ON site_ability_inventory (site_id, namespace, name);
+
+ALTER TABLE site_ability_inventory ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_ability_inventory FORCE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON site_ability_inventory TO wpmgr_app;
+REVOKE TRUNCATE ON site_ability_inventory FROM wpmgr_app;
+
+CREATE POLICY site_ability_inventory_tenant_isolation
+    ON site_ability_inventory
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY site_ability_inventory_site_scope
+    ON site_ability_inventory
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+-- ---------------------------------------------------------------------------
+-- site_ability_inventory_runs
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS site_ability_inventory_runs (
+    tenant_id uuid NOT NULL
+        REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id uuid PRIMARY KEY,
+    CONSTRAINT site_ability_inventory_runs_site_within_tenant_fkey
+        FOREIGN KEY (tenant_id, site_id)
+        REFERENCES sites (tenant_id, id) ON DELETE CASCADE,
+    checked_at timestamptz NOT NULL,
+    snapshot_id uuid NOT NULL,
+    -- False when the site has no Abilities API (WordPress before it shipped).
+    api_present boolean NOT NULL,
+    abilities_stored integer NOT NULL
+        CONSTRAINT site_ability_inventory_runs_abilities_stored_check
+        CHECK (abilities_stored >= 0),
+    truncated boolean NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS site_ability_inventory_runs_tenant_idx
+    ON site_ability_inventory_runs (tenant_id);
+
+ALTER TABLE site_ability_inventory_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_ability_inventory_runs FORCE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, UPDATE ON site_ability_inventory_runs TO wpmgr_app;
+REVOKE DELETE, TRUNCATE ON site_ability_inventory_runs FROM wpmgr_app;
+
+CREATE POLICY site_ability_inventory_runs_tenant_isolation
+    ON site_ability_inventory_runs
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY site_ability_inventory_runs_site_scope
+    ON site_ability_inventory_runs
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+-- ---------------------------------------------------------------------------
+-- assistant_ability_requests - m156. ONE AI connection's request to run ONE
+-- approved-write catalogue ability (m155) on ONE site, waiting for a person to
+-- approve it. Kind-generic; wpmgr/page-create is the first. m151's shape,
+-- device by device; the migration carries the reasoning and this copy is
+-- sqlc's input, not authoritative for RLS.
+--
+-- id is the request_id. input_json is the exact JSON text (R2), never jsonb,
+-- and input_sha256 is held to its UTF-8 bytes. target_key is generated:
+-- 'post:<id>' or, for a creation, 'new:<input_sha256>'. The state is the
+-- result class and outcome the specific result.
+--
+-- Three policies: tenant isolation, the RESTRICTIVE m19 site-scope predicate,
+-- and a FOR SELECT agent policy for the cross-tenant scans.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS assistant_ability_requests (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    tenant_id uuid NOT NULL
+        REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id   uuid NOT NULL,
+    CONSTRAINT assistant_ability_requests_site_within_tenant_fkey
+        FOREIGN KEY (tenant_id, site_id)
+        REFERENCES sites (tenant_id, id) ON DELETE CASCADE,
+
+    -- WHO ASKED. The mcp_grants row. No FK (m133 DECISION 7).
+    proposed_by_grant_id uuid NOT NULL,
+
+    -- THE ENTRY APPROVED (W1). Recorded facts, no FK: the catalogue row may
+    -- change after this request is created, and this row must keep naming
+    -- what the card was built for.
+    entry_id uuid NOT NULL,
+    entry_sha256 text NOT NULL
+        CONSTRAINT assistant_ability_requests_entry_sha256_shape_check
+        CHECK (entry_sha256 ~ '^[0-9a-f]{64}$'),
+    ability_name text NOT NULL
+        CONSTRAINT assistant_ability_requests_ability_name_check
+        CHECK (ability_name ~ '^[a-z0-9-]{1,64}/[a-z0-9-]{1,64}$'),
+    -- Same shape as ability_catalogue_operator_permission_check (m155).
+    operator_permission text NOT NULL
+        CONSTRAINT assistant_ability_requests_operator_permission_check
+        CHECK (operator_permission ~ '^[a-z]+(\.[a-z_]+){1,3}$'),
+
+    -- THE EXACT INPUT (R2). Text, never jsonb. The hash is held to the bytes.
+    input_json text NOT NULL
+        CONSTRAINT assistant_ability_requests_input_json_size_check
+        CHECK (octet_length(input_json) BETWEEN 2 AND 65536),
+    input_sha256 text NOT NULL
+        CONSTRAINT assistant_ability_requests_input_sha256_shape_check
+        CHECK (input_sha256 ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT assistant_ability_requests_input_sha256_matches_check
+        CHECK (input_sha256 = encode(sha256(convert_to(input_json, 'UTF8')), 'hex')),
+
+    -- THE TARGET. NULL for a creation. target_key is derived, never written.
+    target_post_id bigint NULL
+        CONSTRAINT assistant_ability_requests_target_post_id_check
+        CHECK (target_post_id > 0),
+    target_key text GENERATED ALWAYS AS (
+        CASE WHEN target_post_id IS NULL
+             THEN 'new:' || input_sha256
+             ELSE 'post:' || target_post_id::text
+        END
+    ) STORED,
+
+    -- THE PRECHECK RESULT.
+    precheck_digest text NOT NULL
+        CONSTRAINT assistant_ability_requests_precheck_digest_shape_check
+        CHECK (precheck_digest ~ '^[0-9a-f]{64}$'),
+    preview_digest text NULL
+        CONSTRAINT assistant_ability_requests_preview_digest_shape_check
+        CHECK (preview_digest ~ '^[0-9a-f]{64}$'),
+    base_fingerprint text NOT NULL
+        CONSTRAINT assistant_ability_requests_base_fingerprint_shape_check
+        CHECK (base_fingerprint ~ '^[!-~]+$' AND octet_length(base_fingerprint) <= 256),
+
+    -- THE CARD FACTS, which the digest covers.
+    site_label text NOT NULL
+        CONSTRAINT assistant_ability_requests_site_label_length_check
+        CHECK (char_length(site_label) <= 201),
+    site_host text NOT NULL
+        CONSTRAINT assistant_ability_requests_site_host_ascii_check
+        CHECK (site_host ~ '^[!-~]{1,255}$'),
+    grant_label text NOT NULL
+        CONSTRAINT assistant_ability_requests_grant_label_check
+        CHECK (length(btrim(grant_label)) > 0
+               AND char_length(grant_label) <= 65),
+    grant_via text NOT NULL
+        CONSTRAINT assistant_ability_requests_grant_via_check
+        CHECK (grant_via IN ('token', 'browser_sign_in')),
+    setup_client text NULL
+        CONSTRAINT assistant_ability_requests_setup_client_shape_check
+        CHECK (setup_client IS NULL
+               OR (setup_client ~ '^[a-z0-9]+(-[a-z0-9]+)*$'
+                   AND length(setup_client) <= 64)),
+    -- The page title for a creation, the resolved target title for an edit.
+    title_excerpt text NULL
+        CONSTRAINT assistant_ability_requests_title_excerpt_length_check
+        CHECK (char_length(title_excerpt) <= 201),
+    -- The editor or route the precheck resolved (content v3 §3.8.2).
+    editor text NULL
+        CONSTRAINT assistant_ability_requests_editor_check
+        CHECK (editor ~ '^(wordpress_blocks|wordpress_classic|builder:[a-z0-9_-]{1,64})$'),
+    -- A WordPress post type key (at most 20 characters in core).
+    post_type text NULL
+        CONSTRAINT assistant_ability_requests_post_type_check
+        CHECK (post_type ~ '^[a-z0-9_-]{1,20}$'),
+    -- The entry's effect and undo strategy as shown. Same closed sets as
+    -- ability_catalogue_effect_copy_check and _snapshot_check, minus the
+    -- snapshot 'none' no write entry may carry (m155, engine v4 §4.4).
+    effect_copy text NOT NULL
+        CONSTRAINT assistant_ability_requests_effect_copy_check
+        CHECK (effect_copy IN ('draft', 'live', 'none')),
+    snapshot text NOT NULL
+        CONSTRAINT assistant_ability_requests_snapshot_check
+        CHECK (snapshot IN (
+            'created_post_trash', 'wp_revision', 'vendor_draft_discard',
+            'vendor_tree_rewrite', 'post_fields', 'own_attachment_delete',
+            'menu_items', 'option_values'
+        )),
+    card_copy_version integer NOT NULL
+        CONSTRAINT assistant_ability_requests_card_copy_version_check
+        CHECK (card_copy_version > 0),
+
+    -- THE NONCE AND THE FINGERPRINT.
+    digest_nonce text NOT NULL
+        CONSTRAINT assistant_ability_requests_digest_nonce_shape_check
+        CHECK (digest_nonce ~ '^[0-9a-f]{64}$'),
+    presented_digest text NOT NULL
+        CONSTRAINT assistant_ability_requests_presented_digest_shape_check
+        CHECK (presented_digest ~ '^[0-9a-f]{64}$'),
+
+    -- THE STATE MACHINE. Closed, NOT NULL, NO DEFAULT.
+    state text NOT NULL
+        CONSTRAINT assistant_ability_requests_state_check
+        CHECK (state IN (
+            'pending',
+            'approved',
+            'declined',
+            'expired',
+            'withdrawn',
+            'dispatched',
+            'done',
+            'failed',
+            'not_sent',
+            'outcome_unknown'
+        )),
+
+    created_at timestamptz NOT NULL DEFAULT now(),
+
+    expires_at timestamptz NOT NULL,
+    CONSTRAINT assistant_ability_requests_window_is_positive_check
+        CHECK (expires_at > created_at),
+
+    -- THE DECISION.
+    decided_at timestamptz NULL,
+    decided_by_user_id uuid NULL,
+    CONSTRAINT assistant_ability_requests_decided_states_have_time_check
+        CHECK (
+            (state IN ('approved', 'declined', 'dispatched', 'done', 'failed',
+                         'not_sent', 'outcome_unknown'))
+            = (decided_at IS NOT NULL)
+        ),
+    CONSTRAINT assistant_ability_requests_consent_within_window_check
+        CHECK (
+            state NOT IN ('approved', 'dispatched', 'done', 'failed',
+                            'not_sent', 'outcome_unknown')
+            OR (decided_at IS NOT NULL AND decided_at < expires_at)
+        ),
+    CONSTRAINT assistant_ability_requests_approval_names_a_human_check
+        CHECK (
+            state NOT IN ('approved', 'dispatched', 'done', 'failed',
+                            'not_sent', 'outcome_unknown')
+            OR decided_by_user_id IS NOT NULL
+        ),
+    CONSTRAINT assistant_ability_requests_decline_names_a_human_check
+        CHECK (state <> 'declined' OR decided_by_user_id IS NOT NULL),
+    CONSTRAINT assistant_ability_requests_expiry_is_not_a_decision_check
+        CHECK (state <> 'expired' OR decided_by_user_id IS NULL),
+
+    -- WITHDRAWAL. The connection was revoked while the row waited.
+    withdrawn_at timestamptz NULL,
+    CONSTRAINT assistant_ability_requests_withdrawn_has_time_check
+        CHECK ((state = 'withdrawn') = (withdrawn_at IS NOT NULL)),
+    CONSTRAINT assistant_ability_requests_withdrawal_names_nobody_check
+        CHECK (state <> 'withdrawn' OR decided_by_user_id IS NULL),
+
+    -- THE DISPATCH DEADLINE. Set by the approving statement, and present on
+    -- exactly the rows an approval produced.
+    dispatch_deadline_at timestamptz NULL,
+    CONSTRAINT assistant_ability_requests_deadline_iff_approved_check
+        CHECK (
+            (state IN ('approved', 'dispatched', 'done', 'failed',
+                         'not_sent', 'outcome_unknown'))
+            = (dispatch_deadline_at IS NOT NULL)
+        ),
+    CONSTRAINT assistant_ability_requests_deadline_after_decision_check
+        CHECK (dispatch_deadline_at IS NULL OR dispatch_deadline_at > decided_at),
+
+    -- THE CLAIM. Set by the reservation. Every sent state has one; no state
+    -- before the reservation does. 'not_sent' may have one (closed after the
+    -- reservation, transport_pre_send) or not (closed before it).
+    claimed_at timestamptz NULL,
+    CONSTRAINT assistant_ability_requests_sent_states_claimed_check
+        CHECK (state NOT IN ('dispatched', 'outcome_unknown', 'done', 'failed')
+               OR claimed_at IS NOT NULL),
+    CONSTRAINT assistant_ability_requests_unsent_states_unclaimed_check
+        CHECK (state NOT IN ('pending', 'approved', 'declined', 'expired', 'withdrawn')
+               OR claimed_at IS NULL),
+
+    -- TRANSIENT DISPATCH ATTEMPTS. The row stays approved while these move.
+    dispatch_attempts integer NOT NULL DEFAULT 0
+        CONSTRAINT assistant_ability_requests_dispatch_attempts_check
+        CHECK (dispatch_attempts >= 0),
+    last_attempt_at timestamptz NULL,
+    last_attempt_code text NULL
+        CONSTRAINT assistant_ability_requests_last_attempt_code_check
+        CHECK (last_attempt_code IN (
+            'site_unreachable',
+            'site_cooldown',
+            'site_hourly_cap',
+            'site_busy',
+            'org_busy',
+            'context_unavailable',
+            'write_tools_disabled'
+        )),
+
+    -- AN UNKNOWN OUTCOME BEING RESOLVED THROUGH THE SITE LEDGER (engine v4
+    -- §2.7). unknown_since is when the row entered 'outcome_unknown'; it is
+    -- kept when the ledger later resolves the row to done or failed.
+    unknown_since timestamptz NULL,
+    CONSTRAINT assistant_ability_requests_unknown_has_time_check
+        CHECK (state <> 'outcome_unknown' OR unknown_since IS NOT NULL),
+    CONSTRAINT assistant_ability_requests_unknown_since_states_check
+        CHECK (unknown_since IS NULL
+               OR state IN ('outcome_unknown', 'done', 'failed')),
+    ledger_checked_at timestamptz NULL,
+    CONSTRAINT assistant_ability_requests_ledger_checked_when_unknown_check
+        CHECK (ledger_checked_at IS NULL OR unknown_since IS NOT NULL),
+
+    -- THE OUTCOME. engine v4 §1.5's closed set.
+    outcome text NULL
+        CONSTRAINT assistant_ability_requests_outcome_check
+        CHECK (outcome IN (
+            'created',
+            'applied',
+            'refused',
+            'verify_mismatch',
+            'failed',
+            'outcome_unknown',
+            'not_sent'
+        )),
+    -- The state is the result class; outcome is the specific result. An
+    -- 'outcome_unknown' row is either still being resolved (outcome NULL) or
+    -- given up on (outcome 'outcome_unknown'). Wrapped in coalesce: see THE
+    -- NULL SWEEP.
+    CONSTRAINT assistant_ability_requests_state_matches_outcome_check
+        CHECK (coalesce(
+            CASE state
+                WHEN 'done'            THEN outcome IN ('created', 'applied')
+                WHEN 'failed'          THEN outcome IN ('refused', 'verify_mismatch', 'failed')
+                WHEN 'not_sent'        THEN outcome = 'not_sent'
+                WHEN 'outcome_unknown' THEN outcome IS NULL OR outcome = 'outcome_unknown'
+                ELSE outcome IS NULL
+            END, false)),
+    outcome_at timestamptz NULL,
+    CONSTRAINT assistant_ability_requests_outcome_has_time_check
+        CHECK ((outcome IS NULL) = (outcome_at IS NULL)),
+    -- The agent's closed result code (conflict, preview_changed,
+    -- snapshot_failed, side_effect_detected, ...). Shape only: the vocabulary
+    -- belongs to the agent and grows per entry; Go maps it onto its own closed
+    -- set before insert and refuses anything else.
+    outcome_code text NULL
+        CONSTRAINT assistant_ability_requests_outcome_code_shape_check
+        CHECK (outcome_code ~ '^[a-z][a-z0-9_]{0,63}$'),
+    CONSTRAINT assistant_ability_requests_outcome_code_with_outcome_check
+        CHECK (outcome_code IS NULL OR outcome IS NOT NULL),
+    not_sent_reason text NULL
+        CONSTRAINT assistant_ability_requests_not_sent_reason_check
+        CHECK (not_sent_reason IN (
+            'grant_inactive',
+            'assistant_paused',
+            'organisation_deleted',
+            'capability_not_held',
+            'site_absent',
+            'forbidden_by_context',
+            'agent_outdated',
+            'dispatch_deadline_passed',
+            'transport_pre_send',
+            'entry_changed',
+            'entry_disabled',
+            -- m161: a REST route edited or disabled after approval.
+            'route_changed',
+            'route_disabled'
+        )),
+    CONSTRAINT assistant_ability_requests_not_sent_has_reason_check
+        CHECK ((outcome IS NOT DISTINCT FROM 'not_sent')
+               = (not_sent_reason IS NOT NULL)),
+
+    -- THE LEDGER RESULT REFERENCES. Display and status facts; the agent acts
+    -- only on its own ledger row (W3).
+    created_post_id bigint NULL
+        CONSTRAINT assistant_ability_requests_created_post_id_check
+        CHECK (created_post_id > 0),
+    CONSTRAINT assistant_ability_requests_created_names_post_check
+        CHECK (outcome IS DISTINCT FROM 'created' OR created_post_id IS NOT NULL),
+    restored boolean NULL,
+    trashed boolean NULL,
+    CONSTRAINT assistant_ability_requests_ledger_refs_when_sent_check
+        CHECK ((created_post_id IS NULL AND restored IS NULL AND trashed IS NULL)
+               OR state IN ('done', 'failed', 'outcome_unknown')),
+    -- Sanitised in Go before insert, rendered as text to a person.
+    site_reported_text text NULL
+        CONSTRAINT assistant_ability_requests_site_reported_text_check
+        CHECK (site_reported_text IS NULL OR length(site_reported_text) <= 512),
+
+    -- A PERSON'S UNDO of a done request (content v3 §3.8.4, §5).
+    undo_state text NULL
+        CONSTRAINT assistant_ability_requests_undo_state_check
+        CHECK (undo_state IN (
+            'available',
+            'in_progress',
+            'undone',
+            'refused_conflict',
+            'refused_published',
+            'failed'
+        )),
+    -- m158 (GH #826): also a failed or outcome_unknown row that names the
+    -- post it created, so the draft a failed write left can be undone.
+    CONSTRAINT assistant_ability_requests_undo_only_when_done_check
+        CHECK (undo_state IS NULL
+               OR state = 'done'
+               OR (state IN ('failed', 'outcome_unknown') AND created_post_id IS NOT NULL)),
+    undo_available_until timestamptz NULL,
+    CONSTRAINT assistant_ability_requests_undo_has_window_check
+        CHECK ((undo_state IS NULL) = (undo_available_until IS NULL)),
+    undo_by_user_id uuid NULL,
+    CONSTRAINT assistant_ability_requests_undo_names_a_human_check
+        CHECK ((coalesce(undo_state, 'available') <> 'available')
+               = (undo_by_user_id IS NOT NULL)),
+    undo_started_at timestamptz NULL,
+    CONSTRAINT assistant_ability_requests_undo_started_has_time_check
+        CHECK ((coalesce(undo_state, 'available') <> 'available')
+               = (undo_started_at IS NOT NULL)),
+    undo_finished_at timestamptz NULL,
+    CONSTRAINT assistant_ability_requests_undo_finished_has_time_check
+        CHECK ((coalesce(undo_state, 'available') NOT IN ('available', 'in_progress'))
+               = (undo_finished_at IS NOT NULL)),
+
+    -- m161: THE REST WRITE FACTS. Recorded at insert and never updated (no
+    -- column UPDATE grant): the reviewed route the request runs, the route
+    -- row hash it was approved against, and the structured card.
+    route_id text NULL
+        CONSTRAINT assistant_ability_requests_route_id_shape_check
+        CHECK (route_id ~ '^[a-z0-9-]{1,64}$'),
+    route_sha256 text NULL
+        CONSTRAINT assistant_ability_requests_route_sha256_shape_check
+        CHECK (route_sha256 ~ '^[0-9a-f]{64}$'),
+    card_facts jsonb NULL
+        CONSTRAINT assistant_ability_requests_card_facts_check
+        CHECK (card_facts IS NULL OR (
+            jsonb_typeof(card_facts) = 'object'
+            AND octet_length(card_facts::text) <= 65536)),
+    CONSTRAINT assistant_ability_requests_route_pair_check
+        CHECK ((route_id IS NULL) = (route_sha256 IS NULL)),
+    CONSTRAINT assistant_ability_requests_rest_write_route_check
+        CHECK ((ability_name = 'wpmgr/rest-write') = (route_id IS NOT NULL)),
+    CONSTRAINT assistant_ability_requests_rest_write_card_check
+        CHECK (ability_name <> 'wpmgr/rest-write' OR card_facts IS NOT NULL)
+);
+
+-- ===========================================================================
+-- (2) INDEXES
+-- ===========================================================================
+
+CREATE INDEX IF NOT EXISTS assistant_ability_requests_tenant_idx
+    ON assistant_ability_requests (tenant_id);
+
+-- The per-site queue, and the per-site hourly cap.
+CREATE INDEX IF NOT EXISTS assistant_ability_requests_site_created_idx
+    ON assistant_ability_requests (site_id, created_at DESC);
+
+-- The per-connection caps, status by grant, and the revoke cascade.
+CREATE INDEX IF NOT EXISTS assistant_ability_requests_grant_created_idx
+    ON assistant_ability_requests
+       (proposed_by_grant_id, created_at DESC);
+
+-- The dispatch scan and the deadline sweep.
+CREATE INDEX IF NOT EXISTS assistant_ability_requests_dispatch_idx
+    ON assistant_ability_requests (dispatch_deadline_at)
+    WHERE state = 'approved';
+
+-- The expiry sweep, over the only state that can expire.
+CREATE INDEX IF NOT EXISTS assistant_ability_requests_expiry_sweep_idx
+    ON assistant_ability_requests (expires_at)
+    WHERE state = 'pending';
+
+-- In flight: sent with no outcome yet. The per-site busy check, the stale
+-- reconciler and the ledger resolution read this.
+CREATE INDEX IF NOT EXISTS assistant_ability_requests_in_flight_idx
+    ON assistant_ability_requests (site_id, claimed_at)
+    WHERE state IN ('dispatched', 'outcome_unknown') AND outcome IS NULL;
+
+-- AT MOST ONE WAITING REQUEST PER CONNECTION PER SITE PER ABILITY PER TARGET.
+-- See the header for the target of a creation. The creation path's ON
+-- CONFLICT names exactly these columns and this predicate.
+CREATE UNIQUE INDEX IF NOT EXISTS assistant_ability_requests_one_pending_idx
+    ON assistant_ability_requests
+       (tenant_id, site_id, proposed_by_grant_id, ability_name, target_key)
+    WHERE state = 'pending';
+
+
+ALTER TABLE assistant_ability_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE assistant_ability_requests FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY assistant_ability_requests_tenant_isolation
+    ON assistant_ability_requests
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY assistant_ability_requests_site_scope
+    ON assistant_ability_requests
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
+CREATE POLICY assistant_ability_requests_agent
+    ON assistant_ability_requests
+    FOR SELECT
+    USING (current_setting('app.agent', true) = 'on');
+
+GRANT SELECT, INSERT ON assistant_ability_requests TO wpmgr_app;
+REVOKE DELETE, TRUNCATE ON assistant_ability_requests FROM wpmgr_app;
+REVOKE UPDATE ON assistant_ability_requests FROM wpmgr_app;
+GRANT UPDATE (
+    state, decided_at, decided_by_user_id, withdrawn_at,
+    dispatch_deadline_at, claimed_at,
+    dispatch_attempts, last_attempt_at, last_attempt_code,
+    unknown_since, ledger_checked_at,
+    outcome, outcome_at, outcome_code, not_sent_reason,
+    created_post_id, restored, trashed, site_reported_text,
+    undo_state, undo_available_until, undo_by_user_id,
+    undo_started_at, undo_finished_at
+) ON assistant_ability_requests TO wpmgr_app;
+
+-- ===========================================================================
+-- rest_route_catalogue (m161, engine E3 D2)
+-- ===========================================================================
+--
+-- GLOBAL allowlist of the WordPress REST routes an AI may call, m155's model:
+-- ENABLE RLS (not FORCE) with a FOR SELECT USING (true) policy, writes
+-- revoked from wpmgr_app, the superadmin definer admin_upsert_rest_route and
+-- the NULL-to-hash stamp stamp_wpmgr_rest_route_hash, both auditing into
+-- rest_route_catalogue_audit. See the migration header for the single-DSN
+-- caveat, the CHECKs and the seed.
+
+-- ---------------------------------------------------------------------------
+-- 1a. Validators (before the CHECKs that use them)
+-- ---------------------------------------------------------------------------
+
+-- A typed key spec: {key: {"type": int|string|enum|int_list, ...}}.
+--   int:      min, max (integers, min <= max)
+--   string:   max_len (1..10000)
+--   enum:     values (1..32 strings, ^[a-z0-9_-]{1,32}$)
+--   int_list: max_items (1..100)
+-- Optional on every type: required (boolean). No other member.
+CREATE OR REPLACE FUNCTION rest_route_params_valid(s jsonb)
+RETURNS boolean
+LANGUAGE plpgsql
+IMMUTABLE STRICT PARALLEL SAFE
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    k text;
+    v jsonb;
+    m text;
+    t text;
+    e jsonb;
+BEGIN
+    IF jsonb_typeof(s) <> 'object' THEN
+        RETURN false;
+    END IF;
+    IF (SELECT count(*) FROM jsonb_object_keys(s)) > 32 THEN
+        RETURN false;
+    END IF;
+    FOR k, v IN SELECT * FROM jsonb_each(s) LOOP
+        IF k !~ '^[a-z][a-z0-9_]{0,31}$' OR jsonb_typeof(v) <> 'object' THEN
+            RETURN false;
+        END IF;
+        FOR m IN SELECT jsonb_object_keys(v) LOOP
+            IF m NOT IN ('type', 'min', 'max', 'max_len', 'values', 'max_items', 'required') THEN
+                RETURN false;
+            END IF;
+        END LOOP;
+        IF v ? 'required' AND jsonb_typeof(v -> 'required') <> 'boolean' THEN
+            RETURN false;
+        END IF;
+        t := v ->> 'type';
+        IF t = 'int' THEN
+            IF NOT (v ?& ARRAY['min', 'max'])
+               OR (v ?| ARRAY['max_len', 'values', 'max_items'])
+               OR jsonb_typeof(v -> 'min') <> 'number'
+               OR jsonb_typeof(v -> 'max') <> 'number'
+               OR (v ->> 'min') !~ '^-?[0-9]{1,10}$'
+               OR (v ->> 'max') !~ '^-?[0-9]{1,10}$' THEN
+                RETURN false;
+            END IF;
+            -- A separate statement: the casts run only after the shape is known.
+            IF (v ->> 'min')::bigint > (v ->> 'max')::bigint THEN
+                RETURN false;
+            END IF;
+        ELSIF t = 'string' THEN
+            IF NOT (v ? 'max_len')
+               OR (v ?| ARRAY['min', 'max', 'values', 'max_items'])
+               OR jsonb_typeof(v -> 'max_len') <> 'number'
+               OR (v ->> 'max_len') !~ '^[0-9]{1,5}$' THEN
+                RETURN false;
+            END IF;
+            IF (v ->> 'max_len')::int NOT BETWEEN 1 AND 10000 THEN
+                RETURN false;
+            END IF;
+        ELSIF t = 'enum' THEN
+            IF NOT (v ? 'values')
+               OR (v ?| ARRAY['min', 'max', 'max_len', 'max_items'])
+               OR jsonb_typeof(v -> 'values') <> 'array'
+               OR jsonb_array_length(v -> 'values') NOT BETWEEN 1 AND 32 THEN
+                RETURN false;
+            END IF;
+            FOR e IN SELECT * FROM jsonb_array_elements(v -> 'values') LOOP
+                IF jsonb_typeof(e) <> 'string' OR (e #>> '{}') !~ '^[a-z0-9_-]{1,32}$' THEN
+                    RETURN false;
+                END IF;
+            END LOOP;
+        ELSIF t = 'int_list' THEN
+            IF NOT (v ? 'max_items')
+               OR (v ?| ARRAY['min', 'max', 'max_len', 'values'])
+               OR jsonb_typeof(v -> 'max_items') <> 'number'
+               OR (v ->> 'max_items') !~ '^[0-9]{1,3}$' THEN
+                RETURN false;
+            END IF;
+            IF (v ->> 'max_items')::int NOT BETWEEN 1 AND 100 THEN
+                RETURN false;
+            END IF;
+        ELSE
+            RETURN false;
+        END IF;
+    END LOOP;
+    RETURN true;
+END;
+$$;
+
+-- pinned_query: {key: "short printable string"}, at most 16 keys.
+CREATE OR REPLACE FUNCTION rest_route_pinned_valid(s jsonb)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE STRICT PARALLEL SAFE
+SET search_path = public, pg_temp
+AS $$
+    SELECT jsonb_typeof(s) = 'object'
+       AND (SELECT count(*) FROM jsonb_object_keys(s)) <= 16
+       AND NOT EXISTS (
+           SELECT 1 FROM jsonb_each(s) AS e
+           WHERE e.key !~ '^[a-z][a-z0-9_]{0,31}$'
+              OR jsonb_typeof(e.value) <> 'string'
+              OR (e.value #>> '{}') !~ '^[!-~]{1,64}$'
+       );
+$$;
+
+-- True when no key of a is a key of b.
+CREATE OR REPLACE FUNCTION rest_route_keys_disjoint(a jsonb, b jsonb)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE STRICT PARALLEL SAFE
+SET search_path = public, pg_temp
+AS $$
+    SELECT NOT EXISTS (SELECT 1 FROM jsonb_object_keys(a) AS k WHERE b ? k);
+$$;
+
+-- True when the template's {placeholders} are exactly the keys of
+-- path_params, each once, and the template has no other brace.
+CREATE OR REPLACE FUNCTION rest_route_template_params_match(t text, p jsonb)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE STRICT PARALLEL SAFE
+SET search_path = public, pg_temp
+AS $$
+    SELECT coalesce((SELECT array_agg(m[1] ORDER BY m[1])
+                     FROM regexp_matches(t, '\{([a-z][a-z0-9_]{0,31})\}', 'g') AS m), '{}'::text[])
+         = coalesce((SELECT array_agg(k ORDER BY k)
+                     FROM jsonb_object_keys(p) AS k), '{}'::text[])
+       AND length(t) - length(replace(t, '{', ''))
+         = (SELECT count(*) FROM regexp_matches(t, '\{[a-z][a-z0-9_]{0,31}\}', 'g'))
+       AND length(t) - length(replace(t, '}', ''))
+         = (SELECT count(*) FROM regexp_matches(t, '\{[a-z][a-z0-9_]{0,31}\}', 'g'));
+$$;
+
+REVOKE ALL ON FUNCTION rest_route_template_params_match(text, jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rest_route_template_params_match(text, jsonb) TO wpmgr_app;
+REVOKE ALL ON FUNCTION rest_route_params_valid(jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION rest_route_pinned_valid(jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION rest_route_keys_disjoint(jsonb, jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rest_route_params_valid(jsonb) TO wpmgr_app;
+GRANT EXECUTE ON FUNCTION rest_route_pinned_valid(jsonb) TO wpmgr_app;
+GRANT EXECUTE ON FUNCTION rest_route_keys_disjoint(jsonb, jsonb) TO wpmgr_app;
+
+-- ---------------------------------------------------------------------------
+-- 1b. rest_route_catalogue
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS rest_route_catalogue (
+    route_id text PRIMARY KEY
+        CONSTRAINT rest_route_catalogue_route_id_check
+        CHECK (route_id ~ '^[a-z0-9-]{1,64}$'),
+    method text NOT NULL
+        CONSTRAINT rest_route_catalogue_method_check
+        CHECK (method IN ('GET', 'POST', 'PUT', 'PATCH', 'DELETE')),
+    namespace text NOT NULL
+        CONSTRAINT rest_route_catalogue_namespace_check
+        CHECK (namespace ~ '^[a-z0-9_-]{1,64}(/[a-z0-9_.-]{1,32}){0,2}$'),
+    -- Our path, with {param} placeholders the agent fills from typed path
+    -- params only.
+    template text NOT NULL,
+    CONSTRAINT rest_route_catalogue_template_check
+        CHECK (template ~ '^/[a-z0-9_./{}-]{1,200}$'
+               AND position('..' IN template) = 0
+               AND (template = '/' || namespace
+                    OR starts_with(template, '/' || namespace || '/'))),
+    -- Every {placeholder} is a path param and every path param is used once.
+    CONSTRAINT rest_route_catalogue_template_params_check
+        CHECK (rest_route_template_params_match(template, path_params)),
+    -- The exact registered route string the matched handler must report.
+    core_pattern text NOT NULL,
+    CONSTRAINT rest_route_catalogue_core_pattern_check
+        CHECK (core_pattern ~ '^/[!-~]{1,255}$'
+               AND starts_with(core_pattern, '/' || namespace)),
+    path_params jsonb NOT NULL DEFAULT '{}'::jsonb
+        CONSTRAINT rest_route_catalogue_path_params_check
+        CHECK (rest_route_params_valid(path_params)),
+    -- A path param is an int: nothing but digits ever reaches the path.
+    CONSTRAINT rest_route_catalogue_path_params_int_check
+        CHECK (NOT jsonb_path_exists(path_params, '$.* ? (@.type != "int")')),
+    query_keys jsonb NOT NULL DEFAULT '{}'::jsonb
+        CONSTRAINT rest_route_catalogue_query_keys_check
+        CHECK (rest_route_params_valid(query_keys)),
+    pinned_query jsonb NOT NULL DEFAULT '{}'::jsonb
+        CONSTRAINT rest_route_catalogue_pinned_query_check
+        CHECK (rest_route_pinned_valid(pinned_query)),
+    body_keys jsonb NOT NULL DEFAULT '{}'::jsonb
+        CONSTRAINT rest_route_catalogue_body_keys_check
+        CHECK (rest_route_params_valid(body_keys)),
+    class text NOT NULL
+        CONSTRAINT rest_route_catalogue_class_check
+        CHECK (class IN ('read', 'write')),
+    output_fields jsonb NOT NULL
+        CONSTRAINT rest_route_catalogue_output_fields_check
+        CHECK (octet_length(output_fields::text) <= 16384
+               AND ability_output_shape_valid(output_fields, 0)),
+    snapshot text NOT NULL DEFAULT 'none'
+        CONSTRAINT rest_route_catalogue_snapshot_check
+        CHECK (snapshot IN ('none', 'post_fields')),
+    target jsonb NULL,
+    -- coalesce: a missing kind or param makes ->> NULL, and a NULL CHECK
+    -- passes.
+    CONSTRAINT rest_route_catalogue_target_check
+        CHECK (target IS NULL OR coalesce(
+            jsonb_typeof(target) = 'object'
+            AND target ->> 'kind' = 'post'
+            AND path_params -> (target ->> 'param') ->> 'type' = 'int', false)),
+    arg_render jsonb NOT NULL DEFAULT '{}'::jsonb
+        CONSTRAINT rest_route_catalogue_arg_render_check
+        CHECK (jsonb_typeof(arg_render) = 'object'
+               AND octet_length(arg_render::text) <= 16384),
+    operator_permission text NULL
+        CONSTRAINT rest_route_catalogue_operator_permission_check
+        CHECK (operator_permission ~ '^[a-z]+(\.[a-z_]+){1,3}$'),
+    effect_copy text NOT NULL DEFAULT 'none'
+        CONSTRAINT rest_route_catalogue_effect_copy_check
+        CHECK (effect_copy IN ('draft', 'live', 'none')),
+    enabled boolean NOT NULL DEFAULT true,
+    min_wp_version text NULL
+        CONSTRAINT rest_route_catalogue_min_wp_version_check
+        CHECK (min_wp_version ~ '^[0-9]+(\.[0-9]+){0,2}$'),
+
+    -- OUR plain-language copy. Never site text.
+    title text NOT NULL
+        CONSTRAINT rest_route_catalogue_title_check
+        CHECK (length(btrim(title)) > 0 AND char_length(title) <= 80),
+    description text NOT NULL
+        CONSTRAINT rest_route_catalogue_description_check
+        CHECK (length(btrim(description)) > 0 AND char_length(description) <= 1000),
+
+    route_sha256 text NULL
+        CONSTRAINT rest_route_catalogue_route_sha256_check
+        CHECK (route_sha256 ~ '^[0-9a-f]{64}$'),
+
+    -- A read is a GET and a GET is a read. Every column below is NOT NULL.
+    CONSTRAINT rest_route_catalogue_read_is_get_check
+        CHECK ((class = 'read') = (method = 'GET')),
+    CONSTRAINT rest_route_catalogue_get_has_no_body_check
+        CHECK (method <> 'GET' OR body_keys = '{}'::jsonb),
+    -- A write has an undo, a target, an approver permission and an effect; a
+    -- read has none of the first and no effect.
+    CONSTRAINT rest_route_catalogue_write_rules_check
+        CHECK ((class = 'write') = (snapshot <> 'none')
+               AND (class = 'write') = (effect_copy <> 'none')
+               AND (class <> 'write' OR (
+                   target IS NOT NULL AND operator_permission IS NOT NULL))),
+    CONSTRAINT rest_route_catalogue_keys_disjoint_check
+        CHECK (rest_route_keys_disjoint(pinned_query, query_keys)
+               AND rest_route_keys_disjoint(pinned_query, body_keys)
+               AND rest_route_keys_disjoint(pinned_query, path_params)
+               AND rest_route_keys_disjoint(path_params, query_keys)
+               AND rest_route_keys_disjoint(path_params, body_keys)),
+    CONSTRAINT rest_route_catalogue_forbidden_keys_check
+        CHECK (NOT (query_keys ?| ARRAY['context', 'status', 'author', 'password', 'meta', 'slug', 'template'])
+               AND NOT (body_keys ?| ARRAY['context', 'status', 'author', 'password', 'meta', 'slug', 'template'])),
+    -- A write pins nothing but context=view. WordPress reads GET parameters
+    -- ahead of URL parameters for a POST, so a pinned status, author or
+    -- similar key on a write would change what the write does.
+    CONSTRAINT rest_route_catalogue_write_pins_check
+        CHECK (class <> 'write'
+               OR ((pinned_query - 'context') = '{}'::jsonb
+                   AND coalesce(pinned_query ->> 'context', 'view') = 'view')),
+    -- Owner ruling 5: v1 reads are published content only.
+    CONSTRAINT rest_route_catalogue_published_only_check
+        CHECK (coalesce(pinned_query ->> 'context', 'view') = 'view'
+               AND (class <> 'read'
+                    OR coalesce(pinned_query ->> 'status', 'publish') IN ('publish', 'inherit'))),
+
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    -- NULL only for a row the migration seeded or the stamp touched last.
+    updated_by_user_id uuid NULL
+);
+
+ALTER TABLE rest_route_catalogue ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY rest_route_catalogue_read
+    ON rest_route_catalogue
+    FOR SELECT
+    USING (true);
+
+-- ---------------------------------------------------------------------------
+-- 1c. rest_route_catalogue_audit: append-only, written only by the definers
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS rest_route_catalogue_audit (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    route_id text NOT NULL,
+    action text NOT NULL
+        CONSTRAINT rest_route_catalogue_audit_action_check
+        CHECK (action IN ('insert', 'update')),
+    -- NULL only for the stamp (part 2).
+    actor_user_id uuid NULL,
+    before_row_sha256 text NULL
+        CONSTRAINT rest_route_catalogue_audit_before_row_check
+        CHECK (before_row_sha256 ~ '^[0-9a-f]{64}$'),
+    after_row_sha256 text NOT NULL
+        CONSTRAINT rest_route_catalogue_audit_after_row_check
+        CHECK (after_row_sha256 ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT rest_route_catalogue_audit_before_iff_update_check
+        CHECK ((action = 'update') = (before_row_sha256 IS NOT NULL)),
+    before_route_sha256 text NULL,
+    after_route_sha256 text NULL,
+    before_enabled boolean NULL,
+    after_enabled boolean NOT NULL,
+    CONSTRAINT rest_route_catalogue_audit_null_actor_is_stamp_check
+        CHECK (actor_user_id IS NOT NULL OR (
+            action = 'update'
+            AND before_route_sha256 IS NULL
+            AND after_route_sha256 IS NOT NULL
+            AND before_enabled IS NOT DISTINCT FROM after_enabled)),
+    at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS rest_route_catalogue_audit_route_idx
+    ON rest_route_catalogue_audit (route_id, id DESC);
+
+ALTER TABLE rest_route_catalogue_audit ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY rest_route_catalogue_audit_read
+    ON rest_route_catalogue_audit
+    FOR SELECT
+    USING (true);
+
+-- The row hash the audit records, computed in SQL from the stored row so the
+-- audit does not trust a caller-supplied hash. Timestamps and the actor are
+-- excluded.
+CREATE OR REPLACE FUNCTION rest_route_catalogue_row_sha256(
+    r rest_route_catalogue
+)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+SET search_path = public, pg_temp
+AS $$
+    SELECT encode(sha256(convert_to(jsonb_build_object(
+        'route_id', r.route_id,
+        'method', r.method,
+        'namespace', r.namespace,
+        'template', r.template,
+        'core_pattern', r.core_pattern,
+        'path_params', r.path_params,
+        'query_keys', r.query_keys,
+        'pinned_query', r.pinned_query,
+        'body_keys', r.body_keys,
+        'class', r.class,
+        'output_fields', r.output_fields,
+        'snapshot', r.snapshot,
+        'target', r.target,
+        'arg_render', r.arg_render,
+        'operator_permission', r.operator_permission,
+        'effect_copy', r.effect_copy,
+        'enabled', r.enabled,
+        'min_wp_version', r.min_wp_version,
+        'title', r.title,
+        'description', r.description,
+        'route_sha256', r.route_sha256
+    )::text, 'UTF8')), 'hex');
+$$;
+
+-- The hash of what the route DOES: every column except route_sha256, enabled
+-- and the bookkeeping columns. A superadmin edit that changes it must not
+-- keep the stored route_sha256 (see admin_upsert_rest_route).
+CREATE OR REPLACE FUNCTION rest_route_catalogue_content_sha256(
+    r rest_route_catalogue
+)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+SET search_path = public, pg_temp
+AS $$
+    SELECT encode(sha256(convert_to((
+        to_jsonb(r) - 'route_sha256' - 'enabled' - 'created_at'
+                    - 'updated_at' - 'updated_by_user_id'
+    )::text, 'UTF8')), 'hex');
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 1d. The superadmin write path
+-- ---------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION admin_upsert_rest_route(
+    p_actor_user_id uuid,
+    p_create boolean,
+    p_route_id text,
+    p_method text,
+    p_namespace text,
+    p_template text,
+    p_core_pattern text,
+    p_path_params jsonb,
+    p_query_keys jsonb,
+    p_pinned_query jsonb,
+    p_body_keys jsonb,
+    p_class text,
+    p_output_fields jsonb,
+    p_snapshot text,
+    p_target jsonb,
+    p_arg_render jsonb,
+    p_operator_permission text,
+    p_effect_copy text,
+    p_enabled boolean,
+    p_min_wp_version text,
+    p_title text,
+    p_description text,
+    p_route_sha256 text
+)
+RETURNS rest_route_catalogue
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_before rest_route_catalogue;
+    v_after  rest_route_catalogue;
+BEGIN
+    IF p_actor_user_id IS NULL OR NOT EXISTS (
+        SELECT 1 FROM users u
+        WHERE u.id = p_actor_user_id AND u.is_superadmin
+    ) THEN
+        RAISE EXCEPTION 'rest_route_catalogue: actor is not a superadmin'
+            USING ERRCODE = '42501';
+    END IF;
+    IF p_create IS NULL OR p_route_id IS NULL THEN
+        RAISE EXCEPTION 'rest_route_catalogue: create flag and route_id are required'
+            USING ERRCODE = '22023';
+    END IF;
+
+    -- Serialise writers of one route (the stamp takes the same key).
+    PERFORM pg_advisory_xact_lock(hashtext('rest_route_catalogue'), hashtext(p_route_id));
+
+    SELECT * INTO v_before FROM rest_route_catalogue
+        WHERE route_id = p_route_id
+        FOR UPDATE;
+
+    IF p_create THEN
+        IF v_before.route_id IS NOT NULL THEN
+            RAISE EXCEPTION 'rest_route_catalogue: route % already exists', p_route_id
+                USING ERRCODE = '23505';
+        END IF;
+        INSERT INTO rest_route_catalogue AS rc (
+            route_id, method, namespace, template, core_pattern,
+            path_params, query_keys, pinned_query, body_keys, class,
+            output_fields, snapshot, target, arg_render, operator_permission,
+            effect_copy, enabled, min_wp_version, title, description,
+            route_sha256, updated_at, updated_by_user_id
+        ) VALUES (
+            p_route_id, p_method, p_namespace, p_template, p_core_pattern,
+            coalesce(p_path_params, '{}'::jsonb), coalesce(p_query_keys, '{}'::jsonb),
+            coalesce(p_pinned_query, '{}'::jsonb), coalesce(p_body_keys, '{}'::jsonb),
+            p_class, p_output_fields, coalesce(p_snapshot, 'none'), p_target,
+            coalesce(p_arg_render, '{}'::jsonb), p_operator_permission,
+            coalesce(p_effect_copy, 'none'), p_enabled, p_min_wp_version,
+            p_title, p_description, p_route_sha256, now(), p_actor_user_id
+        )
+        RETURNING rc.* INTO v_after;
+    ELSE
+        IF v_before.route_id IS NULL THEN
+            RAISE EXCEPTION 'rest_route_catalogue: no route %', p_route_id
+                USING ERRCODE = 'P0002';
+        END IF;
+        UPDATE rest_route_catalogue AS rc SET
+            method = p_method,
+            namespace = p_namespace,
+            template = p_template,
+            core_pattern = p_core_pattern,
+            path_params = coalesce(p_path_params, '{}'::jsonb),
+            query_keys = coalesce(p_query_keys, '{}'::jsonb),
+            pinned_query = coalesce(p_pinned_query, '{}'::jsonb),
+            body_keys = coalesce(p_body_keys, '{}'::jsonb),
+            class = p_class,
+            output_fields = p_output_fields,
+            snapshot = coalesce(p_snapshot, 'none'),
+            target = p_target,
+            arg_render = coalesce(p_arg_render, '{}'::jsonb),
+            operator_permission = p_operator_permission,
+            effect_copy = coalesce(p_effect_copy, 'none'),
+            enabled = p_enabled,
+            min_wp_version = p_min_wp_version,
+            title = p_title,
+            description = p_description,
+            route_sha256 = p_route_sha256,
+            updated_at = now(),
+            updated_by_user_id = p_actor_user_id
+        WHERE rc.route_id = p_route_id
+        RETURNING rc.* INTO v_after;
+
+        -- An edit that changes what the route does cannot keep the hash the
+        -- old content was approved under: an approved request would then
+        -- still match and run the new content. NULL (re-stamp at boot) or a
+        -- new hash is required. Raising here rolls the UPDATE back.
+        IF v_before.route_sha256 IS NOT NULL
+           AND v_after.route_sha256 IS NOT DISTINCT FROM v_before.route_sha256
+           AND rest_route_catalogue_content_sha256(v_before)
+               <> rest_route_catalogue_content_sha256(v_after) THEN
+            RAISE EXCEPTION 'rest_route_catalogue_hash_not_moved'
+                USING ERRCODE = '22023',
+                      DETAIL = format('route %s changed but kept route_sha256', p_route_id);
+        END IF;
+    END IF;
+
+    INSERT INTO rest_route_catalogue_audit (
+        route_id, action, actor_user_id,
+        before_row_sha256, after_row_sha256,
+        before_route_sha256, after_route_sha256,
+        before_enabled, after_enabled
+    ) VALUES (
+        v_after.route_id,
+        CASE WHEN v_before.route_id IS NULL THEN 'insert' ELSE 'update' END,
+        p_actor_user_id,
+        CASE WHEN v_before.route_id IS NULL THEN NULL
+             ELSE rest_route_catalogue_row_sha256(v_before) END,
+        rest_route_catalogue_row_sha256(v_after),
+        v_before.route_sha256,
+        v_after.route_sha256,
+        v_before.enabled,
+        v_after.enabled
+    );
+
+    RETURN v_after;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION admin_upsert_rest_route(
+    uuid, boolean, text, text, text, text, text, jsonb, jsonb, jsonb, jsonb,
+    text, jsonb, text, jsonb, jsonb, text, text, boolean, text, text, text, text
+) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION admin_upsert_rest_route(
+    uuid, boolean, text, text, text, text, text, jsonb, jsonb, jsonb, jsonb,
+    text, jsonb, text, jsonb, jsonb, text, text, boolean, text, text, text, text
+) TO wpmgr_app;
+
+-- ---------------------------------------------------------------------------
+-- 2. The stamp
+-- ---------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION stamp_wpmgr_rest_route_hash(
+    p_route_id text,
+    p_sha text
+)
+RETURNS rest_route_catalogue
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_before rest_route_catalogue;
+    v_after  rest_route_catalogue;
+BEGIN
+    IF p_sha IS NULL OR p_sha !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'rest_route_catalogue: route hash is not 64 lowercase hex'
+            USING ERRCODE = '22023';
+    END IF;
+    IF p_route_id IS NULL THEN
+        RAISE EXCEPTION 'rest_route_catalogue: no route (NULL)'
+            USING ERRCODE = 'P0002';
+    END IF;
+
+    PERFORM pg_advisory_xact_lock(hashtext('rest_route_catalogue'), hashtext(p_route_id));
+    SELECT * INTO v_before FROM rest_route_catalogue
+        WHERE route_id = p_route_id
+        FOR UPDATE;
+
+    IF v_before.route_id IS NULL THEN
+        RAISE EXCEPTION 'rest_route_catalogue: no route %', p_route_id
+            USING ERRCODE = 'P0002';
+    END IF;
+    IF v_before.route_sha256 IS NOT NULL THEN
+        RAISE EXCEPTION 'rest_route_catalogue: route % is already stamped', p_route_id
+            USING ERRCODE = '55000';
+    END IF;
+
+    UPDATE rest_route_catalogue AS rc SET
+        route_sha256 = p_sha,
+        updated_at = now()
+    WHERE rc.route_id = p_route_id
+      AND rc.route_sha256 IS NULL
+    RETURNING rc.* INTO v_after;
+
+    INSERT INTO rest_route_catalogue_audit (
+        route_id, action, actor_user_id,
+        before_row_sha256, after_row_sha256,
+        before_route_sha256, after_route_sha256,
+        before_enabled, after_enabled
+    ) VALUES (
+        v_after.route_id,
+        'update',
+        NULL,
+        rest_route_catalogue_row_sha256(v_before),
+        rest_route_catalogue_row_sha256(v_after),
+        v_before.route_sha256,
+        v_after.route_sha256,
+        v_before.enabled,
+        v_after.enabled
+    );
+
+    RETURN v_after;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION stamp_wpmgr_rest_route_hash(text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION stamp_wpmgr_rest_route_hash(text, text) TO wpmgr_app;
+
+-- ---------------------------------------------------------------------------
+-- 3a. Seed: the v1 routes. Before the REVOKE (the m40.1 order), so the seed
+-- also lands where the migration runner is wpmgr_app.
+-- ---------------------------------------------------------------------------
+
+INSERT INTO rest_route_catalogue (
+    route_id, method, namespace, template, core_pattern,
+    path_params, query_keys, pinned_query, body_keys, class,
+    output_fields, snapshot, target, arg_render, operator_permission,
+    effect_copy, title, description
+)
+SELECT v.route_id, v.method, 'wp/v2', v.template, v.core_pattern,
+       v.path_params::jsonb, v.query_keys::jsonb, v.pinned_query::jsonb,
+       v.body_keys::jsonb, v.class, v.output_fields::jsonb, v.snapshot,
+       v.target::jsonb, v.arg_render::jsonb, v.operator_permission,
+       v.effect_copy, v.title, v.description
+FROM (VALUES
+    ('wp-v2-pages-list', 'GET', '/wp/v2/pages', '/wp/v2/pages',
+     '{}',
+     '{"per_page":{"type":"int","min":1,"max":50},"page":{"type":"int","min":1,"max":1000},"search":{"type":"string","max_len":64},"orderby":{"type":"enum","values":["date","modified","title","id"]},"include":{"type":"int_list","max_items":50}}',
+     '{"status":"publish","context":"view"}',
+     '{}', 'read',
+     '{"items":{"fields":{"id":"int","date_gmt":"string","modified_gmt":"string","slug":"string","status":"string","type":"string","link":"string","parent":"int","menu_order":"int","author":"int","title":{"fields":{"rendered":"string"}},"excerpt":{"fields":{"rendered":"string"}}}}}',
+     'none', NULL, '{}', NULL, 'none',
+     'List published pages',
+     'Lists the site''s published pages: title, excerpt, address and dates. Up to 50 per call. Changes nothing.'),
+    ('wp-v2-posts-list', 'GET', '/wp/v2/posts', '/wp/v2/posts',
+     '{}',
+     '{"per_page":{"type":"int","min":1,"max":50},"page":{"type":"int","min":1,"max":1000},"search":{"type":"string","max_len":64},"orderby":{"type":"enum","values":["date","modified","title","id"]},"include":{"type":"int_list","max_items":50}}',
+     '{"status":"publish","context":"view"}',
+     '{}', 'read',
+     '{"items":{"fields":{"id":"int","date_gmt":"string","modified_gmt":"string","slug":"string","status":"string","type":"string","link":"string","author":"int","categories":{"items":"int"},"tags":{"items":"int"},"title":{"fields":{"rendered":"string"}},"excerpt":{"fields":{"rendered":"string"}}}}}',
+     'none', NULL, '{}', NULL, 'none',
+     'List published posts',
+     'Lists the site''s published posts: title, excerpt, address, dates, categories and tags. Up to 50 per call. Changes nothing.'),
+    ('wp-v2-pages-get', 'GET', '/wp/v2/pages/{id}', '/wp/v2/pages/(?P<id>[\d]+)',
+     '{"id":{"type":"int","min":1,"max":9999999999,"required":true}}',
+     '{}',
+     '{"status":"publish","context":"view"}',
+     '{}', 'read',
+     '{"fields":{"id":"int","date_gmt":"string","modified_gmt":"string","slug":"string","status":"string","type":"string","link":"string","parent":"int","menu_order":"int","author":"int","title":{"fields":{"rendered":"string"}},"excerpt":{"fields":{"rendered":"string"}},"content":{"fields":{"rendered":"string"}}}}',
+     'none', NULL, '{}', NULL, 'none',
+     'Read a published page',
+     'Reads one published page: its title, excerpt, text, address and dates. Changes nothing.'),
+    ('wp-v2-posts-get', 'GET', '/wp/v2/posts/{id}', '/wp/v2/posts/(?P<id>[\d]+)',
+     '{"id":{"type":"int","min":1,"max":9999999999,"required":true}}',
+     '{}',
+     '{"status":"publish","context":"view"}',
+     '{}', 'read',
+     '{"fields":{"id":"int","date_gmt":"string","modified_gmt":"string","slug":"string","status":"string","type":"string","link":"string","author":"int","categories":{"items":"int"},"tags":{"items":"int"},"title":{"fields":{"rendered":"string"}},"excerpt":{"fields":{"rendered":"string"}},"content":{"fields":{"rendered":"string"}}}}',
+     'none', NULL, '{}', NULL, 'none',
+     'Read a published post',
+     'Reads one published post: its title, excerpt, text, address, dates, categories and tags. Changes nothing.'),
+    ('wp-v2-categories-list', 'GET', '/wp/v2/categories', '/wp/v2/categories',
+     '{}',
+     '{"per_page":{"type":"int","min":1,"max":50},"page":{"type":"int","min":1,"max":1000},"search":{"type":"string","max_len":64}}',
+     '{"context":"view"}',
+     '{}', 'read',
+     '{"items":{"fields":{"id":"int","count":"int","name":"string","slug":"string","parent":"int","description":"string","link":"string"}}}',
+     'none', NULL, '{}', NULL, 'none',
+     'List categories',
+     'Lists the site''s post categories with their names and how many posts each has. Changes nothing.'),
+    ('wp-v2-tags-list', 'GET', '/wp/v2/tags', '/wp/v2/tags',
+     '{}',
+     '{"per_page":{"type":"int","min":1,"max":50},"page":{"type":"int","min":1,"max":1000},"search":{"type":"string","max_len":64}}',
+     '{"context":"view"}',
+     '{}', 'read',
+     '{"items":{"fields":{"id":"int","count":"int","name":"string","slug":"string","description":"string","link":"string"}}}',
+     'none', NULL, '{}', NULL, 'none',
+     'List tags',
+     'Lists the site''s post tags with their names and how many posts each has. Changes nothing.'),
+    ('wp-v2-media-list', 'GET', '/wp/v2/media', '/wp/v2/media',
+     '{}',
+     '{"per_page":{"type":"int","min":1,"max":50},"page":{"type":"int","min":1,"max":1000},"search":{"type":"string","max_len":64},"media_type":{"type":"enum","values":["image","video","text","application","audio"]}}',
+     '{"status":"inherit","context":"view"}',
+     '{}', 'read',
+     '{"items":{"fields":{"id":"int","date_gmt":"string","slug":"string","link":"string","media_type":"string","mime_type":"string","source_url":"string","alt_text":"string","title":{"fields":{"rendered":"string"}}}}}',
+     'none', NULL, '{}', NULL, 'none',
+     'List media',
+     'Lists files in the site''s media library: name, type, address and alt text. Up to 50 per call. Changes nothing.'),
+    ('wp-v2-types', 'GET', '/wp/v2/types', '/wp/v2/types',
+     '{}', '{}',
+     '{"context":"view"}',
+     '{}', 'read',
+     '{"fields":{"post":{"fields":{"name":"string","slug":"string","description":"string","hierarchical":"bool","rest_base":"string","rest_namespace":"string","taxonomies":{"items":"string"}}},"page":{"fields":{"name":"string","slug":"string","description":"string","hierarchical":"bool","rest_base":"string","rest_namespace":"string","taxonomies":{"items":"string"}}},"attachment":{"fields":{"name":"string","slug":"string","description":"string","hierarchical":"bool","rest_base":"string","rest_namespace":"string","taxonomies":{"items":"string"}}}}}',
+     'none', NULL, '{}', NULL, 'none',
+     'List content types',
+     'Lists the kinds of content the site has, such as posts, pages and media. Changes nothing.'),
+    ('wp-v2-taxonomies', 'GET', '/wp/v2/taxonomies', '/wp/v2/taxonomies',
+     '{}', '{}',
+     '{"context":"view"}',
+     '{}', 'read',
+     '{"fields":{"category":{"fields":{"name":"string","slug":"string","description":"string","hierarchical":"bool","rest_base":"string","rest_namespace":"string","types":{"items":"string"}}},"post_tag":{"fields":{"name":"string","slug":"string","description":"string","hierarchical":"bool","rest_base":"string","rest_namespace":"string","types":{"items":"string"}}}}}',
+     'none', NULL, '{}', NULL, 'none',
+     'List groupings',
+     'Lists the ways the site groups its content, such as categories and tags. Changes nothing.'),
+    ('wp-v2-pages-update-fields', 'POST', '/wp/v2/pages/{id}', '/wp/v2/pages/(?P<id>[\d]+)',
+     '{"id":{"type":"int","min":1,"max":9999999999,"required":true}}',
+     '{}', '{}',
+     '{"title":{"type":"string","max_len":200},"excerpt":{"type":"string","max_len":1000}}',
+     'write',
+     '{"fields":{"id":"int","modified_gmt":"string","status":"string","link":"string","title":{"fields":{"rendered":"string"}},"excerpt":{"fields":{"rendered":"string"}}}}',
+     'post_fields', '{"kind":"post","param":"id","post_type":"page"}',
+     '{"title":{"label":"Title","kind":"text"},"excerpt":{"label":"Excerpt","kind":"text"}}',
+     'site.content.edit', 'live',
+     'Change a page''s title or excerpt',
+     'Changes the title or excerpt of one page. A published page changes immediately. Undo puts back the previous title and excerpt.'),
+    ('wp-v2-posts-update-fields', 'POST', '/wp/v2/posts/{id}', '/wp/v2/posts/(?P<id>[\d]+)',
+     '{"id":{"type":"int","min":1,"max":9999999999,"required":true}}',
+     '{}', '{}',
+     '{"title":{"type":"string","max_len":200},"excerpt":{"type":"string","max_len":1000}}',
+     'write',
+     '{"fields":{"id":"int","modified_gmt":"string","status":"string","link":"string","title":{"fields":{"rendered":"string"}},"excerpt":{"fields":{"rendered":"string"}}}}',
+     'post_fields', '{"kind":"post","param":"id","post_type":"post"}',
+     '{"title":{"label":"Title","kind":"text"},"excerpt":{"label":"Excerpt","kind":"text"}}',
+     'site.content.edit', 'live',
+     'Change a post''s title or excerpt',
+     'Changes the title or excerpt of one post. A published post changes immediately. Undo puts back the previous title and excerpt.')
+) AS v(route_id, method, template, core_pattern, path_params, query_keys,
+       pinned_query, body_keys, class, output_fields, snapshot, target,
+       arg_render, operator_permission, effect_copy, title, description)
+ON CONFLICT (route_id) DO NOTHING;
+
+-- ---------------------------------------------------------------------------
+-- 3b. Seed: the two catalogue entries (owner ruling 1)
+-- ---------------------------------------------------------------------------
+
+INSERT INTO ability_catalogue
+    (name, source, class, status, enabled, approval_mode,
+     title, description)
+SELECT 'wpmgr/rest-read', 'wpmgr', 'read', 'admitted', true, 'none',
+       'Read the site''s published content',
+       'Reads published pages, posts, categories, tags, media and content types through the site''s own WordPress API, using only routes WPMgr has reviewed. Changes nothing.'
+WHERE NOT EXISTS (
+    SELECT 1 FROM ability_catalogue c WHERE c.name = 'wpmgr/rest-read'
+);
+
+INSERT INTO ability_catalogue
+    (name, source, class, status, enabled, approval_mode,
+     snapshot, preview, effect_copy, operator_permission,
+     title, description)
+SELECT 'wpmgr/rest-write', 'wpmgr', 'write', 'admitted', true, 'per_call',
+       'post_fields', 'structured', 'live', 'site.content.edit',
+       'Change a page''s or post''s title or excerpt',
+       'Changes the title or excerpt of one page or post through the site''s own WordPress API, after a person approves it. A published page changes immediately. Undo puts back the previous values.'
+WHERE NOT EXISTS (
+    SELECT 1 FROM ability_catalogue c WHERE c.name = 'wpmgr/rest-write'
+);
+
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON rest_route_catalogue FROM wpmgr_app;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON rest_route_catalogue_audit FROM wpmgr_app;
+GRANT SELECT ON rest_route_catalogue TO wpmgr_app;
+GRANT SELECT ON rest_route_catalogue_audit TO wpmgr_app;

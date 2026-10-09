@@ -4,6 +4,11 @@ package audit
 // assistant.request.* row. TargetID is the request id.
 const TargetTypeAssistantCachePurgeRequest = "assistant_cache_purge_request"
 
+// TargetTypeAssistantAbilityRequest is the TargetType of every
+// assistant.request.* row about an ability request (m156). TargetID is the
+// request id.
+const TargetTypeAssistantAbilityRequest = "assistant_ability_request"
+
 // SiteOriginMetadataKeys names the metadata keys, on the assistant request
 // rows and on site.cache.purged when an AI request caused it, whose values
 // came from a site or from an AI connection rather than from WPMgr: a site's

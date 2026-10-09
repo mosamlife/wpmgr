@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -34,7 +35,14 @@ type Store interface {
 	// transaction. There is deliberately no way to do only half of it: a
 	// separate consume would let a failure between the two commits burn a code
 	// that never produced a token, stranding a client that did nothing wrong.
-	RedeemAuthorizationCode(ctx context.Context, tenantID, codeID uuid.UUID, tok sqlc.CreateMCPConnectionTokenParams) (sqlc.McpConnectionToken, error)
+	//
+	// It also returns the scope set the token's grant holds, read in that same
+	// transaction; see RedeemedCode.
+	//
+	// It issues a token only for a grant that is authorized at that moment. A
+	// grant that is not returns errGrantNotAuthorized, and the transaction
+	// rolls back: no token row exists and the code is left unconsumed.
+	RedeemAuthorizationCode(ctx context.Context, tenantID, codeID uuid.UUID, tok sqlc.CreateMCPConnectionTokenParams) (RedeemedCode, error)
 
 	// CreateGrantWithCode takes the authorizing principal as its own argument
 	// and not merely a tenant id, because the principal is what selects the
@@ -303,12 +311,32 @@ func (r *Repo) LookupAuthorizationCode(ctx context.Context, codeHash string) (sq
 // Ordering inside the transaction is unchanged and still matters: the
 // compare-and-set runs FIRST, so two concurrent exchanges still produce exactly
 // one winner. The loser's INSERT never runs because its UPDATE matched nothing.
+//
+// THE GRANT'S SCOPE SET IS READ BACK LAST, IN THE SAME TRANSACTION, through
+// ReCheckMCPRequestAuthorizationInTenantTx for the token just inserted: the
+// query Authenticate runs on every request this token will make. The token
+// response therefore names the scopes from the same column, read the same way,
+// as every authorization decision taken under the token. The set is returned
+// as stored; Exchange decides whether it can be named.
+//
+// pgx.ErrNoRows from the read-back is NOT passed through. The caller reads
+// ErrNoRows as a lost compare-and-set and answers invalid_grant, while a token
+// this transaction inserted and cannot read is a server fault. Any read-back
+// error rolls the consume and the insert back with it.
+//
+// THE READ-BACK'S `authorized` VERDICT GATES THE COMMIT. It is the verdict
+// Authenticate requires on every request: the grant active and inside both of
+// its expiries, and the organisation's assistant not paused. When it is false
+// this returns errGrantNotAuthorized, which rolls the consume and the insert
+// back together. No token row is left behind and the code stays unconsumed,
+// which is what every other refusal of an exchange leaves as well; single use
+// still holds, because the compare-and-set only ever commits alongside a token.
 func (r *Repo) RedeemAuthorizationCode(
 	ctx context.Context,
 	tenantID, codeID uuid.UUID,
 	tok sqlc.CreateMCPConnectionTokenParams,
-) (sqlc.McpConnectionToken, error) {
-	var out sqlc.McpConnectionToken
+) (RedeemedCode, error) {
+	var out RedeemedCode
 	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
 		if _, err := q.ConsumeMCPAuthorizationCodeInTenantTx(ctx,
@@ -321,10 +349,39 @@ func (r *Repo) RedeemAuthorizationCode(
 			// is the whole point of the single transaction.
 			return fmt.Errorf("create mcp connection token: %w", err)
 		}
-		out = row
+		chk, err := q.ReCheckMCPRequestAuthorizationInTenantTx(ctx,
+			sqlc.ReCheckMCPRequestAuthorizationInTenantTxParams{TenantID: tenantID, ID: row.ID})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("read back the grant of issued token %s: no row", row.ID)
+			}
+			return fmt.Errorf("read back the grant of issued token %s: %w", row.ID, err)
+		}
+		if !chk.Authorized {
+			// Returning an error is what rolls the consume and the insert back.
+			return errGrantNotAuthorized
+		}
+		out = RedeemedCode{Token: row, GrantScopes: grantScopes(chk.GrantOauthScopes)}
 		return nil
 	})
 	return out, err
+}
+
+// errGrantNotAuthorized is RedeemAuthorizationCode's refusal for a code whose
+// grant is not authorized when the code is redeemed: revoked, past either
+// expiry, or under an organisation whose assistant is paused. Nothing was
+// written. Exchange answers it as RFC 6749 invalid_grant.
+var errGrantNotAuthorized = errors.New("the grant this authorization code was issued for is not authorized")
+
+// RedeemedCode is what one redeem transaction produced: the connection token
+// row it inserted, and the scope set of the grant that token belongs to, as
+// stored in mcp_grants.oauth_scopes and read back in the same transaction.
+//
+// GrantScopes is the only input to the token response's `scope` member.
+// Exchange renders it with tokenResponseScope and adds nothing to it.
+type RedeemedCode struct {
+	Token       sqlc.McpConnectionToken
+	GrantScopes []Scope
 }
 
 // CreateGrantWithCode mints the grant and its first authorization code in ONE

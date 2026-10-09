@@ -6,8 +6,10 @@ import {
   Building2,
   ChevronRight,
   Globe,
+  LayoutDashboard,
   LineChart,
   Mail,
+  FileText,
   RefreshCw,
   Settings,
   Share2,
@@ -21,7 +23,7 @@ import {
 
 import { FleetHubLogo, Wordmark } from "@/components/brand/logo";
 import { useShellState } from "@/components/layout/app-shell-context";
-import { useMe, isSuperadmin, canManageInstanceEmail } from "@/features/auth/use-auth";
+import { useMe, hasOrg, isSuperadmin, canManageInstanceEmail } from "@/features/auth/use-auth";
 import { useSites } from "@/features/sites/use-sites";
 import { cn } from "@/lib/utils";
 
@@ -192,6 +194,7 @@ const ADMIN_NAV_GROUPS: ReadonlyArray<NavGroup> = [
   { label: "Revenue", icon: TrendingUp, to: "/admin/revenue" },
   { label: "Vulnerability feed", icon: ShieldAlert, to: "/admin/vuln-feed" },
   { label: "Agent mirror", icon: RefreshCw, to: "/admin/agent-mirror" },
+  { label: "Page editors", icon: FileText, to: "/admin/content-report" },
 ];
 
 // The instance SMTP relay requires instance-level authority — the same
@@ -206,11 +209,21 @@ const EMAIL_SMTP_ADMIN_NAV_ITEM: NavGroup = {
 };
 
 // Bottom-aligned app-switcher leaf, mirroring how the tenant sidebar
-// bottom-aligns its single Settings leaf.
+// bottom-aligns its single Settings leaf. Offered only to a superadmin who
+// belongs to an organisation: for one with no organisation /sites is a page
+// the _authed gate sends straight back to /admin, so the link would do nothing.
 const BACK_TO_SITES_LEAF: NavGroup = {
   label: "Back to Sites",
   icon: ArrowLeft,
   to: "/sites",
+};
+
+// The other direction of the same switch: in the organisation's shell, the way
+// into the admin console for a superadmin who belongs to an organisation.
+const ADMIN_CONSOLE_LEAF: NavGroup = {
+  label: "Admin console",
+  icon: LayoutDashboard,
+  to: "/admin",
 };
 
 export function Sidebar() {
@@ -222,6 +235,21 @@ export function Sidebar() {
   const adminNavGroups = canManageInstanceEmail(me)
     ? [...ADMIN_NAV_GROUPS, EMAIL_SMTP_ADMIN_NAV_ITEM]
     : ADMIN_NAV_GROUPS;
+
+  // Which navigation a superadmin gets depends on whether they also belong to
+  // an organisation.
+  //   - No organisation: only the admin console. The _authed gate holds them
+  //     there, so nothing in the nav may point anywhere else.
+  //   - With an organisation: two places from one account, told apart by the
+  //     URL. Under /admin they get the admin nav and a way back to their
+  //     sites; everywhere else they get the ordinary nav and a way into the
+  //     admin console.
+  // Anyone who is not a superadmin gets the ordinary nav, unchanged.
+  const inAdminArea = pathname === "/admin" || pathname.startsWith("/admin/");
+  const superadminHasOrg = superadmin && hasOrg(me);
+  const showAdminNav = superadmin && (inAdminArea || !superadminHasOrg);
+  const showBackToSites = showAdminNav && superadminHasOrg;
+  const showAdminConsole = superadminHasOrg && !showAdminNav;
 
   // Live "Sites" count for the nav badge (active, non-archived) — shares the
   // sites-list query cache with the Sites page, so it's deduped.
@@ -262,11 +290,11 @@ export function Sidebar() {
         <BrandStrip collapsed={collapsed} />
 
         <div className="flex flex-1 flex-col overflow-y-auto px-2 py-3">
-          {superadmin ? (
-            // Superadmin is monitoring-only: show ONLY the Admin area. They
-            // have no org and never manage sites — the one exception is the
-            // instance-wide SMTP relay, linked in from here when the server
-            // admits them to it (see EMAIL_SMTP_ADMIN_NAV_ITEM above).
+          {showAdminNav ? (
+            // The Admin area. For a superadmin with no organisation this is
+            // the whole app: the instance-wide SMTP relay is the one page
+            // outside /admin they can open, linked in from here when the
+            // server admits them to it (see EMAIL_SMTP_ADMIN_NAV_ITEM above).
             <>
               <ul className="flex flex-col gap-0.5">
                 {adminNavGroups.map((group) => (
@@ -279,17 +307,20 @@ export function Sidebar() {
                   </li>
                 ))}
               </ul>
-              {/* Back to Sites — bottom-aligned, mirrors the tenant
-                  sidebar's bottom-aligned Settings leaf. */}
-              <ul className="mt-auto flex flex-col gap-0.5 pt-3">
-                <li>
-                  <NavGroupItem
-                    group={BACK_TO_SITES_LEAF}
-                    pathname={pathname}
-                    collapsed={collapsed}
-                  />
-                </li>
-              </ul>
+              {/* Back to Sites: bottom-aligned, mirrors the tenant
+                  sidebar's bottom-aligned Settings leaf. Only for a
+                  superadmin who has sites to go back to. */}
+              {showBackToSites ? (
+                <ul className="mt-auto flex flex-col gap-0.5 pt-3">
+                  <li>
+                    <NavGroupItem
+                      group={BACK_TO_SITES_LEAF}
+                      pathname={pathname}
+                      collapsed={collapsed}
+                    />
+                  </li>
+                </ul>
+              ) : null}
             </>
           ) : (
             <>
@@ -319,7 +350,9 @@ export function Sidebar() {
                   />
                 </li>
               </ul>
-              {/* Settings — single leaf link, bottom-aligned. */}
+              {/* Settings — single leaf link, bottom-aligned. A superadmin
+                  who belongs to an organisation also gets the way into the
+                  admin console, under it. */}
               <ul className="mt-auto flex flex-col gap-0.5 pt-3">
                 <li>
                   <NavGroupItem
@@ -328,6 +361,15 @@ export function Sidebar() {
                     collapsed={collapsed}
                   />
                 </li>
+                {showAdminConsole ? (
+                  <li>
+                    <NavGroupItem
+                      group={ADMIN_CONSOLE_LEAF}
+                      pathname={pathname}
+                      collapsed={collapsed}
+                    />
+                  </li>
+                ) : null}
               </ul>
             </>
           )}

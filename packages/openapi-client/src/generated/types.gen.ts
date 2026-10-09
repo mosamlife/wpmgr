@@ -16,6 +16,303 @@ export type Readiness = {
   };
 };
 
+export type ContentInventoryEditor = {
+  integration_id: string;
+  /**
+   * From the platform allowlist, never from the site.
+   */
+  display_name?: string | null;
+  version?: string | null;
+};
+
+export type ContentInventoryRow = {
+  post_id: number;
+  post_type: string;
+  post_status: string;
+  /**
+   * Known values: classic, empty, block_document, builder, ambiguous, unrecognised_builder, special_page, template_may_override.
+   */
+  verdict: string;
+  route_number: number;
+  /**
+   * A closed set of reason codes; a client renders an unknown code as "Not available yet".
+   */
+  route_reason: string;
+  /**
+   * Null when no builder owns the page.
+   */
+  editor?: ContentInventoryEditor | null;
+  /**
+   * The site's own text, cleaned and capped at 120 bytes. Null unless the caller holds site.content.read.
+   */
+  title?: string | null;
+  checked_at: string;
+};
+
+export type ContentInventoryPage = {
+  /**
+   * True when the last check stopped at the page cap, so the list is a sample of the site. From the site's last-check record; false when the site has never been checked.
+   */
+  truncated: boolean;
+  state: "ok" | "agent_update_needed" | "not_connected";
+  agent_version?: string;
+  min_agent_version: string;
+  last_checked_at?: string | null;
+  titles_included: boolean;
+  next_after_post_id?: number | null;
+  pages: Array<ContentInventoryRow>;
+};
+
+export type ContentFleetVerdictShare = {
+  verdict: string;
+  route_number: number;
+  pages: number;
+  sites: number;
+};
+
+export type ContentFleetBuilderShare = {
+  integration_id: string;
+  version?: string | null;
+  pages: number;
+  sites: number;
+};
+
+export type ContentFleetReport = {
+  pages: number;
+  by_verdict: Array<ContentFleetVerdictShare>;
+  by_builder: Array<ContentFleetBuilderShare>;
+};
+
+export type ContentIntegration = {
+  integration_id: string;
+  display_name: string;
+  enabled: boolean;
+  status: "detect_only";
+  descriptor: {
+    [key: string]: unknown;
+  };
+  abilities?: {
+    [key: string]: unknown;
+  } | null;
+  min_version?: string | null;
+  max_tested_version?: string | null;
+  min_wp_version?: string | null;
+  integration_entry_sha256?: string | null;
+  /**
+   * The theme directory that signals this builder; sent as a hint only when active.
+   */
+  theme_slug?: string | null;
+  updated_at: string;
+};
+
+/**
+ * One reviewed ability in the global catalogue. `entry_sha256` is the
+ * sha256 of the exact entry bytes sent to a site's agent.
+ *
+ */
+export type AbilityCatalogueEntry = {
+  entry_id: string;
+  name: string;
+  source: "wpmgr" | "core" | "vendor";
+  class: "read" | "write" | "denied";
+  status: "admitted" | "detect_only" | "awaiting_vendor_tools";
+  enabled: boolean;
+  approval_mode: "none" | "per_call";
+  permission_mode: "principal" | "asserted";
+  integration_id?: string;
+  owner_dir?: string;
+  version_min?: string;
+  version_max_tested?: string;
+  min_wp_version?: string;
+  min_agent_version?: string;
+  schema_struct_sha256?: string;
+  dynamic_enum_paths: Array<string>;
+  title: string;
+  description: string;
+  usage?: string;
+  operator_permission?: string;
+  target?: unknown;
+  snapshot: string;
+  preview?: string;
+  arg_render: {
+    [key: string]: unknown;
+  };
+  effect_copy: "draft" | "live" | "none";
+  limits: {
+    [key: string]: unknown;
+  };
+  nested_allow: Array<string>;
+  global_option_keys: Array<string>;
+  integration_block?: unknown;
+  admission: {
+    [key: string]: unknown;
+  };
+  entry_sha256?: string;
+  /**
+   * The pinned output shape of a read: `{"fields":{key:shape}}`,
+   * `{"items":shape}`, `"string"`, `"int"` or `"bool"`, at most 8 deep.
+   * Only listed keys reach the AI.
+   *
+   */
+  output_fields?: unknown;
+  updated_at: string;
+};
+
+/**
+ * Every field is optional on update; an omitted field keeps its stored
+ * value. `name` is required on create and cannot change. There is no
+ * actor field: the actor is the authenticated session.
+ *
+ */
+export type AbilityCatalogueInput = {
+  name?: string;
+  source?: "wpmgr" | "core" | "vendor";
+  class?: "read" | "write" | "denied";
+  status?: "admitted" | "detect_only" | "awaiting_vendor_tools";
+  enabled?: boolean;
+  approval_mode?: "none" | "per_call";
+  permission_mode?: "principal" | "asserted";
+  integration_id?: string;
+  owner_dir?: string;
+  version_min?: string;
+  version_max_tested?: string;
+  min_wp_version?: string;
+  min_agent_version?: string;
+  schema_struct_sha256?: string;
+  dynamic_enum_paths?: Array<string>;
+  title?: string;
+  description?: string;
+  usage?: string;
+  operator_permission?: string;
+  target?: unknown;
+  snapshot?: string;
+  preview?: string;
+  arg_render?: {
+    [key: string]: unknown;
+  };
+  effect_copy?: "draft" | "live" | "none";
+  limits?: {
+    [key: string]: unknown;
+  };
+  nested_allow?: Array<string>;
+  global_option_keys?: Array<string>;
+  integration_block?: unknown;
+  admission?: {
+    [key: string]: unknown;
+  };
+  /**
+   * The pinned output shape of a read, in the strict grammar
+   * `{"fields":{key:shape}}` | `{"items":shape}` | `"string"` | `"int"` |
+   * `"bool"`, keys matching `^[A-Za-z0-9_-]{1,64}$`, at most 8 deep. Any
+   * other node is refused (400 invalid_output_fields). Required for a
+   * vendor or core read. `limits.allowed_option_patterns` may not hold an
+   * empty or wildcard-only (`*`, `**`) pattern.
+   *
+   */
+  output_fields?: unknown;
+};
+
+/**
+ * One reviewed WordPress REST route (m161). `route_sha256` is the sha256
+ * of the exact route bytes sent to a site's agent.
+ *
+ */
+export type RestRoute = {
+  route_id: string;
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  namespace: string;
+  template: string;
+  core_pattern: string;
+  path_params: {
+    [key: string]: unknown;
+  };
+  query_keys: {
+    [key: string]: unknown;
+  };
+  pinned_query: {
+    [key: string]: unknown;
+  };
+  body_keys: {
+    [key: string]: unknown;
+  };
+  class: "read" | "write";
+  /**
+   * The pinned output shape
+   */
+  output_fields: unknown;
+  snapshot: string;
+  target?: unknown;
+  arg_render: {
+    [key: string]: unknown;
+  };
+  operator_permission?: string;
+  effect_copy: "draft" | "live" | "none";
+  enabled: boolean;
+  min_wp_version?: string;
+  title: string;
+  description: string;
+  route_sha256?: string;
+  hash_current: boolean;
+  updated_at: string;
+};
+
+/**
+ * A route edit. Every field is optional; an omitted field keeps its
+ * stored value. route_id and route_sha256 are never body fields.
+ * JSON members hold integers only, written plainly.
+ *
+ */
+export type RestRouteInput = {
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  namespace?: string;
+  template?: string;
+  core_pattern?: string;
+  path_params?: {
+    [key: string]: unknown;
+  };
+  query_keys?: {
+    [key: string]: unknown;
+  };
+  pinned_query?: {
+    [key: string]: unknown;
+  };
+  body_keys?: {
+    [key: string]: unknown;
+  };
+  class?: "read" | "write";
+  /**
+   * The pinned output shape
+   */
+  output_fields?: unknown;
+  snapshot?: string;
+  target?: unknown;
+  arg_render?: {
+    [key: string]: unknown;
+  };
+  operator_permission?: string;
+  effect_copy?: "draft" | "live" | "none";
+  enabled?: boolean;
+  min_wp_version?: string;
+  title?: string;
+  description?: string;
+};
+
+export type ContentIntegrationInput = {
+  display_name: string;
+  enabled: boolean;
+  status: "detect_only";
+  descriptor?: {
+    [key: string]: unknown;
+  };
+  abilities?: {
+    [key: string]: unknown;
+  } | null;
+  min_version?: string | null;
+  max_tested_version?: string | null;
+  min_wp_version?: string | null;
+  theme_slug?: string | null;
+};
+
 export type Error = {
   /**
    * Stable machine-readable error code.
@@ -1059,6 +1356,44 @@ export type AgentMetadata = {
      *
      */
     unreadable?: Array<string>;
+  } | null;
+  /**
+   * Facts about the site's page builders that the plugin and theme
+   * lists do not carry, collected read-only on every metadata report.
+   * Optional and additive: an agent that predates it omits the whole
+   * object, which the control plane stores as "not reported" and never
+   * reads as "off". Every field is tolerantly decoded: a value of an
+   * unexpected type is dropped on its own and never rejects the
+   * report. Only the fields below are kept; any other key is ignored.
+   *
+   */
+  builder_facts?: {
+    /**
+     * Schema version of this object. 1 today.
+     */
+    v?: number;
+    /**
+     * Directory name of the active theme's parent (the theme itself
+     * when it has no parent). Kept only when it is 1 to 100
+     * characters of letters, digits, dot, underscore or hyphen;
+     * omitted by the agent when it cannot be read.
+     *
+     */
+    theme_template?: string;
+    /**
+     * Present only when Elementor is loaded on the site. Absent
+     * means "not installed", never "off".
+     *
+     */
+    elementor?: {
+      /**
+       * Whether Elementor's Atomic editor is on, asked of
+       * Elementor itself. Null means Elementor is loaded but gave
+       * no definite answer; unknown is never sent as false.
+       *
+       */
+      atomic_editor?: boolean | null;
+    } | null;
   } | null;
 };
 
@@ -4320,6 +4655,447 @@ export type PurgeRequest = {
    *
    */
   delete_everything?: boolean;
+};
+
+export type AbilityRequestApproveBody = {
+  /**
+   * The digest the queue returned for this request.
+   */
+  presented_digest: string;
+};
+
+export type AbilityRequestOrgList = {
+  requests: Array<AbilityRequest>;
+  /**
+   * Requests still waiting for a decision (the badge).
+   */
+  pending_count: number;
+  limit: number;
+  offset: number;
+};
+
+export type AbilityRequestList = {
+  requests: Array<AbilityRequest>;
+  limit: number;
+  offset: number;
+};
+
+export type AbilityTenantReenableResult = {
+  entry_id: string;
+  /**
+   * Always true; a tool that was not off is a 404.
+   */
+  reenabled: boolean;
+};
+
+/**
+ * One AI site-change request. `site_label`, `site_host`, `grant_label`
+ * and `title_excerpt` came from a site or an AI connection: render each
+ * as plain text. `input_json` is the exact input the AI chose, shown in
+ * full on the card.
+ *
+ */
+export type AbilityRequest = {
+  id: string;
+  site_id: string;
+  ability_name: string;
+  input_json: string;
+  title_excerpt?: string;
+  editor?: string;
+  post_type?: string;
+  effect_copy: "draft" | "live" | "none";
+  snapshot: string;
+  site_label: string;
+  site_host: string;
+  grant_label: string;
+  grant_via: string;
+  setup_client?: string;
+  card_copy_version: number;
+  presented_digest?: string;
+  state:
+    | "pending"
+    | "approved"
+    | "declined"
+    | "withdrawn"
+    | "expired"
+    | "dispatched"
+    | "outcome_unknown"
+    | "done"
+    | "failed"
+    | "not_sent";
+  created_at: string;
+  expires_at: string;
+  decided_at?: string;
+  outcome?: string;
+  outcome_code?: string;
+  not_sent_reason?: string;
+  created_post_id?: number;
+  trashed?: boolean;
+  /**
+   * A failed wpmgr/rest-write's report on putting the post back.
+   * True: the whole post is as it was. False: WPMgr put back what it
+   * could, but the post is not fully as it was; show the request as
+   * needing attention. Null when nothing needed putting back, and for
+   * every other ability.
+   *
+   */
+  restored?: boolean;
+  undo_state?: string;
+  undo_available_until?: string;
+  /**
+   * Whether `POST .../undo` would start an undo now: a done request
+   * inside its undo window, or the draft a failed or given-up page
+   * creation left on the site. Show the undo action exactly when
+   * this is true.
+   *
+   */
+  undo_offered: boolean;
+  /**
+   * True once WPMgr stopped checking the site for the outcome of a
+   * write whose reply was lost. The result is final: the person
+   * should look at the site's drafts.
+   *
+   */
+  resolve_gave_up: boolean;
+  /**
+   * The reviewed REST route a wpmgr/rest-write request runs; null otherwise.
+   */
+  route_id?: string;
+  /**
+   * The route hash the request was approved against; null otherwise.
+   */
+  route_sha256?: string;
+  /**
+   * The structured card of a wpmgr/rest-write request; null otherwise.
+   */
+  card_facts?: AbilityRequestCardFacts;
+  /**
+   * The images a wpmgr/page-create request places, in outline order, as
+   * the site described them when WPMgr checked the request. Null when
+   * the outline has no image, and for every other ability. A card whose
+   * outline names an image with no entry here cannot be shown in full
+   * and must not be approvable.
+   *
+   */
+  page_media?: Array<AbilityRequestPageMedia>;
+  /**
+   * The page builder that builds a wpmgr/page-create request's page, as
+   * the site's precheck named it. Null for a page in a WordPress
+   * editor, and for every other ability. A card for a request whose
+   * editor is a page builder cannot be shown in full without it and
+   * must not be approvable.
+   *
+   */
+  page_builder?: AbilityRequestPageBuilder;
+};
+
+/**
+ * The page builder of a wpmgr/page-create request. `version` came from
+ * the site: render it as plain text.
+ *
+ */
+export type AbilityRequestPageBuilder = {
+  /**
+   * The page builder, such as `elementor`.
+   */
+  builder: string;
+  /**
+   * What the builder builds the page from, such as `classic` (Elementor's classic widgets).
+   */
+  format: string;
+  /**
+   * The builder's version on the site.
+   */
+  version: string;
+  /**
+   * How the page is laid out, such as `containers` or `sections` (Elementor's two classic layouts).
+   */
+  layout: string;
+};
+
+/**
+ * One image a wpmgr/page-create request places. `filename` came from
+ * the site: render it as plain text.
+ *
+ */
+export type AbilityRequestPageMedia = {
+  /**
+   * The attachment id the outline names.
+   */
+  id: number;
+  filename: string;
+  mime: "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "image/avif";
+  /**
+   * Pixels; 0 when the site does not know.
+   */
+  width: number;
+  /**
+   * Pixels; 0 when the site does not know.
+   */
+  height: number;
+};
+
+/**
+ * A structured approval card. Every value under a `from_the_site`
+ * member came from the site: render it as plain text in the "From the
+ * site" slot. `after` is the value the AI asked for. The other strings
+ * are WPMgr's.
+ *
+ */
+export type AbilityRequestCardFacts = {
+  route_id: string;
+  route_title: string;
+  method: string;
+  target: {
+    id: number;
+    post_type: string;
+    from_the_site: {
+      status: string;
+      title_before: string;
+    };
+  };
+  changes: Array<{
+    key: string;
+    label: string;
+    after: string;
+    from_the_site: {
+      before: string;
+    };
+  }>;
+  effect_copy: "draft" | "live" | "none";
+  live: boolean;
+  /**
+   * "Published immediately" when live, otherwise "Saved to the post; it is not published".
+   */
+  effect_label: string;
+  undo: string;
+  undo_exact: boolean;
+  /**
+   * Set when undo may not restore the exact characters of the previous value.
+   */
+  undo_note: string;
+};
+
+export type ContentEditingState = {
+  site_id: string;
+  enabled: boolean;
+  enabled_at?: string;
+  /**
+   * The WordPress user id of the site's content service user.
+   */
+  principal_user_id?: number;
+  enabled_by?: string;
+};
+
+/**
+ * Whether an AI assistant connected to WPMgr can work on one site. All
+ * values come from WPMgr's own checks; nothing the site wrote reaches
+ * this object except version strings that passed a strict shape check.
+ *
+ */
+export type SiteAiReadiness = {
+  site_id: string;
+  status: AiReadinessStatus;
+  /**
+   * Number of rows with state `fail` in `base` and in installed
+   * builder groups. A `bricks_abilities` row is never one of them: as
+   * a `fail` it is unconfirmed, and as an `unknown` it is not a
+   * failure (see `status`).
+   *
+   */
+  fix_count: number;
+  /**
+   * When the site last reported its plugin and theme details. Null when it never has.
+   */
+  metadata_as_of: string | null;
+  /**
+   * When the site's tool list was last read. Null when it never has.
+   */
+  abilities_as_of: string | null;
+  /**
+   * Advisory notices. They never change `status` or `fix_count`.
+   */
+  warnings: Array<AiReadinessWarning>;
+  floors: AiReadinessFloors;
+  /**
+   * Always `base`, `elementor`, `bricks`, in that order.
+   */
+  groups: Array<AiReadinessGroup>;
+};
+
+export const AiReadinessStatus = {
+  READY: "ready",
+  NEEDS_ATTENTION: "needs_attention",
+  INCOMPLETE: "incomplete",
+} as const;
+
+export type AiReadinessStatus =
+  (typeof AiReadinessStatus)[keyof typeof AiReadinessStatus];
+
+export const AiReadinessWarningCode = {
+  MCP_ADAPTER_PLUGIN_ACTIVE: "mcp_adapter_plugin_active",
+  ELEMENTOR_MCP_ENDPOINT_OPEN: "elementor_mcp_endpoint_open",
+} as const;
+
+export type AiReadinessWarningCode =
+  (typeof AiReadinessWarningCode)[keyof typeof AiReadinessWarningCode];
+
+export type AiReadinessWarning = {
+  code: AiReadinessWarningCode;
+};
+
+/**
+ * The versions the checks compare against, so a client can write "needs
+ * 7.1 or later" without hard-coding the number.
+ *
+ */
+export type AiReadinessFloors = {
+  wp: string;
+  agent: string;
+  /**
+   * The first WPMgr agent release that reports the Atomic editor and the parent theme.
+   */
+  facts_agent: string;
+  elementor: string;
+  bricks: string;
+};
+
+export const AiReadinessCheckId = {
+  WP_VERSION: "wp_version",
+  ABILITIES_API: "abilities_api",
+  AGENT_VERSION: "agent_version",
+  CONTENT_EDITING: "content_editing",
+  ELEMENTOR_VERSION: "elementor_version",
+  ELEMENTOR_MCP_SWITCH: "elementor_mcp_switch",
+  ELEMENTOR_ATOMIC: "elementor_atomic",
+  BRICKS_VERSION: "bricks_version",
+  BRICKS_ABILITIES: "bricks_abilities",
+} as const;
+
+export type AiReadinessCheckId =
+  (typeof AiReadinessCheckId)[keyof typeof AiReadinessCheckId];
+
+export type AiReadinessGroup = {
+  id: "base" | "elementor" | "bricks";
+  /**
+   * Builder groups only. False means the builder is not installed on
+   * the site and `checks` is empty; the group counts toward nothing.
+   *
+   */
+  installed?: boolean;
+  /**
+   * Builder groups only. The installed version, or null when it is not
+   * installed or the site did not report a usable version.
+   *
+   */
+  version?: string | null;
+  /**
+   * Builder groups only. `coming` while WPMgr cannot yet build pages
+   * with this builder; the checks then show whether the site will be
+   * ready.
+   *
+   */
+  wpmgr_support?: "coming" | "available";
+  checks: Array<AiReadinessCheck>;
+};
+
+/**
+ * One row. `state` is `pass`, `fail`, `unknown` (WPMgr could not tell;
+ * never a failure) or `not_applicable` (a row this one depends on
+ * failed, or the builder is installed but not active). `observed` is
+ * the version that was compared, or null.
+ *
+ * `reason` is null for `pass`, and for a `fail` with a single way to
+ * fail. Otherwise, per row:
+ *
+ * - `wp_version`: unknown `not_reported`; fail `prerelease_build` (a
+ * development or pre-release build, such as `7.1-RC1` or
+ * `7.1.1-src`, whose release number reaches `floors.wp`: WPMgr's AI
+ * tools run on a released WordPress only). A released version below
+ * `floors.wp` is a `fail` with a null reason.
+ * - `agent_version`: unknown `not_reported`.
+ * - `abilities_api`: unknown `inventory_never_run`, `agent_too_old`
+ * (the agent cannot read the tool list) or `not_reported`.
+ * - `content_editing`: only `pass` or `fail`.
+ * - `elementor_version`, `bricks_version`: fail `too_old`;
+ * not_applicable `inactive` (installed but not active, so not a fix;
+ * `observed` still carries the installed version); unknown
+ * `not_reported`, and for `bricks_version` also
+ * `agent_too_old_for_fact` (a child theme may be in use and the agent
+ * is too old to report its parent).
+ * - `elementor_mcp_switch`, `bricks_abilities`: unknown
+ * `inventory_never_run` (no tool list yet, or the last one was read
+ * while the site lacked the Abilities API), `inventory_truncated` or
+ * `needs_elementor` / `needs_bricks`; not_applicable `needs_abilities`
+ * or `needs_elementor` / `needs_bricks`.
+ * - `elementor_atomic`: unknown `agent_too_old_for_fact`,
+ * `not_reported` or `needs_elementor`; not_applicable
+ * `needs_elementor`.
+ *
+ * `bricks_abilities` is inferred from the site's tool list and has not
+ * been confirmed on a licensed Bricks install. When it is `pass` or
+ * `fail` it is listed with its state, but it is not counted in
+ * `status`, `fix_count` or `failing`. When it is `unknown` it is an
+ * ordinary unknown: it makes `status` `incomplete`, and it is still not
+ * a fix, so it is not in `failing` either.
+ *
+ * A client must render a state or reason it does not recognise as a
+ * neutral "not checked", never as a failure.
+ *
+ */
+export type AiReadinessCheck = {
+  id: AiReadinessCheckId;
+  state: "pass" | "fail" | "unknown" | "not_applicable";
+  reason:
+    | "not_reported"
+    | "inventory_never_run"
+    | "inventory_truncated"
+    | "agent_too_old"
+    | "agent_too_old_for_fact"
+    | "needs_abilities"
+    | "needs_elementor"
+    | "needs_bricks"
+    | "inactive"
+    | "too_old"
+    | "prerelease_build"
+    | null;
+  /**
+   * A version string that passed a strict shape check, or null.
+   */
+  observed: string | null;
+};
+
+export type FleetAiReadiness = {
+  sites: Array<FleetAiReadinessSite>;
+};
+
+export type FleetAiReadinessSite = {
+  site_id: string;
+  status: AiReadinessStatus;
+  fix_count: number;
+  /**
+   * Ids of the rows that count toward `fix_count`: those whose state
+   * is `fail`. `bricks_abilities` is never listed, whatever its state;
+   * when it is `unknown` it makes the site `incomplete`, and it is
+   * still not a fix.
+   *
+   */
+  failing: Array<AiReadinessCheckId>;
+  warnings: Array<AiReadinessWarningCode>;
+};
+
+export type AiReadinessRefreshResult = {
+  /**
+   * A fresh metadata report was requested from the site.
+   */
+  metadata: boolean;
+  /**
+   * A tool-list read was queued by this call or already queued within
+   * the last two minutes. False when the site's agent is too old to
+   * run one.
+   *
+   */
+  abilities: boolean;
 };
 
 export type AssistantRequestApproveBody = {
@@ -9800,7 +10576,13 @@ export type RevokeAllTrustedDevicesResponse =
 export type OidcLoginData = {
   body?: never;
   path?: never;
-  query?: never;
+  query?: {
+    /**
+     * Where to land after a successful sign-in, including one that first answers a second factor, so a shared deep link survives the identity provider round trip. Must be a path on this origin; anything else (absolute, protocol-relative, or an encoded form of either) is discarded and the sign-in lands on the default page. The value is kept with the handshake in the session and is never handed to the identity provider or read back off the callback URL.
+     *
+     */
+    redirect?: string;
+  };
   url: "/auth/oidc/login";
 };
 
@@ -9835,16 +10617,6 @@ export type OidcCallbackErrors = {
 };
 
 export type OidcCallbackError = OidcCallbackErrors[keyof OidcCallbackErrors];
-
-export type OidcCallbackResponses = {
-  /**
-   * Authenticated via OIDC; session cookie set
-   */
-  200: Me;
-};
-
-export type OidcCallbackResponse =
-  OidcCallbackResponses[keyof OidcCallbackResponses];
 
 export type ListSocialProvidersData = {
   body?: never;
@@ -17742,6 +18514,463 @@ export type DeclineAssistantRequestResponses = {
 export type DeclineAssistantRequestResponse =
   DeclineAssistantRequestResponses[keyof DeclineAssistantRequestResponses];
 
+export type ListAbilityRequestsData = {
+  body?: never;
+  path?: never;
+  query?: {
+    state?:
+      | "pending"
+      | "approved"
+      | "declined"
+      | "withdrawn"
+      | "expired"
+      | "dispatched"
+      | "outcome_unknown"
+      | "done"
+      | "failed"
+      | "not_sent";
+    limit?: number;
+    offset?: number;
+  };
+  url: "/api/v1/ai/ability-requests";
+};
+
+export type ListAbilityRequestsErrors = {
+  /**
+   * Missing site.content.edit
+   */
+  403: Error;
+  /**
+   * Unknown state
+   */
+  422: Error;
+};
+
+export type ListAbilityRequestsError =
+  ListAbilityRequestsErrors[keyof ListAbilityRequestsErrors];
+
+export type ListAbilityRequestsResponses = {
+  /**
+   * A page of requests
+   */
+  200: AbilityRequestOrgList;
+};
+
+export type ListAbilityRequestsResponse =
+  ListAbilityRequestsResponses[keyof ListAbilityRequestsResponses];
+
+export type ListSiteAbilityRequestsData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: {
+    limit?: number;
+    offset?: number;
+  };
+  url: "/api/v1/sites/{siteId}/ai/ability-requests";
+};
+
+export type ListSiteAbilityRequestsErrors = {
+  /**
+   * Missing site.content.edit
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+};
+
+export type ListSiteAbilityRequestsError =
+  ListSiteAbilityRequestsErrors[keyof ListSiteAbilityRequestsErrors];
+
+export type ListSiteAbilityRequestsResponses = {
+  /**
+   * A page of requests
+   */
+  200: AbilityRequestList;
+};
+
+export type ListSiteAbilityRequestsResponse =
+  ListSiteAbilityRequestsResponses[keyof ListSiteAbilityRequestsResponses];
+
+export type ApproveAbilityRequestData = {
+  body: AbilityRequestApproveBody;
+  path: {
+    siteId: string;
+    requestId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/approve";
+};
+
+export type ApproveAbilityRequestErrors = {
+  /**
+   * Not a signed-in person, or missing the permission
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+  /**
+   * Nothing was approved; the error code names why
+   */
+  409: Error;
+  /**
+   * The body was not application/json
+   */
+  415: Error;
+};
+
+export type ApproveAbilityRequestError =
+  ApproveAbilityRequestErrors[keyof ApproveAbilityRequestErrors];
+
+export type ApproveAbilityRequestResponses = {
+  /**
+   * Approved; the request now waits for the worker
+   */
+  200: AbilityRequest;
+};
+
+export type ApproveAbilityRequestResponse =
+  ApproveAbilityRequestResponses[keyof ApproveAbilityRequestResponses];
+
+export type DeclineAbilityRequestData = {
+  body: {
+    [key: string]: unknown;
+  };
+  path: {
+    siteId: string;
+    requestId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/decline";
+};
+
+export type DeclineAbilityRequestErrors = {
+  /**
+   * Not a signed-in person, or missing the permission
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+  /**
+   * The request is no longer waiting
+   */
+  409: Error;
+  /**
+   * The body was not application/json
+   */
+  415: Error;
+};
+
+export type DeclineAbilityRequestError =
+  DeclineAbilityRequestErrors[keyof DeclineAbilityRequestErrors];
+
+export type DeclineAbilityRequestResponses = {
+  /**
+   * Declined
+   */
+  200: AbilityRequest;
+};
+
+export type DeclineAbilityRequestResponse =
+  DeclineAbilityRequestResponses[keyof DeclineAbilityRequestResponses];
+
+export type UndoAbilityRequestData = {
+  body: {
+    [key: string]: unknown;
+  };
+  path: {
+    siteId: string;
+    requestId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/undo";
+};
+
+export type UndoAbilityRequestErrors = {
+  /**
+   * Not a signed-in person, or missing the permission
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+  /**
+   * The change can no longer be undone from WPMgr
+   */
+  409: Error;
+  /**
+   * The body was not application/json
+   */
+  415: Error;
+  /**
+   * The site did not settle the undo; it is offered again
+   */
+  503: Error;
+};
+
+export type UndoAbilityRequestError =
+  UndoAbilityRequestErrors[keyof UndoAbilityRequestErrors];
+
+export type UndoAbilityRequestResponses = {
+  /**
+   * The undo ran; undo_state names its result
+   */
+  200: AbilityRequest;
+};
+
+export type UndoAbilityRequestResponse =
+  UndoAbilityRequestResponses[keyof UndoAbilityRequestResponses];
+
+export type ReenableAbilityForTenantData = {
+  body: {
+    [key: string]: unknown;
+  };
+  path: {
+    entryId: string;
+  };
+  query?: never;
+  url: "/api/v1/ai/abilities/{entryId}/reenable";
+};
+
+export type ReenableAbilityForTenantErrors = {
+  /**
+   * Not a signed-in person, or not an admin or owner of the account
+   */
+  403: Error;
+  /**
+   * The tool is not switched off for this account
+   */
+  404: Error;
+  /**
+   * The body is not JSON
+   */
+  415: Error;
+  /**
+   * entryId is not a UUID
+   */
+  422: Error;
+};
+
+export type ReenableAbilityForTenantError =
+  ReenableAbilityForTenantErrors[keyof ReenableAbilityForTenantErrors];
+
+export type ReenableAbilityForTenantResponses = {
+  /**
+   * The tool is back on for this account
+   */
+  200: AbilityTenantReenableResult;
+};
+
+export type ReenableAbilityForTenantResponse =
+  ReenableAbilityForTenantResponses[keyof ReenableAbilityForTenantResponses];
+
+export type GetSiteContentEditingData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/content-editing";
+};
+
+export type GetSiteContentEditingErrors = {
+  /**
+   * Missing site.content.read
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+};
+
+export type GetSiteContentEditingError =
+  GetSiteContentEditingErrors[keyof GetSiteContentEditingErrors];
+
+export type GetSiteContentEditingResponses = {
+  /**
+   * The site's content-editing state
+   */
+  200: ContentEditingState;
+};
+
+export type GetSiteContentEditingResponse =
+  GetSiteContentEditingResponses[keyof GetSiteContentEditingResponses];
+
+export type EnableSiteContentEditingData = {
+  body: {
+    [key: string]: unknown;
+  };
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/content-editing/enable";
+};
+
+export type EnableSiteContentEditingErrors = {
+  /**
+   * Not a signed-in person, or missing site.content.edit
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+  /**
+   * The agent is too old, or the site refused
+   */
+  409: Error;
+  /**
+   * The body was not application/json
+   */
+  415: Error;
+  /**
+   * The site could not be reached
+   */
+  503: Error;
+};
+
+export type EnableSiteContentEditingError =
+  EnableSiteContentEditingErrors[keyof EnableSiteContentEditingErrors];
+
+export type EnableSiteContentEditingResponses = {
+  /**
+   * Enabled
+   */
+  200: ContentEditingState;
+};
+
+export type EnableSiteContentEditingResponse =
+  EnableSiteContentEditingResponses[keyof EnableSiteContentEditingResponses];
+
+export type GetSiteAiReadinessData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/readiness";
+};
+
+export type GetSiteAiReadinessErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Missing site:read
+   */
+  403: Error;
+  /**
+   * The site is not the caller's, is archived, or has never been enrolled
+   */
+  404: Error;
+};
+
+export type GetSiteAiReadinessError =
+  GetSiteAiReadinessErrors[keyof GetSiteAiReadinessErrors];
+
+export type GetSiteAiReadinessResponses = {
+  /**
+   * The site's AI readiness
+   */
+  200: SiteAiReadiness;
+};
+
+export type GetSiteAiReadinessResponse =
+  GetSiteAiReadinessResponses[keyof GetSiteAiReadinessResponses];
+
+export type GetFleetAiReadinessData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/fleet/ai-readiness";
+};
+
+export type GetFleetAiReadinessErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Missing site:read
+   */
+  403: Error;
+};
+
+export type GetFleetAiReadinessError =
+  GetFleetAiReadinessErrors[keyof GetFleetAiReadinessErrors];
+
+export type GetFleetAiReadinessResponses = {
+  /**
+   * One row per site
+   */
+  200: FleetAiReadiness;
+};
+
+export type GetFleetAiReadinessResponse =
+  GetFleetAiReadinessResponses[keyof GetFleetAiReadinessResponses];
+
+export type RefreshSiteAiReadinessData = {
+  body: {
+    [key: string]: unknown;
+  };
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/readiness/refresh";
+};
+
+export type RefreshSiteAiReadinessErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Missing site.content.refresh
+   */
+  403: Error;
+  /**
+   * The site is not the caller's, or it is archived
+   */
+  404: Error;
+  /**
+   * The site is not enrolled or its agent has not been heard from recently (`site_unreachable`)
+   */
+  409: Error;
+  /**
+   * The body was not application/json
+   */
+  415: Error;
+  /**
+   * Refresh is not available on this install
+   */
+  503: Error;
+};
+
+export type RefreshSiteAiReadinessError =
+  RefreshSiteAiReadinessErrors[keyof RefreshSiteAiReadinessErrors];
+
+export type RefreshSiteAiReadinessResponses = {
+  /**
+   * Refresh queued
+   */
+  202: AiReadinessRefreshResult;
+};
+
+export type RefreshSiteAiReadinessResponse =
+  RefreshSiteAiReadinessResponses[keyof RefreshSiteAiReadinessResponses];
+
 export type PurgeCacheData = {
   body: PurgeRequest;
   path: {
@@ -17911,6 +19140,399 @@ export type GetDbHealthResponses = {
 
 export type GetDbHealthResponse =
   GetDbHealthResponses[keyof GetDbHealthResponses];
+
+export type GetSiteContentInventoryData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: {
+    after_post_id?: number;
+    limit?: number;
+    /**
+     * Filter by editor: `classic` for pages no builder owns, or an integration id such as `elementor`.
+     */
+    editor?: string;
+  };
+  url: "/api/v1/sites/{siteId}/content/inventory";
+};
+
+export type GetSiteContentInventoryErrors = {
+  /**
+   * Validation error
+   */
+  400: Error;
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type GetSiteContentInventoryError =
+  GetSiteContentInventoryErrors[keyof GetSiteContentInventoryErrors];
+
+export type GetSiteContentInventoryResponses = {
+  /**
+   * Inventory page
+   */
+  200: ContentInventoryPage;
+};
+
+export type GetSiteContentInventoryResponse =
+  GetSiteContentInventoryResponses[keyof GetSiteContentInventoryResponses];
+
+export type RefreshSiteContentInventoryData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/content/inventory/refresh";
+};
+
+export type RefreshSiteContentInventoryErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+  /**
+   * A check for this site was requested a moment ago
+   */
+  429: Error;
+};
+
+export type RefreshSiteContentInventoryError =
+  RefreshSiteContentInventoryErrors[keyof RefreshSiteContentInventoryErrors];
+
+export type RefreshSiteContentInventoryResponses = {
+  /**
+   * Queued
+   */
+  202: {
+    status: "queued";
+  };
+};
+
+export type RefreshSiteContentInventoryResponse =
+  RefreshSiteContentInventoryResponses[keyof RefreshSiteContentInventoryResponses];
+
+export type GetAdminContentFleetReportData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/content/fleet-report";
+};
+
+export type GetAdminContentFleetReportErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type GetAdminContentFleetReportError =
+  GetAdminContentFleetReportErrors[keyof GetAdminContentFleetReportErrors];
+
+export type GetAdminContentFleetReportResponses = {
+  /**
+   * Fleet report
+   */
+  200: ContentFleetReport;
+};
+
+export type GetAdminContentFleetReportResponse =
+  GetAdminContentFleetReportResponses[keyof GetAdminContentFleetReportResponses];
+
+export type ListAdminContentIntegrationsData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/content/integrations";
+};
+
+export type ListAdminContentIntegrationsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type ListAdminContentIntegrationsError =
+  ListAdminContentIntegrationsErrors[keyof ListAdminContentIntegrationsErrors];
+
+export type ListAdminContentIntegrationsResponses = {
+  /**
+   * Allowlist rows
+   */
+  200: {
+    integrations: Array<ContentIntegration>;
+  };
+};
+
+export type ListAdminContentIntegrationsResponse =
+  ListAdminContentIntegrationsResponses[keyof ListAdminContentIntegrationsResponses];
+
+export type UpsertAdminContentIntegrationData = {
+  body: ContentIntegrationInput;
+  path: {
+    integrationId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/content/integrations/{integrationId}";
+};
+
+export type UpsertAdminContentIntegrationErrors = {
+  /**
+   * Validation error
+   */
+  400: Error;
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type UpsertAdminContentIntegrationError =
+  UpsertAdminContentIntegrationErrors[keyof UpsertAdminContentIntegrationErrors];
+
+export type UpsertAdminContentIntegrationResponses = {
+  /**
+   * The stored row
+   */
+  200: ContentIntegration;
+};
+
+export type UpsertAdminContentIntegrationResponse =
+  UpsertAdminContentIntegrationResponses[keyof UpsertAdminContentIntegrationResponses];
+
+export type ListAdminAbilityCatalogueData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/abilities/catalogue";
+};
+
+export type ListAdminAbilityCatalogueErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type ListAdminAbilityCatalogueError =
+  ListAdminAbilityCatalogueErrors[keyof ListAdminAbilityCatalogueErrors];
+
+export type ListAdminAbilityCatalogueResponses = {
+  /**
+   * Every catalogue entry, any status
+   */
+  200: {
+    entries: Array<AbilityCatalogueEntry>;
+  };
+};
+
+export type ListAdminAbilityCatalogueResponse =
+  ListAdminAbilityCatalogueResponses[keyof ListAdminAbilityCatalogueResponses];
+
+export type CreateAdminAbilityCatalogueEntryData = {
+  body: AbilityCatalogueInput;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/abilities/catalogue";
+};
+
+export type CreateAdminAbilityCatalogueEntryErrors = {
+  /**
+   * Validation error
+   */
+  400: Error;
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+  /**
+   * entry_conflict or version_range_overlap: an admitted entry with
+   * this name already covers part of this version range.
+   *
+   */
+  409: Error;
+};
+
+export type CreateAdminAbilityCatalogueEntryError =
+  CreateAdminAbilityCatalogueEntryErrors[keyof CreateAdminAbilityCatalogueEntryErrors];
+
+export type CreateAdminAbilityCatalogueEntryResponses = {
+  /**
+   * The stored entry
+   */
+  201: AbilityCatalogueEntry;
+};
+
+export type CreateAdminAbilityCatalogueEntryResponse =
+  CreateAdminAbilityCatalogueEntryResponses[keyof CreateAdminAbilityCatalogueEntryResponses];
+
+export type UpdateAdminAbilityCatalogueEntryData = {
+  body: AbilityCatalogueInput;
+  path: {
+    entryId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/abilities/catalogue/{entryId}";
+};
+
+export type UpdateAdminAbilityCatalogueEntryErrors = {
+  /**
+   * Validation error
+   */
+  400: Error;
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+  /**
+   * version_range_overlap: an admitted entry with this name already
+   * covers part of this version range.
+   *
+   */
+  409: Error;
+};
+
+export type UpdateAdminAbilityCatalogueEntryError =
+  UpdateAdminAbilityCatalogueEntryErrors[keyof UpdateAdminAbilityCatalogueEntryErrors];
+
+export type UpdateAdminAbilityCatalogueEntryResponses = {
+  /**
+   * The stored entry
+   */
+  200: AbilityCatalogueEntry;
+};
+
+export type UpdateAdminAbilityCatalogueEntryResponse =
+  UpdateAdminAbilityCatalogueEntryResponses[keyof UpdateAdminAbilityCatalogueEntryResponses];
+
+export type ListAdminRestRoutesData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/abilities/rest-routes";
+};
+
+export type ListAdminRestRoutesErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type ListAdminRestRoutesError =
+  ListAdminRestRoutesErrors[keyof ListAdminRestRoutesErrors];
+
+export type ListAdminRestRoutesResponses = {
+  /**
+   * Every route
+   */
+  200: {
+    routes: Array<RestRoute>;
+  };
+};
+
+export type ListAdminRestRoutesResponse =
+  ListAdminRestRoutesResponses[keyof ListAdminRestRoutesResponses];
+
+export type UpdateAdminRestRouteData = {
+  body: RestRouteInput;
+  path: {
+    routeId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/abilities/rest-routes/{routeId}";
+};
+
+export type UpdateAdminRestRouteErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+  /**
+   * route_hash_not_moved or route_conflict.
+   */
+  409: Error;
+  /**
+   * invalid_body, invalid_route (details.constraint names the database
+   * check), invalid_output_fields or route_not_reproducible.
+   *
+   */
+  422: Error;
+};
+
+export type UpdateAdminRestRouteError =
+  UpdateAdminRestRouteErrors[keyof UpdateAdminRestRouteErrors];
+
+export type UpdateAdminRestRouteResponses = {
+  /**
+   * The stored route
+   */
+  200: RestRoute;
+};
+
+export type UpdateAdminRestRouteResponse =
+  UpdateAdminRestRouteResponses[keyof UpdateAdminRestRouteResponses];
 
 export type GetDbOrphansReportData = {
   body?: never;

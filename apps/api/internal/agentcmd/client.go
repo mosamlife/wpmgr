@@ -22,6 +22,7 @@ import (
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/httpclient"
 	"github.com/mosamlife/wpmgr/apps/api/internal/siteaddr"
+	"github.com/mosamlife/wpmgr/apps/api/internal/wpfatal"
 )
 
 // commandPathFormat is the agent's signed-command REST route (class-router.php).
@@ -347,9 +348,15 @@ const (
 	// non-404 client error (400/401/403/etc). The server responded, so
 	// something booted, but the request was rejected.
 	ReasonHTTP4xx ReachabilityReason = "http_4xx"
-	// ReasonHTTP5xx: the agent responded but with a server error, the
-	// strongest "installed but broken" signal short of a hard transport
-	// failure, and the case GH #291 needs to be able to name.
+	// ReasonHTTP500: the agent route answered HTTP 500, PHP failing while it
+	// served the signed route itself: the strongest "installed but broken"
+	// signal short of a hard transport failure, and the case GH #291 needs to
+	// be able to name.
+	ReasonHTTP500 ReachabilityReason = "http_500"
+	// ReasonHTTP5xx: the agent route answered with any other server error
+	// status, such as a gateway, unavailable or CDN origin error (502, 503,
+	// 504, 52x): the request was not served, by something in front of
+	// WordPress or by WordPress's own maintenance mode.
 	ReasonHTTP5xx ReachabilityReason = "http_5xx"
 	// ReasonTimeout: the dial or read exceeded the caller's deadline.
 	ReasonTimeout ReachabilityReason = "timeout"
@@ -475,6 +482,8 @@ func classifyTransportErr(err error) ReachabilityReason {
 		switch {
 		case status == http.StatusNotFound:
 			return ReasonAgentAbsent404
+		case status == http.StatusInternalServerError:
+			return ReasonHTTP500
 		case status >= 500:
 			return ReasonHTTP5xx
 		case status >= 400:
@@ -884,7 +893,13 @@ func (c *Client) postRaw(ctx context.Context, siteID uuid.UUID, siteURL, command
 	if err != nil {
 		return nil, markNotSent(fmt.Errorf("mint command jwt: %w", err))
 	}
+	return c.sendSigned(ctx, endpoint, command, payload, token)
+}
 
+// sendSigned POSTs exact payload bytes with an already-minted token. It is
+// postRaw's transport half, shared with params-bound commands (ability_run)
+// whose token claims depend on the payload bytes.
+func (c *Client) sendSigned(ctx context.Context, endpoint, command string, payload []byte, token string) ([]byte, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return nil, markNotSent(fmt.Errorf("build %s request: %w", command, err))
@@ -1046,8 +1061,9 @@ func (c *Client) SendTestEmail(ctx context.Context, siteID uuid.UUID, siteURL st
 }
 
 // Probe is a post-update site health probe over the SSRF-hardened client. It
-// fetches the given URL with a short timeout and reports the HTTP status and a
-// best-effort fatal-error signature found in the (bounded) response body.
+// fetches the given URL with a short timeout and reports the HTTP status, and
+// whether a successful HTML response carries WordPress's own error screen,
+// recognised by its structure (see internal/wpfatal).
 type Probe struct {
 	http *httpclient.Client
 }
@@ -1058,8 +1074,14 @@ func NewProbe(client *httpclient.Client) *Probe { return &Probe{http: client} }
 // ProbeResult is the outcome of a health probe.
 type ProbeResult struct {
 	StatusCode int
-	// Fatal is true when the response looks like a PHP fatal / WSOD even with a
-	// 200 status (WordPress sometimes returns 200 with a fatal-error body).
+	// Fatal is true when a response sent with a success (2xx) status carries
+	// WordPress's own error screen, recognised by the structure WordPress
+	// renders (wpfatal.Scan), wherever it sits in the body: when WordPress
+	// renders that screen after the page has started sending, the status
+	// already sent stays and the screen follows the partial output. A server
+	// error status is reported in StatusCode and decided there, and a refusal
+	// a site sends with its own 4xx status is never read as a crash. A
+	// healthy page is never Fatal.
 	Fatal bool
 	// CacheHit is true when the response carries a header (or Age value) that
 	// identifies it as served from a page/edge cache rather than freshly
@@ -1076,7 +1098,7 @@ type ProbeResult struct {
 }
 
 // Healthy reports whether the probe indicates a healthy site: a non-5xx status
-// and no fatal-error signature. This is the ORIGINAL, unchanged reachability
+// and no WordPress error screen. This is the ORIGINAL, unchanged reachability
 // check: 401/403/404/410 all count as healthy here, which is deliberately
 // lenient for a generic "did something answer" question. It is intentionally
 // NOT used for the post-update rollback decision (see
@@ -1087,17 +1109,6 @@ type ProbeResult struct {
 // means, keeps every other/future caller of this shared helper unaffected.
 func (r ProbeResult) Healthy() bool {
 	return r.StatusCode > 0 && r.StatusCode < 500 && !r.Fatal
-}
-
-// fatalSignatures are substrings that indicate a broken WordPress page after an
-// update (a white-screen-of-death / PHP fatal). Matched case-insensitively over
-// the first chunk of the body.
-var fatalSignatures = []string{
-	"fatal error",
-	"there has been a critical error on this website",
-	"parse error: syntax error",
-	"uncaught error",
-	"cannot redeclare",
 }
 
 // cacheBusterParam is the query parameter Get appends to every probed URL
@@ -1232,21 +1243,21 @@ func (p *Probe) Get(ctx context.Context, targetURL string) (ProbeResult, error) 
 
 	cacheHit, cacheDetail := DetectCacheHit(resp.Header)
 
-	// Read a bounded prefix to scan for fatal-error signatures.
-	const scanLimit = 64 << 10
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, scanLimit))
-	lower := strings.ToLower(string(body))
 	res := ProbeResult{StatusCode: resp.StatusCode, CacheHit: cacheHit}
-	for _, sig := range fatalSignatures {
-		if strings.Contains(lower, sig) {
-			res.Fatal = true
-			res.Detail = "fatal-error signature in response body"
-			return res, nil
-		}
-	}
 	if resp.StatusCode >= 500 {
 		res.Detail = fmt.Sprintf("server returned status %d", resp.StatusCode)
 		return res, nil
+	}
+	// Only a success status is read for WordPress's error screen (see
+	// ProbeResult.Fatal). The screen follows whatever the page had already
+	// sent, so the whole bounded body is scanned, not a prefix of it.
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxRespBody))
+		if found, reason := wpfatal.Scan(body, resp.Header.Get("Content-Type")); found && reason == wpfatal.ReasonFatalError {
+			res.Fatal = true
+			res.Detail = "WordPress error screen in the response"
+			return res, nil
+		}
 	}
 	if cacheHit {
 		res.Detail = cacheDetail

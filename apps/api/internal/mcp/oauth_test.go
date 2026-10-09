@@ -87,6 +87,18 @@ type fakeStore struct {
 	// atomicity proof asserts.
 	tokenPersistErr error
 
+	// grantOauthScopes is mcp_grants.oauth_scopes of the grant the code was
+	// issued for: what the redeem transaction reads back for the token it
+	// inserted. No default. A fixture that redeems must say what the grant
+	// holds, and one that says nothing holds nothing and is refused.
+	grantOauthScopes []string
+
+	// grantNotAuthorized makes the redeem transaction's read-back report
+	// authorized=false: the grant was revoked or has expired since consent, or
+	// the organisation's assistant is paused. The real transaction then rolls
+	// back, so the fake leaves `consumed` unflipped and counts no token.
+	grantNotAuthorized bool
+
 	recheck   sqlc.ReCheckMCPRequestAuthorizationInTenantTxRow
 	recheckOK bool
 
@@ -296,7 +308,7 @@ func (f *fakeStore) LookupAuthorizationCode(_ context.Context, _ string) (sqlc.G
 // would roll the UPDATE back. A fake that marked the code consumed and then
 // returned the error would model two commits, which is the defect being fixed,
 // and the test would pass against the broken code.
-func (f *fakeStore) RedeemAuthorizationCode(_ context.Context, _, _ uuid.UUID, tok sqlc.CreateMCPConnectionTokenParams) (sqlc.McpConnectionToken, error) {
+func (f *fakeStore) RedeemAuthorizationCode(_ context.Context, _, _ uuid.UUID, tok sqlc.CreateMCPConnectionTokenParams) (RedeemedCode, error) {
 	f.note("RedeemAuthorizationCode")
 	f.mu.Lock()
 	f.consumeCalls++
@@ -305,17 +317,27 @@ func (f *fakeStore) RedeemAuthorizationCode(_ context.Context, _, _ uuid.UUID, t
 	// The compare-and-set runs first, inside the transaction.
 	if f.raceLost || f.consumed {
 		// `consumed_at IS NULL` matched nothing; :one turns that into ErrNoRows.
-		return sqlc.McpConnectionToken{}, pgx.ErrNoRows
+		return RedeemedCode{}, pgx.ErrNoRows
 	}
 	// Then the insert. If it fails the whole transaction rolls back, so the
 	// consume never becomes visible and the code remains redeemable.
 	if f.tokenPersistErr != nil {
-		return sqlc.McpConnectionToken{}, f.tokenPersistErr
+		return RedeemedCode{}, f.tokenPersistErr
 	}
-
+	// Then the read-back's verdict. A grant that is not authorized rolls the
+	// whole transaction back: nothing is consumed and no token is counted.
+	if f.grantNotAuthorized {
+		return RedeemedCode{}, errGrantNotAuthorized
+	}
+	// Then the read-back of the grant's stored scope set, returned AS STORED,
+	// exactly as the real transaction returns it: deciding whether a token
+	// response can name it is Exchange's job, not the store's.
 	f.consumed = true
 	f.tokensMinted++
-	return sqlc.McpConnectionToken{ID: uuid.New(), TenantID: tok.TenantID, GrantID: tok.GrantID}, nil
+	return RedeemedCode{
+		Token:       sqlc.McpConnectionToken{ID: uuid.New(), TenantID: tok.TenantID, GrantID: tok.GrantID},
+		GrantScopes: grantScopes(f.grantOauthScopes),
+	}, nil
 }
 
 // CreateGrantWithCode records the principal it was handed. THIS FAKE CANNOT
@@ -673,10 +695,13 @@ func (f *fakeStore) CloseAssistantRequestsForGrantTx(_ context.Context, _ pgx.Tx
 // the handler that mounts it guards nothing.
 // ---------------------------------------------------------------------------
 
-func newAuthorizeRouter(t *testing.T, store Store) *gin.Engine {
+// before is mounted ahead of everything else, the way server.New mounts root
+// middleware ahead of its groups.
+func newAuthorizeRouter(t *testing.T, store Store, before ...gin.HandlerFunc) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
+	r.Use(before...)
 	r.Use(func(c *gin.Context) {
 		ctx := domain.WithPrincipal(c.Request.Context(), domain.Principal{
 			Type:     domain.PrincipalUser,
@@ -812,6 +837,47 @@ func TestAuthorizeHandler_ValidRequestReturnsUnverifiedConsentContext(t *testing
 	}
 }
 
+// The consent screen fetches this route from the browser, so its request
+// carries Fetch Metadata. With AuthorizeNavigationRedirect mounted in front,
+// as server.New mounts it, that fetch must still reach the handler and get
+// the consent context, never the redirect meant for a navigation.
+func TestAuthorizeHandler_BrowserFetchHeadersStillGetJSON(t *testing.T) {
+	const redirect = "https://claude.ai/api/mcp/auth_callback"
+	store := &fakeStore{client: liveClient(redirect), clientOK: true}
+	r := newAuthorizeRouter(t, store, AuthorizeNavigationRedirect())
+
+	q := url.Values{}
+	q.Set("response_type", "code")
+	q.Set("client_id", "client-abc")
+	q.Set("redirect_uri", redirect)
+	q.Set("scope", "mcp:read")
+	q.Set("code_challenge", "abc123challenge")
+	q.Set("code_challenge_method", "S256")
+
+	req := httptest.NewRequest(http.MethodGet, AuthorizePath+"?"+q.Encode(), nil)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d (Location %q), want 200; body %s",
+			w.Code, w.Header().Get("Location"), w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", ct)
+	}
+	var body consentResponseDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v (%s)", err, w.Body.String())
+	}
+	if body.ConsentTicket == "" {
+		t.Fatalf("the consent context carries no consent_ticket: %s", w.Body.String())
+	}
+}
+
 // A redirect_uri that is not an EXACT match must be refused. Every one of these
 // passes a prefix, suffix or host-only comparison, and each is a redirector.
 func TestAuthorize_RedirectURIIsExactMatchedOnly(t *testing.T) {
@@ -900,6 +966,7 @@ func TestExchange_ConsumedCodeCannotBeReplayed(t *testing.T) {
 	store := &fakeStore{
 		codeOK: true, code: redeemableCode(t, verifier, redirect, clientID),
 		clientOK: true, client: liveClient(redirect),
+		grantOauthScopes: []string{string(ScopeRead)},
 	}
 	svc := NewService(store)
 

@@ -101,6 +101,31 @@ func (r *Repo) RecordAttempt(ctx context.Context, in AttemptInput) error {
 	return nil
 }
 
+// ClampLastRequestAt lowers the persisted last_request_at to ceiling when, and
+// only when, it is later than ceiling, and reports whether it changed the row.
+// A NULL value, or one at or before ceiling, is left alone.
+//
+// A request time later than the clock that reads it can only come from a
+// skewed clock on whichever host recorded it. agentupstream.EnqueueBootCheck
+// calls this once at start with its own clock, so the row holds the same value
+// that check's schedule was computed from, and the job that runs later reads
+// that value back rather than the skewed one. It is one conditional UPDATE, so
+// two replicas starting together are harmless: the row settles at the earlier
+// of their two clocks, whichever order they run in.
+func (r *Repo) ClampLastRequestAt(ctx context.Context, ceiling time.Time) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE agent_mirror_state SET
+			last_request_at = $1,
+			updated_at      = now()
+		WHERE id = 1 AND last_request_at > $1`,
+		ceiling.UTC(),
+	)
+	if err != nil {
+		return false, fmt.Errorf("clamp agent mirror request time: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // Load reads the singleton sentinel row. The migration seeds row id=1, so
 // this only ever fails on a genuine connectivity problem, never on "no row
 // yet"; callers (the fleet handler, the manual-check rate-limit pre-flight)

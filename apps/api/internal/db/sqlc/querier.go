@@ -13,6 +13,10 @@ import (
 )
 
 type Querier interface {
+	// The per-site serialisation (ADR-061 A4): another ability write on this
+	// site was sent and has no outcome yet, including one whose outcome is
+	// being resolved through the ledger. Single-site.
+	AbilityRequestInFlightOnSite(ctx context.Context, arg AbilityRequestInFlightOnSiteParams) (bool, error)
 	// ---------------------------------------------------------------------------
 	// email_alert_state  (m62 — per-site durable alert throttle)
 	// ---------------------------------------------------------------------------
@@ -179,6 +183,23 @@ type Querier interface {
 	// Grants a manual comp: plan_status='comped', plan=@plan, comp_reason set.
 	AdminSetTenantComp(ctx context.Context, arg AdminSetTenantCompParams) error
 	AdminSetUserStatus(ctx context.Context, arg AdminSetUserStatusParams) (AdminSetUserStatusRow, error)
+	// The ONLY write path. Call it only behind requireSuperadmin. entry_id NULL
+	// inserts; a non-NULL entry_id updates that entry (SQLSTATE P0002 if absent,
+	// 22023 if the name would change). Refuses with 42501 unless actor_user_id
+	// names a superadmin, and writes an ability_catalogue_audit row in the same
+	// statement. m159: refuses 23P01 (ability_catalogue_range_overlap) when an
+	// admitted entry of the same name overlaps this admitted version range.
+	AdminUpsertAbilityCatalogueEntry(ctx context.Context, arg AdminUpsertAbilityCatalogueEntryParams) (AbilityCatalogue, error)
+	// The ONLY write path. Call it only behind requireSuperadmin. The function
+	// refuses (SQLSTATE 42501) unless actor_user_id names a superadmin, and it
+	// writes a content_integrations_audit row in the same statement.
+	AdminUpsertContentIntegration(ctx context.Context, arg AdminUpsertContentIntegrationParams) (ContentIntegration, error)
+	// The superadmin write path. Call it only behind requireSuperadmin.
+	// create true inserts (23505 if the route exists); false updates (P0002 if it
+	// does not). Refuses 42501 unless actor_user_id names a superadmin, 22023 on
+	// a NULL create flag or route_id, 23514 on any row CHECK, and writes a
+	// rest_route_catalogue_audit row in the same statement.
+	AdminUpsertRestRoute(ctx context.Context, arg AdminUpsertRestRouteParams) (RestRouteCatalogue, error)
 	// Tenants where @user_id is the ONLY member (so deleting them orphans the org),
 	// with each tenant's name + site count. Run under Pool.InAgentTx
 	// (memberships_agent + sites_agent) so the cross-tenant read is allowed.
@@ -235,6 +256,11 @@ type Querier interface {
 	// has already excluded sites the caller cannot access via CanAccessSite
 	// before this runs).
 	ApplyTagDeltaToSite(ctx context.Context, arg ApplyTagDeltaToSiteParams) (int64, error)
+	// The digest, the state and the window are all in the WHERE clause;
+	// decided_at and dispatch_deadline_at come from now(). No row
+	// (pgx.ErrNoRows) is the refusal: already decided, withdrawn, expired, or the
+	// card the approver saw is not the one stored.
+	ApproveAbilityRequest(ctx context.Context, arg ApproveAbilityRequestParams) (AssistantAbilityRequest, error)
 	// The digest, the state and the window are all in the WHERE clause, and
 	// decided_at is now(). No row (pgx.ErrNoRows) is the refusal: already
 	// decided, withdrawn, expired, or the facts changed under the reader.
@@ -271,6 +297,19 @@ type Querier interface {
 	AttachAgentAndConnect(ctx context.Context, arg AttachAgentAndConnectParams) (Site, error)
 	// Re-enrollment: rotate the agent key and mark the site active/enrolled again.
 	AttachAgentToSite(ctx context.Context, arg AttachAgentToSiteParams) (Site, error)
+	// GH #826. Compare-and-set from no undo to in_progress on a write that
+	// failed or was given up on but left the post it created (a draft) on the
+	// site. Only a final outcome qualifies: a resolving outcome_unknown row
+	// (outcome NULL) may still be answered by the ledger through
+	// RecordAbilityRequestOutcome, so it is refused here. The undo window opens
+	// now, window_seconds long; a zero or negative window matches nothing.
+	BeginAbilityRequestRecoveryUndo(ctx context.Context, arg BeginAbilityRequestRecoveryUndoParams) (int64, error)
+	// ---------------------------------------------------------------------------
+	// A person's undo of a done request, approver-side principal. The agent
+	// takes the object id from its own ledger row for this request id (W3).
+	// ---------------------------------------------------------------------------
+	// Compare-and-set: one undo per request, inside the window.
+	BeginAbilityRequestUndo(ctx context.Context, arg BeginAbilityRequestUndoParams) (int64, error)
 	// revoked/disconnected/archived → pending_enrollment (operator). Bumps the
 	// generation counter and clears archived_at so the row leaves the archived list.
 	// The next consume increments nothing further — generation already advanced.
@@ -416,6 +455,17 @@ type Querier interface {
 	// two_factor_enabled is recomputed by the service after this call (it may
 	// remain true if WebAuthn credentials still exist).
 	ClearUserTOTPSecret(ctx context.Context, userID uuid.UUID) error
+	CloseAbilityRequestPastDeadline(ctx context.Context, arg CloseAbilityRequestPastDeadlineParams) (int64, error)
+	// A terminal close before anything is reserved, for every pre-send reason
+	// (grant_inactive, assistant_paused, organisation_deleted,
+	// capability_not_held, site_absent, forbidden_by_context, agent_outdated,
+	// dispatch_deadline_passed, entry_changed, entry_disabled, and m161's
+	// route_changed, route_disabled). 0 rows: another
+	// path got there first; write nothing. The approver stays.
+	CloseApprovedAbilityRequestNotSent(ctx context.Context, arg CloseApprovedAbilityRequestNotSentParams) (int64, error)
+	// An approved row not yet reserved is closed as not sent; its approver stays
+	// recorded. A reserved row is left alone: that write has started.
+	CloseApprovedAbilityRequestsForGrant(ctx context.Context, arg CloseApprovedAbilityRequestsForGrantParams) ([]uuid.UUID, error)
 	// A terminal close before anything is reserved. The SAME statement serves:
 	//   * closeWithoutSite (exception 11), tenant transaction, reasons
 	//     grant_inactive, assistant_paused, capability_not_held, site_absent;
@@ -510,6 +560,28 @@ type Querier interface {
 	ConsumeSiteBoundPairingCode(ctx context.Context, arg ConsumeSiteBoundPairingCodeParams) (ConsumeSiteBoundPairingCodeRow, error)
 	// Mark a challenge used on successful verification.
 	ConsumeTwoFactorChallenge(ctx context.Context, id uuid.UUID) (TwoFactorChallenge, error)
+	// Per site and per builder namespace ('elementor', 'bricks'): how many of the
+	// site's inventoried abilities in that namespace were registered by that
+	// builder itself. One row per (site, namespace) that has at least one
+	// inventoried ability in the namespace; a missing row means zero. Rows for
+	// sites ListAIReadinessSiteFacts does not return are to be ignored.
+	//
+	// attributed counts a row only when its owner is the builder:
+	//   elementor: owner_kind 'plugin' and owner_dir 'elementor'
+	//   bricks:    owner_kind 'theme'  and owner_dir 'bricks'
+	// and owner_ok is not false (true = verified, NULL = an agent that did not
+	// verify; false = the agent found the registration did not belong to that
+	// owner). A row in the namespace registered by anything else never counts, so
+	// another plugin naming its abilities "elementor/..." cannot make the builder
+	// look switched on. in_namespace counts every row in the namespace and is for
+	// diagnostics only; nothing may treat it as attribution.
+	CountAIReadinessAbilityOwners(ctx context.Context, arg CountAIReadinessAbilityOwnersParams) ([]CountAIReadinessAbilityOwnersRow, error)
+	// The per-connection daily cap (30), shared across entries: rows created in
+	// the window, any state, any site the transaction admits. Connection-scoped.
+	CountAbilityRequestsForGrantSince(ctx context.Context, arg CountAbilityRequestsForGrantSinceParams) (int64, error)
+	// The per-site hourly cap (12), every connection. Run it under a principal
+	// that admits the site.
+	CountAbilityRequestsOnSiteSince(ctx context.Context, arg CountAbilityRequestsOnSiteSinceParams) (int64, error)
 	// Count remaining (unused) recovery codes. Shown in the Security settings card.
 	CountActiveRecoveryCodes(ctx context.Context, userID uuid.UUID) (int64, error)
 	// Wraps the SECURITY DEFINER billing_count_active_sites() so the count is
@@ -535,6 +607,14 @@ type Querier interface {
 	// Guards unlink: removing the last identity from a user with no password would
 	// lock them out of their own account permanently.
 	CountIdentitiesForUser(ctx context.Context, userID uuid.UUID) (int64, error)
+	CountLivePendingAbilityRequests(ctx context.Context, tenantID uuid.UUID) (int64, error)
+	// The per-connection waiting cap (10). Counts every site the transaction
+	// admits, so it must run connection-scoped.
+	CountLivePendingAbilityRequestsForGrant(ctx context.Context, arg CountLivePendingAbilityRequestsForGrantParams) (int64, error)
+	// The per-connection per-site waiting cap, narrowed to one ability when
+	// ability_name is given (5 pending creations per connection per site).
+	CountLivePendingAbilityRequestsForGrantSite(ctx context.Context, arg CountLivePendingAbilityRequestsForGrantSiteParams) (int64, error)
+	CountLivePendingAbilityRequestsForSite(ctx context.Context, arg CountLivePendingAbilityRequestsForSiteParams) (int64, error)
 	// The queue badge.
 	CountLivePendingAssistantCachePurgeRequests(ctx context.Context, tenantID uuid.UUID) (int64, error)
 	// The per-connection waiting cap. Counts across EVERY site the transaction
@@ -853,6 +933,8 @@ type Querier interface {
 	// not an error, and skips creating the duplicate task.
 	CreateUpdateTask(ctx context.Context, arg CreateUpdateTaskParams) (UpdateTask, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	// A lapsed row is not declined; the sweeper expires it. No row is the refusal.
+	DeclineAbilityRequest(ctx context.Context, arg DeclineAbilityRequestParams) (AssistantAbilityRequest, error)
 	// A lapsed row is not declined: its honest state is 'expired', which the
 	// sweeper writes. No row (pgx.ErrNoRows) is the refusal.
 	DeclineAssistantCachePurgeRequest(ctx context.Context, arg DeclineAssistantCachePurgeRequestParams) (AssistantCachePurgeRequest, error)
@@ -945,6 +1027,12 @@ type Querier interface {
 	DeleteReport(ctx context.Context, arg DeleteReportParams) (int64, error)
 	DeleteShare(ctx context.Context, arg DeleteShareParams) (int64, error)
 	DeleteSite(ctx context.Context, arg DeleteSiteParams) (int64, error)
+	// The second half of a replace: drops the site's rows the latest refresh did
+	// not report. Pass the checked_at the upsert used.
+	DeleteStaleSiteAbilityInventory(ctx context.Context, arg DeleteStaleSiteAbilityInventoryParams) (int64, error)
+	// The second half of a replace: drops the site's rows the latest refresh did
+	// not report. Pass the checked_at the upsert used.
+	DeleteStaleSiteContentInventory(ctx context.Context, arg DeleteStaleSiteContentInventoryParams) (int64, error)
 	DeleteTagRow(ctx context.Context, arg DeleteTagRowParams) (int64, error)
 	// Remove a single credential by its primary key and user_id guard.
 	DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAuthnCredentialParams) (int64, error)
@@ -1046,6 +1134,7 @@ type Querier interface {
 	// TestGH408_BackfillFromSystemAuditLogFindsLaneAOrgDeletes drains after
 	// backfilling for this reason.
 	EnqueueTenantObjectReclaim(ctx context.Context, arg EnqueueTenantObjectReclaimParams) (int64, error)
+	ExpireAbilityRequest(ctx context.Context, arg ExpireAbilityRequestParams) (int64, error)
 	// Never writes decided_by_user_id (m133 (7)(f)).
 	ExpireAssistantCachePurgeRequest(ctx context.Context, arg ExpireAssistantCachePurgeRequestParams) (int64, error)
 	// The grace window, applied at fire time: 'scheduled' -> 'expired' for a run
@@ -1102,6 +1191,27 @@ type Querier interface {
 	// 'expired' with tasks still 'scheduled' is exactly the stranded shape
 	// CountUnfinishedTasksForRun's comment describes.
 	ExpireDueUpdateRun(ctx context.Context, arg ExpireDueUpdateRunParams) (UpdateRun, error)
+	// assistant_ability_requests (m156): every statement over the kind-generic
+	// ability request table.
+	//
+	// WHICH TRANSACTION, PER STATEMENT. As db/query/assistant_requests.sql (m151),
+	// whose header defines the principals named here: connection-scoped,
+	// single-site, approver, revoker, tenant, agent scan. The advisory locks are
+	// m151's TakeAssistantRequestXactLock / TryAssistantRequestXactLock, reused.
+	//
+	// TIME IS THE DATABASE'S. Every window is measured against now() in the
+	// database; lengths arrive as whole seconds. decided_at, dispatch_deadline_at
+	// and claimed_at are always computed in the statement that sets them.
+	//
+	// digest_nonce and input_json appear only in full-row reads (`*`). The status
+	// reads return a narrow projection with no digest, nonce, input, grant label,
+	// setup client, decider or site-reported text.
+	// ---------------------------------------------------------------------------
+	// Creation (internal/mcp write rail), connection-scoped, after the grant lock
+	// ---------------------------------------------------------------------------
+	// This connection's own lapsed waiting rows on this site become 'expired'
+	// before the caps are counted and the insert runs.
+	ExpireLapsedPendingAbilityRequestsForGrantSite(ctx context.Context, arg ExpireLapsedPendingAbilityRequestsForGrantSiteParams) ([]uuid.UUID, error)
 	// ---------------------------------------------------------------------------
 	// Creation (internal/mcp write rail), connection-scoped, after the grant lock
 	// ---------------------------------------------------------------------------
@@ -1158,6 +1268,11 @@ type Querier interface {
 	// expanded). Returns pgx.ErrNoRows when no tenant matches — the caller then
 	// treats the event as "unknown customer" (record + warn, change nothing).
 	FindTenantByProviderCustomer(ctx context.Context, arg FindTenantByProviderCustomerParams) (uuid.UUID, error)
+	// undo_result is one of undone, refused_conflict, refused_published, failed.
+	// Covers a done row's undo and a recovery undo (GH #826) alike.
+	// restored is the agent's revert report (false: other post columns the site
+	// changed remain); NULL, as on a failure or refusal, keeps the stored value.
+	FinishAbilityRequestUndo(ctx context.Context, arg FinishAbilityRequestUndoParams) (int64, error)
 	// Terminalizes ONE task that never left 'scheduled'. The counterpart to
 	// FinishUpdateTask, which cannot be used here: its precondition is
 	// status IN ('pending','running'), so a scheduled task is not "open" by its
@@ -1255,6 +1370,14 @@ type Querier interface {
 	// org-scoped principals pass all tenant site IDs so the @site_ids_filter
 	// gate applies equally without a separate query path.
 	FleetBackupHealth(ctx context.Context, arg FleetBackupHealthParams) ([]FleetBackupHealthRow, error)
+	// Owner fleet report: builder pages per builder and version, across every
+	// tenant, counts only, through the SECURITY DEFINER function.
+	FleetContentShareByBuilder(ctx context.Context) ([]FleetContentShareByBuilderRow, error)
+	// Owner fleet report: pages and sites per verdict and route, across every
+	// tenant, counts only, through the SECURITY DEFINER function (no session can
+	// read other tenants' rows directly). Works in any transaction helper; gate
+	// the caller to the platform owner in Go.
+	FleetContentShareByVerdict(ctx context.Context) ([]FleetContentShareByVerdictRow, error)
 	// ---------------------------------------------------------------------------
 	// Fleet backup endpoints
 	// ---------------------------------------------------------------------------
@@ -1281,6 +1404,15 @@ type Querier interface {
 	// domain.Unauthorized("apikey_invalid", ...) path) rather than continuing to
 	// authenticate into an org every session/UI path has already hidden.
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error)
+	// One entry by its stable id. pgx.ErrNoRows when it does not exist.
+	GetAbilityCatalogueEntry(ctx context.Context, entryID uuid.UUID) (AbilityCatalogue, error)
+	// One row for the detail card and the undo action.
+	GetAbilityRequestForSite(ctx context.Context, arg GetAbilityRequestForSiteParams) (AssistantAbilityRequest, error)
+	// ---------------------------------------------------------------------------
+	// Status tool (internal/mcp), connection-scoped. Narrow projection.
+	// site_id = ANY(@site_ids) is the connection's current scope.
+	// ---------------------------------------------------------------------------
+	GetAbilityRequestStatusForGrant(ctx context.Context, arg GetAbilityRequestStatusForGrantParams) (GetAbilityRequestStatusForGrantRow, error)
 	// Auth-time allowlist resolver: returns all non-expired site shares for a given
 	// (user, tenant) pair. The result is used to build the AllowedSiteIDs list for a
 	// site-scoped principal. Run under InUserTx (app.user_id set) or directly with
@@ -1300,6 +1432,13 @@ type Querier interface {
 	// default for a tenant with no persisted alert_configs row yet, so that path
 	// and the persisted column's own DEFAULT never disagree.
 	GetAppAlertRolloutDefault(ctx context.Context) (bool, error)
+	// Single-site. past_deadline and entry_current are computed in the database:
+	// entry_current is false when the catalogue entry this row was approved
+	// against has a different entry_sha256 now, is disabled, is no longer
+	// admitted, or is gone (W1: close not_sent / entry_changed or
+	// entry_disabled). ability_catalogue is global and readable in any
+	// transaction.
+	GetApprovedAbilityRequestForDispatch(ctx context.Context, arg GetApprovedAbilityRequestForDispatchParams) (GetApprovedAbilityRequestForDispatchRow, error)
 	// Single-site, opened with AssertSingleSiteTx. past_deadline is computed by
 	// the database clock. No row: the row is no longer approved (another path
 	// closed or reserved it) or is not visible under this principal.
@@ -1636,6 +1775,15 @@ type Querier interface {
 	// Enroll path (app.enroll GUC): resolve a presented code by its hash before the
 	// tenant is known.
 	GetPairingCodeByHash(ctx context.Context, codeHash string) (PairingCode, error)
+	// ---------------------------------------------------------------------------
+	// Approve and decline, approver's own principal. The service re-checks the
+	// approver holds operator_permission on the site (W1) before either.
+	// ---------------------------------------------------------------------------
+	GetPendingAbilityRequestForSite(ctx context.Context, arg GetPendingAbilityRequestForSiteParams) (AssistantAbilityRequest, error)
+	// The dedupe read after a conflict. target_key is 'post:<id>' or
+	// 'new:<input_sha256>' (m156 header). pgx.ErrNoRows means a person decided
+	// the row in between; the caller retries the insert once.
+	GetPendingAbilityRequestForTarget(ctx context.Context, arg GetPendingAbilityRequestForTargetParams) (AssistantAbilityRequest, error)
 	// The dedupe read after a conflict. pgx.ErrNoRows means a person decided the
 	// row in between; the caller retries the insert once.
 	GetPendingAssistantCachePurgeRequestForGrantSite(ctx context.Context, arg GetPendingAssistantCachePurgeRequestForGrantSiteParams) (AssistantCachePurgeRequest, error)
@@ -1661,6 +1809,8 @@ type Querier interface {
 	// report_schedules — singleton schedule per client
 	// ---------------------------------------------------------------------------
 	GetReportSchedule(ctx context.Context, arg GetReportScheduleParams) (ReportSchedule, error)
+	// One route by id. pgx.ErrNoRows when it does not exist.
+	GetRestRoute(ctx context.Context, routeID string) (RestRouteCatalogue, error)
 	GetRucssJob(ctx context.Context, arg GetRucssJobParams) (RucssJob, error)
 	// ---------------------------------------------------------------------------
 	// rucss_results
@@ -1704,6 +1854,11 @@ type Querier interface {
 	// explicit tenant_id match in the ON clause is defense-in-depth + keeps the
 	// planner on the PK index (project convention — see clients.sql).
 	GetSite(ctx context.Context, arg GetSiteParams) (GetSiteRow, error)
+	// One ability on one site. pgx.ErrNoRows when the site did not report it.
+	GetSiteAbilityInventoryEntry(ctx context.Context, arg GetSiteAbilityInventoryEntryParams) (SiteAbilityInventory, error)
+	// The site's last refresh. pgx.ErrNoRows means the site has never been
+	// refreshed.
+	GetSiteAbilityInventoryRun(ctx context.Context, arg GetSiteAbilityInventoryRunParams) (SiteAbilityInventoryRun, error)
 	// Cross-tenant read of one site's alert state (app.agent GUC) for the probe job.
 	GetSiteAlertState(ctx context.Context, siteID uuid.UUID) (SiteAlertState, error)
 	// Cross-tenant read-and-LOCK of one site's alert state (app.agent GUC), used by
@@ -1749,6 +1904,11 @@ type Querier interface {
 	// archived site is visible and the caller can return a structured 409 with
 	// site_id + connection_state instead of hitting the unique-index violation.
 	GetSiteByURLForMint(ctx context.Context, arg GetSiteByURLForMintParams) (GetSiteByURLForMintRow, error)
+	// m157. The site's content-editing state. enabled_at NULL means not enabled.
+	GetSiteContentEditing(ctx context.Context, arg GetSiteContentEditingParams) (GetSiteContentEditingRow, error)
+	// The site's last refresh. pgx.ErrNoRows means the site has never been
+	// refreshed.
+	GetSiteContentInventoryRun(ctx context.Context, arg GetSiteContentInventoryRunParams) (SiteContentInventoryRun, error)
 	// tenant_id is explicit (defense in depth per house convention) AND is the
 	// mechanism that makes a restore-pointer's stamp check work: a version id
 	// belonging to a DIFFERENT tenant stamp (a pre-transfer row, ADR-064 Decision
@@ -2015,6 +2175,8 @@ type Querier interface {
 	GetWebAuthnCredentialByCredentialID(ctx context.Context, credentialID []byte) (WebauthnCredential, error)
 	// Load and return the registration session for a user (most recent, non-expired).
 	GetWebAuthnRegistrationSession(ctx context.Context, userID uuid.UUID) (WebauthnRegistrationSession, error)
+	// "Could not tell" after the resolution window (engine v4 §2.7: 15 minutes).
+	GiveUpAbilityRequestOutcome(ctx context.Context, arg GiveUpAbilityRequestOutcomeParams) (int64, error)
 	// Permanently removes the client row. ON DELETE SET NULL on sites.client_id
 	// handles the unassignment automatically in the same statement.
 	HardDeleteClient(ctx context.Context, arg HardDeleteClientParams) (int64, error)
@@ -2042,6 +2204,19 @@ type Querier interface {
 	// status after initial delivery). Body is only stored when body_stored=true.
 	// m62: connection_key + attachments added (additive; old agents send '' / '[]').
 	IngestEmailLogEntry(ctx context.Context, arg IngestEmailLogEntryParams) (SiteEmailLog, error)
+	// id is the request id the site receives with the write. A caller that
+	// prechecked the request under an id it generated passes that id, so the
+	// write names the request its precheck was made under; NULL takes the
+	// column default, gen_random_uuid().
+	// ON CONFLICT names the one-pending index's columns and predicate. A conflict
+	// inserts nothing and returns NO ROW (pgx.ErrNoRows), whatever id was passed:
+	// the caller reads the waiting row, which keeps its own id, with
+	// GetPendingAbilityRequestForTarget. An id that already names a row is not
+	// that conflict: it fails with 23505. state is always 'pending'; target_key
+	// is generated and never written. m161: route_id, route_sha256 and
+	// card_facts are set together for wpmgr/rest-write and are NULL for every
+	// other ability (the table's CHECKs refuse anything else).
+	InsertAbilityRequest(ctx context.Context, arg InsertAbilityRequestParams) (AssistantAbilityRequest, error)
 	// Agent-auth path (app.agent GUC). The unique (site_id, nonce) index makes a
 	// replayed nonce a no-op via ON CONFLICT, returning 0 rows affected.
 	InsertAgentNonce(ctx context.Context, arg InsertAgentNonceParams) (int64, error)
@@ -2190,6 +2365,9 @@ type Querier interface {
 	InvalidateUserEmailVerificationTokens(ctx context.Context, userID uuid.UUID) error
 	// Burn all outstanding reset tokens for a user (after a successful reset/change).
 	InvalidateUserPasswordResetTokens(ctx context.Context, userID uuid.UUID) error
+	// m160 R4. True when the entry is switched off for this tenant. Run in the
+	// tenant's transaction; RLS confines it to app.tenant_id.
+	IsAbilityDisabledForTenant(ctx context.Context, arg IsAbilityDisabledForTenantParams) (bool, error)
 	// Returns true when the given email_hash is suppressed for this tenant at either
 	// the fleet level (site_id IS NULL) or the specific site.
 	// Runs under InAgentTx (pre-send check from the delta-fetch query) or InTenantTx.
@@ -2209,10 +2387,161 @@ type Querier interface {
 	// caller handles the normal way (errors.Is(err, pgx.ErrNoRows)).
 	LastProcessedBillingEventOccurredAtForTenant(ctx context.Context, arg LastProcessedBillingEventOccurredAtForTenantParams) (time.Time, error)
 	LinkUserOIDC(ctx context.Context, arg LinkUserOIDCParams) (User, error)
+	// AI readiness (per-site checklist and fleet column). Read-only queries over
+	// tables that already exist: sites (with its components JSONB) and the m155
+	// ability inventory with its run record. No migration.
+	//
+	// ListAIReadinessSiteFactsWithAbilityCounts returns, in one statement, what
+	// ListAIReadinessSiteFacts and CountAIReadinessAbilityOwners return as two.
+	// One statement reads one snapshot, so its run-record columns and its counts
+	// always describe the same inventory refresh; the two separate statements
+	// carry no such guarantee under READ COMMITTED.
+	//
+	// WHO CALLS THEM, AND IN WHAT TRANSACTION. All of them run inside the
+	// request's tenant transaction opened by db.Pool.RunTenantTx, as wpmgr_app,
+	// so the tenant and site-scope policies on all three tables apply: a
+	// site-scoped collaborator sees only the sites in app.allowed_site_ids, in
+	// every query. One SQL text serves the per-site card (site_id set) and the
+	// fleet column (site_id NULL), so the two views cannot disagree about a site.
+	//
+	// THE EXPLICIT TENANT PREDICATE ON sites IS LOAD-BEARING, NOT DECORATION.
+	// sites carries two permissive SELECT policies keyed on app.user_id
+	// (sites_shared_read, sites_client_read). RunTenantTx sets app.user_id for
+	// every signed-in member, so without `s.tenant_id = tenant_id` a member of
+	// this tenant who also holds a share on a site in ANOTHER tenant would get
+	// that site in this tenant's rollup. On the inventory tables no such policy
+	// exists and the predicate is defence in depth.
+	//
+	// WHAT IS NEVER READ. No inventory label, description, schema or ability
+	// name leaves the database here; the inventory query returns counts only.
+	// From components it returns booleans, version strings and the builder_facts
+	// block. Plugin and theme versions are site-reported text the agent DTO caps
+	// at 64 characters and does not otherwise validate: a caller that echoes one
+	// must validate it first.
+	//
+	// A MALFORMED components DOCUMENT YIELDS NULLS, NEVER AN ERROR. Every JSONB
+	// step is guarded by jsonb_typeof, so one bad document cannot fail the whole
+	// fleet rollup.
+	// One row per enrolled, non-archived site of the tenant (or the one site
+	// named by site_id; zero rows when it is archived, never enrolled, in another
+	// tenant or outside the caller's site scope).
+	//
+	// Columns. The version and active columns are NEVER NULL: sqlc types every
+	// computed column below as non-null whatever the SQL says, so the SQL
+	// guarantees it, with the same '' convention sites.wp_version uses.
+	//   components_updated_at       NULL: the site has never pushed metadata.
+	//   content_editing_enabled_at  NULL: AI page creation is off.
+	//   elementor_installed         a plugins[] entry whose slug is
+	//                               "elementor/<file>" (the directory, exactly;
+	//                               "elementor-pro/..." is a different plugin).
+	//   elementor_version           that entry's version; '' when not installed
+	//                               or the entry carries no version string. When
+	//                               the directory holds several entries, an
+	//                               active one is preferred, then
+	//                               "elementor/elementor.php", then slug order.
+	//   elementor_active            some entry in the directory is active; false
+	//                               when not installed.
+	//   mcp_adapter_active          some plugins[] entry in directory
+	//                               "mcp-adapter" is active. Installed but
+	//                               inactive is false.
+	//   bricks_installed            a themes[] entry whose slug is "bricks". The
+	//                               parent theme of an active child theme is not
+	//                               in themes[]; that fact is
+	//                               builder_facts.theme_template.
+	//   bricks_version/_active      from that entry, as for Elementor.
+	//   builder_facts               components.builder_facts when it is a JSON
+	//                               object, else NULL (nil). NULL means "not
+	//                               reported", never "false".
+	//   abilities_checked_at,       the site's ability inventory run; all three
+	//   abilities_api_present,      NULL when the inventory has never run.
+	//   abilities_truncated
+	ListAIReadinessSiteFacts(ctx context.Context, arg ListAIReadinessSiteFactsParams) ([]ListAIReadinessSiteFactsRow, error)
+	// ListAIReadinessSiteFacts and CountAIReadinessAbilityOwners as ONE
+	// statement: the same sites, the same facts columns computed by the same SQL,
+	// and each site's builder ability counts pivoted onto its row.
+	//
+	// ONE STATEMENT, ONE SNAPSHOT. The run-record columns (abilities_checked_at,
+	// abilities_api_present, abilities_truncated) and the four count columns are
+	// read by the same statement, and an inventory refresh writes the run record
+	// and the inventory rows in one transaction, so a row reflects all of a
+	// refresh or none of it.
+	//
+	// FILTERS AND RLS ARE THOSE OF THE TWO SEPARATE QUERIES. The sites
+	// predicates are ListAIReadinessSiteFacts's, verbatim, including the
+	// load-bearing explicit tenant predicate; the inventory predicates are
+	// CountAIReadinessAbilityOwners's, verbatim. All three tables are read in the
+	// caller's tenant transaction, so the tenant and site-scope policies apply to
+	// each exactly as they do in the two queries. Counts for a site the sites
+	// predicates drop (archived, never enrolled, another tenant, out of scope) are
+	// never returned.
+	//
+	// One row per enrolled, non-archived site of the tenant (or the one site
+	// named by site_id; zero rows when it is archived, never enrolled, in another
+	// tenant or outside the caller's site scope).
+	//
+	// Facts columns: exactly ListAIReadinessSiteFacts's. The version and active
+	// columns are NEVER NULL (sqlc types every computed column as non-null, so the
+	// SQL guarantees it, with the same '' convention sites.wp_version uses).
+	//   components_updated_at       NULL: the site has never pushed metadata.
+	//   content_editing_enabled_at  NULL: AI page creation is off.
+	//   elementor_installed         a plugins[] entry whose slug is
+	//                               "elementor/<file>" (the directory, exactly;
+	//                               "elementor-pro/..." is a different plugin).
+	//   elementor_version           that entry's version; '' when not installed
+	//                               or the entry carries no version string. When
+	//                               the directory holds several entries, an
+	//                               active one is preferred, then
+	//                               "elementor/elementor.php", then slug order.
+	//   elementor_active            some entry in the directory is active; false
+	//                               when not installed.
+	//   mcp_adapter_active          some plugins[] entry in directory
+	//                               "mcp-adapter" is active. Installed but
+	//                               inactive is false.
+	//   bricks_installed            a themes[] entry whose slug is "bricks". The
+	//                               parent theme of an active child theme is not
+	//                               in themes[]; that fact is
+	//                               builder_facts.theme_template.
+	//   bricks_version/_active      from that entry, as for Elementor.
+	//   builder_facts               components.builder_facts when it is a JSON
+	//                               object, else NULL (nil). NULL means "not
+	//                               reported", never "false".
+	//   abilities_checked_at,       the site's ability inventory run; all three
+	//   abilities_api_present,      NULL when the inventory has never run.
+	//   abilities_truncated
+	//
+	// Count columns, NEVER NULL: 0 where CountAIReadinessAbilityOwners returns no
+	// row for the (site, namespace). Attribution is that query's rule, unchanged.
+	//   elementor_abilities_attributed    its attributed for 'elementor'
+	//   elementor_abilities_in_namespace  its in_namespace for 'elementor'
+	//   bricks_abilities_attributed       its attributed for 'bricks'
+	//   bricks_abilities_in_namespace     its in_namespace for 'bricks'
+	// The *_in_namespace columns are for diagnostics only; nothing may treat them
+	// as attribution.
+	ListAIReadinessSiteFactsWithAbilityCounts(ctx context.Context, arg ListAIReadinessSiteFactsWithAbilityCountsParams) ([]ListAIReadinessSiteFactsWithAbilityCountsRow, error)
 	ListAPIKeys(ctx context.Context, arg ListAPIKeysParams) ([]ApiKey, error)
+	// Every entry, any status, for the admin screen.
+	ListAbilityCatalogue(ctx context.Context) ([]AbilityCatalogue, error)
+	// Newest first, for the admin screen.
+	ListAbilityCatalogueAudit(ctx context.Context, arg ListAbilityCatalogueAuditParams) ([]AbilityCatalogueAudit, error)
+	// ---------------------------------------------------------------------------
+	// Queue and banner, caller's own principal. Row security narrows a site
+	// collaborator to their own sites.
+	// ---------------------------------------------------------------------------
+	ListAbilityRequests(ctx context.Context, arg ListAbilityRequestsParams) ([]AssistantAbilityRequest, error)
+	ListAbilityRequestsForSite(ctx context.Context, arg ListAbilityRequestsForSiteParams) ([]AssistantAbilityRequest, error)
+	// m160 R4. Every entry switched off for this tenant, for filtering a whole
+	// catalogue read in one statement. Run in the tenant's transaction.
+	ListAbilityTenantDisabledEntryIDs(ctx context.Context, tenantID uuid.UUID) ([]uuid.UUID, error)
 	// All unused recovery codes for a user (used_at IS NULL).
 	// Ordered by created_at ASC, id ASC for stable pagination.
 	ListActiveRecoveryCodes(ctx context.Context, userID uuid.UUID) ([]UserRecoveryCode, error)
+	// m155: ability_catalogue (global allowlist) and site_ability_inventory
+	// (per-site registered abilities). See the migration header for the grant
+	// model and the tenancy.
+	// The entries the engine may offer: admitted and enabled. A disabled entry is
+	// kill switch 1. Readable in any transaction: the table is global and its one
+	// policy is FOR SELECT USING (true).
+	ListAdmittedAbilityCatalogue(ctx context.Context) ([]AbilityCatalogue, error)
 	// Cross-tenant enumeration for the evaluator (app.agent GUC). Only enabled
 	// configs are returned.
 	ListAlertConfigsAllTenants(ctx context.Context) ([]AlertConfig, error)
@@ -2401,6 +2730,14 @@ type Querier interface {
 	ListConnectedSiteIDsForScreenshot(ctx context.Context) ([]ListConnectedSiteIDsForScreenshotRow, error)
 	// Newest first; used by the per-site lifecycle timeline.
 	ListConnectionHistory(ctx context.Context, arg ListConnectionHistoryParams) ([]SiteConnectionHistory, error)
+	// Newest first, for the admin screen.
+	ListContentIntegrationAudit(ctx context.Context, arg ListContentIntegrationAuditParams) ([]ContentIntegrationsAudit, error)
+	// m153: content_integrations (global allowlist) and site_content_inventory
+	// (per-site probe results). See the migration header for the grant model.
+	// Every allowlist row, for the probe dispatch and the admin screen. Readable
+	// in any transaction: the table is global and its one policy is FOR SELECT
+	// USING (true).
+	ListContentIntegrations(ctx context.Context) ([]ContentIntegration, error)
 	// Cross-tenant enumeration of enabled schedules whose next_run_at has passed,
 	// for the periodic scheduler. Runs under the app.agent GUC (scheduler policy).
 	ListDueBackupSchedules(ctx context.Context, arg ListDueBackupSchedulesParams) ([]BackupSchedule, error)
@@ -2519,6 +2856,15 @@ type Querier interface {
 	// Keyset cursor on (created_at, id) ASC (agent polls for new entries since last fetch).
 	// @since_ts / @since_id: last seen row; pass epoch-start + uuid-zero for the first fetch.
 	ListEmailSuppressionDeltas(ctx context.Context, arg ListEmailSuppressionDeltasParams) ([]EmailSuppression, error)
+	// The rows the probe is sent. A disabled row is the kill switch.
+	ListEnabledContentIntegrations(ctx context.Context) ([]ContentIntegration, error)
+	// m161: rest_route_catalogue (global allowlist of reviewed WordPress REST
+	// routes). See the migration header for the grant model. The table is global
+	// and its one policy is FOR SELECT USING (true), so every read here works in
+	// any transaction.
+	// The routes the engine may offer: enabled. A disabled route is its kill
+	// switch.
+	ListEnabledRestRoutes(ctx context.Context) ([]RestRouteCatalogue, error)
 	// ---------------------------------------------------------------------------
 	// Health-check job (runs in each enrolled site's tenant scope).
 	// ---------------------------------------------------------------------------
@@ -2661,6 +3007,9 @@ type Querier interface {
 	// invisible to ALL of those call sites in one place, the instant DELETE
 	// /orgs/{orgId} commits, without a per-call-site patch.
 	ListMembershipsForUser(ctx context.Context, userID uuid.UUID) ([]Membership, error)
+	// List mode: this connection's requests with no final result yet, newest
+	// first (engine v4 §1.5: at most 20).
+	ListOpenAbilityRequestStatusForGrant(ctx context.Context, arg ListOpenAbilityRequestStatusForGrantParams) ([]ListOpenAbilityRequestStatusForGrantRow, error)
 	// List mode: this connection's requests that have no final result yet
 	// (waiting, approved, or sent with no outcome), newest first.
 	ListOpenAssistantCachePurgeRequestStatusForGrant(ctx context.Context, arg ListOpenAssistantCachePurgeRequestStatusForGrantParams) ([]ListOpenAssistantCachePurgeRequestStatusForGrantRow, error)
@@ -2678,6 +3027,11 @@ type Querier interface {
 	// the table reads as empty, so an operator cannot discover the id that a
 	// "SET app.tenant_id first" instruction would need them to supply.
 	ListOpenTenantObjectReclaims(ctx context.Context, rowLimit int32) ([]TenantObjectReclaim, error)
+	// The org-wide AI requests queue (GH #828): every site the caller's row
+	// security admits, optionally narrowed to one state, newest first. A NULL
+	// state_filter lists every state. Same columns as ListAbilityRequestsForSite.
+	// The badge count is CountLivePendingAbilityRequests.
+	ListOrgAbilityRequests(ctx context.Context, arg ListOrgAbilityRequestsParams) ([]AssistantAbilityRequest, error)
 	// Keyset-paginated newest-first history (ADR-064 Decision 5). Cursor is the
 	// version number itself, not created_at/id: version is unique, monotonic and
 	// gap-free per tenant (org_context_versions_version_key), which is strictly
@@ -2705,6 +3059,10 @@ type Querier interface {
 	// because batch inserts can share created_at and a bare compare skips co-timestamped rows
 	// (standing keyset-cursor-composite rule).
 	ListReports(ctx context.Context, arg ListReportsParams) ([]GeneratedReport, error)
+	// Newest first, for the admin screen.
+	ListRestRouteAudit(ctx context.Context, arg ListRestRouteAuditParams) ([]RestRouteCatalogueAudit, error)
+	// Every route, enabled or not, for the admin screen and the boot stamp.
+	ListRestRoutes(ctx context.Context) ([]RestRouteCatalogue, error)
 	ListRucssResultsForSite(ctx context.Context, arg ListRucssResultsForSiteParams) ([]RucssResult, error)
 	// All runs for a site (upcoming + past), newest scheduled_for first.
 	ListScheduleRunsBySite(ctx context.Context, arg ListScheduleRunsBySiteParams) ([]BackupScheduleRun, error)
@@ -2730,6 +3088,9 @@ type Querier interface {
 	// session pinned to that (now-invisible) tenant on every login, landing in a
 	// permanent 403 loop instead of the no-access screen.
 	ListSharesForUser(ctx context.Context, userID uuid.UUID) ([]SiteShare, error)
+	// One page of a site's inventory, keyset-paged on name ascending. Pass
+	// after_name = '' for the first page. namespace NULL lists every namespace.
+	ListSiteAbilityInventory(ctx context.Context, arg ListSiteAbilityInventoryParams) ([]SiteAbilityInventory, error)
 	// The AI cache-clear creation path's tie check (internal/mcp): every in-scope
 	// site's address, so a page address that also falls under another in-scope
 	// site can be refused. Runs connection-scoped, and site_ids is the
@@ -2741,6 +3102,11 @@ type Querier interface {
 	// which the caller already holds in memory. Same archived filter and same
 	// nil-means-nothing array semantics as ListSitesForMCPScope.
 	ListSiteAddressesInScope(ctx context.Context, arg ListSiteAddressesInScopeParams) ([]ListSiteAddressesInScopeRow, error)
+	// One page of a site's inventory, keyset-paged on post_id ascending. Pass
+	// after_post_id = 0 for the first page. owner_integration_id filters by
+	// editor: NULL for every row, 'classic' for rows no builder owns, or an
+	// integration id.
+	ListSiteContentInventory(ctx context.Context, arg ListSiteContentInventoryParams) ([]SiteContentInventory, error)
 	// Keyset-paginated newest-first history, scoped to the CURRENT tenant stamp
 	// only — this is what makes list/item history "additionally scoped to
 	// versions stamped with the site's current organisation" (ADR-064 Decision 13)
@@ -2911,6 +3277,16 @@ type Querier interface {
 	// makes the predicate selective. Cross-tenant select via the GC RLS policy
 	// (app.agent='on').
 	ListStalledRunningSnapshots(ctx context.Context, arg ListStalledRunningSnapshotsParams) ([]ListStalledRunningSnapshotsRow, error)
+	// Agent scan (InAgentTx), plain SELECT, as ScanResolvingAbilityRequests: undos
+	// started longer ago than the threshold with nothing recorded since (GH
+	// #824). The caller checks the site ledger and records the answer per row
+	// with FinishAbilityRequestUndo or ReleaseAbilityRequestUndo in a tenant
+	// transaction. Includes recovery undos (GH #826).
+	// Random order, not oldest first: a row whose site stays unreachable keeps
+	// its in_progress state, so a fixed order would hand the same row_limit rows
+	// to every pass and never reach the rest. Random sampling gives every stuck
+	// row an equal chance on each pass without a cursor column.
+	ListStuckAbilityRequestUndos(ctx context.Context, arg ListStuckAbilityRequestUndosParams) ([]ListStuckAbilityRequestUndosRow, error)
 	// The tasks that have exhausted @max_attempts and therefore no longer appear in
 	// the due query above. The rows are kept deliberately (they are the last record
 	// that those objects exist), but kept is not the same as visible: without this
@@ -3121,6 +3497,9 @@ type Querier interface {
 	// Also returns beacon_key_hash_prev so the handler can accept the grace-window
 	// previous key during rotation.
 	LookupRumBeaconKey(ctx context.Context, beaconKeyHash []byte) (LookupRumBeaconKeyRow, error)
+	// The send's reply was lost or timed out. The row waits in 'outcome_unknown'
+	// with outcome NULL while the ledger is polled (engine v4 §2.7).
+	MarkAbilityRequestOutcomeUnknown(ctx context.Context, arg MarkAbilityRequestOutcomeUnknownParams) (int64, error)
 	// Used on the Redis-hot-path success: Redis already produced the payload, but
 	// we still UPDATE the PG row so the audit/observability story is complete.
 	// Idempotent: returns 0 if another path already marked it (safe).
@@ -3228,6 +3607,12 @@ type Querier interface {
 	// clears the disconnected_at/reason set by a prior down transition. The legacy
 	// status='active'/health_status='healthy' mirror the new connection_state.
 	MarkSiteConnected(ctx context.Context, arg MarkSiteConnectedParams) (Site, error)
+	// m157. The enable action's one write: records the WordPress principal the
+	// agent returned and the WPMgr user who enabled it. Run in the site's tenant
+	// transaction; sites_tenant_isolation and sites_site_scope apply. No row
+	// (pgx.ErrNoRows) when the site is not visible to the caller. enabled_by must
+	// come from the authenticated actor, never request input.
+	MarkSiteContentEditingEnabled(ctx context.Context, arg MarkSiteContentEditingEnabledParams) (MarkSiteContentEditingEnabledRow, error)
 	// connected → degraded (timeout sweeper only). Legacy health_status mirrors it.
 	MarkSiteDegraded(ctx context.Context, arg MarkSiteDegradedParams) (Site, error)
 	// degraded → disconnected (timeout sweeper) OR connected/degraded → disconnected
@@ -3447,6 +3832,30 @@ type Querier interface {
 	// parameter, so this is a primary-key probe and costs no extra round trip.
 	ReCheckMCPRequestAuthorizationInTenantTx(ctx context.Context, arg ReCheckMCPRequestAuthorizationInTenantTxParams) (ReCheckMCPRequestAuthorizationInTenantTxRow, error)
 	RecolorTag(ctx context.Context, arg RecolorTagParams) (SiteTag, error)
+	// m160 (owner ruling 4, amended 2026-10-02). Records that a vendor read was
+	// caught writing or calling out on this site. Run it in the site's tenant
+	// transaction (InTenantTx): the definer takes the tenant from app.tenant_id
+	// and refuses a tenant_id argument that differs or a site that is not that
+	// tenant's. It disables the entry for the reporting tenant at once, then
+	// returns the number of distinct QUALIFIED (paid or aged) tenants counted
+	// since the last superadmin re-enable. The report that makes a new qualified
+	// tenant the third or later disables an enabled entry fleet-wide with a
+	// NULL-actor audit row. Run it in its own READ COMMITTED transaction.
+	// Refusals, nothing recorded: 22023 a NULL argument; 42501 wrong tenant, a
+	// site not of the tenant, or the entry is not a vendor read; P0002 no entry.
+	RecordAbilityReadSideEffect(ctx context.Context, arg RecordAbilityReadSideEffectParams) (int32, error)
+	// A transient reason; the row stays approved. Single-site.
+	RecordAbilityRequestDispatchAttempt(ctx context.Context, arg RecordAbilityRequestDispatchAttemptParams) (int64, error)
+	RecordAbilityRequestLedgerCheck(ctx context.Context, arg RecordAbilityRequestLedgerCheckParams) (int64, error)
+	// Compare-and-set on "sent with no outcome", from 'dispatched' (the worker's
+	// reply) or a resolving 'outcome_unknown' (the ledger's answer). 0 rows:
+	// another path already recorded one; write nothing. The state is derived
+	// from the outcome; the table CHECK enforces the pairing. Passing 'not_sent'
+	// needs not_sent_reason 'transport_pre_send'. undo_available_until set
+	// opens the person's undo (undo_state 'available') on a done row. A row with
+	// any undo_state already set is never matched (GH #826): this statement
+	// rewrites the undo columns, and must not reset an undo that is running.
+	RecordAbilityRequestOutcome(ctx context.Context, arg RecordAbilityRequestOutcomeParams) (int64, error)
 	// A transient reason; the row stays approved. Single-site.
 	RecordAssistantCachePurgeDispatchAttempt(ctx context.Context, arg RecordAssistantCachePurgeDispatchAttemptParams) (int64, error)
 	// Compare-and-set on "sent with no outcome". 0 rows: the reconciler already
@@ -3464,6 +3873,11 @@ type Querier interface {
 	// first would hide it. So protocol_version is passed through as NULL when the
 	// header was absent -- it must NOT be defaulted to a string here.
 	RecordMCPGrantClientIdentityInTenantTx(ctx context.Context, arg RecordMCPGrantClientIdentityInTenantTxParams) (McpGrant, error)
+	// m160 R4. A tenant admin or superadmin switches the entry back on for this
+	// tenant; the row stays as the record. The caller checks the role. Returns 0
+	// when the entry was not disabled for the tenant. Run in the tenant's
+	// transaction. A later side-effect report from this tenant disables it again.
+	ReenableAbilityForTenant(ctx context.Context, arg ReenableAbilityForTenantParams) (int64, error)
 	// Rotate the token of a still-pending invitation: overwrite token_hash (kills
 	// the old link), reset expiry + attempts, and clear any prior soft-revoke.
 	// Only an un-accepted row is touched (RETURNING -> ErrNoRows if already
@@ -3609,6 +4023,15 @@ type Querier interface {
 	// and refuse a requested scope set it does not contain, so widening it here
 	// widens what the client may ever be granted.
 	RegisterMCPOAuthClient(ctx context.Context, arg RegisterMCPOAuthClientParams) (int64, error)
+	// A retryable undo failure (GH #824): in_progress goes back to available,
+	// still inside the undo window, so the person can try again. The CHECKs
+	// require the starter and start time to be NULL whenever undo is available,
+	// and undo_finished_at is already NULL while in progress. Past the window
+	// this matches nothing; the caller then finishes the undo as 'failed'.
+	// A recovery undo (GH #826) goes back to no undo at all, window cleared,
+	// because BeginAbilityRequestRecoveryUndo starts only from undo_state NULL;
+	// the person can begin it again, with a fresh window.
+	ReleaseAbilityRequestUndo(ctx context.Context, arg ReleaseAbilityRequestUndoParams) (int64, error)
 	// ReleaseTenantAssistantKillSwitch clears the pause after an incident.
 	//
 	// IT CLEARS THE REASON IN THE SAME STATEMENT, and it must: the reason is part
@@ -3653,6 +4076,12 @@ type Querier interface {
 	// Replays events after a client cursor (?since / Last-Event-ID). ULIDs sort
 	// lexicographically, so event_id > $2 is monotonic-after.
 	ReplaySiteEvents(ctx context.Context, arg ReplaySiteEventsParams) ([]SiteEvent, error)
+	// The one reservation point. The deadline and the approved entry hash are in
+	// the WHERE clause, so nothing is reserved after the deadline or against an
+	// entry that changed. m161: a row naming a REST route is reserved only while
+	// that route carries the approved route_sha256 and is an enabled write route. 0 rows: another replica, the revoke cascade, a close,
+	// the sweeper or a catalogue change won; roll back.
+	ReserveAbilityRequestForDispatch(ctx context.Context, arg ReserveAbilityRequestForDispatchParams) (int64, error)
 	// The one reservation point. Moves the row to 'dispatched' naming the
 	// cache_purge_audit row written in the same transaction. The deadline is in
 	// the WHERE clause, so nothing is reserved after it. 0 rows: another replica,
@@ -3813,7 +4242,13 @@ type Querier interface {
 	// is exactly what a merge needs when a site already carries both the source
 	// and the survivor name.
 	RewriteSiteTagName(ctx context.Context, arg RewriteSiteTagNameParams) error
+	ScanApprovedAbilityRequestsPastDeadline(ctx context.Context, rowLimit int32) ([]ScanApprovedAbilityRequestsPastDeadlineRow, error)
 	ScanApprovedAssistantCachePurgeRequestsPastDeadline(ctx context.Context, arg ScanApprovedAssistantCachePurgeRequestsPastDeadlineParams) ([]ScanApprovedAssistantCachePurgeRequestsPastDeadlineRow, error)
+	// ---------------------------------------------------------------------------
+	// Dispatch worker
+	// ---------------------------------------------------------------------------
+	// Agent scan (InAgentTx), plain SELECT. Backoff per row as m151's.
+	ScanDueApprovedAbilityRequests(ctx context.Context, arg ScanDueApprovedAbilityRequestsParams) ([]ScanDueApprovedAbilityRequestsRow, error)
 	// ---------------------------------------------------------------------------
 	// Dispatch worker (internal/assistantrequest)
 	// ---------------------------------------------------------------------------
@@ -3823,10 +4258,24 @@ type Querier interface {
 	// overflow.
 	ScanDueApprovedAssistantCachePurgeRequests(ctx context.Context, arg ScanDueApprovedAssistantCachePurgeRequestsParams) ([]ScanDueApprovedAssistantCachePurgeRequestsRow, error)
 	// ---------------------------------------------------------------------------
+	// Sweeper and reconciler. Each is a plain agent scan, then a per-row
+	// compare-and-set in a tenant transaction.
+	// ---------------------------------------------------------------------------
+	ScanLapsedPendingAbilityRequests(ctx context.Context, rowLimit int32) ([]ScanLapsedPendingAbilityRequestsRow, error)
+	// ---------------------------------------------------------------------------
 	// Sweeper and reconciler (internal/assistantrequest). Each is a plain agent
 	// scan, then a per-row compare-and-set in a tenant transaction.
 	// ---------------------------------------------------------------------------
 	ScanLapsedPendingAssistantCachePurgeRequests(ctx context.Context, rowLimit int32) ([]ScanLapsedPendingAssistantCachePurgeRequestsRow, error)
+	// Rows waiting in outcome_unknown whose ledger was not checked in the last
+	// poll interval. The caller sends ability_run{mode:"ledger"} and records the
+	// answer with RecordAbilityRequestOutcome, or the check with
+	// RecordAbilityRequestLedgerCheck.
+	ScanResolvingAbilityRequests(ctx context.Context, arg ScanResolvingAbilityRequestsParams) ([]ScanResolvingAbilityRequestsRow, error)
+	// Sent, no reply recorded, older than the write budget: the worker died
+	// between send and record. Each is moved to outcome_unknown with
+	// MarkAbilityRequestOutcomeUnknown, never retried.
+	ScanStaleDispatchedAbilityRequests(ctx context.Context, arg ScanStaleDispatchedAbilityRequestsParams) ([]ScanStaleDispatchedAbilityRequestsRow, error)
 	ScanStaleDispatchedAssistantCachePurgeRequests(ctx context.Context, arg ScanStaleDispatchedAssistantCachePurgeRequestsParams) ([]ScanStaleDispatchedAssistantCachePurgeRequestsRow, error)
 	// Stamp the in-flight db_clean job id + start time for the watchdog.
 	// Runs under app.agent (cross-tenant scheduled path) or InTenantTx (operator).
@@ -4045,6 +4494,17 @@ type Querier interface {
 	// run this under the per-tenant org_lifecycle advisory lock (see
 	// internal/org/delete_handler.go) so the guard is authoritative, not racy.
 	SoftDeleteTenant(ctx context.Context, tenantID uuid.UUID) (Tenant, error)
+	// m157. Stores the Go-computed canonical entry hash on a WPMgr-owned entry
+	// whose hash is still NULL, and audits it with a NULL actor. Needs no
+	// superadmin: it can only move NULL to a hash, on a source = 'wpmgr' row.
+	// Refusals: P0002 no entry, 22023 not 64 lowercase hex, 42501 not a wpmgr
+	// row, 55000 already stamped (a concurrent stamper lost the race; re-read).
+	StampWpmgrAbilityEntryHash(ctx context.Context, arg StampWpmgrAbilityEntryHashParams) (AbilityCatalogue, error)
+	// m161, m157's stamp for routes. Stores the Go-computed route hash on a route
+	// whose hash is still NULL, and audits it with a NULL actor. Needs no
+	// superadmin. Refusals: 22023 not 64 lowercase hex, P0002 no route, 55000
+	// already stamped (a concurrent stamper lost the race; re-read).
+	StampWpmgrRestRouteHash(ctx context.Context, arg StampWpmgrRestRouteHashParams) (RestRouteCatalogue, error)
 	// assistant_cache_purge_requests (m151): every statement over the request
 	// table, plus the cache_purge_audit statements the AI clear path needs.
 	//
@@ -4421,11 +4881,34 @@ type Querier interface {
 	UpsertScreenshotPending(ctx context.Context, arg UpsertScreenshotPendingParams) (SiteScreenshot, error)
 	// Called by the capture worker (InAgentTx) on a successful capture.
 	UpsertScreenshotReady(ctx context.Context, arg UpsertScreenshotReadyParams) (SiteScreenshot, error)
+	// One refresh's rows for ONE site, in one statement. Run in the site's tenant
+	// transaction, then DeleteStaleSiteAbilityInventory with the same checked_at
+	// in the same transaction, then UpsertSiteAbilityInventoryRun: together they
+	// replace the site's inventory. The arrays are parallel, one element per
+	// ability. Nullable text columns take '' for NULL (pgx cannot carry a NULL
+	// element in []string); the schema and annotation arrays carry JSON text.
+	// owner_oks is text: 'true', 'false' or '' for unknown.
+	UpsertSiteAbilityInventory(ctx context.Context, arg UpsertSiteAbilityInventoryParams) (int64, error)
+	// Records one refresh of one site. Call it in the SAME tenant transaction as
+	// UpsertSiteAbilityInventory and DeleteStaleSiteAbilityInventory, with the
+	// same checked_at and a fresh snapshot_id, so the record and the rows commit
+	// or roll back together.
+	UpsertSiteAbilityInventoryRun(ctx context.Context, arg UpsertSiteAbilityInventoryRunParams) error
 	// Cross-tenant upsert of a site's alert state (app.agent GUC). The probe worker
 	// writes the new transition memory after each probe.
 	UpsertSiteAlertState(ctx context.Context, arg UpsertSiteAlertStateParams) (SiteAlertState, error)
 	// Cross-tenant upsert of a site's app-health alert state (app.agent GUC).
 	UpsertSiteAppAlertState(ctx context.Context, arg UpsertSiteAppAlertStateParams) (SiteAppAlertState, error)
+	// One refresh's rows for ONE site, in one statement. Run in the site's tenant
+	// transaction, then DeleteStaleSiteContentInventory with the same checked_at
+	// in the same transaction: together they replace the site's inventory.
+	// The arrays are parallel, one element per post. Nullable text columns take
+	// '' for NULL (pgx cannot carry a NULL element in []string).
+	UpsertSiteContentInventory(ctx context.Context, arg UpsertSiteContentInventoryParams) (int64, error)
+	// Records one refresh of one site. Call it in the SAME tenant transaction as
+	// UpsertSiteContentInventory and DeleteStaleSiteContentInventory, with the
+	// same checked_at, so the record and the rows commit or roll back together.
+	UpsertSiteContentInventoryRun(ctx context.Context, arg UpsertSiteContentInventoryRunParams) error
 	// Insert-or-update a per-site config row. provider_secret_encrypted uses a
 	// nil-sentinel: when @set_secret is false the existing ciphertext is preserved,
 	// so editing non-secret fields without re-entering the password keeps the stored
@@ -4454,6 +4937,11 @@ type Querier interface {
 	// silent steady-state tick - so the caller can detect "materially worse
 	// since we last said anything" without a second table.
 	UpsertTenantAppAlertBreaker(ctx context.Context, arg UpsertTenantAppAlertBreakerParams) (TenantAppAlertBreaker, error)
+	// ---------------------------------------------------------------------------
+	// Revoke cascade, in the revoke transaction, org-scoped revoker.
+	// ---------------------------------------------------------------------------
+	// Names nobody: decided_by_user_id and decided_at stay NULL.
+	WithdrawPendingAbilityRequestsForGrant(ctx context.Context, arg WithdrawPendingAbilityRequestsForGrantParams) ([]uuid.UUID, error)
 	// ---------------------------------------------------------------------------
 	// Revoke cascade (mcp.Repo.CloseAssistantRequestsForGrantTx), in the revoke
 	// transaction, org-scoped revoker. Pending rows first, then approved rows.

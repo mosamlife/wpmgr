@@ -116,11 +116,17 @@ func TestParseRequestedScopes_RecognisedScopeIsGranted(t *testing.T) {
 // (m150), and each confers what policy.go says and nothing else. A third scope
 // arrives with its own migration and its own review, not by drifting in; this
 // test is the tripwire, and it names the set rather than counting it.
-func TestRecognisedScopes_AreExactlyReadAndCache(t *testing.T) {
-	want := []string{string(ScopeCache), string(ScopeRead)}
+func TestRecognisedScopes_AreExactlyReadCacheAndSite(t *testing.T) {
+	want := []string{string(ScopeCache), string(ScopeRead), string(ScopeSite)}
 	if got := SupportedScopes(); !slices.Equal(got, want) {
 		t.Fatalf("recognised scope registry = %v, want exactly %v; a new scope "+
 			"needs its own migration and review", got, want)
+	}
+	if got := scopeCapabilities[ScopeSite]; !slices.Equal(got, []Capability{CapAbilityRead, CapAbilityRequest}) {
+		t.Fatalf("mcp:site confers %v, want exactly [%s %s]", got, CapAbilityRead, CapAbilityRequest)
+	}
+	if got, want := AdvertisedScopes(), []string{string(ScopeRead), string(ScopeSite), string(ScopeCache)}; !slices.Equal(got, want) {
+		t.Fatalf("AdvertisedScopes() = %v, want exactly %v", got, want)
 	}
 	if got := scopeCapabilities[ScopeCache]; len(got) != 1 || got[0] != CapCachePurge {
 		t.Fatalf("mcp:cache confers %v, want exactly [%s]", got, CapCachePurge)

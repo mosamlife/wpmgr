@@ -8,6 +8,7 @@ import { PageError } from "@/components/feedback/page-error";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMe } from "@/features/auth/use-auth";
 import { AiAreaTabs } from "@/features/ai-requests/ai-area-tabs";
+import { OrgAbilityRequests } from "@/features/ability-requests/org-ability-requests";
 import { RequestCard } from "@/features/ai-requests/request-card";
 import {
   useAssistantRequestPages,
@@ -173,6 +174,7 @@ function AiRequestsPage() {
           )}
         </div>
       )}
+      <OrgAbilityRequests />
     </div>
   );
 }

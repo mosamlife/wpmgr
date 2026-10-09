@@ -7,7 +7,7 @@
 # native codec libs (libaom/dav1d/etc.), so it builds with CGO_ENABLED=1 against
 # a glibc base. The main API NEVER imports the encoder — these are two distinct
 # images by design.
-FROM golang:1.26.6 AS build
+FROM golang:1.26.9 AS build
 
 # CGO ON. linux/amd64 (lilliput ships prebuilt static codec libs for it).
 ENV CGO_ENABLED=1 \
@@ -68,7 +68,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # debian:trixie-slim ships glibc 2.41 + libstdc++ from GCC 14 (identical ABI
 # to distroless/cc-debian13), so the lilliput CGO requirement is still met.
 #
-# CRITICAL: stay on Debian 13 "trixie" to match golang:1.26.6 (also trixie).
+# CRITICAL: stay on Debian 13 "trixie" to match golang:1.26.9 (also trixie).
 # The binary requires GLIBC_2.38+ and GLIBCXX_3.4.32+; a debian12 runtime
 # dies at startup before it can bind $PORT.
 #
@@ -95,6 +95,9 @@ FROM debian:trixie-slim
 #   fonts-noto-cjk        — CJK (Chinese/Japanese/Korean) fallback; prevents
 #                           tofu on Asian-language sites
 #   ca-certificates       — TLS roots for the SSRF-proxy CONNECT tunnel
+#   tini                  — PID 1: reaps orphaned processes and forwards
+#                           signals (see the ENTRYPOINT note at the foot of
+#                           this file)
 #
 # dbus, libnss3, libnspr4, libatk*, libgbm1, libasound2t64, libpango*,
 # libcairo2, libgtk-3* are all pulled as chromium dependencies automatically.
@@ -104,6 +107,7 @@ RUN apt-get update \
         fonts-noto-color-emoji \
         fonts-noto-cjk \
         ca-certificates \
+        tini \
     && ln -s /usr/bin/chromium /usr/bin/chromium-browser \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 65532 nonroot \
@@ -122,4 +126,12 @@ COPY --from=build /out/media-encoder /usr/local/bin/media-encoder
 ENV HOME=/home/nonroot
 USER nonroot:nonroot
 
-ENTRYPOINT ["/usr/local/bin/media-encoder"]
+# PID 1 is tini, not the Go binary. Chromium starts its crash handler through a
+# double fork, and helper processes it leaves behind when the browser exits are
+# orphaned, and the kernel hands every orphan to PID 1. A Go program does not
+# wait on children it did not start itself, so with the binary as PID 1 each
+# exited orphan stayed in the process table as a zombie until the container was
+# restarted (GH #290). tini waits on them, and forwards SIGTERM and SIGINT to
+# the binary, so the shutdown drain in cmd/media-encoder runs exactly as before.
+# scripts/check-media-encoder-reaps.sh checks both against the built image.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/media-encoder"]

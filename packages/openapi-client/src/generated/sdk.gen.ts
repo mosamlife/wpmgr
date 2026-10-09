@@ -116,6 +116,9 @@ import type {
   ApplySiteFileUploadData,
   ApplySiteFileUploadErrors,
   ApplySiteFileUploadResponses,
+  ApproveAbilityRequestData,
+  ApproveAbilityRequestErrors,
+  ApproveAbilityRequestResponses,
   ApproveAssistantRequestData,
   ApproveAssistantRequestErrors,
   ApproveAssistantRequestResponses,
@@ -198,6 +201,9 @@ import type {
   ConfirmTotpEnrollmentData,
   ConfirmTotpEnrollmentErrors,
   ConfirmTotpEnrollmentResponses,
+  CreateAdminAbilityCatalogueEntryData,
+  CreateAdminAbilityCatalogueEntryErrors,
+  CreateAdminAbilityCatalogueEntryResponses,
   CreateApiKeyData,
   CreateApiKeyErrors,
   CreateApiKeyResponses,
@@ -254,6 +260,9 @@ import type {
   CreateUpdateRunData,
   CreateUpdateRunErrors,
   CreateUpdateRunResponses,
+  DeclineAbilityRequestData,
+  DeclineAbilityRequestErrors,
+  DeclineAbilityRequestResponses,
   DeclineAssistantRequestData,
   DeclineAssistantRequestErrors,
   DeclineAssistantRequestResponses,
@@ -341,6 +350,9 @@ import type {
   EnableObjectCacheData,
   EnableObjectCacheErrors,
   EnableObjectCacheResponses,
+  EnableSiteContentEditingData,
+  EnableSiteContentEditingErrors,
+  EnableSiteContentEditingResponses,
   EnrollData,
   EnrollErrors,
   EnrollResponses,
@@ -378,6 +390,9 @@ import type {
   GetAdminAccountsTenancyData,
   GetAdminAccountsTenancyErrors,
   GetAdminAccountsTenancyResponses,
+  GetAdminContentFleetReportData,
+  GetAdminContentFleetReportErrors,
+  GetAdminContentFleetReportResponses,
   GetAdminRevenueData,
   GetAdminRevenueErrors,
   GetAdminRevenueResponses,
@@ -453,6 +468,9 @@ import type {
   GetFleetAgentVersionsData,
   GetFleetAgentVersionsErrors,
   GetFleetAgentVersionsResponses,
+  GetFleetAiReadinessData,
+  GetFleetAiReadinessErrors,
+  GetFleetAiReadinessResponses,
   GetFleetBackupHealthData,
   GetFleetBackupHealthResponses,
   GetFleetDbHealthData,
@@ -535,6 +553,9 @@ import type {
   GetScheduleRunData,
   GetScheduleRunErrors,
   GetScheduleRunResponses,
+  GetSiteAiReadinessData,
+  GetSiteAiReadinessErrors,
+  GetSiteAiReadinessResponses,
   GetSiteAppHealthSettingsData,
   GetSiteAppHealthSettingsErrors,
   GetSiteAppHealthSettingsResponses,
@@ -544,6 +565,12 @@ import type {
   GetSiteAvailableUpdatesData,
   GetSiteAvailableUpdatesErrors,
   GetSiteAvailableUpdatesResponses,
+  GetSiteContentEditingData,
+  GetSiteContentEditingErrors,
+  GetSiteContentEditingResponses,
+  GetSiteContentInventoryData,
+  GetSiteContentInventoryErrors,
+  GetSiteContentInventoryResponses,
   GetSiteContextData,
   GetSiteContextErrors,
   GetSiteContextResponses,
@@ -621,9 +648,21 @@ import type {
   InviteMemberResponses,
   IsolateUnusedMediaData,
   IsolateUnusedMediaResponses,
+  ListAbilityRequestsData,
+  ListAbilityRequestsErrors,
+  ListAbilityRequestsResponses,
+  ListAdminAbilityCatalogueData,
+  ListAdminAbilityCatalogueErrors,
+  ListAdminAbilityCatalogueResponses,
   ListAdminAccountsData,
   ListAdminAccountsErrors,
   ListAdminAccountsResponses,
+  ListAdminContentIntegrationsData,
+  ListAdminContentIntegrationsErrors,
+  ListAdminContentIntegrationsResponses,
+  ListAdminRestRoutesData,
+  ListAdminRestRoutesErrors,
+  ListAdminRestRoutesResponses,
   ListAdminUsersData,
   ListAdminUsersErrors,
   ListAdminUserSitesData,
@@ -723,6 +762,9 @@ import type {
   ListSharedWithMeData,
   ListSharedWithMeErrors,
   ListSharedWithMeResponses,
+  ListSiteAbilityRequestsData,
+  ListSiteAbilityRequestsErrors,
+  ListSiteAbilityRequestsResponses,
   ListSiteActivityData,
   ListSiteActivityResponses,
   ListSiteAssistantRequestsData,
@@ -793,7 +835,6 @@ import type {
   LogoutResponses,
   OidcCallbackData,
   OidcCallbackErrors,
-  OidcCallbackResponses,
   OidcLoginData,
   OidcLoginErrors,
   OptimizeMediaData,
@@ -896,6 +937,15 @@ import type {
   RecheckSiteData,
   RecheckSiteErrors,
   RecheckSiteResponses,
+  ReenableAbilityForTenantData,
+  ReenableAbilityForTenantErrors,
+  ReenableAbilityForTenantResponses,
+  RefreshSiteAiReadinessData,
+  RefreshSiteAiReadinessErrors,
+  RefreshSiteAiReadinessResponses,
+  RefreshSiteContentInventoryData,
+  RefreshSiteContentInventoryErrors,
+  RefreshSiteContentInventoryResponses,
   RefreshSiteDiagnosticsData,
   RefreshSiteDiagnosticsErrors,
   RefreshSiteDiagnosticsResponses,
@@ -1081,12 +1131,21 @@ import type {
   UnblockSiteIpData,
   UnblockSiteIpErrors,
   UnblockSiteIpResponses,
+  UndoAbilityRequestData,
+  UndoAbilityRequestErrors,
+  UndoAbilityRequestResponses,
   UnlinkMyIdentityData,
   UnlinkMyIdentityErrors,
   UnlinkMyIdentityResponses,
   UnlockBackupData,
   UnlockBackupErrors,
   UnlockBackupResponses,
+  UpdateAdminAbilityCatalogueEntryData,
+  UpdateAdminAbilityCatalogueEntryErrors,
+  UpdateAdminAbilityCatalogueEntryResponses,
+  UpdateAdminRestRouteData,
+  UpdateAdminRestRouteErrors,
+  UpdateAdminRestRouteResponses,
   UpdateClientData,
   UpdateClientErrors,
   UpdateClientResponses,
@@ -1108,6 +1167,9 @@ import type {
   UpdateTagData,
   UpdateTagErrors,
   UpdateTagResponses,
+  UpsertAdminContentIntegrationData,
+  UpsertAdminContentIntegrationErrors,
+  UpsertAdminContentIntegrationResponses,
   VerifyAuditData,
   VerifyAuditErrors,
   VerifyAuditResponses,
@@ -1767,15 +1829,17 @@ export const oidcLogin = <ThrowOnError extends boolean = false>(
 
 /**
  * OIDC redirect callback
+ *
+ * The identity provider's return leg, reached by a browser navigation, so a completed sign-in answers with a redirect into the app rather than a response body.
+ *
  */
 export const oidcCallback = <ThrowOnError extends boolean = false>(
   options?: Options<OidcCallbackData, ThrowOnError>,
 ) =>
-  (options?.client ?? client).get<
-    OidcCallbackResponses,
-    OidcCallbackErrors,
-    ThrowOnError
-  >({ url: "/auth/oidc/callback", ...options });
+  (options?.client ?? client).get<unknown, OidcCallbackErrors, ThrowOnError>({
+    url: "/auth/oidc/callback",
+    ...options,
+  });
 
 /**
  * List the social sign-in providers this install offers
@@ -6694,6 +6758,290 @@ export const declineAssistantRequest = <ThrowOnError extends boolean = false>(
   });
 
 /**
+ * List AI site-change requests across the organisation
+ *
+ * This organisation's AI site-change requests the caller can see,
+ * newest first, optionally narrowed to one `state`, with the number
+ * still waiting for a decision (the badge). A site collaborator sees
+ * and counts only requests on their own sites. Requires
+ * `site.content.edit`. `presented_digest` is returned only to a
+ * signed-in person.
+ *
+ */
+export const listAbilityRequests = <ThrowOnError extends boolean = false>(
+  options?: Options<ListAbilityRequestsData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListAbilityRequestsResponses,
+    ListAbilityRequestsErrors,
+    ThrowOnError
+  >({ url: "/api/v1/ai/ability-requests", ...options });
+
+/**
+ * List AI site-change requests for one site
+ *
+ * Requests an AI connection made through `site_ability_run` to change
+ * this site, each through a reviewed write ability and in any state,
+ * newest first. Requires `site.content.edit` and access to the site.
+ * `presented_digest` is returned only to a signed-in person.
+ *
+ */
+export const listSiteAbilityRequests = <ThrowOnError extends boolean = false>(
+  options: Options<ListSiteAbilityRequestsData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    ListSiteAbilityRequestsResponses,
+    ListSiteAbilityRequestsErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/ai/ability-requests", ...options });
+
+/**
+ * Approve one AI site-change request
+ *
+ * Approves one waiting request, once. Only a signed-in person may
+ * approve, and the service re-checks that the person holds the
+ * permission the request names (`operator_permission`) on this site.
+ * The body carries the `presented_digest` the queue returned; a stale
+ * digest is refused with 409. A worker then sends the change to the
+ * site, re-checking everything first.
+ *
+ */
+export const approveAbilityRequest = <ThrowOnError extends boolean = false>(
+  options: Options<ApproveAbilityRequestData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    ApproveAbilityRequestResponses,
+    ApproveAbilityRequestErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/approve",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Decline one AI site-change request
+ *
+ * Declines one waiting request. Only a signed-in person holding the
+ * request's permission on this site may decline. The body must be JSON
+ * (an empty object is fine).
+ *
+ */
+export const declineAbilityRequest = <ThrowOnError extends boolean = false>(
+  options: Options<DeclineAbilityRequestData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    DeclineAbilityRequestResponses,
+    DeclineAbilityRequestErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/decline",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Undo one AI site change
+ *
+ * Undoes a done request inside its undo window, or removes the draft a
+ * failed or given-up page creation left on the site. Offered exactly
+ * when the request's `undo_offered` is true; the server decides which
+ * undo runs from the request's state. For a created page this moves
+ * the draft to the trash, only while it is unchanged and still a
+ * draft. The site takes the page from its own record of this request;
+ * nothing in the call names it. `undo_state` in the answer is the
+ * result: undone, refused_conflict, refused_published or failed. When
+ * the site did not settle the undo (unreachable, or busy with this
+ * request) the answer is 503 `ability_request_undo_retry` and the undo
+ * is offered again.
+ *
+ */
+export const undoAbilityRequest = <ThrowOnError extends boolean = false>(
+  options: Options<UndoAbilityRequestData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    UndoAbilityRequestResponses,
+    UndoAbilityRequestErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/undo",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Turn a reviewed tool back on for this account
+ *
+ * WPMgr switches a reviewed plugin, theme or core read tool off for an
+ * account as soon as it changes something on one of that account's
+ * sites, or contacts another server, during a read. While it is off,
+ * the AI connection is refused with `not_runnable_reason`
+ * `disabled_for_your_account`. This turns it back on for the caller's
+ * account only; a tool switched off for every account stays off until
+ * WPMgr turns it back on. A later report from this account switches it
+ * off again. The caller must be a signed-in admin or owner of the
+ * account with full organisation access, or a WPMgr superadmin. The
+ * change is audited as `ability.tenant_reenabled`.
+ *
+ */
+export const reenableAbilityForTenant = <ThrowOnError extends boolean = false>(
+  options: Options<ReenableAbilityForTenantData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    ReenableAbilityForTenantResponses,
+    ReenableAbilityForTenantErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/ai/abilities/{entryId}/reenable",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Read whether content editing is enabled on a site
+ *
+ * Until content editing is enabled, an AI connection's page-creation
+ * requests for this site are refused. Requires `site.content.read`.
+ *
+ */
+export const getSiteContentEditing = <ThrowOnError extends boolean = false>(
+  options: Options<GetSiteContentEditingData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetSiteContentEditingResponses,
+    GetSiteContentEditingErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/ai/content-editing", ...options });
+
+/**
+ * Enable content editing on a site
+ *
+ * Asks the site's agent to create (or confirm) the WPMgr content service
+ * user that every approved AI change runs as. That user can edit pages
+ * and posts and cannot publish, delete, install plugins, manage users or
+ * change settings. Only a signed-in person may enable it. The body must
+ * be JSON (an empty object is fine).
+ *
+ */
+export const enableSiteContentEditing = <ThrowOnError extends boolean = false>(
+  options: Options<EnableSiteContentEditingData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    EnableSiteContentEditingResponses,
+    EnableSiteContentEditingErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/ai/content-editing/enable",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Whether an AI assistant can work on this site
+ *
+ * A checklist computed by the control plane from what the site last
+ * reported: WordPress and WPMgr agent versions, whether AI page creation
+ * is on, and, for Elementor and Bricks, the version, the AI tools switch
+ * and (Elementor) the Atomic editor. Every row is `pass`, `fail`,
+ * `unknown` or `not_applicable`; an unknown is never a failure. The
+ * response carries no text the site chose: `observed` is a version
+ * string that passed a strict shape check, or null.
+ *
+ * `status` is `needs_attention` when any row in `base` or in an
+ * installed builder group fails (`fix_count` counts them), otherwise
+ * `incomplete` when any row is unknown, otherwise `ready`. The one
+ * exception is `bricks_abilities`: it is inferred from the site's tool
+ * list and has not been confirmed on a licensed Bricks install, so when
+ * it is `pass` or `fail` it is listed with its state and never counted.
+ * When it is `unknown` (the tool list was never read, or was cut short)
+ * it is an ordinary unknown and makes the site `incomplete`.
+ * A builder that is not installed contributes nothing, and neither
+ * does one that is installed but not active: that is a choice, not a
+ * fix, so its version row is `not_applicable` with reason `inactive`.
+ * `warnings` never change `status`.
+ *
+ * Advisory only: no tool call, approval or dispatch reads this result.
+ *
+ * Requires `site:read` and access to the site. Returns 404 for a site
+ * that is not the caller's, is archived, or has never been enrolled.
+ *
+ */
+export const getSiteAiReadiness = <ThrowOnError extends boolean = false>(
+  options: Options<GetSiteAiReadinessData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetSiteAiReadinessResponses,
+    GetSiteAiReadinessErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/ai/readiness", ...options });
+
+/**
+ * AI readiness of every site the caller can see
+ *
+ * One compact row per enrolled, non-archived site: the same `status`
+ * and `fix_count` the per-site route returns, the ids of the failing
+ * rows, and the warning codes. Computed by the same function as the
+ * per-site route, so the two cannot disagree. A site collaborator sees
+ * only the sites shared with them. Requires `site:read`.
+ *
+ */
+export const getFleetAiReadiness = <ThrowOnError extends boolean = false>(
+  options?: Options<GetFleetAiReadinessData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    GetFleetAiReadinessResponses,
+    GetFleetAiReadinessErrors,
+    ThrowOnError
+  >({ url: "/api/v1/fleet/ai-readiness", ...options });
+
+/**
+ * Ask the site to report again
+ *
+ * Queues a fresh metadata report from the site and, when the site's
+ * WPMgr agent can read its tool list, a fresh tool-list read. Returns
+ * 202 at once; the results appear on the next GET within a couple of
+ * minutes. `abilities` is true when a tool-list read was queued by this
+ * call or was already queued within the last two minutes, and false
+ * when the agent is too old to run one. Requires `site.content.refresh`
+ * (operator and above, the same tier as the content inventory refresh)
+ * and access to the site: a viewer can read the result but cannot ask
+ * for a new one. The body must be JSON (an empty object is fine).
+ * Returns 409 `site_unreachable` when the site is not enrolled or its
+ * agent has not been heard from recently.
+ *
+ */
+export const refreshSiteAiReadiness = <ThrowOnError extends boolean = false>(
+  options: Options<RefreshSiteAiReadinessData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    RefreshSiteAiReadinessResponses,
+    RefreshSiteAiReadinessErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/ai/readiness/refresh",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
  * Purge the page cache for a site
  *
  * Purges the whole cache (`scope: all`), a single URL (`scope: url` with
@@ -6820,6 +7168,212 @@ export const getDbHealth = <ThrowOnError extends boolean = false>(
     GetDbHealthErrors,
     ThrowOnError
   >({ url: "/api/v1/sites/{siteId}/perf/db/health", ...options });
+
+/**
+ * Which editor owns each page on a site (Track B S1)
+ *
+ * One page of the site's page-ownership inventory, ordered by `post_id`
+ * ascending. Page it by passing `next_after_post_id` back as
+ * `after_post_id`. Titles are the site's own text and are returned only
+ * to callers holding `site.content.read`; `titles_included` says which
+ * applies. A site whose agent is below `min_agent_version` answers 200
+ * with `state: agent_update_needed` and no rows, never an error.
+ * `verdict` and `route_reason` are open strings: a client must render an
+ * unknown value as "Not available yet".
+ *
+ */
+export const getSiteContentInventory = <ThrowOnError extends boolean = false>(
+  options: Options<GetSiteContentInventoryData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetSiteContentInventoryResponses,
+    GetSiteContentInventoryErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/content/inventory", ...options });
+
+/**
+ * Ask for a fresh page-ownership check of a site
+ *
+ * Queues a check; the result appears in the inventory once it runs.
+ * Rate limited per site: a second request inside the window answers 429
+ * with `Retry-After`.
+ *
+ */
+export const refreshSiteContentInventory = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<RefreshSiteContentInventoryData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    RefreshSiteContentInventoryResponses,
+    RefreshSiteContentInventoryErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/content/inventory/refresh", ...options });
+
+/**
+ * Fleet share of page editors (superadmin)
+ *
+ * Counts across every tenant: pages and sites per verdict and route, and
+ * builder pages per builder and version. Counts only; no titles or
+ * tenant identifiers.
+ *
+ */
+export const getAdminContentFleetReport = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<GetAdminContentFleetReportData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    GetAdminContentFleetReportResponses,
+    GetAdminContentFleetReportErrors,
+    ThrowOnError
+  >({ url: "/api/v1/admin/content/fleet-report", ...options });
+
+/**
+ * The page-builder allowlist (superadmin)
+ */
+export const listAdminContentIntegrations = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<ListAdminContentIntegrationsData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListAdminContentIntegrationsResponses,
+    ListAdminContentIntegrationsErrors,
+    ThrowOnError
+  >({ url: "/api/v1/admin/content/integrations", ...options });
+
+/**
+ * Create or update one allowlist row (superadmin)
+ *
+ * The acting user is the authenticated session, never a body field. The
+ * server computes `integration_entry_sha256` (sha256 of the canonical
+ * JSON of the whole entry) and the database records an audit row.
+ *
+ */
+export const upsertAdminContentIntegration = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<UpsertAdminContentIntegrationData, ThrowOnError>,
+) =>
+  (options.client ?? client).put<
+    UpsertAdminContentIntegrationResponses,
+    UpsertAdminContentIntegrationErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/admin/content/integrations/{integrationId}",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * The reviewed-ability catalogue (superadmin)
+ */
+export const listAdminAbilityCatalogue = <ThrowOnError extends boolean = false>(
+  options?: Options<ListAdminAbilityCatalogueData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListAdminAbilityCatalogueResponses,
+    ListAdminAbilityCatalogueErrors,
+    ThrowOnError
+  >({ url: "/api/v1/admin/abilities/catalogue", ...options });
+
+/**
+ * Add one catalogue entry (superadmin)
+ *
+ * The acting user is the authenticated session, never a body field. The
+ * server stamps `entry_sha256` and the database records an audit row.
+ *
+ */
+export const createAdminAbilityCatalogueEntry = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<CreateAdminAbilityCatalogueEntryData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    CreateAdminAbilityCatalogueEntryResponses,
+    CreateAdminAbilityCatalogueEntryErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/admin/abilities/catalogue",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Update one catalogue entry (superadmin)
+ *
+ * Omitted fields keep their stored values; the merge happens in the
+ * write's transaction under the entry's lock. The acting user is the
+ * authenticated session. The server re-stamps `entry_sha256`.
+ *
+ */
+export const updateAdminAbilityCatalogueEntry = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<UpdateAdminAbilityCatalogueEntryData, ThrowOnError>,
+) =>
+  (options.client ?? client).put<
+    UpdateAdminAbilityCatalogueEntryResponses,
+    UpdateAdminAbilityCatalogueEntryErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/admin/abilities/catalogue/{entryId}",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * The reviewed REST route catalogue (superadmin)
+ *
+ * Every route, enabled or not. `hash_current` is false when the stored
+ * `route_sha256` is unset or no longer reproduces from the row; such a
+ * route is not offered and nothing is sent against it.
+ *
+ */
+export const listAdminRestRoutes = <ThrowOnError extends boolean = false>(
+  options?: Options<ListAdminRestRoutesData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListAdminRestRoutesResponses,
+    ListAdminRestRoutesErrors,
+    ThrowOnError
+  >({ url: "/api/v1/admin/abilities/rest-routes", ...options });
+
+/**
+ * Edit one reviewed REST route (superadmin)
+ *
+ * Omitted fields keep their stored values; the merge happens in the
+ * write's transaction under the route's lock. The acting user is the
+ * authenticated session. The server stamps a new `route_sha256` from the
+ * edited row, so every request approved against the old route closes
+ * unsent (route_changed, or route_disabled for a disable).
+ *
+ */
+export const updateAdminRestRoute = <ThrowOnError extends boolean = false>(
+  options: Options<UpdateAdminRestRouteData, ThrowOnError>,
+) =>
+  (options.client ?? client).put<
+    UpdateAdminRestRouteResponses,
+    UpdateAdminRestRouteErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/admin/abilities/rest-routes/{routeId}",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
 
 /**
  * On-demand orphan-artifact classification report (P3.5, read-only)

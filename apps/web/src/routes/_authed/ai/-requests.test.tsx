@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import type { AssistantRequest, AssistantRequestList, Me } from "@wpmgr/api";
 
 import { createTestQueryClient, renderWithProviders } from "@/test/render";
@@ -16,8 +16,10 @@ import { Route } from "./requests";
 // proves the hook, the component and the click handler agree with each
 // other, not just each in isolation.
 
-const { listMock, approveMock, declineMock } = vi.hoisted(() => ({
+const { listMock, abilityListMock, approveAbilityMock, approveMock, declineMock } = vi.hoisted(() => ({
   listMock: vi.fn(),
+  abilityListMock: vi.fn(),
+  approveAbilityMock: vi.fn(),
   approveMock: vi.fn(),
   declineMock: vi.fn(),
 }));
@@ -27,6 +29,8 @@ vi.mock("@wpmgr/api", async (importOriginal) => {
   return {
     ...actual,
     listAssistantRequests: listMock,
+    listAbilityRequests: abilityListMock,
+    approveAbilityRequest: approveAbilityMock,
     listSiteAssistantRequests: vi.fn().mockResolvedValue({
       data: { requests: [], pending_count: 0, limit: 50, offset: 0 },
       error: undefined,
@@ -104,9 +108,44 @@ function ok(data: unknown) {
 }
 
 beforeEach(() => {
+  abilityListMock.mockReset();
+  approveAbilityMock.mockReset();
+  abilityListMock.mockReturnValue(ok({ requests: [], pending_count: 0, limit: 50, offset: 0 }));
   listMock.mockReset();
   approveMock.mockReset();
   declineMock.mockReset();
+});
+
+describe("/ai/requests AI requests section on a failed load", () => {
+  it("hides the section quietly on a 403 (no site.content.edit)", async () => {
+    listMock.mockReturnValue(ok(list([])));
+    abilityListMock.mockReturnValue(
+      Promise.resolve({
+        data: undefined,
+        error: { code: "forbidden", message: "forbidden" },
+        response: { status: 403 },
+      }),
+    );
+    renderPage();
+    expect(await screen.findByTestId("ai-requests-empty")).toBeInTheDocument();
+    await waitFor(() => expect(abilityListMock).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(/could not load ai requests/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("org-ability-requests")).not.toBeInTheDocument();
+  });
+
+  it("still reports a 500", async () => {
+    listMock.mockReturnValue(ok(list([])));
+    abilityListMock.mockReturnValue(
+      Promise.resolve({
+        data: undefined,
+        error: { code: "internal", message: "boom" },
+        response: { status: 500 },
+      }),
+    );
+    renderPage();
+    expect(await screen.findByText(/could not load ai requests/i)).toBeInTheDocument();
+  });
 });
 
 describe("/ai/requests renders the queue", () => {
@@ -345,6 +384,89 @@ describe("a failed background refresh", () => {
     fireEvent.click(screen.getByTestId("ai-requests-refresh-retry"));
     await waitFor(() =>
       expect(screen.queryByTestId("ai-requests-refresh-error")).not.toBeInTheDocument(),
+    );
+  });
+});
+
+function abilityReq(over: Record<string, unknown>) {
+  return {
+    id: "ab-1",
+    site_id: "site-1",
+    ability_name: "wpmgr/page-create",
+    input_json: JSON.stringify({
+      post_type: "page",
+      editor: "wordpress_blocks",
+      title: "Spring sale",
+      outline: [{ type: "paragraph", text: "Big savings." }],
+    }),
+    effect_copy: "draft",
+    snapshot: "{}",
+    site_label: "Shop One",
+    site_host: "one.example",
+    grant_label: "Claude",
+    grant_via: "mcp",
+    card_copy_version: 1,
+    presented_digest: "dig-1",
+    state: "pending",
+    created_at: "2026-10-01T10:00:00Z",
+    expires_at: "2026-10-01T11:00:00Z",
+    post_type: "page",
+    undo_offered: false,
+    resolve_gave_up: false,
+    ...over,
+  };
+}
+
+describe("/ai/requests page requests from every site", () => {
+  it("lists page requests from two sites with a link to each Content tab, and the badge adds pending_count", async () => {
+    listMock.mockReturnValue(ok(list([pendingRequest()], 1)));
+    abilityListMock.mockReturnValue(
+      ok({
+        requests: [
+          abilityReq({ id: "ab-1", site_id: "site-1", site_label: "Shop One" }),
+          abilityReq({ id: "ab-2", site_id: "site-2", site_label: "Shop Two", site_host: "two.example", presented_digest: "dig-2" }),
+        ],
+        pending_count: 2,
+        limit: 50,
+        offset: 0,
+      }),
+    );
+    renderPage();
+    const one = await screen.findByRole("article", { name: /Create a draft page · Shop One/ });
+    const two = await screen.findByRole("article", { name: /Create a draft page · Shop Two/ });
+    expect(one).toBeInTheDocument();
+    expect(two).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open the Content tab for Shop One" })).toHaveAttribute(
+      "href",
+      "/sites/site-1/content",
+    );
+    expect(screen.getByRole("link", { name: "Open the Content tab for Shop Two" })).toHaveAttribute(
+      "href",
+      "/sites/site-2/content",
+    );
+    // 1 cache-clear request waiting plus 2 page requests waiting.
+    expect(await screen.findByRole("link", { name: "Requests · 3" })).toBeInTheDocument();
+  });
+
+  it("approve on a page request posts to that request's own site", async () => {
+    listMock.mockReturnValue(ok(list([], 0)));
+    abilityListMock.mockReturnValue(
+      ok({
+        requests: [abilityReq({ id: "ab-2", site_id: "site-2", site_label: "Shop Two", presented_digest: "dig-2" })],
+        pending_count: 1,
+        limit: 50,
+        offset: 0,
+      }),
+    );
+    approveAbilityMock.mockReturnValue(ok(abilityReq({ id: "ab-2", state: "approved" })));
+    renderPage();
+    const card = await screen.findByRole("article", { name: /Shop Two/ });
+    fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
+    await waitFor(() =>
+      expect(approveAbilityMock).toHaveBeenCalledWith({
+        path: { siteId: "site-2", requestId: "ab-2" },
+        body: { presented_digest: "dig-2" },
+      }),
     );
   });
 });

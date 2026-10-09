@@ -41,6 +41,11 @@ export const CAPABILITY_LABELS = {
   // property that makes this row impossible to render next to the reads by
   // accident.
   "mcp.cache.purge": "Ask to clear the site cache",
+  // The site-tools engine (scope mcp:site). The first is a read that is NOT in
+  // any preset, because it can return page text; the second is a request, like
+  // the cache row: nothing runs until a person approves it in WPMgr.
+  "mcp.ability.read": "See this site's tools and read its published pages",
+  "mcp.ability.request": "Ask to make changes through the site's tools. You approve each one.",
 } as const satisfies Readonly<Record<string, string>>;
 
 /** A capability wire string this build's vocabulary knows. */
@@ -64,7 +69,11 @@ export const KNOWN_CAPABILITIES: readonly Capability[] = Object.keys(
  * the same "one list, derived everywhere else" property CAPABILITY_DESCRIPTIONS
  * already holds, extended to the one distinction that decides which of the two
  * visibly separate groups a row renders in (design v7 S2.1: "write rows
- * visibly distinct, never pre-ticked, in no preset").
+ * visibly distinct, never pre-ticked, in no preset"). That holds exactly for
+ * mcp.cache.purge, on the wizard and on the consent screen. The site-tools rows
+ * are in no preset either, but their opening state differs by surface: the
+ * connection wizard opens them clear, and the consent screen opens them ticked
+ * when the requesting app asked for mcp:site and the server offers them.
  *
  * "write" IS NOT "this runs unattended". Every write capability in this
  * vocabulary gates its own call behind a person approving a specific request
@@ -82,7 +91,73 @@ export const CAPABILITY_KIND: Readonly<Record<Capability, "read" | "write">> = {
   "mcp.diagnostics.read": "read",
   "mcp.content.read": "read",
   "mcp.cache.purge": "write",
+  "mcp.ability.read": "read",
+  "mcp.ability.request": "write",
 };
+
+/**
+ * The two site-tools capabilities. They render in their own box (see
+ * AbilityCapabilityBox), never in the plain read list and never in a preset:
+ * the read can return page text. The connection wizard opens both rows clear.
+ * The consent screen opens both ticked when the requesting app asked for
+ * mcp:site and the server offers them, and the person can clear either one.
+ * The request needs the read, on both surfaces: see nextAbilityTicks.
+ */
+export const ABILITY_CAPABILITIES = ["mcp.ability.read", "mcp.ability.request"] as const;
+
+export function isAbilityCapability(capability: string): boolean {
+  return (ABILITY_CAPABILITIES as readonly string[]).includes(capability);
+}
+
+/**
+ * `names` without "ask for changes" unless "see what the site can do" is in the
+ * list too. This is the one payload rule for the pair, shared by the consent
+ * approval and the wizard's mint request: a connection holding the request alone
+ * cannot call the tool that carries one, so a list that holds it alone must not
+ * be sent as it stands. Returns the same list when nothing has to go.
+ */
+export function withoutOrphanedRequest(names: readonly string[]): readonly string[] {
+  if (names.includes("mcp.ability.request") && !names.includes("mcp.ability.read")) {
+    return names.filter((name) => name !== "mcp.ability.request");
+  }
+  return names;
+}
+
+/** One of the two site-tools rows: "see what the site can do", or "ask for changes". */
+export type AbilityRow = "read" | "request";
+
+/** Whether each of the two site-tools rows is ticked. */
+export interface AbilityTicks {
+  readonly read: boolean;
+  readonly request: boolean;
+}
+
+/**
+ * The two site-tools rows after the person sets one of them.
+ *
+ * "ASK FOR CHANGES" NEEDS "SEE WHAT THE SITE CAN DO". The tool that carries a
+ * request is declared with the read capability, so a connection holding the
+ * request alone cannot call it. The two rows therefore move together in two
+ * directions and stay independent in the others:
+ *
+ *   - ticking the request ticks the read;
+ *   - clearing the read clears the request;
+ *   - clearing the request leaves the read as it was;
+ *   - ticking the read leaves the request as it was.
+ *
+ * The result never has the request ticked without the read, whatever `current`
+ * held.
+ */
+export function nextAbilityTicks(
+  current: AbilityTicks,
+  row: AbilityRow,
+  ticked: boolean,
+): AbilityTicks {
+  if (row === "request") {
+    return ticked ? { read: true, request: true } : { read: current.read, request: false };
+  }
+  return ticked ? { read: true, request: current.request } : { read: false, request: false };
+}
 
 /**
  * The kind of a capability wire string, for a name this build may not know.
@@ -144,7 +219,9 @@ export const CAPABILITY_DESCRIPTIONS: Readonly<Record<Capability, string>> = {
   // creates a request, and nothing runs until a person allowed to clear
   // caches on that site approves it in WPMgr (ADR-061 option B). The wizard
   // and the consent screen render this row in its own bordered group, never
-  // pre-ticked and never part of a preset (design v7 S2.1, S6 row W1).
+  // pre-ticked on either surface and never part of a preset (design v7 S2.1,
+  // S6 row W1). The two site-tools rows follow a different opening rule: see
+  // ABILITY_CAPABILITIES.
   "mcp.cache.purge":
     "Ask to clear the page cache on one site at a time, for the whole site or one page " +
     "address. Nothing runs until someone allowed to clear caches on that site approves " +
@@ -152,6 +229,14 @@ export const CAPABILITY_DESCRIPTIONS: Readonly<Record<Capability, string>> = {
     "site. It skips every hosting cache, because WPMgr has not yet confirmed that any " +
     "of them clears only this site, so visitors may still get cached pages from the " +
     "host until they expire. Pages load slower until the cache refills.",
+  "mcp.ability.read":
+    "List the tools a site offers, describe one, and run the ones WPMgr has reviewed as " +
+    "read-only, such as reading a published page. This can return the text of pages on " +
+    "the sites you chose. It changes nothing.",
+  "mcp.ability.request":
+    "Ask to make a change through one of a site's reviewed tools. Nothing runs until " +
+    "someone allowed to edit that site's content approves the request in WPMgr. You " +
+    "approve each request one at a time.",
 } as const;
 
 /**
@@ -179,7 +264,7 @@ export const CAPABILITY_DESCRIPTIONS: Readonly<Record<Capability, string>> = {
  * CONFERRABLE_CAPABILITIES below.
  */
 export const CONFERRABLE_READS: readonly Capability[] = KNOWN_CAPABILITIES.filter(
-  (c) => c !== "mcp.content.read" && CAPABILITY_KIND[c] === "read",
+  (c) => c !== "mcp.content.read" && !isAbilityCapability(c) && CAPABILITY_KIND[c] === "read",
 );
 
 /**

@@ -1,0 +1,257 @@
+import type { AbilityRequest } from "@wpmgr/api";
+
+// Fixture rows for the AI page-create approval card, held to the states the
+// database allows. A test that builds a row the table would refuse proves
+// nothing about a screen a person can reach, so every row built here is checked
+// against the CHECK constraints it could trip:
+//
+//   m156 (assistant_ability_requests): the ten states, decided_at on exactly the
+//     decided states and inside the window, the outcome each state may carry,
+//     not_sent_reason iff outcome not_sent, ledger refs (created_post_id,
+//     restored, trashed) only on done, failed and outcome_unknown rows,
+//     grant_via in (token, browser_sign_in), site_host printable ASCII.
+//   m158: undo_state on done rows, or on failed and outcome_unknown rows that
+//     name a created post.
+//   m161: route_id, route_sha256 and card_facts belong to wpmgr/rest-write rows
+//     only (a page-create row carries none of them).
+//   The control plane (apps/api/internal/mcp/ability_write.go): card copy
+//     version 2 when the outline holds a block beyond heading, paragraph and
+//     list, else 1; the editor column is the input's editor; and page_media is
+//     the request's distinct image ids in document order
+//     (apps/api/internal/abilityrequest/handler.go pageMediaFor), or null.
+//   page_builder (handler.go pageBuilderFor) is null except on a page-create
+//     row whose editor is builder:elementor, and holds what the control
+//     plane's reader returns (mcp/page_create_input.go readPageCardBuilder):
+//     builder elementor, format classic, layout containers or sections, a
+//     version of the checked shape. It is null on an Elementor row whose
+//     stored facts do not read back.
+
+const STATES = [
+  "pending",
+  "approved",
+  "declined",
+  "expired",
+  "withdrawn",
+  "dispatched",
+  "done",
+  "failed",
+  "not_sent",
+  "outcome_unknown",
+] as const;
+const DECIDED = new Set(["approved", "declined", "dispatched", "done", "failed", "not_sent", "outcome_unknown"]);
+const SENT = new Set(["done", "failed", "outcome_unknown"]);
+const NOT_SENT_REASONS = new Set([
+  "grant_inactive",
+  "assistant_paused",
+  "organisation_deleted",
+  "capability_not_held",
+  "site_absent",
+  "forbidden_by_context",
+  "agent_outdated",
+  "dispatch_deadline_passed",
+  "transport_pre_send",
+  "entry_changed",
+  "entry_disabled",
+  "route_changed",
+  "route_disabled",
+]);
+const UNDO_STATES = new Set(["available", "in_progress", "undone", "refused_conflict", "refused_published", "failed"]);
+
+/** The v1 block types: anything else makes the request card copy version 2. */
+const V1_TYPES = new Set(["heading", "paragraph", "list"]);
+
+export type PageMediaRow = NonNullable<AbilityRequest["page_media"]>[number];
+
+/** Image ids of an input in document order, distinct, depth first. */
+export function imageIdsOf(inputJson: string): number[] {
+  const ids: number[] = [];
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+    } else if (node !== null && typeof node === "object") {
+      const o = node as Record<string, unknown>;
+      if (o.type === "image" && typeof o.attachment_id === "number" && !ids.includes(o.attachment_id)) {
+        ids.push(o.attachment_id);
+      }
+      for (const v of Object.values(o)) walk(v);
+    }
+  };
+  walk(JSON.parse(inputJson));
+  return ids;
+}
+
+function usesLayoutBlock(inputJson: string): boolean {
+  let layout = false;
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+    } else if (node !== null && typeof node === "object") {
+      const o = node as Record<string, unknown>;
+      if (typeof o.type === "string" && !V1_TYPES.has(o.type)) layout = true;
+      for (const v of Object.values(o)) walk(v);
+    }
+  };
+  const outline = (JSON.parse(inputJson) as { outline?: unknown }).outline;
+  walk(outline);
+  return layout;
+}
+
+/** Throws when a row is a state the database (or the control plane) would not store. */
+export function assertDbShape(r: AbilityRequest): void {
+  const fail = (why: string): never => {
+    throw new Error(`fixture row ${r.id} is not a state the database allows: ${why}`);
+  };
+  if (!(STATES as readonly string[]).includes(r.state)) fail(`state ${r.state}`);
+  if (DECIDED.has(r.state) !== (r.decided_at != null)) fail("decided_at must be set on exactly the decided states");
+  if (r.decided_at != null && DECIDED.has(r.state) && r.state !== "declined") {
+    if (!(Date.parse(r.decided_at) < Date.parse(r.expires_at))) fail("an approval must fall inside the window");
+  }
+  if (!(Date.parse(r.expires_at) > Date.parse(r.created_at))) fail("expires_at must be after created_at");
+
+  const outcomeOk =
+    r.state === "done"
+      ? r.outcome === "created" || r.outcome === "applied"
+      : r.state === "failed"
+        ? r.outcome === "refused" || r.outcome === "verify_mismatch" || r.outcome === "failed"
+        : r.state === "not_sent"
+          ? r.outcome === "not_sent"
+          : r.state === "outcome_unknown"
+            ? r.outcome == null || r.outcome === "outcome_unknown"
+            : r.outcome == null;
+  if (!outcomeOk) fail(`outcome ${String(r.outcome)} on a ${r.state} row`);
+  if (r.outcome_code != null && r.outcome == null) fail("outcome_code needs an outcome");
+  if (r.outcome_code != null && !/^[a-z][a-z0-9_]{0,63}$/.test(r.outcome_code)) fail("outcome_code shape");
+  if ((r.outcome === "not_sent") !== (r.not_sent_reason != null)) fail("not_sent_reason belongs to not_sent rows only");
+  if (r.not_sent_reason != null && !NOT_SENT_REASONS.has(r.not_sent_reason)) fail("not_sent_reason value");
+
+  if (r.created_post_id != null && !(Number.isInteger(r.created_post_id) && r.created_post_id > 0)) {
+    fail("created_post_id must be a positive integer");
+  }
+  if (r.outcome === "created" && r.created_post_id == null) fail("a created outcome names its post");
+  if ((r.created_post_id != null || r.restored != null || r.trashed != null) && !SENT.has(r.state)) {
+    fail("ledger refs belong to done, failed and outcome_unknown rows");
+  }
+
+  if (r.undo_state != null) {
+    if (!UNDO_STATES.has(r.undo_state)) fail("undo_state value");
+    const recovery = (r.state === "failed" || r.state === "outcome_unknown") && r.created_post_id != null;
+    if (r.state !== "done" && !recovery) fail("an undo needs a done row, or a failed row that names a created post");
+  }
+  if ((r.undo_state == null) !== (r.undo_available_until == null)) fail("undo_available_until goes with undo_state");
+
+  if (r.ability_name !== "wpmgr/rest-write" && (r.route_id != null || r.route_sha256 != null || r.card_facts != null)) {
+    fail("route_id, route_sha256 and card_facts belong to wpmgr/rest-write rows");
+  }
+  if (!/^[!-~]{1,255}$/.test(r.site_host)) fail("site_host must be printable ASCII with no spaces");
+  if (!["token", "browser_sign_in"].includes(r.grant_via)) fail("grant_via");
+  if (r.presented_digest !== undefined && !/^[0-9a-f]{64}$/.test(r.presented_digest)) fail("presented_digest shape");
+
+  if (r.ability_name === "wpmgr/page-create") {
+    const wantVersion = usesLayoutBlock(r.input_json) ? 2 : 1;
+    if (r.card_copy_version !== wantVersion) fail(`card_copy_version must be ${wantVersion} for this outline`);
+    if (r.page_media != null) {
+      const ids = imageIdsOf(r.input_json);
+      const got = r.page_media.map((m) => m.id);
+      if (JSON.stringify(ids) !== JSON.stringify(got)) fail("page_media must list the outline's distinct image ids in order");
+    }
+    const editor = inputEditor(r.input_json);
+    if (r.editor !== editor) fail("the editor column is the input's editor");
+    if (r.page_builder != null) {
+      if (editor !== ELEMENTOR) fail("page_builder belongs to a page Elementor builds");
+      const b = r.page_builder;
+      if (
+        Object.keys(b).length !== 4 ||
+        b.builder !== "elementor" ||
+        b.format !== "classic" ||
+        (b.layout !== "containers" && b.layout !== "sections") ||
+        !/^[0-9]{1,4}\.[0-9]{1,4}(\.[0-9]{1,4})?([.-][0-9A-Za-z]{1,16}){0,2}$/.test(b.version)
+      ) {
+        fail("page_builder must be a value the control plane's reader returns");
+      }
+    }
+  } else if (r.page_media != null || r.page_builder != null) {
+    fail("page_media and page_builder are for wpmgr/page-create rows only");
+  }
+}
+
+const ELEMENTOR = "builder:elementor";
+
+/** The editor an input names, as the control plane records it. */
+function inputEditor(inputJson: string): string | null {
+  const editor = (JSON.parse(inputJson) as { editor?: unknown }).editor;
+  return typeof editor === "string" ? editor : null;
+}
+
+export interface PageInput {
+  title?: string;
+  post_type?: "page" | "post";
+  editor?: "wordpress_blocks" | "wordpress_classic" | "builder:elementor";
+  elementor_format?: "site_default" | "classic" | "atomic";
+  outline: unknown[];
+}
+
+export function pageInput(input: PageInput): string {
+  return JSON.stringify({
+    post_type: input.post_type ?? "page",
+    editor: input.editor ?? "wordpress_blocks",
+    title: input.title ?? "Spring menu",
+    outline: input.outline,
+    ...(input.elementor_format === undefined ? {} : { elementor_format: input.elementor_format }),
+  });
+}
+
+export type PageBuilderRow = NonNullable<AbilityRequest["page_builder"]>;
+
+/** The page_builder of a page Elementor builds, as the control plane returns it. */
+export function elementorFacts(over: Partial<PageBuilderRow> = {}): PageBuilderRow {
+  return { builder: "elementor", format: "classic", version: "3.35.9", layout: "containers", ...over };
+}
+
+/** What the site reported for an attachment (the page_media fact shape). */
+export function mediaFact(id: number, over: Partial<PageMediaRow> = {}): PageMediaRow {
+  return { id, filename: `photo-${id}.jpg`, mime: "image/jpeg", width: 1200, height: 800, ...over };
+}
+
+export const SITE_HOST = "example.com";
+
+/**
+ * A wpmgr/page-create row as the queue returns it. The default is a pending
+ * text-only request; pass `input_json` (from pageInput) for a layout. The card
+ * copy version follows the outline and page_media follows `media` (null when
+ * the outline places no image), as the control plane writes them.
+ */
+export function pageCreateRow(
+  over: Partial<AbilityRequest> & { media?: PageMediaRow[] | null } = {},
+): AbilityRequest {
+  const { media, ...rest } = over;
+  const input_json = rest.input_json ?? pageInput({ outline: [{ type: "paragraph", text: "Big savings." }] });
+  const layout = usesLayoutBlock(input_json);
+  const row: AbilityRequest = {
+    id: "pc-1",
+    site_id: "site-1",
+    ability_name: "wpmgr/page-create",
+    input_json,
+    title_excerpt: "Spring menu",
+    editor: inputEditor(input_json),
+    post_type: "page",
+    effect_copy: "draft",
+    snapshot: "created_post_trash",
+    site_label: "Shop One",
+    site_host: SITE_HOST,
+    grant_label: "Claude",
+    grant_via: "token",
+    setup_client: "claude-code",
+    card_copy_version: layout ? 2 : 1,
+    presented_digest: "c".repeat(64),
+    state: "pending",
+    created_at: "2026-10-01T09:55:00Z",
+    expires_at: "2026-10-01T11:00:00Z",
+    undo_offered: false,
+    resolve_gave_up: false,
+    page_media: media === undefined ? null : media,
+    page_builder: null,
+    ...rest,
+  };
+  assertDbShape(row);
+  return row;
+}

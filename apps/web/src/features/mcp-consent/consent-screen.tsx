@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle, ShieldAlert } from "lucide-react";
+import { AlertTriangle, Info, ShieldAlert } from "lucide-react";
 import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
@@ -13,9 +13,19 @@ import { cn } from "@/lib/utils";
 import {
   allCapabilityEffectsKnown,
   allScopesRecognised,
+  asksBeyondReading,
+  asksForSiteTools,
   buildApprovalCapabilities,
+  CAPABILITY_EFFECT_READ,
+  CAPABILITY_EFFECT_REQUEST,
+  describeChangeLimit,
   describeScope,
+  initialSelection,
+  offeredReads,
+  requestCapabilitiesIn,
   SCOPE_CACHE,
+  SCOPE_READ,
+  SCOPE_SITE,
   type ConsentContext,
   type SelfAsserted,
 } from "./consent-context";
@@ -30,7 +40,13 @@ import {
   type SiteScopeMode,
 } from "./site-scope";
 import { SiteEnforcementBox } from "./site-enforcement-box";
+import { AbilityCapabilityBox } from "@/features/ai-connections/ability-capability-box";
 import { CachePurgeCapabilityBox } from "@/features/ai-connections/cache-purge-capability-box";
+import {
+  withAbilityTicks,
+  withCapability,
+} from "@/features/ai-connections/capability-presets";
+import { ReadCapabilityPicker } from "@/features/ai-connections/read-capability-picker";
 
 // The consent screen (design Step 7).
 //
@@ -41,12 +57,52 @@ import { CachePurgeCapabilityBox } from "@/features/ai-connections/cache-purge-c
 // beats euphemistic here".
 //
 // Each checklist item is marked below with the section that discharges it. The
-// "propose" item is deliberately left undischarged: no capability in the
-// shipped vocabulary does anything but read (the capability CHECK constraint
-// admits only members ending `.read`; see migration m131), so there is no
-// propose behaviour for this screen to describe.
+// "propose" item is discharged by the ask rows: mcp.cache.purge and
+// mcp.ability.request are the vocabulary's request capabilities, and each only
+// ever creates a request that a person approves in WPMgr. What the screen says
+// the connection can change is worded from the capabilities the approval will
+// carry (the list the request is built from), never from what the app asked
+// for, so it says "read-only" only while no request capability is ticked.
 
 export const REVOKE_LOCATION = "Settings, under AI connections";
+
+/**
+ * The sentences shown when the server withheld scopes the app asked for
+ * (`unregistered_scopes` on the consent payload).
+ *
+ * An AI app keeps the registration it made the first time it was connected, and
+ * that registration lists what it may ever ask for. A scope it did not register
+ * for cannot be given from this screen: the only way to ask again is to register
+ * again, which for a standard MCP client means removing WPMgr from the app and
+ * adding it back. So the sentence says that, and offers no tick, because there
+ * is nothing here to tick.
+ *
+ * TWO SENTENCES, CHOSEN BY MEMBERSHIP. A registration can hold mcp:site and lack
+ * mcp:cache. For that app this screen already offers site tools, so a sentence
+ * promising site tools after a reinstall would send the user to remove an app
+ * that has the access they came for. The site sentence is therefore shown only
+ * when mcp:site itself was withheld. Any other withheld scope gets the general
+ * sentence, which names no scope and no tool.
+ */
+export const UNREGISTERED_SITE_TOOLS_NOTICE =
+  "This AI app was connected before WPMgr offered site tools. To give it site tools, remove WPMgr from the app and add it again.";
+
+export const UNREGISTERED_OTHER_SCOPES_NOTICE =
+  "This AI app was connected before WPMgr offered some of the permissions it is asking for. To give it those, remove WPMgr from the app and add it again.";
+
+/**
+ * Which sentence, if any, explains the withheld scopes. Membership decides:
+ * mcp:site anywhere in the list selects the site sentence, any other non-empty
+ * list selects the general one, and an empty list selects none. Order and length
+ * change nothing. The scope strings are never rendered, so a value the server
+ * sends that this dashboard has never heard of cannot reach the page.
+ */
+function unregisteredScopesNotice(unregistered: readonly string[]): string | null {
+  if (unregistered.length === 0) return null;
+  return unregistered.includes(SCOPE_SITE)
+    ? UNREGISTERED_SITE_TOOLS_NOTICE
+    : UNREGISTERED_OTHER_SCOPES_NOTICE;
+}
 
 // ---------------------------------------------------------------------------
 // Checklist item 1: which client is asking
@@ -164,31 +220,59 @@ function SelfAssertedSite({ value }: { value: SelfAsserted }) {
 // Checklist items 2, 3 and 4: what it may read, what it may ask for, and that
 // it cannot approve anything
 //
+// What it may READ is chosen here, in the same picker the connection wizard
+// uses, and the approval sends exactly the ticks. The picker opens on the
+// wizard's default preset, not on every read the server offered.
+//
 // "Ask", not "propose". mcp.cache.purge (design v7, ADR-061 option B) is the
 // vocabulary's one member that is not a read: calling its tool writes a
 // pending request and changes nothing by itself. It is rendered below in its
 // own bordered box (design v7 S2.2 "the same write box and label as 2.1"),
-// never folded into the read bullets above it and never pre-ticked, so the
+// never folded into the read rows above it and never pre-ticked, so the
 // two are never mistaken for one another on this screen.
 // ---------------------------------------------------------------------------
 
 function PermissionsBlock({
   consent,
-  purgeTicked,
-  onPurgeChange,
+  selected,
+  sending,
+  onSelectedChange,
+  disabled,
 }: {
   consent: ConsentContext;
-  purgeTicked: boolean;
-  onPurgeChange: (checked: boolean) => void;
+  /** Every capability ticked on this screen: the reads and the two write boxes. */
+  selected: readonly string[];
+  /** The capabilities the approval will carry: `selected`, limited to what is offered and asked for. */
+  sending: readonly string[];
+  onSelectedChange: (next: readonly string[]) => void;
+  /** True while the approval is in flight. */
+  disabled: boolean;
 }) {
   const recognised = allScopesRecognised(consent.scopes);
-  // The generic bullets below describe only the read scope. mcp:cache gets
+  // The reads the server offered. When there is at least one, the read picker
+  // takes the place of the generic read bullet: the bullet describes the whole
+  // scope, the picker lists what will actually be granted. With none offered (a
+  // server that predates the list) the bullet stays, so the screen still says
+  // what the scope allows.
+  const offered = offeredReads(consent.conferrableCapabilities);
+  const showReadPicker = offered.length > 0;
+  // The generic bullets below describe every scope that is not the cache or the
+  // site tools, so an unrecognised scope still gets its warning. mcp:cache gets
   // its own section (CachePurgeCapabilityBox), never a bullet from
   // describeScope, so the one write permission in this vocabulary is never
   // described in two places that could drift apart. See describeScope's note.
-  const readScopes = consent.scopes.filter((s) => s !== SCOPE_CACHE);
+  const bulletScopes = consent.scopes.filter(
+    (s) => s !== SCOPE_CACHE && s !== SCOPE_SITE && !(showReadPicker && s === SCOPE_READ),
+  );
+  const askedForSiteTools = asksForSiteTools(consent.scopes);
   const askedToClearCache = consent.scopes.includes(SCOPE_CACHE);
+  // The request capabilities the approval will carry. They decide what the
+  // "cannot change anything" paragraph says, so it follows the boxes.
+  const asks = requestCapabilitiesIn(consent.conferrableCapabilities, sending);
   const capabilitiesOk = allCapabilityEffectsKnown(consent.conferrableCapabilities);
+  const tick = (cap: string) => (next: boolean) => {
+    onSelectedChange(withCapability(selected, cap, next));
+  };
   return (
     <section
       aria-labelledby="consent-permissions-heading"
@@ -198,25 +282,90 @@ function PermissionsBlock({
         What this connection can do
       </h2>
 
-      <ul className="mt-3 space-y-3">
-        {readScopes.map((token) => {
-          const copy = describeScope(token);
-          return (
-            <li key={token}>
-              <p className="text-sm font-medium">{copy.title}</p>
-              <p className="mt-0.5 text-sm text-[var(--color-muted-foreground)]">{copy.detail}</p>
-            </li>
-          );
-        })}
-      </ul>
-
-      {/* design v7 S2.2: the same write box and label as 2.1. A live opt-in,
-          unticked by default; the approval sends `capabilities` built from it. */}
-      {askedToClearCache && (
-        <div className="mt-4" data-testid="consent-cache-capability">
-          <CachePurgeCapabilityBox checked={purgeTicked} onChange={onPurgeChange} />
+      {/* The same presets and read rows as the connection wizard's step 4, from
+          the same component, opening on the same default. What is ticked here
+          is exactly what the approval sends. */}
+      {showReadPicker && (
+        <div
+          role="group"
+          aria-labelledby="consent-read-heading"
+          className="mt-3"
+          data-testid="consent-read-capability"
+        >
+          <h3 id="consent-read-heading" className="text-sm font-medium">
+            It will be able to read
+          </h3>
+          <div className="mt-2">
+            <ReadCapabilityPicker
+              selected={selected}
+              onChange={onSelectedChange}
+              offered={offered}
+              disabled={disabled}
+            />
+          </div>
         </div>
       )}
+
+      {bulletScopes.length > 0 && (
+        <ul className="mt-3 space-y-3">
+          {bulletScopes.map((token) => {
+            const copy = describeScope(token);
+            return (
+              <li key={token}>
+                <p className="text-sm font-medium">{copy.title}</p>
+                <p className="mt-0.5 text-sm text-[var(--color-muted-foreground)]">
+                  {copy.detail}
+                </p>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {/* design v7 S2.2: the same write box and label as 2.1. A live opt-in,
+          unticked by default; the approval sends `capabilities` built from it.
+          When the server did not offer the cache clear to this app the row is
+          disabled and shown clear, so the box never shows a tick the approval
+          would leave out. */}
+      {askedToClearCache && (
+        <div className="mt-4" data-testid="consent-cache-capability">
+          <CachePurgeCapabilityBox
+            checked={selected.includes("mcp.cache.purge")}
+            onChange={tick("mcp.cache.purge")}
+            disabled={disabled}
+            offered={consent.conferrableCapabilities.some(
+              (c) => c.name === "mcp.cache.purge" && c.effect === CAPABILITY_EFFECT_REQUEST,
+            )}
+          />
+        </div>
+      )}
+
+      {/* mcp:site: two explicit ticks. They open ticked, because the app asked
+          for site tools, and either can be cleared before approving. "Ask for
+          changes" needs "see what the site can do", so the box moves the two
+          together where it must and reports both rows in one change. */}
+      {askedForSiteTools && (
+        <div className="mt-4" data-testid="consent-site-capability">
+          <AbilityCapabilityBox
+            readChecked={selected.includes("mcp.ability.read")}
+            requestChecked={selected.includes("mcp.ability.request")}
+            onChange={(next) => onSelectedChange(withAbilityTicks(selected, next))}
+            disabled={disabled}
+            readOffered={consent.conferrableCapabilities.some(
+              (c) => c.name === "mcp.ability.read" && c.effect === CAPABILITY_EFFECT_READ,
+            )}
+            requestOffered={consent.conferrableCapabilities.some(
+              (c) => c.name === "mcp.ability.request" && c.effect === CAPABILITY_EFFECT_REQUEST,
+            )}
+          />
+        </div>
+      )}
+
+      {/* Why the app is being offered less than it asked for. Read from
+          `unregisteredScopes` to choose a sentence and for nothing else: the
+          boxes above are driven by `scopes`, so a withheld scope can never grow
+          a tick. */}
+      <UnregisteredScopesNotice unregistered={consent.unregisteredScopes} />
 
       {!capabilitiesOk && (
         <p
@@ -237,20 +386,18 @@ function PermissionsBlock({
       <div className="mt-4 border-t border-[var(--color-border)] pt-4">
         <h3 className="text-sm font-medium">What it cannot do</h3>
         <ul className="mt-2 space-y-2 text-sm text-[var(--color-muted-foreground)]">
-          <li>
+          <li data-testid="consent-cannot-change">
             <span className="font-medium text-[var(--color-foreground)]">
               It cannot change anything.
             </span>{" "}
             No updates, no installs, no activations, no deletions, no edits to any site, and no
             changes to this dashboard or your organisation.{" "}
-            {askedToClearCache
-              ? // "Read-only" would be false the moment mcp:cache is granted: the
-                // connection can ask to clear a cache. What stays true, and what
-                // this sentence says instead, is that asking is the only thing it
-                // can do beyond reading, and asking changes nothing by itself.
-                "The one exception is the cache-clear box above: even that only " +
-                "creates a request, and nothing runs until you approve it."
-              : "This connection is read-only."}
+            {/* "Read-only" is false while a request capability is ticked: the
+                connection can then ask for a change, though asking changes
+                nothing by itself. So the closing sentence follows the ticks,
+                naming each request that will be carried, and says read-only
+                only when there is none. */}
+            {describeChangeLimit(asks)}
           </li>
           <li>
             <span className="font-medium text-[var(--color-foreground)]">
@@ -288,6 +435,27 @@ function PermissionsBlock({
         </p>
       )}
     </section>
+  );
+}
+
+/**
+ * Why an app that asked for more is being offered less. A plain informational
+ * note, not a warning: nothing is wrong with the request and nothing here is
+ * blocked, the app is simply limited to what it registered for. Renders nothing
+ * when nothing was withheld.
+ */
+function UnregisteredScopesNotice({ unregistered }: { unregistered: readonly string[] }) {
+  const sentence = unregisteredScopesNotice(unregistered);
+  if (sentence === null) return null;
+  return (
+    <div
+      role="note"
+      data-testid="consent-unregistered-scopes"
+      className="mt-4 flex items-start gap-2 rounded-md border border-[var(--color-info)]/30 bg-[var(--color-info-subtle)] p-3 text-sm text-[var(--color-info-subtle-fg)]"
+    >
+      <Info aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+      <p>{sentence}</p>
+    </div>
   );
 }
 
@@ -631,8 +799,25 @@ export function ConsentScreen({
     consent.clientNameUnverified.stated ? consent.clientNameUnverified.value : "",
   );
   const [nameError, setNameError] = useState<string | null>(null);
-  // Never ticked by default: the write capability is an opt-in.
-  const [purgeTicked, setPurgeTicked] = useState(false);
+  // EVERYTHING THE OPERATOR HAS TICKED, in one list, as the wizard keeps it:
+  // the read rows, the cache-clear box and the two site-tools boxes. One list is
+  // what the approval is built from, so the screen and the request read one
+  // value. The preset claim is derived from the read rows in it only, because a
+  // preset sets the reads and nothing else (owner ruling 2026-10-09): the boxes
+  // further down never move the chip, and a press never touches them.
+  //
+  // IT OPENS ON THE WIZARD'S DEFAULT PRESET, from the same function the wizard
+  // opens on, limited to the reads the server offered: Sites alone. Never every
+  // read, and never a read that is not on offer. When the app asked for site
+  // tools (mcp:site) the two site-tools choices open ticked as well, each only
+  // if the server offers it. The cache-clear box never opens ticked.
+  //
+  // WORKED OUT ONCE, WHEN THIS SCREEN MOUNTS. The route builds this screen only
+  // after the authorize response has arrived, so these ticks come from the
+  // request the person is looking at. A lazy initial state is deliberate: a
+  // later render, even one that brings a refreshed context object, must not put
+  // back a tick the person has cleared.
+  const [selected, setSelected] = useState<readonly string[]>(() => initialSelection(consent));
 
   const scope = useMemo(
     () =>
@@ -676,10 +861,13 @@ export function ConsentScreen({
     return resolveTagIds(selectedTagNames, tags);
   }, [mode, tags, selectedTagNames]);
 
-  const capabilities = buildApprovalCapabilities(consent.conferrableCapabilities, purgeTicked);
-  // The server offered capabilities but none is ticked (a cache-only request
-  // with the box left clear): an empty list is refused, so Approve is blocked.
-  // A server that offers none at all (older deploy) is not this case.
+  // Exactly the ticks, limited to what the server offered and the app asked for.
+  // Never a name that is not ticked, and never one whose box is not on the screen.
+  const capabilities = buildApprovalCapabilities(consent, selected);
+  // The server offered capabilities but none is ticked (every read cleared, or
+  // a cache-only request with the box left clear): an empty list is refused, so
+  // Approve is blocked. A server that offers none at all (older deploy) is not
+  // this case.
   const nothingToConfer = consent.conferrableCapabilities.length > 0 && capabilities.length === 0;
 
   const canApprove =
@@ -716,16 +904,19 @@ export function ConsentScreen({
       <header>
         <h1 className="text-xl font-semibold">Approve an AI connection</h1>
         <p className="mt-1 text-sm text-[var(--color-muted-foreground)]">
-          Something is asking to read your fleet through this dashboard. Read this before you
-          approve it.
+          {asksBeyondReading(consent.scopes)
+            ? "Something is asking to read your fleet, and to ask for changes to it, through this dashboard. Read this before you approve it."
+            : "Something is asking to read your fleet through this dashboard. Read this before you approve it."}
         </p>
       </header>
 
       <IdentityBlock consent={consent} />
       <PermissionsBlock
         consent={consent}
-        purgeTicked={purgeTicked}
-        onPurgeChange={setPurgeTicked}
+        selected={selected}
+        sending={capabilities}
+        onSelectedChange={setSelected}
+        disabled={isApproving}
       />
       <SiteScopeBlock
         mode={mode}
@@ -785,7 +976,12 @@ export function ConsentScreen({
       )}
 
       <div className="flex flex-wrap items-center gap-3">
-        <Button type="submit" disabled={!canApprove} data-testid="consent-approve">
+        <Button
+          type="submit"
+          disabled={!canApprove}
+          data-testid="consent-approve"
+          aria-describedby={nothingToConfer ? "consent-nothing-to-confer" : undefined}
+        >
           {isApproving ? "Approving…" : "Approve and connect"}
         </Button>
         {nothingToConfer && (
@@ -795,7 +991,7 @@ export function ConsentScreen({
             data-testid="consent-nothing-to-confer"
             className="text-sm text-[var(--color-muted-foreground)]"
           >
-            This app asked only to request cache clears. Tick the box to allow that, or deny the
+            Nothing is ticked, so this connection could do nothing: tick a box above, or deny the
             request.
           </p>
         )}

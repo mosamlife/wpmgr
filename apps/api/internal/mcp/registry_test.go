@@ -713,6 +713,13 @@ func TestNoRegisteredToolIsWriteShaped(t *testing.T) {
 	allowlist := map[string]allowed{
 		ToolSiteCachePurgeRequest:       {CapCachePurge, EffectRequest},
 		ToolSiteCachePurgeRequestStatus: {CapCachePurge, EffectRead},
+		// The ability engine. site_ability_run carries "run" and is
+		// request-shaped: the catalogue entry decides its effect. A reviewed
+		// read answers in the same call, audited fail-closed (R1); a reviewed
+		// write becomes a request that a person approves. The status tool
+		// needs the request capability, which is not a .read.
+		ToolSiteAbilityRun:           {CapAbilityRead, EffectRequest},
+		ToolSiteAbilityRequestStatus: {CapAbilityRequest, EffectRead},
 	}
 	neverAllowed := map[string]struct{}{"apply": {}, "propose": {}, "approve": {}}
 

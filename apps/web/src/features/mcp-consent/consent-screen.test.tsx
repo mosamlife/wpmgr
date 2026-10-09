@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, fireEvent, within } from "@testing-library/react";
+import { cleanup, screen, fireEvent, within } from "@testing-library/react";
 
 import { renderWithProviders } from "@/test/render";
 
 import { ConsentScreen, type ConsentScreenProps } from "./consent-screen";
-import { parseConsentContext, SCOPE_CACHE, SCOPE_READ } from "./consent-context";
+import { parseConsentContext, SCOPE_CACHE, SCOPE_READ, SCOPE_SITE } from "./consent-context";
 import { bannedWordHits } from "./site-enforcement";
 import type { ScopedSite } from "./site-scope";
 
@@ -539,14 +539,30 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
   });
 
-  it("stops claiming the connection is read-only once it can ask to clear a cache", () => {
-    // The mutation this pins: dropping the askedToClearCache branch and
-    // always rendering "This connection is read-only." would be a false
-    // statement the moment mcp:cache is granted.
-    renderWithProviders(<ConsentScreen {...props({ consent: cacheConsent() })} />);
-    const bullet = screen.getByText(/It cannot change anything\./i).closest("li")!;
-    expect(bullet).not.toHaveTextContent(/This connection is read-only/i);
-    expect(bullet).toHaveTextContent(/nothing runs until you approve it/i);
+  it("stops claiming the connection is read-only once the cache-clear box is ticked, and starts again when it is cleared", async () => {
+    // The mutation this pins: always rendering "This connection is read-only."
+    // would be a false statement the moment the cache clear is ticked. The
+    // sentence follows the box, not the scope: asking for mcp:cache without
+    // ticking the box leaves the connection read-only.
+    renderWithProviders(<ConsentScreen {...props({ consent: cacheConsent() })} />, {
+      withRouter: true,
+    });
+    const box = within(await screen.findByTestId("consent-cache-capability")).getByRole<
+      HTMLInputElement
+    >("checkbox");
+    const bullet = () => screen.getByTestId("consent-cannot-change");
+    expect(box.checked).toBe(false);
+    expect(bullet()).toHaveTextContent(/This connection is read-only/i);
+
+    fireEvent.click(box);
+    expect(box.checked).toBe(true);
+    expect(bullet()).not.toHaveTextContent(/read-only/i);
+    expect(bullet()).toHaveTextContent(
+      "Beyond reading, the only thing it can do is ask to clear the site cache. That only creates a request, and nothing runs until a person approves it in WPMgr.",
+    );
+
+    fireEvent.click(box);
+    expect(bullet()).toHaveTextContent(/This connection is read-only/i);
   });
 
   it("keeps the read-only claim for a request that never asked for mcp:cache", () => {
@@ -588,12 +604,44 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
     await screen.findByTestId("consent-cache-capability");
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(true);
     expect(screen.getByTestId("consent-nothing-to-confer")).toHaveTextContent(
-      /asked only to request cache clears/i,
+      "Nothing is ticked, so this connection could do nothing: tick a box above, or deny the request.",
     );
     // Ticking the box makes the approval possible again.
     fireEvent.click(within(screen.getByTestId("consent-cache-capability")).getByRole("checkbox"));
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
     expect(screen.queryByTestId("consent-nothing-to-confer")).toBeNull();
+  });
+
+  it("shows the cache-clear box disabled and clear when the server did not offer it, and sends only the read", async () => {
+    // The app asked for mcp:cache but the server did not offer the capability
+    // as a request. A box the person could tick and the approval would then
+    // leave out is a lie, so the row is disabled and shown clear, with the note.
+    const onApprove = vi.fn();
+    const notOffered = cacheConsent([{ name: "mcp.sites.read", effect: "read" }]);
+    renderWithProviders(<ConsentScreen {...props({ consent: notOffered, onApprove })} />, {
+      withRouter: true,
+    });
+    const box = within(await screen.findByTestId("consent-cache-capability")).getByRole<
+      HTMLInputElement
+    >("checkbox");
+    expect(box.disabled).toBe(true);
+    expect(box.checked).toBe(false);
+    expect(screen.getByTestId("cache-purge-not-offered")).toHaveTextContent(
+      "WPMgr did not offer cache clearing for this connection.",
+    );
+    // Nothing that asks will be carried, so the screen says read-only.
+    expect(screen.getByTestId("consent-cannot-change")).toHaveTextContent(
+      "This connection is read-only.",
+    );
+    // This fixture's client gave no name, and the form needs one to submit.
+    fireEvent.change(screen.getByLabelText("Name this connection"), {
+      target: { value: "Cache test connection" },
+    });
+    fireEvent.submit(screen.getByTestId("consent-approve").closest("form")!);
+    expect(onApprove).toHaveBeenCalledTimes(1);
+    expect((onApprove.mock.calls[0]![0] as { capabilities?: string[] }).capabilities).toEqual([
+      "mcp.sites.read",
+    ]);
   });
 
   it("does not disable Approve when the server sent no conferrable_capabilities key at all", () => {
@@ -610,5 +658,646 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
     renderWithProviders(<ConsentScreen {...props({ consent: noCaps })} />);
     expect(screen.queryByTestId("consent-unknown-capability-effect")).toBeNull();
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The mcp:site site-tools section
+// ---------------------------------------------------------------------------
+//
+// THE DEFAULT. An app that asks for site tools (mcp:site) gets the two choices
+// opened TICKED (owner ruling 2026-10-09), each only if the server offers it,
+// and the person can clear either one before approving. An app that did not ask
+// gets no box and no tick. The cache-clear choice is not part of this and still
+// opens clear. Every "sent" assertion below is read from what onApprove was
+// handed, which is what the request is built from.
+describe("ConsentScreen, the mcp:site site-tools section", () => {
+  const READ = { name: "mcp.sites.read", effect: "read" };
+  const ABILITY_READ = { name: "mcp.ability.read", effect: "read" };
+  const ABILITY_REQUEST = { name: "mcp.ability.request", effect: "request" };
+
+  function siteConsent(
+    scopes: readonly string[] = [SCOPE_READ, SCOPE_SITE],
+    conferrable: readonly { name: string; effect: string }[] = [
+      READ,
+      ABILITY_READ,
+      ABILITY_REQUEST,
+    ],
+    extra: Record<string, unknown> = {},
+  ) {
+    return parseConsentContext({
+      client_id: "c_site",
+      client_name_unverified: "Test Client",
+      identity_verified: false,
+      redirect_uri: "https://x.example/cb",
+      redirect_host: "x.example",
+      scopes,
+      grant_lifetime_days: 90,
+      conferrable_capabilities: conferrable,
+      ...extra,
+    });
+  }
+
+  const readBox = () => screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.read");
+  const requestBox = () =>
+    screen.getByTestId<HTMLInputElement>("ability-box-mcp.ability.request");
+
+  /** Put a box in the wanted state the way a person would, and prove it got there. */
+  function setTicked(box: () => HTMLInputElement, want: boolean) {
+    if (box().checked !== want) fireEvent.click(box());
+    expect(box().checked).toBe(want);
+  }
+
+  function approveCall(onApprove: ReturnType<typeof vi.fn>) {
+    fireEvent.submit(screen.getByTestId("consent-approve").closest("form")!);
+    expect(onApprove).toHaveBeenCalledTimes(1);
+    return onApprove.mock.calls[0]![0] as { capabilities?: string[] };
+  }
+
+  it("recognises mcp:site, opens both boxes ticked, and leaves Approve enabled", async () => {
+    renderWithProviders(<ConsentScreen {...props({ consent: siteConsent() })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    expect(screen.queryByTestId("consent-unrecognised-scope")).toBeNull();
+    expect(readBox().checked).toBe(true);
+    expect(requestBox().checked).toBe(true);
+    // Ticked is not the same as locked: both are live controls.
+    expect(readBox().disabled).toBe(false);
+    expect(requestBox().disabled).toBe(false);
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+  });
+
+  it("sends the fleet reads and both site tools when the person changes nothing", async () => {
+    const onApprove = vi.fn();
+    renderWithProviders(<ConsentScreen {...props({ consent: siteConsent(), onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    expect(approveCall(onApprove).capabilities).toEqual([
+      "mcp.sites.read",
+      "mcp.ability.read",
+      "mcp.ability.request",
+    ]);
+  });
+
+  it("sends the fleet reads only when the person clears both boxes", async () => {
+    const onApprove = vi.fn();
+    renderWithProviders(<ConsentScreen {...props({ consent: siteConsent(), onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    setTicked(readBox, false);
+    setTicked(requestBox, false);
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read"]);
+  });
+
+  it("sends exactly what is ticked, for every combination of the two boxes that can stand", async () => {
+    // "Ask for changes" needs "see what the site can do", so the request alone
+    // is not a state the screen can be in: see the tests on that rule below.
+    const cases: { read: boolean; request: boolean; want: string[] }[] = [
+      {
+        read: true,
+        request: true,
+        want: ["mcp.sites.read", "mcp.ability.read", "mcp.ability.request"],
+      },
+      { read: true, request: false, want: ["mcp.sites.read", "mcp.ability.read"] },
+      { read: false, request: false, want: ["mcp.sites.read"] },
+    ];
+    for (const c of cases) {
+      const onApprove = vi.fn();
+      const { unmount } = renderWithProviders(
+        <ConsentScreen {...props({ consent: siteConsent(), onApprove })} />,
+        { withRouter: true },
+      );
+      await screen.findByTestId("consent-site-capability");
+      setTicked(readBox, c.read);
+      setTicked(requestBox, c.request);
+      expect(approveCall(onApprove).capabilities).toEqual(c.want);
+      unmount();
+    }
+  });
+
+  it("opens the offered site tool ticked and the one the server did not offer clear, and sends only the first", async () => {
+    // The app asked for site tools, the server offers the read but not the
+    // request. The read is the positive control: it opens ticked and is sent.
+    // The request is never ticked, cannot be forced on, and is never sent.
+    const onApprove = vi.fn();
+    const consent = siteConsent([SCOPE_READ, SCOPE_SITE], [READ, ABILITY_READ]);
+    renderWithProviders(<ConsentScreen {...props({ consent, onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    expect(readBox().checked).toBe(true);
+    expect(readBox().disabled).toBe(false);
+    expect(requestBox().checked).toBe(false);
+    expect(requestBox().disabled).toBe(true);
+    expect(screen.getByTestId("ability-not-offered-mcp.ability.request")).toHaveTextContent(
+      "WPMgr did not offer this for this connection.",
+    );
+    expect(screen.queryByTestId("ability-not-offered-mcp.ability.read")).toBeNull();
+    fireEvent.click(requestBox());
+    expect(requestBox().checked).toBe(false);
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read", "mcp.ability.read"]);
+  });
+
+  it("leaves the request clear and unusable when the read it needs is not offered, and sends neither", async () => {
+    // The server offers the request but not the read. A request without the read
+    // cannot stand, so it opens clear, is disabled with the reason, and is not
+    // sent; the fleet read still goes.
+    const onApprove = vi.fn();
+    const consent = siteConsent([SCOPE_READ, SCOPE_SITE], [READ, ABILITY_REQUEST]);
+    renderWithProviders(<ConsentScreen {...props({ consent, onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    expect(readBox().checked).toBe(false);
+    expect(readBox().disabled).toBe(true);
+    expect(screen.getByTestId("ability-not-offered-mcp.ability.read")).toBeTruthy();
+    expect(requestBox().checked).toBe(false);
+    expect(requestBox().disabled).toBe(true);
+    expect(screen.getByTestId("ability-request-blocked")).toBeTruthy();
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read"]);
+  });
+
+  it("ticking ask for changes while see what the site can do is clear ticks both, and approving sends both", async () => {
+    const onApprove = vi.fn();
+    renderWithProviders(<ConsentScreen {...props({ consent: siteConsent(), onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    // Clear the read: that clears the request with it.
+    setTicked(readBox, false);
+    expect(requestBox().checked).toBe(false);
+
+    // Now tick only the request: the read comes back with it.
+    fireEvent.click(requestBox());
+    expect(requestBox().checked).toBe(true);
+    expect(readBox().checked).toBe(true);
+    expect(approveCall(onApprove).capabilities).toEqual([
+      "mcp.sites.read",
+      "mcp.ability.read",
+      "mcp.ability.request",
+    ]);
+  });
+
+  it("clearing see what the site can do clears ask for changes too, and ticking it again does not bring the request back", async () => {
+    const onApprove = vi.fn();
+    renderWithProviders(<ConsentScreen {...props({ consent: siteConsent(), onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    expect(requestBox().checked).toBe(true);
+
+    fireEvent.click(readBox());
+    expect(readBox().checked).toBe(false);
+    expect(requestBox().checked).toBe(false);
+
+    fireEvent.click(readBox());
+    expect(readBox().checked).toBe(true);
+    expect(requestBox().checked).toBe(false);
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read", "mcp.ability.read"]);
+  });
+
+  it("clearing ask for changes alone leaves see what the site can do ticked and sent", async () => {
+    const onApprove = vi.fn();
+    renderWithProviders(<ConsentScreen {...props({ consent: siteConsent(), onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    fireEvent.click(requestBox());
+    expect(requestBox().checked).toBe(false);
+    expect(readBox().checked).toBe(true);
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read", "mcp.ability.read"]);
+  });
+
+  it("tells the person that ask for changes needs see what the site can do", async () => {
+    renderWithProviders(<ConsentScreen {...props({ consent: siteConsent() })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-site-capability");
+    expect(screen.getByTestId("ability-request-needs-read")).toHaveTextContent(
+      "Needs “See this site's tools and read its published pages”. Ticking this ticks that too, and clearing that clears this.",
+    );
+  });
+
+  it("lets a site-only request through as it opens, and blocks Approve only once both boxes are cleared", async () => {
+    const consent = siteConsent([SCOPE_SITE], [ABILITY_READ, ABILITY_REQUEST]);
+    renderWithProviders(<ConsentScreen {...props({ consent })} />, { withRouter: true });
+    await screen.findByTestId("consent-site-capability");
+    // Both ticked at open, so there is something to approve.
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+    expect(screen.queryByTestId("consent-nothing-to-confer")).toBeNull();
+
+    setTicked(readBox, false);
+    setTicked(requestBox, false);
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(true);
+    expect(screen.getByTestId("consent-nothing-to-confer")).toBeTruthy();
+
+    setTicked(readBox, true);
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+    expect(screen.queryByTestId("consent-nothing-to-confer")).toBeNull();
+  });
+
+  it("does not show the site-tools box when the client did not ask for mcp:site", () => {
+    renderWithProviders(<ConsentScreen {...props()} />);
+    expect(screen.queryByTestId("consent-site-capability")).toBeNull();
+  });
+
+  it("ticks and sends no site tool for an app that did not ask for mcp:site, even if the server lists them", async () => {
+    // The scope decides, not the offer. The server lists both site-tools
+    // capabilities here, so a screen that ticked whatever was on offer would
+    // send them; this one has no box and sends the fleet read alone.
+    const onApprove = vi.fn();
+    const consent = siteConsent([SCOPE_READ], [READ, ABILITY_READ, ABILITY_REQUEST]);
+    renderWithProviders(<ConsentScreen {...props({ consent, onApprove })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-approve");
+    expect(screen.queryByTestId("consent-site-capability")).toBeNull();
+    expect(screen.queryByTestId("ability-capability-box")).toBeNull();
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read"]);
+  });
+
+  it("opens the cache-clear box clear while the site tools open ticked, and does not send it", async () => {
+    // The default covers the two site-tools choices and nothing else.
+    const onApprove = vi.fn();
+    const consent = siteConsent(
+      [SCOPE_READ, SCOPE_CACHE, SCOPE_SITE],
+      [READ, { name: "mcp.cache.purge", effect: "request" }, ABILITY_READ, ABILITY_REQUEST],
+    );
+    renderWithProviders(<ConsentScreen {...props({ consent, onApprove })} />, {
+      withRouter: true,
+    });
+    const cache = within(await screen.findByTestId("consent-cache-capability")).getByRole<
+      HTMLInputElement
+    >("checkbox");
+    expect(cache.checked).toBe(false);
+    expect(readBox().checked).toBe(true);
+    expect(requestBox().checked).toBe(true);
+    const sent = approveCall(onApprove).capabilities;
+    expect(sent).toEqual(["mcp.sites.read", "mcp.ability.read", "mcp.ability.request"]);
+    expect(sent).not.toContain("mcp.cache.purge");
+  });
+
+  it("keeps a box the person cleared cleared when the same screen is shown again with a refreshed context", () => {
+    // A re-render that brings a NEW context object must not put back a tick the
+    // person took off. Rendered without a router so the same screen instance can
+    // be given new props with rerender. The refreshed context differs in the
+    // lifetime it states, which is on screen, so the test can see that the new
+    // context really did reach the screen.
+    const first = siteConsent([SCOPE_READ, SCOPE_SITE], undefined, { consent_ticket: "t-1" });
+    const refreshed = siteConsent([SCOPE_READ, SCOPE_SITE], undefined, {
+      consent_ticket: "t-2",
+      grant_lifetime_days: 30,
+    });
+    expect(refreshed).not.toBe(first);
+
+    const { rerender } = renderWithProviders(<ConsentScreen {...props({ consent: first })} />);
+    expect(screen.getByTestId("consent-duration-expiry")).toHaveTextContent("90 days");
+    expect(readBox().checked).toBe(true);
+    expect(requestBox().checked).toBe(true);
+    fireEvent.click(requestBox());
+    expect(requestBox().checked).toBe(false);
+
+    rerender(<ConsentScreen {...props({ consent: refreshed })} />);
+    // The screen now holds the refreshed context...
+    expect(screen.getByTestId("consent-duration-expiry")).toHaveTextContent("30 days");
+    // ...the box that was left ticked still is, and the one taken off has not
+    // come back.
+    expect(readBox().checked).toBe(true);
+    expect(requestBox().checked).toBe(false);
+  });
+
+  // A TICK THE SCREEN STILL HOLDS FOR A BOX THAT IS NO LONGER SHOWN. The ticks
+  // are worked out when the screen mounts and kept; a refreshed context can then
+  // arrive with fewer scopes, which removes a box but not the tick it held.
+  // Nothing on the screen shows that tick, so the approval must not carry it.
+  it("does not send the site-tools names once a refreshed context no longer asks for site tools", () => {
+    const onApprove = vi.fn();
+    const asked = siteConsent([SCOPE_READ, SCOPE_SITE], undefined, { consent_ticket: "t-1" });
+    const narrowed = siteConsent([SCOPE_READ], undefined, { consent_ticket: "t-2" });
+    const { rerender } = renderWithProviders(
+      <ConsentScreen {...props({ consent: asked, onApprove })} />,
+    );
+    // The positive control: both are ticked, and the box is there.
+    expect(readBox().checked).toBe(true);
+    expect(requestBox().checked).toBe(true);
+
+    rerender(<ConsentScreen {...props({ consent: narrowed, onApprove })} />);
+    expect(screen.queryByTestId("consent-site-capability")).toBeNull();
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read"]);
+  });
+
+  it("does not send the cache clear once a refreshed context no longer asks for mcp:cache", () => {
+    const onApprove = vi.fn();
+    const offered = [READ, { name: "mcp.cache.purge", effect: "request" }];
+    const asked = siteConsent([SCOPE_READ, SCOPE_CACHE], offered, { consent_ticket: "t-1" });
+    const narrowed = siteConsent([SCOPE_READ], offered, { consent_ticket: "t-2" });
+    const { rerender } = renderWithProviders(
+      <ConsentScreen {...props({ consent: asked, onApprove })} />,
+    );
+    const box = within(screen.getByTestId("consent-cache-capability")).getByRole<HTMLInputElement>(
+      "checkbox",
+    );
+    fireEvent.click(box);
+    expect(box.checked).toBe(true);
+
+    rerender(<ConsentScreen {...props({ consent: narrowed, onApprove })} />);
+    expect(screen.queryByTestId("consent-cache-capability")).toBeNull();
+    expect(approveCall(onApprove).capabilities).toEqual(["mcp.sites.read"]);
+  });
+
+  // WHAT THE SCREEN SAYS IT CAN CHANGE FOLLOWS WHAT IS TICKED. The paragraph
+  // "It cannot change anything." closes with "This connection is read-only."
+  // only while no request capability will be carried, and otherwise names each
+  // one as something that only creates a request a person approves. The
+  // sentences are written out in full here, never taken from the screen.
+  describe("what it says it can change", () => {
+    const CACHE_PURGE = { name: "mcp.cache.purge", effect: "request" };
+    const ALL = [READ, CACHE_PURGE, ABILITY_READ, ABILITY_REQUEST];
+
+    const READ_ONLY = "This connection is read-only.";
+    const SITE_ASK =
+      "Beyond reading, the only thing it can do is ask to make changes through the site's tools. That only creates a request, and nothing runs until a person approves it in WPMgr.";
+    const CACHE_ASK =
+      "Beyond reading, the only thing it can do is ask to clear the site cache. That only creates a request, and nothing runs until a person approves it in WPMgr.";
+    const BOTH_ASK =
+      "Beyond reading, the only things it can do are ask to clear the site cache and ask to make changes through the site's tools. Each only creates a request, and nothing runs until a person approves it in WPMgr.";
+
+    const cannotChange = () => screen.getByTestId("consent-cannot-change");
+    const cacheBox = () =>
+      within(screen.getByTestId("consent-cache-capability")).getByRole<HTMLInputElement>(
+        "checkbox",
+      );
+
+    async function open(scopes: readonly string[], conferrable = ALL) {
+      renderWithProviders(<ConsentScreen {...props({ consent: siteConsent(scopes, conferrable) })} />, {
+        withRouter: true,
+      });
+      await screen.findByTestId("consent-approve");
+    }
+
+    it("says read-only, in full, when the request is for reading alone", async () => {
+      await open([SCOPE_READ], [READ]);
+      expect(cannotChange().textContent).toBe(
+        "It cannot change anything. No updates, no installs, no activations, no deletions, no edits to any site, and no changes to this dashboard or your organisation. " +
+          READ_ONLY,
+      );
+    });
+
+    it("names ask for changes, and not read-only, on a screen that opens with site tools ticked", async () => {
+      await open([SCOPE_READ, SCOPE_SITE]);
+      expect(readBox().checked).toBe(true);
+      expect(requestBox().checked).toBe(true);
+      expect(cannotChange()).toHaveTextContent(SITE_ASK);
+      expect(cannotChange()).not.toHaveTextContent(/read-only/i);
+      expect(cannotChange()).not.toHaveTextContent(/exception/i);
+    });
+
+    it("says read-only for a cache request while the cache box is clear, and names the cache clear once it is ticked", async () => {
+      await open([SCOPE_READ, SCOPE_CACHE], [READ, CACHE_PURGE]);
+      expect(cacheBox().checked).toBe(false);
+      expect(cannotChange()).toHaveTextContent(READ_ONLY);
+      expect(cannotChange()).not.toHaveTextContent(/Beyond reading/);
+
+      fireEvent.click(cacheBox());
+      expect(cannotChange()).toHaveTextContent(CACHE_ASK);
+      expect(cannotChange()).not.toHaveTextContent(/read-only/i);
+    });
+
+    it("names both ask rows when both are ticked, and never says there is one exception", async () => {
+      await open([SCOPE_READ, SCOPE_CACHE, SCOPE_SITE]);
+      // At open only the site tools are ticked: the cache box is clear and so
+      // it is not named. The old wording named the clear cache box and left the
+      // ticked site tools out.
+      expect(cacheBox().checked).toBe(false);
+      expect(cannotChange()).toHaveTextContent(SITE_ASK);
+      expect(cannotChange()).not.toHaveTextContent(/cache/i);
+
+      fireEvent.click(cacheBox());
+      expect(cannotChange()).toHaveTextContent(BOTH_ASK);
+      expect(cannotChange()).not.toHaveTextContent(/read-only/i);
+      expect(cannotChange()).not.toHaveTextContent(/exception/i);
+    });
+
+    it("brings the read-only sentence back when ask for changes is cleared", async () => {
+      await open([SCOPE_READ, SCOPE_SITE]);
+      expect(cannotChange()).toHaveTextContent(SITE_ASK);
+
+      // "See what the site can do" stays ticked: it is a read, so the
+      // connection is read-only again.
+      fireEvent.click(requestBox());
+      expect(requestBox().checked).toBe(false);
+      expect(readBox().checked).toBe(true);
+      expect(cannotChange()).toHaveTextContent(READ_ONLY);
+      expect(cannotChange()).not.toHaveTextContent(/Beyond reading/);
+
+      // And ticking it again takes the read-only claim away again.
+      fireEvent.click(requestBox());
+      expect(cannotChange()).toHaveTextContent(SITE_ASK);
+    });
+
+    it("says read-only again when see what the site can do is cleared, which clears the request with it", async () => {
+      await open([SCOPE_READ, SCOPE_SITE]);
+      fireEvent.click(readBox());
+      expect(requestBox().checked).toBe(false);
+      expect(cannotChange()).toHaveTextContent(READ_ONLY);
+    });
+
+    it("does not name a request the server did not offer, so the screen stays read-only", async () => {
+      // The app asked for site tools; the server offers the read but not the
+      // request. Only the read will be carried, and a read changes nothing.
+      await open([SCOPE_READ, SCOPE_SITE], [READ, ABILITY_READ]);
+      expect(readBox().checked).toBe(true);
+      expect(cannotChange()).toHaveTextContent(READ_ONLY);
+    });
+
+    it("describes the app's request in the page header, and only says reading when that is all it asks", async () => {
+      const READING = "Something is asking to read your fleet through this dashboard.";
+      const BEYOND =
+        "Something is asking to read your fleet, and to ask for changes to it, through this dashboard.";
+      const header = () => screen.getByRole("heading", { level: 1 }).parentElement!;
+
+      await open([SCOPE_READ], [READ]);
+      expect(header()).toHaveTextContent(READING);
+      expect(header()).not.toHaveTextContent(/ask for changes/);
+      cleanup();
+
+      await open([SCOPE_READ, SCOPE_SITE]);
+      expect(header()).toHaveTextContent(BEYOND);
+      // It describes the request, so clearing every box does not change it.
+      fireEvent.click(readBox());
+      expect(header()).toHaveTextContent(BEYOND);
+      cleanup();
+
+      await open([SCOPE_READ, SCOPE_CACHE], [READ, CACHE_PURGE]);
+      expect(header()).toHaveTextContent(BEYOND);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// An app whose registration predates site tools
+// ---------------------------------------------------------------------------
+//
+// The authorize endpoint narrows a request to the registration instead of
+// refusing it (apps/api/internal/mcp/service.go, Authorize) and names what it
+// left out in `unregistered_scopes`. Without this note an app connected before
+// site tools existed signs in with read access only and no explanation. The
+// expected sentences are written out in full here, never imported from the
+// screen, so editing the copy there reddens this file.
+//
+// Rendered through the real router (withRouter: true) like the sections above,
+// from the wire shape through parseConsentContext, so the field has to survive
+// the schema to get here.
+describe("ConsentScreen, an app whose registration predates site tools", () => {
+  // Two sentences, picked by whether mcp:site itself is in the withheld list.
+  const SITE_NOTICE =
+    "This AI app was connected before WPMgr offered site tools. To give it site tools, remove WPMgr from the app and add it again.";
+  const OTHER_NOTICE =
+    "This AI app was connected before WPMgr offered some of the permissions it is asking for. To give it those, remove WPMgr from the app and add it again.";
+
+  // What Authorize leaves in `scopes` for a registration that asked for the
+  // advertised list: mcp:read alone by default, or `held` for one that holds
+  // more. A registration holding mcp:site is offered the two ability
+  // capabilities (scopeCapabilities in apps/api/internal/mcp/policy.go).
+  function withheld(unregistered?: readonly string[], held: readonly string[] = [SCOPE_READ]) {
+    return parseConsentContext({
+      client_id: "c_old",
+      client_name_unverified: "Test Client",
+      identity_verified: false,
+      redirect_uri: "https://x.example/cb",
+      redirect_host: "x.example",
+      scopes: held,
+      grant_lifetime_days: 90,
+      conferrable_capabilities: [
+        { name: "mcp.sites.read", effect: "read" },
+        ...(held.includes(SCOPE_SITE)
+          ? [
+              { name: "mcp.ability.read", effect: "read" },
+              { name: "mcp.ability.request", effect: "request" },
+            ]
+          : []),
+      ],
+      ...(unregistered === undefined ? {} : { unregistered_scopes: unregistered }),
+    });
+  }
+
+  it("says how to get site tools, in exactly these words, when mcp:site was withheld", async () => {
+    renderWithProviders(
+      <ConsentScreen {...props({ consent: withheld([SCOPE_SITE, SCOPE_CACHE]) })} />,
+      { withRouter: true },
+    );
+    const note = await screen.findByTestId("consent-unregistered-scopes");
+    expect(note.textContent).toBe(SITE_NOTICE);
+  });
+
+  it("does not promise site tools to an app that already holds them, when only mcp:cache was withheld", async () => {
+    // A registration holding mcp:read and mcp:site and lacking mcp:cache. The
+    // screen offers the site-tools box, so a sentence about getting site tools
+    // by reinstalling would send the user to discard access they already have.
+    renderWithProviders(
+      <ConsentScreen {...props({ consent: withheld([SCOPE_CACHE], [SCOPE_READ, SCOPE_SITE]) })} />,
+      { withRouter: true },
+    );
+    const note = await screen.findByTestId("consent-unregistered-scopes");
+    expect(note.textContent).toBe(OTHER_NOTICE);
+    // The positive control for why the site sentence would have been wrong.
+    expect(screen.getByTestId("consent-site-capability")).toBeTruthy();
+    expect(screen.queryByTestId("consent-cache-capability")).toBeNull();
+  });
+
+  it("puts the note in the permissions block, as a note", async () => {
+    renderWithProviders(
+      <ConsentScreen {...props({ consent: withheld([SCOPE_SITE, SCOPE_CACHE]) })} />,
+      { withRouter: true },
+    );
+    const note = await screen.findByRole("note");
+    expect(note).toBe(screen.getByTestId("consent-unregistered-scopes"));
+    expect(note.closest("section")).toHaveAttribute(
+      "aria-labelledby",
+      "consent-permissions-heading",
+    );
+  });
+
+  it("picks the sentence by membership alone, never by order or by how many were withheld", async () => {
+    const cases: { unregistered: readonly string[]; want: string }[] = [
+      { unregistered: [SCOPE_SITE], want: SITE_NOTICE },
+      { unregistered: [SCOPE_SITE, SCOPE_CACHE], want: SITE_NOTICE },
+      { unregistered: [SCOPE_CACHE, SCOPE_SITE], want: SITE_NOTICE },
+      { unregistered: [SCOPE_CACHE], want: OTHER_NOTICE },
+      { unregistered: ["mcp:future-scope"], want: OTHER_NOTICE },
+      { unregistered: [SCOPE_CACHE, "mcp:future-scope"], want: OTHER_NOTICE },
+    ];
+    for (const c of cases) {
+      const { unmount } = renderWithProviders(
+        <ConsentScreen {...props({ consent: withheld(c.unregistered) })} />,
+        { withRouter: true },
+      );
+      await screen.findByTestId("consent-unregistered-scopes");
+      expect(screen.getAllByTestId("consent-unregistered-scopes")).toHaveLength(1);
+      expect(screen.getByTestId("consent-unregistered-scopes").textContent).toBe(c.want);
+      // The scope strings are never rendered: a fixed sentence is picked and
+      // that is all the list is read for.
+      expect(document.body.textContent).not.toContain("mcp:future-scope");
+      unmount();
+    }
+  });
+
+  it("shows no note when nothing was withheld", async () => {
+    // The over-fire case. A note on every screen is a note nobody reads. The
+    // pattern covers both sentences.
+    renderWithProviders(<ConsentScreen {...props({ consent: withheld([]) })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-approve");
+    expect(screen.queryByTestId("consent-unregistered-scopes")).toBeNull();
+    expect(screen.queryByText(/connected before WPMgr offered/i)).toBeNull();
+    expect(screen.queryByRole("note")).toBeNull();
+  });
+
+  it("shows no note against a server that predates the field", async () => {
+    renderWithProviders(<ConsentScreen {...props({ consent: withheld() })} />, {
+      withRouter: true,
+    });
+    await screen.findByTestId("consent-approve");
+    expect(screen.queryByTestId("consent-unregistered-scopes")).toBeNull();
+  });
+
+  it("offers no tick for a scope the registration withheld", async () => {
+    // The boxes are driven by `scopes`, the approvable set. A withheld scope is
+    // named for the note and nothing else, so it cannot grow a tick.
+    renderWithProviders(
+      <ConsentScreen {...props({ consent: withheld([SCOPE_SITE, SCOPE_CACHE]) })} />,
+      { withRouter: true },
+    );
+    await screen.findByTestId("consent-unregistered-scopes");
+    expect(screen.queryByTestId("consent-site-capability")).toBeNull();
+    expect(screen.queryByTestId("ability-capability-box")).toBeNull();
+    expect(screen.queryByTestId("consent-cache-capability")).toBeNull();
+    expect(screen.queryByTestId("cache-purge-capability-box")).toBeNull();
+  });
+
+  it("neither blocks Approve nor changes what it sends, and still says read-only", async () => {
+    const onApprove = vi.fn();
+    renderWithProviders(
+      <ConsentScreen {...props({ consent: withheld([SCOPE_SITE, SCOPE_CACHE]), onApprove })} />,
+      { withRouter: true },
+    );
+    await screen.findByTestId("consent-unregistered-scopes");
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+    expect(screen.getByText(/It cannot change anything\./i).closest("li")).toHaveTextContent(
+      /This connection is read-only/i,
+    );
+    fireEvent.submit(screen.getByTestId("consent-approve").closest("form")!);
+    expect(onApprove).toHaveBeenCalledTimes(1);
+    expect(onApprove).toHaveBeenCalledWith({
+      name: "Test Client",
+      siteScopeMode: "list",
+      scopeTagIds: [],
+      scopeSiteIds: [],
+      capabilities: ["mcp.sites.read"],
+    });
   });
 });

@@ -687,6 +687,11 @@ func (w *Worker) runDry(ctx context.Context, task Task, siteURL string, item age
 		if re, ok := agentcmd.AsRedirect(err); ok {
 			return w.finish(ctx, task, TaskFailed, task.FromVersion, "", re.OperatorMessage("Dry run"), err.Error())
 		}
+		// GH #679: a 403 names who refused and what fixes it. The raw reply
+		// stays in the error log, never in the detail.
+		if msg, ok := agentcmd.ForbiddenMessage(err, "Dry run"); ok {
+			return w.finish(ctx, task, TaskFailed, task.FromVersion, "", msg, err.Error())
+		}
 		return w.finish(ctx, task, TaskFailed, task.FromVersion, "", "dry-run command failed", err.Error())
 	}
 	// A 200 only means the transport worked. resp.OK is the agent's own verdict on
@@ -731,6 +736,10 @@ func (w *Worker) runApply(ctx context.Context, task Task, siteURL string, item a
 		if re, ok := agentcmd.AsRedirect(err); ok {
 			return w.finish(ctx, task, TaskFailed, task.FromVersion, "", re.OperatorMessage("Update"), err.Error())
 		}
+		// GH #679: see runDry.
+		if msg, ok := agentcmd.ForbiddenMessage(err, "Update"); ok {
+			return w.finish(ctx, task, TaskFailed, task.FromVersion, "", msg, err.Error())
+		}
 		return w.finish(ctx, task, TaskFailed, task.FromVersion, "", "update command failed", err.Error())
 	}
 	res := firstResult(resp.Results)
@@ -764,7 +773,15 @@ func (w *Worker) runApply(ctx context.Context, task Task, siteURL string, item a
 	if res.Status == agentcmd.ItemFailed {
 		return w.finish(ctx, task, TaskFailed, fromOr(res.FromVersion, task.FromVersion), res.ToVersion, "agent reported update failure", res.Log)
 	}
-	if res.Status == agentcmd.ItemUpToDate || res.Status == agentcmd.ItemSkipped {
+	if res.Status == agentcmd.ItemSkipped {
+		return w.finish(ctx, task, TaskSkipped, fromOr(res.FromVersion, task.FromVersion), res.ToVersion, "already up to date", "")
+	}
+	if res.Status == agentcmd.ItemUpToDate {
+		// GH #415: for WordPress core, up_to_date on an apply is not taken as
+		// proof that nothing changed (see checkCoreReportedNoChange).
+		if item.Type == TargetCore {
+			return w.checkCoreReportedNoChange(ctx, task, siteURL, res)
+		}
 		return w.finish(ctx, task, TaskSkipped, fromOr(res.FromVersion, task.FromVersion), res.ToVersion, "already up to date", "")
 	}
 
@@ -784,8 +801,8 @@ func (w *Worker) runApply(ctx context.Context, task Task, siteURL string, item a
 	// way; it falls through to the public probe below exactly like a healthy
 	// verdict does.
 	verdict, verifyDetail, agentAttempts := w.verifyAgentHealthWithRetry(ctx, task.SiteID, siteURL)
-	if verdict == agentHealthUnhealthy {
-		return w.rollback(ctx, task, siteURL, item, res, agentcmd.ProbeResult{}, true,
+	if verdict.failed() {
+		return w.rollback(ctx, task, siteURL, item, res, agentcmd.ProbeResult{}, verdict == agentHealthCrashed,
 			fmt.Sprintf("post-update agent reachability check failed after %d attempt(s): %s", agentAttempts, verifyDetail))
 	}
 
@@ -838,6 +855,52 @@ func (w *Worker) runApply(ctx context.Context, task Task, siteURL string, item a
 	}
 }
 
+// coreNoChangeUnhealthyDetail is the task detail when a core apply the agent
+// reported as up to date is followed by a failed health check. The check's
+// own reason goes to the task's error log.
+const coreNoChangeUnhealthyDetail = "WordPress core reported no change, but the site did not pass the health check that followed. " +
+	"Nothing was rolled back; check the site."
+
+// checkCoreReportedNoChange finishes an apply of WordPress core that the
+// agent answered with up_to_date.
+//
+// For core, that answer is not taken as proof that nothing changed on the
+// site, so the post-update checks runApply uses run here too: the signed
+// agent check, then the public homepage probe, each with its retry ladder. A
+// site that fails either is recorded TaskFailed. No rollback is sent: by the
+// agent's own account there is nothing to roll back to, and a core rollback
+// is a forced downgrade. A site that passes, or whose result is inconclusive,
+// keeps the plain "already up to date".
+//
+// Plugin and theme results never come through here; their up_to_date stays a
+// plain skip.
+func (w *Worker) checkCoreReportedNoChange(ctx context.Context, task Task, siteURL string, res agentcmd.ItemResult) error {
+	from := fromOr(res.FromVersion, task.FromVersion)
+	if reason := w.postUpdateCheckFailure(ctx, task.SiteID, siteURL); reason != "" {
+		return w.finish(ctx, task, TaskFailed, from, res.ToVersion, coreNoChangeUnhealthyDetail, reason)
+	}
+	return w.finish(ctx, task, TaskSkipped, from, res.ToVersion, "already up to date", "")
+}
+
+// postUpdateCheckFailure runs the post-update checks (the signed agent check,
+// then the public homepage probe) and returns why the site failed them, or ""
+// when it passed or the result was inconclusive. It decides pass or fail and
+// nothing else; runApply's own tail keeps its per-verdict handling.
+func (w *Worker) postUpdateCheckFailure(ctx context.Context, siteID uuid.UUID, siteURL string) string {
+	verdict, verifyDetail, agentAttempts := w.verifyAgentHealthWithRetry(ctx, siteID, siteURL)
+	if verdict.failed() {
+		return fmt.Sprintf("post-update agent reachability check failed after %d attempt(s): %s", agentAttempts, verifyDetail)
+	}
+	probe, perr, attempts := w.probeHealthWithRetry(ctx, siteURL)
+	if perr != nil {
+		return fmt.Sprintf("post-update probe error after %d attempt(s): %v", attempts, perr)
+	}
+	if classifyPostUpdateProbe(probe) == postUpdateUnhealthy {
+		return fmt.Sprintf("post-update health failed after %d attempt(s): status=%d %s", attempts, probe.StatusCode, probe.Detail)
+	}
+	return ""
+}
+
 // agentVerifyTimeout bounds ONE attempt of the agent-first post-update
 // reachability check (GH #291 Phase 4). Short and independent of the update
 // command's own (possibly multi-minute) timeout: this is a lightweight signed
@@ -873,18 +936,32 @@ const (
 	agentHealthHealthy
 	// agentHealthUnhealthy means the signed command route itself returned a
 	// server error on EVERY attempt across verifyAgentHealthWithRetry's retry
-	// window, not merely once: PHP is persistently fatal-ing on every request,
-	// including the agent's own route. This is the strongest signal available
-	// short of total unreachability, and because it came back over a signed
-	// round trip rather than a cacheable public GET, it cannot be a stale
-	// cached read. A single unhealthy sample is deliberately NOT enough to
-	// reach this verdict (see verifyAgentHealthWithRetry): the agent's ping
-	// route is served by the same PHP and WordPress stack as the homepage, so
-	// it is exposed to the same transient migration-on-activation window,
-	// php-fpm restart, opcache reset, or WAF/CDN origin error that
-	// probeRetryDelays already exists to ride out for the public probe.
+	// window, not merely once, and the last answer was a server error status
+	// other than HTTP 500, such as a gateway, unavailable or CDN error (502,
+	// 503, 504, 52x). The check failed, so the update is treated as failed,
+	// but it is not a confirmed crash: like a timeout, it leaves WordPress
+	// core where the update put it (see confirmedFatal). A single unhealthy
+	// sample is deliberately NOT
+	// enough to reach this verdict (see verifyAgentHealthWithRetry): the
+	// agent's ping route is served by the same PHP and WordPress stack as the
+	// homepage, so it is exposed to the same transient
+	// migration-on-activation window, php-fpm restart, opcache reset, or
+	// WAF/CDN origin error that probeRetryDelays already exists to ride out
+	// for the public probe.
 	agentHealthUnhealthy
+	// agentHealthCrashed is agentHealthUnhealthy whose last answer was HTTP
+	// 500: PHP is persistently failing on every request, including the
+	// agent's own route. It is the signed check's confirmed crash. Because it
+	// came back over a signed round trip rather than a cacheable public GET,
+	// it cannot be a stale cached read.
+	agentHealthCrashed
 )
+
+// failed reports whether the signed check saw a server error on every
+// attempt, whether or not that confirms a crash.
+func (v agentHealthVerdict) failed() bool {
+	return v == agentHealthUnhealthy || v == agentHealthCrashed
+}
 
 // agentVerifier is the subset of *agentcmd.Client used for the agent-first
 // post-update reachability check. Defined locally, matching the method
@@ -920,8 +997,11 @@ func (w *Worker) verifyAgentHealth(ctx context.Context, siteID uuid.UUID, siteUR
 	if alive {
 		return agentHealthHealthy, "signed agent route reachable"
 	}
+	if reason == agentcmd.ReasonHTTP500 {
+		return agentHealthCrashed, "signed agent route returned a server error (HTTP 500, PHP fatal)"
+	}
 	if reason == agentcmd.ReasonHTTP5xx {
-		return agentHealthUnhealthy, "signed agent route returned a server error (PHP fatal)"
+		return agentHealthUnhealthy, "signed agent route returned a server error other than HTTP 500"
 	}
 	return agentHealthInconclusive, fmt.Sprintf("agent reachability ambiguous (%s)", reason)
 }
@@ -934,10 +1014,11 @@ func (w *Worker) verifyAgentHealth(ctx context.Context, siteID uuid.UUID, siteUR
 // stack as the homepage, so a transient DB-migration-on-activation window (or
 // a php-fpm restart, opcache reset, or WAF/CDN origin error) can make it 5xx
 // for a few seconds exactly like the public homepage. Only a verdict that
-// STAYS agentHealthUnhealthy across the whole retry window reaches that
-// conclusion here; a verdict that resolves to healthy or inconclusive at any
-// attempt returns immediately, mirroring probeHealthWithRetry's early return
-// on postUpdateHealthy.
+// STAYS a server error (agentHealthUnhealthy or agentHealthCrashed) across the
+// whole retry window reaches that conclusion here, and the last attempt's
+// answer decides which of the two it is; a verdict that resolves to healthy
+// or inconclusive at any attempt returns immediately, mirroring
+// probeHealthWithRetry's early return on postUpdateHealthy.
 func (w *Worker) verifyAgentHealthWithRetry(ctx context.Context, siteID uuid.UUID, siteURL string) (verdict agentHealthVerdict, detail string, attempts int) {
 	delays := probeRetryDelays
 	if w.probeDelays != nil {
@@ -946,7 +1027,7 @@ func (w *Worker) verifyAgentHealthWithRetry(ctx context.Context, siteID uuid.UUI
 	for i := 0; ; i++ {
 		attempts = i + 1
 		verdict, detail = w.verifyAgentHealth(ctx, siteID, siteURL)
-		if verdict != agentHealthUnhealthy {
+		if !verdict.failed() {
 			return verdict, detail, attempts
 		}
 		if i >= len(delays) {
@@ -982,7 +1063,7 @@ const (
 // for a site the update may never have touched. A CacheHit result is always
 // classified inconclusive, regardless of its status code.
 //
-// A 5xx status or a fatal-error body signature is unhealthy (unchanged from
+// A 5xx status or WordPress's error screen is unhealthy (unchanged from
 // Healthy()). A 401 or 403 is healthy, because those are common and
 // legitimate on the homepage (staging HTTP auth, a members-only site, a
 // security plugin) and rolling back a good update because of one would be its
@@ -1053,24 +1134,64 @@ func (w *Worker) probeHealthWithRetry(ctx context.Context, siteURL string) (prob
 	}
 }
 
+// confirmedFatal reports whether the post-update check itself confirmed a
+// crash, and nothing else does: an HTTP 500 from the signed agent check
+// (agentConfirmedFatal), an HTTP 500 from the homepage, or WordPress's own
+// error screen on the homepage (probe.Fatal). Any other server error status
+// (502, 503, 504, a CDN 52x) is treated like a timeout: the check failed, but
+// no crash is confirmed. A cached response never counts either: it says
+// nothing about the backend as it is now.
+func confirmedFatal(probe agentcmd.ProbeResult, agentConfirmedFatal bool) bool {
+	if agentConfirmedFatal {
+		return true
+	}
+	return !probe.CacheHit && (probe.Fatal || probe.StatusCode == http.StatusInternalServerError)
+}
+
+// coreLeftAsIsDetail is the task detail when a core update fails its health
+// check without a confirmed fatal. The check's own reason goes to the task's
+// error log.
+const coreLeftAsIsDetail = "WordPress core was updated, but the site did not pass the health check afterwards. " +
+	"Core was left as is: an automatic core rollback runs only when the check confirms a crash (an HTTP 500 or WordPress's error screen), " +
+	"and this check did not. Check the site."
+
+// coreRollbackUndeliverableDetail is the GH #210 detail for core. The agent
+// arms its update watchdog and takes a directory snapshot only for plugins
+// and themes, so after a completed core update nothing restores core on its
+// own.
+const coreRollbackUndeliverableDetail = "The site is down after the WordPress core update: it answered with a server error or showed a PHP fatal error, " +
+	"and the rollback command could not be delivered. Nothing restores WordPress core automatically, so the site needs manual recovery."
+
 // rollback issues the signed rollback command and records the rolled_back
 // state. probe is the ProbeResult that triggered the rollback decision (the
 // zero value when rollback was reached via a probe TRANSPORT error, or via
 // the GH #291 Phase 4 agent-first check, rather than a reachable-but-unhealthy
-// public-probe response), and is used, together with agentConfirmedFatal,
-// only to classify a rollback-transport failure below (GH #210).
-// agentConfirmedFatal is true when the rollback decision came from the
-// signed agent-first reachability check itself returning a server error
-// (agentHealthUnhealthy), which is exactly as strong a "site-wide PHP fatal"
-// signal as probe.Fatal or probe.StatusCode >= 500, but arrives with no
-// ProbeResult to carry it.
+// public-probe response). agentConfirmedFatal is true when the rollback
+// decision came from the signed agent-first reachability check itself
+// returning HTTP 500 (agentHealthCrashed), which is exactly as strong a
+// "site-wide PHP fatal" signal as probe.Fatal or a homepage 500, but arrives
+// with no ProbeResult to carry it. Together they decide
+// confirmedFatal, which gates a core rollback and classifies a
+// rollback-transport failure below (GH #210).
+//
+// Core policy (GH #415): rolling core back is a forced downgrade of WordPress
+// itself, so it is sent only after a confirmed fatal, and always with
+// allow_core_downgrade. Anything weaker records the failure and leaves core
+// where the update put it. This is the only place the control plane sends the
+// rollback command.
 func (w *Worker) rollback(ctx context.Context, task Task, siteURL string, item agentcmd.UpdateItem, res agentcmd.ItemResult, probe agentcmd.ProbeResult, agentConfirmedFatal bool, reason string) error {
 	from := fromOr(res.FromVersion, task.FromVersion)
+	fatal := confirmedFatal(probe, agentConfirmedFatal)
+	isCore := item.Type == TargetCore
+	if isCore && !fatal {
+		return w.finish(ctx, task, TaskFailed, from, res.ToVersion, coreLeftAsIsDetail, reason)
+	}
 	rbResp, rbErr := w.cmd.Rollback(ctx, task.SiteID, siteURL, agentcmd.RollbackRequest{
-		Type:       item.Type,
-		Slug:       item.Slug,
-		SnapshotID: res.SnapshotID,
-		ToVersion:  from,
+		Type:               item.Type,
+		Slug:               item.Slug,
+		SnapshotID:         res.SnapshotID,
+		ToVersion:          from,
+		AllowCoreDowngrade: isCore && fatal,
 	})
 	// A 200 with ok=false is the agent REFUSING the rollback (e.g. the snapshot
 	// is gone or unreadable). The transport succeeded, so rbErr is nil and the
@@ -1088,17 +1209,21 @@ func (w *Worker) rollback(ctx context.Context, task Task, siteURL string, item a
 		// both the health reason and the rollback error so the operator is alerted.
 		detail := "rollback FAILED after unhealthy update: " + reason
 		// GH #210: when the post-update health check ITSELF detected a
-		// site-wide PHP fatal (a fatal-error body signature, a 5xx probe
+		// site-wide PHP fatal (WordPress's error screen, a 500 probe
 		// response, or the GH #291 Phase 4 signed agent-first check itself
-		// getting a 5xx, agentConfirmedFatal) AND the rollback command's
+		// getting a 500, agentConfirmedFatal) AND the rollback command's
 		// transport also errored, the site is very likely serving a
 		// site-wide PHP fatal that makes the agent's own REST endpoint
 		// undeliverable, a distinct, more actionable failure mode than a
 		// generic "rollback failed" (which could also mean e.g. a
 		// transient network blip unrelated to the update). Record a distinct
 		// detail so the operator knows the automatic filesystem-level
-		// recovery on the agent side is the remaining recovery path.
-		if probe.Fatal || probe.StatusCode >= 500 || agentConfirmedFatal {
+		// recovery on the agent side is the remaining recovery path. Core has
+		// no such path, so its detail says manual recovery is needed.
+		switch {
+		case fatal && isCore:
+			detail = coreRollbackUndeliverableDetail
+		case fatal:
 			detail = "site not responding: site-wide PHP fatal after update; rollback command undeliverable. " +
 				"The agent update watchdog will attempt automatic filesystem recovery; if it cannot, manual filesystem recovery is required."
 		}
