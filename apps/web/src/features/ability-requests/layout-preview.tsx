@@ -247,12 +247,8 @@ function ImageView({ node, ctx }: { node: ImageNode; ctx: Ctx }) {
               rel="noopener noreferrer"
               className="font-medium text-primary underline underline-offset-2 hover:opacity-80"
             >
-              View image in WordPress
-              <span className="sr-only">
-                {" ("}
-                {fact.filename}
-                {")"}
-              </span>
+              View image in WordPress{" "}
+              <span className="sr-only">{`(${fact.filename})`}</span>
             </a>
           </p>
         ) : null}

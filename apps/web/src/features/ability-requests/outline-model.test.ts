@@ -40,10 +40,13 @@ function sharedCases(): SharedCase[] {
   return parsed.cases;
 }
 
-/** A fact for every attachment id the input names, so structure alone decides. */
+/**
+ * A fact for every attachment id the input names (the whole-number part of a
+ * fractional one too), so that structure alone decides the outcome.
+ */
 function factsFor(input: string): unknown[] {
   const ids = new Set<number>();
-  for (const m of input.matchAll(/"attachment_id":(\d+)(?![.\d])/g)) ids.add(Number(m[1]));
+  for (const m of input.matchAll(/"attachment_id":(\d+)/g)) ids.add(Number(m[1]));
   return [...ids].map((id) => ({ id, filename: `f${id}.jpg`, mime: "image/jpeg", width: 10, height: 10 }));
 }
 
@@ -137,6 +140,23 @@ describe("a request the card cannot show in full is not shown in part", () => {
   it("refuses text that is not JSON, a list, or a number", () => {
     for (const bad of ["", "not json", "[]", "null", "42", "{}", '{"outline":[]}']) {
       expect(parsePagePreview(bad), bad).toBeNull();
+    }
+  });
+
+  it("refuses a number written with a fraction or an exponent, wherever it sits", () => {
+    const page = (outline: string) =>
+      `{"post_type":"page","editor":"wordpress_blocks","title":"T","outline":[${outline}]}`;
+    expect(parsePagePreview(page('{"type":"heading","level":2,"text":"x"}'))).not.toBeNull();
+    for (const level of ["2.0", "2e0", "2E0", "0.2e1", "2.5"]) {
+      expect(parsePagePreview(page(`{"type":"heading","level":${level},"text":"x"}`)), level).toBeNull();
+    }
+  });
+
+  it("reads digits, dots and quotes inside text as text", () => {
+    const page = (text: string) =>
+      JSON.stringify({ post_type: "page", editor: "wordpress_blocks", title: "T", outline: [{ type: "paragraph", text }] });
+    for (const text of ["Costs 1.5 or 2e3", 'She said "2.5" twice', "C:\\path\\1.0", "-3.14"]) {
+      expect(parsePagePreview(page(text)), text).not.toBeNull();
     }
   });
 
