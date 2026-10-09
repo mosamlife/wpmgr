@@ -41,7 +41,8 @@
 #     (a whole line or a trailing one) is removed before matching, so a step may
 #     say what it used to pull; quoted text is kept, so an image named in a
 #     command may not. A "#" starts a comment only at the start of a line or after
-#     a space or tab, and never inside quotes.
+#     a space or tab, and never inside a quote opened on the same line. A quote
+#     that spans lines is not followed (GH #885).
 #   * api-integration.yml has a line, other than a whole-line comment, that
 #     CAPTURES this script's output with $(...). A workflow that stopped calling
 #     it would fall back to a literal sooner or later; this says so before that
@@ -159,8 +160,10 @@ go_code_hits() {
 #   "..."  holds # as text, and \" does not end it
 #   '...'  holds # as text, and a backslash in it is only a backslash
 #   \x     outside single quotes, the character after it is text
-# The state is reset on every line. A quote that is not closed on its line leaves
-# the rest of that line as code, which can add a finding and never hides one.
+# The state is reset on every line, so a quote that spans lines is not followed:
+# a # inside one, on a later line, reads as a comment (GH #885). A quote that is
+# not closed on its line leaves the rest of that line as code, which adds a
+# finding and hides none.
 # BEGIN wf_code_hits
 wf_code_hits() {
   awk -v repos="$S3_IMAGE_REPOS" -v sq="'" '
