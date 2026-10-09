@@ -96,6 +96,7 @@ case "$1" in
       wpmgr-proc-scan)
         if [ -e "$D/scan_fail" ]; then echo "fake: scan exec failed" >&2; exit 1; fi
         if [ -e "$D/scan_silent" ]; then exit 0; fi
+        if [ -e "$D/scan_canned" ]; then cat "$D/scan_canned"; exit 0; fi
         n=0
         if [ -r "$D/scans.$role" ]; then n="$(cat "$D/scans.$role")"; fi
         n=$((n + 1))
@@ -594,6 +595,60 @@ if should_run "$NAME"; then
   run_check fakectr
   want_rc "$NAME" 2 &&
     want_says "$NAME" 'did not print its summary line' &&
+    pass "$NAME"
+fi
+
+# The next cases feed the host a scan the in-container script would never
+# print. They guard the host's own reading of it: a count it cannot reconcile
+# with the listing, or a scan that saw nothing, is not a clean bill of health.
+
+NAME='broken: the scan counts more zombies than it lists'
+if should_run "$NAME"; then
+  new_case
+  printf 'init=tini\nzombie pid=7 comm=sleep\nscanned=4 zombies=2\n' > "$CASEDIR/scan_canned"
+  run_check fakectr
+  want_rc "$NAME" 2 &&
+    want_says "$NAME" 'counted 2 zombies but listed 1' &&
+    pass "$NAME"
+fi
+
+NAME='broken: the scan lists a zombie its summary does not count'
+if should_run "$NAME"; then
+  new_case
+  printf 'init=tini\nzombie pid=7 comm=sleep\nscanned=4 zombies=0\n' > "$CASEDIR/scan_canned"
+  run_check fakectr
+  want_rc "$NAME" 2 &&
+    want_says "$NAME" 'counted 0 zombies but listed 1' &&
+    pass "$NAME"
+fi
+
+NAME='broken: the scan saw no processes at all'
+if should_run "$NAME"; then
+  new_case
+  printf 'init=tini\nscanned=0 zombies=0\n' > "$CASEDIR/scan_canned"
+  run_check fakectr
+  want_rc "$NAME" 2 &&
+    want_says "$NAME" 'saw no processes at all' &&
+    pass "$NAME"
+fi
+
+NAME='broken: the scan does not say what PID 1 is'
+if should_run "$NAME"; then
+  new_case
+  printf 'scanned=4 zombies=0\n' > "$CASEDIR/scan_canned"
+  run_check fakectr
+  want_rc "$NAME" 2 &&
+    want_says "$NAME" 'did not report what PID 1 is' &&
+    pass "$NAME"
+fi
+
+NAME='broken: the scan prints two summaries'
+if should_run "$NAME"; then
+  new_case
+  printf 'init=tini\nscanned=4 zombies=0\nscanned=4 zombies=0\n' > "$CASEDIR/scan_canned"
+  run_check fakectr
+  want_rc "$NAME" 2 &&
+    want_says "$NAME" 'more than one summary line' &&
     pass "$NAME"
 fi
 
