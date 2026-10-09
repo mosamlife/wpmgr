@@ -108,6 +108,19 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
+/**
+ * The consent endpoint's refusal shape: an RFC 6749 error with `error` and
+ * `error_description`, which use-consent.ts turns into an OAuthRequestError whose
+ * message is the description. HTTP 400 with `invalid_request` is what a refused
+ * narrowing answers with (see the refusal case in consent-screen.read-picker.test.tsx).
+ */
+function errorResponse(code: string, description: string, status: number): Response {
+  return new Response(JSON.stringify({ error: code, error_description: description }), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 const SEARCH =
   "response_type=code&client_id=c_route" +
   "&redirect_uri=https%3A%2F%2Fx.example%2Fcb" +
@@ -121,6 +134,8 @@ function urlOf(input: RequestInfo | URL): string {
 }
 
 let authorizeAnswers: (() => Promise<Response>)[];
+// What the approval POST answers with. A success unless a test says otherwise.
+let approveAnswer: () => Promise<Response>;
 const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
   (input) => {
     const url = urlOf(input);
@@ -131,7 +146,7 @@ const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promis
       if (next === undefined) return Promise.reject(new Error(`unplanned authorize request: ${url}`));
       return next();
     }
-    if (url === CONSENT_APPROVE_PATH) return Promise.resolve(jsonResponse(APPROVED));
+    if (url === CONSENT_APPROVE_PATH) return approveAnswer();
     return Promise.reject(new Error(`unplanned request: ${url}`));
   },
 );
@@ -204,6 +219,7 @@ function submitApproval() {
 
 beforeEach(() => {
   authorizeAnswers = [];
+  approveAnswer = () => Promise.resolve(jsonResponse(APPROVED));
   fetchMock.mockClear();
   vi.mocked(navigateTo).mockClear();
   vi.stubGlobal("fetch", fetchMock);
@@ -606,4 +622,79 @@ describe("/connect/ai, a different authorize request", () => {
   // The over-fire arm of the key, that it is the request and not the consent
   // ticket, is the earlier test in this file where a refreshed context for the
   // SAME request brings a new ticket and the person's cleared tick survives.
+
+  // THE APPROVAL BELONGS TO ITS REQUEST. The approval mutation used to live in
+  // the page, above the screen, so request A's error (or its "Approving" state)
+  // was still on show after the person moved to request B. It now lives in the
+  // keyed child, so each request has its own.
+  async function openFirstWithSecondCached() {
+    const wireB = wire("ticket-b", {
+      client_id: "c_second",
+      client_name_unverified: "Second Client",
+      redirect_uri: "https://other.example/cb",
+      redirect_host: "other.example",
+      scopes: ["mcp:read", "mcp:cache"],
+      conferrable_capabilities: [{ name: "mcp.sites.read", effect: "read" }, CACHE_PURGE],
+    });
+    const late = lateAnswer(wire("ticket-a"));
+    authorizeAnswers = [late.answer];
+    const { queryClient, router } = mount();
+    await screen.findByRole("status", { name: "Loading the connection request" });
+    late.release();
+    await screen.findByTestId("consent-site-capability");
+    // The second request is already cached, as it is on the way back and forth.
+    queryClient.setQueryData(consentKeys.authorize(PARAMS_B), parseConsentContext(wireB));
+    return {
+      goToSecond: async () => {
+        act(() => {
+          router.history.push(`/connect/ai?${SEARCH_B}`);
+        });
+        await waitFor(() =>
+          expect(screen.getByTestId("consent-redirect-host")).toHaveTextContent("other.example"),
+        );
+      },
+    };
+  }
+
+  it("does not show request A's approval error on request B", async () => {
+    approveAnswer = () =>
+      Promise.resolve(errorResponse("invalid_request", "That grant could not be created.", 400));
+    const { goToSecond } = await openFirstWithSecondCached();
+
+    // The positive control: A's approval fails and the error is on A's screen.
+    submitApproval();
+    expect(await screen.findByText("That grant could not be created.")).toBeTruthy();
+    expect(screen.getByText("We could not approve this connection.")).toBeTruthy();
+
+    await goToSecond();
+
+    // B is a fresh screen and carries nothing of A's failed approval.
+    expect(screen.queryByText("That grant could not be created.")).toBeNull();
+    expect(screen.queryByText("We could not approve this connection.")).toBeNull();
+    expect(screen.getByTestId("consent-approve")).toBeEnabled();
+  });
+
+  it("does not show request A's in-flight approval as request B approving", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    approveAnswer = async () => {
+      await gate;
+      return jsonResponse(APPROVED);
+    };
+    const { goToSecond } = await openFirstWithSecondCached();
+
+    // The positive control: A's approval is in flight and its button says so.
+    submitApproval();
+    await waitFor(() => expect(screen.getByTestId("consent-approve")).toBeDisabled());
+    expect(screen.getByTestId("consent-approve")).toHaveTextContent(/Approving/);
+
+    await goToSecond();
+
+    // B is not approving, and its button is the ordinary one.
+    expect(screen.getByTestId("consent-approve")).toBeEnabled();
+    expect(screen.getByTestId("consent-approve")).toHaveTextContent("Approve and connect");
+    release();
+  });
 });
