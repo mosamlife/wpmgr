@@ -33,8 +33,10 @@
 #
 # WHAT --check ADDS, all of it an error when it finds something:
 #   * the declaration is the only place under apps/api/tests that names an S3
-#     server image repository. Comment lines are ignored, so prose may say what
-#     the fixture used to be; a code line may not.
+#     server image repository. Go comments (line, trailing and block, one line or
+#     several) are removed before matching, so prose may say what the fixture used
+#     to be; string and rune literals are kept, so an image named in code may not.
+#     "//" inside a string is not a comment, and neither is "/*".
 #   * no non-comment line in .github/workflows names one either, and
 #     api-integration.yml has a non-comment line that CAPTURES this script's
 #     output with $(...). A workflow that stopped calling it would fall back to a
@@ -80,6 +82,69 @@ CALL_RE='\$\([^)]*scripts/test-s3-image\.sh'
 
 # [registry[:port]/]repo[:tag]@sha256:<64 lowercase hex>
 REF_RE='^([a-z0-9.-]+(:[0-9]+)?/)?[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9_][A-Za-z0-9_.-]*)?@sha256:[0-9a-f]{64}$'
+
+# go_code_hits FILE: print "LINE:text" for every line of a Go file whose CODE
+# names an S3 server image repository, except the declaration line. Comments are
+# removed first, by a small scanner that knows the four things a Go line can hold
+# that look like comment syntax but are not:
+#   "..."  an interpreted string, where \" does not end it
+#   `...`  a raw string, which may span lines and holds // and /* as text
+#   '.'    a rune literal, which can be '"' or '/'
+# and the two comment forms, // to the end of the line and /* ... */ across lines.
+# A block comment or raw string that is still open at the end of a line stays open
+# on the next one. The scan state is reset at the start of every file.
+# BEGIN go_code_hits
+go_code_hits() {
+  awk -v repos="$S3_IMAGE_REPOS" -v decl="^const ${DECL_NAME} = " -v sq="'" '
+    function strip(line,    out, i, n, c, d, q) {
+      out = ""
+      n = length(line)
+      i = 1
+      while (i <= n) {
+        c = substr(line, i, 1)
+        d = substr(line, i + 1, 1)
+        if (in_block) {
+          if (c == "*" && d == "/") { in_block = 0; i += 2; out = out " " } else { i++ }
+          continue
+        }
+        if (in_raw) {
+          out = out c
+          if (c == "`") { in_raw = 0 }
+          i++
+          continue
+        }
+        if (c == "/" && d == "/") { break }
+        if (c == "/" && d == "*") { in_block = 1; i += 2; continue }
+        if (c == "`") { in_raw = 1; out = out c; i++; continue }
+        if (c == "\"" || c == sq) {
+          q = c
+          out = out c
+          i++
+          while (i <= n) {
+            c = substr(line, i, 1)
+            out = out c
+            i++
+            if (c == "\\") {
+              if (i <= n) { out = out substr(line, i, 1); i++ }
+            } else if (c == q) {
+              break
+            }
+          }
+          continue
+        }
+        out = out c
+        i++
+      }
+      return out
+    }
+    FNR == 1 { in_block = 0; in_raw = 0 }
+    {
+      code = strip($0)
+      if (code ~ repos && code !~ decl) { print FNR ":" $0 }
+    }
+  ' "$1"
+}
+# END go_code_hits
 
 usage() {
   cat <<'USAGE'
@@ -222,14 +287,13 @@ fi
 # --check: nothing else names an S3 server image, and the workflow calls us
 # ---------------------------------------------------------------------------
 if [ "$check" -eq 1 ]; then
-  # Go: a line that is not a comment and not the declaration, naming a repo.
-  go_scanned=0
+  # Go: code that is not the declaration, naming a repo. A file that never
+  # mentions one cannot hold a finding, so only the files that do are scanned;
+  # the scan itself is the comment-aware go_code_hits above.
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    go_scanned=$((go_scanned + 1))
-    bad="$(grep -n -E "$S3_IMAGE_REPOS" "$f" \
-      | grep -v -E '^[0-9]+:[[:space:]]*//' \
-      | grep -v -E "^[0-9]+:const ${DECL_NAME} = " || true)"
+    grep -q -E "$S3_IMAGE_REPOS" "$f" || continue
+    bad="$(go_code_hits "$f")"
     if [ -n "$bad" ]; then
       err "$f names an S3 server image outside the ${DECL_NAME} declaration; use ${DECL_NAME}:"
       printf '%s\n' "$bad" | sed 's/^/         /' >&2

@@ -398,6 +398,177 @@ func startOther() {
 GO
 case_run "check: an indented Go comment is prose too" pass check "$t" "=$REF"
 
+# ---- Go comment forms beyond a whole-line //. Comment text is removed before the
+# match; string and rune literals are kept. Every case below puts one Go file
+# beside the declaration and asserts on that file alone.
+go_other() { # go_other TREE-NAME  (the Go source comes on standard input)
+  _t="$(tree "$1")"
+  cat >"$_t/apps/api/tests/other_test.go"
+  printf '%s' "$_t"
+}
+
+# What must NOT be flagged: the image is named only in comment text.
+t="$(go_other check-go-block-comment-one-line <<'GO'
+package tests
+
+/* previously minio/minio */
+var n = 1
+GO
+)"
+case_run "check: a one-line block comment naming the old image is prose" pass check "$t" "=$REF"
+
+t="$(go_other check-go-trailing-comment <<'GO'
+package tests
+
+var n = 1 // previously minio/minio
+GO
+)"
+case_run "check: a trailing comment after code is prose" pass check "$t" "=$REF"
+
+t="$(go_other check-go-block-comment-multiline <<'GO'
+package tests
+
+/*
+previously minio/minio:RELEASE.2024-01-16T16-07-38Z
+and bitnami/minio before that
+*/
+var n = 1
+GO
+)"
+case_run "check: a block comment spread over several lines is prose" pass check "$t" "=$REF"
+
+t="$(go_other check-go-block-comment-mid-line <<'GO'
+package tests
+
+var n = /* was minio/minio */ 1
+GO
+)"
+case_run "check: a block comment opened and closed inside a code line is prose" pass check "$t" "=$REF"
+
+t="$(go_other check-go-comment-with-quotes <<'GO'
+package tests
+
+var n = 1 // it's "minio/minio" now
+var m = 2
+GO
+)"
+case_run "check: quotes inside a comment do not start a string" pass check "$t" "=$REF"
+
+t="$(go_other check-go-comment-with-backtick <<'GO'
+package tests
+
+var n = 1 // a ` tick, and minio/minio
+var m = 2
+GO
+)"
+case_run "check: a backtick inside a comment does not open a raw string" pass check "$t" "=$REF"
+
+t="$(go_other check-go-block-comment-with-url <<'GO'
+package tests
+
+/* see "http://x" and minio/minio */
+var n = 1
+GO
+)"
+case_run "check: a block comment holding // and quotes is prose" pass check "$t" "=$REF"
+
+# What must STILL be flagged: the image is named in code, whatever surrounds it.
+t="$(go_other check-go-string-then-comment <<'GO'
+package tests
+
+var img = "minio/minio:RELEASE.2024-01-16T16-07-38Z" // the old pin
+GO
+)"
+case_run "check: a real image string followed by a comment is still a finding" fail check "$t" "+other_test.go names an S3 server image"
+
+t="$(go_other check-go-code-after-block-comment <<'GO'
+package tests
+
+/* old */ var img = "minio/minio:x"
+GO
+)"
+case_run "check: code after a closed block comment is still scanned" fail check "$t" "+other_test.go names an S3 server image"
+
+t="$(go_other check-go-url-in-string <<'GO'
+package tests
+
+var u, img = "http://x", "minio/minio:x"
+GO
+)"
+case_run "check: // inside a string is not a comment, so a literal after it is found" fail check "$t" "+other_test.go names an S3 server image"
+
+t="$(go_other check-go-block-open-in-string <<'GO'
+package tests
+
+var s = "/* not a comment"
+var img = "minio/minio:x"
+GO
+)"
+case_run "check: /* inside a string does not open a comment that hides the next line" fail check "$t" "+other_test.go names an S3 server image"
+
+t="$(go_other check-go-rune-quote <<'GO'
+package tests
+
+var r, u, img = '"', "http://x", "minio/minio:x"
+GO
+)"
+case_run "check: a quote inside a rune literal does not flip the string state" fail check "$t" "+other_test.go names an S3 server image"
+
+t="$(go_other check-go-rune-slash <<'GO'
+package tests
+
+var a, b, img = '/', '/', "minio/minio:x"
+GO
+)"
+case_run "check: two slash runes in a row are not a comment" fail check "$t" "+other_test.go names an S3 server image"
+
+t="$(go_other check-go-escaped-quote <<'GO'
+package tests
+
+var s = "a \" // b minio/minio"
+GO
+)"
+case_run "check: an escaped quote does not end the string early" fail check "$t" "+other_test.go names an S3 server image"
+
+t="$(go_other check-go-raw-string-second-line <<'GO'
+package tests
+
+var s = `first line
+minio/minio:x`
+GO
+)"
+case_run "check: an image named on the second line of a raw string is found" fail check "$t" "+other_test.go names an S3 server image"
+
+t="$(go_other check-go-raw-string-slashes <<'GO'
+package tests
+
+var s = `http://x minio/minio`
+GO
+)"
+case_run "check: a raw string holding // is not a comment" fail check "$t" "+other_test.go names an S3 server image"
+
+t="$(go_other check-go-raw-string-then-code <<'GO'
+package tests
+
+var s = `/* open in a raw string`
+var img = "minio/minio:x"
+GO
+)"
+case_run "check: /* inside a raw string does not open a comment that hides the next line" fail check "$t" "+other_test.go names an S3 server image"
+
+t="$(go_other check-go-state-resets-per-file <<'GO'
+package tests
+
+/* a block comment that never closes, and names minio/minio
+GO
+)"
+cat >"$t/apps/api/tests/zz_second_test.go" <<'GO'
+package tests
+
+var img = "minio/minio:x"
+GO
+case_run "check: an unclosed block comment in one file does not hide the next file" fail check "$t" "+zz_second_test.go names an S3 server image"
+
 t="$(tree check-workflow-stopped-calling)"
 cat >"$(wf "$t")" <<'YML'
 name: api-integration
