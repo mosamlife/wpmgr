@@ -16,6 +16,303 @@ export type Readiness = {
   };
 };
 
+export type ContentInventoryEditor = {
+  integration_id: string;
+  /**
+   * From the platform allowlist, never from the site.
+   */
+  display_name?: string | null;
+  version?: string | null;
+};
+
+export type ContentInventoryRow = {
+  post_id: number;
+  post_type: string;
+  post_status: string;
+  /**
+   * Known values: classic, empty, block_document, builder, ambiguous, unrecognised_builder, special_page, template_may_override.
+   */
+  verdict: string;
+  route_number: number;
+  /**
+   * A closed set of reason codes; a client renders an unknown code as "Not available yet".
+   */
+  route_reason: string;
+  /**
+   * Null when no builder owns the page.
+   */
+  editor?: ContentInventoryEditor | null;
+  /**
+   * The site's own text, cleaned and capped at 120 bytes. Null unless the caller holds site.content.read.
+   */
+  title?: string | null;
+  checked_at: string;
+};
+
+export type ContentInventoryPage = {
+  /**
+   * True when the last check stopped at the page cap, so the list is a sample of the site. From the site's last-check record; false when the site has never been checked.
+   */
+  truncated: boolean;
+  state: "ok" | "agent_update_needed" | "not_connected";
+  agent_version?: string;
+  min_agent_version: string;
+  last_checked_at?: string | null;
+  titles_included: boolean;
+  next_after_post_id?: number | null;
+  pages: Array<ContentInventoryRow>;
+};
+
+export type ContentFleetVerdictShare = {
+  verdict: string;
+  route_number: number;
+  pages: number;
+  sites: number;
+};
+
+export type ContentFleetBuilderShare = {
+  integration_id: string;
+  version?: string | null;
+  pages: number;
+  sites: number;
+};
+
+export type ContentFleetReport = {
+  pages: number;
+  by_verdict: Array<ContentFleetVerdictShare>;
+  by_builder: Array<ContentFleetBuilderShare>;
+};
+
+export type ContentIntegration = {
+  integration_id: string;
+  display_name: string;
+  enabled: boolean;
+  status: "detect_only";
+  descriptor: {
+    [key: string]: unknown;
+  };
+  abilities?: {
+    [key: string]: unknown;
+  } | null;
+  min_version?: string | null;
+  max_tested_version?: string | null;
+  min_wp_version?: string | null;
+  integration_entry_sha256?: string | null;
+  /**
+   * The theme directory that signals this builder; sent as a hint only when active.
+   */
+  theme_slug?: string | null;
+  updated_at: string;
+};
+
+/**
+ * One reviewed ability in the global catalogue. `entry_sha256` is the
+ * sha256 of the exact entry bytes sent to a site's agent.
+ *
+ */
+export type AbilityCatalogueEntry = {
+  entry_id: string;
+  name: string;
+  source: "wpmgr" | "core" | "vendor";
+  class: "read" | "write" | "denied";
+  status: "admitted" | "detect_only" | "awaiting_vendor_tools";
+  enabled: boolean;
+  approval_mode: "none" | "per_call";
+  permission_mode: "principal" | "asserted";
+  integration_id?: string;
+  owner_dir?: string;
+  version_min?: string;
+  version_max_tested?: string;
+  min_wp_version?: string;
+  min_agent_version?: string;
+  schema_struct_sha256?: string;
+  dynamic_enum_paths: Array<string>;
+  title: string;
+  description: string;
+  usage?: string;
+  operator_permission?: string;
+  target?: unknown;
+  snapshot: string;
+  preview?: string;
+  arg_render: {
+    [key: string]: unknown;
+  };
+  effect_copy: "draft" | "live" | "none";
+  limits: {
+    [key: string]: unknown;
+  };
+  nested_allow: Array<string>;
+  global_option_keys: Array<string>;
+  integration_block?: unknown;
+  admission: {
+    [key: string]: unknown;
+  };
+  entry_sha256?: string;
+  /**
+   * The pinned output shape of a read: `{"fields":{key:shape}}`,
+   * `{"items":shape}`, `"string"`, `"int"` or `"bool"`, at most 8 deep.
+   * Only listed keys reach the AI.
+   *
+   */
+  output_fields?: unknown;
+  updated_at: string;
+};
+
+/**
+ * Every field is optional on update; an omitted field keeps its stored
+ * value. `name` is required on create and cannot change. There is no
+ * actor field: the actor is the authenticated session.
+ *
+ */
+export type AbilityCatalogueInput = {
+  name?: string;
+  source?: "wpmgr" | "core" | "vendor";
+  class?: "read" | "write" | "denied";
+  status?: "admitted" | "detect_only" | "awaiting_vendor_tools";
+  enabled?: boolean;
+  approval_mode?: "none" | "per_call";
+  permission_mode?: "principal" | "asserted";
+  integration_id?: string;
+  owner_dir?: string;
+  version_min?: string;
+  version_max_tested?: string;
+  min_wp_version?: string;
+  min_agent_version?: string;
+  schema_struct_sha256?: string;
+  dynamic_enum_paths?: Array<string>;
+  title?: string;
+  description?: string;
+  usage?: string;
+  operator_permission?: string;
+  target?: unknown;
+  snapshot?: string;
+  preview?: string;
+  arg_render?: {
+    [key: string]: unknown;
+  };
+  effect_copy?: "draft" | "live" | "none";
+  limits?: {
+    [key: string]: unknown;
+  };
+  nested_allow?: Array<string>;
+  global_option_keys?: Array<string>;
+  integration_block?: unknown;
+  admission?: {
+    [key: string]: unknown;
+  };
+  /**
+   * The pinned output shape of a read, in the strict grammar
+   * `{"fields":{key:shape}}` | `{"items":shape}` | `"string"` | `"int"` |
+   * `"bool"`, keys matching `^[A-Za-z0-9_-]{1,64}$`, at most 8 deep. Any
+   * other node is refused (400 invalid_output_fields). Required for a
+   * vendor or core read. `limits.allowed_option_patterns` may not hold an
+   * empty or wildcard-only (`*`, `**`) pattern.
+   *
+   */
+  output_fields?: unknown;
+};
+
+/**
+ * One reviewed WordPress REST route (m161). `route_sha256` is the sha256
+ * of the exact route bytes sent to a site's agent.
+ *
+ */
+export type RestRoute = {
+  route_id: string;
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  namespace: string;
+  template: string;
+  core_pattern: string;
+  path_params: {
+    [key: string]: unknown;
+  };
+  query_keys: {
+    [key: string]: unknown;
+  };
+  pinned_query: {
+    [key: string]: unknown;
+  };
+  body_keys: {
+    [key: string]: unknown;
+  };
+  class: "read" | "write";
+  /**
+   * The pinned output shape
+   */
+  output_fields: unknown;
+  snapshot: string;
+  target?: unknown;
+  arg_render: {
+    [key: string]: unknown;
+  };
+  operator_permission?: string;
+  effect_copy: "draft" | "live" | "none";
+  enabled: boolean;
+  min_wp_version?: string;
+  title: string;
+  description: string;
+  route_sha256?: string;
+  hash_current: boolean;
+  updated_at: string;
+};
+
+/**
+ * A route edit. Every field is optional; an omitted field keeps its
+ * stored value. route_id and route_sha256 are never body fields.
+ * JSON members hold integers only, written plainly.
+ *
+ */
+export type RestRouteInput = {
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  namespace?: string;
+  template?: string;
+  core_pattern?: string;
+  path_params?: {
+    [key: string]: unknown;
+  };
+  query_keys?: {
+    [key: string]: unknown;
+  };
+  pinned_query?: {
+    [key: string]: unknown;
+  };
+  body_keys?: {
+    [key: string]: unknown;
+  };
+  class?: "read" | "write";
+  /**
+   * The pinned output shape
+   */
+  output_fields?: unknown;
+  snapshot?: string;
+  target?: unknown;
+  arg_render?: {
+    [key: string]: unknown;
+  };
+  operator_permission?: string;
+  effect_copy?: "draft" | "live" | "none";
+  enabled?: boolean;
+  min_wp_version?: string;
+  title?: string;
+  description?: string;
+};
+
+export type ContentIntegrationInput = {
+  display_name: string;
+  enabled: boolean;
+  status: "detect_only";
+  descriptor?: {
+    [key: string]: unknown;
+  };
+  abilities?: {
+    [key: string]: unknown;
+  } | null;
+  min_version?: string | null;
+  max_tested_version?: string | null;
+  min_wp_version?: string | null;
+  theme_slug?: string | null;
+};
+
 export type Error = {
   /**
    * Stable machine-readable error code.
@@ -4320,6 +4617,172 @@ export type PurgeRequest = {
    *
    */
   delete_everything?: boolean;
+};
+
+export type AbilityRequestApproveBody = {
+  /**
+   * The digest the queue returned for this request.
+   */
+  presented_digest: string;
+};
+
+export type AbilityRequestOrgList = {
+  requests: Array<AbilityRequest>;
+  /**
+   * Requests still waiting for a decision (the badge).
+   */
+  pending_count: number;
+  limit: number;
+  offset: number;
+};
+
+export type AbilityRequestList = {
+  requests: Array<AbilityRequest>;
+  limit: number;
+  offset: number;
+};
+
+export type AbilityTenantReenableResult = {
+  entry_id: string;
+  /**
+   * Always true; a tool that was not off is a 404.
+   */
+  reenabled: boolean;
+};
+
+/**
+ * One AI site-change request. `site_label`, `site_host`, `grant_label`
+ * and `title_excerpt` came from a site or an AI connection: render each
+ * as plain text. `input_json` is the exact input the AI chose, shown in
+ * full on the card.
+ *
+ */
+export type AbilityRequest = {
+  id: string;
+  site_id: string;
+  ability_name: string;
+  input_json: string;
+  title_excerpt?: string;
+  editor?: string;
+  post_type?: string;
+  effect_copy: "draft" | "live" | "none";
+  snapshot: string;
+  site_label: string;
+  site_host: string;
+  grant_label: string;
+  grant_via: string;
+  setup_client?: string;
+  card_copy_version: number;
+  presented_digest?: string;
+  state:
+    | "pending"
+    | "approved"
+    | "declined"
+    | "withdrawn"
+    | "expired"
+    | "dispatched"
+    | "outcome_unknown"
+    | "done"
+    | "failed"
+    | "not_sent";
+  created_at: string;
+  expires_at: string;
+  decided_at?: string;
+  outcome?: string;
+  outcome_code?: string;
+  not_sent_reason?: string;
+  created_post_id?: number;
+  trashed?: boolean;
+  /**
+   * A failed wpmgr/rest-write's report on putting the post back.
+   * True: the whole post is as it was. False: WPMgr put back what it
+   * could, but the post is not fully as it was; show the request as
+   * needing attention. Null when nothing needed putting back, and for
+   * every other ability.
+   *
+   */
+  restored?: boolean;
+  undo_state?: string;
+  undo_available_until?: string;
+  /**
+   * Whether `POST .../undo` would start an undo now: a done request
+   * inside its undo window, or the draft a failed or given-up page
+   * creation left on the site. Show the undo action exactly when
+   * this is true.
+   *
+   */
+  undo_offered: boolean;
+  /**
+   * True once WPMgr stopped checking the site for the outcome of a
+   * write whose reply was lost. The result is final: the person
+   * should look at the site's drafts.
+   *
+   */
+  resolve_gave_up: boolean;
+  /**
+   * The reviewed REST route a wpmgr/rest-write request runs; null otherwise.
+   */
+  route_id?: string;
+  /**
+   * The route hash the request was approved against; null otherwise.
+   */
+  route_sha256?: string;
+  /**
+   * The structured card of a wpmgr/rest-write request; null otherwise.
+   */
+  card_facts?: AbilityRequestCardFacts;
+};
+
+/**
+ * A structured approval card. Every value under a `from_the_site`
+ * member came from the site: render it as plain text in the "From the
+ * site" slot. `after` is the value the AI asked for. The other strings
+ * are WPMgr's.
+ *
+ */
+export type AbilityRequestCardFacts = {
+  route_id: string;
+  route_title: string;
+  method: string;
+  target: {
+    id: number;
+    post_type: string;
+    from_the_site: {
+      status: string;
+      title_before: string;
+    };
+  };
+  changes: Array<{
+    key: string;
+    label: string;
+    after: string;
+    from_the_site: {
+      before: string;
+    };
+  }>;
+  effect_copy: "draft" | "live" | "none";
+  live: boolean;
+  /**
+   * "Published immediately" when live, otherwise "Saved to the post; it is not published".
+   */
+  effect_label: string;
+  undo: string;
+  undo_exact: boolean;
+  /**
+   * Set when undo may not restore the exact characters of the previous value.
+   */
+  undo_note: string;
+};
+
+export type ContentEditingState = {
+  site_id: string;
+  enabled: boolean;
+  enabled_at?: string;
+  /**
+   * The WordPress user id of the site's content service user.
+   */
+  principal_user_id?: number;
+  enabled_by?: string;
 };
 
 export type AssistantRequestApproveBody = {
@@ -17742,6 +18205,344 @@ export type DeclineAssistantRequestResponses = {
 export type DeclineAssistantRequestResponse =
   DeclineAssistantRequestResponses[keyof DeclineAssistantRequestResponses];
 
+export type ListAbilityRequestsData = {
+  body?: never;
+  path?: never;
+  query?: {
+    state?:
+      | "pending"
+      | "approved"
+      | "declined"
+      | "withdrawn"
+      | "expired"
+      | "dispatched"
+      | "outcome_unknown"
+      | "done"
+      | "failed"
+      | "not_sent";
+    limit?: number;
+    offset?: number;
+  };
+  url: "/api/v1/ai/ability-requests";
+};
+
+export type ListAbilityRequestsErrors = {
+  /**
+   * Missing site.content.edit
+   */
+  403: Error;
+  /**
+   * Unknown state
+   */
+  422: Error;
+};
+
+export type ListAbilityRequestsError =
+  ListAbilityRequestsErrors[keyof ListAbilityRequestsErrors];
+
+export type ListAbilityRequestsResponses = {
+  /**
+   * A page of requests
+   */
+  200: AbilityRequestOrgList;
+};
+
+export type ListAbilityRequestsResponse =
+  ListAbilityRequestsResponses[keyof ListAbilityRequestsResponses];
+
+export type ListSiteAbilityRequestsData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: {
+    limit?: number;
+    offset?: number;
+  };
+  url: "/api/v1/sites/{siteId}/ai/ability-requests";
+};
+
+export type ListSiteAbilityRequestsErrors = {
+  /**
+   * Missing site.content.edit
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+};
+
+export type ListSiteAbilityRequestsError =
+  ListSiteAbilityRequestsErrors[keyof ListSiteAbilityRequestsErrors];
+
+export type ListSiteAbilityRequestsResponses = {
+  /**
+   * A page of requests
+   */
+  200: AbilityRequestList;
+};
+
+export type ListSiteAbilityRequestsResponse =
+  ListSiteAbilityRequestsResponses[keyof ListSiteAbilityRequestsResponses];
+
+export type ApproveAbilityRequestData = {
+  body: AbilityRequestApproveBody;
+  path: {
+    siteId: string;
+    requestId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/approve";
+};
+
+export type ApproveAbilityRequestErrors = {
+  /**
+   * Not a signed-in person, or missing the permission
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+  /**
+   * Nothing was approved; the error code names why
+   */
+  409: Error;
+  /**
+   * The body was not application/json
+   */
+  415: Error;
+};
+
+export type ApproveAbilityRequestError =
+  ApproveAbilityRequestErrors[keyof ApproveAbilityRequestErrors];
+
+export type ApproveAbilityRequestResponses = {
+  /**
+   * Approved; the request now waits for the worker
+   */
+  200: AbilityRequest;
+};
+
+export type ApproveAbilityRequestResponse =
+  ApproveAbilityRequestResponses[keyof ApproveAbilityRequestResponses];
+
+export type DeclineAbilityRequestData = {
+  body: {
+    [key: string]: unknown;
+  };
+  path: {
+    siteId: string;
+    requestId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/decline";
+};
+
+export type DeclineAbilityRequestErrors = {
+  /**
+   * Not a signed-in person, or missing the permission
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+  /**
+   * The request is no longer waiting
+   */
+  409: Error;
+  /**
+   * The body was not application/json
+   */
+  415: Error;
+};
+
+export type DeclineAbilityRequestError =
+  DeclineAbilityRequestErrors[keyof DeclineAbilityRequestErrors];
+
+export type DeclineAbilityRequestResponses = {
+  /**
+   * Declined
+   */
+  200: AbilityRequest;
+};
+
+export type DeclineAbilityRequestResponse =
+  DeclineAbilityRequestResponses[keyof DeclineAbilityRequestResponses];
+
+export type UndoAbilityRequestData = {
+  body: {
+    [key: string]: unknown;
+  };
+  path: {
+    siteId: string;
+    requestId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/ability-requests/{requestId}/undo";
+};
+
+export type UndoAbilityRequestErrors = {
+  /**
+   * Not a signed-in person, or missing the permission
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+  /**
+   * The change can no longer be undone from WPMgr
+   */
+  409: Error;
+  /**
+   * The body was not application/json
+   */
+  415: Error;
+  /**
+   * The site did not settle the undo; it is offered again
+   */
+  503: Error;
+};
+
+export type UndoAbilityRequestError =
+  UndoAbilityRequestErrors[keyof UndoAbilityRequestErrors];
+
+export type UndoAbilityRequestResponses = {
+  /**
+   * The undo ran; undo_state names its result
+   */
+  200: AbilityRequest;
+};
+
+export type UndoAbilityRequestResponse =
+  UndoAbilityRequestResponses[keyof UndoAbilityRequestResponses];
+
+export type ReenableAbilityForTenantData = {
+  body: {
+    [key: string]: unknown;
+  };
+  path: {
+    entryId: string;
+  };
+  query?: never;
+  url: "/api/v1/ai/abilities/{entryId}/reenable";
+};
+
+export type ReenableAbilityForTenantErrors = {
+  /**
+   * Not a signed-in person, or not an admin or owner of the account
+   */
+  403: Error;
+  /**
+   * The tool is not switched off for this account
+   */
+  404: Error;
+  /**
+   * The body is not JSON
+   */
+  415: Error;
+  /**
+   * entryId is not a UUID
+   */
+  422: Error;
+};
+
+export type ReenableAbilityForTenantError =
+  ReenableAbilityForTenantErrors[keyof ReenableAbilityForTenantErrors];
+
+export type ReenableAbilityForTenantResponses = {
+  /**
+   * The tool is back on for this account
+   */
+  200: AbilityTenantReenableResult;
+};
+
+export type ReenableAbilityForTenantResponse =
+  ReenableAbilityForTenantResponses[keyof ReenableAbilityForTenantResponses];
+
+export type GetSiteContentEditingData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/content-editing";
+};
+
+export type GetSiteContentEditingErrors = {
+  /**
+   * Missing site.content.read
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+};
+
+export type GetSiteContentEditingError =
+  GetSiteContentEditingErrors[keyof GetSiteContentEditingErrors];
+
+export type GetSiteContentEditingResponses = {
+  /**
+   * The site's content-editing state
+   */
+  200: ContentEditingState;
+};
+
+export type GetSiteContentEditingResponse =
+  GetSiteContentEditingResponses[keyof GetSiteContentEditingResponses];
+
+export type EnableSiteContentEditingData = {
+  body: {
+    [key: string]: unknown;
+  };
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/content-editing/enable";
+};
+
+export type EnableSiteContentEditingErrors = {
+  /**
+   * Not a signed-in person, or missing site.content.edit
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+  /**
+   * The agent is too old, or the site refused
+   */
+  409: Error;
+  /**
+   * The body was not application/json
+   */
+  415: Error;
+  /**
+   * The site could not be reached
+   */
+  503: Error;
+};
+
+export type EnableSiteContentEditingError =
+  EnableSiteContentEditingErrors[keyof EnableSiteContentEditingErrors];
+
+export type EnableSiteContentEditingResponses = {
+  /**
+   * Enabled
+   */
+  200: ContentEditingState;
+};
+
+export type EnableSiteContentEditingResponse =
+  EnableSiteContentEditingResponses[keyof EnableSiteContentEditingResponses];
+
 export type PurgeCacheData = {
   body: PurgeRequest;
   path: {
@@ -17911,6 +18712,399 @@ export type GetDbHealthResponses = {
 
 export type GetDbHealthResponse =
   GetDbHealthResponses[keyof GetDbHealthResponses];
+
+export type GetSiteContentInventoryData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: {
+    after_post_id?: number;
+    limit?: number;
+    /**
+     * Filter by editor: `classic` for pages no builder owns, or an integration id such as `elementor`.
+     */
+    editor?: string;
+  };
+  url: "/api/v1/sites/{siteId}/content/inventory";
+};
+
+export type GetSiteContentInventoryErrors = {
+  /**
+   * Validation error
+   */
+  400: Error;
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type GetSiteContentInventoryError =
+  GetSiteContentInventoryErrors[keyof GetSiteContentInventoryErrors];
+
+export type GetSiteContentInventoryResponses = {
+  /**
+   * Inventory page
+   */
+  200: ContentInventoryPage;
+};
+
+export type GetSiteContentInventoryResponse =
+  GetSiteContentInventoryResponses[keyof GetSiteContentInventoryResponses];
+
+export type RefreshSiteContentInventoryData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/content/inventory/refresh";
+};
+
+export type RefreshSiteContentInventoryErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+  /**
+   * A check for this site was requested a moment ago
+   */
+  429: Error;
+};
+
+export type RefreshSiteContentInventoryError =
+  RefreshSiteContentInventoryErrors[keyof RefreshSiteContentInventoryErrors];
+
+export type RefreshSiteContentInventoryResponses = {
+  /**
+   * Queued
+   */
+  202: {
+    status: "queued";
+  };
+};
+
+export type RefreshSiteContentInventoryResponse =
+  RefreshSiteContentInventoryResponses[keyof RefreshSiteContentInventoryResponses];
+
+export type GetAdminContentFleetReportData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/content/fleet-report";
+};
+
+export type GetAdminContentFleetReportErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type GetAdminContentFleetReportError =
+  GetAdminContentFleetReportErrors[keyof GetAdminContentFleetReportErrors];
+
+export type GetAdminContentFleetReportResponses = {
+  /**
+   * Fleet report
+   */
+  200: ContentFleetReport;
+};
+
+export type GetAdminContentFleetReportResponse =
+  GetAdminContentFleetReportResponses[keyof GetAdminContentFleetReportResponses];
+
+export type ListAdminContentIntegrationsData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/content/integrations";
+};
+
+export type ListAdminContentIntegrationsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type ListAdminContentIntegrationsError =
+  ListAdminContentIntegrationsErrors[keyof ListAdminContentIntegrationsErrors];
+
+export type ListAdminContentIntegrationsResponses = {
+  /**
+   * Allowlist rows
+   */
+  200: {
+    integrations: Array<ContentIntegration>;
+  };
+};
+
+export type ListAdminContentIntegrationsResponse =
+  ListAdminContentIntegrationsResponses[keyof ListAdminContentIntegrationsResponses];
+
+export type UpsertAdminContentIntegrationData = {
+  body: ContentIntegrationInput;
+  path: {
+    integrationId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/content/integrations/{integrationId}";
+};
+
+export type UpsertAdminContentIntegrationErrors = {
+  /**
+   * Validation error
+   */
+  400: Error;
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type UpsertAdminContentIntegrationError =
+  UpsertAdminContentIntegrationErrors[keyof UpsertAdminContentIntegrationErrors];
+
+export type UpsertAdminContentIntegrationResponses = {
+  /**
+   * The stored row
+   */
+  200: ContentIntegration;
+};
+
+export type UpsertAdminContentIntegrationResponse =
+  UpsertAdminContentIntegrationResponses[keyof UpsertAdminContentIntegrationResponses];
+
+export type ListAdminAbilityCatalogueData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/abilities/catalogue";
+};
+
+export type ListAdminAbilityCatalogueErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type ListAdminAbilityCatalogueError =
+  ListAdminAbilityCatalogueErrors[keyof ListAdminAbilityCatalogueErrors];
+
+export type ListAdminAbilityCatalogueResponses = {
+  /**
+   * Every catalogue entry, any status
+   */
+  200: {
+    entries: Array<AbilityCatalogueEntry>;
+  };
+};
+
+export type ListAdminAbilityCatalogueResponse =
+  ListAdminAbilityCatalogueResponses[keyof ListAdminAbilityCatalogueResponses];
+
+export type CreateAdminAbilityCatalogueEntryData = {
+  body: AbilityCatalogueInput;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/abilities/catalogue";
+};
+
+export type CreateAdminAbilityCatalogueEntryErrors = {
+  /**
+   * Validation error
+   */
+  400: Error;
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+  /**
+   * entry_conflict or version_range_overlap: an admitted entry with
+   * this name already covers part of this version range.
+   *
+   */
+  409: Error;
+};
+
+export type CreateAdminAbilityCatalogueEntryError =
+  CreateAdminAbilityCatalogueEntryErrors[keyof CreateAdminAbilityCatalogueEntryErrors];
+
+export type CreateAdminAbilityCatalogueEntryResponses = {
+  /**
+   * The stored entry
+   */
+  201: AbilityCatalogueEntry;
+};
+
+export type CreateAdminAbilityCatalogueEntryResponse =
+  CreateAdminAbilityCatalogueEntryResponses[keyof CreateAdminAbilityCatalogueEntryResponses];
+
+export type UpdateAdminAbilityCatalogueEntryData = {
+  body: AbilityCatalogueInput;
+  path: {
+    entryId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/abilities/catalogue/{entryId}";
+};
+
+export type UpdateAdminAbilityCatalogueEntryErrors = {
+  /**
+   * Validation error
+   */
+  400: Error;
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+  /**
+   * version_range_overlap: an admitted entry with this name already
+   * covers part of this version range.
+   *
+   */
+  409: Error;
+};
+
+export type UpdateAdminAbilityCatalogueEntryError =
+  UpdateAdminAbilityCatalogueEntryErrors[keyof UpdateAdminAbilityCatalogueEntryErrors];
+
+export type UpdateAdminAbilityCatalogueEntryResponses = {
+  /**
+   * The stored entry
+   */
+  200: AbilityCatalogueEntry;
+};
+
+export type UpdateAdminAbilityCatalogueEntryResponse =
+  UpdateAdminAbilityCatalogueEntryResponses[keyof UpdateAdminAbilityCatalogueEntryResponses];
+
+export type ListAdminRestRoutesData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/abilities/rest-routes";
+};
+
+export type ListAdminRestRoutesErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type ListAdminRestRoutesError =
+  ListAdminRestRoutesErrors[keyof ListAdminRestRoutesErrors];
+
+export type ListAdminRestRoutesResponses = {
+  /**
+   * Every route
+   */
+  200: {
+    routes: Array<RestRoute>;
+  };
+};
+
+export type ListAdminRestRoutesResponse =
+  ListAdminRestRoutesResponses[keyof ListAdminRestRoutesResponses];
+
+export type UpdateAdminRestRouteData = {
+  body: RestRouteInput;
+  path: {
+    routeId: string;
+  };
+  query?: never;
+  url: "/api/v1/admin/abilities/rest-routes/{routeId}";
+};
+
+export type UpdateAdminRestRouteErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+  /**
+   * route_hash_not_moved or route_conflict.
+   */
+  409: Error;
+  /**
+   * invalid_body, invalid_route (details.constraint names the database
+   * check), invalid_output_fields or route_not_reproducible.
+   *
+   */
+  422: Error;
+};
+
+export type UpdateAdminRestRouteError =
+  UpdateAdminRestRouteErrors[keyof UpdateAdminRestRouteErrors];
+
+export type UpdateAdminRestRouteResponses = {
+  /**
+   * The stored route
+   */
+  200: RestRoute;
+};
+
+export type UpdateAdminRestRouteResponse =
+  UpdateAdminRestRouteResponses[keyof UpdateAdminRestRouteResponses];
 
 export type GetDbOrphansReportData = {
   body?: never;

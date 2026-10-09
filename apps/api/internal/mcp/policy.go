@@ -117,6 +117,19 @@ const (
 	// ScopeCache (m150) confers it and nothing else confers it. It is never in
 	// DefaultGrantCapabilities and never in a preset: an operator ticks it.
 	CapCachePurge Capability = "mcp.cache.purge"
+
+	// CapAbilityRead, seated by m154, lets a connection list a site's
+	// abilities, describe one, and run one WPMgr reviewed as a read. A
+	// reviewed read changes nothing on the site. ScopeSite confers it and
+	// nothing else does; it is never in DefaultGrantCapabilities.
+	CapAbilityRead Capability = "mcp.ability.read"
+
+	// CapAbilityRequest, seated by m154, is the second non-read member: it
+	// lets a connection ASK for a reviewed write on one site and read that
+	// request's status. Nothing reaches the site until a person approves the
+	// one request in WPMgr. ScopeSite confers it; minting a grant holding it
+	// requires the creator to hold authz.PermSiteContentEdit.
+	CapAbilityRequest Capability = "mcp.ability.request"
 )
 
 // capabilityVocabulary is the CLOSED set of capabilities this surface knows.
@@ -145,6 +158,8 @@ const (
 // Widening this map alone widens NOTHING a grant receives, and that separation
 // is the whole point. See DefaultGrantCapabilities.
 var capabilityVocabulary = map[Capability]struct{}{
+	CapAbilityRead:     {},
+	CapAbilityRequest:  {},
 	CapActivityRead:    {},
 	CapBackupsRead:     {},
 	CapCachePurge:      {},
@@ -241,6 +256,10 @@ var scopeCapabilities = map[Scope][]Capability{
 	ScopeCache: {
 		CapCachePurge,
 	},
+	ScopeSite: {
+		CapAbilityRead,
+		CapAbilityRequest,
+	},
 }
 
 // Effect is what a capability, or a tool, does to a site. It is a closed set
@@ -260,6 +279,8 @@ const (
 // It is total by test (TestCapabilityEffectIsExhaustive), so a capability
 // seated without an effect goes red rather than rendering as a read.
 var capabilityEffect = map[Capability]Effect{
+	CapAbilityRead:     EffectRead,
+	CapAbilityRequest:  EffectRequest,
 	CapActivityRead:    EffectRead,
 	CapBackupsRead:     EffectRead,
 	CapCachePurge:      EffectRequest,

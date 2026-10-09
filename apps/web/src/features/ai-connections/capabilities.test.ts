@@ -40,7 +40,8 @@ describe("capabilityKind", () => {
     // capability added without an entry in CAPABILITY_KIND fails typecheck
     // (see the file header) before it could fail this test silently.
     for (const cap of KNOWN_CAPABILITIES) {
-      const expected = cap === "mcp.cache.purge" ? "write" : "read";
+      const expected =
+        cap === "mcp.cache.purge" || cap === "mcp.ability.request" ? "write" : "read";
       expect(capabilityKind(cap)).toBe(expected);
     }
   });

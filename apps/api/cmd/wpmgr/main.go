@@ -27,6 +27,8 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilities"
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilityrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
@@ -48,6 +50,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/blobstore"
 	clientpkg "github.com/mosamlife/wpmgr/apps/api/internal/client"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
+	"github.com/mosamlife/wpmgr/apps/api/internal/content"
 	"github.com/mosamlife/wpmgr/apps/api/internal/cryptbox"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
@@ -1789,6 +1792,89 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		ocCmdClient = agentcmd.NewClient(ssrfClient, cmdSigner)
 	}
 	ocSvc := objectcache.NewService(ocRepo, siteDestAgeID, ocCmdClient, perfSiteAdapterImpl, siteEventsPub)
+
+	// Track B S1 — page-ownership inventory. The probe client is nil-checked
+	// here so a nil *agentcmd.Client is never wrapped in a non-nil interface;
+	// with no signing key the refresh reports the feature as unavailable.
+	var contentProbe content.ProbeClient
+	if ocCmdClient != nil {
+		contentProbe = ocCmdClient
+	}
+	contentSvc := content.NewService(content.NewRepo(pool), contentProbe, logger)
+	contentH := content.NewHandler(contentSvc)
+	contentRefreshWorker := content.NewRefreshWorker(contentSvc, logger)
+	contentSweepWorker := content.NewSweepWorker(contentSvc, logger)
+	// Ability engine (E1) — the per-site ability inventory refresh and its
+	// daily sweep. Same nil-interface care as the content probe above.
+	var abilityAgent abilities.AgentClient
+	if ocCmdClient != nil {
+		abilityAgent = ocCmdClient
+	}
+	abilitySvc := abilities.NewService(abilities.NewRepo(pool), abilityAgent, logger)
+	abilityRefreshWorker := abilities.NewRefreshWorker(abilitySvc, logger)
+	abilitySweepWorker := abilities.NewSweepWorker(abilitySvc, logger)
+	// The four MCP ability tools, served only while WPMGR_MCP_ABILITY_TOOLS=on.
+	// The run tool sends the same entry bytes as the inventory job
+	// (abilities.SendableEntry).
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("WPMGR_MCP_ABILITY_TOOLS"))) {
+	case "", "off":
+	case "on":
+		var mcpAbilityAgent mcp.AbilityAgent
+		if ocCmdClient != nil {
+			mcpAbilityAgent = ocCmdClient
+		}
+		// The discover cursor's dedicated secret: no other key's material,
+		// and the tools refuse to start without it.
+		cursorKey := os.Getenv("WPMGR_MCP_CURSOR_KEY")
+		if err := checkMCPCursorKey(cursorKey); err != nil {
+			return err
+		}
+		if err := mcpSvc.EnableAbilityTools(mcpRepo, mcpAbilityAgent, abilities.SendableEntry, cursorKey); err != nil {
+			return fmt.Errorf("enable MCP ability tools: %w", err)
+		}
+		// wpmgr/rest-read and wpmgr/rest-write send the reviewed route row
+		// bytes (abilities.SendableRoute); without it both refuse.
+		mcpSvc.SetRouteEncoder(abilities.SendableRoute)
+		// The write branch of site_ability_run (E2). Writes also need the
+		// write-tools switch, which the run tool checks per call.
+		if err := mcpSvc.EnableAbilityWrites(mcpRepo); err != nil {
+			return fmt.Errorf("enable MCP ability writes: %w", err)
+		}
+	default:
+		return fmt.Errorf("WPMGR_MCP_ABILITY_TOOLS must be \"on\" or \"off\"")
+	}
+	// Ability requests (E2): approve, decline, undo, the content-editing
+	// enable action, and the dispatch worker, sweeper and reconciler. The
+	// same write-tools switch as the AI cache clears; the workers run either
+	// way so rows always close.
+	abilityReqSvc := abilityrequest.NewService(pool, mcpRepo, mcpSvc, auditRec, logger)
+	abilityReqSvc.SetWriteToolsEnabled(writeToolsOn)
+	if ocCmdClient != nil {
+		abilityReqSvc.SetSender(ocCmdClient, abilities.SendableEntry, mcpSvc)
+		abilityReqSvc.SetRouteEncoder(abilities.SendableRoute)
+		abilityReqSvc.SetEnabler(ocCmdClient)
+	}
+	abilityReqScanWorker := abilityrequest.NewScanWorker(abilityReqSvc)
+	abilityReqDispatchWorker := abilityrequest.NewDispatchWorker(abilityReqSvc)
+	abilityReqSweepWorker := abilityrequest.NewSweepWorker(abilityReqSvc)
+	abilityReqReconcileWorker := abilityrequest.NewReconcileWorker(abilityReqSvc)
+	abilityReqUndoReconcileWorker := abilityrequest.NewUndoReconcileWorker(abilityReqSvc)
+	abilityReqH := abilityrequest.NewHandler(abilityReqSvc)
+	abilityTenantH := abilities.NewTenantHandler(abilities.NewTenantRepo(pool, auditRec), admingate.NewPoolStore(pool))
+	// Stamp WPMgr's own seeded catalogue entries (NULL hash) so requests
+	// made against them can be dispatched (W1 compares the stamped hash).
+	if n, err := abilities.StampOwnEntryHashes(ctx, pool, logger); err != nil {
+		logger.Error("ability catalogue stamp failed", slog.Any("error", err))
+	} else {
+		logger.Info("ability catalogue stamp", slog.Int("stamped", n))
+	}
+	// The same for the m161 REST route catalogue: every route is NULL until
+	// stamped, and a NULL route hash fails closed at describe, run and send.
+	if n, err := abilities.StampOwnRouteHashes(ctx, pool, logger); err != nil {
+		logger.Error("rest route catalogue stamp failed", slog.Any("error", err))
+	} else {
+		logger.Info("rest route catalogue stamp", slog.Int("stamped", n))
+	}
 	ocH := objectcache.NewHandler(ocSvc, auditRec)
 	ocGCWorker := objectcache.NewObjectCacheStatsHistoryGCWorker(ocRepo, logger)
 
@@ -2046,6 +2132,12 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// M38 — CP-owned db-clean scheduling workers.
 		dbCleanWorker:         dbCleanWorker,
 		dbCleanScheduleWorker: dbCleanScheduleWorker,
+		// Track B S1 — page-ownership inventory refresh and daily sweep.
+		contentRefreshWorker: contentRefreshWorker,
+		contentSweepWorker:   contentSweepWorker,
+		// Ability engine (E1) — inventory refresh and daily sweep.
+		abilityRefreshWorker: abilityRefreshWorker,
+		abilitySweepWorker:   abilitySweepWorker,
 		// M39 — watchdog for stalled db_clean/db_scan jobs.
 		dbCleanWatchdogWorker: dbCleanWatchdogWorker,
 		// P3.8 — watchdog for stalled db_orphan_delete jobs.
@@ -2066,6 +2158,12 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		assistantReqDispatchWorker:  assistantReqDispatchWorker,
 		assistantReqSweepWorker:     assistantReqSweepWorker,
 		assistantReqReconcileWorker: assistantReqReconcileWorker,
+		// Ability requests (E2), always wired.
+		abilityReqScanWorker:          abilityReqScanWorker,
+		abilityReqDispatchWorker:      abilityReqDispatchWorker,
+		abilityReqSweepWorker:         abilityReqSweepWorker,
+		abilityReqReconcileWorker:     abilityReqReconcileWorker,
+		abilityReqUndoReconcileWorker: abilityReqUndoReconcileWorker,
 		// m59 Phase 3 — email log retention GC (always wired).
 		emailLogGCWorker: emailLogGCWorker,
 		// GH #461 — webhook dedup GC (always wired; 7-day retention).
@@ -2261,8 +2359,18 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// DBCleanArgs River jobs; the dispatch worker calls perfSvc.DBCleanScheduled.
 	dbCleanEnqueuer := perf.NewDBCleanRiverEnqueuer(riverClient)
 	dbCleanScheduleWorker.SetEnqueuer(dbCleanEnqueuer, cfg.PublicBaseURL)
+	contentEnqueuer := content.NewRiverEnqueuer(riverClient)
+	contentSweepWorker.SetEnqueuer(contentEnqueuer)
+	abilityEnqueuer := abilities.NewRiverEnqueuer(riverClient)
+	abilitySweepWorker.SetEnqueuer(abilityEnqueuer)
+	// A read of a never-inventoried site queues that site's refresh.
+	mcpSvc.SetAbilityRefresher(func(ctx context.Context, tenantID, siteID uuid.UUID) (bool, error) {
+		return abilityEnqueuer.EnqueueRefresh(ctx, abilities.RefreshArgs{TenantID: tenantID, SiteID: siteID}, time.Time{})
+	})
+	contentH.SetEnqueuer(contentEnqueuer)
 	// The AI request scan enqueues one dispatch job per due approved request.
 	assistantReqScanWorker.SetEnqueuer(assistantrequest.NewRiverEnqueuer(riverClient))
+	abilityReqScanWorker.SetEnqueuer(abilityrequest.NewRiverEnqueuer(riverClient))
 
 	// ADR-046 Performance Suite: wire the RUCSS enqueuer + perf ingest service
 	// now that River has started. The ingest service stashes the agent-posted
@@ -2651,6 +2759,12 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	adminSvc := admin.NewService(adminRepo, authSvc)
 	adminH := admin.NewHandler(adminSvc, pool)
 	adminH.SetAuditRecorder(auditRec)
+	contentH.SetAuditRecorder(auditRec)
+	adminH.SetContentRoutes(contentH.RegisterAdmin)
+	// Ability engine: the superadmin catalogue routes (list, create, update).
+	abilityAdminH := abilities.NewAdminHandler(abilities.NewAdminRepo(pool))
+	abilityAdminH.SetAuditRecorder(auditRec)
+	adminH.SetAbilityRoutes(abilityAdminH.RegisterAdmin)
 	// m80 — wire the vuln-feed key management into the admin handler.
 	// vulnFeedKeySvc already has its feed-refresh enqueuer set (wired in the
 	// vuln River block above), so this call sees a fully-wired service.
@@ -2955,6 +3069,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		MCPTransportH:     mcpTransportH,
 		MCPOAuthH:         mcpOAuthH,
 		AssistantRequestH: assistantReqH,
+		AbilityRequestH:   abilityReqH,
+		AbilityTenantH:    abilityTenantH,
 		MCPDiscoveryH:     mcpDiscoveryH,
 		FilesH:            filesH,
 		UpdateH:           updateH,
@@ -2999,6 +3115,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		MediaAgentH: mediaAgentH,
 		// m36 / ADR-046 — Performance Suite.
 		PerfH:             perfH,
+		ContentH:          contentH,
 		PerfAgentH:        perfAgentH,
 		FontResultsAgentH: fontResultsAgentH,
 		// m68 — Object Cache operator routes.
@@ -3468,6 +3585,12 @@ type riverDeps struct {
 	// is configured; nil when the signing key is empty).
 	dbCleanWorker         *perf.DBCleanWorker
 	dbCleanScheduleWorker *perf.DBCleanScheduleWorker
+	// Track B S1 — page-ownership inventory.
+	contentRefreshWorker *content.RefreshWorker
+	contentSweepWorker   *content.SweepWorker
+	// Ability engine (E1) — per-site ability inventory.
+	abilityRefreshWorker *abilities.RefreshWorker
+	abilitySweepWorker   *abilities.SweepWorker
 	// M39 — watchdog for stalled db_clean + db_scan jobs (always wired).
 	dbCleanWatchdogWorker *perf.DBCleanWatchdogWorker
 	// P3.8 — watchdog for stalled db_orphan_delete jobs (always wired).
@@ -3491,6 +3614,12 @@ type riverDeps struct {
 	assistantReqDispatchWorker  *assistantrequest.DispatchWorker
 	assistantReqSweepWorker     *assistantrequest.SweepWorker
 	assistantReqReconcileWorker *assistantrequest.ReconcileWorker
+	// Ability requests (E2): scan, dispatch, sweeper, reconciler.
+	abilityReqScanWorker          *abilityrequest.ScanWorker
+	abilityReqDispatchWorker      *abilityrequest.DispatchWorker
+	abilityReqSweepWorker         *abilityrequest.SweepWorker
+	abilityReqReconcileWorker     *abilityrequest.ReconcileWorker
+	abilityReqUndoReconcileWorker *abilityrequest.UndoReconcileWorker
 	// m59 Phase 3 — email log retention GC (always wired).
 	emailLogGCWorker *email.EmailLogGCWorker
 	// GH #461 — webhook dedup GC (always wired; 7-day retention).
@@ -3842,6 +3971,34 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	if d.dbCleanWorker != nil {
 		river.AddWorker(workers, d.dbCleanWorker)
 	}
+	// Track B S1 — page-ownership inventory. The sweep runs daily and spreads
+	// each site's refresh across the following hours with a per-site jitter;
+	// RunOnStart is false so a restart does not re-ask the whole fleet.
+	if d.contentRefreshWorker != nil {
+		river.AddWorker(workers, d.contentRefreshWorker)
+	}
+	if d.contentSweepWorker != nil {
+		river.AddWorker(workers, d.contentSweepWorker)
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(content.SweepInterval),
+			func() (river.JobArgs, *river.InsertOpts) { return content.SweepArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: false},
+		))
+	}
+	if d.abilityRefreshWorker != nil {
+		river.AddWorker(workers, d.abilityRefreshWorker)
+	}
+	if d.abilitySweepWorker != nil {
+		river.AddWorker(workers, d.abilitySweepWorker)
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(abilities.SweepInterval),
+			func() (river.JobArgs, *river.InsertOpts) { return abilities.SweepArgs{}, nil },
+			// RunOnStart: the inventory must fill without waiting a day
+			// after a deploy. The refresh job is unique per site per
+			// window, so a restart loop cannot storm the fleet.
+			&river.PeriodicJobOpts{RunOnStart: true},
+		))
+	}
 	if d.dbCleanScheduleWorker != nil {
 		river.AddWorker(workers, d.dbCleanScheduleWorker)
 		periodics = append(periodics, river.NewPeriodicJob(
@@ -3974,6 +4131,42 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 			river.NewPeriodicJob(
 				river.PeriodicInterval(assistantrequest.SweepInterval),
 				func() (river.JobArgs, *river.InsertOpts) { return assistantrequest.ReconcileArgs{}, nil },
+				&river.PeriodicJobOpts{RunOnStart: true},
+			),
+		)
+	}
+
+	// Ability requests (E2): same cadence as the AI cache clears.
+	if d.abilityReqScanWorker != nil && d.abilityReqDispatchWorker != nil &&
+		d.abilityReqSweepWorker != nil && d.abilityReqReconcileWorker != nil &&
+		d.abilityReqUndoReconcileWorker != nil {
+		river.AddWorker(workers, d.abilityReqScanWorker)
+		river.AddWorker(workers, d.abilityReqDispatchWorker)
+		river.AddWorker(workers, d.abilityReqSweepWorker)
+		river.AddWorker(workers, d.abilityReqReconcileWorker)
+		river.AddWorker(workers, d.abilityReqUndoReconcileWorker)
+		for q, qc := range abilityrequest.Queues() {
+			queues[q] = qc
+		}
+		periodics = append(periodics,
+			river.NewPeriodicJob(
+				river.PeriodicInterval(abilityrequest.ScanInterval),
+				func() (river.JobArgs, *river.InsertOpts) { return abilityrequest.ScanArgs{}, nil },
+				&river.PeriodicJobOpts{RunOnStart: true},
+			),
+			river.NewPeriodicJob(
+				river.PeriodicInterval(abilityrequest.SweepInterval),
+				func() (river.JobArgs, *river.InsertOpts) { return abilityrequest.SweepArgs{}, nil },
+				&river.PeriodicJobOpts{RunOnStart: true},
+			),
+			river.NewPeriodicJob(
+				river.PeriodicInterval(abilityrequest.SweepInterval),
+				func() (river.JobArgs, *river.InsertOpts) { return abilityrequest.ReconcileArgs{}, nil },
+				&river.PeriodicJobOpts{RunOnStart: true},
+			),
+			river.NewPeriodicJob(
+				river.PeriodicInterval(abilityrequest.UndoReconcileInterval),
+				func() (river.JobArgs, *river.InsertOpts) { return abilityrequest.UndoReconcileArgs{}, nil },
 				&river.PeriodicJobOpts{RunOnStart: true},
 			),
 		)
@@ -4410,4 +4603,14 @@ func newLogger(cfg config.Config) *slog.Logger {
 		handler = slog.NewTextHandler(os.Stdout, opts)
 	}
 	return slog.New(handler)
+}
+
+// checkMCPCursorKey refuses boot when the ability tools are on without their
+// cursor secret. The message names the variable and how to make a value; it
+// never echoes one.
+func checkMCPCursorKey(key string) error {
+	if len(strings.TrimSpace(key)) >= 32 {
+		return nil
+	}
+	return errors.New("WPMGR_MCP_ABILITY_TOOLS=on needs WPMGR_MCP_CURSOR_KEY: set WPMGR_MCP_CURSOR_KEY to at least 32 random characters, e.g. `openssl rand -hex 32`, or set WPMGR_MCP_ABILITY_TOOLS=off")
 }

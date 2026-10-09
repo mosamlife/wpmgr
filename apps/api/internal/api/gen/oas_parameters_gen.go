@@ -68,6 +68,12 @@ type ApplySiteFileUploadParams struct {
 	SiteId uuid.UUID
 }
 
+// ApproveAbilityRequestParams is parameters of approveAbilityRequest operation.
+type ApproveAbilityRequestParams struct {
+	SiteId    uuid.UUID
+	RequestId uuid.UUID
+}
+
 // ApproveAssistantRequestParams is parameters of approveAssistantRequest operation.
 type ApproveAssistantRequestParams struct {
 	SiteId    uuid.UUID
@@ -188,6 +194,12 @@ type CreateSiteFileArchiveParams struct {
 // CreateSiteShareParams is parameters of createSiteShare operation.
 type CreateSiteShareParams struct {
 	SiteId uuid.UUID
+}
+
+// DeclineAbilityRequestParams is parameters of declineAbilityRequest operation.
+type DeclineAbilityRequestParams struct {
+	SiteId    uuid.UUID
+	RequestId uuid.UUID
 }
 
 // DeclineAssistantRequestParams is parameters of declineAssistantRequest operation.
@@ -351,6 +363,11 @@ type EnableCacheParams struct {
 
 // EnableObjectCacheParams is parameters of enableObjectCache operation.
 type EnableObjectCacheParams struct {
+	SiteId uuid.UUID
+}
+
+// EnableSiteContentEditingParams is parameters of enableSiteContentEditing operation.
+type EnableSiteContentEditingParams struct {
 	SiteId uuid.UUID
 }
 
@@ -666,6 +683,20 @@ type GetSiteAvailableUpdatesParams struct {
 	SiteId uuid.UUID
 }
 
+// GetSiteContentEditingParams is parameters of getSiteContentEditing operation.
+type GetSiteContentEditingParams struct {
+	SiteId uuid.UUID
+}
+
+// GetSiteContentInventoryParams is parameters of getSiteContentInventory operation.
+type GetSiteContentInventoryParams struct {
+	SiteId      uuid.UUID
+	AfterPostID OptInt64 `json:",omitempty,omitzero"`
+	Limit       OptInt32 `json:",omitempty,omitzero"`
+	// Filter by editor: `classic` for pages no builder owns, or an integration id such as `elementor`.
+	Editor OptString `json:",omitempty,omitzero"`
+}
+
 // GetSiteContextParams is parameters of getSiteContext operation.
 type GetSiteContextParams struct {
 	SiteId uuid.UUID
@@ -779,6 +810,13 @@ type HandleEmailProviderWebhookParams struct {
 // IsolateUnusedMediaParams is parameters of isolateUnusedMedia operation.
 type IsolateUnusedMediaParams struct {
 	SiteId uuid.UUID
+}
+
+// ListAbilityRequestsParams is parameters of listAbilityRequests operation.
+type ListAbilityRequestsParams struct {
+	State  OptListAbilityRequestsState `json:",omitempty,omitzero"`
+	Limit  OptInt32                    `json:",omitempty,omitzero"`
+	Offset OptInt32                    `json:",omitempty,omitzero"`
 }
 
 // ListAdminAccountsParams is parameters of listAdminAccounts operation.
@@ -1019,6 +1057,13 @@ type ListScheduleRunsParams struct {
 	Status OptListScheduleRunsStatus `json:",omitempty,omitzero"`
 	Limit  OptInt32                  `json:",omitempty,omitzero"`
 	Offset OptInt32                  `json:",omitempty,omitzero"`
+}
+
+// ListSiteAbilityRequestsParams is parameters of listSiteAbilityRequests operation.
+type ListSiteAbilityRequestsParams struct {
+	SiteId uuid.UUID
+	Limit  OptInt32 `json:",omitempty,omitzero"`
+	Offset OptInt32 `json:",omitempty,omitzero"`
 }
 
 // ListSiteActivityParams is parameters of listSiteActivity operation.
@@ -1361,6 +1406,16 @@ type RecheckSiteParams struct {
 	SiteId uuid.UUID
 }
 
+// ReenableAbilityForTenantParams is parameters of reenableAbilityForTenant operation.
+type ReenableAbilityForTenantParams struct {
+	EntryId uuid.UUID
+}
+
+// RefreshSiteContentInventoryParams is parameters of refreshSiteContentInventory operation.
+type RefreshSiteContentInventoryParams struct {
+	SiteId uuid.UUID
+}
+
 // RefreshSiteDiagnosticsParams is parameters of refreshSiteDiagnostics operation.
 type RefreshSiteDiagnosticsParams struct {
 	SiteId uuid.UUID
@@ -1668,6 +1723,12 @@ type UnblockSiteIPParams struct {
 	SiteId uuid.UUID
 }
 
+// UndoAbilityRequestParams is parameters of undoAbilityRequest operation.
+type UndoAbilityRequestParams struct {
+	SiteId    uuid.UUID
+	RequestId uuid.UUID
+}
+
 // UnlinkMyIdentityParams is parameters of unlinkMyIdentity operation.
 type UnlinkMyIdentityParams struct {
 	// The provider key, as returned by `GET /auth/me/identities`.
@@ -1677,6 +1738,16 @@ type UnlinkMyIdentityParams struct {
 // UnlockBackupParams is parameters of unlockBackup operation.
 type UnlockBackupParams struct {
 	SnapshotId uuid.UUID
+}
+
+// UpdateAdminAbilityCatalogueEntryParams is parameters of updateAdminAbilityCatalogueEntry operation.
+type UpdateAdminAbilityCatalogueEntryParams struct {
+	EntryId uuid.UUID
+}
+
+// UpdateAdminRestRouteParams is parameters of updateAdminRestRoute operation.
+type UpdateAdminRestRouteParams struct {
+	RouteId string
 }
 
 // UpdateClientParams is parameters of updateClient operation.
@@ -1703,6 +1774,11 @@ type UpdateSiteFilesSettingsParams struct {
 // UpdateTagParams is parameters of updateTag operation.
 type UpdateTagParams struct {
 	TagId uuid.UUID
+}
+
+// UpsertAdminContentIntegrationParams is parameters of upsertAdminContentIntegration operation.
+type UpsertAdminContentIntegrationParams struct {
+	IntegrationId string
 }
 
 // VerifySiteActivityParams is parameters of verifySiteActivity operation.

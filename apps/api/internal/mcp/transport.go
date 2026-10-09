@@ -1045,7 +1045,8 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 		slog.String("operator_permission", string(entry.OperatorPermission)),
 	)
 
-	text, err := entry.invoke(ctx, h.svc, auth, p.Arguments)
+	invokeCtx, marker := withRequestRowMarker(ctx)
+	text, err := entry.invoke(invokeCtx, h.svc, auth, p.Arguments)
 	if err != nil {
 		// A REQUEST-TOOL REFUSAL carries its own operator reason. It is
 		// recorded in its OWN transaction, never the one that would have
@@ -1070,12 +1071,18 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 		return h.toolError(req.ID, err)
 	}
 
-	// A REQUEST TOOL OWNS ITS AUDIT ROWS. The creation rail records
+	// A REQUEST ROW OWNS ITS AUDIT ROW. The creation rail records
 	// mcp.tool.called with RecordInTx inside the transaction that wrote the
 	// request row, so the row and its record commit together or not at all.
 	// Recording it again here would be a second row for one call, in a second
 	// transaction that could fail after the first committed.
-	if entry.Effect == EffectRequest {
+	//
+	// THE SKIP IS KEYED ON WHAT THE HANDLER DID, NOT ON THE TOOL'S EFFECT (R1).
+	// A request-effect tool can answer without inserting a request row -- the
+	// ability engine's run tool answers a reviewed READ with site text -- and
+	// that answer must be recorded fail-closed below like any read. Only a
+	// handler that marked the call (markRequestRowRecorded) is skipped.
+	if entry.Effect == EffectRequest && marker.recorded {
 		return newResponse(req.ID, map[string]any{
 			"content": []map[string]any{{"type": "text", "text": text}},
 		})

@@ -22,6 +22,8 @@ package mcp
 import (
 	"strings"
 	"testing"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 )
 
 // capsToStrings renders a capability list for comparison and for failure
@@ -152,7 +154,7 @@ func TestMintWithNoRequestedCapabilitiesGetsThePresetNotTheCeiling(t *testing.T)
 // The vocabulary and the ceiling, pinned by value.
 // ---------------------------------------------------------------------------
 
-// TestVocabularyIsM135sNine pins the Go half of the two-place closed set by
+// TestVocabularyIsM154sEleven pins the Go half of the two-place closed set by
 // value. The DATABASE half is proved separately and against the live
 // constraint, by TestCapabilityVocabularyMatchesTheDatabaseCheckAsAppRole in
 // apps/api/tests -- this one cannot see the database and does not pretend to.
@@ -161,9 +163,12 @@ func TestMintWithNoRequestedCapabilitiesGetsThePresetNotTheCeiling(t *testing.T)
 // rename is deliberate rather than a silent edit of the literal: the name of
 // this test is the only place the vocabulary's SIZE is asserted in prose, and a
 // test called "IsM131sEight" passing over nine members is the drift this
-// project keeps finding.
-func TestVocabularyIsM135sNine(t *testing.T) {
+// project keeps finding. It became IsM154sEleven when m154 seated the two
+// ability-engine capabilities.
+func TestVocabularyIsM154sEleven(t *testing.T) {
 	want := []Capability{
+		CapAbilityRead,
+		CapAbilityRequest,
 		CapActivityRead,
 		CapBackupsRead,
 		CapCachePurge,
@@ -175,7 +180,7 @@ func TestVocabularyIsM135sNine(t *testing.T) {
 		CapUptimeRead,
 	}
 	if !sameCaps(AllCapabilities(), want) {
-		t.Fatalf("AllCapabilities() = %v, want exactly %v (m135's seated vocabulary, "+
+		t.Fatalf("AllCapabilities() = %v, want exactly %v (m154's seated vocabulary, "+
 			"alphabetical, which is the order the constraint lists them in)",
 			capsToStrings(AllCapabilities()), capsToStrings(want))
 	}
@@ -191,7 +196,25 @@ func TestVocabularyIsM135sNine(t *testing.T) {
 // pattern but a named exception list, so the property becomes "the only
 // non-read members are the ones a reviewer wrote down".
 var nonReadCapabilities = map[Capability]struct{}{
-	CapCachePurge: {},
+	CapAbilityRequest: {},
+	CapCachePurge:     {},
+}
+
+// TestEveryRequestCapabilityNamesACreatorPermission: every request-effect
+// capability names the operator permission a grant's creator must hold, and
+// the gate refuses a principal lacking it.
+func TestEveryRequestCapabilityNamesACreatorPermission(t *testing.T) {
+	for _, c := range AllCapabilities() {
+		if e, _ := CapabilityEffect(c); e != EffectRequest {
+			continue
+		}
+		if _, ok := requestCapabilityPermission[c]; !ok {
+			t.Errorf("request capability %q has no creator permission", c)
+		}
+	}
+	if got := requestCapabilityPermission[CapAbilityRequest].perm; got != authz.PermSiteContentEdit {
+		t.Fatalf("mcp.ability.request creator permission = %q, want %q", got, authz.PermSiteContentEdit)
+	}
 }
 
 // TestEveryCapabilityIsAReadOrAnEnumeratedWrite makes "this build seats no

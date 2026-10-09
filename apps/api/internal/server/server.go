@@ -12,6 +12,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilities"
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilityrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
@@ -27,6 +29,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/billing"
 	clientpkg "github.com/mosamlife/wpmgr/apps/api/internal/client"
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
+	"github.com/mosamlife/wpmgr/apps/api/internal/content"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/email"
@@ -165,7 +168,9 @@ type Deps struct {
 	// /api/v1/cache/* bulk routes; PerfAgentH serves the agent-authenticated
 	// /agent/v1/cache/* + /agent/v1/perf/* + /agent/v1/rucss callbacks. Either
 	// may be nil.
-	PerfH      *perf.Handler
+	PerfH *perf.Handler
+	// ContentH serves the page-ownership inventory (Track B S1).
+	ContentH   *content.Handler
 	PerfAgentH *perf.AgentHandler
 	// m68 — Object Cache (P0+P1). ObjectCacheH serves the operator-facing
 	// /api/v1/sites/{siteId}/perf/object-cache/... routes.
@@ -272,6 +277,15 @@ type Deps struct {
 	// GET /sites/{siteId}/ai/requests, POST .../ai/requests/{requestId}/approve
 	// and /decline). Nil leaves them unmounted.
 	AssistantRequestH *assistantrequest.Handler
+	// AbilityRequestH serves the ability request queue, approve, decline and
+	// undo, and the site's content-editing state and enable action
+	// (/sites/{siteId}/ai/ability-requests..., /sites/{siteId}/ai/content-editing...).
+	// Nil leaves them unmounted.
+	AbilityRequestH *abilityrequest.Handler
+	// AbilityTenantH serves POST /ai/abilities/{entryId}/reenable: a tenant
+	// admin or owner, or a superadmin, switches back on a vendor read that
+	// was switched off for this tenant (m160). Nil leaves it unmounted.
+	AbilityTenantH *abilities.TenantHandler
 	// MCPDiscoveryH serves the two unauthenticated OAuth discovery documents:
 	// GET /.well-known/oauth-authorization-server (RFC 8414) and GET
 	// /.well-known/oauth-protected-resource (RFC 9728), the second also at its
@@ -623,6 +637,12 @@ func New(deps Deps) *Server {
 	if deps.AssistantRequestH != nil {
 		deps.AssistantRequestH.Register(v1)
 	}
+	if deps.AbilityRequestH != nil {
+		deps.AbilityRequestH.Register(v1)
+	}
+	if deps.AbilityTenantH != nil {
+		deps.AbilityTenantH.Register(v1)
+	}
 	deps.TenantH.Register(v1)
 	deps.SiteH.Register(v1)
 	// m100 (GH #230 "rich tags") — tenant-level tag registry.
@@ -741,6 +761,9 @@ func New(deps Deps) *Server {
 	// portfolio bulk cache routes.
 	if deps.PerfH != nil {
 		deps.PerfH.Register(v1)
+	}
+	if deps.ContentH != nil {
+		deps.ContentH.Register(v1)
 	}
 
 	// m68 — Object Cache operator routes: GET/PUT config, POST test/enable/

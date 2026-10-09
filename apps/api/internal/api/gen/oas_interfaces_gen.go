@@ -145,6 +145,10 @@ type ApplySiteFileUploadRes interface {
 	applySiteFileUploadRes()
 }
 
+type ApproveAbilityRequestRes interface {
+	approveAbilityRequestRes()
+}
+
 type ApproveAssistantRequestRes interface {
 	approveAssistantRequestRes()
 }
@@ -241,6 +245,10 @@ type ConfirmTotpEnrollmentRes interface {
 	confirmTotpEnrollmentRes()
 }
 
+type CreateAdminAbilityCatalogueEntryRes interface {
+	createAdminAbilityCatalogueEntryRes()
+}
+
 type CreateApiKeyRes interface {
 	createApiKeyRes()
 }
@@ -311,6 +319,10 @@ type CreateTenantRes interface {
 
 type CreateUpdateRunRes interface {
 	createUpdateRunRes()
+}
+
+type DeclineAbilityRequestRes interface {
+	declineAbilityRequestRes()
 }
 
 type DeclineAssistantRequestRes interface {
@@ -413,6 +425,10 @@ type EnableObjectCacheRes interface {
 	enableObjectCacheRes()
 }
 
+type EnableSiteContentEditingRes interface {
+	enableSiteContentEditingRes()
+}
+
 type EnrollRes interface {
 	enrollRes()
 }
@@ -455,6 +471,10 @@ type GetAdminAccountRes interface {
 
 type GetAdminAccountsTenancyRes interface {
 	getAdminAccountsTenancyRes()
+}
+
+type GetAdminContentFleetReportRes interface {
+	getAdminContentFleetReportRes()
 }
 
 type GetAdminRevenueRes interface {
@@ -641,6 +661,14 @@ type GetSiteAvailableUpdatesRes interface {
 	getSiteAvailableUpdatesRes()
 }
 
+type GetSiteContentEditingRes interface {
+	getSiteContentEditingRes()
+}
+
+type GetSiteContentInventoryRes interface {
+	getSiteContentInventoryRes()
+}
+
 type GetSiteContextRes interface {
 	getSiteContextRes()
 }
@@ -733,8 +761,24 @@ type InviteMemberRes interface {
 	inviteMemberRes()
 }
 
+type ListAbilityRequestsRes interface {
+	listAbilityRequestsRes()
+}
+
+type ListAdminAbilityCatalogueRes interface {
+	listAdminAbilityCatalogueRes()
+}
+
 type ListAdminAccountsRes interface {
 	listAdminAccountsRes()
+}
+
+type ListAdminContentIntegrationsRes interface {
+	listAdminContentIntegrationsRes()
+}
+
+type ListAdminRestRoutesRes interface {
+	listAdminRestRoutesRes()
 }
 
 type ListAdminUserSitesRes interface {
@@ -843,6 +887,10 @@ type ListScheduleRunsRes interface {
 
 type ListSharedWithMeRes interface {
 	listSharedWithMeRes()
+}
+
+type ListSiteAbilityRequestsRes interface {
+	listSiteAbilityRequestsRes()
 }
 
 type ListSiteAssistantRequestsRes interface {
@@ -1051,6 +1099,14 @@ type RebaselineAuditIntegrityRes interface {
 
 type RecheckSiteRes interface {
 	recheckSiteRes()
+}
+
+type ReenableAbilityForTenantRes interface {
+	reenableAbilityForTenantRes()
+}
+
+type RefreshSiteContentInventoryRes interface {
+	refreshSiteContentInventoryRes()
 }
 
 type RefreshSiteDiagnosticsRes interface {
@@ -1263,12 +1319,24 @@ type UnblockSiteIPRes interface {
 	unblockSiteIPRes()
 }
 
+type UndoAbilityRequestRes interface {
+	undoAbilityRequestRes()
+}
+
 type UnlinkMyIdentityRes interface {
 	unlinkMyIdentityRes()
 }
 
 type UnlockBackupRes interface {
 	unlockBackupRes()
+}
+
+type UpdateAdminAbilityCatalogueEntryRes interface {
+	updateAdminAbilityCatalogueEntryRes()
+}
+
+type UpdateAdminRestRouteRes interface {
+	updateAdminRestRouteRes()
 }
 
 type UpdateClientRes interface {
@@ -1297,6 +1365,10 @@ type UpdateSmtpSettingsRes interface {
 
 type UpdateTagRes interface {
 	updateTagRes()
+}
+
+type UpsertAdminContentIntegrationRes interface {
+	upsertAdminContentIntegrationRes()
 }
 
 type VerifyAuditRes interface {

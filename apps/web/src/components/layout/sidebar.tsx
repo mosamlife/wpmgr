@@ -8,6 +8,7 @@ import {
   Globe,
   LineChart,
   Mail,
+  FileText,
   RefreshCw,
   Settings,
   Share2,
@@ -192,6 +193,7 @@ const ADMIN_NAV_GROUPS: ReadonlyArray<NavGroup> = [
   { label: "Revenue", icon: TrendingUp, to: "/admin/revenue" },
   { label: "Vulnerability feed", icon: ShieldAlert, to: "/admin/vuln-feed" },
   { label: "Agent mirror", icon: RefreshCw, to: "/admin/agent-mirror" },
+  { label: "Page editors", icon: FileText, to: "/admin/content-report" },
 ];
 
 // The instance SMTP relay requires instance-level authority — the same

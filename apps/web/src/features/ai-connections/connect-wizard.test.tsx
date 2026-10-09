@@ -1760,8 +1760,9 @@ describe("choosing what a token may do (step 4, token path only)", () => {
     // otherwise let this pass against a skeleton.
     const boxes = await screen.findAllByRole("checkbox", { name: /.+/ });
     // seven conferrable reads + the disabled Content row + the one write row
-    // in its own box (CachePurgeCapabilityBox) = 9.
-    expect(boxes.length).toBe(9);
+    // in its own box (CachePurgeCapabilityBox) + the two site-tools rows = 11.
+    expect(boxes.length).toBe(11);
+    expect(screen.getByTestId("ability-capability-box")).toBeInTheDocument();
     expect(screen.getByTestId("cache-purge-capability-box")).toBeInTheDocument();
 
     expect(screen.getByRole("checkbox", { name: /^Sites/i })).toBeInTheDocument();
@@ -2230,9 +2231,10 @@ describe("a preset is a shortcut, not a mode", () => {
    */
   function expectClaimMatchesTicks() {
     const writeBox = screen.getByTestId("cache-purge-capability-box");
+    const abilityBox = screen.getByTestId("ability-capability-box");
     const boxes = screen
       .getAllByRole<HTMLInputElement>("checkbox")
-      .filter((b) => !writeBox.contains(b));
+      .filter((b) => !writeBox.contains(b) && !abilityBox.contains(b));
     const enabled = boxes.filter((b) => !b.disabled);
     const ticked = enabled.filter((b) => b.checked);
     const claim = claimed();
@@ -2350,6 +2352,41 @@ describe("a preset is a shortcut, not a mode", () => {
 
     fireEvent.click(screen.getByTestId("preset-read-everything"));
     expect(within(writeBox).getByRole("checkbox")).not.toBeChecked();
+  });
+});
+
+describe("the site-tools boxes in the capability step", () => {
+  it("offers both boxes unticked, and read everything does not tick them", async () => {
+    await reachCapabilityStep();
+    const box = screen.getByTestId("ability-capability-box");
+    expect(within(box).getAllByRole("checkbox")).toHaveLength(2);
+    for (const c of within(box).getAllByRole<HTMLInputElement>("checkbox")) {
+      expect(c.checked).toBe(false);
+    }
+    fireEvent.click(screen.getByTestId("preset-read-everything"));
+    for (const c of within(box).getAllByRole<HTMLInputElement>("checkbox")) {
+      expect(c.checked).toBe(false);
+    }
+  });
+
+  it("sends the ticked site-tools capabilities on the mint, and only those", async () => {
+    loadedFleet(3);
+    let capturedBody: unknown = null;
+    stubMintFetch((init) => {
+      capturedBody = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : null;
+      return jsonResponse(MINTED, 201);
+    });
+
+    renderWizard();
+    await advanceToCapabilityStep(chooseAllSites);
+    fireEvent.click(screen.getByTestId("ability-box-mcp.ability.read"));
+    fireEvent.click(screen.getByTestId("ability-box-mcp.ability.request"));
+    fireEvent.click(screen.getByTestId("ability-box-mcp.ability.request"));
+    fireEvent.click(await forwardToMintButtonFromCapabilities());
+    await screen.findByText(/this is the only time this token is shown/i);
+
+    const sent = (capturedBody as Record<string, unknown>).capabilities as string[];
+    expect([...sent].sort()).toEqual(["mcp.ability.read", "mcp.sites.read"]);
   });
 });
 
