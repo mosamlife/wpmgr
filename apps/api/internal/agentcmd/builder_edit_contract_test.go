@@ -11,7 +11,7 @@ import (
 )
 
 func TestMinAgentVersionForBuilderEditPinned(t *testing.T) {
-	const firstVersionWithBuilderEdit = "0.61.162"
+	const firstVersionWithBuilderEdit = "0.61.163"
 	if MinAgentVersionForBuilderEdit != firstVersionWithBuilderEdit {
 		t.Fatalf("MinAgentVersionForBuilderEdit = %q, want %q; if the floor is re-gated, update this pin and m169's seeds in the same commit",
 			MinAgentVersionForBuilderEdit, firstVersionWithBuilderEdit)

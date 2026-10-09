@@ -84,6 +84,8 @@ var m169Constraints = []string{
 	"assistant_ability_requests_page_edit_target_check",
 	"assistant_ability_requests_page_edit_card_check",
 	"assistant_ability_requests_page_edit_undo_hash_check",
+	"assistant_ability_requests_undo_code_check",
+	"assistant_ability_requests_undo_code_only_when_failed_check",
 }
 
 // m156UpdateColumns is wpmgr_app's column UPDATE grant on

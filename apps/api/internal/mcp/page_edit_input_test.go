@@ -24,7 +24,7 @@ const (
 	pageEditSchemaFixture      = agentAbilityFixtures + "page-edit-schema.json"
 	pageStructureSchemaFixture = agentAbilityFixtures + "page-structure-schema.json"
 	pageEditOpsCasesFixture    = agentAbilityFixtures + "page-edit-ops-cases.json"
-	m169Migration              = "../../migrations/20261009080000_m169_builder_page_edit.sql"
+	m169Migration              = "../../migrations/20261010010000_m169_builder_page_edit.sql"
 )
 
 func TestPageEditSchemaIsTheAgentFixture(t *testing.T) {
@@ -409,7 +409,7 @@ func TestMinAgentVersionForBuilderEditIsM169s(t *testing.T) {
 }
 
 func TestBuilderEditFloorAtRun(t *testing.T) {
-	below, at := "0.61.161", agentcmd.MinAgentVersionForBuilderEdit
+	below, at := "0.61.162", agentcmd.MinAgentVersionForBuilderEdit
 	for _, name := range []string{AbilityPageStructure, AbilityPageEdit} {
 		class, approval, snapshot := "read", "none", "none"
 		if name == AbilityPageEdit {

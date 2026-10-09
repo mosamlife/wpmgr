@@ -84,7 +84,7 @@ const MinAgentVersionForBuilderAdapters = "0.61.161"
 // and again at dispatch, so an older agent is never asked to read or edit a
 // page builder's document. m169's catalogue entries carry the same number as
 // min_agent_version, and it moves with the release that ships builder edit.
-const MinAgentVersionForBuilderEdit = "0.61.162"
+const MinAgentVersionForBuilderEdit = "0.61.163"
 
 // AbilityRunMaxAllowedDraftIDs bounds p.allowed_draft_ids: the control plane
 // names at most the one post an input is about, so p stays far under
