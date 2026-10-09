@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.159
+Stable tag: 0.61.160
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -142,7 +142,7 @@ This plugin does not contact any external service until you connect it to a WPMg
 
 Once connected, the agent communicates only with the control-plane URL you configured. It sends the following, only to that endpoint, and only for the management actions you or your schedules initiate:
 
-- Site and environment metadata: site URL, WordPress, PHP and server versions, active theme and plugins, and Site Health diagnostics. Sent on connect, on a periodic heartbeat, and when you click Re-run checks. Used to display your site's status in the dashboard.
+- Site and environment metadata: site URL, WordPress, PHP and server versions, active theme and plugins, and Site Health diagnostics. The metadata also includes the parent theme of a child theme and, on a site running Elementor, whether Elementor's Atomic editor is switched on. Sent on connect, on a periodic heartbeat, and when you click Re-run checks. Used to display your site's status in the dashboard.
 - Update inventory: the list of available core, plugin and theme updates. Sent when inventory is refreshed. Used to show and apply updates.
 - Backup archives (encrypted): when you run or schedule a backup, the agent archives your database and/or files, encrypts the archive, and uploads it to the storage destination your control plane configured. Archive contents may include your site's content and personal data, and are encrypted before leaving the server.
 - Rendered HTML: for CSS optimization (used-CSS generation), the agent submits rendered HTML of selected pages so unused CSS can be computed. Used only to produce optimized stylesheets.
@@ -285,6 +285,10 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 == Changelog ==
 
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+
+= 0.61.160 =
+* Added: An AI connected through WPMgr can now create a draft page or post from an outline with real layout, with your approval for each request in WPMgr. The outline can use headings, paragraphs, lists, quotes, tables and separators, and images that are already in the site's media library. In the block editor it can also use buttons, spacing, sections and columns. Nothing is published, and undo moves the draft to the trash.
+* Fixed: When one cache purge starts another, each purge's report of what it cleared stays separate and accurate.
 
 = 0.61.159 =
 * Added: The agent now includes two read-only facts in the site details it sends to WPMgr: which parent theme a child theme uses and, on a site running Elementor, whether Elementor's Atomic editor is switched on. It changes nothing on the site.
@@ -490,6 +494,9 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 * New: WOFF2 font transcoding. TTF, OTF and WOFF are converted on the control plane; the flag defaults to off.
 
 == Upgrade Notice ==
+
+= 0.61.160 =
+Lets a connected AI create a draft page or post from an outline with real layout, with your approval for each request in WPMgr. Nothing is published. Also keeps each cache purge's report separate when one purge starts another.
 
 = 0.61.159 =
 Adds two read-only facts to the site details sent to WPMgr: the parent theme of a child theme and, where Elementor runs, whether its Atomic editor is switched on. It changes nothing on the site.
