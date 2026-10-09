@@ -460,6 +460,7 @@ describe("Check again", () => {
 
     await act(async () => {
       resolve(okResult({ metadata: true, abilities: true }));
+      await Promise.resolve();
     });
     expect(
       await c.findByText("Asked the site to report again. Results update within a couple of minutes."),
