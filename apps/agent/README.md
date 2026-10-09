@@ -34,18 +34,23 @@ encrypted email-delivery secrets. Scripts can rely on the following.
   site keeps the original site's keys until all of them are gone.
 - **Disconnect and Re-enroll in wp-admin are not a reset.** Both keep the
   site's backup key so that older backups stay restorable.
-- **Match each form as an anchored prefix, and escape `_`**, which SQL `LIKE`
-  treats as "any one character". A substring match such as
+- **Match each form as an anchored prefix, byte for byte, and escape `_`**,
+  which SQL `LIKE` treats as "any one character". A substring match such as
   `LIKE '%wpmgr_agent_%'` also catches other rows that merely contain the
-  text. For a single site with the default table prefix:
+  text. A plain `option_name LIKE` compares under the column's collation,
+  which on a default install ignores case and accents, so it also returns
+  another plugin's rows such as `WPMGR_AGENT_...`; deleting what it returns
+  removes them. `CAST(option_name AS BINARY)` compares the stored bytes, which
+  is how uninstall decides what it owns. For a single site with the default
+  table prefix, on MySQL or MariaDB:
 
   ```sql
   SELECT option_name FROM wp_options
-  WHERE option_name LIKE 'wpmgr\_agent\_%'
-     OR option_name LIKE '\_transient\_wpmgr\_agent\_%'
-     OR option_name LIKE '\_transient\_timeout\_wpmgr\_agent\_%'
-     OR option_name LIKE '\_site\_transient\_wpmgr\_agent\_%'
-     OR option_name LIKE '\_site\_transient\_timeout\_wpmgr\_agent\_%';
+  WHERE CAST(option_name AS BINARY) LIKE 'wpmgr\_agent\_%'
+     OR CAST(option_name AS BINARY) LIKE '\_transient\_wpmgr\_agent\_%'
+     OR CAST(option_name AS BINARY) LIKE '\_transient\_timeout\_wpmgr\_agent\_%'
+     OR CAST(option_name AS BINARY) LIKE '\_site\_transient\_wpmgr\_agent\_%'
+     OR CAST(option_name AS BINARY) LIKE '\_site\_transient\_timeout\_wpmgr\_agent\_%';
   ```
 
 - With a persistent object cache, transients live in the cache rather than
