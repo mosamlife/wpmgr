@@ -9,6 +9,7 @@ import {
 import type { AbilityRequest, Me } from "@wpmgr/api";
 
 import { createTestQueryClient, renderWithProviders } from "@/test/render";
+import { okResult, readiness } from "@/features/ai-readiness/readiness-fixtures";
 
 import { Route as ContentRoute } from "./$siteId.content";
 
@@ -27,6 +28,10 @@ const undoReq = vi.fn();
 const getEditing = vi.fn();
 const enableEditing = vi.fn();
 const getInv = vi.fn();
+// The Content route also renders the AI readiness card, which makes its own
+// request. Stubbed here with a ready site so its (separate) failure states
+// cannot take the `alert` role these tests look for.
+const getReadiness = vi.fn();
 
 vi.mock("@wpmgr/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@wpmgr/api")>();
@@ -39,6 +44,7 @@ vi.mock("@wpmgr/api", async (importOriginal) => {
     getSiteContentEditing: (...a: unknown[]): unknown => getEditing(...a),
     enableSiteContentEditing: (...a: unknown[]): unknown => enableEditing(...a),
     getSiteContentInventory: (...a: unknown[]): unknown => getInv(...a),
+    getSiteAiReadiness: (...a: unknown[]): unknown => getReadiness(...a),
   };
 });
 
@@ -152,9 +158,10 @@ function renderTab(role: "operator" | "viewer" = "operator") {
 }
 
 beforeEach(() => {
-  for (const m of [listReqs, approveReq, declineReq, undoReq, getEditing, enableEditing, getInv]) {
+  for (const m of [listReqs, approveReq, declineReq, undoReq, getEditing, enableEditing, getInv, getReadiness]) {
     m.mockReset();
   }
+  getReadiness.mockResolvedValue(okResult(readiness()));
   getEditing.mockResolvedValue(okEditing(true));
   listReqs.mockResolvedValue(okList([]));
   getInv.mockResolvedValue({
