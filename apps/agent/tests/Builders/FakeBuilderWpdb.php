@@ -19,7 +19,10 @@
  *   even after a ROLLBACK;
  * - START TRANSACTION, COMMIT and ROLLBACK cover the posts, postmeta and
  *   options rows, and a FOR UPDATE read outside a transaction throws;
- * - every statement resets last_error, and a failing one sets it.
+ * - every statement resets last_error, and a failing one sets it;
+ * - information_schema lists the tables in $tableEngines with their storage
+ *   engine's TRANSACTIONS answer (ENGINES_SQL); $failOn "information_schema"
+ *   fails that read.
  *
  * add_option() and delete_option() as core runs them against this table are
  * addOptionLikeCore() and deleteOptionLikeCore(), for Brain Monkey aliases.
@@ -59,6 +62,19 @@ final class FakeBuilderWpdb
         'post_date'             => '0000-00-00 00:00:00',
         'post_date_gmt'         => '0000-00-00 00:00:00',
     ];
+
+    /** The catalogue read of the posts and postmeta tables' storage engines, as the restore sends it. */
+    public const ENGINES_SQL = 'SELECT t.TABLE_NAME AS table_name, e.TRANSACTIONS AS transactions FROM information_schema.TABLES AS t LEFT JOIN information_schema.ENGINES AS e ON e.ENGINE = t.ENGINE WHERE t.TABLE_SCHEMA = DATABASE() AND t.TABLE_NAME IN (%s, %s)';
+
+    /** Whether each storage engine supports transactions, as information_schema.ENGINES says. */
+    private const ENGINE_TRANSACTIONS = ['InnoDB' => 'YES', 'MyISAM' => 'NO', 'Aria' => 'NO', 'MEMORY' => 'NO'];
+
+    /**
+     * @var array<string,string|null> The storage engine of each table that
+     *      information_schema lists, by name; null for a table it lists
+     *      without one. A table left out is not listed.
+     */
+    public array $tableEngines = ['wp_posts' => 'InnoDB', 'wp_postmeta' => 'InnoDB', 'wp_options' => 'InnoDB'];
 
     public string $prefix   = 'wp_';
     public string $posts    = 'wp_posts';
@@ -349,6 +365,20 @@ final class FakeBuilderWpdb
         [$sql, $args] = $this->begin($prepared);
         if ($sql === 'SELECT option_id, option_name, SUBSTRING(option_value, 1, %d) AS head FROM %i WHERE option_name LIKE %s ORDER BY option_id ASC LIMIT %d') {
             return $this->optionHeads($sql, $args, $output);
+        }
+        if ($sql === self::ENGINES_SQL) {
+            if ($this->fails('information_schema', $sql)) {
+                return null;
+            }
+            $out = [];
+            foreach ($this->tableEngines as $name => $engine) {
+                if (in_array($name, $args, true)) {
+                    $row   = ['table_name' => (string) $name, 'transactions' => $engine === null ? null : (self::ENGINE_TRANSACTIONS[$engine] ?? null)];
+                    $out[] = $output === ARRAY_A ? $row : (object) $row;
+                }
+            }
+
+            return $out;
         }
 
         $keys   = null;

@@ -39,7 +39,11 @@ if (!defined('ABSPATH')) {
  * change.
  *
  * In both, the reads that decide the writes and the writes themselves run in
- * one transaction, rolled back on any database error. The descriptor's
+ * one transaction, rolled back on any database error. transactionProblem()
+ * says whether the site's posts and postmeta tables can take that
+ * transaction: both must use a storage engine that supports transactions,
+ * as information_schema lists them, or a failed restore could not be rolled
+ * back, so wpmgr/page-edit refuses before it writes anything. The descriptor's
  * derived keys (caches the builder rebuilds from the page) are deleted, never
  * restored or guarded. After the commit the post's object caches are
  * dropped and the adapter's afterRestore() drops what the builder caches
@@ -75,6 +79,20 @@ final class BuilderDocumentRestore
 
     /** scoped(): the post is gone; nothing was written. */
     public const DETAIL_POST_MISSING = 'post_missing';
+
+    /** transactionProblem(): the posts or postmeta table uses a storage engine without transactions. */
+    public const DETAIL_NOT_TRANSACTIONAL = 'tables_not_transactional';
+
+    /** transactionProblem(): the storage engines of the posts and postmeta tables could not be read. */
+    public const DETAIL_ENGINE_UNREADABLE = 'table_engine_unreadable';
+
+    /**
+     * transactionProblem()'s answers, per database handle (so per request),
+     * by posts and postmeta table names.
+     *
+     * @var \WeakMap<object, array<string, string|null>>|null
+     */
+    private static ?\WeakMap $engineAnswers = null;
 
     private const RE_SHA256 = '/^[0-9a-f]{64}$/D';
 
@@ -138,6 +156,74 @@ final class BuilderDocumentRestore
         }
 
         return $now !== null && hash_equals($beforeFp, $now) ? null : self::CODE_MISMATCH;
+    }
+
+    /**
+     * Why a restore of this site's posts and postmeta tables could not be all
+     * or nothing, or null when it can: both tables are listed in the current
+     * database's information_schema, each with a storage engine that supports
+     * transactions. DETAIL_NOT_TRANSACTIONAL when one is not (MyISAM, say),
+     * DETAIL_ENGINE_UNREADABLE when the engines cannot be read or a table is
+     * not listed. Read once per database handle and table names, so once per
+     * request.
+     *
+     * @return string|null
+     */
+    public static function transactionProblem(): ?string
+    {
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            return self::DETAIL_ENGINE_UNREADABLE;
+        }
+        $posts    = $wpdb->posts ?? null;
+        $postmeta = $wpdb->postmeta ?? null;
+        if (!is_string($posts) || $posts === '' || !is_string($postmeta) || $postmeta === '') {
+            return self::DETAIL_ENGINE_UNREADABLE;
+        }
+        self::$engineAnswers ??= new \WeakMap();
+        $known = self::$engineAnswers[$wpdb] ?? [];
+        $pair  = $posts . ' ' . $postmeta;
+        if (!array_key_exists($pair, $known)) {
+            $known[$pair]                = self::readTransactionProblem($wpdb, $posts, $postmeta);
+            self::$engineAnswers[$wpdb] = $known;
+        }
+
+        return $known[$pair];
+    }
+
+    /**
+     * transactionProblem() for one pair of tables, read from information_schema.
+     *
+     * @param object $wpdb     The database handle.
+     * @param string $posts    The posts table.
+     * @param string $postmeta The postmeta table.
+     * @return string|null
+     */
+    private static function readTransactionProblem(object $wpdb, string $posts, string $postmeta): ?string
+    {
+        /** @var \wpdb $wpdb */
+        try {
+            $rows = $wpdb->get_results($wpdb->prepare('SELECT t.TABLE_NAME AS table_name, e.TRANSACTIONS AS transactions FROM information_schema.TABLES AS t LEFT JOIN information_schema.ENGINES AS e ON e.ENGINE = t.ENGINE WHERE t.TABLE_SCHEMA = DATABASE() AND t.TABLE_NAME IN (%s, %s)', $posts, $postmeta), ARRAY_A); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- a catalogue read of the two tables' storage engines, cached per request by the caller; both names go through prepare()
+        } catch (\Throwable $e) {
+            return self::DETAIL_ENGINE_UNREADABLE;
+        }
+        if (!is_array($rows) || self::lastError($wpdb)) {
+            return self::DETAIL_ENGINE_UNREADABLE;
+        }
+        $listed = [];
+        foreach ($rows as $row) {
+            $name = is_array($row) ? ($row['table_name'] ?? null) : null;
+            if (!is_string($name)) {
+                return self::DETAIL_ENGINE_UNREADABLE;
+            }
+            $transactions = $row['transactions'] ?? null;
+            if (!is_string($transactions) || strtoupper($transactions) !== 'YES') {
+                return self::DETAIL_NOT_TRANSACTIONAL;
+            }
+            $listed[strtolower($name)] = true;
+        }
+
+        return isset($listed[strtolower($posts)], $listed[strtolower($postmeta)]) ? null : self::DETAIL_ENGINE_UNREADABLE;
     }
 
     /**

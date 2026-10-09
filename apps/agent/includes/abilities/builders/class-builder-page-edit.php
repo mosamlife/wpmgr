@@ -29,7 +29,11 @@ if (!defined('ABSPATH')) {
  *   3. a page builder the entry enables and this agent has compiled in holds
  *      the post's layout (target_not_eligible, not_builder_page or
  *      owner_unknown; the registry's refusal when none can be used), and can
- *      be used on the site now (builder_not_available);
+ *      be used on the site now (builder_not_available), and the site's posts
+ *      and postmeta tables support transactions, so a failed write is put
+ *      back all or nothing (builder_not_available, detail
+ *      tables_not_transactional, or table_engine_unreadable when that
+ *      cannot be read; BuilderDocumentRestore::transactionProblem());
  *   4. the post can take an edit (ElementorDocument::editTargetProblem()):
  *      someone's autosave or someone else's edit lock is conflict with
  *      detail autosave_pending or editor_open, an unreadable element tree is
@@ -177,6 +181,10 @@ final class BuilderPageEdit
         $version = $status->version;
         if (!is_string($version) || $version === '') {
             return self::refused(AdapterStatus::CODE, 'version_unverified');
+        }
+        $tables = BuilderDocumentRestore::transactionProblem();
+        if ($tables !== null) {
+            return self::refused(AdapterStatus::CODE, $tables);
         }
 
         $target = $a->document()->editTargetProblem($postId, $a->facts());
