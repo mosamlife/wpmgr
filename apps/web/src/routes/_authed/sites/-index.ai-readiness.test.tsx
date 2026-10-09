@@ -103,6 +103,7 @@ const S_READY = "aaaaaaaa-0000-0000-0000-000000000001";
 const S_FIX = "bbbbbbbb-0000-0000-0000-000000000002";
 const S_UNCHECKED = "cccccccc-0000-0000-0000-000000000003";
 const S_WARNED = "dddddddd-0000-0000-0000-000000000004";
+const S_BUILDERS = "eeeeeeee-0000-0000-0000-000000000005";
 
 function buildSite(overrides: Partial<Site> = {}): Site {
   return {
@@ -125,6 +126,7 @@ const SITES: Site[] = [
   buildSite({ id: S_FIX, name: "Fixit Ltd", url: "https://fixit.example.com" }),
   buildSite({ id: S_UNCHECKED, name: "Pending Inc", url: "https://pending.example.com" }),
   buildSite({ id: S_WARNED, name: "Beta Co", url: "https://beta.example.com" }),
+  buildSite({ id: S_BUILDERS, name: "Builders Ltd", url: "https://builders.example.com" }),
 ];
 
 const ROLLUP: FleetAiReadinessSite[] = [
@@ -137,6 +139,15 @@ const ROLLUP: FleetAiReadinessSite[] = [
   }),
   fleetSite({ site_id: S_UNCHECKED, status: "incomplete" }),
   fleetSite({ site_id: S_WARNED, warnings: ["mcp_adapter_plugin_active", "elementor_mcp_endpoint_open"] }),
+  // A builder version row can only be in `failing` when the builder is too old:
+  // one that is installed but not active is not_applicable and is not listed
+  // (AIReadinessCheck in packages/openapi/openapi.yaml).
+  fleetSite({
+    site_id: S_BUILDERS,
+    status: "needs_attention",
+    fix_count: 2,
+    failing: ["elementor_version", "bricks_version"],
+  }),
 ];
 
 function buildSitesRouter(initialPath: string, queryClient: QueryClient) {
@@ -222,6 +233,14 @@ describe("Sites list, table view: the AI column", () => {
     const fix = await within(await rowFor("Fixit Ltd")).findByRole("link", { name: /to fix/ });
     expect(fix.getAttribute("title")).toBe("WordPress version\nAI page creation");
     expect(fix).toHaveAccessibleDescription("WordPress version. AI page creation");
+  });
+
+  it("words a builder's version line as the fix, never as a bare 'version' row", async () => {
+    renderSitesPage("/sites");
+    const link = await within(await rowFor("Builders Ltd")).findByRole("link", { name: /to fix/ });
+    expect(link).toHaveTextContent("2 to fix");
+    expect(link.getAttribute("title")).toBe("Elementor needs updating\nBricks needs updating");
+    expect(link.getAttribute("title")).not.toMatch(/version/i);
   });
 
   it("marks an open AI connection point with an amber triangle and names it on hover, leaving Ready alone", async () => {
