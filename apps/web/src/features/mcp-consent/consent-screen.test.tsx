@@ -633,6 +633,10 @@ describe("ConsentScreen — the mcp:cache write section (design v7 S2.2)", () =>
     expect(screen.getByTestId("consent-cannot-change")).toHaveTextContent(
       "This connection is read-only.",
     );
+    // This fixture's client gave no name, and the form needs one to submit.
+    fireEvent.change(screen.getByLabelText("Name this connection"), {
+      target: { value: "Cache test connection" },
+    });
     fireEvent.submit(screen.getByTestId("consent-approve").closest("form")!);
     expect(onApprove).toHaveBeenCalledTimes(1);
     expect((onApprove.mock.calls[0]![0] as { capabilities?: string[] }).capabilities).toEqual([
