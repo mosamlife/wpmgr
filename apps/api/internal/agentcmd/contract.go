@@ -129,11 +129,18 @@ type UpdateResponse struct {
 //	             agent took a snapshot.
 //	to_version   the version to restore to (the recorded from_version); used for
 //	             core and as a fallback when no snapshot_id is available.
+//	allow_core_downgrade
+//	             true only on a core rollback: rolling core back is a forced
+//	             downgrade to to_version, and an agent that knows this flag
+//	             refuses a core rollback without it. The control plane sends
+//	             it only after a confirmed fatal (see update.Worker.rollback).
+//	             Omitted when false, so a plugin or theme body is unchanged.
 type RollbackRequest struct {
-	Type       string `json:"type"`
-	Slug       string `json:"slug"`
-	SnapshotID string `json:"snapshot_id,omitempty"`
-	ToVersion  string `json:"to_version"`
+	Type               string `json:"type"`
+	Slug               string `json:"slug"`
+	SnapshotID         string `json:"snapshot_id,omitempty"`
+	ToVersion          string `json:"to_version"`
+	AllowCoreDowngrade bool   `json:"allow_core_downgrade,omitempty"`
 }
 
 // RollbackResponse is the agent's response to the `rollback` command.

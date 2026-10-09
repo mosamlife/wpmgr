@@ -204,3 +204,146 @@ func TestRunApply_PluginOrThemeUpToDate_IsNotHealthChecked(t *testing.T) {
 		})
 	}
 }
+
+// ----------------------------------------------------------------------------
+// Core rollback policy (GH #415). A core rollback is a forced downgrade, so it
+// is sent only after a CONFIRMED fatal (the signed agent check's own server
+// error, a fatal-error page, or a 5xx homepage), and always with an explicit
+// allow_core_downgrade. Anything weaker records the failure and leaves core
+// as it is.
+// ----------------------------------------------------------------------------
+
+// coreUpdated is the agent's answer to a core apply that changed the version.
+func coreUpdated() agentcmd.ItemResult {
+	return agentcmd.ItemResult{Type: TargetCore, Slug: agentcmd.CoreSlug, FromVersion: "7.0", ToVersion: "7.1", Status: agentcmd.ItemSucceeded}
+}
+
+// TestRunApply_CoreUpdated_ProbeTimeout_LeavesCoreAndFails: a homepage that
+// cannot be reached is not a confirmed fatal, so core is not downgraded.
+func TestRunApply_CoreUpdated_ProbeTimeout_LeavesCoreAndFails(t *testing.T) {
+	cases := []struct {
+		name  string
+		probe probeStep
+	}{
+		{"probe times out on every attempt", errorStep(context.DeadlineExceeded)},
+		{"probe cannot connect on every attempt", errorStep(errors.New("dial tcp: connection refused"))},
+		{"probe answers with no status (not a confirmed fatal)", probeStep{result: agentcmd.ProbeResult{StatusCode: 0}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &itemCommander{result: coreUpdated()}
+			repo := &probeFakeRepo{}
+			w := newApplyTestWorker(repo, cmd, &scriptedProber{script: []probeStep{tc.probe}})
+
+			if err := w.runApply(context.Background(), coreTask(), "https://example.test", coreItem()); err != nil {
+				t.Fatalf("runApply: %v", err)
+			}
+			if len(cmd.rollbacks) != 0 {
+				t.Fatalf("rollback sent %d time(s) (%+v): an unconfirmed failure must never downgrade core", len(cmd.rollbacks), cmd.rollbacks)
+			}
+			got := onlyFinish(t, repo)
+			if got.Status != TaskFailed {
+				t.Fatalf("status = %q, want %q", got.Status, TaskFailed)
+			}
+			for _, want := range []string{"WordPress core was updated", "did not pass the health check", "left as is"} {
+				if !strings.Contains(got.Detail, want) {
+					t.Errorf("detail = %q, want it to contain %q", got.Detail, want)
+				}
+			}
+			if got.FromVersion != "7.0" || got.ToVersion != "7.1" {
+				t.Errorf("versions = %q -> %q, want 7.0 -> 7.1 (core is on the new version)", got.FromVersion, got.ToVersion)
+			}
+			if got.Error == "" {
+				t.Error("error is empty, want the check's reason in the task's error log")
+			}
+		})
+	}
+}
+
+// TestRunApply_CoreUpdated_ConfirmedFatal_RollsBackWithDowngradeFlag: each
+// confirmed fatal sends exactly one core rollback, flagged.
+func TestRunApply_CoreUpdated_ConfirmedFatal_RollsBackWithDowngradeFlag(t *testing.T) {
+	cases := []struct {
+		name  string
+		build func(t *testing.T) (Commander, HealthProber, *itemCommander)
+	}{
+		{
+			name: "homepage 5xx on every attempt",
+			build: func(t *testing.T) (Commander, HealthProber, *itemCommander) {
+				c := &itemCommander{result: coreUpdated()}
+				return c, &scriptedProber{script: []probeStep{unhealthyStep(500)}}, c
+			},
+		},
+		{
+			name: "homepage shows a PHP fatal",
+			build: func(t *testing.T) (Commander, HealthProber, *itemCommander) {
+				c := &itemCommander{result: coreUpdated()}
+				return c, &scriptedProber{script: []probeStep{{result: agentcmd.ProbeResult{StatusCode: 200, Fatal: true, Detail: "fatal-error signature in response body"}}}}, c
+			},
+		},
+		{
+			name: "signed agent check returns a server error on every attempt",
+			build: func(t *testing.T) (Commander, HealthProber, *itemCommander) {
+				c := &verifyingItemCommander{itemCommander: itemCommander{result: coreUpdated()}, reason: agentcmd.ReasonHTTP5xx}
+				return c, &panicProber{t: t}, &c.itemCommander
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, prober, rec := tc.build(t)
+			repo := &probeFakeRepo{}
+			w := newApplyTestWorker(repo, cmd, prober)
+
+			if err := w.runApply(context.Background(), coreTask(), "https://example.test", coreItem()); err != nil {
+				t.Fatalf("runApply: %v", err)
+			}
+			if len(rec.rollbacks) != 1 {
+				t.Fatalf("rollback sent %d time(s), want exactly 1 on a confirmed fatal", len(rec.rollbacks))
+			}
+			req := rec.rollbacks[0]
+			if !req.AllowCoreDowngrade {
+				t.Errorf("rollback request %+v: a core rollback must carry allow_core_downgrade", req)
+			}
+			if req.Type != TargetCore || req.ToVersion != "7.0" {
+				t.Errorf("rollback request %+v, want type core back to 7.0", req)
+			}
+			if got := onlyFinish(t, repo); got.Status != TaskRolledBack {
+				t.Errorf("status = %q (detail %q), want %q", got.Status, got.Detail, TaskRolledBack)
+			}
+		})
+	}
+}
+
+// TestRunApply_PluginRollback_NeverCarriesDowngradeFlag is the over-fire
+// guard: plugin rollbacks are unchanged, including the one after an
+// unreachable homepage, and never carry the core flag.
+func TestRunApply_PluginRollback_NeverCarriesDowngradeFlag(t *testing.T) {
+	cases := []struct {
+		name  string
+		probe probeStep
+	}{
+		{"homepage 5xx", unhealthyStep(503)},
+		{"homepage unreachable", errorStep(errors.New("dial tcp: connection refused"))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &itemCommander{result: agentcmd.ItemResult{Type: TargetPlugin, Slug: "suremail", FromVersion: "1.9.9", ToVersion: "2.0.0", Status: agentcmd.ItemSucceeded, SnapshotID: "snap-1"}}
+			repo := &probeFakeRepo{}
+			w := newApplyTestWorker(repo, cmd, &scriptedProber{script: []probeStep{tc.probe}})
+
+			if err := w.runApply(context.Background(), testTask(), "https://example.test", updateItem()); err != nil {
+				t.Fatalf("runApply: %v", err)
+			}
+			if len(cmd.rollbacks) != 1 {
+				t.Fatalf("rollback sent %d time(s), want 1 (plugin behaviour unchanged)", len(cmd.rollbacks))
+			}
+			if cmd.rollbacks[0].AllowCoreDowngrade {
+				t.Errorf("plugin rollback request %+v carries allow_core_downgrade", cmd.rollbacks[0])
+			}
+			if got := onlyFinish(t, repo); got.Status != TaskRolledBack {
+				t.Errorf("status = %q, want %q", got.Status, TaskRolledBack)
+			}
+		})
+	}
+}

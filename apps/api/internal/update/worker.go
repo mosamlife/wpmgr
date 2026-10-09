@@ -1116,24 +1116,62 @@ func (w *Worker) probeHealthWithRetry(ctx context.Context, siteURL string) (prob
 	}
 }
 
+// confirmedFatal reports whether the post-update check itself saw the site
+// fail hard: the signed agent check's own server error (agentConfirmedFatal),
+// a PHP fatal-error page, or a 5xx homepage. A probe that got no answer (a
+// timeout, a refused connection) does not count, and neither does a cached
+// response, which says nothing about the backend as it is now.
+func confirmedFatal(probe agentcmd.ProbeResult, agentConfirmedFatal bool) bool {
+	if agentConfirmedFatal {
+		return true
+	}
+	return !probe.CacheHit && (probe.Fatal || probe.StatusCode >= 500)
+}
+
+// coreLeftAsIsDetail is the task detail when a core update fails its health
+// check without a confirmed fatal. The check's own reason goes to the task's
+// error log.
+const coreLeftAsIsDetail = "WordPress core was updated, but the site did not pass the health check afterwards. " +
+	"Core was left as is: an automatic core rollback runs only when the site answers with a server error or shows a PHP fatal error, " +
+	"and this check saw neither. Check the site."
+
+// coreRollbackUndeliverableDetail is the GH #210 detail for core. The agent
+// arms its update watchdog and takes a directory snapshot only for plugins
+// and themes, so after a completed core update nothing restores core on its
+// own.
+const coreRollbackUndeliverableDetail = "site not responding: site-wide PHP fatal after the WordPress core update; rollback command undeliverable. " +
+	"No automatic recovery follows for WordPress core, so manual recovery is required."
+
 // rollback issues the signed rollback command and records the rolled_back
 // state. probe is the ProbeResult that triggered the rollback decision (the
 // zero value when rollback was reached via a probe TRANSPORT error, or via
 // the GH #291 Phase 4 agent-first check, rather than a reachable-but-unhealthy
-// public-probe response), and is used, together with agentConfirmedFatal,
-// only to classify a rollback-transport failure below (GH #210).
-// agentConfirmedFatal is true when the rollback decision came from the
-// signed agent-first reachability check itself returning a server error
-// (agentHealthUnhealthy), which is exactly as strong a "site-wide PHP fatal"
-// signal as probe.Fatal or probe.StatusCode >= 500, but arrives with no
-// ProbeResult to carry it.
+// public-probe response). agentConfirmedFatal is true when the rollback
+// decision came from the signed agent-first reachability check itself
+// returning a server error (agentHealthUnhealthy), which is exactly as strong
+// a "site-wide PHP fatal" signal as probe.Fatal or probe.StatusCode >= 500,
+// but arrives with no ProbeResult to carry it. Together they decide
+// confirmedFatal, which gates a core rollback and classifies a
+// rollback-transport failure below (GH #210).
+//
+// Core policy (GH #415): rolling core back is a forced downgrade of WordPress
+// itself, so it is sent only after a confirmed fatal, and always with
+// allow_core_downgrade. Anything weaker records the failure and leaves core
+// where the update put it. This is the one place the control plane sends a
+// rollback, so no other path can downgrade core.
 func (w *Worker) rollback(ctx context.Context, task Task, siteURL string, item agentcmd.UpdateItem, res agentcmd.ItemResult, probe agentcmd.ProbeResult, agentConfirmedFatal bool, reason string) error {
 	from := fromOr(res.FromVersion, task.FromVersion)
+	fatal := confirmedFatal(probe, agentConfirmedFatal)
+	isCore := item.Type == TargetCore
+	if isCore && !fatal {
+		return w.finish(ctx, task, TaskFailed, from, res.ToVersion, coreLeftAsIsDetail, reason)
+	}
 	rbResp, rbErr := w.cmd.Rollback(ctx, task.SiteID, siteURL, agentcmd.RollbackRequest{
-		Type:       item.Type,
-		Slug:       item.Slug,
-		SnapshotID: res.SnapshotID,
-		ToVersion:  from,
+		Type:               item.Type,
+		Slug:               item.Slug,
+		SnapshotID:         res.SnapshotID,
+		ToVersion:          from,
+		AllowCoreDowngrade: isCore && fatal,
 	})
 	// A 200 with ok=false is the agent REFUSING the rollback (e.g. the snapshot
 	// is gone or unreadable). The transport succeeded, so rbErr is nil and the
@@ -1161,7 +1199,10 @@ func (w *Worker) rollback(ctx context.Context, task Task, siteURL string, item a
 		// transient network blip unrelated to the update). Record a distinct
 		// detail so the operator knows the automatic filesystem-level
 		// recovery on the agent side is the remaining recovery path.
-		if probe.Fatal || probe.StatusCode >= 500 || agentConfirmedFatal {
+		switch {
+		case fatal && isCore:
+			detail = coreRollbackUndeliverableDetail
+		case fatal:
 			detail = "site not responding: site-wide PHP fatal after update; rollback command undeliverable. " +
 				"The agent update watchdog will attempt automatic filesystem recovery; if it cannot, manual filesystem recovery is required."
 		}
