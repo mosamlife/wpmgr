@@ -110,7 +110,11 @@ func m166AssertCopy(t *testing.T, r sqlc.AbilityCatalogue, wantEnabled bool) {
 		t.Fatalf("description = %q, want m166's", r.Description)
 	}
 	if r.Usage == nil || *r.Usage != m166Usage {
-		t.Fatalf("usage = %v, want m166's", r.Usage)
+		got := "(NULL)"
+		if r.Usage != nil {
+			got = *r.Usage
+		}
+		t.Fatalf("usage = %q\nwant m166's:\n%q", got, m166Usage)
 	}
 	got := m166LimitsOf(t, r.Limits)
 	if want := m166LimitsOf(t, []byte(m166Limits)); !reflect.DeepEqual(got, want) {

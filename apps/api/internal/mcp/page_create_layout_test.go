@@ -36,6 +36,7 @@ const (
 	pageLayoutFixture      = agentAbilityFixtures + "page-create-layout.json"
 	pageSchemaFixture      = agentAbilityFixtures + "page-create-schema.json"
 	m162Migration          = "20261009000000_m162_page_create_layout_copy.sql"
+	m166Migration          = "20261009060000_m166_builder_page_create.sql"
 )
 
 type layoutCase struct {
@@ -172,9 +173,16 @@ func TestPageCreateSchemaIsTheAgentFixture(t *testing.T) {
 // literals joined with ||, as m162 writes its copy.
 func sqlConstantText(t *testing.T, sql, name string) string {
 	t.Helper()
+	return sqlConstantTextIn(t, m162Migration, sql, name)
+}
+
+// sqlConstantTextIn is sqlConstantText for the migration file named, which
+// its failures cite.
+func sqlConstantTextIn(t *testing.T, file, sql, name string) string {
+	t.Helper()
 	i := strings.Index(sql, name+" constant ")
 	if i < 0 {
-		t.Fatalf("%s: no constant %s", m162Migration, name)
+		t.Fatalf("%s: no constant %s", file, name)
 	}
 	rest := sql[i:]
 	rest = rest[strings.Index(rest, ":=")+2:]
@@ -194,17 +202,23 @@ func sqlConstantText(t *testing.T, sql, name string) string {
 			return out.String()
 		}
 	}
-	t.Fatalf("%s: constant %s is not terminated", m162Migration, name)
+	t.Fatalf("%s: constant %s is not terminated", file, name)
 	return ""
+}
+
+// readMigration is the text of a migration file as the binary embeds it.
+func readMigration(t *testing.T, file string) string {
+	t.Helper()
+	b, err := fs.ReadFile(migrations.FS, file)
+	if err != nil {
+		t.Fatalf("read %s: %v", file, err)
+	}
+	return string(b)
 }
 
 func readM162(t *testing.T) string {
 	t.Helper()
-	b, err := fs.ReadFile(migrations.FS, m162Migration)
-	if err != nil {
-		t.Fatalf("read %s: %v", m162Migration, err)
-	}
-	return string(b)
+	return readMigration(t, m162Migration)
 }
 
 // TestPageCreateM162UsageNamesTheLayoutFloor ties the floor constant to the
@@ -220,6 +234,24 @@ func TestPageCreateM162UsageNamesTheLayoutFloor(t *testing.T) {
 	}
 	if !strings.Contains(msgAbilityLayoutOutdated, agentcmd.MinAgentVersionForPageLayout) {
 		t.Fatalf("the refusal does not name the floor: %q", msgAbilityLayoutOutdated)
+	}
+}
+
+// TestPageCreateM166UsageNamesTheBuilderFloor ties the builder floor constant
+// to the release the usage text m166 seeds names. The migration is applied
+// only by the integration package, which CI does not run, so this is the check
+// that does run: a floor moved without the copy fails here.
+func TestPageCreateM166UsageNamesTheBuilderFloor(t *testing.T) {
+	usage := sqlConstantTextIn(t, m166Migration, readMigration(t, m166Migration), "v_usage")
+	if !strings.HasPrefix(usage, "Build the page as an outline.") || len(usage) > 2000 {
+		t.Fatalf("m166 usage did not read back whole: %q", usage)
+	}
+	want := "Elementor pages need the WPMgr plugin " + agentcmd.MinAgentVersionForBuilderAdapters + " or later"
+	if !strings.Contains(usage, want) {
+		t.Fatalf("m166 usage does not name MinAgentVersionForBuilderAdapters (%s): %q", agentcmd.MinAgentVersionForBuilderAdapters, usage)
+	}
+	if !strings.Contains(msgAbilityBuilderOutdated, agentcmd.MinAgentVersionForBuilderAdapters) {
+		t.Fatalf("the refusal does not name the floor: %q", msgAbilityBuilderOutdated)
 	}
 }
 
