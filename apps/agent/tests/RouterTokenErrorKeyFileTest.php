@@ -16,10 +16,6 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Tests;
 
-use FilesystemIterator;
-use RecursiveDirectoryIterator;
-use RecursiveIteratorIterator;
-use SplFileInfo;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -46,12 +42,13 @@ final class RouterTokenErrorKeyFileTest extends TestCase
     {
         // Remove the directory set_up() made and what the run left in it.
         // Anchored to that one path; a link is removed, never followed.
-        if (strpos($this->dir, sys_get_temp_dir() . '/' . self::DIR_PREFIX) === 0 && is_dir($this->dir) && !is_link($this->dir)) {
-            foreach ($this->entries(RecursiveIteratorIterator::CHILD_FIRST) as $entry) {
-                if ($entry->isDir() && !$entry->isLink()) {
-                    rmdir($entry->getPathname());
+        $own = strpos($this->dir, sys_get_temp_dir() . '/' . self::DIR_PREFIX) === 0;
+        if ($own && is_dir($this->dir) && !is_link($this->dir)) {
+            foreach ($this->paths($this->dir) as $path) {
+                if (is_dir($path) && !is_link($path)) {
+                    rmdir($path);
                 } else {
-                    unlink($entry->getPathname());
+                    unlink($path);
                 }
             }
             rmdir($this->dir);
@@ -77,14 +74,15 @@ final class RouterTokenErrorKeyFileTest extends TestCase
                 '--colors=never',
                 $agentDir . '/tests/RouterTokenErrorTest.php',
             ],
-            [1 => ['pipe', 'w'], 2 => ['redirect', 1]],
+            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes,
             $agentDir
         );
         $this->assertIsResource($process, 'could not start the child run');
 
-        $output = (string) stream_get_contents($pipes[1]);
+        $output = (string) stream_get_contents($pipes[1]) . (string) stream_get_contents($pipes[2]);
         fclose($pipes[1]);
+        fclose($pipes[2]);
         $status = proc_close($process);
 
         // Positive controls: the class ran and passed, and the child's
@@ -92,12 +90,12 @@ final class RouterTokenErrorKeyFileTest extends TestCase
         // parent there), so an empty result below is not a vacuous pass.
         $this->assertSame(0, $status, $output);
         $this->assertMatchesRegularExpression('/^OK\b/m', $output);
-        $this->assertDirectoryExists($this->dir . '/wpmgr_wp_abspath', 'the child did not use the temporary directory it was given');
+        $this->assertDirectoryExists($this->dir . '/wpmgr_wp_abspath', 'the child used another temporary directory');
 
         $left = [];
-        foreach ($this->entries(RecursiveIteratorIterator::SELF_FIRST) as $entry) {
-            if (!$entry->isDir() || $entry->isLink()) {
-                $left[] = substr($entry->getPathname(), strlen($this->dir) + 1);
+        foreach ($this->paths($this->dir) as $path) {
+            if (!is_dir($path) || is_link($path)) {
+                $left[] = substr($path, strlen($this->dir) + 1);
             }
         }
         sort($left);
@@ -106,19 +104,28 @@ final class RouterTokenErrorKeyFileTest extends TestCase
     }
 
     /**
-     * Everything under the child's temporary directory, links not followed.
+     * Every path under $dir, each directory after its contents, links not
+     * followed.
      *
-     * @param int $mode RecursiveIteratorIterator mode.
-     * @return iterable<SplFileInfo>
+     * @param string $dir Directory to walk.
+     * @return list<string>
      */
-    private function entries(int $mode): iterable
+    private function paths(string $dir): array
     {
-        /** @var iterable<SplFileInfo> $entries */
-        $entries = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($this->dir, FilesystemIterator::SKIP_DOTS),
-            $mode
-        );
+        $names = scandir($dir);
+        if ($names === false) {
+            return [];
+        }
 
-        return $entries;
+        $paths = [];
+        foreach (array_diff($names, ['.', '..']) as $name) {
+            $path = $dir . '/' . $name;
+            if (is_dir($path) && !is_link($path)) {
+                array_push($paths, ...$this->paths($path));
+            }
+            $paths[] = $path;
+        }
+
+        return $paths;
     }
 }
