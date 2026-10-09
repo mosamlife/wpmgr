@@ -9718,7 +9718,7 @@ INSERT INTO ability_catalogue (
     title, description, usage
 )
 SELECT 'wpmgr/page-structure', 'wpmgr', 'read', 'admitted', true, 'none',
-       'none', '0.61.162',
+       'none', '0.61.163',
        '{"builders_enabled":["elementor"],"max_nodes":500}'::jsonb,
        'Read a page''s layout',
        'Reads the layout of one page built in a page builder WPMgr supports: its sections, columns and elements in ' ||
@@ -9746,7 +9746,7 @@ INSERT INTO ability_catalogue (
 )
 SELECT 'wpmgr/page-edit', 'wpmgr', 'write', 'admitted', true, 'per_call',
        'builder_document', 'rich_edit', 'draft', 'site.content.edit',
-       '0.61.162',
+       '0.61.163',
        '{"builders_enabled":["elementor"],"max_operations":25}'::jsonb,
        'Change a draft in its page builder',
        'Changes a draft that WPMgr created with wpmgr/page-create in a page builder WPMgr supports: the text, links ' ||
@@ -10596,10 +10596,13 @@ CREATE TABLE IF NOT EXISTS assistant_ability_requests (
 
     -- m169: THE PAGE EDIT FACTS. snapshot_sha256 is the hash of the copy the
     -- agent kept before an applied page edit; the outcome recording writes it
-    -- once and the undo sends it back. The last column, as ADD COLUMN placed
-    -- it. A page edit names its post and carries builder_edit card facts
-    -- (coalesce: facts without a kind are refused, not passed as NULL). An
-    -- applied page edit with no hash has no undo.
+    -- once and the undo sends it back. A page edit names its post and carries
+    -- builder_edit card facts (coalesce: facts without a kind are refused,
+    -- not passed as NULL). An applied page edit with no hash has no undo.
+    -- undo_code names why a failed undo failed; the undo's finish writes it,
+    -- on a failed undo only (coalesce again: a NULL undo_state is refused,
+    -- not passed). snapshot_sha256 and undo_code are the last two columns, in
+    -- the order ADD COLUMN placed them.
     snapshot_sha256 text NULL
         CONSTRAINT assistant_ability_requests_snapshot_sha256_shape_check
         CHECK (snapshot_sha256 ~ '^[0-9a-f]{64}$'),
@@ -10612,7 +10615,13 @@ CREATE TABLE IF NOT EXISTS assistant_ability_requests (
         CHECK (ability_name <> 'wpmgr/page-edit'
                OR outcome IS DISTINCT FROM 'applied'
                OR snapshot_sha256 IS NOT NULL
-               OR undo_state IS NULL)
+               OR undo_state IS NULL),
+    undo_code text NULL
+        CONSTRAINT assistant_ability_requests_undo_code_check
+        CHECK (undo_code IN ('snapshot_tampered', 'restore_mismatch')),
+    CONSTRAINT assistant_ability_requests_undo_code_only_when_failed_check
+        CHECK (undo_code IS NULL
+               OR coalesce(undo_state = 'failed', false))
 );
 
 -- ===========================================================================
@@ -10702,7 +10711,7 @@ GRANT UPDATE (
     undo_state, undo_available_until, undo_by_user_id,
     undo_started_at, undo_finished_at,
     -- m169
-    snapshot_sha256
+    snapshot_sha256, undo_code
 ) ON assistant_ability_requests TO wpmgr_app;
 
 -- ===========================================================================

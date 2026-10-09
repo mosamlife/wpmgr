@@ -72,9 +72,16 @@
 -- agent kept before an applied page edit, as its outcome reported it. The
 -- undo sends it back, and the agent refuses an undo whose copy no longer
 -- hashes to it. Written by the outcome recording only, once: the statement
--- matches only a row whose snapshot_sha256 is still NULL. wpmgr_app gains
--- UPDATE on this one column; every column it could not update before m169
--- stays that way.
+-- matches only a row whose snapshot_sha256 is still NULL.
+--
+-- undo_code (text NULL): why a person's undo of the request failed, when the
+-- agent named the cause. snapshot_tampered: the kept copy, its ledger record
+-- and the hash the undo sent are not one. restore_mismatch: the put-back did
+-- not read back as the copy. Written by the undo's finish
+-- (FinishAbilityRequestUndo), and NULL on every other undo result.
+--
+-- wpmgr_app gains UPDATE on these two columns; every column it could not
+-- update before m169 stays that way.
 --
 -- CHECKs, each counted before it is added (as part 1):
 --
@@ -88,17 +95,27 @@
 --   * assistant_ability_requests_page_edit_undo_hash_check: an applied page
 --     edit without a snapshot hash has no undo. The control plane records
 --     such an outcome with no undo window rather than invent a hash.
+--   * assistant_ability_requests_undo_code_check: undo_code is one of the
+--     two codes above.
+--   * assistant_ability_requests_undo_code_only_when_failed_check: a code is
+--     stored only on a failed undo. Written with coalesce for the same reason
+--     as the card check: while undo_state is NULL the comparison is NULL, and
+--     a CHECK passes a NULL.
 --
--- Before m169 no catalogue entry named wpmgr/page-edit existed, so no request
--- row can name it and every count is 0 on every install.
+-- Before m169 no catalogue entry named wpmgr/page-edit existed and no request
+-- row had an undo_code, so every count is 0 on every install.
 --
 -- ===========================================================================
 -- CONVERGE PATH
 -- ===========================================================================
 --
--- None needed: m169 is new. Every step is guarded (definition-checked
+-- None needed on any install: none had applied m169 when it merged. A
+-- database that ran this file under its pre-merge ordinal, 20261009080000,
+-- applies it again under this one. Every step is guarded (definition-checked
 -- constraint swaps, ADD COLUMN IF NOT EXISTS, existence-checked constraints,
--- NOT EXISTS seeds, a GRANT that is idempotent), so a re-run is a no-op.
+-- NOT EXISTS seeds, a GRANT that is idempotent), so that run adds undo_code,
+-- its two CHECKs and its grant, and leaves the two seeded entries as the
+-- earlier run wrote them, min_agent_version included. A re-run is a no-op.
 
 -- ---------------------------------------------------------------------------
 -- 1. The builder_document snapshot strategy
@@ -202,7 +219,7 @@ INSERT INTO "public"."ability_catalogue" (
     "title", "description", "usage"
 )
 SELECT 'wpmgr/page-structure', 'wpmgr', 'read', 'admitted', true, 'none',
-       'none', '0.61.162',
+       'none', '0.61.163',
        '{"builders_enabled":["elementor"],"max_nodes":500}'::jsonb,
        'Read a page''s layout',
        'Reads the layout of one page built in a page builder WPMgr supports: its sections, columns and elements in ' ||
@@ -232,7 +249,7 @@ INSERT INTO "public"."ability_catalogue" (
 )
 SELECT 'wpmgr/page-edit', 'wpmgr', 'write', 'admitted', true, 'per_call',
        'builder_document', 'rich_edit', 'draft', 'site.content.edit',
-       '0.61.162',
+       '0.61.163',
        '{"builders_enabled":["elementor"],"max_operations":25}'::jsonb,
        'Change a draft in its page builder',
        'Changes a draft that WPMgr created with wpmgr/page-create in a page builder WPMgr supports: the text, links ' ||
@@ -261,6 +278,9 @@ WHERE NOT EXISTS (
 
 ALTER TABLE "public"."assistant_ability_requests"
     ADD COLUMN IF NOT EXISTS "snapshot_sha256" text NULL;
+
+ALTER TABLE "public"."assistant_ability_requests"
+    ADD COLUMN IF NOT EXISTS "undo_code" text NULL;
 
 DO $$
 DECLARE
@@ -355,11 +375,53 @@ BEGIN
             VALIDATE CONSTRAINT "assistant_ability_requests_page_edit_undo_hash_check";
     END IF;
 
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.assistant_ability_requests'::regclass
+          AND conname  = 'assistant_ability_requests_undo_code_check'
+    ) THEN
+        SELECT count(*) INTO v_bad FROM "public"."assistant_ability_requests"
+         WHERE NOT coalesce("undo_code" IN ('snapshot_tampered', 'restore_mismatch'), true);
+        IF v_bad <> 0 THEN
+            RAISE EXCEPTION 'm169: % assistant_ability_requests row(s) carry an undo_code outside the m169 set', v_bad
+                USING ERRCODE = '23514';
+        END IF;
+        ALTER TABLE "public"."assistant_ability_requests"
+            ADD CONSTRAINT "assistant_ability_requests_undo_code_check"
+            CHECK ("undo_code" IN ('snapshot_tampered', 'restore_mismatch'))
+            NOT VALID;
+        ALTER TABLE "public"."assistant_ability_requests"
+            VALIDATE CONSTRAINT "assistant_ability_requests_undo_code_check";
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.assistant_ability_requests'::regclass
+          AND conname  = 'assistant_ability_requests_undo_code_only_when_failed_check'
+    ) THEN
+        SELECT count(*) INTO v_bad FROM "public"."assistant_ability_requests"
+         WHERE NOT ("undo_code" IS NULL
+                    OR coalesce("undo_state" = 'failed', false));
+        IF v_bad <> 0 THEN
+            RAISE EXCEPTION 'm169: % assistant_ability_requests row(s) carry an undo_code on an undo that did not fail', v_bad
+                USING ERRCODE = '23514';
+        END IF;
+        ALTER TABLE "public"."assistant_ability_requests"
+            ADD CONSTRAINT "assistant_ability_requests_undo_code_only_when_failed_check"
+            CHECK ("undo_code" IS NULL
+                   OR coalesce("undo_state" = 'failed', false))
+            NOT VALID;
+        ALTER TABLE "public"."assistant_ability_requests"
+            VALIDATE CONSTRAINT "assistant_ability_requests_undo_code_only_when_failed_check";
+    END IF;
+
     PERFORM set_config('app.agent', coalesce(v_agent, ''), true);
 END;
 $$;
 
--- The outcome recording writes snapshot_sha256. A column grant only: m156's
--- table-level UPDATE revoke stands, and every other column keeps the grant
--- m156 gave it.
-GRANT UPDATE ("snapshot_sha256") ON "public"."assistant_ability_requests" TO "wpmgr_app";
+-- The outcome recording writes snapshot_sha256 and the undo's finish writes
+-- undo_code. FinishAbilityRequestUndo names undo_code on every finish, so
+-- without this grant every finish is refused (42501). A column grant only:
+-- m156's table-level UPDATE revoke stands, and every other column keeps the
+-- grant m156 gave it.
+GRANT UPDATE ("snapshot_sha256", "undo_code") ON "public"."assistant_ability_requests" TO "wpmgr_app";

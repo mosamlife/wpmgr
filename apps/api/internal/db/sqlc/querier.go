@@ -1272,6 +1272,9 @@ type Querier interface {
 	// Covers a done row's undo and a recovery undo (GH #826) alike.
 	// restored is the agent's revert report (false: other post columns the site
 	// changed remain); NULL, as on a failure or refusal, keeps the stored value.
+	// undo_code (m169) names why a failed undo failed, snapshot_tampered or
+	// restore_mismatch, and is NULL otherwise. The table refuses any other code,
+	// and a code with any undo_result but failed (23514).
 	FinishAbilityRequestUndo(ctx context.Context, arg FinishAbilityRequestUndoParams) (int64, error)
 	// Terminalizes ONE task that never left 'scheduled'. The counterpart to
 	// FinishUpdateTask, which cannot be used here: its precondition is

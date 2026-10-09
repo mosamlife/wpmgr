@@ -576,9 +576,13 @@ WHERE tenant_id = @tenant_id
 -- Covers a done row's undo and a recovery undo (GH #826) alike.
 -- restored is the agent's revert report (false: other post columns the site
 -- changed remain); NULL, as on a failure or refusal, keeps the stored value.
+-- undo_code (m169) names why a failed undo failed, snapshot_tampered or
+-- restore_mismatch, and is NULL otherwise. The table refuses any other code,
+-- and a code with any undo_result but failed (23514).
 UPDATE assistant_ability_requests
 SET undo_state = sqlc.arg(undo_result)::text, undo_finished_at = now(),
-    restored = COALESCE(sqlc.narg(restored)::boolean, restored)
+    restored = COALESCE(sqlc.narg(restored)::boolean, restored),
+    undo_code = sqlc.narg(undo_code)::text
 WHERE tenant_id = @tenant_id
   AND id = @id
   AND (state = 'done'
