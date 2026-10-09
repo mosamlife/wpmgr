@@ -238,9 +238,9 @@ func TestPageCreateM162UsageNamesTheLayoutFloor(t *testing.T) {
 }
 
 // TestPageCreateM166UsageNamesTheBuilderFloor ties the builder floor constant
-// to the release the usage text m166 seeds names. The migration is applied
-// only by the integration package, which CI does not run, so this is the check
-// that does run: a floor moved without the copy fails here.
+// to the release the usage text m166 seeds names. The integration package
+// compares that text with a literal and CI does not run it, so this is the
+// check CI does run: a floor moved without the copy fails here.
 func TestPageCreateM166UsageNamesTheBuilderFloor(t *testing.T) {
 	usage := sqlConstantTextIn(t, m166Migration, readMigration(t, m166Migration), "v_usage")
 	if !strings.HasPrefix(usage, "Build the page as an outline.") || len(usage) > 2000 {
