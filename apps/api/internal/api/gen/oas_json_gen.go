@@ -3299,9 +3299,15 @@ func (s *AbilityRequest) encodeFields(e *jx.Encoder) {
 			s.CardFacts.Encode(e)
 		}
 	}
+	{
+		if s.PageMedia.Set {
+			e.FieldStart("page_media")
+			s.PageMedia.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfAbilityRequest = [33]string{
+var jsonFieldsNameOfAbilityRequest = [34]string{
 	0:  "id",
 	1:  "site_id",
 	2:  "ability_name",
@@ -3335,6 +3341,7 @@ var jsonFieldsNameOfAbilityRequest = [33]string{
 	30: "route_id",
 	31: "route_sha256",
 	32: "card_facts",
+	33: "page_media",
 }
 
 // Decode decodes AbilityRequest from json.
@@ -3703,6 +3710,16 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"card_facts\"")
+			}
+		case "page_media":
+			if err := func() error {
+				s.PageMedia.Reset()
+				if err := s.PageMedia.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"page_media\"")
 			}
 		default:
 			return d.Skip()
@@ -4990,6 +5007,214 @@ func (s *AbilityRequestOrgList) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AbilityRequestOrgList) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AbilityRequestPageMedia) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AbilityRequestPageMedia) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("id")
+		e.Int64(s.ID)
+	}
+	{
+		e.FieldStart("filename")
+		e.Str(s.Filename)
+	}
+	{
+		e.FieldStart("mime")
+		s.Mime.Encode(e)
+	}
+	{
+		e.FieldStart("width")
+		e.Int64(s.Width)
+	}
+	{
+		e.FieldStart("height")
+		e.Int64(s.Height)
+	}
+}
+
+var jsonFieldsNameOfAbilityRequestPageMedia = [5]string{
+	0: "id",
+	1: "filename",
+	2: "mime",
+	3: "width",
+	4: "height",
+}
+
+// Decode decodes AbilityRequestPageMedia from json.
+func (s *AbilityRequestPageMedia) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AbilityRequestPageMedia to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "id":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := d.Int64()
+				s.ID = int64(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"id\"")
+			}
+		case "filename":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Str()
+				s.Filename = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"filename\"")
+			}
+		case "mime":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				if err := s.Mime.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"mime\"")
+			}
+		case "width":
+			requiredBitSet[0] |= 1 << 3
+			if err := func() error {
+				v, err := d.Int64()
+				s.Width = int64(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"width\"")
+			}
+		case "height":
+			requiredBitSet[0] |= 1 << 4
+			if err := func() error {
+				v, err := d.Int64()
+				s.Height = int64(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"height\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AbilityRequestPageMedia")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00011111,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAbilityRequestPageMedia) {
+					name = jsonFieldsNameOfAbilityRequestPageMedia[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AbilityRequestPageMedia) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AbilityRequestPageMedia) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AbilityRequestPageMediaMime as json.
+func (s AbilityRequestPageMediaMime) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AbilityRequestPageMediaMime from json.
+func (s *AbilityRequestPageMediaMime) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AbilityRequestPageMediaMime to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AbilityRequestPageMediaMime(v) {
+	case AbilityRequestPageMediaMimeImageJpeg:
+		*s = AbilityRequestPageMediaMimeImageJpeg
+	case AbilityRequestPageMediaMimeImagePNG:
+		*s = AbilityRequestPageMediaMimeImagePNG
+	case AbilityRequestPageMediaMimeImageGIF:
+		*s = AbilityRequestPageMediaMimeImageGIF
+	case AbilityRequestPageMediaMimeImageWEBP:
+		*s = AbilityRequestPageMediaMimeImageWEBP
+	case AbilityRequestPageMediaMimeImageAvif:
+		*s = AbilityRequestPageMediaMimeImageAvif
+	default:
+		*s = AbilityRequestPageMediaMime(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AbilityRequestPageMediaMime) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AbilityRequestPageMediaMime) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -94424,6 +94649,67 @@ func (s OptNilAbilityRequestCardFacts) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptNilAbilityRequestCardFacts) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes []AbilityRequestPageMedia as json.
+func (o OptNilAbilityRequestPageMediaArray) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	if o.Null {
+		e.Null()
+		return
+	}
+	e.ArrStart()
+	for _, elem := range o.Value {
+		elem.Encode(e)
+	}
+	e.ArrEnd()
+}
+
+// Decode decodes []AbilityRequestPageMedia from json.
+func (o *OptNilAbilityRequestPageMediaArray) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptNilAbilityRequestPageMediaArray to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v []AbilityRequestPageMedia
+		o.Value = v
+		o.Set = true
+		o.Null = true
+		return nil
+	}
+	o.Set = true
+	o.Null = false
+	o.Value = make([]AbilityRequestPageMedia, 0)
+	if err := d.Arr(func(d *jx.Decoder) error {
+		var elem AbilityRequestPageMedia
+		if err := elem.Decode(d); err != nil {
+			return err
+		}
+		o.Value = append(o.Value, elem)
+		return nil
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptNilAbilityRequestPageMediaArray) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptNilAbilityRequestPageMediaArray) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

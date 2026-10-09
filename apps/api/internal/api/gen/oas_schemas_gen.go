@@ -2081,6 +2081,10 @@ type AbilityRequest struct {
 	RouteSHA256 OptNilString `json:"route_sha256"`
 	// The structured card of a wpmgr/rest-write request; null otherwise.
 	CardFacts OptNilAbilityRequestCardFacts `json:"card_facts"`
+	// The images a wpmgr/page-create request places, in outline order, as the site described them when
+	// WPMgr checked the request. Null when the outline has no image, and for every other ability. A card
+	// whose outline names an image with no entry here cannot be shown in full and must not be approvable.
+	PageMedia OptNilAbilityRequestPageMediaArray `json:"page_media"`
 }
 
 // GetID returns the value of ID.
@@ -2248,6 +2252,11 @@ func (s *AbilityRequest) GetCardFacts() OptNilAbilityRequestCardFacts {
 	return s.CardFacts
 }
 
+// GetPageMedia returns the value of PageMedia.
+func (s *AbilityRequest) GetPageMedia() OptNilAbilityRequestPageMediaArray {
+	return s.PageMedia
+}
+
 // SetID sets the value of ID.
 func (s *AbilityRequest) SetID(val uuid.UUID) {
 	s.ID = val
@@ -2411,6 +2420,11 @@ func (s *AbilityRequest) SetRouteSHA256(val OptNilString) {
 // SetCardFacts sets the value of CardFacts.
 func (s *AbilityRequest) SetCardFacts(val OptNilAbilityRequestCardFacts) {
 	s.CardFacts = val
+}
+
+// SetPageMedia sets the value of PageMedia.
+func (s *AbilityRequest) SetPageMedia(val OptNilAbilityRequestPageMediaArray) {
+	s.PageMedia = val
 }
 
 func (*AbilityRequest) approveAbilityRequestRes() {}
@@ -2870,6 +2884,132 @@ func (s *AbilityRequestOrgList) SetOffset(val int32) {
 }
 
 func (*AbilityRequestOrgList) listAbilityRequestsRes() {}
+
+// One image a wpmgr/page-create request places. `filename` came from the site: render it as plain
+// text.
+// Ref: #/components/schemas/AbilityRequestPageMedia
+type AbilityRequestPageMedia struct {
+	// The attachment id the outline names.
+	ID       int64                       `json:"id"`
+	Filename string                      `json:"filename"`
+	Mime     AbilityRequestPageMediaMime `json:"mime"`
+	// Pixels; 0 when the site does not know.
+	Width int64 `json:"width"`
+	// Pixels; 0 when the site does not know.
+	Height int64 `json:"height"`
+}
+
+// GetID returns the value of ID.
+func (s *AbilityRequestPageMedia) GetID() int64 {
+	return s.ID
+}
+
+// GetFilename returns the value of Filename.
+func (s *AbilityRequestPageMedia) GetFilename() string {
+	return s.Filename
+}
+
+// GetMime returns the value of Mime.
+func (s *AbilityRequestPageMedia) GetMime() AbilityRequestPageMediaMime {
+	return s.Mime
+}
+
+// GetWidth returns the value of Width.
+func (s *AbilityRequestPageMedia) GetWidth() int64 {
+	return s.Width
+}
+
+// GetHeight returns the value of Height.
+func (s *AbilityRequestPageMedia) GetHeight() int64 {
+	return s.Height
+}
+
+// SetID sets the value of ID.
+func (s *AbilityRequestPageMedia) SetID(val int64) {
+	s.ID = val
+}
+
+// SetFilename sets the value of Filename.
+func (s *AbilityRequestPageMedia) SetFilename(val string) {
+	s.Filename = val
+}
+
+// SetMime sets the value of Mime.
+func (s *AbilityRequestPageMedia) SetMime(val AbilityRequestPageMediaMime) {
+	s.Mime = val
+}
+
+// SetWidth sets the value of Width.
+func (s *AbilityRequestPageMedia) SetWidth(val int64) {
+	s.Width = val
+}
+
+// SetHeight sets the value of Height.
+func (s *AbilityRequestPageMedia) SetHeight(val int64) {
+	s.Height = val
+}
+
+type AbilityRequestPageMediaMime string
+
+const (
+	AbilityRequestPageMediaMimeImageJpeg AbilityRequestPageMediaMime = "image/jpeg"
+	AbilityRequestPageMediaMimeImagePNG  AbilityRequestPageMediaMime = "image/png"
+	AbilityRequestPageMediaMimeImageGIF  AbilityRequestPageMediaMime = "image/gif"
+	AbilityRequestPageMediaMimeImageWEBP AbilityRequestPageMediaMime = "image/webp"
+	AbilityRequestPageMediaMimeImageAvif AbilityRequestPageMediaMime = "image/avif"
+)
+
+// AllValues returns all AbilityRequestPageMediaMime values.
+func (AbilityRequestPageMediaMime) AllValues() []AbilityRequestPageMediaMime {
+	return []AbilityRequestPageMediaMime{
+		AbilityRequestPageMediaMimeImageJpeg,
+		AbilityRequestPageMediaMimeImagePNG,
+		AbilityRequestPageMediaMimeImageGIF,
+		AbilityRequestPageMediaMimeImageWEBP,
+		AbilityRequestPageMediaMimeImageAvif,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestPageMediaMime) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestPageMediaMimeImageJpeg:
+		return []byte(s), nil
+	case AbilityRequestPageMediaMimeImagePNG:
+		return []byte(s), nil
+	case AbilityRequestPageMediaMimeImageGIF:
+		return []byte(s), nil
+	case AbilityRequestPageMediaMimeImageWEBP:
+		return []byte(s), nil
+	case AbilityRequestPageMediaMimeImageAvif:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestPageMediaMime) UnmarshalText(data []byte) error {
+	switch AbilityRequestPageMediaMime(data) {
+	case AbilityRequestPageMediaMimeImageJpeg:
+		*s = AbilityRequestPageMediaMimeImageJpeg
+		return nil
+	case AbilityRequestPageMediaMimeImagePNG:
+		*s = AbilityRequestPageMediaMimeImagePNG
+		return nil
+	case AbilityRequestPageMediaMimeImageGIF:
+		*s = AbilityRequestPageMediaMimeImageGIF
+		return nil
+	case AbilityRequestPageMediaMimeImageWEBP:
+		*s = AbilityRequestPageMediaMimeImageWEBP
+		return nil
+	case AbilityRequestPageMediaMimeImageAvif:
+		*s = AbilityRequestPageMediaMimeImageAvif
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 type AbilityRequestState string
 
@@ -39619,6 +39759,74 @@ func (o OptNilAbilityRequestCardFacts) Get() (v AbilityRequestCardFacts, ok bool
 
 // Or returns value if set, or given parameter if does not.
 func (o OptNilAbilityRequestCardFacts) Or(d AbilityRequestCardFacts) AbilityRequestCardFacts {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAbilityRequestPageMediaArray returns new OptNilAbilityRequestPageMediaArray with value set to v.
+func NewOptNilAbilityRequestPageMediaArray(v []AbilityRequestPageMedia) OptNilAbilityRequestPageMediaArray {
+	return OptNilAbilityRequestPageMediaArray{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAbilityRequestPageMediaArray is optional nullable []AbilityRequestPageMedia.
+type OptNilAbilityRequestPageMediaArray struct {
+	Value []AbilityRequestPageMedia
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAbilityRequestPageMediaArray was set.
+func (o OptNilAbilityRequestPageMediaArray) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAbilityRequestPageMediaArray) Reset() {
+	var v []AbilityRequestPageMedia
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAbilityRequestPageMediaArray) SetTo(v []AbilityRequestPageMedia) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAbilityRequestPageMediaArray) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAbilityRequestPageMediaArray) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v []AbilityRequestPageMedia
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAbilityRequestPageMediaArray) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAbilityRequestPageMediaArray) Get() (v []AbilityRequestPageMedia, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAbilityRequestPageMediaArray) Or(d []AbilityRequestPageMedia) []AbilityRequestPageMedia {
 	if v, ok := o.Get(); ok {
 		return v
 	}

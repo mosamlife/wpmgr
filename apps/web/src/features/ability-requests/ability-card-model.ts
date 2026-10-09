@@ -1,45 +1,10 @@
-import { z } from "zod";
 import type { AbilityRequest } from "@wpmgr/api";
 
 // Pure logic for the AI page-creation approval card (engine slice E2). Every
 // string the AI or the site supplied (title, outline text, site and connection
 // names) is carried to the caller as plain data and rendered as a text node;
-// nothing here builds markup or an href from one.
-
-// The shape the control plane accepts for wpmgr/page-create
-// (apps/api/internal/mcp/ability_write.go validatePageCreateInput): heading
-// levels 2 to 4, up to 50 list items, up to 200 nodes.
-const outlineNodeSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("heading"), level: z.number().int(), text: z.string() }),
-  z.object({ type: z.literal("paragraph"), text: z.string() }),
-  z.object({ type: z.literal("list"), ordered: z.boolean(), items: z.array(z.string()) }),
-]);
-
-const pageInputSchema = z.object({
-  post_type: z.string(),
-  editor: z.string(),
-  title: z.string(),
-  outline: z.array(outlineNodeSchema),
-});
-
-export type OutlineNode = z.infer<typeof outlineNodeSchema>;
-export interface PagePreview {
-  readonly title: string;
-  readonly outline: readonly OutlineNode[];
-}
-
-/** Parses the exact AI input. Null when it is not the shape the card can show in full. */
-export function parsePagePreview(inputJson: string): PagePreview | null {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(inputJson);
-  } catch {
-    return null;
-  }
-  const parsed = pageInputSchema.safeParse(raw);
-  if (!parsed.success) return null;
-  return { title: parsed.data.title, outline: parsed.data.outline };
-}
+// nothing here builds markup or an href from one. The outline itself is parsed
+// by outline-model.ts.
 
 export function isPostRequest(r: AbilityRequest): boolean {
   return r.post_type === "post";
@@ -94,13 +59,23 @@ const REFUSAL_ADVICE: Record<string, string> = {
   principal_create_failed: "Turn AI page creation on again from this tab.",
   principal_login_taken: "Turn AI page creation on again from this tab.",
   editor_unavailable: "This site's editor isn't available.",
-  preview_changed: "The site changed since you approved. Ask the AI to try again.",
+  preview_changed: "The site or one of the chosen images changed since you approved. Ask the AI to try again.",
   entry_approval_invalid: "The site changed since you approved. Ask the AI to try again.",
   integration_entry_changed: "The site changed since you approved. Ask the AI to try again.",
   sanitiser_changed_new_content:
-    "This site changes page text on save in a way WPMgr can't approve. Ask the AI to simplify the text.",
+    "This site changes page content when saving it, often because of a plugin, in a way WPMgr can't approve. Ask the AI to simplify the page.",
   create_content_invalid: "The AI's page outline wasn't valid. Ask it to try again.",
   bad_input: "The AI's page outline wasn't valid. Ask it to try again.",
+  // Page layouts: the codes the page-create builder and the ability_run command
+  // refuse with (class-page-create-builder.php, class-ability-run-command.php).
+  layout_invalid: "The AI's page layout wasn't valid. Ask it to try again.",
+  link_invalid: "The AI's page layout wasn't valid. Ask it to try again.",
+  image_not_available:
+    "An image the AI chose is no longer in the media library, or WPMgr may not use it. Ask the AI to pick another image.",
+  image_url_unusable:
+    "WordPress gave an unusual address for one of the images, so WPMgr stopped. Ask the AI to pick another image.",
+  layout_needs_block_editor:
+    "This site uses the classic editor, which has no columns, sections, buttons or spacing. Ask the AI for a simpler page.",
   disabled_on_site: "AI page creation is turned off for this site.",
   ability_disabled: "AI page creation is turned off for this site.",
   post_content_would_change:

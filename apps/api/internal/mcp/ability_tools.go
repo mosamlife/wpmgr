@@ -876,15 +876,8 @@ var ownAbilityInputSchemas = map[string]json.RawMessage{
 		`"post_id":{"type":"integer","minimum":1},` +
 		`"max_bytes":{"type":"integer","minimum":256,"maximum":65536}},` +
 		`"required":["post_id"],"additionalProperties":false}`),
-	AbilityPageCreate: json.RawMessage(`{"type":"object","properties":{` +
-		`"post_type":{"type":"string","enum":["page","post"]},` +
-		`"editor":{"type":"string","enum":["wordpress_blocks","wordpress_classic"]},` +
-		`"title":{"type":"string","minLength":1,"maxLength":200},` +
-		`"outline":{"type":"array","minItems":1,"maxItems":200,"items":{"oneOf":[` +
-		`{"type":"object","properties":{"type":{"const":"heading"},"level":{"type":"integer","minimum":2,"maximum":4},"text":{"type":"string"}},"required":["type","level","text"],"additionalProperties":false},` +
-		`{"type":"object","properties":{"type":{"const":"paragraph"},"text":{"type":"string"}},"required":["type","text"],"additionalProperties":false},` +
-		`{"type":"object","properties":{"type":{"const":"list"},"ordered":{"type":"boolean"},"items":{"type":"array","minItems":1,"maxItems":50,"items":{"type":"string"}}},"required":["type","ordered","items"],"additionalProperties":false}]}}},` +
-		`"required":["post_type","editor","title","outline"],"additionalProperties":false}`),
+	// The agent registers the same bytes (page_create_input.go).
+	AbilityPageCreate: pageCreateInputSchema,
 	AbilityRestRead:  restInputSchema,
 	AbilityRestWrite: restInputSchema,
 }

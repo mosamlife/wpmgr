@@ -4769,6 +4769,37 @@ export type AbilityRequest = {
    * The structured card of a wpmgr/rest-write request; null otherwise.
    */
   card_facts?: AbilityRequestCardFacts;
+  /**
+   * The images a wpmgr/page-create request places, in outline order, as
+   * the site described them when WPMgr checked the request. Null when
+   * the outline has no image, and for every other ability. A card whose
+   * outline names an image with no entry here cannot be shown in full
+   * and must not be approvable.
+   *
+   */
+  page_media?: Array<AbilityRequestPageMedia>;
+};
+
+/**
+ * One image a wpmgr/page-create request places. `filename` came from
+ * the site: render it as plain text.
+ *
+ */
+export type AbilityRequestPageMedia = {
+  /**
+   * The attachment id the outline names.
+   */
+  id: number;
+  filename: string;
+  mime: "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "image/avif";
+  /**
+   * Pixels; 0 when the site does not know.
+   */
+  width: number;
+  /**
+   * Pixels; 0 when the site does not know.
+   */
+  height: number;
 };
 
 /**

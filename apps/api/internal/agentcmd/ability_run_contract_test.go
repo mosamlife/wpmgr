@@ -111,6 +111,38 @@ func TestAbilityRun_RefusalIsTypedAndClosed(t *testing.T) {
 	}
 }
 
+// pageLayoutRefusalCodes are the codes the agent's wpmgr/page-create answers
+// for outline grammar v2 (MinAgentVersionForPageLayout).
+var pageLayoutRefusalCodes = []string{
+	"layout_invalid", "link_invalid", "layout_needs_block_editor", "image_not_available", "image_url_unusable",
+}
+
+// TestAbilityRun_PageLayoutRefusalsKeepTheirCode sends the agent's own
+// refusal JSON through the real transport and decoder: each grammar v2 code
+// arrives as itself, so a precheck refusal reaches its fixed hint and a
+// failed write records its code, never unknown.
+func TestAbilityRun_PageLayoutRefusalsKeepTheirCode(t *testing.T) {
+	entry := []byte(`{"name":"wpmgr/page-create"}`)
+	for _, code := range pageLayoutRefusalCodes {
+		srv := fakeAbilityAgent(t, func(map[string]string) any {
+			return map[string]any{"ok": false, "outcome": "refused", "code": code, "detail": "attachment_id 42", "retryable": false}
+		})
+		_, err := realCommandClient(t).AbilityRun(context.Background(), uuid.New(), srv.URL, AbilityRunCall{
+			Mode: AbilityRunModePrecheck, RequestID: uuid.New(), Entry: entry, EntrySHA256: SHA256Hex(entry),
+			Input: []byte(`{"post_type":"page"}`),
+		})
+		srv.Close()
+		var ref *AbilityRunRefusal
+		if !errors.As(err, &ref) {
+			t.Errorf("code %q: err = %v, want a refusal", code, err)
+			continue
+		}
+		if ref.Code != code {
+			t.Errorf("code %q arrived as %q", code, ref.Code)
+		}
+	}
+}
+
 func TestBuildAbilityRunParams_RefusesAMismatchedEntryHash(t *testing.T) {
 	entry := []byte(`{"name":"wpmgr/site-facts"}`)
 	_, _, err := BuildAbilityRunParams(AbilityRunCall{

@@ -297,6 +297,10 @@ func (s *Service) runAgentScan(ctx context.Context, fn func(q *sqlc.Queries) err
 	return s.pool.InAgentTx(ctx, func(tx pgx.Tx) error { return fn(sqlc.New(tx)) })
 }
 
+// siteTxRunner runs fn in a transaction scoped to one site: runSiteTx in
+// production; a unit test hands checkSite a stand-in.
+type siteTxRunner func(ctx context.Context, p domain.Principal, siteID uuid.UUID, fn func(tx pgx.Tx, q *sqlc.Queries) error) error
+
 // runSiteTx runs fn under a single-site principal; the first statement
 // proves the transaction admits exactly siteID.
 func (s *Service) runSiteTx(ctx context.Context, p domain.Principal, siteID uuid.UUID, fn func(tx pgx.Tx, q *sqlc.Queries) error) error {
@@ -404,16 +408,47 @@ type dispatchPlan struct {
 	routeSum string
 }
 
-// agentFloorFor is the first agent release that runs a request's ability.
-func agentFloorFor(abilityName string) string {
-	if abilityName == mcp.AbilityRestWrite {
+// agentFloorFor is the first agent release that runs a request: its
+// ability's floor, and for wpmgr/page-create the floor of the stored input
+// (a layout outline needs a newer agent than a text-only one). A site whose
+// plugin went below it after approval closes not_sent/agent_outdated and is
+// never sent a write it cannot build.
+func agentFloorFor(r sqlc.AssistantAbilityRequest) string {
+	switch r.AbilityName {
+	case mcp.AbilityRestWrite:
 		return agentcmd.MinAgentVersionForRestCall
+	case mcp.AbilityPageCreate:
+		return mcp.PageCreateAgentFloor([]byte(r.InputJson))
 	}
 	return agentcmd.MinAgentVersionForPageCreate
 }
 
-func agentMeetsFloor(v, abilityName string) bool {
-	return v != "" && wpversion.Compare(v, agentFloorFor(abilityName)) >= 0
+func agentMeetsFloor(v, floor string) bool {
+	return v != "" && wpversion.Compare(v, floor) >= 0
+}
+
+// notSentBeforeReserve is the reason an approved request closes not_sent
+// before it is reserved, or "" when it may go on: the site left scope, the
+// deadline passed, the entry or route changed after approval (W1), or the
+// site's plugin is below the floor for this request's stored input.
+func notSentBeforeReserve(row sqlc.GetApprovedAbilityRequestForDispatchRow, site sqlc.Site, found bool) string {
+	switch {
+	case !found:
+		return ReasonSiteAbsent
+	case row.PastDeadline:
+		return ReasonDispatchDeadlinePassed
+	case !row.EntryEnabled: // W1
+		return ReasonEntryDisabled
+	case !row.EntryHashCurrent: // W1
+		return ReasonEntryChanged
+	case !row.RouteEnabled: // W1, m161
+		return ReasonRouteDisabled
+	case !row.RouteHashCurrent: // W1, m161
+		return ReasonRouteChanged
+	case !agentMeetsFloor(site.AgentVersion, agentFloorFor(row.AssistantAbilityRequest)):
+		return ReasonAgentOutdated
+	}
+	return ""
 }
 
 // routeSendable is W1 for a route (m161). It returns the bytes to send for a
@@ -474,7 +509,7 @@ func (s *Service) dispatch(ctx context.Context, a DispatchArgs) error {
 		return fmt.Errorf("site principal: %w", err)
 	}
 	// (2) The site and entry checks.
-	plan, done, err := s.checkSite(ctx, p, a)
+	plan, done, err := s.checkSite(ctx, s.runSiteTx, p, a)
 	if err != nil || done {
 		return err
 	}
@@ -524,11 +559,14 @@ func derefOr(p *string, d string) string {
 	return *p
 }
 
-func (s *Service) checkSite(ctx context.Context, p domain.Principal, a DispatchArgs) (dispatchPlan, bool, error) {
+// checkSite reads the approved row and its site in run's transaction and
+// decides, before any reservation, whether the request closes not_sent,
+// waits with a recorded attempt, or goes on (done false) with the plan.
+func (s *Service) checkSite(ctx context.Context, run siteTxRunner, p domain.Principal, a DispatchArgs) (dispatchPlan, bool, error) {
 	var plan dispatchPlan
 	var site sqlc.Site
 	done := false
-	err := s.runSiteTx(ctx, p, a.SiteID, func(tx pgx.Tx, q *sqlc.Queries) error {
+	err := run(ctx, p, a.SiteID, func(tx pgx.Tx, q *sqlc.Queries) error {
 		row, err := q.GetApprovedAbilityRequestForDispatch(ctx, sqlc.GetApprovedAbilityRequestForDispatchParams{
 			TenantID: a.TenantID, ID: a.RequestID,
 		})
@@ -548,24 +586,7 @@ func (s *Service) checkSite(ctx context.Context, p domain.Principal, a DispatchA
 		if err != nil {
 			return err
 		}
-		reason := ""
-		switch {
-		case !found:
-			reason = ReasonSiteAbsent
-		case row.PastDeadline:
-			reason = ReasonDispatchDeadlinePassed
-		case !row.EntryEnabled: // W1
-			reason = ReasonEntryDisabled
-		case !row.EntryHashCurrent: // W1
-			reason = ReasonEntryChanged
-		case !row.RouteEnabled: // W1, m161
-			reason = ReasonRouteDisabled
-		case !row.RouteHashCurrent: // W1, m161
-			reason = ReasonRouteChanged
-		case !agentMeetsFloor(site.AgentVersion, plan.row.AbilityName):
-			reason = ReasonAgentOutdated
-		}
-		if reason != "" {
+		if reason := notSentBeforeReserve(row, site, found); reason != "" {
 			done = true
 			return s.closeNotSent(ctx, tx, q, a.TenantID, a.RequestID, reason)
 		}
@@ -630,7 +651,7 @@ func (s *Service) checkSite(ctx context.Context, p domain.Principal, a DispatchA
 	if !forbidden && transient == "" {
 		return plan, false, nil
 	}
-	err = s.runSiteTx(ctx, p, a.SiteID, func(tx pgx.Tx, q *sqlc.Queries) error {
+	err = run(ctx, p, a.SiteID, func(tx pgx.Tx, q *sqlc.Queries) error {
 		if forbidden && ctxErr == nil {
 			return s.closeNotSent(ctx, tx, q, a.TenantID, a.RequestID, ReasonForbiddenByContext)
 		}

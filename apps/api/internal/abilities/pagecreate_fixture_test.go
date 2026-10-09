@@ -3,32 +3,81 @@ package abilities
 import (
 	"bytes"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
+	"github.com/mosamlife/wpmgr/apps/api/migrations"
 )
 
 // pageCreateFixturePath is the data file the agent's tests replay. It is
-// regenerated, never hand-edited.
-const pageCreateFixturePath = "../../../agent/tests/fixtures/ability-run/page-create.json"
+// regenerated, never hand-edited. The agent's layout fixture
+// (page-create-layout.json) is built from the entry it carries.
+const (
+	pageCreateFixturePath       = "../../../agent/tests/fixtures/ability-run/page-create.json"
+	pageCreateLayoutFixturePath = "../../../agent/tests/fixtures/ability-run/page-create-layout.json"
+	m162PageCreateCopy          = "20261009000000_m162_page_create_layout_copy.sql"
+)
 
-// seededPageCreateRow is the wpmgr/page-create row as the m157 seed leaves it
-// (columns the seed does not name take the m155 defaults).
-func seededPageCreateRow() sqlc.AbilityCatalogue {
+// m162Constant is the text of a constant m162 declares: its quoted pieces
+// joined, with a doubled quote read as one, up to the ';' that ends it.
+func m162Constant(t *testing.T, name string) string {
+	t.Helper()
+	b, err := fs.ReadFile(migrations.FS, m162PageCreateCopy)
+	if err != nil {
+		t.Fatalf("read %s: %v", m162PageCreateCopy, err)
+	}
+	sql := string(b)
+	i := strings.Index(sql, name+" constant ")
+	if i < 0 {
+		t.Fatalf("%s: no constant %s", m162PageCreateCopy, name)
+	}
+	rest := sql[i:]
+	rest = rest[strings.Index(rest, ":=")+2:]
+	var out strings.Builder
+	in := false
+	for j := 0; j < len(rest); j++ {
+		switch c := rest[j]; {
+		case in && c == '\'' && j+1 < len(rest) && rest[j+1] == '\'':
+			out.WriteByte('\'')
+			j++
+		case c == '\'':
+			in = !in
+		case in:
+			out.WriteByte(c)
+		case c == ';':
+			if out.Len() == 0 {
+				t.Fatalf("%s: constant %s is empty", m162PageCreateCopy, name)
+			}
+			return out.String()
+		}
+	}
+	t.Fatalf("%s: constant %s is not terminated", m162PageCreateCopy, name)
+	return ""
+}
+
+// seededPageCreateRow is the wpmgr/page-create row as the migrations leave
+// it: the m157 seed (columns the seed does not name take the m155
+// defaults), with the description, usage and limits m162 sets, read from
+// m162 itself.
+func seededPageCreateRow(t *testing.T) sqlc.AbilityCatalogue {
+	t.Helper()
 	minAgent := "0.61.156"
 	perm := "site.content.edit"
+	usage := m162Constant(t, "v_usage")
 	return sqlc.AbilityCatalogue{
 		Name: "wpmgr/page-create", Source: "wpmgr", Class: "write", Status: "admitted",
 		Enabled: true, ApprovalMode: "per_call", PermissionMode: "principal",
 		MinAgentVersion: &minAgent, Title: "Create a draft page",
-		Description:        "Creates a new draft page or post from a text outline. Nothing is published. Undo moves the draft to the trash.",
+		Description: m162Constant(t, "v_description"), Usage: &usage,
 		OperatorPermission: &perm, Snapshot: "created_post_trash", EffectCopy: "draft",
-		ArgRender: []byte("{}"), Limits: []byte("{}"), Admission: []byte("{}"),
+		ArgRender: []byte("{}"), Limits: []byte(m162Constant(t, "v_limits")), Admission: []byte("{}"),
 	}
 }
 
@@ -53,7 +102,7 @@ type pageCreateFixture struct {
 
 func buildPageCreateFixture(t *testing.T) []byte {
 	t.Helper()
-	entry, sum, err := EntryBytes(seededPageCreateRow())
+	entry, sum, err := EntryBytes(seededPageCreateRow(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,5 +160,34 @@ func TestPageCreateFixture(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("%s differs from what Go produces now; regenerate with WPMGR_WRITE_FIXTURES=1", pageCreateFixturePath)
+	}
+}
+
+// TestPageCreateLayoutFixtureCarriesTheEntry: the agent builds its layout
+// fixture from the entry page-create.json carries, so the precheck digests
+// it records bind the entry the control plane sends after m162, the one
+// that names the layout floor.
+func TestPageCreateLayoutFixtureCarriesTheEntry(t *testing.T) {
+	entry, sum, err := EntryBytes(seededPageCreateRow(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(entry), "Layout blocks need the WPMgr plugin "+agentcmd.MinAgentVersionForPageLayout+" or later") {
+		t.Fatalf("the page-create entry does not name the layout floor %s: %s", agentcmd.MinAgentVersionForPageLayout, entry)
+	}
+	b, err := os.ReadFile(pageCreateLayoutFixturePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", pageCreateLayoutFixturePath, err)
+	}
+	var doc struct {
+		Entry       string `json:"entry"`
+		EntrySHA256 string `json:"entry_sha256"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("decode %s: %v", pageCreateLayoutFixturePath, err)
+	}
+	if doc.Entry != string(entry) || doc.EntrySHA256 != sum {
+		t.Fatalf("%s carries another entry (sha256 %s, want %s); regenerate page-create.json here, "+
+			"then the layout fixture with the agent's WPMGR_WRITE_FIXTURES=1", pageCreateLayoutFixturePath, doc.EntrySHA256, sum)
 	}
 }

@@ -1,40 +1,275 @@
 [
-  {"name":"headings-h2-h4","outline":[
+  {"name":"headings-h2-h4","classic":true,"outline":[
     {"type":"heading","level":2,"text":"Section heading"},
     {"type":"heading","level":3,"text":"Sub heading"},
     {"type":"heading","level":4,"text":"Minor heading"}]},
-  {"name":"paragraphs","outline":[
+  {"name":"paragraphs","classic":true,"outline":[
     {"type":"paragraph","text":"A plain paragraph with a comma, a colon: and a quote \" and an apostrophe '."},
     {"type":"paragraph","text":"Second paragraph."}]},
-  {"name":"lists","outline":[
+  {"name":"lists","classic":true,"outline":[
     {"type":"list","ordered":false,"items":["one","two","three"]},
     {"type":"list","ordered":true,"items":["first","second"]}]},
-  {"name":"unicode","outline":[
+  {"name":"unicode","classic":true,"outline":[
     {"type":"heading","level":2,"text":"Café déjà vu 東京 العربية Ελληνικά"},
     {"type":"paragraph","text":"Ünïcödé — “curly” quotes, ellipsis… and non-breaking space here."},
     {"type":"list","ordered":false,"items":["日本語","Привет","naïve"]}]},
-  {"name":"emoji","outline":[
+  {"name":"emoji","classic":true,"outline":[
     {"type":"heading","level":3,"text":"Launch 🚀 day 🎯"},
     {"type":"paragraph","text":"Fine 👍🏽 and flags 🇮🇳 and keycap 1️⃣."},
     {"type":"list","ordered":true,"items":["🎉 party","🔥 hot"]}]},
-  {"name":"ampersand","outline":[
+  {"name":"ampersand","classic":true,"outline":[
     {"type":"heading","level":2,"text":"Q&A & more"},
     {"type":"paragraph","text":"Fish & chips && AT&T, R&D."},
     {"type":"list","ordered":false,"items":["Tom & Jerry","a&b"]}]},
-  {"name":"encoded-text","outline":[
+  {"name":"encoded-text","classic":true,"outline":[
     {"type":"heading","level":2,"text":"Terms & Conditions [1]"},
     {"type":"paragraph","text":"Terms & Conditions [1] and see [22], [333], [4444]."},
     {"type":"list","ordered":false,"items":["Item [22]","Q&A;"]},
-    {"type":"paragraph","text":"Already &amp; encoded and &#60; entity."},
-    {"type":"list","ordered":true,"items":["&amp; first","&#60; second"]}]},
-  {"name":"long-text","outline":[
+    {"type":"paragraph","text":"Already &amp; encoded and &lt; entity."},
+    {"type":"list","ordered":true,"items":["&amp; first","&lt; second"]}]},
+  {"name":"numeric-reference-text","classic":true,"outline":[
+    {"type":"heading","level":2,"text":"Numeric &#60; reference"},
+    {"type":"paragraph","text":"Decimal &#60; hex &#x3C; padded &#0060; end."},
+    {"type":"list","ordered":false,"items":["Item &#60;"]}]},
+  {"name":"long-text","classic":true,"outline":[
     {"type":"paragraph","text":"LONGTEXT"},
-    {"type":"list","ordered":false,"items":["LONGTEXT"]}]},
-  {"name":"mixed","outline":[
+    {"type":"list","ordered":false,"items":["LONGTEXT:4000"]}]},
+  {"name":"mixed","classic":true,"outline":[
     {"type":"heading","level":2,"text":"Intro"},
     {"type":"paragraph","text":"Body."},
     {"type":"heading","level":3,"text":"Steps"},
     {"type":"list","ordered":true,"items":["a","b"]},
     {"type":"heading","level":4,"text":"Notes"},
-    {"type":"paragraph","text":"End."}]}
+    {"type":"paragraph","text":"End."}]},
+  {"name":"title-specials","classic":true,"title":"Q&A: it's \"quoted\" [1] 100% café 東京 🚀","outline":[
+    {"type":"paragraph","text":"The title above carries characters the save filters look at."}]},
+  {"name":"title-longest","classic":true,"title":"LONGTEXT:200","outline":[
+    {"type":"paragraph","text":"A title at the length limit."}]},
+
+  {"name":"image-defaults","classic":true,"outline":[
+    {"type":"image","attachment_id":42,"alt":"Our team at the 2026 offsite"}]},
+  {"name":"image-align-variants","classic":true,"outline":[
+    {"type":"image","attachment_id":42,"alt":"Explicitly not aligned","align":"none"},
+    {"type":"image","attachment_id":42,"alt":"Centred picture","align":"center"},
+    {"type":"image","attachment_id":43,"alt":"Wide picture","align":"wide"},
+    {"type":"image","attachment_id":43,"alt":"Full width picture","align":"full"}]},
+  {"name":"image-empty-alt","classic":true,"outline":[
+    {"type":"image","attachment_id":42,"alt":""}]},
+  {"name":"image-alt-specials","classic":true,"outline":[
+    {"type":"image","attachment_id":42,"alt":"Bob's \"dog\" & cat: café 東京 🚀 100%"},
+    {"type":"image","attachment_id":43,"alt":"Fish & chips, R&D, AT&T, a=b&c=d"}]},
+  {"name":"image-alt-ampersand-not-a-reference","classic":true,"outline":[
+    {"type":"image","attachment_id":44,"alt":"Logo &copy 2026, a & b, &; and &#; and &#x; and &#xg; and & amp;"}]},
+  {"name":"image-url-shapes","classic":true,"outline":[
+    {"type":"image","attachment_id":43,"alt":"Address with a query string"},
+    {"type":"image","attachment_id":44,"alt":"Address with percent encoding and punctuation"},
+    {"type":"image","attachment_id":2147483647,"alt":"Largest id, address with a port"},
+    {"type":"image","attachment_id":1,"alt":"Smallest id"}]},
+  {"name":"image-caption","outline":[
+    {"type":"image","attachment_id":42,"alt":"Team","caption":"Caption with & ampersand, \"quotes\", it's and a note [2]"},
+    {"type":"image","attachment_id":43,"alt":"","caption":"A caption on a decorative picture","align":"center"},
+    {"type":"image","attachment_id":44,"alt":"Wide with caption","caption":"Wide caption","align":"wide"}]},
+
+  {"name":"buttons-defaults","outline":[
+    {"type":"buttons","buttons":[{"text":"Book a call","url":"https://calendly.example/acme/30min"}]}]},
+  {"name":"buttons-aligned-styles","outline":[
+    {"type":"buttons","align":"left","buttons":[
+      {"text":"Left fill","url":"/contact","style":"fill"},
+      {"text":"Left outline","url":"/about","style":"outline"}]},
+    {"type":"buttons","align":"center","buttons":[
+      {"text":"Centre fill","url":"https://example.test/a","style":"fill"},
+      {"text":"Centre outline","url":"https://example.test/b","style":"outline"},
+      {"text":"Third, no style","url":"/c"}]}]},
+  {"name":"buttons-text-specials","outline":[
+    {"type":"buttons","buttons":[
+      {"text":"Fish & chips [1] \"now\" it's","url":"/menu"},
+      {"text":"Already &amp; encoded &lt;","url":"/menu","style":"outline"},
+      {"text":"東京 🚀 café","url":"/jp"}]}]},
+  {"name":"buttons-url-shapes","outline":[
+    {"type":"buttons","buttons":[
+      {"text":"Query and fragment","url":"https://example.test/p?a=1&b=2#top"},
+      {"text":"Port","url":"https://example.test:8443/x"},
+      {"text":"Percent encoding and punctuation","url":"https://example.test/a%20b/(c)!$*+,;=@?q=%E2%9C%93"}]},
+    {"type":"buttons","buttons":[
+      {"text":"Punycode host","url":"https://xn--bcher-kva.example/"},
+      {"text":"Site path with query","url":"/about/team?ref=nav&x=1#staff"},
+      {"text":"Home","url":"/"}]}]},
+  {"name":"buttons-url-ampersand-not-a-reference","outline":[
+    {"type":"buttons","buttons":[
+      {"text":"Name with no semicolon","url":"https://example.test/?a=1&copy=2&nbsp=3"},
+      {"text":"Site path, no semicolon","url":"/shop?x=1&copy=2&nbsp=3#top"},
+      {"text":"Not a reference","url":"https://example.test/a&;b&#;c&#x;d&#xg;e"}]},
+    {"type":"buttons","buttons":[
+      {"text":"Colon, percent encoded","url":"/shop/sale%3Asummer"},
+      {"text":"Colon in an https path","url":"https://example.test/shop/sale:summer?t=10:30"}]}]},
+
+  {"name":"quote-single","classic":true,"outline":[
+    {"type":"quote","paragraphs":["To be & not to be."]}]},
+  {"name":"quote-citation","classic":true,"outline":[
+    {"type":"quote","paragraphs":["One.","Two [3]."],"citation":"Jane & John, \"Notes\" (2026)"}]},
+  {"name":"quote-ten-paragraphs","classic":true,"outline":[
+    {"type":"quote","paragraphs":[{"@repeat":10,"node":"Quoted paragraph {n} & done."}],"citation":"At the limit"}]},
+
+  {"name":"separator","classic":true,"outline":[
+    {"type":"paragraph","text":"Above the line."},
+    {"type":"separator"},
+    {"type":"paragraph","text":"Below the line."}]},
+  {"name":"spacers-all-sizes","outline":[
+    {"type":"paragraph","text":"Before."},
+    {"type":"spacer","size":"small"},
+    {"type":"spacer","size":"medium"},
+    {"type":"spacer","size":"large"},
+    {"type":"paragraph","text":"After."}]},
+
+  {"name":"table-no-header","classic":true,"outline":[
+    {"type":"table","rows":[["a","b"],["c & d","e"]]}]},
+  {"name":"table-header","classic":true,"outline":[
+    {"type":"table","header":["Plan","Price"],"rows":[["Basic","$10"],["Pro [1]","$20"]]}]},
+  {"name":"table-empty-cells","classic":true,"outline":[
+    {"type":"table","header":["A",""],"rows":[["","b"],["c",""],["",""]]}]},
+  {"name":"table-single-cell","classic":true,"outline":[
+    {"type":"table","rows":[["only"]]}]},
+  {"name":"table-text-specials","classic":true,"outline":[
+    {"type":"table","header":["Q&A","\"Quoted\"","it's"],"rows":[["Already &amp; encoded","&lt; named","[22]"],["東京","🚀","café"]]}]},
+  {"name":"table-limits","classic":true,"outline":[
+    {"type":"table","header":["h1","h2","h3","h4","h5","h6"],"rows":[
+      {"@repeat":50,"node":["r{n}c1","r{n}c2 & x","r{n}c3","","r{n}c5 [1]","r{n}c6"]}]}]},
+
+  {"name":"group-basic","outline":[
+    {"type":"group","children":[
+      {"type":"heading","level":2,"text":"In a group"},
+      {"type":"paragraph","text":"Body [1] & more."},
+      {"type":"list","ordered":false,"items":["a","b"]}]}]},
+  {"name":"group-fifty-children","outline":[
+    {"type":"group","children":[
+      {"@repeat":50,"node":{"type":"paragraph","text":"Child {n} & more"}}]}]},
+  {"name":"columns-two-equal","outline":[
+    {"type":"columns","columns":[
+      {"children":[{"type":"paragraph","text":"Left & right"}]},
+      {"children":[{"type":"heading","level":3,"text":"Right column"}]}]}]},
+  {"name":"columns-three-widths","outline":[
+    {"type":"columns","widths":[25,50,25],"columns":[
+      {"children":[{"type":"paragraph","text":"a"}]},
+      {"children":[{"type":"paragraph","text":"b"}]},
+      {"children":[{"type":"paragraph","text":"c"}]}]}]},
+  {"name":"columns-four-equal","outline":[
+    {"type":"columns","columns":[
+      {"children":[{"type":"paragraph","text":"a"}]},
+      {"children":[{"type":"paragraph","text":"b"}]},
+      {"children":[{"type":"paragraph","text":"c"}]},
+      {"children":[{"type":"paragraph","text":"d"}]}]}]},
+  {"name":"columns-widths-extremes","outline":[
+    {"type":"columns","widths":[10,90],"columns":[
+      {"children":[{"type":"paragraph","text":"narrow"}]},
+      {"children":[{"type":"paragraph","text":"wide"}]}]},
+    {"type":"columns","widths":[90,10],"columns":[
+      {"children":[{"type":"paragraph","text":"wide"}]},
+      {"children":[{"type":"paragraph","text":"narrow"}]}]},
+    {"type":"columns","widths":[10,20,30,40],"columns":[
+      {"children":[{"type":"paragraph","text":"ten"}]},
+      {"children":[{"type":"paragraph","text":"twenty"}]},
+      {"children":[{"type":"paragraph","text":"thirty"}]},
+      {"children":[{"type":"paragraph","text":"forty"}]}]}]},
+  {"name":"column-fifty-children","outline":[
+    {"type":"columns","columns":[
+      {"children":[{"@repeat":50,"node":{"type":"paragraph","text":"Column child {n}"}}]},
+      {"children":[{"type":"paragraph","text":"Short"}]}]}]},
+  {"name":"columns-every-leaf","outline":[
+    {"type":"columns","widths":[60,40],"columns":[
+      {"children":[
+        {"type":"heading","level":3,"text":"Left"},
+        {"type":"paragraph","text":"Text"},
+        {"type":"list","ordered":true,"items":["x","y"]},
+        {"type":"image","attachment_id":42,"alt":"In a column","caption":"Caption in a column","align":"center"},
+        {"type":"quote","paragraphs":["Quoted in a column"],"citation":"Someone"}]},
+      {"children":[
+        {"type":"buttons","align":"center","buttons":[{"text":"Go","url":"https://example.test/go"}]},
+        {"type":"separator"},
+        {"type":"spacer","size":"medium"},
+        {"type":"table","header":["h1","h2"],"rows":[["1","2"]]}]}]}]},
+  {"name":"group-columns-deepest","outline":[
+    {"type":"group","children":[
+      {"type":"heading","level":2,"text":"The deepest shape"},
+      {"type":"columns","columns":[
+        {"children":[{"type":"image","attachment_id":42,"alt":"Left"},{"type":"paragraph","text":"Left text"}]},
+        {"children":[{"type":"buttons","buttons":[{"text":"Go","url":"/go"}]},{"type":"quote","paragraphs":["Right quote"]}]}]},
+      {"type":"separator"},
+      {"type":"columns","widths":[20,20,20,40],"columns":[
+        {"children":[{"type":"paragraph","text":"one"}]},
+        {"children":[{"type":"paragraph","text":"two"}]},
+        {"children":[{"type":"paragraph","text":"three"}]},
+        {"children":[{"type":"paragraph","text":"four"}]}]}]}]},
+
+  {"name":"layout-everything","outline":[
+    {"type":"heading","level":2,"text":"Top"},
+    {"type":"group","children":[
+      {"type":"paragraph","text":"Inside a section."},
+      {"type":"columns","widths":[60,40],"columns":[
+        {"children":[{"type":"image","attachment_id":42,"alt":"x"},{"type":"paragraph","text":"p"}]},
+        {"children":[{"type":"heading","level":3,"text":"h"},{"type":"buttons","buttons":[{"text":"Go","url":"https://example.test"}]}]}]}]},
+    {"type":"quote","paragraphs":["q"],"citation":"c"},
+    {"type":"separator"},
+    {"type":"spacer","size":"large"},
+    {"type":"table","header":["h1","h2"],"rows":[["1","2"]]},
+    {"type":"list","ordered":false,"items":["end"]}]},
+  {"name":"layout-text-escapes","outline":[
+    {"type":"quote","paragraphs":["Already &amp; encoded and &lt; entity, see [1] and [4444]."],"citation":"A &amp; B"},
+    {"type":"columns","columns":[
+      {"children":[{"type":"paragraph","text":"Terms & Conditions [22]"}]},
+      {"children":[{"type":"table","rows":[["R&D [333]","&lt;"]]}]}]},
+    {"type":"buttons","buttons":[{"text":"Q&A [1]","url":"/qa?x=1&y=2"}]}]},
+  {"name":"layout-long-text","outline":[
+    {"type":"quote","paragraphs":["LONGTEXT"],"citation":"LONGTEXT:200"},
+    {"type":"image","attachment_id":42,"alt":"LONGTEXT:300","caption":"LONGTEXT:500"},
+    {"type":"table","header":["LONGTEXT:500"],"rows":[["LONGTEXT:500"]]},
+    {"type":"buttons","buttons":[{"text":"LONGTEXT:80","url":"/x"}]}]},
+  {"name":"layout-unicode","outline":[
+    {"type":"quote","paragraphs":["مرحبا بالعالم — “اقتباس” 東京の夜 🌃"],"citation":"Ελληνικά · Привет"},
+    {"type":"columns","columns":[
+      {"children":[{"type":"image","attachment_id":42,"alt":"日本語の代替テキスト 🚀","caption":"Légende — café"}]},
+      {"children":[{"type":"table","header":["言語","Λέξη"],"rows":[["日本語","naïve"],["🎉","🔥"]]}]}]},
+    {"type":"buttons","buttons":[{"text":"始める 🚀","url":"/start"}]}]},
+
+  {"name":"numeric-reference-classic-nodes","classic":true,"outline":[
+    {"type":"quote","paragraphs":["Quote &#60; text"],"citation":"Cite &#60;"},
+    {"type":"table","header":["&#60;"],"rows":[["Cell &#x3C;"]]}]},
+  {"name":"numeric-reference-block-nodes","outline":[
+    {"type":"image","attachment_id":42,"alt":"","caption":"Caption &#60; text"},
+    {"type":"buttons","buttons":[{"text":"Button &#60; text","url":"/x"}]},
+    {"type":"group","children":[{"type":"paragraph","text":"Group &#60; text"}]},
+    {"type":"columns","columns":[
+      {"children":[{"type":"paragraph","text":"Column &#60; text"}]},
+      {"children":[{"type":"paragraph","text":"Plain"}]}]}]},
+
+  {"name":"mixed-classic-subset","classic":true,"outline":[
+    {"type":"heading","level":2,"text":"Everything the classic editor can hold"},
+    {"type":"paragraph","text":"Intro & overview."},
+    {"type":"image","attachment_id":42,"alt":"A picture","align":"center"},
+    {"type":"quote","paragraphs":["A quote"],"citation":"Someone"},
+    {"type":"separator"},
+    {"type":"table","header":["a","b"],"rows":[["1","2"]]},
+    {"type":"list","ordered":true,"items":["one","two"]}]},
+
+  {"name":"refused-alt-reference-named","classic":true,"refused":"create_content_invalid","outline":[
+    {"type":"image","attachment_id":44,"alt":"Logo &copy; 2026"}]},
+  {"name":"refused-alt-reference-amp","classic":true,"refused":"create_content_invalid","outline":[
+    {"type":"image","attachment_id":44,"alt":"Already &amp; encoded"}]},
+  {"name":"refused-alt-reference-decimal","classic":true,"refused":"create_content_invalid","outline":[
+    {"type":"image","attachment_id":44,"alt":"Alt &#39; text"}]},
+  {"name":"refused-alt-reference-hex","classic":true,"refused":"create_content_invalid","outline":[
+    {"type":"image","attachment_id":44,"alt":"a&#xA0;b"}]},
+  {"name":"refused-link-reference-amp","refused":"link_invalid","outline":[
+    {"type":"buttons","buttons":[{"text":"Go","url":"https://example.test/?a=1&amp;b=2"}]}]},
+  {"name":"refused-link-reference-named","refused":"link_invalid","outline":[
+    {"type":"buttons","buttons":[{"text":"Go","url":"/shop?x=1&copy;=2"}]}]},
+  {"name":"refused-link-reference-decimal","refused":"link_invalid","outline":[
+    {"type":"buttons","buttons":[{"text":"Go","url":"/&#47;evil.example/login"}]}]},
+  {"name":"refused-link-path-colon","refused":"link_invalid","outline":[
+    {"type":"buttons","buttons":[{"text":"Go","url":"/shop/sale:summer"}]}]},
+  {"name":"refused-link-path-colon-in-query","refused":"link_invalid","outline":[
+    {"type":"buttons","buttons":[{"text":"Go","url":"/shop?time=10:30"}]}]},
+  {"name":"refused-link-path-colon-in-fragment","refused":"link_invalid","outline":[
+    {"type":"buttons","buttons":[{"text":"Go","url":"/shop#a:b"}]}]},
+  {"name":"refused-link-path-numeric-colon","refused":"link_invalid","outline":[
+    {"type":"buttons","buttons":[{"text":"Go","url":"/a&#58b"}]}]}
 ]

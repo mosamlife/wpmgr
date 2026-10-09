@@ -72,6 +72,21 @@ expect "a node that fails is red" nonzero PAGE_BLOCKS_MARKUP="$tmp/good.json" PA
 VERS="no-such-version" expect "a missing version dir is red" nonzero PAGE_BLOCKS_MARKUP="$tmp/good.json"
 VERS=" " expect "zero versions is red" nonzero PAGE_BLOCKS_MARKUP="$tmp/good.json"
 
+# An outline case marked "refused" pins a refusal: the generator fails when
+# the builder accepts it or answers another code, and a held refusal renders
+# nothing. These run the real generator and builder.
+plain='{"name":"plain","outline":[{"type":"paragraph","text":"ok"}]}'
+printf '[%s,{"name":"held","refused":"link_invalid","outline":[{"type":"buttons","buttons":[{"text":"Go","url":"/a:b"}]}]}]' "$plain" > "$tmp/outlines_held.json"
+printf '[%s,{"name":"accepted","refused":"link_invalid","outline":[{"type":"buttons","buttons":[{"text":"Go","url":"/a"}]}]}]' "$plain" > "$tmp/outlines_accepted.json"
+printf '[%s,{"name":"othercode","refused":"layout_invalid","outline":[{"type":"buttons","buttons":[{"text":"Go","url":"/a:b"}]}]}]' "$plain" > "$tmp/outlines_othercode.json"
+printf '[%s,{"name":"badcode","refused":true,"outline":[{"type":"buttons","buttons":[{"text":"Go","url":"/a:b"}]}]}]' "$plain" > "$tmp/outlines_badcode.json"
+expect "a refusal the builder holds is accepted" 0 PAGE_BLOCKS_OUTLINES="$tmp/outlines_held.json"
+case "$LAST_OUT" in *"1 expected refusals held"*) ok "the held refusal is counted" ;; *) bad "no held-refusal count: $LAST_OUT" ;; esac
+expect "an outline marked refused that the builder accepts is red" nonzero PAGE_BLOCKS_OUTLINES="$tmp/outlines_accepted.json"
+case "$LAST_OUT" in *"must be refused link_invalid, the builder answered ok"*) ok "the accepted refusal is named" ;; *) bad "accepted refusal not named: $LAST_OUT" ;; esac
+expect "an outline refused with another code is red" nonzero PAGE_BLOCKS_OUTLINES="$tmp/outlines_othercode.json"
+expect "a refused value that is not a code is red" nonzero PAGE_BLOCKS_OUTLINES="$tmp/outlines_badcode.json"
+
 echo
 echo "passed: $pass, failed: $failed"
 [ "$failed" -eq 0 ]

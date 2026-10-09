@@ -128,35 +128,9 @@ final class OwnAbilities
                     'additionalProperties' => false,
                 ];
             case self::NAME_PAGE_CREATE:
-                $text = ['type' => 'string', 'minLength' => 1, 'maxLength' => 5000];
-
-                return [
-                    'type'                 => 'object',
-                    'properties'           => [
-                        'post_type' => ['type' => 'string', 'enum' => ['page', 'post']],
-                        'editor'    => ['type' => 'string', 'enum' => ['wordpress_blocks', 'wordpress_classic']],
-                        'title'     => ['type' => 'string', 'minLength' => 1, 'maxLength' => 200],
-                        'outline'   => [
-                            'type'     => 'array',
-                            'minItems' => 1,
-                            'maxItems' => 200,
-                            'items'    => [
-                                'type'       => 'object',
-                                'properties' => [
-                                    'type'    => ['type' => 'string', 'enum' => ['heading', 'paragraph', 'list']],
-                                    'level'   => ['type' => 'integer', 'minimum' => 2, 'maximum' => 4],
-                                    'text'    => $text,
-                                    'ordered' => ['type' => 'boolean'],
-                                    'items'   => ['type' => 'array', 'minItems' => 1, 'maxItems' => 50, 'items' => $text],
-                                ],
-                                'required'   => ['type'],
-                                'additionalProperties' => false,
-                            ],
-                        ],
-                    ],
-                    'required'             => ['post_type', 'editor', 'title', 'outline'],
-                    'additionalProperties' => false,
-                ];
+                // The one schema text the control plane also publishes; both
+                // sides are tested against the shared contract fixture.
+                return PageCreateBuilder::inputSchema();
             default:
                 return ['type' => 'object', 'properties' => new \stdClass(), 'additionalProperties' => false];
         }

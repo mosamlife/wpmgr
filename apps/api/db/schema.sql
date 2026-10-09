@@ -9628,16 +9628,32 @@ WHERE NOT EXISTS (
     SELECT 1 FROM ability_catalogue c WHERE c.name = v.name
 );
 
--- m157: wpmgr/page-create, the first admitted write.
+-- m157: wpmgr/page-create, the first admitted write. description, usage and
+-- limits are as m162 leaves them (layout outlines); m162 also clears the
+-- entry hash, which the boot stamp fills.
 INSERT INTO ability_catalogue (
     name, source, class, status, enabled, approval_mode,
     snapshot, effect_copy, operator_permission, min_agent_version,
-    title, description
+    title, description, usage, limits
 )
 SELECT 'wpmgr/page-create', 'wpmgr', 'write', 'admitted', true, 'per_call',
        'created_post_trash', 'draft', 'site.content.edit', '0.61.156',
        'Create a draft page',
-       'Creates a new draft page or post from a text outline. Nothing is published. Undo moves the draft to the trash.'
+       'Creates a new draft page or post from an outline: headings, paragraphs, lists, quotes, tables, separators, ' ||
+       'images already in the site''s media library, and, in the block editor, buttons, spacing, sections and ' ||
+       'columns. Nothing is published. Undo moves the draft to the trash.',
+       'Build the page as an outline. A top-level item can be any block, a group (a section) or columns. A group ' ||
+       'holds blocks or columns; a column holds blocks only. Use 2 to 4 columns; widths are optional whole ' ||
+       'percentages that add up to 100. Images must already be in the media library: find an attachment id with ' ||
+       'wpmgr/rest-read route wp-v2-media-list, and write alt text that describes the picture, or an empty alt for ' ||
+       'a decorative one. Button links are https:// addresses or paths on this site that start with /. All text is ' ||
+       'plain: no HTML, shortcodes or template syntax; square brackets only around a number such as [1], and never ' ||
+       'in alt text. On a site that uses the classic editor, send editor wordpress_classic and only headings, ' ||
+       'paragraphs, lists, quotes, tables, separators and images without captions. Layout blocks need the WPMgr ' ||
+       'plugin 0.61.160 or later on the site.',
+       ('{"max_top_level_nodes":200,"max_nodes":400,"max_columns":4,"max_children":50,"max_images":20,' ||
+        '"max_buttons":12,"max_tables":10,"max_table_rows":50,"max_table_columns":6,"max_title_chars":200,' ||
+        '"max_text_chars":5000,"max_total_chars":60000,"max_input_bytes":65536}')::jsonb
 WHERE NOT EXISTS (
     SELECT 1 FROM ability_catalogue c WHERE c.name = 'wpmgr/page-create'
 );

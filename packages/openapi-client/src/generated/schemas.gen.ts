@@ -8240,6 +8240,52 @@ export const AbilityRequestSchema = {
       description:
         "The structured card of a wpmgr/rest-write request; null otherwise.",
     },
+    page_media: {
+      type: "array",
+      nullable: true,
+      items: {
+        $ref: "#/components/schemas/AbilityRequestPageMedia",
+      },
+      description:
+        "The images a wpmgr/page-create request places, in outline order, as\nthe site described them when WPMgr checked the request. Null when\nthe outline has no image, and for every other ability. A card whose\noutline names an image with no entry here cannot be shown in full\nand must not be approvable.\n",
+    },
+  },
+} as const;
+
+export const AbilityRequestPageMediaSchema = {
+  type: "object",
+  description:
+    "One image a wpmgr/page-create request places. `filename` came from\nthe site: render it as plain text.\n",
+  required: ["id", "filename", "mime", "width", "height"],
+  properties: {
+    id: {
+      type: "integer",
+      format: "int64",
+      description: "The attachment id the outline names.",
+    },
+    filename: {
+      type: "string",
+    },
+    mime: {
+      type: "string",
+      enum: [
+        "image/jpeg",
+        "image/png",
+        "image/gif",
+        "image/webp",
+        "image/avif",
+      ],
+    },
+    width: {
+      type: "integer",
+      format: "int64",
+      description: "Pixels; 0 when the site does not know.",
+    },
+    height: {
+      type: "integer",
+      format: "int64",
+      description: "Pixels; 0 when the site does not know.",
+    },
   },
 } as const;
 

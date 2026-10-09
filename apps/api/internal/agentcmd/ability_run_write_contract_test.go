@@ -18,6 +18,18 @@ func TestMinAgentVersionForPageCreate_Pinned(t *testing.T) {
 	}
 }
 
+// TestMinAgentVersionForPageLayout_Pinned pins the literal: the first agent
+// release that builds outline grammar v2. It must be the release that ships
+// it; m162's usage text names the same number (a test in internal/mcp holds
+// the two together), so a change here is a change there in the same commit.
+func TestMinAgentVersionForPageLayout_Pinned(t *testing.T) {
+	const firstVersionWithPageLayout = "0.61.160"
+	if MinAgentVersionForPageLayout != firstVersionWithPageLayout {
+		t.Fatalf("MinAgentVersionForPageLayout = %q, want %q; if the floor is re-gated, update this pin and m162's usage in the same commit",
+			MinAgentVersionForPageLayout, firstVersionWithPageLayout)
+	}
+}
+
 func writeEntry() ([]byte, string) {
 	e := []byte(`{"name":"wpmgr/page-create","source":"wpmgr","class":"write","status":"admitted","enabled":true,"approval":"per_call","snapshot":"created_post_trash"}`)
 	return e, SHA256Hex(e)

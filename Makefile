@@ -223,6 +223,18 @@ check-page-blocks: ## Validate the page builder's block markup per WordPress ver
 check-page-blocks-test: ## Run the page block guard's regression suite
 	scripts/check-page-blocks_test.sh
 
+# The same generated markup, run through the save filters of the pinned
+# WordPress cores as a user without unfiltered_html (CI job page-kses). The
+# first run downloads and sha256-verifies each core into a cache dir; the
+# guard's own regression suite is the second target. Run it after editing.
+.PHONY: check-page-kses
+check-page-kses: ## Run the page builder's markup through core kses per WordPress version
+	scripts/check-page-kses.sh
+
+.PHONY: check-page-kses-test
+check-page-kses-test: ## Run the kses guard's regression suite
+	scripts/check-page-kses_test.sh
+
 # The load-balancer url-map. Twice in one day a route shipped, deployed and was
 # unreachable because the API mounted it and the LB did not route it — POST
 # /mcp, then very nearly the OAuth discovery documents. Both answer 200

@@ -1293,6 +1293,18 @@ final class AbilityRunCommand implements CommandInterface
                 if (isset($built['refusal'])) {
                     return $built['refusal'];
                 }
+                $preview = [
+                    'post_type' => $spec['post_type'],
+                    'editor'    => $spec['editor'],
+                    'status'    => 'draft',
+                    'title'     => $spec['title'],
+                    'content'   => $built['content'],
+                ];
+                // Only an outline with an image carries media, so a text-only
+                // answer stays exactly what older control planes decode.
+                if ($built['media'] !== []) {
+                    $preview['media'] = $built['media'];
+                }
 
                 return [
                     'ok'               => true,
@@ -1304,13 +1316,7 @@ final class AbilityRunCommand implements CommandInterface
                     'base_fingerprint' => $built['base_fingerprint'],
                     'preview_digest'   => $built['preview_digest'],
                     'precheck_digest'  => $this->precheckDigest($entrySha, $inputSha, $built['base_fingerprint'], $built['preview_digest']),
-                    'preview'          => [
-                        'post_type' => $spec['post_type'],
-                        'editor'    => $spec['editor'],
-                        'status'    => 'draft',
-                        'title'     => $spec['title'],
-                        'content'   => $built['content'],
-                    ],
+                    'preview'          => $preview,
                 ];
             });
         }
@@ -1344,14 +1350,14 @@ final class AbilityRunCommand implements CommandInterface
     }
 
     /**
-     * Render and simulate the save, as the principal. Writes nothing.
+     * Resolve, render and simulate the save, as the principal. Writes nothing.
      *
      * @param array{post_type:string,editor:string,title:string,outline:list<array<string,mixed>>} $spec Spec.
-     * @return array{refusal?:array<string,mixed>,content:string,title:string,preview_digest:string,base_fingerprint:string}
+     * @return array{refusal?:array<string,mixed>,content:string,title:string,preview_digest:string,base_fingerprint:string,media:list<array<string,mixed>>}
      */
     private function pageCreateBuild(array $spec): array
     {
-        $empty = ['content' => '', 'title' => '', 'preview_digest' => '', 'base_fingerprint' => ''];
+        $empty = ['content' => '', 'title' => '', 'preview_digest' => '', 'base_fingerprint' => '', 'media' => []];
 
         $blocksOn = $this->blockEditorFor($spec['post_type']);
         if ($blocksOn === null
@@ -1359,7 +1365,17 @@ final class AbilityRunCommand implements CommandInterface
             return ['refusal' => $this->fail('editor_unavailable', 'that editor is not available for this post type on this site')] + $empty;
         }
 
-        $content = PageCreateBuilder::render($spec);
+        $resolved = $this->pageCreateMedia(PageCreateBuilder::mediaIds($spec));
+        if (!isset($resolved['facts'])) {
+            return ['refusal' => $resolved['refusal'] ?? $this->fail('image_not_available', 'an image could not be resolved')] + $empty;
+        }
+        $facts = $resolved['facts'];
+        $byId  = [];
+        foreach ($facts as $fact) {
+            $byId[(int) $fact['id']] = $fact;
+        }
+
+        $content = PageCreateBuilder::render($spec, $byId);
         $title   = PageCreateBuilder::storedTitle($spec['title']);
         $problem = PageCreateBuilder::retokenise($content);
         if ($problem !== null) {
@@ -1380,8 +1396,95 @@ final class AbilityRunCommand implements CommandInterface
             // digest binds, so the digest still names exactly what is stored.
             'title'            => $title,
             'preview_digest'   => PageCreateBuilder::previewDigest($spec, $content),
-            'base_fingerprint' => PageCreateBuilder::baseFingerprint($spec['post_type']),
+            // With images, every fact of every image is bound, so a write
+            // after the image changed answers preview_changed.
+            'base_fingerprint' => PageCreateBuilder::baseFingerprint($spec['post_type'], $facts),
+            'media'            => $facts,
         ];
+    }
+
+    /**
+     * Resolve the outline's images, as the principal. An image is usable only
+     * when it is an attachment already in the media library, of an allowed
+     * raster type, published (unattached, or attached to a published post
+     * with no password), and readable by the principal. Nothing is fetched:
+     * every fact comes from the site's own records.
+     *
+     * @param list<int> $ids Distinct attachment ids, in document order.
+     * @return array{facts?:list<array<string,mixed>>,refusal?:array<string,mixed>}
+     */
+    private function pageCreateMedia(array $ids): array
+    {
+        $facts = [];
+        foreach ($ids as $id) {
+            $gone = ['refusal' => $this->fail('image_not_available', 'attachment_id ' . $id)];
+            $post = get_post($id);
+            if (!is_object($post) || (string) $post->post_type !== 'attachment' || (string) $post->post_password !== ''
+                || !wp_attachment_is_image($id)) {
+                return $gone;
+            }
+            $mime = (string) get_post_mime_type($id);
+            if (!in_array($mime, PageCreateBuilder::IMAGE_MIMES, true)) {
+                return $gone;
+            }
+            // Core resolves inherit: unattached counts as published, else the
+            // parent's status. The parent is also checked directly, so a
+            // trashed, draft, private or password-protected parent refuses.
+            if (get_post_status($id) !== 'publish') {
+                return $gone;
+            }
+            $parentId = (int) $post->post_parent;
+            if ($parentId > 0) {
+                $parent = get_post($parentId);
+                if (!is_object($parent) || (string) $parent->post_status !== 'publish' || (string) $parent->post_password !== '') {
+                    return $gone;
+                }
+            }
+            if (!current_user_can('read_post', $id)) {
+                return $gone;
+            }
+
+            $src = wp_get_attachment_image_src($id, 'large');
+            $url = is_array($src) && isset($src[0]) && is_string($src[0]) ? $src[0] : '';
+            if (PageCreateBuilder::imageUrlProblem($url) !== null) {
+                return ['refusal' => $this->fail('image_url_unusable', 'attachment_id ' . $id)];
+            }
+            $file = get_attached_file($id);
+            $meta = wp_get_attachment_metadata($id);
+            $meta = is_array($meta) ? $meta : [];
+            $fact = [
+                'id'           => $id,
+                'url'          => $url,
+                // The file's base name only, never the server path.
+                'filename'     => is_string($file) && $file !== '' ? wp_basename($file) : '',
+                'mime'         => $mime,
+                'width'        => self::imageDimension($meta['width'] ?? null),
+                'height'       => self::imageDimension($meta['height'] ?? null),
+                'modified_gmt' => (string) $post->post_modified_gmt,
+            ];
+            if (PageCreateBuilder::mediaFactProblem($fact) !== null) {
+                return $gone;
+            }
+            $facts[] = $fact;
+        }
+
+        return ['facts' => $facts];
+    }
+
+    /**
+     * An image dimension from attachment metadata: a whole number of pixels,
+     * 0 when absent or out of range.
+     *
+     * @param mixed $value Stored value.
+     * @return int
+     */
+    private static function imageDimension($value): int
+    {
+        if (is_string($value) && preg_match('/^[0-9]{1,6}$/D', $value) === 1) {
+            $value = (int) $value;
+        }
+
+        return is_int($value) && $value >= 0 && $value <= PageCreateBuilder::MAX_IMAGE_DIMENSION ? $value : 0;
     }
 
     /**
