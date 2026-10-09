@@ -286,6 +286,24 @@ check-rls-cross-tenant: ## Audit cross-tenant RLS policies against the ledger (D
 check-rls-cross-tenant-test: ## Run the RLS cross-tenant guard's regression suite (hermetic, no DB)
 	scripts/check-rls-cross-tenant_test.sh
 
+# scripts/check-schema-sync.sh (GH #759) replays every migration into one
+# throwaway postgres, loads apps/api/db/schema.sql into a second, and compares
+# what the catalogs say: tables, columns, indexes, constraints, RLS flags and
+# policies, functions. It also checks atlas.sum names exactly the migration
+# files, in order, with the hashes Atlas would write. Needs Docker (the
+# postgres:16-alpine image, no network, nothing published) and openssl; run it
+# before merging anything that touches a migration or schema.sql.
+# check-schema-sync-test is the guard's own regression suite; it needs the same
+# Docker and builds small trees, so it is unaffected by the real tree's state.
+# Run it after editing the guard.
+.PHONY: check-schema-sync
+check-schema-sync: ## Check db/schema.sql and atlas.sum are in step with the migrations (Docker required)
+	scripts/check-schema-sync.sh
+
+.PHONY: check-schema-sync-test
+check-schema-sync-test: ## Run the schema sync guard's regression suite (Docker required)
+	scripts/check-schema-sync_test.sh
+
 # ADR-061 A11 item 4: the containment test. No handler on the assistant surface
 # may take a site id from a request and pass it anywhere but the ONE audited
 # chokepoint, mcp.Repo.ResolveScopeSites. The chokepoint shipped; nothing
