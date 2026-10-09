@@ -138,7 +138,7 @@ Only for a small number of opt-in features that must run before WordPress finish
 
 == Privacy / What data is sent and where ==
 
-This plugin does not contact any external service until you connect it to a WPMgr control plane that you choose. There is NO default endpoint; the agent is inert until you supply a control-plane URL and complete a one-time, signed enrollment from that control plane. That control plane is either a WPMgr instance you self-host or the hosted WPMgr service at https://manage.wpmgr.app.
+This plugin contacts nothing until you connect it to a WPMgr control plane you choose, self-hosted or the hosted service at https://manage.wpmgr.app. There is NO default endpoint: it is inert until you supply a control-plane URL and complete a one-time, signed enrollment.
 
 Once connected, the agent communicates only with the control-plane URL you configured. It sends the following, only to that endpoint, and only for the management actions you or your schedules initiate:
 
@@ -147,8 +147,9 @@ Once connected, the agent communicates only with the control-plane URL you confi
 - Backup archives (not encrypted by this plugin): when you run or schedule a backup, the agent archives your database and/or files and uploads them to the storage destination your control plane configured. Protection at rest comes from that destination. Archive contents may include your site's content and personal data.
 - Rendered HTML: for CSS optimization (used-CSS generation), the agent submits rendered HTML of selected pages so unused CSS can be computed. Used only to produce optimized stylesheets.
 - Diagnostics and activity logs: error logs, performance and cache statistics, and a record of management actions, sent so they can be surfaced in the dashboard.
+- AI requests from an assistant you connect to your WPMgr dashboard: the results of the reads it asks for, such as published page and post text, titles and excerpts, media details and what reviewed abilities on the site return, and previews of the drafts and changes it proposes.
 
-The agent does not sell or share this data with third parties. It receives signed, allow-listed commands (backup, restore, update, cache operations) from your control plane; it does NOT download or execute arbitrary remote PHP code.
+The agent does not sell or share this data with third parties.
 
 **Real User Monitoring (when you enable it)**
 

@@ -530,8 +530,8 @@ func TestRollback_FatalProbeAndRollbackTransportError_RecordsDistinctDetail(t *t
 }
 
 // TestRollback_FatalStatusOnlyAndRollbackTransportError_RecordsDistinctDetail
-// covers the 5xx-without-a-body-signature half of the GH #210 condition (the
-// agent.go/agentcmd Probe never sets Fatal for a bare 5xx — only StatusCode).
+// covers the 500-without-an-error-screen half of the GH #210 condition (the
+// agentcmd Probe never sets Fatal for a server error status, only StatusCode).
 func TestRollback_FatalStatusOnlyAndRollbackTransportError_RecordsDistinctDetail(t *testing.T) {
 	repo := &probeFakeRepo{}
 	cmd := &fakeCommander{rollbackErr: fmt.Errorf("dial tcp: connection refused")}
@@ -540,14 +540,14 @@ func TestRollback_FatalStatusOnlyAndRollbackTransportError_RecordsDistinctDetail
 	task := testTask()
 	item := updateItem()
 	res := agentcmd.ItemResult{Type: item.Type, Slug: item.Slug, FromVersion: "1.9.9", ToVersion: "2.0.0", Status: agentcmd.ItemSucceeded}
-	statusOnlyProbe := agentcmd.ProbeResult{StatusCode: 503, Detail: "server returned status 503"}
+	statusOnlyProbe := agentcmd.ProbeResult{StatusCode: 500, Detail: "server returned status 500"}
 
 	if err := w.rollback(context.Background(), task, "https://example.test", item, res, statusOnlyProbe, false, "post-update health failed"); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
 	got := repo.finished[0]
 	if !strings.Contains(got.Detail, "site not responding") {
-		t.Fatalf("expected the distinct site-wide-fatal detail for a 5xx-only probe, got %q", got.Detail)
+		t.Fatalf("expected the distinct site-wide-fatal detail for a 500-only probe, got %q", got.Detail)
 	}
 }
 

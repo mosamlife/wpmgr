@@ -247,9 +247,12 @@ class ManagedCore
             // is not configuration, so it is left out. The plain string test
             // runs first, so only a file that already looks managed is lexed.
             $content = $this->boundedRead($path);
-            $managed = $content !== ''
-                && WpConfigEditor::isManagedConfigContent($content)
-                && WpConfigEditor::isManagedConfigContent(self::withoutComments($content));
+            $code    = $content !== '' && WpConfigEditor::isManagedConfigContent($content)
+                ? WpConfigEditor::withoutComments($content)
+                : null;
+            // Null (nothing to read, or no tokenizer to read it with) is no
+            // evidence, like any other signal that cannot be read.
+            $managed = $code !== null && WpConfigEditor::isManagedConfigContent($code);
 
             return $managed
                 ? $path . ' loads a framework-managed config (Roots\\WPConfig\\Config or config/application.php)'
@@ -403,33 +406,6 @@ class ManagedCore
         }
 
         return $drive . '/' . implode('/', $parts);
-    }
-
-    /**
-     * PHP source with its comments replaced by a space, so a commented-out
-     * line never reads as configuration. token_get_all() only splits the text
-     * into tokens and never runs it. '' without the tokenizer extension, which
-     * makes the signal no evidence, like any other signal that cannot be read.
-     *
-     * @param string $source PHP source.
-     * @return string
-     */
-    private static function withoutComments(string $source): string
-    {
-        if (!function_exists('token_get_all')) {
-            return '';
-        }
-
-        $code = '';
-        foreach (token_get_all($source) as $token) {
-            if (!is_array($token)) {
-                $code .= $token;
-            } else {
-                $code .= ($token[0] === T_COMMENT || $token[0] === T_DOC_COMMENT) ? ' ' : $token[1];
-            }
-        }
-
-        return $code;
     }
 
     /**
