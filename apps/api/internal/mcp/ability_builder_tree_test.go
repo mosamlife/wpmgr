@@ -299,7 +299,9 @@ func TestElementorPrecheckProjection(t *testing.T) {
 			}},
 		{name: "the sections tree under layout containers", golden: rows, c: goldenCase(t, rows, "mixed-top-level"),
 			edit: func(a *builderAnswer, _ []byte, _ pageCreateFacts) { a.layout = elementorLayoutBoxes }},
-		{name: "a layout the mapper does not build", golden: boxes, c: mixed,
+		// The sections tree is what the mapper builds for any layout but
+		// containers, so only the layout check refuses this answer.
+		{name: "a layout the mapper does not build", golden: rows, c: goldenCase(t, rows, "mixed-top-level"),
 			edit: func(a *builderAnswer, _ []byte, _ pageCreateFacts) { a.layout = "grid" }},
 		{name: "the atomic format", golden: boxes, c: mixed,
 			edit: func(a *builderAnswer, _ []byte, _ pageCreateFacts) { a.format = "atomic" }},
