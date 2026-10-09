@@ -26,6 +26,40 @@ type fakeRecorder struct {
 	calls   []agentmirror.AttemptInput
 	state   agentmirror.State
 	loadErr error
+	// clamps holds every ceiling ClampLastRequestAt was asked to apply, and
+	// clampErr is what it fails with when set.
+	clamps   []time.Time
+	clampErr error
+}
+
+// ClampLastRequestAt behaves as agentmirror.Repo.ClampLastRequestAt does: it
+// lowers the stored request time to ceiling when, and only when, that time is
+// later than ceiling, and says whether it did.
+func (f *fakeRecorder) ClampLastRequestAt(_ context.Context, ceiling time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clamps = append(f.clamps, ceiling)
+	if f.clampErr != nil {
+		return false, f.clampErr
+	}
+	if f.state.LastRequestAt == nil || !f.state.LastRequestAt.After(ceiling) {
+		return false, nil
+	}
+	lowered := ceiling
+	f.state.LastRequestAt = &lowered
+	return true, nil
+}
+
+func (f *fakeRecorder) clampCalls() []time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.clamps)
+}
+
+func (f *fakeRecorder) storedRequestTime() *time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.state.LastRequestAt
 }
 
 func (f *fakeRecorder) RecordAttempt(_ context.Context, in agentmirror.AttemptInput) error {
@@ -657,6 +691,51 @@ func TestWorker_PersistedRequestClockPastTheWindowStillMirrors(t *testing.T) {
 	}
 	if got, _ := rec.last(); got.Outcome != agentmirror.OutcomeMirrored {
 		t.Fatalf("Outcome = %q, want %q", got.Outcome, agentmirror.OutcomeMirrored)
+	}
+}
+
+// TestWorkerBootRun_FutureRequestTimeStillGetsTheScheduledCheck takes the job
+// EnqueueBootCheck queued through Work when the persisted request time is
+// AHEAD of this host's clock (a skewed clock on whichever host recorded it, here
+// three hours). The check was scheduled for after the spacing window, and when
+// it runs it must spend its request: Work completes without rescheduling, so a
+// run the spacing guard refuses leaves the install waiting for the six-hour
+// tick instead of getting the check it was promised after start.
+func TestWorkerBootRun_FutureRequestTimeStillGetsTheScheduledCheck(t *testing.T) {
+	ctx := context.Background()
+	// The process started 36 minutes ago, so the boot check queued then, at most
+	// start + spacing + BootCheckMaxDelay, is due now.
+	start := time.Now().Add(-36 * time.Minute)
+	future := start.Add(3 * time.Hour)
+	rec := &fakeRecorder{state: agentmirror.State{LastRequestAt: &future}}
+
+	ins := &fakeInserter{}
+	if _, err := EnqueueBootCheck(ctx, ins, rec, start); err != nil {
+		t.Fatalf("EnqueueBootCheck: %v", err)
+	}
+	args, opts := ins.only(t)
+	if !args.Boot {
+		t.Fatalf("args = %+v, want the boot check", args)
+	}
+	if opts.ScheduledAt.After(time.Now()) {
+		t.Fatalf("boot check scheduled for %v, which has not arrived; this test models the run at that time", opts.ScheduledAt)
+	}
+	if opts.ScheduledAt.Before(start.Add(minRequestSpacing)) {
+		t.Fatalf("boot check scheduled for %v, before the spacing window after start closes at %v", opts.ScheduledAt, start.Add(minRequestSpacing))
+	}
+
+	doer := wire(newFixture(t))
+	w := NewMirrorWorker(true, newTestMirror(newFakeStore(), doer), rec, nil)
+	if err := w.Work(ctx, &river.Job[MirrorArgs]{Args: args}); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+
+	if got := doer.urls(); len(got) == 0 {
+		out, _ := rec.last()
+		t.Fatalf("the scheduled boot check spent no upstream request (recorded outcome %q); the install now waits for the %v tick", out.Outcome, MirrorInterval)
+	}
+	if got, ok := rec.last(); !ok || got.Outcome != agentmirror.OutcomeMirrored {
+		t.Fatalf("recorded %+v, want outcome %q", got, agentmirror.OutcomeMirrored)
 	}
 }
 
