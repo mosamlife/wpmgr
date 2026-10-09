@@ -229,8 +229,9 @@ final class LeafPolicy
             return 'character references nested deeper than ' . self::DECODE_ROUNDS . ' levels';
         }
 
+        $refuseBraces = ($rules['refuse_braces'] ?? null) === true;
         foreach ($forms as $form) {
-            $why = self::sequenceProblem($form, $rules['refuse_braces'] === true, $forbidden);
+            $why = self::sequenceProblem($form, $refuseBraces, $forbidden);
             if ($why !== null) {
                 return $why;
             }
