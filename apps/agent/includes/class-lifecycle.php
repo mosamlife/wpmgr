@@ -632,14 +632,15 @@ final class Lifecycle
         foreach ($rows as $id => $name) {
             // The id alone picks the row; the name only refuses an id that has
             // since been given to another row.
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- only a delete by primary key is exact; the options API deletes every row whose name the collation matches. Cache entries are dropped below.
-            $wpdb->query(
-                $wpdb->prepare(
-                    "DELETE FROM {$wpdb->options} WHERE option_id = %d AND option_name = %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
-                    $id,
-                    $name
-                )
+            $delete = $wpdb->prepare(
+                "DELETE FROM {$wpdb->options} WHERE option_id = %d AND option_name = %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
+                $id,
+                $name
             );
+            if (is_string($delete)) {
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared -- $delete is the prepared statement above; only a delete by primary key is exact, since the options API deletes every row whose name the collation matches. Cache entries are dropped below.
+                $wpdb->query($delete);
+            }
             if ($forgetCached) {
                 wp_cache_delete($name, 'options');
             }
@@ -683,15 +684,16 @@ final class Lifecycle
             $rows += self::ownedRows($found, $form, true);
         }
         foreach ($rows as $id => $name) {
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- only a delete by primary key is exact; the network options API deletes every row whose name the collation matches. Cache entries are dropped below.
-            $wpdb->query(
-                $wpdb->prepare(
-                    "DELETE FROM {$wpdb->sitemeta} WHERE meta_id = %d AND site_id = %d AND meta_key = %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
-                    $id,
-                    $networkId,
-                    $name
-                )
+            $delete = $wpdb->prepare(
+                "DELETE FROM {$wpdb->sitemeta} WHERE meta_id = %d AND site_id = %d AND meta_key = %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
+                $id,
+                $networkId,
+                $name
             );
+            if (is_string($delete)) {
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared -- $delete is the prepared statement above; only a delete by primary key is exact, since the network options API deletes every row whose name the collation matches. Cache entries are dropped below.
+                $wpdb->query($delete);
+            }
             if ($forgetCached) {
                 wp_cache_delete($networkId . ':' . $name, 'site-options');
             }
