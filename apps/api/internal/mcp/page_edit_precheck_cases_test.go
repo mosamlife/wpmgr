@@ -246,6 +246,14 @@ func TestPageEditPrecheckRefusesANodeOffThePageWithoutALaterRemoval(t *testing.T
 				return ops, tree, changes
 			},
 		},
+		"a new node off the page takes a ref the input names": {
+			base: "change-then-remove-containers",
+			edit: func(ops, tree, changes []any) ([]any, []any, []any) {
+				// The group the fifth operation removes.
+				changes[3].(map[string]any)["new_refs"] = []any{"93e6ad3"}
+				return ops, tree, changes
+			},
+		},
 		"some of an insert's nodes are on the page and some are not": {
 			base: "change-then-remove-containers",
 			edit: func(ops, tree, changes []any) ([]any, []any, []any) {
