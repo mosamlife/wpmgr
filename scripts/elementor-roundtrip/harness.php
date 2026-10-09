@@ -38,6 +38,41 @@
  * has edited (undo must refuse and leave it). At the end no post the agent
  * created may be outside the trash.
  *
+ * Then the agent's edit path, on the same site, for every edit case of the
+ * shared edit fixture and of edit-cases-extra.json that names the layout this
+ * boot runs. Each case starts from a draft the agent's page-create path made
+ * (so the agent admits it as WPMgr's), the page's tree is the case's, and the
+ * agent's ability_run command edits it as the router calls it, with the signed
+ * list naming the draft:
+ *
+ *   8. golden: the shared fixture's operations, applied by the agent's own
+ *      LayoutOps under the fixture's request id, give the fixture's tree;
+ *   9. precheck, then write under the precheck's digests: the answer must be
+ *      "applied", and Elementor's own save (Document::save, as the service
+ *      user, which has no unfiltered_html) must have stored exactly the
+ *      previewed tree: the whole tree, read here with SQL, equal in value,
+ *      type and key order to the tree the precheck planned, so no node the
+ *      edit did not touch was dropped or rewritten;
+ *  10. render: the edited page must hold every text the operations wrote as
+ *      written (an ampersand, an entity-shaped text and a bracket are shown
+ *      literally), none of the texts they removed, the links they set, no
+ *      script element and no on* attribute.
+ *
+ * Together the cases must have applied all five operations: set_text, insert,
+ * replace, remove and move.
+ *
+ * And the full restore: a write that fails after the agent has snapshotted the
+ * page (a site that rewrites the saved tree) must put the page back. The
+ * postmeta rows of the draft, [meta_key, meta_value] in meta_id order, read
+ * with SQL before the write and after the failed one, must be the same bytes,
+ * and so must the posts columns a snapshot keeps. The rows include values with
+ * backslashes, a serialized-looking value, a key with several rows, a NULL, an
+ * empty string and a four-byte character, so a restore that goes through the
+ * meta API (which unslashes, serializes and renumbers) cannot pass. Rows the
+ * agent leaves alone by contract, the edit lock and the derived caches, are
+ * left out of both sides. At the end no post the edit path made may be outside
+ * the trash.
+ *
  * Arguments are key=value tokens (the CLI drops numeric-looking tokens):
  *   elementor=<x.y.z>   the Elementor version this boot must run
  *   wp=<x.y>            the WordPress version this boot must run
@@ -64,9 +99,18 @@
 declare(strict_types=1);
 
 use Elementor\Plugin;
+use WPMgr\Agent\Abilities\Builders\BuilderContract;
+use WPMgr\Agent\Abilities\Builders\BuilderDocumentFingerprint;
+use WPMgr\Agent\Abilities\Builders\BuilderDocumentRestore;
+use WPMgr\Agent\Abilities\Builders\BuilderDocumentSnapshot;
+use WPMgr\Agent\Abilities\Builders\BuilderPageEdit;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
 use WPMgr\Agent\Abilities\Builders\ElementorClassicMapper;
+use WPMgr\Agent\Abilities\Builders\ElementorDocument;
 use WPMgr\Agent\Abilities\Builders\IdSeed;
+use WPMgr\Agent\Abilities\Builders\LayoutOps;
+use WPMgr\Agent\Abilities\Builders\PageEditValidator;
+use WPMgr\Agent\Abilities\OwnAbilities;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
 use WPMgr\Agent\Abilities\ServicePrincipal;
 use WPMgr\Agent\Commands\AbilityRunCommand;
@@ -85,6 +129,16 @@ const RT_PLANTS = [
     'render_text',
     // The agent path is handed no outline at all (use the case name "all").
     'agent_no_cases',
+    // The edit path is handed no case at all (use the case name "all").
+    'edit_no_cases',
+    // The page an edit case rendered gains a script element.
+    'edit_render_script',
+    // Every ampersand in the page an edit case rendered is escaped twice.
+    'edit_render_text',
+    // After an edit case is written, Elementor's stored copy loses one setting of an element the edit did not touch.
+    'edit_drops_setting',
+    // After the full restore, one preserved postmeta row differs from its bytes before the write (use the case name "restore").
+    'restore_row_drift',
 ];
 
 const RT_NODE_LIMIT_DEPTH = 64;
@@ -650,6 +704,676 @@ function rt_agent_phase(string $layout, string $stored, int $principal, array $f
 }
 
 // ---------------------------------------------------------------------------
+// The agent's edit path
+// ---------------------------------------------------------------------------
+
+/** The scenarios the edit phase must have run besides its cases, by name. A run that ran fewer is red. */
+const RT_EDIT_SCENARIOS = ['restore'];
+
+/** The title of every draft the edit phase makes. */
+const RT_EDIT_TITLE = 'Edit path draft';
+
+/**
+ * The catalogue entry the control plane sends for one of WPMgr's own abilities.
+ *
+ * @return array{0:string,1:string} The entry's exact text and its sha256.
+ */
+function rt_entry(string $name, string $snapshot): array
+{
+    $text = (string) json_encode([
+        'name'          => $name,
+        'source'        => 'wpmgr',
+        'class'         => 'write',
+        'status'        => 'admitted',
+        'enabled'       => true,
+        'approval_mode' => 'per_call',
+        'snapshot'      => $snapshot,
+        'limits'        => ['builders_enabled' => ['elementor']],
+    ], JSON_UNESCAPED_SLASHES);
+
+    return [$text, hash('sha256', $text)];
+}
+
+/**
+ * One call of the agent's command under an entry.
+ *
+ * @param array{0:string,1:string} $entry See rt_entry().
+ * @param array<string,mixed>      $more  The other members of p.
+ * @return array<string,mixed>
+ */
+function rt_call(AbilityRunCommand $cmd, array $entry, string $mode, string $rid, array $more = []): array
+{
+    return rt_ability($cmd, ['mode' => $mode, 'request_id' => $rid, 'entry' => $entry[0], 'entry_sha256' => $entry[1]] + $more);
+}
+
+/**
+ * The two digests a write must carry, from a precheck's answer.
+ *
+ * @param array<string,mixed> $pre A precheck answer.
+ * @return array{precheck_digest:string,preview_digest:string}
+ */
+function rt_digests(array $pre): array
+{
+    return ['precheck_digest' => (string) ($pre['precheck_digest'] ?? ''), 'preview_digest' => (string) ($pre['preview_digest'] ?? '')];
+}
+
+/**
+ * A draft made by the agent's own page-create path, so the agent admits it as
+ * WPMgr's: precheck, then write under the precheck's digests.
+ *
+ * @param array{0:string,1:string} $entry   The page-create entry.
+ * @param array<mixed>             $outline The outline, as the AI sends it.
+ * @return array{0:int,1:string} The post id (0 when it could not be made) and, then, why not.
+ */
+function rt_make_draft(AbilityRunCommand $cmd, array $entry, array $outline): array
+{
+    $rid = wp_generate_uuid4();
+    try {
+        $input = json_encode(['post_type' => 'page', 'editor' => 'builder:elementor', 'title' => RT_EDIT_TITLE, 'outline' => $outline], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+    } catch (JsonException $e) {
+        return [0, 'the seed outline cannot be encoded'];
+    }
+    $pre = rt_call($cmd, $entry, 'precheck', $rid, ['input' => $input]);
+    if (($pre['ok'] ?? false) !== true) {
+        return [0, 'the seed precheck was answered ' . rt_brief($pre)];
+    }
+    $w = rt_call($cmd, $entry, 'write', $rid, ['input' => $input, 'expected' => rt_digests($pre)]);
+    $id = (int) ($w['post_id'] ?? 0);
+    if (($w['ok'] ?? false) !== true || ($w['outcome'] ?? null) !== 'created' || $id < 1) {
+        return [0, 'the seed write was answered ' . rt_brief($w)];
+    }
+
+    return [$id, ''];
+}
+
+/**
+ * Save an element tree on a post with Elementor's own document save, as the
+ * service user, which has no unfiltered_html.
+ *
+ * @param array<mixed> $tree Elements.
+ */
+function rt_save_tree(int $postId, array $tree, int $principal): bool
+{
+    wp_set_current_user($principal);
+    $saved = false;
+    try {
+        $doc   = Plugin::$instance->documents->get($postId, false);
+        $saved = is_object($doc) && $doc->save(['elements' => $tree]) === true;
+    } catch (Throwable $e) {
+        $saved = false;
+    }
+    setlocale(LC_NUMERIC, 'C');
+    wp_set_current_user(0);
+
+    return $saved;
+}
+
+/** Put a draft in the trash, as a person would. */
+function rt_trash(int $postId): void
+{
+    wp_set_current_user(1);
+    wp_trash_post($postId);
+    wp_set_current_user(0);
+}
+
+/**
+ * The operations with every reference written as @kind#n (the n-th node of
+ * that kind on the page, in page order) replaced by the node's real reference.
+ *
+ * @param array<mixed> $ops  Operations, as the AI sends them.
+ * @param array<mixed> $tree The page's stored tree.
+ * @return array{0:?array<mixed>,1:string} The operations, or null and why not.
+ */
+function rt_resolve_refs(array $ops, array $tree): array
+{
+    $asks = false;
+    foreach ($ops as $op) {
+        foreach (['ref', 'after', 'before', 'into'] as $member) {
+            $asks = $asks || (is_string($op[$member] ?? null) && strpos($op[$member], '@') === 0);
+        }
+    }
+    if (!$asks) {
+        return [$ops, ''];
+    }
+    try {
+        $nodes = ElementorClassicMapper::project($tree)->nodes();
+    } catch (Throwable $e) {
+        return [null, 'the page cannot be projected: ' . get_class($e)];
+    }
+    $byKind = [];
+    foreach ($nodes as $node) {
+        $byKind[(string) $node['kind']][] = (string) $node['ref'];
+    }
+    foreach ($ops as $i => $op) {
+        foreach (['ref', 'after', 'before', 'into'] as $member) {
+            $v = $op[$member] ?? null;
+            if (!is_string($v) || strpos($v, '@') !== 0) {
+                continue;
+            }
+            $parts = explode('#', substr($v, 1), 2);
+            $found = count($parts) === 2 ? ($byKind[$parts[0]][(int) $parts[1]] ?? null) : null;
+            if ($found === null) {
+                return [null, 'operations[' . $i . '].' . $member . ' names ' . $v . ', the page has: ' . implode(', ', array_map(static fn (string $k): string => $k . 'x' . count($byKind[$k]), array_keys($byKind)))];
+            }
+            $ops[$i][$member] = $found;
+        }
+    }
+
+    return [$ops, ''];
+}
+
+/**
+ * The strings under the keys text and caption of what an operation replaced,
+ * from a change in a precheck's preview.
+ *
+ * @param array<mixed> $change One entry of the preview's changes.
+ * @return list<string>
+ */
+function rt_replaced_texts(array $change): array
+{
+    $op = $change['op'] ?? '';
+    if (!in_array($op, ['set_text', 'replace', 'remove'], true) || !is_array($change['before'] ?? null)) {
+        return [];
+    }
+    $out = [];
+    foreach (['text', 'caption'] as $member) {
+        $v = $change['before'][$member] ?? null;
+        if (is_string($v) && $v !== '') {
+            $out[] = $v;
+        }
+    }
+
+    return $out;
+}
+
+/**
+ * The links an operation sets: the url of a set_text on a url field, and the
+ * links of the buttons an outline makes. Only absolute https links are held
+ * to the page, since a relative one is shown as the site resolves it.
+ *
+ * @param mixed        $node An operation or an outline node, as objects.
+ * @param list<string> $out  Gets the links.
+ */
+function rt_links($node, array &$out): void
+{
+    if (is_array($node)) {
+        foreach ($node as $child) {
+            rt_links($child, $out);
+        }
+
+        return;
+    }
+    if (!is_object($node)) {
+        return;
+    }
+    if (($node->op ?? '') === 'set_text' && ($node->field ?? '') === 'url' && is_string($node->text ?? null)) {
+        $out[] = $node->text;
+    }
+    if (($node->type ?? '') === 'buttons') {
+        foreach ((array) ($node->buttons ?? []) as $b) {
+            if (is_object($b) && is_string($b->url ?? null)) {
+                $out[] = $b->url;
+            }
+        }
+    }
+    rt_links($node->outline ?? [], $out);
+    foreach ((array) ($node->columns ?? []) as $col) {
+        rt_links($col->children ?? [], $out);
+    }
+    rt_links($node->children ?? [], $out);
+}
+
+/**
+ * Render a page with Elementor's frontend and hold it to what an edit wrote.
+ *
+ * @param list<string> $texts Texts the page must show as written.
+ * @param list<string> $gone  Texts the page must no longer show.
+ * @param list<string> $links Absolute links an anchor of the page must carry.
+ * @param list<string> $kinds The plants of the case.
+ */
+function rt_render_checks(RtChecks $c, int $postId, array $texts, array $gone, array $links, array $kinds): void
+{
+    $plant = static function (string $html) use ($kinds): string {
+        if (in_array('edit_render_script', $kinds, true)) {
+            $html .= '<script>alert(1)</script>';
+        }
+        if (in_array('edit_render_text', $kinds, true)) {
+            $html = str_replace('&amp;', '&amp;amp;', $html);
+        }
+
+        return $html;
+    };
+    add_filter('elementor/frontend/the_content', $plant, 99);
+    try {
+        $html = Plugin::$instance->frontend->get_builder_content($postId, false);
+    } catch (Throwable $e) {
+        $html = '';
+        $c->ck('render', false, 'render threw ' . get_class($e));
+    }
+    remove_filter('elementor/frontend/the_content', $plant, 99);
+    setlocale(LC_NUMERIC, 'C');
+
+    if (!$c->ck('render-nonempty', is_string($html) && trim($html) !== '', 'the edited page rendered nothing')) {
+        return;
+    }
+    $dom = rt_dom($html);
+    $c->ck('render-script', stripos($html, '<script') === false && $dom->getElementsByTagName('script')->length === 0, 'the edited page holds a script element');
+    $onAttr = '';
+    foreach ($dom->getElementsByTagName('*') as $el) {
+        foreach ($el->attributes ?? [] as $attr) {
+            if (stripos($attr->name, 'on') === 0) {
+                $onAttr = $el->nodeName . '[' . $attr->name . ']';
+                break 2;
+            }
+        }
+    }
+    $c->ck('render-on', $onAttr === '' && preg_match('/\son[a-z]+\s*=/i', $html) !== 1, 'an on* attribute: ' . $onAttr);
+
+    $page = rt_norm((string) $dom->textContent);
+    $miss = [];
+    foreach ($texts as $t) {
+        if (strpos($page, rt_norm($t)) === false) {
+            $miss[] = rt_brief($t);
+        }
+    }
+    // An edit that wrote text but handed the page nothing to look for would otherwise pass by looking for nothing.
+    $c->ck('render-text', $texts !== [] && $miss === [], $texts === [] ? 'the harness found no text the operations wrote' : count($miss) . ' text(s) not shown as written, first: ' . ($miss[0] ?? ''));
+    $still = [];
+    foreach ($gone as $t) {
+        if (strpos($page, rt_norm($t)) !== false) {
+            $still[] = rt_brief($t);
+        }
+    }
+    $c->ck('render-gone', $still === [], count($still) . ' replaced or removed text(s) still shown, first: ' . ($still[0] ?? ''));
+    $hrefs = [];
+    foreach ($dom->getElementsByTagName('a') as $a) {
+        $hrefs[] = (string) $a->getAttribute('href');
+    }
+    foreach ($links as $link) {
+        if (strpos($link, 'https://') === 0) {
+            $c->ck('render-link', in_array($link, $hrefs, true), 'no anchor carries the link ' . rt_brief($link));
+        }
+    }
+}
+
+/**
+ * The post meta rows of a post read with SQL, [meta_key, meta_value] in meta_id
+ * order, without the rows the agent leaves alone by contract: the edit lock and
+ * the derived caches.
+ *
+ * @param list<string> $skip Meta keys left out.
+ * @return list<array{0:string,1:?string}>
+ */
+function rt_raw_rows(int $postId, array $skip): array
+{
+    global $wpdb;
+    $found = $wpdb->get_results($wpdb->prepare("SELECT meta_key, meta_value FROM {$wpdb->postmeta} WHERE post_id = %d ORDER BY meta_id ASC", $postId), ARRAY_A);
+    if (!is_array($found) || (string) $wpdb->last_error !== '') {
+        rt_broken('the postmeta rows of post ' . $postId . ' cannot be read');
+    }
+    $rows = [];
+    foreach ($found as $row) {
+        $key   = (string) $row['meta_key'];
+        $value = $row['meta_value'] ?? null;
+        if (in_array($key, $skip, true)) {
+            continue;
+        }
+        $rows[] = [$key, $value === null ? null : (string) $value];
+    }
+
+    return $rows;
+}
+
+/**
+ * The posts columns a snapshot keeps, read with SQL.
+ *
+ * @return array<string,string>
+ */
+function rt_raw_post(int $postId): array
+{
+    global $wpdb;
+    $row = $wpdb->get_row($wpdb->prepare("SELECT " . implode(', ', BuilderDocumentSnapshot::RESTORE_POST_COLUMNS) . " FROM {$wpdb->posts} WHERE ID = %d", $postId), ARRAY_A);
+    if (!is_array($row)) {
+        rt_broken('the posts row of post ' . $postId . ' cannot be read');
+    }
+
+    return array_map('strval', $row);
+}
+
+/**
+ * The first place two row lists differ, or null when they are the same bytes
+ * in the same order.
+ *
+ * @param list<array{0:string,1:?string}> $want
+ * @param list<array{0:string,1:?string}> $got
+ */
+function rt_rows_diff(array $want, array $got): ?string
+{
+    $n = max(count($want), count($got));
+    for ($i = 0; $i < $n; ++$i) {
+        if (!isset($want[$i])) {
+            return 'row ' . $i . ' is extra: ' . $got[$i][0] . ' (' . ($got[$i][1] === null ? 'NULL' : strlen($got[$i][1]) . ' bytes') . ')';
+        }
+        if (!isset($got[$i])) {
+            return 'row ' . $i . ' is missing: ' . $want[$i][0] . ' (' . ($want[$i][1] === null ? 'NULL' : strlen($want[$i][1]) . ' bytes') . ')';
+        }
+        if ($want[$i] !== $got[$i]) {
+            $w = $want[$i][1] === null ? 'NULL' : strlen($want[$i][1]) . ' bytes ' . substr(hash('sha256', $want[$i][1]), 0, 12);
+            $g = $got[$i][1] === null ? 'NULL' : strlen($got[$i][1]) . ' bytes ' . substr(hash('sha256', $got[$i][1]), 0, 12);
+
+            return 'row ' . $i . ' differs: was ' . $want[$i][0] . ' (' . $w . '), is ' . $got[$i][0] . ' (' . $g . ')';
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Drop one setting of the first element that has any, from the page's stored
+ * tree, with SQL: what Elementor losing a setting of an untouched element looks
+ * like. Plant only.
+ */
+function rt_plant_drop_setting(int $postId): bool
+{
+    global $wpdb;
+    $raw  = $wpdb->get_var($wpdb->prepare("SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s ORDER BY meta_id LIMIT 1", $postId, '_elementor_data'));
+    $tree = is_string($raw) ? json_decode($raw, true, RT_NODE_LIMIT_DEPTH) : null;
+    if (!is_array($tree)) {
+        return false;
+    }
+    $drop = static function (array &$nodes) use (&$drop): bool {
+        foreach ($nodes as &$node) {
+            if (is_array($node['settings'] ?? null) && $node['settings'] !== []) {
+                array_pop($node['settings']);
+
+                return true;
+            }
+            if (is_array($node['elements'] ?? null) && $drop($node['elements'])) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+    if (!$drop($tree)) {
+        return false;
+    }
+
+    return $wpdb->update($wpdb->postmeta, ['meta_value' => wp_json_encode($tree)], ['post_id' => $postId, 'meta_key' => '_elementor_data'], ['%s'], ['%d', '%s']) !== false;
+}
+
+/**
+ * Run the agent's edit path on this site: every edit case that names the layout
+ * of this boot, then the full restore. See the steps 8 to 10 and the restore in
+ * the file header.
+ *
+ * @param array<string,list<string>> $plants  Plant kinds by case name.
+ * @param bool                       $noCases Plant: hand the edit path no case at all.
+ * @return array{cases:int,scenarios:list<string>,ops:list<string>,checks:int,failed:int}
+ */
+function rt_edit_phase(string $layout, string $stored, int $principal, array $plants, bool $noCases): array
+{
+    global $wpdb;
+    $out     = ['cases' => 0, 'scenarios' => [], 'ops' => [], 'checks' => 0, 'failed' => 0];
+    $tagBase = ELEMENTOR_VERSION . ' edit-' . $layout;
+    $made    = [];
+    $report  = static function (string $what, RtChecks $c) use (&$out, $tagBase): void {
+        $out['checks'] += $c->count;
+        if ($c->fails === []) {
+            rt_out(sprintf('ok   [%s %s] checks=%d', $tagBase, $what, $c->count));
+
+            return;
+        }
+        ++$out['failed'];
+        foreach ($c->fails as $f) {
+            rt_out(sprintf('FAIL [%s %s] %s', $tagBase, $what, $f));
+        }
+    };
+
+    $createEntry = rt_entry(OwnAbilities::NAME_PAGE_CREATE, 'created_post_trash');
+    $editEntry   = rt_entry(OwnAbilities::NAME_PAGE_EDIT, BuilderPageEdit::SNAPSHOT);
+    $cmd         = new AbilityRunCommand();
+    wp_set_current_user(0);
+    $containers = $layout === 'containers';
+    $dirOps     = static function (array $ops): array {
+        try {
+            $parsed = PageEditValidator::parse((string) json_encode(['post_id' => 1, 'base_fingerprint' => str_repeat('0', 64), 'operations' => $ops], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+        } catch (Throwable $e) {
+            return [];
+        }
+
+        return is_array($parsed['input']['operations'] ?? null) ? $parsed['input']['operations'] : [];
+    };
+
+    // The cases of this layout: the shared fixture's, and the extra file's.
+    $specs   = [];
+    $restore = null;
+    $media   = [];
+    foreach (['/rt/fixtures/elementor-edit-cases.json', '/rt/harness/edit-cases-extra.json'] as $file) {
+        $loaded = rt_load($file);
+        $shared = strpos($file, '/rt/fixtures/') === 0;
+        if ($shared) {
+            $media = is_array($loaded['arrays']['media'] ?? null) ? $loaded['arrays']['media'] : [];
+        } else {
+            $restore = is_array($loaded['arrays']['restore'] ?? null) ? $loaded['arrays']['restore'] : null;
+        }
+        foreach ($loaded['arrays']['cases'] as $case) {
+            $name = (string) ($case['name'] ?? '');
+            if ($name === '' || !is_array($case['ops'] ?? null) || ($shared && (!is_array($case['before_tree'] ?? null) || !is_array($case['after_tree'] ?? null))) || (!$shared && !is_array($case['seed'] ?? null))) {
+                rt_broken('an edit case in ' . $file . ' has no name, no operations or no page');
+            }
+            if ($shared && ($case['layout'] ?? null) !== $layout) {
+                continue;
+            }
+            $specs[] = [
+                'name'   => (string) preg_replace('/-(containers|sections)$/D', '', $name),
+                'seed'   => $shared ? null : $case['seed'],
+                'before' => $shared ? $case['before_tree'] : null,
+                'ops'    => $case['ops'],
+                'golden' => $shared ? ['request_id' => (string) ($case['request_id'] ?? ''), 'after' => $case['after_tree']] : null,
+            ];
+        }
+    }
+
+    foreach ($noCases ? [] : $specs as $spec) {
+        $name = $spec['name'];
+        $c    = new RtChecks();
+        $kind = $plants[$name] ?? [];
+        ++$out['cases'];
+
+        // The draft: made by the agent's page-create path, so the agent admits it as WPMgr's.
+        [$pid, $why] = rt_make_draft($cmd, $createEntry, $spec['seed'] ?? [['type' => 'paragraph', 'text' => 'Seed']]);
+        if (!$c->ck('seed', $pid > 0, $why)) {
+            $report($name, $c);
+            continue;
+        }
+        $made[] = $pid;
+        if ($spec['before'] !== null) {
+            $c->ck('before-saved', rt_save_tree($pid, $spec['before'], $principal), 'Elementor did not save the case\'s page');
+        }
+        [$rows, $decoded] = rt_stored_tree($pid);
+        $before = $decoded ?? [];
+        if ($spec['before'] !== null) {
+            $want = $stored === 'strings' ? rt_scalars_as_strings($spec['before']) : $spec['before'];
+            $d    = $decoded !== null ? rt_diff($want, $decoded, 'tree') : 'expected one _elementor_data row holding a tree, found ' . $rows;
+            $c->ck('before-stored', $d === null, (string) $d);
+        }
+        [$ops, $refWhy] = rt_resolve_refs($spec['ops'], $before);
+        if (!$c->ck('refs', $ops !== null, $refWhy)) {
+            $report($name, $c);
+            rt_trash($pid);
+            continue;
+        }
+
+        // 8. The operations as the agent's own LayoutOps applies them, under the fixture's request id.
+        if (is_array($spec['golden'])) {
+            $planned = LayoutOps::apply($spec['before'], $dirOps($ops), new IdSeed($spec['golden']['request_id']), $media, $containers);
+            $d       = isset($planned['tree']) ? rt_diff($spec['golden']['after'], $planned['tree'], 'tree') : 'LayoutOps refused: ' . rt_brief($planned);
+            $c->ck('golden', $d === null, (string) $d);
+        }
+
+        // 9. Precheck, then write under the precheck's digests, as the router calls them.
+        $fp = BuilderDocumentFingerprint::ofPost($pid, ElementorDocument::DESCRIPTOR_KEYS);
+        try {
+            $input = json_encode(['post_id' => $pid, 'base_fingerprint' => (string) $fp, 'operations' => $ops], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        } catch (JsonException $e) {
+            rt_broken('the operations of ' . $name . ' cannot be encoded');
+        }
+        $rid  = wp_generate_uuid4();
+        $more = ['input' => $input, 'allowed_draft_ids' => [$pid]];
+        $pre  = rt_call($cmd, $editEntry, 'precheck', $rid, $more);
+        if ($c->ck('precheck', ($pre['ok'] ?? false) === true && ($pre['outcome'] ?? null) === 'prechecked', rt_brief($pre))) {
+            $preview = is_array($pre['preview'] ?? null) ? $pre['preview'] : [];
+            $tree    = $preview['tree'] ?? null;
+            $changes = is_array($preview['changes'] ?? null) ? $preview['changes'] : [];
+            $c->ck('base-fingerprint', ($pre['base_fingerprint'] ?? null) === $fp, 'the precheck read another page than the one the input was made from');
+            $c->ck('changes', count($changes) === count($ops), 'the preview lists ' . count($changes) . ' change(s) for ' . count($ops) . ' operation(s)');
+            $c->ck('digests', preg_match('/^[0-9a-f]{64}$/D', (string) ($pre['preview_digest'] ?? '')) === 1 && preg_match('/^[0-9a-f]{64}$/D', (string) ($pre['precheck_digest'] ?? '')) === 1, 'the precheck gave no digests');
+            $c->ck('preview-tree', is_array($tree) && $tree !== [], 'the precheck previewed no tree');
+            $w = rt_call($cmd, $editEntry, 'write', $rid, $more + ['expected' => rt_digests($pre)]);
+            if ($c->ck('write', ($w['ok'] ?? false) === true && ($w['outcome'] ?? null) === 'applied', rt_brief($w))) {
+                foreach ($ops as $op) {
+                    $out['ops'][] = (string) ($op['op'] ?? '');
+                }
+                if (in_array('edit_drops_setting', $kind, true) && !rt_plant_drop_setting($pid)) {
+                    $c->ck('plant', false, 'no setting to drop in this case');
+                }
+                $c->ck('write-digest', ($w['preview_digest'] ?? null) === ($pre['preview_digest'] ?? ''), 'the write answers a preview digest that is not the precheck\'s');
+                $c->ck('changes-applied', ($w['changes_applied'] ?? null) === count($ops), 'the write applied ' . rt_brief($w['changes_applied'] ?? null) . ' change(s) of ' . count($ops));
+                $c->ck('before-fp', ($w['before_fp'] ?? null) === $fp, 'the write answers a fingerprint before the edit that is not the page\'s');
+                $now = BuilderDocumentFingerprint::ofPost($pid, ElementorDocument::DESCRIPTOR_KEYS);
+                $c->ck('after-fp', ($w['after_fp'] ?? null) === $now && $now !== $fp, 'the write answers a fingerprint after the edit that is not the page\'s now');
+
+                // What the database holds, read here and not taken from the answer: the whole tree.
+                [$rows, $decoded] = rt_stored_tree($pid);
+                $expect           = $stored === 'strings' && is_array($tree) ? rt_scalars_as_strings($tree) : $tree;
+                $d                = $decoded !== null && is_array($expect) ? rt_diff($expect, $decoded, 'tree') : 'expected one _elementor_data row holding a tree, found ' . $rows;
+                $c->ck('stored-tree', $d === null, (string) $d);
+                $row = $wpdb->get_row($wpdb->prepare("SELECT post_status, post_author, post_type FROM {$wpdb->posts} WHERE ID = %d", $pid), ARRAY_A);
+                $c->ck('draft', is_array($row) && $row['post_status'] === 'draft' && (int) $row['post_author'] === $principal && $row['post_type'] === 'page', 'the page is not a draft page of the principal: ' . rt_brief($row));
+                $mode = $wpdb->get_col($wpdb->prepare("SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s", $pid, '_elementor_edit_mode'));
+                $c->ck('edit-mode', $mode === ['builder'], 'the edit mode rows are ' . rt_brief($mode));
+
+                // 10. Render the edited page.
+                $texts = [];
+                $links = [];
+                $objs  = json_decode((string) json_encode($ops, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), false);
+                foreach (is_array($objs) ? $objs : [] as $op) {
+                    if (($op->op ?? '') === 'set_text' && in_array($op->field ?? '', ['text', 'caption'], true) && is_string($op->text ?? null)) {
+                        $texts[] = $op->text;
+                    }
+                    rt_texts($op->outline ?? [], $texts);
+                }
+                rt_links($objs, $links);
+                $gone = [];
+                foreach ($changes as $change) {
+                    if (is_array($change)) {
+                        array_push($gone, ...rt_replaced_texts($change));
+                    }
+                }
+                rt_render_checks($c, $pid, $texts, array_values(array_diff($gone, $texts)), $links, $kind);
+            }
+        }
+        $report($name, $c);
+        rt_trash($pid);
+    }
+
+    // The full restore.
+    if (!$noCases && is_array($restore)) {
+        $name = (string) ($restore['name'] ?? 'restore');
+        $c    = new RtChecks();
+        $kind = $plants[$name] ?? [];
+        [$pid, $why] = is_array($restore['seed'] ?? null) && is_array($restore['ops'] ?? null) ? rt_make_draft($cmd, $createEntry, $restore['seed']) : [0, 'the restore case has no seed or no operations'];
+        if ($c->ck('seed', $pid > 0, $why)) {
+            $made[] = $pid;
+            // Rows another plugin might keep on the page, as bytes the meta API would change.
+            $extra = [
+                ['_rt_backslashes', 'C:\\path\\"q"\\u00e9 \\/ \\\\ end'],
+                ['_rt_serialized', 'a:2:{s:1:"k";s:3:"a\\b";s:1:"q";s:5:"\\"x\\"";}'],
+                ['_rt_multi', 'one'],
+                ['_rt_multi', 'two\\three'],
+                ['_rt_null', null],
+                ['_rt_empty', ''],
+                ['_rt_wide', "caf\u{00E9} \u{1F600} \u{65E5}\u{672C}"],
+            ];
+            $seeded = 0;
+            foreach ($extra as [$k, $v]) {
+                $seeded += $wpdb->insert($wpdb->postmeta, ['post_id' => $pid, 'meta_key' => $k, 'meta_value' => $v], ['%d', '%s', '%s']) === 1 ? 1 : 0;
+            }
+            $c->ck('rows-seeded', $seeded === count($extra), 'only ' . $seeded . ' of ' . count($extra) . ' extra rows could be stored');
+
+            [$ops, $refWhy] = rt_resolve_refs($restore['ops'], rt_stored_tree($pid)[1] ?? []);
+            if ($c->ck('refs', $ops !== null, $refWhy)) {
+                $skip      = array_merge([BuilderDocumentSnapshot::EDIT_LOCK_KEY], (new ElementorAdapter())->descriptor()->derivedKeys);
+                $rowsWas   = rt_raw_rows($pid, $skip);
+                $postWas   = rt_raw_post($pid);
+                $fp        = BuilderDocumentFingerprint::ofPost($pid, ElementorDocument::DESCRIPTOR_KEYS);
+                $c->ck('rows-before', count($rowsWas) > count($extra) && array_filter($rowsWas, static fn (array $r): bool => $r[0] === '_elementor_data') !== [], 'the page holds ' . count($rowsWas) . ' postmeta row(s) before the write');
+                $input     = (string) json_encode(['post_id' => $pid, 'base_fingerprint' => (string) $fp, 'operations' => $ops], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                $rid       = wp_generate_uuid4();
+                $more      = ['input' => $input, 'allowed_draft_ids' => [$pid]];
+                $pre       = rt_call($cmd, $editEntry, 'precheck', $rid, $more);
+                if ($c->ck('precheck', ($pre['ok'] ?? false) === true && ($pre['outcome'] ?? null) === 'prechecked', rt_brief($pre))) {
+                    // A site that rewrites what Elementor stores: the write fails after the snapshot and must put the page back.
+                    $fired   = 0;
+                    $rewrite = static function ($value) use (&$fired) {
+                        if (!is_string($value)) {
+                            return $value;
+                        }
+                        $changed = preg_replace('/"id":"/', '"id":"z', $value, 1, $n);
+                        if (!is_string($changed) || $n !== 1) {
+                            return $value;
+                        }
+                        ++$fired;
+
+                        return $changed;
+                    };
+                    add_filter('sanitize_post_meta__elementor_data', $rewrite, 10, 1);
+                    try {
+                        $w = rt_call($cmd, $editEntry, 'write', $rid, $more + ['expected' => rt_digests($pre)]);
+                    } finally {
+                        remove_filter('sanitize_post_meta__elementor_data', $rewrite, 10);
+                    }
+                    $c->ck('armed', $fired >= 1, 'the rewrite never ran, so this scenario proved nothing');
+                    $c->ck('refused', ($w['ok'] ?? true) === false && ($w['code'] ?? null) === 'verify_mismatch', 'a write whose stored tree differs from the planned one was answered ' . rt_brief($w));
+                    $c->ck('restored', ($w['restored'] ?? null) === true, 'the answer says the page was put back: ' . rt_brief($w['restored'] ?? null));
+                    if (in_array('restore_row_drift', $kind, true)) {
+                        $victim = $wpdb->get_row($wpdb->prepare("SELECT meta_id, meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s", $pid, '_rt_backslashes'), ARRAY_A);
+                        if (!is_array($victim) || $wpdb->update($wpdb->postmeta, ['meta_value' => $victim['meta_value'] . 'x'], ['meta_id' => (int) $victim['meta_id']], ['%s'], ['%d']) === false) {
+                            $c->ck('plant', false, 'no row to change in this case');
+                        }
+                    }
+                    $diff = rt_rows_diff($rowsWas, rt_raw_rows($pid, $skip));
+                    $c->ck('rows-back', $diff === null, (string) $diff);
+                    $postNow = rt_raw_post($pid);
+                    $moved   = array_keys(array_filter($postWas, static fn (string $v, string $col): bool => $postNow[$col] !== $v, ARRAY_FILTER_USE_BOTH));
+                    $c->ck('post-back', $moved === [], 'the posts column(s) ' . implode(',', $moved) . ' are not the bytes they were before the write');
+                    $c->ck('fingerprint', BuilderDocumentFingerprint::ofPost($pid, ElementorDocument::DESCRIPTOR_KEYS) === $fp, 'the page\'s fingerprint is not the one it had before the write');
+                    $led = rt_call($cmd, $editEntry, 'ledger', $rid);
+                    $c->ck('ledger', ($led['found'] ?? false) === true && ($led['phase'] ?? null) === 'failed', 'the ledger says ' . rt_brief($led));
+                }
+            }
+            rt_trash($pid);
+        }
+        $out['scenarios'][] = 'restore';
+        $report($name, $c);
+    }
+
+    // Nothing the edit path made may be left outside the trash.
+    $c    = new RtChecks();
+    $left = [];
+    foreach ($made as $id) {
+        if (rt_status_of($id) !== 'trash') {
+            $left[] = $id . '=' . rt_status_of($id);
+        }
+    }
+    $c->ck('left-behind', $left === [], 'post(s) the edit path made are not in the trash: ' . implode(',', $left));
+    $report('leftover', $c);
+
+    return $out;
+}
+
+// ---------------------------------------------------------------------------
 // Arguments
 // ---------------------------------------------------------------------------
 
@@ -738,7 +1462,7 @@ spl_autoload_register(static function (string $class): void {
         require_once $file;
     }
 });
-foreach ([ElementorClassicMapper::class, ElementorAdapter::class, IdSeed::class, PageCreateBuilder::class, ServicePrincipal::class, AbilityRunCommand::class] as $cls) {
+foreach ([ElementorClassicMapper::class, ElementorAdapter::class, IdSeed::class, PageCreateBuilder::class, ServicePrincipal::class, AbilityRunCommand::class, BuilderContract::class, BuilderDocumentFingerprint::class, BuilderDocumentRestore::class, BuilderDocumentSnapshot::class, BuilderPageEdit::class, ElementorDocument::class, LayoutOps::class, PageEditValidator::class, OwnAbilities::class] as $cls) {
     if (!class_exists($cls)) {
         rt_broken('the agent class ' . $cls . ' cannot be loaded by the agent autoloader');
     }
@@ -1036,6 +1760,11 @@ $rtAgent = rt_agent_phase(
 $rtChecks += $rtAgent['checks'];
 $rtFailed += $rtAgent['failed'];
 
+// The agent's edit path and the full restore, on the same site.
+$rtEdit    = rt_edit_phase($rtArgs['layout'], $rtArgs['stored'], $principal, $rtPlants, in_array('edit_no_cases', $rtPlants['all'] ?? [], true));
+$rtChecks += $rtEdit['checks'];
+$rtFailed += $rtEdit['failed'];
+
 foreach ($rtNotices as $n) {
     rt_out('note ' . rt_brief($n));
 }
@@ -1064,8 +1793,21 @@ foreach (array_diff(RT_AGENT_SCENARIOS, $rtAgent['scenarios']) as $missing) {
     ++$rtFailed;
     rt_out('FAIL the agent path did not run the refusal scenario ' . $missing);
 }
+// So must the edit path: a case, every operation, and the full restore.
+if ($rtEdit['cases'] < 1) {
+    ++$rtFailed;
+    rt_out('FAIL the edit path ran no case');
+}
+foreach (array_diff(BuilderContract::OPS, $rtEdit['ops']) as $missing) {
+    ++$rtFailed;
+    rt_out('FAIL the edit path applied no ' . $missing . ' operation');
+}
+foreach (array_diff(RT_EDIT_SCENARIOS, $rtEdit['scenarios']) as $missing) {
+    ++$rtFailed;
+    rt_out('FAIL the edit path did not run the ' . $missing . ' scenario');
+}
 rt_out(sprintf(
-    'SUMMARY elementor=%s layout=%s cases=%d checks=%d texts=%d alts=%d agent=%d refused=%d failed=%d',
+    'SUMMARY elementor=%s layout=%s cases=%d checks=%d texts=%d alts=%d agent=%d refused=%d edit=%d restore=%d failed=%d',
     ELEMENTOR_VERSION,
     $rtArgs['layout'],
     $rtCases,
@@ -1074,6 +1816,8 @@ rt_out(sprintf(
     $rtAltsSeen,
     $rtAgent['cases'],
     count($rtAgent['scenarios']),
+    $rtEdit['cases'],
+    count($rtEdit['scenarios']),
     $rtFailed
 ));
 rt_out($rtFailed === 0 ? 'RESULT OK' : 'RESULT FAIL');
