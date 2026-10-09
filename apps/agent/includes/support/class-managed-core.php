@@ -375,8 +375,7 @@ class ManagedCore
 
         $here = self::normalize($this->wordPressDir());
         foreach ($dirs !== [] ? $dirs : ['wordpress'] as $dir) {
-            $absolute = $dir[0] === '/' || preg_match('#^[A-Za-z]:/#', $dir) === 1;
-            if (self::normalize($absolute ? $dir : $manifestDir . '/' . $dir) === $here) {
+            if (self::normalize(self::isAbsolute($dir) ? $dir : $manifestDir . '/' . $dir) === $here) {
                 return true;
             }
         }
@@ -482,9 +481,18 @@ class ManagedCore
             return '';
         }
 
-        $absolute = $dir[0] === '/' || preg_match('#^[A-Za-z]:/#', $dir) === 1;
+        return self::isAbsolute($dir) ? $dir : '';
+    }
 
-        return $absolute ? $dir : '';
+    /**
+     * Whether a non-empty path with forward slashes is absolute.
+     *
+     * @param string $path Path.
+     * @return bool
+     */
+    private static function isAbsolute(string $path): bool
+    {
+        return $path[0] === '/' || preg_match('#^[A-Za-z]:/#', $path) === 1;
     }
 
     /**
