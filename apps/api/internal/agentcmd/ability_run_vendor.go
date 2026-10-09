@@ -14,6 +14,13 @@ import (
 // An older agent refuses such an entry; the run tool refuses before asking.
 const MinAgentVersionForVendorReads = "0.61.158"
 
+// MinWPVersionForVendorReads is the WordPress floor for vendor and core
+// reads: the interception guards need the 7.1 filters, so a vendor or core
+// read is not available below it. It lives here, beside the agent floor, so
+// that the MCP tools and the AI readiness checklist compare against one
+// number; internal/mcp re-exports it under the same name.
+const MinWPVersionForVendorReads = "7.1"
+
 // Vendor read reply limits. The agent caps each list at 50 names; a reply
 // over these bounds breaks the contract.
 const (

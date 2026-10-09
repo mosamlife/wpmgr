@@ -154,6 +154,122 @@ type metadataDTO struct {
 	// Never carries key material, a key-check value, an error detail or a
 	// file path; that is enforced agent-side.
 	Keystore *keystoreStatusDTO `json:"keystore,omitempty"`
+
+	// BuilderFacts is the agent's read-only account of page-builder facts the
+	// plugin and theme lists do not carry (the parent theme directory, the
+	// Elementor Atomic editor switch). Optional and additive: an agent that
+	// predates it sends nothing and the key stays absent, which every reader
+	// treats as "not reported", never as "off".
+	BuilderFacts *builderFactsDTO `json:"builder_facts,omitempty"`
+}
+
+// builderFactsDTO is the tolerant decode of the metadata push's builder_facts
+// object. It decodes field by field, and a field of an unexpected type is
+// dropped on its own: a malformed value here must never fail the metadata
+// push and lose the plugin and theme lists that ride with it.
+//
+// present is true only when the JSON value was an object. A value of any
+// other shape leaves the whole DTO unset, which reads as "not reported".
+// Unknown keys are ignored, so a newer agent's extra keys never fail an
+// older control plane.
+type builderFactsDTO struct {
+	V             *int                      `json:"v"`
+	ThemeTemplate string                    `json:"theme_template"`
+	Elementor     *builderFactsElementorDTO `json:"elementor"`
+	present       bool
+}
+
+// builderFactsElementorDTO is the elementor member. AtomicEditor is nil for
+// JSON null and for any value that is not a JSON boolean: unknown is never
+// coerced to false.
+type builderFactsElementorDTO struct {
+	AtomicEditor *bool `json:"atomic_editor"`
+}
+
+// UnmarshalJSON decodes builder_facts without ever returning an error.
+func (f *builderFactsDTO) UnmarshalJSON(b []byte) error {
+	*f = builderFactsDTO{}
+	raw, ok := jsonObject(b)
+	if !ok {
+		return nil
+	}
+	f.present = true
+	if v, ok := raw["v"]; ok {
+		if n, ok := strictJSONInt(v); ok {
+			f.V = &n
+		}
+	}
+	if v, ok := raw["theme_template"]; ok {
+		if s, ok := strictJSONString(v); ok {
+			f.ThemeTemplate = s
+		}
+	}
+	if v, ok := raw["elementor"]; ok {
+		// Only an object means "Elementor is loaded". Any other value leaves
+		// the member unset, which reads the same as an absent one.
+		if eraw, ok := jsonObject(v); ok {
+			e := &builderFactsElementorDTO{}
+			if a, ok := eraw["atomic_editor"]; ok {
+				if x, ok := strictJSONBool(a); ok {
+					e.AtomicEditor = &x
+				}
+			}
+			f.Elementor = e
+		}
+	}
+	return nil
+}
+
+// jsonObject returns the members of b when b is a JSON object.
+func jsonObject(b []byte) (map[string]json.RawMessage, bool) {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || b[0] != '{' {
+		return nil, false
+	}
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(b, &raw) != nil {
+		return nil, false
+	}
+	return raw, true
+}
+
+// strictJSONBool accepts only the JSON literals true and false. encoding/json
+// would turn null into a false value without an error, which is the coercion
+// this decoder exists to avoid.
+func strictJSONBool(b json.RawMessage) (value, ok bool) {
+	switch string(bytes.TrimSpace(b)) {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	}
+	return false, false
+}
+
+// strictJSONInt accepts only a JSON integer literal.
+func strictJSONInt(b json.RawMessage) (int, bool) {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || (b[0] != '-' && (b[0] < '0' || b[0] > '9')) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(string(b))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// strictJSONString accepts only a JSON string.
+func strictJSONString(b json.RawMessage) (string, bool) {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || b[0] != '"' {
+		return "", false
+	}
+	var s string
+	if json.Unmarshal(b, &s) != nil {
+		return "", false
+	}
+	return s, true
 }
 
 // keystoreStatusDTO mirrors the agent's Keystore::probe() result (GH #753).
@@ -432,6 +548,18 @@ func (d metadataDTO) toMetadata() Metadata {
 			Unreadable: unreadable,
 		}
 	}
+	// The agent's builder facts. A builder_facts value that was not a JSON
+	// object leaves BuilderFacts nil, which reads as "not reported".
+	if d.BuilderFacts != nil && d.BuilderFacts.present {
+		bf := &BuilderFacts{ThemeTemplate: d.BuilderFacts.ThemeTemplate}
+		if d.BuilderFacts.V != nil {
+			bf.SchemaVersion = *d.BuilderFacts.V
+		}
+		if d.BuilderFacts.Elementor != nil {
+			bf.Elementor = &BuilderFactsElementor{AtomicEditor: d.BuilderFacts.Elementor.AtomicEditor}
+		}
+		m.BuilderFacts = bf
+	}
 	// The agent's account of its last apply beat. A record with no status says
 	// nothing, so it is dropped here rather than persisted as an empty shell.
 	if d.AgentSelfUpdate != nil && strings.TrimSpace(string(d.AgentSelfUpdate.Status)) != "" {
@@ -515,6 +643,30 @@ type Metadata struct {
 	// had no keystore access on this push) — the site domain surfaces that
 	// absence explicitly as "not reported", never as "ok".
 	KeystoreStatus *KeystoreStatus
+	// BuilderFacts is the agent's builder_facts object. nil when the agent did
+	// not send one (too old, or the collector failed): that is "not reported",
+	// never "off".
+	BuilderFacts *BuilderFacts
+}
+
+// BuilderFacts mirrors the agent's builder_facts object. Every field is
+// optional; the site domain validates each one before it is stored.
+type BuilderFacts struct {
+	// SchemaVersion is the agent's "v"; 0 when it was absent or not an integer.
+	SchemaVersion int
+	// ThemeTemplate is the parent theme directory the agent reported; "" when
+	// absent. Not yet validated.
+	ThemeTemplate string
+	// Elementor is nil when the agent sent no elementor member (Elementor not
+	// loaded, or an unusable value).
+	Elementor *BuilderFactsElementor
+}
+
+// BuilderFactsElementor is the elementor member of BuilderFacts.
+type BuilderFactsElementor struct {
+	// AtomicEditor is nil when Elementor is loaded but gave no definite
+	// answer. It is never false for "unknown".
+	AtomicEditor *bool
 }
 
 // KeystoreStatus mirrors the agent's Keystore::probe() trial-decrypt result.

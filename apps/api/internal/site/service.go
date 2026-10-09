@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -599,9 +600,12 @@ func fromAgentComponents(cs []agentpkg.Component) []Component {
 // — the 30-minute cron cadence or a CP-triggered recheck re-reporting a
 // keystore with none of the other sparse-metadata fields changed — is never
 // dropped for looking empty.
+//
+// BuilderFacts is in the nil check for the same reason: a push whose only new
+// information is the builder facts must still reach the stored document.
 func fromAgentMetadataExtras(m agentpkg.Metadata) *MetadataExtras {
 	if m.HostFlags == nil && m.Disk == nil && m.UserCount == 0 && m.AdminCount == 0 &&
-		len(m.Roles) == 0 && m.KeystoreStatus == nil {
+		len(m.Roles) == 0 && m.KeystoreStatus == nil && m.BuilderFacts == nil {
 		return nil
 	}
 	x := &MetadataExtras{
@@ -609,6 +613,7 @@ func fromAgentMetadataExtras(m agentpkg.Metadata) *MetadataExtras {
 		AdminCount:     m.AdminCount,
 		Roles:          fromAgentSiteRoles(m.Roles),
 		KeystoreStatus: fromAgentKeystoreStatus(m.KeystoreStatus),
+		BuilderFacts:   fromAgentBuilderFacts(m.BuilderFacts),
 	}
 	if m.HostFlags != nil {
 		x.HostFlags = &HostFlags{
@@ -713,6 +718,41 @@ func fromAgentKeystoreStatus(k *agentpkg.KeystoreStatus) *KeystoreStatus {
 		if len(unreadable) > 0 {
 			out.Unreadable = unreadable
 		}
+	}
+	return out
+}
+
+// builderThemeTemplateRe is the shape a stored theme directory name must
+// have: the same characters WordPress allows in a theme directory, capped at
+// 100. Anything else is dropped rather than stored, so the stored document
+// never holds text a site chose beyond a slug-shaped token.
+var builderThemeTemplateRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+
+// maxBuilderFactsVersion bounds the agent's schema version. It is
+// informational today; the cap keeps a forged value out of the document.
+const maxBuilderFactsVersion = 100
+
+// fromAgentBuilderFacts validates the agent's builder_facts object field by
+// field before it is stored. Returns nil only when the agent sent no object;
+// an object whose every field was unusable becomes an empty stored object,
+// which readers take to mean "the agent reports facts but gave none usable",
+// a different thing from "an agent too old to report them".
+//
+// The agent is untrusted: a field that fails its shape check is dropped, not
+// repaired. Nothing here can fail a metadata push.
+func fromAgentBuilderFacts(b *agentpkg.BuilderFacts) *BuilderFacts {
+	if b == nil {
+		return nil
+	}
+	out := &BuilderFacts{}
+	if b.SchemaVersion >= 1 && b.SchemaVersion <= maxBuilderFactsVersion {
+		out.V = b.SchemaVersion
+	}
+	if builderThemeTemplateRe.MatchString(b.ThemeTemplate) {
+		out.ThemeTemplate = b.ThemeTemplate
+	}
+	if b.Elementor != nil {
+		out.Elementor = &BuilderFactsElementor{AtomicEditor: b.Elementor.AtomicEditor}
 	}
 	return out
 }
@@ -1024,6 +1064,14 @@ func buildInventoryPayload(m Metadata) map[string]any {
 		// rather than substituting "ok" behind the operator's back.
 		if m.Extras.KeystoreStatus != nil {
 			payload["keystore_status"] = m.Extras.KeystoreStatus
+		}
+		// The agent's builder facts, a sibling key to plugins/themes. Absent
+		// when the agent did not report them (an agent that predates them, or a
+		// collection that failed), which readers take as "not reported" and
+		// never as "off". Every push rewrites the whole document, so a key not
+		// written here is a key the site loses on the next push.
+		if m.Extras.BuilderFacts != nil {
+			payload["builder_facts"] = m.Extras.BuilderFacts
 		}
 	}
 	// The agent's account of its last self-update apply beat, stored as a

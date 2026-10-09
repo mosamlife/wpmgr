@@ -41,8 +41,9 @@ const (
 
 // MinWPVersionForVendorReads is the WordPress floor for vendor and core reads:
 // the interception guards need the 7.1 filters (owner ruling 2: not available
-// below it).
-const MinWPVersionForVendorReads = "7.1"
+// below it). The value is agentcmd's, so the AI readiness checklist, which
+// must not import this package, compares against the same number.
+const MinWPVersionForVendorReads = agentcmd.MinWPVersionForVendorReads
 
 // notRunnableCopy is our plain text for each not-runnable reason, for the
 // operator and the AI alike. No site text appears in it.
