@@ -57,11 +57,9 @@
     {"type":"image","attachment_id":42,"alt":""}]},
   {"name":"image-alt-specials","classic":true,"outline":[
     {"type":"image","attachment_id":42,"alt":"Bob's \"dog\" & cat: café 東京 🚀 100%"},
-    {"type":"image","attachment_id":43,"alt":"Fish & chips, R&D, AT&T; a=b&c=d"}]},
-  {"name":"image-alt-entity-named","classic":true,"outline":[
-    {"type":"image","attachment_id":44,"alt":"Already &amp; encoded, &quot; named and &apos; named"}]},
-  {"name":"image-alt-entity-numeric","classic":true,"outline":[
-    {"type":"image","attachment_id":44,"alt":"Alt &#39; text"}]},
+    {"type":"image","attachment_id":43,"alt":"Fish & chips, R&D, AT&T, a=b&c=d"}]},
+  {"name":"image-alt-ampersand-not-a-reference","classic":true,"outline":[
+    {"type":"image","attachment_id":44,"alt":"Logo &copy 2026, a & b, &; and &#; and &#x; and &#xg; and & amp;"}]},
   {"name":"image-url-shapes","classic":true,"outline":[
     {"type":"image","attachment_id":43,"alt":"Address with a query string"},
     {"type":"image","attachment_id":44,"alt":"Address with percent encoding and punctuation"},
@@ -96,6 +94,14 @@
       {"text":"Punycode host","url":"https://xn--bcher-kva.example/"},
       {"text":"Site path with query","url":"/about/team?ref=nav&x=1#staff"},
       {"text":"Home","url":"/"}]}]},
+  {"name":"buttons-url-ampersand-not-a-reference","outline":[
+    {"type":"buttons","buttons":[
+      {"text":"Name with no semicolon","url":"https://example.test/?a=1&copy=2&nbsp=3"},
+      {"text":"Site path, no semicolon","url":"/shop?x=1&copy=2&nbsp=3#top"},
+      {"text":"Not a reference","url":"https://example.test/a&;b&#;c&#x;d&#xg;e"}]},
+    {"type":"buttons","buttons":[
+      {"text":"Colon, percent encoded","url":"/shop/sale%3Asummer"},
+      {"text":"Colon in an https path","url":"https://example.test/shop/sale:summer?t=10:30"}]}]},
 
   {"name":"quote-single","classic":true,"outline":[
     {"type":"quote","paragraphs":["To be & not to be."]}]},

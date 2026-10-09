@@ -34,8 +34,10 @@ if (!defined('ABSPATH')) {
  *
  * Text is plain characters: no markup, no template syntax, no control or
  * bidi-override characters, and no square bracket except a bracketed number
- * such as [1]. Alt text holds no square bracket at all. A link is an https://
- * address or a path on this site. An image is an attachment already in the
+ * such as [1]. Alt text holds no square bracket at all. Alt text, links and
+ * image addresses hold no "&" that starts a character reference ("&" then a
+ * name or number and ";"). A link is an https:// address or a path on this
+ * site with no colon and no "&#". An image is an attachment already in the
  * media library, named by id; its address comes from the site, never from
  * the input. Anything outside the grammar is refused, never stripped.
  *
@@ -127,6 +129,15 @@ final class PageCreateBuilder
 
     /** Every character a link or image address may hold (ASCII only). */
     private const URL_CHARSET = '/^[A-Za-z0-9\-._~:\/?#!$&()*+,;=%@]+$/D';
+
+    /**
+     * An ampersand that starts a character reference: a name, a decimal
+     * number or a hex number, ended by ";". The block editor writes such an
+     * ampersand bare in an attribute, so an attribute value holding one
+     * cannot keep the bytes this builder writes; alt text, links and image
+     * addresses refuse it.
+     */
+    private const CHARACTER_REFERENCE = '/&(?:[A-Za-z0-9]+|#[0-9]+|#[xX][0-9A-Fa-f]+);/';
 
     /** URL attribute value as written: an http(s) address or a site path. */
     private const RE_URL_VALUE = '(?:https?:\/\/|\/(?![\/\\\\]))[A-Za-z0-9\-._~:\/?#!$&()*+,;=%@]*';
@@ -404,8 +415,8 @@ final class PageCreateBuilder
     /**
      * Why an address the site gave for an image is unusable, or null:
      * http:// or https:// (lowercase), a host with no user name, ASCII from
-     * the link character set, every % followed by two hex digits, at most
-     * 2048 bytes.
+     * the link character set, every % followed by two hex digits, no "&"
+     * that starts a character reference, at most 2048 bytes.
      *
      * @param string $url Address.
      * @return string|null
@@ -435,8 +446,9 @@ final class PageCreateBuilder
      * Why a button link is not acceptable, or null. Either an absolute
      * https:// address (lowercase scheme, DNS host with at least one dot,
      * optional port 1..65535, no user name or password) or a path on this
-     * site (starts with one /). ASCII from the link character set only, every
-     * % followed by two hex digits, at most 2048 bytes.
+     * site (starts with one /, and holds no colon and no "&#"). ASCII from the
+     * link character set only, every % followed by two hex digits, no "&"
+     * that starts a character reference, at most 2048 bytes.
      *
      * @param string $url Link.
      * @return string|null
@@ -450,6 +462,12 @@ final class PageCreateBuilder
         if ($url[0] === '/') {
             if (strlen($url) > 1 && ($url[1] === '/' || $url[1] === '\\')) {
                 return 'must not start with two slashes';
+            }
+            // WordPress reads the text before a colon in a link, in any
+            // spelling, as its protocol and drops it on save. A path holds no
+            // colon and no "&#" anywhere; %3A is a colon it keeps.
+            if (strpos($url, ':') !== false || strpos($url, '&#') !== false) {
+                return 'a path on this site cannot hold a colon or "&#"; write a colon as %3A';
             }
 
             return null;
@@ -1415,6 +1433,9 @@ final class PageCreateBuilder
             if (strpos($text, '[') !== false || strpos($text, ']') !== false) {
                 return 'contains a square bracket; alt text cannot hold one, so use parentheses instead';
             }
+            if (preg_match(self::CHARACTER_REFERENCE, $text) === 1) {
+                return 'contains "&" then a name or number and ";", which reads as a character reference; write the character itself, or put a space after the "&"';
+            }
 
             return null;
         }
@@ -1444,6 +1465,9 @@ final class PageCreateBuilder
         }
         if (preg_match('/%(?![0-9A-Fa-f]{2})/', $url) === 1) {
             return 'has a % that is not followed by two hex digits';
+        }
+        if (preg_match(self::CHARACTER_REFERENCE, $url) === 1) {
+            return 'contains "&" then a name or number and ";", which reads as a character reference';
         }
 
         return null;
