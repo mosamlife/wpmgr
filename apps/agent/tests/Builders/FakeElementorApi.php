@@ -246,6 +246,9 @@ final class FakeElementorApi implements ElementorApi
      * "C" as Elementor's does first, then answers what $onSave answers (true
      * when unset; $onSave may also throw, fire hooks or change rows), and
      * puts the locale back only when that answer is true, as Elementor does.
+     * Its get_newer_autosave() answers $newerAutosave (false when unset, as
+     * Elementor does without a newer autosave), or what that closure
+     * answers, which may throw.
      *
      * @param int    $postId   Post id.
      * @param string $name     What get_name() answers.
@@ -261,6 +264,9 @@ final class FakeElementorApi implements ElementorApi
             /** @var (\Closure(mixed): mixed)|null */
             public ?\Closure $onSave = null;
 
+            /** @var mixed What get_newer_autosave() answers; a closure is called. */
+            public mixed $newerAutosave = false;
+
             public function __construct(public string $name, public bool $editable)
             {
             }
@@ -273,6 +279,14 @@ final class FakeElementorApi implements ElementorApi
             public function is_editable_by_current_user(): bool
             {
                 return $this->editable;
+            }
+
+            /**
+             * @return mixed
+             */
+            public function get_newer_autosave()
+            {
+                return $this->newerAutosave instanceof \Closure ? ($this->newerAutosave)() : $this->newerAutosave;
             }
 
             /**
@@ -293,6 +307,37 @@ final class FakeElementorApi implements ElementorApi
             }
         };
         $this->documents[$postId] = $document;
+
+        return $document;
+    }
+
+    /**
+     * Register a stand-in document for $postId whose save() stores the
+     * elements it is given as Elementor's does: every _elementor_data row of
+     * the post replaced by one row holding json_encode() of the elements, then
+     * the version row. $filter, when given, changes the elements first, as a
+     * plugin's filter on the saved data would.
+     *
+     * @param int                                      $postId Post id.
+     * @param FakeBuilderWpdb                          $wpdb   The rows.
+     * @param (\Closure(list<mixed>): list<mixed>)|null $filter Changes the elements before they are stored.
+     * @return object
+     */
+    public function storingDocument(int $postId, FakeBuilderWpdb $wpdb, ?\Closure $filter = null): object
+    {
+        $document         = $this->addDocument($postId);
+        $document->onSave = static function ($data) use ($postId, $wpdb, $filter): bool {
+            $elements = is_array($data) && is_array($data['elements'] ?? null) ? $data['elements'] : [];
+            if ($filter !== null) {
+                $elements = $filter($elements);
+            }
+            $wpdb->delete($wpdb->postmeta, ['post_id' => $postId, 'meta_key' => '_elementor_data']);
+            $wpdb->insert($wpdb->postmeta, ['post_id' => $postId, 'meta_key' => '_elementor_data', 'meta_value' => (string) json_encode($elements)]);
+            $wpdb->delete($wpdb->postmeta, ['post_id' => $postId, 'meta_key' => '_elementor_version']);
+            $wpdb->insert($wpdb->postmeta, ['post_id' => $postId, 'meta_key' => '_elementor_version', 'meta_value' => '3.35.9']);
+
+            return true;
+        };
 
         return $document;
     }
