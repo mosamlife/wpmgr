@@ -8,6 +8,7 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ### Added
 
+- An AI connected through WPMgr can now create a draft page or post from an outline with real layout, with your approval for each request in WPMgr. The outline can use headings, paragraphs, lists, quotes, tables and separators, and images that are already in the site's media library. In the block editor it can also use buttons, spacing, sections and columns. Nothing is published, and undo moves the draft to the trash. Agent 0.61.160.
 - The agent now includes two read-only facts in the site details it sends to WPMgr: which parent theme a child theme uses and, on a site running Elementor, whether Elementor's Atomic editor is switched on. It changes nothing on the site. Agent 0.61.159.
 - An AI connected through WPMgr can now read a site's published pages, posts, media, categories and tags through WordPress's own REST API, as the dedicated WPMgr content user. With per-request approval in WPMgr it can also change a page or post title or excerpt, with undo, and it refuses pages whose other content the WPMgr user may not save. It can use reviewed read tools that other plugins register with the WordPress Abilities API (WordPress 7.1 or later); a read that tries to change settings or contact other servers is refused, and admin-rights changes are put back. Agent 0.61.158.
 - The dashboard's AI requests list now covers title and excerpt changes, and an approval card shows the before and after of the change. A superadmin-managed allowlist now limits which REST routes an AI can read.
@@ -23,6 +24,7 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ### Fixed
 
+- When one cache purge starts another, each purge's report of what it cleared now stays separate and accurate. Agent 0.61.160.
 - The agent can now carry out a cache purge limited to the site's own page cache, skipping hosting and CDN cache integrations, and report which integrations ran, when the control plane requests it with an origin-only option. The control plane does not send that option yet, so dashboard purges are unchanged until it does. Under the option, a hosting or edge cache integration runs only when its declared reach is this install; the others are skipped, and the result reports what each detected integration did (purged_all, purged_urls, purged_urls_exact or skipped_reach_unconfirmed). Without the option the command behaves as before. A per-page purge also now keeps a non-default port in the cache bucket host, the way the cache writer does (#795). Agent 0.61.153.
 - The agent now checks whether each key it has stored still opens under the site's current encryption key. When some do not, WordPress admin shows a notice naming which keys cannot be read and what to do about it. When the backup key cannot be used, a backup is refused with a clear keystore_unreadable explanation instead of failing later. Status is reported to the dashboard with the agent's metadata, and a missing backup key is created only while the site's own key pair still opens, or on a site with no stored keys yet (#753). Agent 0.61.152.
 
