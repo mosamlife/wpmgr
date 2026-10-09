@@ -672,6 +672,35 @@ jobs:
       - name: "RLS cross-tenant guard (live, GH #470)"
         run: scripts/check-rls-cross-tenant.sh
 
+  # ---- db/schema.sql and atlas.sum against the migrations (GH #759) ----
+  # schema.sql is sqlc's input and Atlas's desired state, but the server never
+  # runs it, so a migration that forgot to update it passed every other check
+  # until atlas could not read the file. This replays every migration into one
+  # throwaway postgres, loads schema.sql into a second, and compares the
+  # catalogs (tables, columns, indexes, constraints, RLS flags and policies,
+  # functions); it also checks atlas.sum names exactly the files on disk with
+  # the hashes Atlas writes. The postgres is started by the script itself
+  # (docker run, no network, tmpfs), the same way the RLS guard above does it.
+  #
+  # Self-test first, as its own step, so a broken guard fails before it ever
+  # touches the real tree rather than passing by failing open. Both print
+  # their own elapsed seconds; read those for what the job costs. No path
+  # filter, for the reason given on the RLS job above.
+  schema-sync:
+    name: schema.sql matches the migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: "schema sync guard self-test (GH #759)"
+        run: scripts/check-schema-sync_test.sh
+
+      - name: "schema.sql and atlas.sum match the migrations (GH #759)"
+        run: scripts/check-schema-sync.sh
+
   # ---- nginx routing (infra/nginx/nginx.conf) ----
   # `nginx -t` only checks syntax; it does not catch a public Go route with no
   # matching nginx location (GH #175 — self-hosted RUM ingest 405'd on every

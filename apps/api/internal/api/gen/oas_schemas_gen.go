@@ -31071,7 +31071,6 @@ func (s *Me) SetDesiredPlan(val OptMeDesiredPlan) {
 func (*Me) finishWebAuthnChallengeRes() {}
 func (*Me) getMeRes()                   {}
 func (*Me) loginRes()                   {}
-func (*Me) oidcCallbackRes()            {}
 func (*Me) registerRes()                {}
 func (*Me) updateMeRes()                {}
 func (*Me) verifyEmailRes()             {}
@@ -35519,6 +35518,11 @@ func (s *ObjectCacheTestResult) SetRoundTripOk(val bool) {
 func (s *ObjectCacheTestResult) SetConfigHash(val OptNilString) {
 	s.ConfigHash = val
 }
+
+// OidcCallbackFound is response for OidcCallback operation.
+type OidcCallbackFound struct{}
+
+func (*OidcCallbackFound) oidcCallbackRes() {}
 
 type OidcCallbackNotImplemented Error
 
