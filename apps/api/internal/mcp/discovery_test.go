@@ -19,8 +19,10 @@ const testBaseURL = "https://manage.example.com"
 // mountedEngine builds a gin engine with the MCP surface mounted EXACTLY as
 // internal/server/server.go mounts it.
 //
-// The three call sites it mirrors, so a reader can check the correspondence by
-// hand: server.go's `deps.MCPOAuthH.RegisterPublic(engine.Group(mcp.APIV1Prefix))`,
+// The four call sites it mirrors, so a reader can check the correspondence by
+// hand: server.go's `engine.Use(mcp.AuthorizeNavigationRedirect())`, mounted
+// on the root engine before any group exists,
+// `deps.MCPOAuthH.RegisterPublic(engine.Group(mcp.APIV1Prefix))`,
 // `deps.MCPOAuthH.Register(v1)` where v1 is `sessionAuthGroup.Group(mcp.APIV1Prefix)`,
 // and `deps.MCPTransportH.Register(engine)`. The session middleware on v1 is
 // irrelevant here: this test asks whether a ROUTE EXISTS, not whether it lets
@@ -32,6 +34,7 @@ func mountedEngine(t *testing.T, withOAuth bool) *gin.Engine {
 
 	svc := NewService(nil)
 	if withOAuth {
+		engine.Use(AuthorizeNavigationRedirect())
 		oauthH := NewHandler(svc)
 		oauthH.RegisterPublic(engine.Group(APIV1Prefix))
 		oauthH.Register(engine.Group(APIV1Prefix))
@@ -133,6 +136,45 @@ func TestAdvertisedEndpointsAreMounted(t *testing.T) {
 	}
 	for _, problem := range unmountedAdvertisements(engine, endpoints) {
 		t.Error(problem)
+	}
+}
+
+// TestAdvertisedAuthorizationEndpointOpensInABrowser is the browser half of
+// the pin above. A route at the advertised address is not enough: a client
+// opens authorization_endpoint in the user's browser, so a browser navigation
+// there must land on the consent screen with the client's query intact, not
+// on the JSON the screen fetches from the same address.
+//
+// mountedEngine mirrors server.New's mount, so this is the drift pin;
+// TestNew_AuthorizeNavigationOpensTheConsentScreen in internal/server is the
+// proof against the real mount.
+func TestAdvertisedAuthorizationEndpointOpensInABrowser(t *testing.T) {
+	engine := mountedEngine(t, true)
+	_, asBody := getDoc(t, engine, WellKnownAuthorizationServerPath)
+	var as authorizationServerMetadataDTO
+	if err := json.Unmarshal(asBody, &as); err != nil {
+		t.Fatalf("authorization server metadata is not JSON: %v (%s)", err, asBody)
+	}
+	u, err := url.Parse(as.AuthorizationEndpoint)
+	if err != nil || u.Path == "" {
+		t.Fatalf("authorization_endpoint %q is not a URL with a path (%v)", as.AuthorizationEndpoint, err)
+	}
+
+	const query = "response_type=code&client_id=c1&state=a~b-_c&scope=mcp%3Aread%20mcp%3Acache"
+	req := httptest.NewRequest(http.MethodGet, u.Path+"?"+query, nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	req.Header.Set("Sec-Fetch-Site", "none")
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("a browser opening authorization_endpoint got %d %s (body %s); want 303 to the consent screen",
+			rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+	}
+	if got, want := rec.Header().Get("Location"), ConsentScreenPath+"?"+query; got != want {
+		t.Fatalf("Location = %q, want %q", got, want)
 	}
 }
 

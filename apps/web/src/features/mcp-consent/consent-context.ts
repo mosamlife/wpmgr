@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { CONFERRABLE_READS } from "@/features/ai-connections/capabilities";
+import { conferrableReadsIn } from "@/features/ai-connections/capability-presets";
 
 // The consent screen's data model (ADR-064 S6b, design Step 7).
 //
@@ -408,33 +408,48 @@ export function allScopesRecognised(scopes: readonly string[]): boolean {
 }
 
 /**
- * The capability list an approval sends: every conferrable READ the server
- * named that this build knows (CONFERRABLE_READS, the set the connection
- * wizard's presets use), plus mcp.cache.purge only when the operator ticked
- * its box and the server offered it. An empty result is returned as empty;
- * the caller omits the key rather than send `[]`, which the server refuses.
+ * The reads the server offered that this build can confer: the names the read
+ * picker may show as tickable. Only the server decides what is offered, so a
+ * name it did not list is never in this set, and a name this build does not
+ * know (CONFERRABLE_READS is the reads-only list) is left out even when the
+ * server lists it with the read effect. In vocabulary order, once each.
+ */
+export function offeredReads(conferrable: readonly ConferrableCapability[]): readonly string[] {
+  return conferrableReadsIn(
+    conferrable.filter((c) => c.effect === CAPABILITY_EFFECT_READ).map((c) => c.name),
+  );
+}
+
+/**
+ * The capability list an approval sends: EXACTLY what the operator ticked,
+ * limited to what the server offered. It never adds a name that is not ticked.
+ *
+ *   - a read is sent when it is ticked and in offeredReads;
+ *   - mcp.cache.purge is sent when it is ticked and offered as a request;
+ *   - mcp.ability.read and mcp.ability.request are sent when they are ticked and
+ *     offered with their own effect.
+ *
+ * `selected` is the whole tick list of the screen. A name in it that the server
+ * did not offer, or offered with a different effect, is dropped here rather
+ * than sent, so a tick left over from a different request can never widen what
+ * is approved. An empty result is returned as empty; the caller omits the key
+ * rather than send `[]`, which the server refuses.
  */
 export function buildApprovalCapabilities(
   conferrable: readonly ConferrableCapability[],
-  purgeTicked: boolean,
-  abilityReadTicked = false,
-  abilityRequestTicked = false,
+  selected: readonly string[],
 ): string[] {
-  const known: ReadonlySet<string> = new Set(CONFERRABLE_READS);
-  const out = conferrable
-    .filter((c) => c.effect === CAPABILITY_EFFECT_READ && known.has(c.name))
-    .map((c) => c.name);
-  const offersPurge = conferrable.some(
-    (c) => c.name === "mcp.cache.purge" && c.effect === CAPABILITY_EFFECT_REQUEST,
-  );
-  if (purgeTicked && offersPurge) out.push("mcp.cache.purge");
-  const offers = (name: string, effect: string) =>
-    conferrable.some((c) => c.name === name && c.effect === effect);
-  if (abilityReadTicked && offers("mcp.ability.read", CAPABILITY_EFFECT_READ)) {
-    out.push("mcp.ability.read");
-  }
-  if (abilityRequestTicked && offers("mcp.ability.request", CAPABILITY_EFFECT_REQUEST)) {
-    out.push("mcp.ability.request");
+  const ticked: ReadonlySet<string> = new Set(selected);
+  const out = offeredReads(conferrable).filter((name) => ticked.has(name));
+  const askable: readonly (readonly [name: string, effect: string])[] = [
+    ["mcp.cache.purge", CAPABILITY_EFFECT_REQUEST],
+    ["mcp.ability.read", CAPABILITY_EFFECT_READ],
+    ["mcp.ability.request", CAPABILITY_EFFECT_REQUEST],
+  ];
+  for (const [name, effect] of askable) {
+    if (ticked.has(name) && conferrable.some((c) => c.name === name && c.effect === effect)) {
+      out.push(name);
+    }
   }
   return out;
 }

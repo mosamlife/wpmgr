@@ -19,6 +19,7 @@ import {
 import { getMe } from "@wpmgr/api";
 
 import { ensureMe, authKeys } from "@/features/auth/use-auth";
+import { sameOriginPath } from "@/features/auth/social-errors";
 import {
   useTotpChallenge,
   useRecoveryChallenge,
@@ -44,7 +45,9 @@ export const Route = createFileRoute("/2fa-challenge")({
   beforeLoad: async ({ context, search }) => {
     const me = await ensureMe(context.queryClient);
     if (me) {
-      throw redirect({ to: search.redirect ?? "/sites" });
+      // A path on this origin or the sites list, exactly as the sign-in page
+      // decides it (sameOriginPath), so the two screens cannot disagree.
+      throw redirect({ to: sameOriginPath(search.redirect) ?? "/sites" });
     }
   },
   component: TwoFaChallengePage,
@@ -129,7 +132,8 @@ function TwoFaChallengePage() {
         if (freshMe?.role === "client") {
           void navigate({ to: "/portal" });
         } else {
-          void navigate({ to: search.redirect ?? "/sites" });
+          // Same narrowing as the guard above.
+          void navigate({ to: sameOriginPath(search.redirect) ?? "/sites" });
         }
       });
   }
