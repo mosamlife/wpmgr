@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
@@ -191,17 +192,18 @@ const guidanceLinePrefix = "| "
 
 // writeQuoted renders one operator-authored field as quoted lines: the label
 // on the first line, guidanceLinePrefix on every line including the
-// continuations of a multi-line value.
+// continuations of a multi-line value. Every line of operator guidance
+// carries the operator prefix.
 //
-// CR and CRLF are normalised to LF before splitting. Splitting on "\n" alone
-// would treat a lone "\r" forgery as one physical line here while a model
-// reads it as a line break, which is the same escape by a different byte.
+// A line ends at every line break isLineBreak names, the same set oneLine
+// collapses in restriction items, with CRLF counted as one break.
 func writeQuoted(b *strings.Builder, label, value string) {
-	norm := strings.ReplaceAll(value, "\r\n", "\n")
-	norm = strings.ReplaceAll(norm, "\r", "\n")
-	// A trailing newline would otherwise emit a bare prefix on its own line.
-	norm = strings.TrimRight(norm, "\n")
-	for i, line := range strings.Split(norm, "\n") {
+	lines := splitLines(value)
+	// Trailing breaks would otherwise emit bare prefixes on lines of their own.
+	for len(lines) > 1 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	for i, line := range lines {
 		b.WriteString(guidanceLinePrefix)
 		if i == 0 {
 			b.WriteString(label)
@@ -209,6 +211,37 @@ func writeQuoted(b *strings.Builder, label, value string) {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
+}
+
+// splitLines splits s at every rune isLineBreak names, with CRLF counted as
+// one break. Every other byte of s is kept as it is.
+func splitLines(s string) []string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	lines := make([]string, 0, 1)
+	start := 0
+	for i, r := range s {
+		if isLineBreak(r) {
+			lines = append(lines, s[start:i])
+			start = i + utf8.RuneLen(r)
+		}
+	}
+	return append(lines, s[start:])
+}
+
+// isLineBreak reports whether r is one of Unicode's mandatory line breaks
+// (UAX #14 classes BK, CR, LF and NL): LF, CR, VT (U+000B), FF (U+000C), NEL
+// (U+0085), LINE SEPARATOR (U+2028) and PARAGRAPH SEPARATOR (U+2029).
+//
+// It is the one definition of a line break in this render. Guidance is split
+// at these (writeQuoted) and restriction items have them collapsed (oneLine),
+// so a line of the rendered block is one line to every reader, whichever of
+// these it treats as a break.
+func isLineBreak(r rune) bool {
+	switch r {
+	case '\n', '\r', '\v', '\f', '\u0085', '\u2028', '\u2029':
+		return true
+	}
+	return false
 }
 
 // quotedItem renders one operator-supplied restriction item as a quoted value:
@@ -225,13 +258,9 @@ func quotedItem(s string) string {
 	return strconv.Quote(oneLine(s))
 }
 
-// oneLine replaces every line-break character in an operator-authored list
-// item with a space, which is what keeps a restriction line one line.
-//
-// The set is Unicode's mandatory line breaks (UAX #14 classes BK, CR, LF and
-// NL): LF, CR, VT (U+000B), FF (U+000C), NEL (U+0085), LINE SEPARATOR
-// (U+2028) and PARAGRAPH SEPARATOR (U+2029). A restriction line is therefore
-// one line to every reader, whichever of these it treats as a break.
+// oneLine replaces every line break in an operator-authored list item with a
+// space, which is what keeps a restriction line one line. The set is
+// isLineBreak's.
 //
 // Restriction lines are WPMgr's own framing and carry no prefix, so their
 // items are quoted values (quotedItem) rather than prefixed lines. Collapsing
@@ -239,8 +268,7 @@ func quotedItem(s string) string {
 // reach the model, inside the value, on the line where they belong.
 func oneLine(s string) string {
 	return strings.Map(func(r rune) rune {
-		switch r {
-		case '\n', '\r', '\v', '\f', '\u0085', '\u2028', '\u2029':
+		if isLineBreak(r) {
 			return ' '
 		}
 		return r
