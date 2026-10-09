@@ -138,6 +138,13 @@ export {
   undoAbilityRequest,
   getSiteContentEditing,
   enableSiteContentEditing,
+  // AI trust: each site's mode, each connection's switch and usage, and the
+  // feed of everything an AI connection changed
+  getSiteAiMode,
+  putSiteAiMode,
+  getAiConnectionUsage,
+  putAiConnectionAuto,
+  listAiActivity,
   // AI readiness checklist (per-site card, fleet rollup, re-check)
   getSiteAiReadiness,
   getFleetAiReadiness,
@@ -575,6 +582,31 @@ export type {
   UndoAbilityRequestData,
   GetSiteContentEditingData,
   EnableSiteContentEditingData,
+  // AI trust. AiActivityItem and AiActivityPage are exported below with the
+  // nullable-field patch, because each item carries a request object.
+  AiMode,
+  AiModeSource,
+  AiChangeClass,
+  AiAskReason,
+  AiControlRefusalCode,
+  AiModeOption,
+  AiChangeKindAbility,
+  AiModeDecision,
+  AiChangeKind,
+  SiteAiMode,
+  PutSiteAiModeRequest,
+  AiAuto,
+  AiUsageBucket,
+  AiConnectionAuto,
+  AiConnectionUsage,
+  PutAiConnectionAutoRequest,
+  AiApprovalSetting,
+  AbilityRequestApproval,
+  GetSiteAiModeData,
+  PutSiteAiModeData,
+  GetAiConnectionUsageData,
+  PutAiConnectionAutoData,
+  ListAiActivityData,
   // AI readiness checklist. The status, check id and warning code unions are
   // the closed sets the control plane returns.
   SiteAiReadiness,
@@ -1120,3 +1152,16 @@ export type DeclineAbilityRequestResponse = AbilityRequest;
 export type UndoAbilityRequestResponse = AbilityRequest;
 export type GetSiteContentEditingResponse = GeneratedContentEditingState;
 export type EnableSiteContentEditingResponse = GeneratedContentEditingState;
+
+// --- AI activity: items carry the patched request types ----------------------
+// Each activity item embeds the same request object the queues return, so the
+// generated item types inherit the nullability gap patched above. These carry
+// the patched AbilityRequest and AssistantRequest instead, so a card rendered
+// from the feed and one rendered from a queue read the same type.
+import type { AiActivityPage as GeneratedAiActivityPage } from "./generated/types.gen";
+
+export type AiActivityAbilityRequest = { kind: "ability_request"; request: AbilityRequest };
+export type AiActivityCachePurgeRequest = { kind: "cache_purge_request"; request: AssistantRequest };
+export type AiActivityItem = AiActivityAbilityRequest | AiActivityCachePurgeRequest;
+export type AiActivityPage = Omit<GeneratedAiActivityPage, "items"> & { items: AiActivityItem[] };
+export type ListAiActivityResponse = AiActivityPage;
