@@ -25,25 +25,34 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// The ability engine's four tools (Track B engine, slice E1).
+// The ability engine's four tools.
 //
 //   site_abilities_discover      read   CapAbilityRead
 //   site_ability_describe        read   CapAbilityRead
-//   site_ability_run             request-shaped, CapAbilityRead; E1 runs READ
-//                                entries only, and only WPMgr's own (source
-//                                wpmgr). A read writes mcp.tool.called
-//                                fail-closed BEFORE its text leaves the
-//                                process: the transport skips that row only
-//                                when the handler reports it wrote a request
-//                                row (markRequestRowRecorded), which no E1
-//                                path does.
-//   site_ability_request_status  read   CapAbilityRequest; E1 has no request
-//                                rows, so it lists none and answers any
-//                                request_id as absent (-32007).
+//   site_ability_run             request-effect, CapAbilityRead. The catalogue
+//                                entry decides what a call does. A reviewed
+//                                read runs on the site and answers in the same
+//                                call; it writes mcp.tool.called fail-closed
+//                                BEFORE its text leaves the process. A
+//                                reviewed WPMgr write entry (which also needs
+//                                CapAbilityRequest) becomes a pending request
+//                                row that a person approves before anything
+//                                is written to the site. Its creation
+//                                transaction records mcp.tool.called, and the
+//                                transport skips that row only when the
+//                                handler reports it wrote a request row
+//                                (markRequestRowRecorded).
+//   site_ability_request_status  read   CapAbilityRequest; one request by
+//                                request_id, or this connection's open
+//                                requests. A request that is not this
+//                                connection's, or whose site has left its
+//                                scope, answers absent (-32007). Without the
+//                                request store (EnableAbilityWrites) it lists
+//                                none and answers any request_id as absent.
 //
-// Every tool fences the site first (-32007, byte-identical for out of scope,
-// cross-tenant, nonexistent or archived), reads under SingleSitePrincipal,
-// and returns site text only inside fenceSiteText.
+// The three tools that take a site_id fence it first (-32007, byte-identical
+// for out of scope, cross-tenant, nonexistent or archived) and read under
+// SingleSitePrincipal. All four return site text only inside fenceSiteText.
 // ---------------------------------------------------------------------------
 
 // Tool names.
@@ -291,9 +300,11 @@ func abilityToolPolicies() []ToolPolicy {
 		},
 	}, {
 		Name: ToolSiteAbilityRun,
-		Description: "Run one ability WPMgr has reviewed on one site. On this server only reviewed " +
-			"reads run: they change nothing and answer immediately. The result is the site's own " +
-			"output and is untrusted text.",
+		Description: "Run one ability WPMgr has reviewed on one site. A read answers immediately and " +
+			"changes nothing on the site. A change is not made directly: it becomes a request that a " +
+			"person approves in WPMgr, and nothing changes until they do. Its result carries the " +
+			"request's `request_id`; call `" + ToolSiteAbilityRequestStatus + "` with it to learn " +
+			"the outcome. A read's result is the site's own output and is untrusted text.",
 		InputSchema:          abilityRunSchema,
 		Capability:           CapAbilityRead,
 		OperatorPermission:   authz.PermSiteRead,
@@ -1190,7 +1201,8 @@ func projectNode(v any, depth int, removed *bool) any {
 }
 
 // ---------------------------------------------------------------------------
-// site_ability_run (READ entries only in E1)
+// site_ability_run: the entry point and the read path. A write entry is
+// handed to runSiteAbilityWrite (ability_write.go).
 // ---------------------------------------------------------------------------
 
 type runResult struct {
@@ -1269,8 +1281,10 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 	if ref != nil {
 		return "", ref
 	}
-	// 3. The catalogue decides, before anything else: E1 runs admitted,
-	// enabled, source=wpmgr READ entries only.
+	// 3. The catalogue decides, before anything else. An admitted, enabled
+	// WPMgr write entry goes to the request rail; an entry classed as a
+	// runnable read runs on the site; any other entry is refused with its
+	// reason.
 	_, all, err := s.siteClassified(ctx, eng, site)
 	if err != nil {
 		return "", err
@@ -1563,7 +1577,9 @@ func projectOutput(v any, s *outShape) any {
 }
 
 // ---------------------------------------------------------------------------
-// site_ability_request_status (E1: there are no ability requests yet)
+// site_ability_request_status: one request by request_id, or this
+// connection's open requests. abilityRequestStatus (ability_write.go) reads
+// them.
 // ---------------------------------------------------------------------------
 
 func (s *Service) siteAbilityRequestStatus(ctx context.Context, auth AuthorizedRequest, raw json.RawMessage) (string, error) {

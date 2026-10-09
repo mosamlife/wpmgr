@@ -59,6 +59,11 @@ func assertFenceHolds(t *testing.T, text string) {
 	preambleLine := strings.TrimSuffix(instructionPreamble, "\n")
 
 	for i, line := range lines[1 : len(lines)-1] {
+		// One line to every reader: no line break of any form inside it.
+		if j := strings.IndexFunc(line, isLineBreak); j >= 0 {
+			t.Errorf("body line %d holds a line break at byte %d; each rendered line is one line:\n\t%q\nfull render:\n%s",
+				i, j, line, text)
+		}
 		if line == epilogueLine {
 			t.Errorf("body line %d closes the fence early:\n\t%q\nfull render:\n%s", i, line, text)
 		}
