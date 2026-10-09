@@ -5,9 +5,11 @@
  *
  * It answers only the two query shapes BuilderDocumentFingerprint::read()
  * sends and throws on any other, so a changed query is loud. It emulates the
- * parts of MySQL those reads depend on: postmeta rows come back in storage
- * order unless the query asks for meta_id order, and meta_key matches under
- * the default collation (case-insensitive, trailing spaces ignored).
+ * parts of MySQL those reads depend on: a posts read returns exactly the
+ * columns the query names (placement columns default to 0, as the table's
+ * do), postmeta rows come back in storage order unless the query asks for
+ * meta_id order, and meta_key matches under the default collation
+ * (case-insensitive, trailing spaces ignored).
  *
  * @package WPMgr\Agent\Tests\Builders
  */
@@ -21,6 +23,12 @@ namespace WPMgr\Agent\Tests\Builders;
  */
 final class FakeBuilderWpdb
 {
+    /** The posts columns a read may name. */
+    private const POST_COLUMNS = ['post_type', 'post_status', 'post_title', 'post_content', 'post_modified_gmt', 'post_parent', 'menu_order'];
+
+    /** The integer columns among them, which a driver may return as ints. */
+    private const INT_COLUMNS = ['post_parent', 'menu_order'];
+
     public string $prefix   = 'wp_';
     public string $posts    = 'wp_posts';
     public string $postmeta = 'wp_postmeta';
@@ -32,19 +40,30 @@ final class FakeBuilderWpdb
     /** @var string Table whose next read fails ("posts" or "postmeta"), or "". */
     public string $failOn = '';
 
-    /** @var array<int,array<string,string>> */
+    /**
+     * @var bool A driver that returns native types: the integer columns of a
+     *           posts read come back as ints. Off, every column is text, as
+     *           mysqli answers.
+     */
+    public bool $nativeInts = false;
+
+    /** @var array<int,array<string,string|int|null>> */
     private array $postRows = [];
 
     /** @var list<array{meta_id:int,post_id:int,meta_key:string,meta_value:string|null}> Storage order. */
     private array $metaRows = [];
 
     /**
-     * @param int                  $id     Post ID.
-     * @param array<string,string> $fields Column => stored value.
+     * Stores a posts row. A placement column the fields leave out is 0, as the
+     * table's default is; a driver that returns native types may be given as an
+     * int.
+     *
+     * @param int                          $id     Post ID.
+     * @param array<string,string|int|null> $fields Column => stored value.
      */
     public function addPost(int $id, array $fields): void
     {
-        $this->postRows[$id] = $fields;
+        $this->postRows[$id] = $fields + ['post_parent' => '0', 'menu_order' => '0'];
     }
 
     /**
@@ -81,13 +100,19 @@ final class FakeBuilderWpdb
      * @param string $prepared Output of prepare().
      * @param string $output   ARRAY_A or OBJECT.
      * @param int    $y        Row offset (unused).
-     * @return array<string,string>|object|null
+     * @return array<string,string|int|null>|object|null
      */
     public function get_row(string $prepared, string $output = 'OBJECT', int $y = 0)
     {
         [$sql, $args] = $this->begin($prepared);
-        if ($sql !== 'SELECT post_type, post_status, post_title, post_content, post_modified_gmt FROM %i WHERE ID = %d') {
+        if (preg_match('/^SELECT ([a-z_]+(?:, [a-z_]+)*) FROM %i WHERE ID = %d$/', $sql, $m) !== 1) {
             throw new \LogicException('get_row: unexpected query: ' . $sql);
+        }
+        $columns = explode(', ', $m[1]);
+        foreach ($columns as $column) {
+            if (!in_array($column, self::POST_COLUMNS, true)) {
+                throw new \LogicException('get_row: not a posts column: ' . $column);
+            }
         }
         if ($args[0] !== $this->posts) {
             throw new \LogicException('get_row: not the posts table');
@@ -95,9 +120,20 @@ final class FakeBuilderWpdb
         if ($this->fails('posts')) {
             return null;
         }
-        $row = $this->postRows[(int) $args[1]] ?? null;
-        if ($row === null) {
+        $stored = $this->postRows[(int) $args[1]] ?? null;
+        if ($stored === null) {
             return null;
+        }
+        // The columns the query names, in the order it names them, as text
+        // (ints for the integer columns under $nativeInts); a column the row
+        // never had is NULL.
+        $row = [];
+        foreach ($columns as $column) {
+            $value = $stored[$column] ?? null;
+            if ($value !== null) {
+                $value = $this->nativeInts && in_array($column, self::INT_COLUMNS, true) ? (int) $value : (string) $value;
+            }
+            $row[$column] = $value;
         }
 
         return $output === ARRAY_A ? $row : (object) $row;

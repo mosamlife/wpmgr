@@ -17,8 +17,15 @@ if (!defined('ABSPATH')) {
  *   sha256(json_encode([
  *     "wpmgr.builder_document.v1",
  *     post_type, post_status, sha256(post_title), sha256(post_content), post_modified_gmt,
+ *     post_parent, menu_order,
  *     [[key, row_count, [sha256(row), ...]], ...]
  *   ]))
+ *
+ * post_parent and menu_order are where the page sits, its parent and its
+ * order among its siblings: the stored integers, encoded as JSON numbers
+ * (menu_order may be negative). A page that was moved or reordered is a
+ * different fingerprint even when nothing else about it changed, as for a
+ * block-editor draft (PageCreateBuilder::documentFingerprint()).
  *
  * The keys are the adapter's descriptor keys in byte order (strcmp). Each
  * key's rows are its postmeta rows in meta_id order, each hashed on its own
@@ -36,17 +43,20 @@ final class BuilderDocumentFingerprint
 {
     public const DOMAIN = 'wpmgr.builder_document.v1';
 
-    /** The posts columns the fingerprint covers. */
+    /** The posts columns the fingerprint covers as text. */
     public const POST_FIELDS = ['post_type', 'post_status', 'post_title', 'post_content', 'post_modified_gmt'];
+
+    /** The posts columns it covers as integers, in formula order: where the page sits. */
+    public const PLACEMENT_FIELDS = ['post_parent', 'menu_order'];
 
     /**
      * The fingerprint of a post and its rows under the given descriptor keys.
      *
-     * @param array<string,mixed> $post      The POST_FIELDS, each a string.
+     * @param array<string,mixed> $post      The POST_FIELDS, each a string, and the PLACEMENT_FIELDS, each an int.
      * @param array<mixed>        $rowsByKey Descriptor key => stored rows in meta_id order.
      * @param array<mixed>        $keys      The descriptor keys, in any order.
      * @return string Lowercase hex.
-     * @throws \InvalidArgumentException When a post field, key or row is not a string, or rows name a key outside $keys.
+     * @throws \InvalidArgumentException When a post field, key or row is not a string, a placement is not an int, or rows name a key outside $keys.
      * @throws \JsonException            Never for valid strings.
      */
     public static function compute(array $post, array $rowsByKey, array $keys): string
@@ -58,6 +68,13 @@ final class BuilderDocumentFingerprint
                 throw new \InvalidArgumentException('every post field must be a string');
             }
             $fields[$field] = $post[$field];
+        }
+        $placement = [];
+        foreach (self::PLACEMENT_FIELDS as $field) {
+            if (!isset($post[$field]) || !is_int($post[$field])) {
+                throw new \InvalidArgumentException('post_parent and menu_order must be integers');
+            }
+            $placement[$field] = $post[$field];
         }
         foreach ($rowsByKey as $key => $rows) {
             if (!in_array((string) $key, $keys, true)) {
@@ -87,6 +104,8 @@ final class BuilderDocumentFingerprint
             hash('sha256', $fields['post_title']),
             hash('sha256', $fields['post_content']),
             $fields['post_modified_gmt'],
+            $placement['post_parent'],
+            $placement['menu_order'],
             $meta,
         ], JSON_THROW_ON_ERROR));
     }
@@ -96,7 +115,7 @@ final class BuilderDocumentFingerprint
      *
      * @param int          $postId Post ID.
      * @param array<mixed> $keys   The descriptor keys.
-     * @return array{post:array<string,string>,rows:array<string,list<string>>}|null Null when there is no such post.
+     * @return array{post:array<string,string|int>,rows:array<string,list<string>>}|null Null when there is no such post. The post holds the POST_FIELDS as text and the PLACEMENT_FIELDS as ints, whatever types the driver answers.
      * @throws \InvalidArgumentException When the post ID or a key is not valid.
      * @throws \RuntimeException         When the database cannot answer, or answers with something that is not stored bytes.
      */
@@ -112,7 +131,7 @@ final class BuilderDocumentFingerprint
             throw new \RuntimeException('database handle unavailable');
         }
         /** @var \wpdb $wpdb */
-        $post = $wpdb->get_row($wpdb->prepare('SELECT post_type, post_status, post_title, post_content, post_modified_gmt FROM %i WHERE ID = %d', $wpdb->posts, $postId), ARRAY_A); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- the fingerprint covers the stored row, so it is read uncached; table from core via the %i identifier placeholder (WP 6.2+)
+        $post = $wpdb->get_row($wpdb->prepare('SELECT post_type, post_status, post_title, post_content, post_modified_gmt, post_parent, menu_order FROM %i WHERE ID = %d', $wpdb->posts, $postId), ARRAY_A); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- the fingerprint covers the stored row, so it is read uncached; table from core via the %i identifier placeholder (WP 6.2+)
         self::assertQueryOk($wpdb);
         if ($post === null) {
             return null;
@@ -126,6 +145,13 @@ final class BuilderDocumentFingerprint
                 throw new \RuntimeException('database read failed');
             }
             $fields[$field] = $post[$field];
+        }
+        foreach (self::PLACEMENT_FIELDS as $field) {
+            $int = self::storedInt($post[$field] ?? null);
+            if ($int === null) {
+                throw new \RuntimeException('database read failed');
+            }
+            $fields[$field] = $int;
         }
 
         $rows = [];
@@ -172,6 +198,31 @@ final class BuilderDocumentFingerprint
         }
 
         return self::compute($stored['post'], $stored['rows'], $keys);
+    }
+
+    /**
+     * An integer column as the database answered it: its decimal text, as
+     * mysqli answers every column, or an int from a driver that returns native
+     * types. Anything that is not a plain stored integer is null, so it is
+     * never read as one.
+     *
+     * @param mixed $value The column.
+     * @return int|null
+     */
+    private static function storedInt(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+        if (!is_string($value)) {
+            return null;
+        }
+        $int = (int) $value;
+
+        // Only an integer's own decimal text survives the round trip: no sign
+        // but a minus, no space, no leading zero, no fraction or exponent, and
+        // nothing outside the platform's integers.
+        return (string) $int === $value ? $int : null;
     }
 
     /**

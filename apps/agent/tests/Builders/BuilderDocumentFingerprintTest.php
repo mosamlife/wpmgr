@@ -183,8 +183,94 @@ final class BuilderDocumentFingerprintTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
+    // Placement
+    // -------------------------------------------------------------------------
+
+    public function test_where_the_page_sits_is_part_of_the_fingerprint(): void
+    {
+        // post_parent, then menu_order, as JSON numbers, after post_modified_gmt.
+        $at = static fn (int $parent, int $order): string => BuilderDocumentFingerprint::compute(self::placed($parent, $order), [], self::ELEMENTOR_KEYS);
+        $this->assertSame(self::formula(self::post(), self::noRows()), $at(0, 0));
+        $this->assertSame(self::formula(self::placed(12, -3), self::noRows()), $at(12, -3));
+
+        // Moved, reordered, moved and reordered, and the two numbers swapped:
+        // every placement is its own fingerprint over the same page and rows.
+        $seen = [];
+        foreach ([[0, 0], [12, 0], [0, 12], [12, 12], [0, -12], [12, -12]] as [$parent, $order]) {
+            $seen[$parent . '/' . $order] = $at($parent, $order);
+        }
+        $this->assertCount(count($seen), array_unique($seen), 'no two placements share a fingerprint');
+    }
+
+    public function test_placement_changes_the_fingerprint_whatever_else_stays_put(): void
+    {
+        // The modified time, the content and every row are the same; only where
+        // the page sits differs.
+        $rows = ['_elementor_data' => ['[{"id":"1a2b3c4","elType":"container"}]'], '_elementor_edit_mode' => ['builder']];
+        $made = BuilderDocumentFingerprint::compute(self::post(), $rows, self::ELEMENTOR_KEYS);
+
+        $this->assertNotSame($made, BuilderDocumentFingerprint::compute(self::placed(9, 0), $rows, self::ELEMENTOR_KEYS), 'moved under another page');
+        $this->assertNotSame($made, BuilderDocumentFingerprint::compute(self::placed(0, 3), $rows, self::ELEMENTOR_KEYS), 'reordered among its siblings');
+        $this->assertSame($made, BuilderDocumentFingerprint::compute(self::placed(0, 0), $rows, self::ELEMENTOR_KEYS), 'put back, it is the page that was made');
+    }
+
+    public function test_placement_must_be_integers(): void
+    {
+        $post = self::post();
+        $bad  = [
+            'parent missing'  => array_diff_key($post, ['post_parent' => 1]),
+            'order missing'   => array_diff_key($post, ['menu_order' => 1]),
+            'parent as text'  => ['post_parent' => '0'] + $post,
+            'order as text'   => ['menu_order' => '0'] + $post,
+            'parent null'     => ['post_parent' => null] + $post,
+            'order as float'  => ['menu_order' => 1.0] + $post,
+            'parent as bool'  => ['post_parent' => false] + $post,
+            'order as array'  => ['menu_order' => [0]] + $post,
+        ];
+        foreach ($bad as $what => $given) {
+            try {
+                BuilderDocumentFingerprint::compute($given, [], self::ELEMENTOR_KEYS);
+                $this->fail($what . ' must be refused');
+            } catch (\InvalidArgumentException $e) {
+                $this->assertNotSame('', $e->getMessage(), $what);
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Read
     // -------------------------------------------------------------------------
+
+    public function test_read_returns_placement_as_integers_whatever_the_driver_returns(): void
+    {
+        $this->db->addPost(self::POST_ID, ['post_parent' => '12', 'menu_order' => '-3'] + self::post());
+        $want = BuilderDocumentFingerprint::compute(self::placed(12, -3), [], self::ELEMENTOR_KEYS);
+
+        // mysqli answers every column as text; some drivers answer ints.
+        foreach ([false, true] as $native) {
+            $this->db->nativeInts = $native;
+            $stored               = BuilderDocumentFingerprint::read(self::POST_ID, self::ELEMENTOR_KEYS);
+            $this->assertNotNull($stored);
+            $this->assertSame([12, -3], [$stored['post']['post_parent'], $stored['post']['menu_order']], $native ? 'native ints' : 'text');
+            $this->assertSame($want, BuilderDocumentFingerprint::ofPost(self::POST_ID, self::ELEMENTOR_KEYS), $native ? 'native ints' : 'text');
+        }
+    }
+
+    public function test_a_placement_that_is_not_a_stored_integer_fails_the_read(): void
+    {
+        $unreadable = ['', ' 1', '1 ', '+1', '-0', '01', '1.5', '1e3', '0x1', 'abc', '9223372036854775808', '-9223372036854775809', null];
+        foreach (['post_parent', 'menu_order'] as $column) {
+            foreach ($unreadable as $value) {
+                $this->db->addPost(self::POST_ID, [$column => $value] + self::post());
+                try {
+                    BuilderDocumentFingerprint::read(self::POST_ID, self::ELEMENTOR_KEYS);
+                    $this->fail($column . ' ' . var_export($value, true) . ' must fail the read, never read as a placement');
+                } catch (\RuntimeException $e) {
+                    $this->assertSame('database read failed', $e->getMessage(), $column . ' ' . var_export($value, true));
+                }
+            }
+        }
+    }
 
     public function test_reads_raw_rows_not_the_meta_cache(): void
     {
@@ -220,6 +306,8 @@ final class BuilderDocumentFingerprintTest extends TestCase
             BuilderDocumentFingerprint::compute($post, $stored['rows'], self::ELEMENTOR_KEYS),
             BuilderDocumentFingerprint::ofPost(self::POST_ID, self::ELEMENTOR_KEYS)
         );
+        $this->assertSame('SELECT post_type, post_status, post_title, post_content, post_modified_gmt, post_parent, menu_order FROM %i WHERE ID = %d', $this->db->queries[0]['sql'], 'every column the fingerprint covers, placement included');
+        $this->assertSame(['wp_posts', self::POST_ID], $this->db->queries[0]['args']);
         $this->assertSame('SELECT meta_key, meta_value FROM %i WHERE post_id = %d AND meta_key IN (%s, %s, %s, %s) ORDER BY meta_id ASC', $this->db->queries[1]['sql']);
         $this->assertSame(array_merge(['wp_postmeta', self::POST_ID], self::ELEMENTOR_KEYS), $this->db->queries[1]['args']);
     }
@@ -273,7 +361,9 @@ final class BuilderDocumentFingerprintTest extends TestCase
     // -------------------------------------------------------------------------
 
     /**
-     * @return array<string,string>
+     * A page at the top level, first among its siblings.
+     *
+     * @return array<string,string|int>
      */
     private static function post(string $title = 'Spring sale', string $content = '<h2>Spring sale</h2>'): array
     {
@@ -283,13 +373,25 @@ final class BuilderDocumentFingerprintTest extends TestCase
             'post_title'        => $title,
             'post_content'      => $content,
             'post_modified_gmt' => '2026-10-09 05:20:00',
+            'post_parent'       => 0,
+            'menu_order'        => 0,
         ];
+    }
+
+    /**
+     * The same page under another parent, in another place among its siblings.
+     *
+     * @return array<string,string|int>
+     */
+    private static function placed(int $parent, int $order, string $title = 'Spring sale', string $content = '<h2>Spring sale</h2>'): array
+    {
+        return ['post_parent' => $parent, 'menu_order' => $order] + self::post($title, $content);
     }
 
     /**
      * The formula written out by hand, with the per-key entries in the order given.
      *
-     * @param array<string,string> $post    Post fields.
+     * @param array<string,string|int> $post    Post fields.
      * @param list<array{0:string,1:int,2:list<string>}> $entries Per-key entries.
      */
     private static function formula(array $post, array $entries): string
@@ -298,17 +400,34 @@ final class BuilderDocumentFingerprintTest extends TestCase
             'wpmgr.builder_document.v1',
             $post['post_type'],
             $post['post_status'],
-            hash('sha256', $post['post_title']),
-            hash('sha256', $post['post_content']),
+            hash('sha256', (string) $post['post_title']),
+            hash('sha256', (string) $post['post_content']),
             $post['post_modified_gmt'],
+            $post['post_parent'],
+            $post['menu_order'],
             $entries,
         ]));
     }
 
     /**
+     * The per-key entries of a document with none of its rows.
+     *
+     * @return list<array{0:string,1:int,2:list<string>}>
+     */
+    private static function noRows(): array
+    {
+        return [
+            ['_elementor_data', 0, []],
+            ['_elementor_edit_mode', 0, []],
+            ['_elementor_page_settings', 0, []],
+            ['_elementor_template_type', 0, []],
+        ];
+    }
+
+    /**
      * The cases of the shared fixture.
      *
-     * @return list<array{name:string,keys:list<string>,post:array<string,string>,rows:array<string,list<string>>}>
+     * @return list<array{name:string,keys:list<string>,post:array<string,string|int>,rows:array<string,list<string>>}>
      */
     private static function cases(): array
     {
@@ -356,6 +475,11 @@ final class BuilderDocumentFingerprintTest extends TestCase
                 'post' => self::post('Spring sale', $content),
                 'rows' => $document,
             ],
+            // Where the page sits: the same page and rows, each placement its own fingerprint.
+            ['name' => 'moved-under-a-parent', 'keys' => self::ELEMENTOR_KEYS, 'post' => self::placed(7, 0, 'Spring sale', $content), 'rows' => $document],
+            ['name' => 'reordered-among-siblings', 'keys' => self::ELEMENTOR_KEYS, 'post' => self::placed(0, 7, 'Spring sale', $content), 'rows' => $document],
+            ['name' => 'negative-menu-order', 'keys' => self::ELEMENTOR_KEYS, 'post' => self::placed(0, -3, 'Spring sale', $content), 'rows' => $document],
+            ['name' => 'moved-and-reordered', 'keys' => self::ELEMENTOR_KEYS, 'post' => self::placed(4180, 12, 'Spring sale', $content), 'rows' => $document],
         ];
     }
 
@@ -378,8 +502,9 @@ final class BuilderDocumentFingerprintTest extends TestCase
         $doc = [
             'note'        => 'Generated by the agent (tests/Builders/BuilderDocumentFingerprintTest.php). Regenerate with WPMGR_WRITE_FIXTURES=1. '
                 . 'fingerprint = sha256(json_encode([domain, post_type, post_status, sha256(post_title), sha256(post_content), post_modified_gmt, '
-                . '[[key, row_count, [sha256(row), ...]], ...]])) with one entry per key of "keys", taken in byte order (strcmp) whatever order "keys" '
-                . 'lists them in; a key\'s rows are its postmeta rows in meta_id order, and a key with no row is [key, 0, []]. '
+                . 'post_parent, menu_order, [[key, row_count, [sha256(row), ...]], ...]])) with one entry per key of "keys", taken in byte order (strcmp) whatever order "keys" '
+                . 'lists them in; post_parent and menu_order are the stored integers and encode as JSON numbers (menu_order may be negative); '
+                . 'a key\'s rows are its postmeta rows in meta_id order, and a key with no row is [key, 0, []]. '
                 . 'json_encode with default flags; every sha256 is lowercase hex over the bytes. '
                 . 'rows_b64 holds each stored meta_value, base64, in meta_id order; a key missing from rows_b64 has no row. '
                 . 'descriptors.elementor is the Elementor document\'s key list.',

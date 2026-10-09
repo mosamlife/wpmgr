@@ -559,6 +559,32 @@ final class BuilderPageCreateTest extends TestCase
         $this->assertSame('the created draft no longer exists', BuilderPageCreate::revertProblem(self::OTHER, $row));
     }
 
+    public function test_revert_guard_refuses_a_draft_that_was_moved_or_reordered(): void
+    {
+        $row = $this->createdDraft();
+        $this->assertNull(BuilderPageCreate::revertProblem(self::NEW_ID, $row), 'the draft as created, where it was created');
+        $modified = $this->rows[self::NEW_ID]['post_modified_gmt'];
+
+        // Someone moved the draft under another page, or reordered it among its
+        // siblings. Every column the fingerprint covered before is as it was,
+        // post_modified_gmt included.
+        $moves = [
+            'moved under another page'    => ['post_parent' => '9'],
+            'reordered after its siblings' => ['menu_order' => '3'],
+            'reordered before them'        => ['menu_order' => '-1'],
+            'moved and reordered'          => ['post_parent' => '9', 'menu_order' => '3'],
+        ];
+        foreach ($moves as $what => $columns) {
+            $this->wpdb->addPost(self::NEW_ID, $columns + $this->rows[self::NEW_ID]);
+            $this->assertSame($modified, $this->rows[self::NEW_ID]['post_modified_gmt'], 'precondition: the modified time did not move');
+            $this->assertSame('someone edited this draft after it was created', BuilderPageCreate::revertProblem(self::NEW_ID, $row), $what);
+        }
+
+        // The guard compares what is stored: put back, the draft is as created.
+        $this->wpdb->addPost(self::NEW_ID, $this->rows[self::NEW_ID]);
+        $this->assertNull(BuilderPageCreate::revertProblem(self::NEW_ID, $row), 'back where it was created');
+    }
+
     /**
      * Precheck $spec as the service user's request, through a fresh adapter.
      *

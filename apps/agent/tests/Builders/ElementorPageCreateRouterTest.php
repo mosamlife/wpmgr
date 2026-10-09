@@ -526,6 +526,34 @@ final class ElementorPageCreateRouterTest extends TestCase
         $this->assertSame('reverted', $this->revert(self::REQ_GOLDEN)['outcome'] ?? null, 'unchanged again, the draft can be undone');
     }
 
+    public function test_undo_refused_after_the_draft_is_moved_or_reordered(): void
+    {
+        $id       = $this->createDraft();
+        $modified = $this->posts[$id]->post_modified_gmt;
+        $this->assertSame([0, 0], [$this->posts[$id]->post_parent, $this->posts[$id]->menu_order], 'precondition: the draft is created at the top level, first among its siblings');
+
+        // Someone moved the draft under another page or reordered it among its
+        // siblings, and the modified time did not move with it.
+        foreach ([['post_parent', 9], ['menu_order', 3], ['menu_order', -1]] as [$column, $value]) {
+            $this->posts[$id]->$column = $value;
+            $this->syncRow($id);
+            $this->assertSame($modified, $this->posts[$id]->post_modified_gmt, 'precondition: the modified time did not move');
+
+            $r = $this->revert(self::REQ_GOLDEN);
+            $this->assertSame('created_post_touched', $r['code'] ?? null, $column . ' ' . $value . ': ' . json_encode($r));
+            $this->assertSame('draft', $this->posts[$id]->post_status, $column . ' ' . $value . ': not trashed');
+            $this->assertSame('available', AbilityLedger::get(self::REQ_GOLDEN)['undo_state'], $column . ' ' . $value);
+
+            $this->posts[$id]->$column = 0;
+            $this->syncRow($id);
+        }
+
+        // Put back, nothing differs from what was created: the draft can be undone.
+        $r = $this->revert(self::REQ_GOLDEN);
+        $this->assertSame('reverted', $r['outcome'] ?? null, json_encode($r));
+        $this->assertSame('trash', $this->posts[$id]->post_status);
+    }
+
     public function test_elementor_format_rejected_for_block_editor(): void
     {
         $this->enable();
@@ -586,6 +614,7 @@ final class ElementorPageCreateRouterTest extends TestCase
             'post_title'        => stripslashes((string) $data['post_title']),
             'post_content'      => stripslashes((string) $data['post_content']),
             'post_parent'       => 0,
+            'menu_order'        => 0,
             'post_date'         => '2026-10-09 10:00:00',
             'post_date_gmt'     => '0000-00-00 00:00:00',
             'post_modified'     => '2026-10-09 10:00:00',
@@ -632,6 +661,8 @@ final class ElementorPageCreateRouterTest extends TestCase
             'post_title'        => (string) $p->post_title,
             'post_content'      => (string) $p->post_content,
             'post_modified_gmt' => (string) $p->post_modified_gmt,
+            'post_parent'       => (string) $p->post_parent,
+            'menu_order'        => (string) $p->menu_order,
         ]);
     }
 
