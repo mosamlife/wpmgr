@@ -138,6 +138,12 @@ type RequestDTO struct {
 	// WordPress editor, and for every other ability). Version came from the
 	// site.
 	PageBuilder *PageBuilderDTO `json:"page_builder"`
+	// PageEdit is a wpmgr/page-edit request's card (null for every other
+	// ability): the post, the page builder, each change, and the page's
+	// outline after the edit, as the control plane checked them against
+	// the site's precheck. Every value under a from_the_site member came
+	// from the site. It is passed through as stored, never added to.
+	PageEdit json.RawMessage `json:"page_edit"`
 }
 
 // PageBuilderDTO is the page builder of a page-create request.
@@ -184,6 +190,18 @@ func cardFactsJSON(b []byte) json.RawMessage {
 // page-create request's stored facts reach the wire as page_media instead.
 func cardFactsFor(r sqlc.AssistantAbilityRequest) json.RawMessage {
 	if r.AbilityName != mcp.AbilityRestWrite {
+		return json.RawMessage("null")
+	}
+	return cardFactsJSON(r.CardFacts)
+}
+
+// pageEditFor is page_edit: a page-edit request's stored card, or null when
+// the row is another ability's or holds no page-edit card.
+func pageEditFor(r sqlc.AssistantAbilityRequest) json.RawMessage {
+	if r.AbilityName != mcp.AbilityPageEdit {
+		return json.RawMessage("null")
+	}
+	if _, ok := mcp.ReadPageEditCardFacts(r.CardFacts); !ok {
 		return json.RawMessage("null")
 	}
 	return cardFactsJSON(r.CardFacts)
@@ -252,6 +270,7 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string)
 		CardFacts:          cardFactsFor(r),
 		PageMedia:          pageMediaFor(r),
 		PageBuilder:        pageBuilderFor(r),
+		PageEdit:           pageEditFor(r),
 	}
 	if withDigest {
 		d := r.PresentedDigest

@@ -4787,6 +4787,147 @@ export type AbilityRequest = {
    *
    */
   page_builder?: AbilityRequestPageBuilder;
+  /**
+   * The card of a wpmgr/page-edit request: the post, the page
+   * builder, each change and the page's outline after the edit, as
+   * WPMgr checked them against the site's precheck. Null for every
+   * other ability. A page-edit request without it cannot be shown in
+   * full and must not be approvable.
+   *
+   */
+  page_edit?: AbilityRequestPageEdit;
+};
+
+/**
+ * A wpmgr/page-edit card. Every value under a `from_the_site` member
+ * came from the site: render it as plain text in the "From the site"
+ * slot. A change's `after` is the text the AI asked for. The other
+ * strings are WPMgr's.
+ *
+ */
+export type AbilityRequestPageEdit = {
+  kind: "builder_edit";
+  post: {
+    /**
+     * The post the edit changes, a draft WPMgr created.
+     */
+    id: number;
+    from_the_site: {
+      title: string;
+    };
+  };
+  builder: {
+    /**
+     * The page builder, such as `elementor`.
+     */
+    id: string;
+    /**
+     * The builder's version on the site; render it as plain text.
+     */
+    version: string;
+    /**
+     * What the builder edits the page in, such as `classic`.
+     */
+    format: string;
+  };
+  /**
+   * One per operation, in the order they apply.
+   */
+  changes: Array<AbilityRequestPageEditChange>;
+  after_outline?: AbilityRequestPageOutline;
+  /**
+   * True when the page's outline after the edit was too large to
+   * keep on the card; `after_outline` is then absent.
+   *
+   */
+  after_outline_omitted?: boolean;
+  /**
+   * When WPMgr checked the edit on the site.
+   */
+  checked_at: string;
+};
+
+/**
+ * One change. `set_text` changes `field` of node `ref` to `after`;
+ * `insert` puts new nodes (`new_refs`) by `anchor`; `replace` puts
+ * `new_refs` where `ref` was; `remove` takes `ref` and everything in it
+ * off the page; `move` puts `ref` by `anchor`.
+ *
+ */
+export type AbilityRequestPageEditChange = {
+  op: "set_text" | "insert" | "replace" | "remove" | "move";
+  ref?: string;
+  /**
+   * What the node is, such as `heading` or `paragraph`.
+   */
+  kind?: string;
+  /**
+   * A heading's level.
+   */
+  level?: number;
+  field?: "text" | "url" | "alt" | "caption";
+  /**
+   * The text the AI asked for (set_text).
+   */
+  after?: string;
+  /**
+   * Every node the change makes, parent first.
+   */
+  new_refs?: Array<string>;
+  anchor?: AbilityRequestPageEditAnchor;
+  from_the_site?: {
+    /**
+     * The node's text before the change, field by field.
+     */
+    before: {
+      [key: string]: string;
+    };
+  };
+};
+
+/**
+ * Where an insert or a move puts its nodes: `after`, `before` or
+ * `into` the node `ref`, `first` or `last` among its children for
+ * `into`. `label` is WPMgr's words for a node it does not edit.
+ *
+ */
+export type AbilityRequestPageEditAnchor = {
+  ref: string;
+  how: "after" | "before" | "into";
+  position?: "first" | "last";
+  kind: string;
+  level?: number;
+  label?: string;
+};
+
+/**
+ * A page's outline as WPMgr reads it: `node_count` nodes in all, the
+ * first `nodes` in page order, `truncated` when some were left out.
+ *
+ */
+export type AbilityRequestPageOutline = {
+  node_count: number;
+  truncated: boolean;
+  nodes: Array<AbilityRequestPageOutlineNode>;
+};
+
+/**
+ * One node. `parent` is `root` or an earlier node's ref. A node of kind
+ * `locked` is one WPMgr does not edit, with WPMgr's `label` for it;
+ * every other node lists the fields an edit may change and its text
+ * from the site.
+ *
+ */
+export type AbilityRequestPageOutlineNode = {
+  ref: string;
+  parent: string;
+  kind: string;
+  level?: number;
+  editable?: Array<string>;
+  from_the_site?: {
+    [key: string]: string;
+  };
+  label?: string;
 };
 
 /**

@@ -20576,6 +20576,167 @@ components:
             editor, and for every other ability. A card for a request whose
             editor is a page builder cannot be shown in full without it and
             must not be approvable.
+        page_edit:
+          allOf:
+            - $ref: "#/components/schemas/AbilityRequestPageEdit"
+          nullable: true
+          description: |
+            The card of a wpmgr/page-edit request: the post, the page
+            builder, each change and the page's outline after the edit, as
+            WPMgr checked them against the site's precheck. Null for every
+            other ability. A page-edit request without it cannot be shown in
+            full and must not be approvable.
+    AbilityRequestPageEdit:
+      type: object
+      description: |
+        A wpmgr/page-edit card. Every value under a `from_the_site` member
+        came from the site: render it as plain text in the "From the site"
+        slot. A change's `after` is the text the AI asked for. The other
+        strings are WPMgr's.
+      required: [kind, post, builder, changes, checked_at]
+      properties:
+        kind:
+          type: string
+          enum: [builder_edit]
+        post:
+          type: object
+          required: [id, from_the_site]
+          properties:
+            id:
+              type: integer
+              format: int64
+              description: The post the edit changes, a draft WPMgr created.
+            from_the_site:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+        builder:
+          type: object
+          required: [id, version, format]
+          properties:
+            id:
+              type: string
+              description: The page builder, such as `elementor`.
+            version:
+              type: string
+              description: The builder's version on the site; render it as plain text.
+            format:
+              type: string
+              description: What the builder edits the page in, such as `classic`.
+        changes:
+          type: array
+          description: One per operation, in the order they apply.
+          items:
+            $ref: "#/components/schemas/AbilityRequestPageEditChange"
+        after_outline:
+          $ref: "#/components/schemas/AbilityRequestPageOutline"
+        after_outline_omitted:
+          type: boolean
+          description: |
+            True when the page's outline after the edit was too large to
+            keep on the card; `after_outline` is then absent.
+        checked_at:
+          type: string
+          format: date-time
+          description: When WPMgr checked the edit on the site.
+    AbilityRequestPageEditChange:
+      type: object
+      description: |
+        One change. `set_text` changes `field` of node `ref` to `after`;
+        `insert` puts new nodes (`new_refs`) by `anchor`; `replace` puts
+        `new_refs` where `ref` was; `remove` takes `ref` and everything in it
+        off the page; `move` puts `ref` by `anchor`.
+      required: [op]
+      properties:
+        op:
+          type: string
+          enum: [set_text, insert, replace, remove, move]
+        ref: { type: string }
+        kind:
+          type: string
+          description: What the node is, such as `heading` or `paragraph`.
+        level:
+          type: integer
+          format: int64
+          description: A heading's level.
+        field:
+          type: string
+          enum: [text, url, alt, caption]
+        after:
+          type: string
+          description: The text the AI asked for (set_text).
+        new_refs:
+          type: array
+          items: { type: string }
+          description: Every node the change makes, parent first.
+        anchor:
+          $ref: "#/components/schemas/AbilityRequestPageEditAnchor"
+        from_the_site:
+          type: object
+          required: [before]
+          properties:
+            before:
+              type: object
+              additionalProperties: { type: string }
+              description: The node's text before the change, field by field.
+    AbilityRequestPageEditAnchor:
+      type: object
+      description: |
+        Where an insert or a move puts its nodes: `after`, `before` or
+        `into` the node `ref`, `first` or `last` among its children for
+        `into`. `label` is WPMgr's words for a node it does not edit.
+      required: [ref, how, kind]
+      properties:
+        ref: { type: string }
+        how:
+          type: string
+          enum: [after, before, into]
+        position:
+          type: string
+          enum: [first, last]
+        kind: { type: string }
+        level:
+          type: integer
+          format: int64
+        label: { type: string }
+    AbilityRequestPageOutline:
+      type: object
+      description: |
+        A page's outline as WPMgr reads it: `node_count` nodes in all, the
+        first `nodes` in page order, `truncated` when some were left out.
+      required: [node_count, truncated, nodes]
+      properties:
+        node_count:
+          type: integer
+          format: int64
+        truncated: { type: boolean }
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/AbilityRequestPageOutlineNode"
+    AbilityRequestPageOutlineNode:
+      type: object
+      description: |
+        One node. `parent` is `root` or an earlier node's ref. A node of kind
+        `locked` is one WPMgr does not edit, with WPMgr's `label` for it;
+        every other node lists the fields an edit may change and its text
+        from the site.
+      required: [ref, parent, kind]
+      properties:
+        ref: { type: string }
+        parent: { type: string }
+        kind: { type: string }
+        level:
+          type: integer
+          format: int64
+        editable:
+          type: array
+          items: { type: string }
+        from_the_site:
+          type: object
+          additionalProperties: { type: string }
+        label: { type: string }
     AbilityRequestPageBuilder:
       type: object
       description: |

@@ -8259,6 +8259,233 @@ export const AbilityRequestSchema = {
       description:
         "The page builder that builds a wpmgr/page-create request's page, as\nthe site's precheck named it. Null for a page in a WordPress\neditor, and for every other ability. A card for a request whose\neditor is a page builder cannot be shown in full without it and\nmust not be approvable.\n",
     },
+    page_edit: {
+      allOf: [
+        {
+          $ref: "#/components/schemas/AbilityRequestPageEdit",
+        },
+      ],
+      nullable: true,
+      description:
+        "The card of a wpmgr/page-edit request: the post, the page\nbuilder, each change and the page's outline after the edit, as\nWPMgr checked them against the site's precheck. Null for every\nother ability. A page-edit request without it cannot be shown in\nfull and must not be approvable.\n",
+    },
+  },
+} as const;
+
+export const AbilityRequestPageEditSchema = {
+  type: "object",
+  description:
+    "A wpmgr/page-edit card. Every value under a `from_the_site` member\ncame from the site: render it as plain text in the \"From the site\"\nslot. A change's `after` is the text the AI asked for. The other\nstrings are WPMgr's.\n",
+  required: ["kind", "post", "builder", "changes", "checked_at"],
+  properties: {
+    kind: {
+      type: "string",
+      enum: ["builder_edit"],
+    },
+    post: {
+      type: "object",
+      required: ["id", "from_the_site"],
+      properties: {
+        id: {
+          type: "integer",
+          format: "int64",
+          description: "The post the edit changes, a draft WPMgr created.",
+        },
+        from_the_site: {
+          type: "object",
+          required: ["title"],
+          properties: {
+            title: {
+              type: "string",
+            },
+          },
+        },
+      },
+    },
+    builder: {
+      type: "object",
+      required: ["id", "version", "format"],
+      properties: {
+        id: {
+          type: "string",
+          description: "The page builder, such as `elementor`.",
+        },
+        version: {
+          type: "string",
+          description:
+            "The builder's version on the site; render it as plain text.",
+        },
+        format: {
+          type: "string",
+          description: "What the builder edits the page in, such as `classic`.",
+        },
+      },
+    },
+    changes: {
+      type: "array",
+      description: "One per operation, in the order they apply.",
+      items: {
+        $ref: "#/components/schemas/AbilityRequestPageEditChange",
+      },
+    },
+    after_outline: {
+      $ref: "#/components/schemas/AbilityRequestPageOutline",
+    },
+    after_outline_omitted: {
+      type: "boolean",
+      description:
+        "True when the page's outline after the edit was too large to\nkeep on the card; `after_outline` is then absent.\n",
+    },
+    checked_at: {
+      type: "string",
+      format: "date-time",
+      description: "When WPMgr checked the edit on the site.",
+    },
+  },
+} as const;
+
+export const AbilityRequestPageEditChangeSchema = {
+  type: "object",
+  description:
+    "One change. `set_text` changes `field` of node `ref` to `after`;\n`insert` puts new nodes (`new_refs`) by `anchor`; `replace` puts\n`new_refs` where `ref` was; `remove` takes `ref` and everything in it\noff the page; `move` puts `ref` by `anchor`.\n",
+  required: ["op"],
+  properties: {
+    op: {
+      type: "string",
+      enum: ["set_text", "insert", "replace", "remove", "move"],
+    },
+    ref: {
+      type: "string",
+    },
+    kind: {
+      type: "string",
+      description: "What the node is, such as `heading` or `paragraph`.",
+    },
+    level: {
+      type: "integer",
+      format: "int64",
+      description: "A heading's level.",
+    },
+    field: {
+      type: "string",
+      enum: ["text", "url", "alt", "caption"],
+    },
+    after: {
+      type: "string",
+      description: "The text the AI asked for (set_text).",
+    },
+    new_refs: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+      description: "Every node the change makes, parent first.",
+    },
+    anchor: {
+      $ref: "#/components/schemas/AbilityRequestPageEditAnchor",
+    },
+    from_the_site: {
+      type: "object",
+      required: ["before"],
+      properties: {
+        before: {
+          type: "object",
+          additionalProperties: {
+            type: "string",
+          },
+          description: "The node's text before the change, field by field.",
+        },
+      },
+    },
+  },
+} as const;
+
+export const AbilityRequestPageEditAnchorSchema = {
+  type: "object",
+  description:
+    "Where an insert or a move puts its nodes: `after`, `before` or\n`into` the node `ref`, `first` or `last` among its children for\n`into`. `label` is WPMgr's words for a node it does not edit.\n",
+  required: ["ref", "how", "kind"],
+  properties: {
+    ref: {
+      type: "string",
+    },
+    how: {
+      type: "string",
+      enum: ["after", "before", "into"],
+    },
+    position: {
+      type: "string",
+      enum: ["first", "last"],
+    },
+    kind: {
+      type: "string",
+    },
+    level: {
+      type: "integer",
+      format: "int64",
+    },
+    label: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const AbilityRequestPageOutlineSchema = {
+  type: "object",
+  description:
+    "A page's outline as WPMgr reads it: `node_count` nodes in all, the\nfirst `nodes` in page order, `truncated` when some were left out.\n",
+  required: ["node_count", "truncated", "nodes"],
+  properties: {
+    node_count: {
+      type: "integer",
+      format: "int64",
+    },
+    truncated: {
+      type: "boolean",
+    },
+    nodes: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/AbilityRequestPageOutlineNode",
+      },
+    },
+  },
+} as const;
+
+export const AbilityRequestPageOutlineNodeSchema = {
+  type: "object",
+  description:
+    "One node. `parent` is `root` or an earlier node's ref. A node of kind\n`locked` is one WPMgr does not edit, with WPMgr's `label` for it;\nevery other node lists the fields an edit may change and its text\nfrom the site.\n",
+  required: ["ref", "parent", "kind"],
+  properties: {
+    ref: {
+      type: "string",
+    },
+    parent: {
+      type: "string",
+    },
+    kind: {
+      type: "string",
+    },
+    level: {
+      type: "integer",
+      format: "int64",
+    },
+    editable: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    from_the_site: {
+      type: "object",
+      additionalProperties: {
+        type: "string",
+      },
+    },
+    label: {
+      type: "string",
+    },
   },
 } as const;
 
