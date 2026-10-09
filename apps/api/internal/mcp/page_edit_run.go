@@ -110,8 +110,14 @@ func pageEditPreInputRefusal(input []byte) (pageEditFacts, *toolRefusal) {
 }
 
 // runPageEdit checks a page-edit input and prechecks it on the site, with
-// the draft this control plane names for its post read in this call.
+// the draft this control plane names for its post read in this call. A
+// refusal's audit row names the ability and the post (withBuilderEditTarget).
 func (s *Service) runPageEdit(ctx context.Context, auth AuthorizedRequest, eng *abilityEngine, site abilitySite, e *sqlc.AbilityCatalogue, host string, input []byte) (string, error) {
+	out, err := s.runPageEditChecked(ctx, auth, eng, site, e, host, input)
+	return out, withBuilderEditTarget(err, AbilityPageEdit, input)
+}
+
+func (s *Service) runPageEditChecked(ctx context.Context, auth AuthorizedRequest, eng *abilityEngine, site abilitySite, e *sqlc.AbilityCatalogue, host string, input []byte) (string, error) {
 	facts, r := pageEditPreInputRefusal(input)
 	if r != nil {
 		return "", r

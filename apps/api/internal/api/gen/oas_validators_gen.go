@@ -1242,6 +1242,24 @@ func (s *AbilityRequest) Validate() error {
 		})
 	}
 	if err := func() error {
+		if value, ok := s.OutcomeDetail.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "outcome_detail",
+			Error: err,
+		})
+	}
+	if err := func() error {
 		if value, ok := s.CardFacts.Get(); ok {
 			if err := func() error {
 				if err := value.Validate(); err != nil {
@@ -1456,6 +1474,19 @@ func (s *AbilityRequestOrgList) Validate() error {
 		return &validate.Error{Fields: failures}
 	}
 	return nil
+}
+
+func (s AbilityRequestOutcomeDetail) Validate() error {
+	switch s {
+	case "changed_since_read":
+		return nil
+	case "editor_open":
+		return nil
+	case "autosave_pending":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
 }
 
 func (s *AbilityRequestPageEdit) Validate() error {

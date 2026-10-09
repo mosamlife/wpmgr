@@ -1406,7 +1406,7 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 	if err != nil {
 		var refusal *agentcmd.AbilityRunRefusal
 		if errors.As(err, &refusal) && !vendor && builderEditIneligible(name, refusal) {
-			return "", builderEditIneligibleRefusal(name, refusal)
+			return "", withBuilderEditTarget(builderEditIneligibleRefusal(name, refusal), name, input)
 		}
 		if errors.As(err, &refusal) && vendor {
 			if refusal.Code == "read_side_effect_detected" {

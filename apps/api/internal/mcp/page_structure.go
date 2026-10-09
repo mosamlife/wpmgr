@@ -247,6 +247,30 @@ func builderEditIneligibleRefusal(name string, refusal *agentcmd.AbilityRunRefus
 	}
 }
 
+// withBuilderEditTarget names, on the audit row of a builder-edit refusal,
+// the ability and the post the AI asked about: the person-visible record of
+// a request that never became a card (the connection's activity). The AI's
+// answer is unchanged, so it stays the same bytes for every page. post_id
+// is the input's own positive integer; an input without one names no post.
+// Any other error passes through.
+func withBuilderEditTarget(err error, name string, input []byte) error {
+	tr, ok := err.(*toolRefusal)
+	if !ok || tr == nil {
+		return err
+	}
+	meta := make(map[string]any, len(tr.meta)+2)
+	for k, v := range tr.meta {
+		meta[k] = v
+	}
+	meta["ability"] = name
+	if id, ok := builderEditInputPostID(input); ok {
+		meta["post_id"] = id
+	}
+	out := *tr
+	out.meta = meta
+	return &out
+}
+
 // builderEditIneligible reports whether an agent refusal of a builder-edit
 // call means the page is outside what the ability may touch.
 func builderEditIneligible(name string, refusal *agentcmd.AbilityRunRefusal) bool {

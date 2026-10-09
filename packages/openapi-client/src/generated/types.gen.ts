@@ -4728,6 +4728,16 @@ export type AbilityRequest = {
   decided_at?: string;
   outcome?: string;
   outcome_code?: string;
+  /**
+   * Which conflict refused a wpmgr/page-edit (`outcome_code`
+   * conflict): the page changed after the AI read it
+   * (changed_since_read), someone has it open in Elementor
+   * (editor_open), or someone has unsaved Elementor changes on it
+   * (autosave_pending). Null for every other request. A closed
+   * value, never the site's own words.
+   *
+   */
+  outcome_detail?: "changed_since_read" | "editor_open" | "autosave_pending";
   not_sent_reason?: string;
   created_post_id?: number;
   trashed?: boolean;

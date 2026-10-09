@@ -2060,9 +2060,14 @@ type AbilityRequest struct {
 	DecidedAt       OptNilDateTime           `json:"decided_at"`
 	Outcome         OptNilString             `json:"outcome"`
 	OutcomeCode     OptNilString             `json:"outcome_code"`
-	NotSentReason   OptNilString             `json:"not_sent_reason"`
-	CreatedPostID   OptNilInt64              `json:"created_post_id"`
-	Trashed         OptNilBool               `json:"trashed"`
+	// Which conflict refused a wpmgr/page-edit (`outcome_code` conflict): the page changed after the AI
+	// read it (changed_since_read), someone has it open in Elementor (editor_open), or someone has unsaved
+	// Elementor changes on it (autosave_pending). Null for every other request. A closed value, never the
+	// site's own words.
+	OutcomeDetail OptNilAbilityRequestOutcomeDetail `json:"outcome_detail"`
+	NotSentReason OptNilString                      `json:"not_sent_reason"`
+	CreatedPostID OptNilInt64                       `json:"created_post_id"`
+	Trashed       OptNilBool                        `json:"trashed"`
 	// A failed wpmgr/rest-write's report on putting the post back. True: the whole post is as it was.
 	// False: WPMgr put back what it could, but the post is not fully as it was; show the request as
 	// needing attention. Null when nothing needed putting back, and for every other ability.
@@ -2204,6 +2209,11 @@ func (s *AbilityRequest) GetOutcome() OptNilString {
 // GetOutcomeCode returns the value of OutcomeCode.
 func (s *AbilityRequest) GetOutcomeCode() OptNilString {
 	return s.OutcomeCode
+}
+
+// GetOutcomeDetail returns the value of OutcomeDetail.
+func (s *AbilityRequest) GetOutcomeDetail() OptNilAbilityRequestOutcomeDetail {
+	return s.OutcomeDetail
 }
 
 // GetNotSentReason returns the value of NotSentReason.
@@ -2384,6 +2394,11 @@ func (s *AbilityRequest) SetOutcome(val OptNilString) {
 // SetOutcomeCode sets the value of OutcomeCode.
 func (s *AbilityRequest) SetOutcomeCode(val OptNilString) {
 	s.OutcomeCode = val
+}
+
+// SetOutcomeDetail sets the value of OutcomeDetail.
+func (s *AbilityRequest) SetOutcomeDetail(val OptNilAbilityRequestOutcomeDetail) {
+	s.OutcomeDetail = val
 }
 
 // SetNotSentReason sets the value of NotSentReason.
@@ -2913,6 +2928,58 @@ func (s *AbilityRequestOrgList) SetOffset(val int32) {
 }
 
 func (*AbilityRequestOrgList) listAbilityRequestsRes() {}
+
+// Which conflict refused a wpmgr/page-edit (`outcome_code` conflict): the page changed after the AI
+// read it (changed_since_read), someone has it open in Elementor (editor_open), or someone has unsaved
+// Elementor changes on it (autosave_pending). Null for every other request. A closed value, never the
+// site's own words.
+type AbilityRequestOutcomeDetail string
+
+const (
+	AbilityRequestOutcomeDetailChangedSinceRead AbilityRequestOutcomeDetail = "changed_since_read"
+	AbilityRequestOutcomeDetailEditorOpen       AbilityRequestOutcomeDetail = "editor_open"
+	AbilityRequestOutcomeDetailAutosavePending  AbilityRequestOutcomeDetail = "autosave_pending"
+)
+
+// AllValues returns all AbilityRequestOutcomeDetail values.
+func (AbilityRequestOutcomeDetail) AllValues() []AbilityRequestOutcomeDetail {
+	return []AbilityRequestOutcomeDetail{
+		AbilityRequestOutcomeDetailChangedSinceRead,
+		AbilityRequestOutcomeDetailEditorOpen,
+		AbilityRequestOutcomeDetailAutosavePending,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestOutcomeDetail) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestOutcomeDetailChangedSinceRead:
+		return []byte(s), nil
+	case AbilityRequestOutcomeDetailEditorOpen:
+		return []byte(s), nil
+	case AbilityRequestOutcomeDetailAutosavePending:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestOutcomeDetail) UnmarshalText(data []byte) error {
+	switch AbilityRequestOutcomeDetail(data) {
+	case AbilityRequestOutcomeDetailChangedSinceRead:
+		*s = AbilityRequestOutcomeDetailChangedSinceRead
+		return nil
+	case AbilityRequestOutcomeDetailEditorOpen:
+		*s = AbilityRequestOutcomeDetailEditorOpen
+		return nil
+	case AbilityRequestOutcomeDetailAutosavePending:
+		*s = AbilityRequestOutcomeDetailAutosavePending
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 // The page builder of a wpmgr/page-create request. `version` came from the site: render it as plain
 // text.
@@ -40872,6 +40939,74 @@ func (o OptNilAbilityRequestCardFacts) Get() (v AbilityRequestCardFacts, ok bool
 
 // Or returns value if set, or given parameter if does not.
 func (o OptNilAbilityRequestCardFacts) Or(d AbilityRequestCardFacts) AbilityRequestCardFacts {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAbilityRequestOutcomeDetail returns new OptNilAbilityRequestOutcomeDetail with value set to v.
+func NewOptNilAbilityRequestOutcomeDetail(v AbilityRequestOutcomeDetail) OptNilAbilityRequestOutcomeDetail {
+	return OptNilAbilityRequestOutcomeDetail{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAbilityRequestOutcomeDetail is optional nullable AbilityRequestOutcomeDetail.
+type OptNilAbilityRequestOutcomeDetail struct {
+	Value AbilityRequestOutcomeDetail
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAbilityRequestOutcomeDetail was set.
+func (o OptNilAbilityRequestOutcomeDetail) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAbilityRequestOutcomeDetail) Reset() {
+	var v AbilityRequestOutcomeDetail
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAbilityRequestOutcomeDetail) SetTo(v AbilityRequestOutcomeDetail) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAbilityRequestOutcomeDetail) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAbilityRequestOutcomeDetail) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AbilityRequestOutcomeDetail
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAbilityRequestOutcomeDetail) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAbilityRequestOutcomeDetail) Get() (v AbilityRequestOutcomeDetail, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAbilityRequestOutcomeDetail) Or(d AbilityRequestOutcomeDetail) AbilityRequestOutcomeDetail {
 	if v, ok := o.Get(); ok {
 		return v
 	}

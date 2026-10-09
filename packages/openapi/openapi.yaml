@@ -20525,6 +20525,17 @@ components:
         decided_at: { type: string, format: date-time, nullable: true }
         outcome: { type: string, nullable: true }
         outcome_code: { type: string, nullable: true }
+        outcome_detail:
+          type: string
+          nullable: true
+          enum: [changed_since_read, editor_open, autosave_pending, null]
+          description: |
+            Which conflict refused a wpmgr/page-edit (`outcome_code`
+            conflict): the page changed after the AI read it
+            (changed_since_read), someone has it open in Elementor
+            (editor_open), or someone has unsaved Elementor changes on it
+            (autosave_pending). Null for every other request. A closed
+            value, never the site's own words.
         not_sent_reason: { type: string, nullable: true }
         created_post_id: { type: integer, format: int64, nullable: true }
         trashed: { type: boolean, nullable: true }

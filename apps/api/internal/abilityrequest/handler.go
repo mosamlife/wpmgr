@@ -102,9 +102,13 @@ type RequestDTO struct {
 	DecidedAt       *time.Time `json:"decided_at"`
 	Outcome         *string    `json:"outcome"`
 	OutcomeCode     *string    `json:"outcome_code"`
-	NotSentReason   *string    `json:"not_sent_reason"`
-	CreatedPostID   *int64     `json:"created_post_id"`
-	Trashed         *bool      `json:"trashed"`
+	// OutcomeDetail says which conflict refused a wpmgr/page-edit:
+	// changed_since_read, editor_open or autosave_pending (outcomeDetailFor).
+	// Null for every other row. Never the site's own words.
+	OutcomeDetail *string `json:"outcome_detail"`
+	NotSentReason *string `json:"not_sent_reason"`
+	CreatedPostID *int64  `json:"created_post_id"`
+	Trashed       *bool   `json:"trashed"`
 	// Restored is a failed wpmgr/rest-write's own-undo report: true when the
 	// whole post is back as it was, false when the title and excerpt were
 	// put back but other changes the site made remain (or the put-back
@@ -264,7 +268,7 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string,
 		SiteLabel: r.SiteLabel, SiteHost: r.SiteHost, GrantLabel: r.GrantLabel, GrantVia: r.GrantVia,
 		SetupClient: r.SetupClient, CardCopyVersion: r.CardCopyVersion, State: r.State,
 		CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt, DecidedAt: ts(r.DecidedAt),
-		Outcome: r.Outcome, OutcomeCode: r.OutcomeCode, NotSentReason: r.NotSentReason,
+		Outcome: r.Outcome, OutcomeCode: r.OutcomeCode, OutcomeDetail: outcomeDetailFor(r), NotSentReason: r.NotSentReason,
 		CreatedPostID: r.CreatedPostID, Trashed: r.Trashed, Restored: r.Restored, UndoState: r.UndoState,
 		UndoAvailableUntil: ts(r.UndoAvailableUntil),
 		UndoOffered:        UndoOffered(r, agentVersion, newestEdit, time.Now()),
