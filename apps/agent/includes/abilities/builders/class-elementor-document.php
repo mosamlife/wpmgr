@@ -794,7 +794,7 @@ final class ElementorDocument
         }
         /** @var \wpdb $wpdb */
         $row = $wpdb->get_row($wpdb->prepare('SELECT post_author FROM %i WHERE ID = %d', $wpdb->posts, $postId), ARRAY_A); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- the read-back compares the stored row with the snapshot, so it is read uncached; table via the %i identifier placeholder (WP 6.2+)
-        if (isset($wpdb->last_error) && (string) $wpdb->last_error !== '') {
+        if ($wpdb->last_error !== '') {
             throw new \RuntimeException('database read failed');
         }
         if ($row === null) {
