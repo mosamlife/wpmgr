@@ -139,12 +139,15 @@ func (s *Service) EnableAbilityWrites(store AbilityRequestStore) error {
 // ---------------------------------------------------------------------------
 
 // ownWriteAbilities are the write entries this control plane can run.
-var ownWriteAbilities = map[string]struct{}{AbilityPageCreate: {}, AbilityRestWrite: {}}
+var ownWriteAbilities = map[string]struct{}{AbilityPageCreate: {}, AbilityRestWrite: {}, AbilityPageEdit: {}}
 
 // writeAgentFloor is the first agent release that runs a write entry.
 func writeAgentFloor(name string) string {
-	if name == AbilityRestWrite {
+	switch name {
+	case AbilityRestWrite:
 		return agentcmd.MinAgentVersionForRestCall
+	case AbilityPageEdit:
+		return agentcmd.MinAgentVersionForBuilderEdit
 	}
 	return agentcmd.MinAgentVersionForPageCreate
 }
@@ -418,6 +421,9 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 		return "", notRunnableRefusal(notRunnableCapabilityNotHeld)
 	}
 	if c.reason != nil {
+		if *c.reason == notRunnableAgentOutdated && c.name == AbilityPageEdit {
+			return "", builderEditOutdatedRefusal()
+		}
 		if *c.reason == notRunnableAgentOutdated {
 			msg := msgAbilityWriteOutdated
 			if c.name == AbilityRestWrite {
@@ -464,6 +470,9 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 	}
 	if e.Name == AbilityRestWrite {
 		return s.runRestWrite(ctx, auth, eng, site, e, self.host, input)
+	}
+	if e.Name == AbilityPageEdit {
+		return s.runPageEdit(ctx, auth, eng, site, e, input)
 	}
 	// Step 5: our grammar, including a layout the classic editor cannot
 	// hold. Then the per-input floor: a layout outline needs a newer agent
@@ -624,6 +633,11 @@ var precheckRefusalHints = map[string]string{
 	pageBuilderNotAvailable:         hintBuilderNotAvailable,
 	pageNodeNotSupported:            hintNodeNotSupportedByBuilder,
 	pageImageAltFromLibrary:         hintImageAltFromLibrary,
+	pageEditOpsInvalid:              hintPageEditOpsInvalid,
+	pageEditNodeNotFound:            hintPageEditNodeNotFound,
+	pageEditNodeNotEditable:         hintPageEditNodeNotEditable,
+	pageEditOpNotSupported:          hintPageEditOpNotSupported,
+	pageEditPageTooLarge:            hintPageEditPageTooLarge,
 }
 
 // precheckRefusalHint maps an input-related refusal code to a fixed hint,

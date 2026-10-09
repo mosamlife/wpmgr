@@ -420,6 +420,8 @@ func agentFloorFor(r sqlc.AssistantAbilityRequest) string {
 		return agentcmd.MinAgentVersionForRestCall
 	case mcp.AbilityPageCreate:
 		return mcp.PageCreateAgentFloor([]byte(r.InputJson))
+	case mcp.AbilityPageEdit:
+		return agentcmd.MinAgentVersionForBuilderEdit
 	}
 	return agentcmd.MinAgentVersionForPageCreate
 }

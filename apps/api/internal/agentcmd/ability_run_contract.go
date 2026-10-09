@@ -72,6 +72,20 @@ const MinAgentVersionForPageLayout = "0.61.160"
 // release that ships the builder path and moves with that release's number.
 const MinAgentVersionForBuilderAdapters = "0.61.161"
 
+// MinAgentVersionForBuilderEdit is the first agent release that ships
+// wpmgr/page-structure and wpmgr/page-edit: the structure read, the edit
+// operations, the builder document snapshot and its restore, and
+// p.allowed_draft_ids. The control plane applies it to both abilities at run
+// and again at dispatch, so an older agent is never asked to read or edit a
+// page builder's document. m169's catalogue entries carry the same number as
+// min_agent_version, and it moves with the release that ships builder edit.
+const MinAgentVersionForBuilderEdit = "0.61.162"
+
+// AbilityRunMaxAllowedDraftIDs bounds p.allowed_draft_ids: the control plane
+// names at most the one post an input is about, so p stays far under
+// AbilityRunMaxPBytes however many drafts WPMgr created on the site.
+const AbilityRunMaxAllowedDraftIDs = 1
+
 // ErrAbilityRunMalformed marks a 2xx ability_run reply the control plane
 // could not use: a body that did not decode, or an answer for another mode or
 // entry. Resending the same call gets the same answer.
@@ -121,6 +135,14 @@ type AbilityRunCall struct {
 	// Empty for every other ability and for revert and ledger.
 	Route       []byte
 	RouteSHA256 string
+	// AllowedDraftIDs is the drafts this control plane names as created by
+	// WPMgr's own wpmgr/page-create, for wpmgr/page-structure and
+	// wpmgr/page-edit: nil sends nothing; any other value, an empty list
+	// included, is sent as p.allowed_draft_ids. At most
+	// AbilityRunMaxAllowedDraftIDs ids, each at least 1, and only with read,
+	// precheck and write. The agent reads or edits a draft only when its id
+	// is in this list and its own records agree.
+	AllowedDraftIDs []int64
 }
 
 // AbilityRunExpected is write's expected{} member.
@@ -145,6 +167,9 @@ type abilityRunP struct {
 	Route       string              `json:"route,omitempty"`
 	RouteSHA256 string              `json:"route_sha256,omitempty"`
 	Expected    *AbilityRunExpected `json:"expected,omitempty"`
+	// AllowedDraftIDs is a pointer so an empty list is sent as [] and an
+	// absent one is not sent at all.
+	AllowedDraftIDs *[]int64 `json:"allowed_draft_ids,omitempty"`
 }
 
 // abilityRunBody is the outer body, exactly {"p": "..."}.
@@ -227,6 +252,24 @@ func BuildAbilityRunParams(call AbilityRunCall) (p []byte, pd string, err error)
 		pv.Route = string(call.Route)
 		pv.RouteSHA256 = call.RouteSHA256
 		pv.Expected = call.Expected
+	}
+	if call.AllowedDraftIDs != nil {
+		switch call.Mode {
+		case AbilityRunModeRead, AbilityRunModePrecheck, AbilityRunModeWrite:
+		default:
+			return nil, "", fmt.Errorf("ability_run: allowed_draft_ids is only sent with read, precheck and write")
+		}
+		if len(call.AllowedDraftIDs) > AbilityRunMaxAllowedDraftIDs {
+			return nil, "", fmt.Errorf("ability_run: allowed_draft_ids holds at most %d ids", AbilityRunMaxAllowedDraftIDs)
+		}
+		ids := make([]int64, 0, len(call.AllowedDraftIDs))
+		for _, id := range call.AllowedDraftIDs {
+			if id < 1 {
+				return nil, "", fmt.Errorf("ability_run: allowed_draft_ids holds only post ids of at least 1")
+			}
+			ids = append(ids, id)
+		}
+		pv.AllowedDraftIDs = &ids
 	}
 	p, err = json.Marshal(pv)
 	if err != nil {
@@ -465,6 +508,14 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"builder_would_change_layout":   {},
 	"builder_save_refused":          {},
 	"builder_crashed":               {},
+	// wpmgr/page-structure and wpmgr/page-edit (MinAgentVersionForBuilderEdit).
+	"ops_invalid":                 {},
+	"node_not_found":              {},
+	"node_not_editable":           {},
+	"op_not_supported_by_builder": {},
+	"page_too_large":              {},
+	"target_not_eligible":         {},
+	"page_has_admin_only_content": {},
 }
 
 var abilityRunCodeRe = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
