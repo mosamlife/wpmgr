@@ -21,21 +21,28 @@ const (
 	bricksThemeDir = "bricks"
 )
 
+// preReleaseWord is the whole vocabulary a version suffix may use: alpha, beta,
+// rc, RC, dev or build. Only digits may follow one, so a site can put a number
+// after its version but never a word of its own.
+const preReleaseWord = `(?:alpha|beta|rc|dev|build|RC)`
+
 // The shapes a site-reported value must have before Evaluate will compare it
 // or return it. Go's $ without the m flag is the end of the text, so a
 // trailing newline does not match.
 var (
-	// wpVersionRe admits a release (7.1, 7.1.2) or a pre-release (7.1-RC1,
-	// 7.1-beta2-59000).
-	wpVersionRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z][0-9A-Za-z.-]{0,31})?$`)
+	// wpVersionRe admits a release (7.1, 7.1.2) or a pre-release: a hyphen, a
+	// preReleaseWord and optional digits, then optionally a hyphen and a build
+	// number (7.1-RC1, 7.1-beta2-59000, 7.1-alpha-59000).
+	wpVersionRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}(-` + preReleaseWord + `[0-9]*(-[0-9]+)?)?$`)
 	// agentVersionRe admits a dotted numeric release only, the shape every
 	// agent floor compare in this codebase requires.
 	agentVersionRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}$`)
 	// componentVersionRe admits a plugin or theme version: a dotted numeric
-	// release (4.3, 4.3.4, 1.2.3.4) with an optional pre-release or build
-	// suffix after a hyphen, plus, tilde or underscore (4.3.0-beta1,
-	// 2.4.1+build.5). It starts with a digit, so a word is never a version.
-	componentVersionRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+){0,3}([-+~_][0-9A-Za-z][0-9A-Za-z._+~-]{0,31})?$`)
+	// release (4.3, 4.3.4, 1.2.3.4), optionally followed by one suffix: a
+	// hyphen, plus, tilde or underscore, a preReleaseWord, an optional dot and
+	// optional digits (4.3.0-beta1, 2.4.1+build.5). Nothing else is admitted,
+	// so a version never carries a word of the site's own.
+	componentVersionRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+){0,3}([-+~_]` + preReleaseWord + `\.?[0-9]*)?$`)
 )
 
 const (
