@@ -12,6 +12,7 @@ import { CopyableMono } from "@/components/shared/copyable-mono";
 import { cn } from "@/lib/utils";
 import { CONFERRABLE_READS } from "./capabilities";
 import { defaultCapabilities, withAbilityTicks } from "./capability-presets";
+import { mintCapabilitiesRequest, type MintCapabilitiesRequest } from "./mint-capabilities";
 import { AbilityCapabilityBox } from "./ability-capability-box";
 import { CachePurgeCapabilityBox } from "./cache-purge-capability-box";
 import { ReadCapabilityPicker } from "./read-capability-picker";
@@ -2035,38 +2036,6 @@ function siteScopeReadiness(
   if (scope.kind === "unresolved") return scope.because;
   if (!scopeRequest.ok) return "unselected";
   return "resolved";
-}
-
-/** The capability payload a mint would send, or the reason there is none. */
-type MintCapabilitiesRequest =
-  | { readonly ok: true; readonly capabilities: readonly string[] }
-  | { readonly ok: false; readonly refusal: string };
-
-/**
- * The capability payload for the CURRENT selection, or the reason there is
- * none -- the same shape and the same reason `mintScopeRequest` above returns
- * one, so the gate (`mintBlockedReason`) and the wire payload
- * (`TokenMintPanel`'s mint call) read one value rather than two derivations
- * of the same checkbox state.
- *
- * THE ONLY REFUSAL: NOTHING IS CHECKED. dto.go's mintConnectionRequestDTO
- * treats an OMITTED `capabilities` field as the default preset
- * `["mcp.sites.read"]`, but an explicitly empty array is a different wire
- * value entirely -- it mints a connection that authenticates and can reach no
- * tool at all, because Authenticate refuses by name on every request. A
- * request naming no capabilities and a request naming none-on-purpose are not
- * the same thing, so this is refused client-side rather than silently
- * becoming the default or being sent as `[]`.
- */
-function mintCapabilitiesRequest(selected: readonly string[]): MintCapabilitiesRequest {
-  if (selected.length === 0) {
-    return {
-      ok: false,
-      refusal:
-        "No capability is selected, so this token would authenticate and be able to reach nothing. Pick at least one capability above, or leave Sites checked. An empty selection is refused rather than becoming the default.",
-    };
-  }
-  return { ok: true, capabilities: selected };
 }
 
 /**

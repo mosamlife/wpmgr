@@ -6,6 +6,7 @@ import {
   CONFERRABLE_READS,
   KNOWN_CAPABILITIES,
   nextAbilityTicks,
+  withoutOrphanedRequest,
   type AbilityTicks,
 } from "./capabilities";
 
@@ -125,5 +126,33 @@ describe("nextAbilityTicks", () => {
     const from = Object.freeze({ read: true, request: true });
     expect(() => nextAbilityTicks(from, "read", false)).not.toThrow();
     expect(from).toEqual({ read: true, request: true });
+  });
+});
+
+// The one payload rule for the pair, used by the consent approval and by the
+// wizard's mint request.
+describe("withoutOrphanedRequest", () => {
+  it("drops the request when the read is not in the list", () => {
+    expect(withoutOrphanedRequest(["mcp.sites.read", "mcp.ability.request"])).toEqual([
+      "mcp.sites.read",
+    ]);
+    expect(withoutOrphanedRequest(["mcp.ability.request"])).toEqual([]);
+  });
+
+  it("keeps the request beside the read, in the order given", () => {
+    const both = ["mcp.ability.request", "mcp.sites.read", "mcp.ability.read"];
+    expect(withoutOrphanedRequest(both)).toEqual(both);
+  });
+
+  it("leaves a list without the request alone, whether or not it holds the read", () => {
+    expect(withoutOrphanedRequest(["mcp.sites.read"])).toEqual(["mcp.sites.read"]);
+    expect(withoutOrphanedRequest(["mcp.ability.read"])).toEqual(["mcp.ability.read"]);
+    expect(withoutOrphanedRequest([])).toEqual([]);
+  });
+
+  it("does not change the list it was given", () => {
+    const before = Object.freeze(["mcp.sites.read", "mcp.ability.request"]);
+    expect(() => withoutOrphanedRequest(before)).not.toThrow();
+    expect(before).toEqual(["mcp.sites.read", "mcp.ability.request"]);
   });
 });

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { capabilityLabel } from "@/features/ai-connections/capabilities";
+import { capabilityLabel, withoutOrphanedRequest } from "@/features/ai-connections/capabilities";
 import {
   conferrableReadsIn,
   defaultCapabilities,
@@ -566,10 +566,9 @@ export function buildApprovalCapabilities(
   for (const [name, effect, asked] of askable) {
     if (!asked || !ticked.has(name)) continue;
     if (!conferrable.some((c) => c.name === name && c.effect === effect)) continue;
-    // askable lists the read before the request, so `out` already holds the read
-    // here exactly when the read is itself being sent.
-    if (name === "mcp.ability.request" && !out.includes("mcp.ability.read")) continue;
     out.push(name);
   }
-  return out;
+  // The request travels only with the read: the one payload rule, shared with the
+  // wizard's mint request.
+  return [...withoutOrphanedRequest(out)];
 }

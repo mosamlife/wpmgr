@@ -109,6 +109,20 @@ export function isAbilityCapability(capability: string): boolean {
   return (ABILITY_CAPABILITIES as readonly string[]).includes(capability);
 }
 
+/**
+ * `names` without "ask for changes" unless "see what the site can do" is in the
+ * list too. This is the one payload rule for the pair, shared by the consent
+ * approval and the wizard's mint request: a connection holding the request alone
+ * cannot call the tool that carries one, so a list that holds it alone must not
+ * be sent as it stands. Returns the same list when nothing has to go.
+ */
+export function withoutOrphanedRequest(names: readonly string[]): readonly string[] {
+  if (names.includes("mcp.ability.request") && !names.includes("mcp.ability.read")) {
+    return names.filter((name) => name !== "mcp.ability.request");
+  }
+  return names;
+}
+
 /** One of the two site-tools rows: "see what the site can do", or "ask for changes". */
 export type AbilityRow = "read" | "request";
 
