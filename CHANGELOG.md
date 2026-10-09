@@ -46,6 +46,7 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 - The token endpoint now issues a token only while the connection the authorization code was issued for is still authorized. A connection that has been revoked or has expired, or whose organisation's AI is paused, answers 400 invalid_grant and no token is issued (#843).
 - The two-factor screen now follows its redirect parameter only when it is a path on the dashboard's own address, and otherwise goes to the sites list, as the sign-in page does. Both pages now use one check, which also refuses a value that holds a control character or a backslash (#850).
+- Operator context restrictions now reach an AI as quoted values the operator supplied, and every line of operator guidance carries the operator prefix. The 2048-byte limit counts the rendered form, so an organisation near the limit may need to shorten its context on the next save (#857).
 - The API and media-encoder images are now built with Go 1.26.9, and golang.org/x/net, golang.org/x/text and gRPC are updated, clearing the vulnerabilities the Go vulnerability scan reported. Patched versions of seroval, source-map-js, sharp and brace-expansion are pinned in the JavaScript workspace (#838, #797).
 - The marketing site's `next` dependency is upgraded from 16.3.4 to 16.3.8, the patched release for GHSA-vcvr-r3jv-pc5j. Anyone self-hosting the marketing site should update (#820).
 

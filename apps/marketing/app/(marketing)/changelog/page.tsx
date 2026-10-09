@@ -57,7 +57,7 @@ const RELEASES: ChangeEntry[] = [
     items: [
       {
         tag: "Added",
-        text: "An AI connected through WPMgr can create a draft page or post from an outline with real layout: headings, paragraphs, lists, quotes, tables, separators and images already in the media library, and in the block editor also buttons, spacing, sections and columns. You approve each request in WPMgr, nothing is published, and undo moves the draft to the trash. Agent 0.61.160; sites get it when the plugin updates.",
+        text: "An AI connected through WPMgr can create a draft page or post from an outline with real layout: headings, paragraphs, lists, quotes, tables, separators and images already in the media library, and in the block editor also buttons, spacing, sections and columns. You approve each request in WPMgr, nothing is published, and undo moves the draft to the trash. Agent 0.61.160; sites get it when the plugin updates. On a self-hosted install, AI page creation, title and excerpt edits and cache clears also need the server started with WPMGR_MCP_WRITE_TOOLS=on; unset or off keeps them off.",
       },
       {
         tag: "Added",
@@ -118,6 +118,10 @@ const RELEASES: ChangeEntry[] = [
       {
         tag: "Security",
         text: "The token endpoint no longer issues a token for a connection that has been revoked or has expired, or whose organisation's AI is paused. The two-factor screen follows its redirect only to a path on the dashboard's own address.",
+      },
+      {
+        tag: "Security",
+        text: "Operator context restrictions now reach an AI as quoted values the operator supplied, and every line of operator guidance carries the operator prefix. The 2048-byte limit counts the rendered form, so an organisation near the limit may need to shorten its context on the next save.",
       },
       {
         tag: "Security",
