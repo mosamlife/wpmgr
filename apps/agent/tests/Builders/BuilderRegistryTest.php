@@ -300,6 +300,11 @@ final class BuilderRegistryTest extends TestCase
                 return 'not_built';
             }
 
+            public function verifyEdited(int $postId, NativeDocument $doc, array $before): ?string
+            {
+                return 'not_built';
+            }
+
             public function afterRestore(int $postId): void
             {
             }

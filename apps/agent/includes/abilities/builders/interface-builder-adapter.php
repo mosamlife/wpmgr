@@ -144,6 +144,23 @@ interface BuilderAdapter
     public function verifyCreated(int $postId, NativeDocument $doc, int $principal, string $requestId): ?string;
 
     /**
+     * Read an edited page back and compare it with what planEdit() built and
+     * with the page's snapshot taken before the save: the whole stored
+     * document, untouched nodes included, is the planned one; what the edit
+     * does not write (the post's status, type, author, parent and slug, and
+     * the page's other document rows) is as the snapshot holds it; and what
+     * the edit wrote passes the adapter's allowlist and leaf rules.
+     *
+     * @param int                  $postId Post id.
+     * @param NativeDocument       $doc    What planEdit() built.
+     * @param array<string, mixed> $before The page's snapshot, as BuilderDocumentSnapshot::decode() gives it.
+     * @return string|null Null when the stored page is exactly what was
+     *                     planned, else a short token naming the first
+     *                     mismatch.
+     */
+    public function verifyEdited(int $postId, NativeDocument $doc, array $before): ?string;
+
+    /**
      * Drop what the builder keeps about one post outside the post's rows,
      * after BuilderDocumentRestore has put the rows back and deleted the
      * descriptor's derived keys: generated files, style caches and the like.

@@ -265,6 +265,16 @@ final class ElementorAdapter implements BuilderAdapter
     /**
      * {@inheritDoc}
      *
+     * ElementorDocument::verifyEdited() over the planned tree.
+     */
+    public function verifyEdited(int $postId, NativeDocument $doc, array $before): ?string
+    {
+        return $this->document->verifyEdited($postId, $doc->tree, $before);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
      * Elementor's own per-post invalidation: the post's generated CSS file
      * and its CSS meta through Elementor's post CSS object, then the post's
      * local styles in every context through Elementor's style-clear action,
