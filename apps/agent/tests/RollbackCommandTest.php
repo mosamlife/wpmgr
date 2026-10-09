@@ -199,10 +199,11 @@ final class RollbackCommandTest extends TestCase
 
         $cmd = new RollbackCommand($snapshots, $runner);
         $out = $cmd->execute([], [
-            'type'        => 'core',
-            'slug'        => 'core',
-            'snapshot_id' => 'snap_core',
-            'to_version'  => '6.3.2',
+            'type'                 => 'core',
+            'slug'                 => 'core',
+            'snapshot_id'          => 'snap_core',
+            'to_version'           => '6.3.2',
+            'allow_core_downgrade' => true,
         ]);
 
         $this->assertTrue($out['ok']);
@@ -218,8 +219,9 @@ final class RollbackCommandTest extends TestCase
 
         $cmd = new RollbackCommand($snapshots, $runner);
         $out = $cmd->execute([], [
-            'type'        => 'core',
-            'snapshot_id' => 'snap_core',
+            'type'                 => 'core',
+            'snapshot_id'          => 'snap_core',
+            'allow_core_downgrade' => true,
         ]);
 
         $this->assertTrue($out['ok']);
@@ -277,9 +279,10 @@ final class RollbackCommandTest extends TestCase
         $cmd = new RollbackCommand($this->spySnapshots(true), $runner);
 
         $out = $cmd->execute([], [
-            'type'        => 'core',
-            'snapshot_id' => 'snap_core',
-            'to_version'  => '6.3.2',
+            'type'                 => 'core',
+            'snapshot_id'          => 'snap_core',
+            'to_version'           => '6.3.2',
+            'allow_core_downgrade' => true,
         ]);
 
         $this->assertTrue($out['ok']);
@@ -315,12 +318,14 @@ final class RollbackCommandTest extends TestCase
         $cmd    = new RollbackCommand($this->spySnapshots(true), $runner);
 
         $out = $cmd->execute([], [
-            'type'        => 'core',
-            'snapshot_id' => 'snap_core',
-            'to_version'  => '6.3.2',
+            'type'                 => 'core',
+            'snapshot_id'          => 'snap_core',
+            'to_version'           => '6.3.2',
+            'allow_core_downgrade' => true,
         ]);
 
         $this->assertFalse($out['ok']);
+        $this->assertSame(['6.3.2'], $runner->forced, 'the downgrade was attempted and failed, not refused');
         $this->assertSame([], $this->deletedTransients);
     }
 
@@ -364,7 +369,11 @@ final class RollbackCommandTest extends TestCase
         $runner = $this->spyRunner(true);
         $cmd    = new RollbackCommand($this->spySnapshots(true), $runner);
 
-        $out = $cmd->execute([], ['type' => 'core', 'to_version' => 'not a version; rm -rf']);
+        $out = $cmd->execute([], [
+            'type'                 => 'core',
+            'to_version'           => 'not a version; rm -rf',
+            'allow_core_downgrade' => true,
+        ]);
 
         $this->assertFalse($out['ok']);
         $this->assertSame([], $runner->forced, 'forceCore must not run for invalid version');
@@ -427,9 +436,10 @@ final class RollbackCommandTest extends TestCase
         $cmd    = new RollbackCommand($this->spySnapshots(true), $runner);
 
         $out = $cmd->execute([], [
-            'type'        => 'core',
-            'snapshot_id' => 'snap_core',
-            'to_version'  => '6.3.2',
+            'type'                 => 'core',
+            'snapshot_id'          => 'snap_core',
+            'to_version'           => '6.3.2',
+            'allow_core_downgrade' => true,
         ]);
 
         $this->assertFalse($out['ok']);
@@ -449,9 +459,10 @@ final class RollbackCommandTest extends TestCase
         $cmd = new RollbackCommand($this->spySnapshots(true), $runner);
 
         $out = $cmd->execute([], [
-            'type'        => 'core',
-            'snapshot_id' => 'snap_core',
-            'to_version'  => '6.3.2',
+            'type'                 => 'core',
+            'snapshot_id'          => 'snap_core',
+            'to_version'           => '6.3.2',
+            'allow_core_downgrade' => true,
         ]);
 
         $this->assertTrue($out['ok']);
