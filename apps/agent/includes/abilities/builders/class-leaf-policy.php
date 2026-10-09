@@ -432,7 +432,7 @@ final class LeafPolicy
     {
         switch ($pin) {
             case 'int':
-                return is_int($value) ? null : [self::CODE_UNSAFE, 'an int value that is not an integer'];
+                return is_int($value) ? null : [self::CODE_UNSAFE, 'int value that is not an integer'];
             case 'html':
             case 'text':
             case 'url':
@@ -442,7 +442,7 @@ final class LeafPolicy
                 return [self::CODE_KEY, 'a pin outside ' . implode(', ', BuilderAdapter::PINS)];
         }
         if (!is_string($value)) {
-            return [self::CODE_UNSAFE, 'a ' . $pin . ' value that is not a string'];
+            return [self::CODE_UNSAFE, $pin . ' value that is not a string'];
         }
         if ($pin === 'html' && preg_match(self::BARE_AMPERSAND, $value) === 1) {
             return [self::CODE_UNSAFE, 'an "&" that does not start a character reference'];
