@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Abilities\Builders;
 
+use WPMgr\Agent\Support\ArrayShape;
+
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
     exit;
@@ -61,7 +63,7 @@ final class BuilderDocumentFingerprint
             if (!in_array((string) $key, $keys, true)) {
                 throw new \InvalidArgumentException('rows are given for a key outside the descriptor');
             }
-            if (!is_array($rows) || !array_is_list($rows)) {
+            if (!is_array($rows) || !ArrayShape::isList($rows)) {
                 throw new \InvalidArgumentException('the rows of a key must be a list');
             }
         }

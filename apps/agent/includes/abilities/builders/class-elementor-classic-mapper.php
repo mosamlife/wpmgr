@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Abilities\Builders;
 
 use WPMgr\Agent\Abilities\PageCreateBuilder;
+use WPMgr\Agent\Support\ArrayShape;
 
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
@@ -251,7 +252,7 @@ final class ElementorClassicMapper
     public static function map(array $spec, IdSeed $ids, array $mediaById, bool $containers): array
     {
         $outline = $spec['outline'] ?? null;
-        if (!is_array($outline) || $outline === [] || !array_is_list($outline)) {
+        if (!is_array($outline) || $outline === [] || !ArrayShape::isList($outline)) {
             return ['code' => 'bad_input', 'detail' => 'outline: not a list of nodes'];
         }
         $mapper = new self($ids, $mediaById, $containers);
@@ -379,7 +380,7 @@ final class ElementorClassicMapper
     private function group(array $node, string $path): ?array
     {
         $children = $node['children'] ?? null;
-        if (!is_array($children) || $children === [] || !array_is_list($children)) {
+        if (!is_array($children) || $children === [] || !ArrayShape::isList($children)) {
             return $this->fail('bad_input', $path . '.children: not a list of nodes');
         }
         $id       = $this->ids->next($path);
@@ -426,13 +427,13 @@ final class ElementorClassicMapper
     private function columns(array $node, string $path, bool $nested): ?array
     {
         $columns = $node['columns'] ?? null;
-        if (!is_array($columns) || !array_is_list($columns) || count($columns) < 2 || count($columns) > 4) {
+        if (!is_array($columns) || !ArrayShape::isList($columns) || count($columns) < 2 || count($columns) > 4) {
             return $this->fail('bad_input', $path . '.columns: not a list of 2 to 4 columns');
         }
         $count  = count($columns);
         $widths = $node['widths'] ?? null;
         if ($widths !== null) {
-            if (!is_array($widths) || !array_is_list($widths) || count($widths) !== $count) {
+            if (!is_array($widths) || !ArrayShape::isList($widths) || count($widths) !== $count) {
                 return $this->fail('bad_input', $path . '.widths: not one width per column');
             }
             foreach ($widths as $w) {
@@ -446,7 +447,7 @@ final class ElementorClassicMapper
         $built = [];
         foreach ($columns as $k => $children) {
             $at = $path . '.columns[' . $k . ']';
-            if (!is_array($children) || $children === [] || !array_is_list($children)) {
+            if (!is_array($children) || $children === [] || !ArrayShape::isList($children)) {
                 return $this->fail('bad_input', $at . ': not a list of nodes');
             }
             $columnId = $this->ids->next($at);
@@ -616,7 +617,7 @@ final class ElementorClassicMapper
     {
         $header = $node['header'] ?? null;
         $rows   = $node['rows'] ?? null;
-        if (($header !== null && !self::isTextList($header, true)) || !is_array($rows) || $rows === [] || !array_is_list($rows)) {
+        if (($header !== null && !self::isTextList($header, true)) || !is_array($rows) || $rows === [] || !ArrayShape::isList($rows)) {
             return $this->fail('bad_input', $path . ': a table needs its rows and an optional header');
         }
         $html = '<table>';
@@ -694,7 +695,7 @@ final class ElementorClassicMapper
     {
         $align   = $node['align'] ?? 'left';
         $buttons = $node['buttons'] ?? null;
-        if (!is_string($align) || !isset(self::BUTTON_ALIGN[$align]) || !is_array($buttons) || $buttons === [] || !array_is_list($buttons)) {
+        if (!is_string($align) || !isset(self::BUTTON_ALIGN[$align]) || !is_array($buttons) || $buttons === [] || !ArrayShape::isList($buttons)) {
             return $this->fail('bad_input', $path . ': buttons need an align of left or center and a list of buttons');
         }
         $widgets = [];
@@ -776,7 +777,7 @@ final class ElementorClassicMapper
      */
     private static function isTextList($value, bool $emptyCells): bool
     {
-        if (!is_array($value) || $value === [] || !array_is_list($value)) {
+        if (!is_array($value) || $value === [] || !ArrayShape::isList($value)) {
             return false;
         }
         foreach ($value as $item) {

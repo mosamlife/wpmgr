@@ -7,6 +7,7 @@ namespace WPMgr\Agent\Abilities\Builders;
 use WPMgr\Agent\Abilities\AbilitySideEffects;
 use WPMgr\Agent\Abilities\AbilityWriteScope;
 use WPMgr\Agent\Abilities\VersionCompare;
+use WPMgr\Agent\Support\ArrayShape;
 
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
@@ -165,7 +166,7 @@ final class ElementorDocument
      */
     public function precheckTree(array $tree): ?array
     {
-        if ($tree === [] || !array_is_list($tree)) {
+        if ($tree === [] || !ArrayShape::isList($tree)) {
             return ['code' => self::CODE_UNKNOWN, 'detail' => 'the page has no list of elements'];
         }
         $unknown = $this->unknownElement($tree, 'elements', 1);
@@ -406,7 +407,7 @@ final class ElementorDocument
                 return $at . ': element type not registered';
             }
             $children = $node['elements'] ?? [];
-            if (!is_array($children) || !array_is_list($children)) {
+            if (!is_array($children) || !ArrayShape::isList($children)) {
                 return $at . '.elements: not a list of elements';
             }
             $inner = $this->unknownElement($children, $at . '.elements', $depth + 1);

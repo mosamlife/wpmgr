@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Abilities\Builders;
 
+use WPMgr\Agent\Support\ArrayShape;
+
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
     exit;
@@ -92,7 +94,7 @@ final class BuilderRegistry
             return false;
         }
         $list = get_object_vars($limits)['builders_enabled'] ?? null;
-        if (!is_array($list) || !array_is_list($list)) {
+        if (!is_array($list) || !ArrayShape::isList($list)) {
             return false;
         }
         foreach ($list as $name) {

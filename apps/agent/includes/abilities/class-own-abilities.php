@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Abilities;
 
+use WPMgr\Agent\Support\ArrayShape;
+
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
     exit;
@@ -218,7 +220,7 @@ final class OwnAbilities
         if ($list === null) {
             return [];
         }
-        if (!is_array($list) || !array_is_list($list) || count($list) > self::BUILDERS_ENABLED_MAX) {
+        if (!is_array($list) || !ArrayShape::isList($list) || count($list) > self::BUILDERS_ENABLED_MAX) {
             return null;
         }
         $ids = [];

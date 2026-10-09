@@ -6,6 +6,7 @@ namespace WPMgr\Agent\Abilities\Builders;
 
 use WPMgr\Agent\Abilities\OwnAbilities;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
+use WPMgr\Agent\Support\ArrayShape;
 
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
@@ -458,7 +459,7 @@ final class BuilderPageCreate
      */
     private static function ledgerRevisions(mixed $ids): ?array
     {
-        if (!is_array($ids) || !array_is_list($ids) || count($ids) > self::MAX_OWN_REVISIONS) {
+        if (!is_array($ids) || !ArrayShape::isList($ids) || count($ids) > self::MAX_OWN_REVISIONS) {
             return null;
         }
         foreach ($ids as $id) {

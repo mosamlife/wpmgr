@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Abilities\Builders;
 
 use WPMgr\Agent\Abilities\PageCreateBuilder;
+use WPMgr\Agent\Support\ArrayShape;
 
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
@@ -260,7 +261,7 @@ final class LeafPolicy
         if (self::adapterForbidden($rules) === null) {
             return self::refuse(self::CODE_UNSAFE, 'the adapter leaf rules are malformed');
         }
-        if (!array_is_list($nodes)) {
+        if (!ArrayShape::isList($nodes)) {
             return self::refuse(self::CODE_KEY, 'elements: not a list of nodes');
         }
 
@@ -282,7 +283,7 @@ final class LeafPolicy
         }
         foreach ($nodes as $i => $node) {
             $at = $where . '[' . $i . ']';
-            if (!is_array($node) || ($node !== [] && array_is_list($node))) {
+            if (!is_array($node) || ($node !== [] && ArrayShape::isList($node))) {
                 return self::refuse(self::CODE_KEY, $at . ': not a node');
             }
             $refusal = self::checkNode($node, $at, $depth, $allowedKeys, $rules);
@@ -366,7 +367,7 @@ final class LeafPolicy
         }
 
         $children = $node['elements'] ?? [];
-        if (!is_array($children) || !array_is_list($children)) {
+        if (!is_array($children) || !ArrayShape::isList($children)) {
             return self::refuse(self::CODE_KEY, $at . ': elements not a list of nodes');
         }
 
@@ -532,7 +533,7 @@ final class LeafPolicy
             return null;
         }
         $forbidden = $rules['forbidden'] ?? null;
-        if (!is_array($forbidden) || !array_is_list($forbidden)) {
+        if (!is_array($forbidden) || !ArrayShape::isList($forbidden)) {
             return null;
         }
         $out = [];
