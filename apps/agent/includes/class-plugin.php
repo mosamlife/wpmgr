@@ -56,6 +56,7 @@ use WPMgr\Agent\Commands\SyncSecurityConfigCommand;
 use WPMgr\Agent\Commands\UnblockIpCommand;
 use WPMgr\Agent\Commands\UpdateCommand;
 use WPMgr\Agent\Abilities\OwnAbilities;
+use WPMgr\Agent\Abilities\Builders\BuilderDocumentSnapshot;
 use WPMgr\Agent\Commands\AbilityRunCommand;
 use WPMgr\Agent\Commands\ContentProbeCommand;
 use WPMgr\Agent\Commands\ContentUpdateCommand;
@@ -809,6 +810,12 @@ final class Plugin
         // self-heal).
         add_action(BackupJanitor::HOOK_GC, [BackupJanitor::class, 'gcRuns']);
 
+        // Hourly bounded sweep of page copies kept for a page-edit undo past
+        // their retention, so a site that stops editing still loses them.
+        // Scheduled by BuilderDocumentSnapshot::scheduleSweep() (activate(),
+        // maybeRescheduleCron() and every page-edit write).
+        add_action(BuilderDocumentSnapshot::HOOK_SWEEP, [BuilderDocumentSnapshot::class, 'sweepScheduled']);
+
         // Media Optimizer — WP attachment-deletion cleanup. When an attachment
         // is deleted (wp-admin, programmatic, WP-CLI, or REST), WordPress purges
         // ONLY the files it tracks in _wp_attachment_metadata; WPMgr's own
@@ -1186,6 +1193,9 @@ final class Plugin
         // scratch directory (reclaims scratch a failed backup run leaks).
         BackupJanitor::scheduleGc($now);
 
+        // Hourly sweep of expired page-edit page copies.
+        BuilderDocumentSnapshot::scheduleSweep($now);
+
         // v0.9.13 — push diagnostics within ~30s of activation rather than
         // waiting out the jittered daily cron's 0..4h first-fire offset
         // (Scheduler::diagnosticsJitter). The single-event below fires the
@@ -1362,6 +1372,7 @@ final class Plugin
             wp_clear_scheduled_hook(UpdateInFlight::HOOK_GC);
             // GH #151 — backup runs/ scratch-dir GC backstop.
             wp_clear_scheduled_hook(BackupJanitor::HOOK_GC);
+            wp_clear_scheduled_hook(BuilderDocumentSnapshot::HOOK_SWEEP);
         }
 
         // Phase 3 — page-cache teardown. Cleanly reverse every server-side
@@ -1996,6 +2007,9 @@ final class Plugin
 
         // GH #151 — backup runs/ scratch-dir GC backstop — re-arm when missing.
         BackupJanitor::scheduleGc($now);
+
+        // Expired page-edit page copies, re-arm when missing.
+        BuilderDocumentSnapshot::scheduleSweep($now);
     }
 
     /**

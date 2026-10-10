@@ -400,6 +400,7 @@ final class AbilityRunCommand implements CommandInterface
             return $this->fail('bad_expected', 'expected.precheck_digest and expected.preview_digest are required');
         }
         BuilderDocumentSnapshot::sweep();
+        BuilderDocumentSnapshot::scheduleSweep(time());
         $row = AbilityLedger::get($requestId);
         if ($row !== null) {
             return $this->alreadyApplied($requestId, $row);
