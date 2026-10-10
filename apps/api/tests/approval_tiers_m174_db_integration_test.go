@@ -17,6 +17,7 @@ package tests
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -121,6 +122,16 @@ func m174ApproveByPolicy(t *testing.T, pool *db.Pool, arg sqlc.ApproveAbilityReq
 	return out, err
 }
 
+// m174Text is an optional text column as a failure message shows it: the
+// value quoted, or NULL. Printing the *string itself with %v shows an
+// address.
+func m174Text(p *string) string {
+	if p == nil {
+		return "NULL"
+	}
+	return strconv.Quote(*p)
+}
+
 func m174SetMode(t *testing.T, pool *db.Pool, p domain.Principal, arg sqlc.SetSiteAIModeParams) (sqlc.SetSiteAIModeRow, error) {
 	t.Helper()
 	var out sqlc.SetSiteAIModeRow
@@ -196,7 +207,7 @@ WHERE tenant_id = $1 AND id = $2`, tenant, req.ID, src, mode.AiModeVersion, user
 			return err
 		})
 		if m174Code(err) != "42501" {
-			t.Fatalf("raw policy approval with mode source %v: err = %v (code %s), want 42501 from ai_approval_backstop", src, err, m174Code(err))
+			t.Fatalf("raw policy approval with mode source %s: err = %v (code %s), want 42501 from ai_approval_backstop", m174Text(src), err, m174Code(err))
 		}
 	}
 
@@ -207,8 +218,8 @@ WHERE tenant_id = $1 AND id = $2`, tenant, req.ID, src, mode.AiModeVersion, user
 	}
 	if got.State != "approved" || got.ApprovalSource != "policy" || got.ApprovalModeSource == nil ||
 		*got.ApprovalModeSource != "enable_default" || got.DecidedByUserID.Valid {
-		t.Fatalf("approved row: state %s source %s mode source %v decider %v; want approved/policy/enable_default/none",
-			got.State, got.ApprovalSource, got.ApprovalModeSource, got.DecidedByUserID)
+		t.Fatalf("approved row: state %s source %s mode source %s decider %v; want approved/policy/enable_default/none",
+			got.State, got.ApprovalSource, m174Text(got.ApprovalModeSource), got.DecidedByUserID)
 	}
 
 	// The record does not move after the approval.
@@ -401,7 +412,7 @@ func TestM174CheckedTargetStatusIsWrittenAtInsertOnly(t *testing.T) {
 	withStatus.CheckedTargetStatus = acprStr("draft ")
 	row := aarInsert(t, pool, acprSitePrincipal(tenant, site), withStatus)
 	if row.CheckedTargetStatus == nil || *row.CheckedTargetStatus != "draft " {
-		t.Fatalf("checked_target_status = %v, want exactly %q", row.CheckedTargetStatus, "draft ")
+		t.Fatalf("checked_target_status = %s, want exactly %q", m174Text(row.CheckedTargetStatus), "draft ")
 	}
 	none := aarInsert(t, pool, acprSitePrincipal(tenant, site), aarParams(tenant, site, uuid.New(), "cts-2"))
 	if none.CheckedTargetStatus != nil {
