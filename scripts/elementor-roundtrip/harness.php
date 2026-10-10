@@ -61,11 +61,6 @@
  * Together the cases must have applied all five operations: set_text, insert,
  * replace, remove and move.
  *
- * The precheck refuses a site whose posts or postmeta table cannot roll back,
- * which it reads from information_schema.TABLES joined to
- * information_schema.ENGINES. The site here runs on SQLite, which has the first
- * and not the second, so the harness supplies the second (rt_supply_engines()).
- *
  * And the full restore: a write that fails after the agent has snapshotted the
  * page (a site that rewrites the saved tree) must put the page back. The
  * postmeta rows of the draft, [meta_key, meta_value] in meta_id order, read
@@ -144,8 +139,6 @@ const RT_PLANTS = [
     'edit_drops_setting',
     // After the full restore, one preserved postmeta row differs from its bytes before the write (use the case name "restore").
     'restore_row_drift',
-    // The site's engine catalogue says the engine of the posts and postmeta tables has no transactions (use the case name "all").
-    'edit_engines_no_transactions',
 ];
 
 const RT_NODE_LIMIT_DEPTH = 64;
@@ -1129,30 +1122,6 @@ function rt_plant_drop_setting(int $postId): bool
 }
 
 /**
- * Put the one catalogue this site lacks in place. The site runs on SQLite,
- * whose information_schema lists the storage engine of every table but has no
- * ENGINES table, and the agent asks which engines support transactions by
- * joining the two. In that read, ENGINES becomes a table of the engines MySQL
- * names with the TRANSACTIONS value MySQL gives each. The engine of the site's
- * own tables is still read from the site, so the agent's query and its reading
- * of the answer run as they do on MySQL.
- *
- * @param bool $innodbTransactions Plant: false makes the catalogue say InnoDB has no transactions.
- */
-function rt_supply_engines(bool $innodbTransactions): void
-{
-    $innodb  = $innodbTransactions ? 'YES' : 'NO';
-    $engines = "(SELECT 'InnoDB' AS ENGINE, '" . $innodb . "' AS TRANSACTIONS UNION ALL SELECT 'MyISAM', 'NO' UNION ALL SELECT 'MEMORY', 'NO')";
-    add_filter('query', static function ($sql) use ($engines) {
-        if (!is_string($sql) || substr_count($sql, 'information_schema.ENGINES') !== 1) {
-            return $sql;
-        }
-
-        return str_replace('information_schema.ENGINES', $engines, $sql);
-    }, 10, 1);
-}
-
-/**
  * Run the agent's edit path on this site: every edit case that names the layout
  * of this boot, then the full restore. See the steps 8 to 10 and the restore in
  * the file header.
@@ -1164,7 +1133,6 @@ function rt_supply_engines(bool $innodbTransactions): void
 function rt_edit_phase(string $layout, string $stored, int $principal, array $plants, bool $noCases): array
 {
     global $wpdb;
-    rt_supply_engines(!in_array('edit_engines_no_transactions', $plants['all'] ?? [], true));
     $out     = ['cases' => 0, 'scenarios' => [], 'ops' => [], 'checks' => 0, 'failed' => 0];
     $tagBase = ELEMENTOR_VERSION . ' edit-' . $layout;
     $made    = [];
