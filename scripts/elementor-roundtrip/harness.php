@@ -166,6 +166,8 @@ const RT_PLANTS = [
     'restore_row_drift',
     // While the edit of a previewed page is saved, the style-cache entry of another page is cleared (use the case name "after-view").
     'edit_view_other_cache',
+    // The preview before the edit does not enqueue the page's styles, so it leaves no style-cache entry for the page (use the case name "after-view").
+    'edit_view_no_styles',
 ];
 
 const RT_NODE_LIMIT_DEPTH = 64;
@@ -1310,9 +1312,10 @@ function rt_style_cache_of(int $postId): array
  * variables, the main query, the current post and user) is put back, as the next
  * request of a site would start without it.
  *
+ * @param bool $styles Plant: false leaves out Elementor's styles, so only the main query is made.
  * @return array{preview:bool,queried:int,threw:string} What the main query held, and the class of what was thrown, if anything.
  */
-function rt_view_page(int $postId): array
+function rt_view_page(int $postId, bool $styles = true): array
 {
     $get   = $_GET;
     $query = $_SERVER['QUERY_STRING'] ?? null;
@@ -1327,10 +1330,12 @@ function rt_view_page(int $postId): array
         wp();
         $seen['preview'] = is_preview();
         $seen['queried'] = (int) get_queried_object_id();
-        $frontend        = Plugin::$instance->frontend;
-        $frontend->register_scripts();
-        $frontend->register_styles();
-        $frontend->enqueue_styles();
+        if ($styles) {
+            $frontend = Plugin::$instance->frontend;
+            $frontend->register_scripts();
+            $frontend->register_styles();
+            $frontend->enqueue_styles();
+        }
     } catch (Throwable $e) {
         $seen['threw'] = get_class($e);
     } finally {
@@ -1395,7 +1400,11 @@ function rt_edit_after_view(AbilityRunCommand $cmd, array $createEntry, array $e
     }
 
     // Look at the page.
-    $seen = rt_view_page($pid);
+    $noStyles = in_array('edit_view_no_styles', $kinds, true);
+    if ($noStyles && $cacheClass === null) {
+        $c->ck('plant', false, 'this Elementor keeps no style-cache entries for the look to leave');
+    }
+    $seen = rt_view_page($pid, !$noStyles);
     $c->ck('view', $seen['threw'] === '' && $seen['preview'] && $seen['queried'] === $pid, $seen['threw'] !== '' ? 'the preview threw ' . $seen['threw'] : 'the preview of page ' . $pid . ' resolved to ' . ($seen['preview'] ? 'post ' . $seen['queried'] : 'no preview'));
     $otherBefore = [];
     if ($cacheClass === null) {
@@ -1452,7 +1461,8 @@ function rt_edit_after_view(AbilityRunCommand $cmd, array $createEntry, array $e
             remove_action('elementor/document/after_save', $plant, 30);
         }
     }
-    if ($c->ck('write', ($w['ok'] ?? false) === true && ($w['outcome'] ?? null) === 'applied', rt_brief($w))) {
+    $answered = 'the write was answered ok=' . rt_brief($w['ok'] ?? null) . ' outcome=' . rt_brief($w['outcome'] ?? null) . ' code=' . rt_brief($w['code'] ?? null) . ' detail=' . rt_brief($w['detail'] ?? null);
+    if ($c->ck('write', ($w['ok'] ?? false) === true && ($w['outcome'] ?? null) === 'applied', $answered)) {
         [$rows, $decoded] = rt_stored_tree($pid);
         $expect           = $stored === 'strings' && is_array($tree) ? rt_scalars_as_strings($tree) : $tree;
         $d                = $decoded !== null && is_array($expect) ? rt_diff($expect, $decoded, 'tree') : 'expected one _elementor_data row holding a tree, found ' . $rows;
