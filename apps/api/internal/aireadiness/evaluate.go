@@ -106,6 +106,7 @@ func DefaultFloors() Floors {
 		Bricks:         MinBricksVersion,
 		EngineAgent:    agentcmd.MinAgentVersionForAbilityEngine,
 		AbilitiesAPIWP: abilitiesAPIWPVersion,
+		BuilderAgent:   agentcmd.MinAgentVersionForBuilderAdapters,
 	}
 }
 
@@ -370,9 +371,19 @@ func (e *evaluator) switchCheck(id CheckID, needs Reason, version, api Check, at
 	return fail(id, ReasonNone, "")
 }
 
+// elementorSupport is available when the site's agent builds Elementor pages
+// (Floors.BuilderAgent), and coming below it or when the agent's version is
+// not known.
+func (e *evaluator) elementorSupport() WPMgrSupport {
+	if e.agentOK && agentAtLeast(e.agent, e.fl.BuilderAgent) {
+		return SupportAvailable
+	}
+	return SupportComing
+}
+
 func (e *evaluator) elementorGroup(api Check) Group {
 	f := e.f
-	g := Group{ID: GroupElementor, Installed: f.ElementorInstalled, Support: SupportComing, Checks: []Check{}}
+	g := Group{ID: GroupElementor, Installed: f.ElementorInstalled, Support: e.elementorSupport(), Checks: []Check{}}
 	if !f.ElementorInstalled {
 		return g
 	}

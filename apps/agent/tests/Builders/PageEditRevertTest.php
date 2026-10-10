@@ -547,6 +547,33 @@ final class PageEditRevertTest extends TestCase
         $this->assertSame(['reverted', true], [$r['outcome'] ?? null, $r['restored'] ?? null], (string) json_encode($r));
     }
 
+    public function test_editor_open_is_retryable_other_conflicts_are_not(): void
+    {
+        $this->enable();
+        $applied = $this->edit(self::EDIT, self::ops());
+        $state   = $this->state(self::DRAFT);
+
+        // Someone else holds the edit lock: worth asking again once it lapses.
+        $this->locks[self::DRAFT] = 9;
+        $open = $this->undo(self::EDIT, $applied['snapshot_sha256']);
+        $this->assertSame(['conflict', 'editor_open', true, false], [$open['code'] ?? null, $open['detail'] ?? null, $open['retryable'] ?? null, $open['ok'] ?? null], (string) json_encode($open));
+        $this->assertSame($state, $this->state(self::DRAFT), 'nothing written, no ledger change');
+        $this->assertSame([], $this->wpdb->claims, 'the target claim is released');
+        $this->assertSame([], $this->api->callsTo('deletePostCss'));
+        $this->locks = [];
+
+        // An autosave waits on a person.
+        $this->autosaves[self::DRAFT] = 9;
+        $autosave = $this->undo(self::EDIT, $applied['snapshot_sha256']);
+        $this->assertSame(['conflict', 'autosave_pending', false], [$autosave['code'] ?? null, $autosave['detail'] ?? null, $autosave['retryable'] ?? null]);
+        $this->autosaves = [];
+
+        // A later edit moved the page on: asking again cannot help.
+        $this->edit(self::EDIT2, [['op' => 'set_text', 'ref' => self::HEADING, 'field' => 'text', 'text' => 'Autumn prices']]);
+        $moved = $this->undo(self::EDIT, $applied['snapshot_sha256']);
+        $this->assertSame(['conflict', 'changed_after_this_change', false], [$moved['code'] ?? null, $moved['detail'] ?? null, $moved['retryable'] ?? null]);
+    }
+
     public function test_replay_already_reverted(): void
     {
         $this->enable();

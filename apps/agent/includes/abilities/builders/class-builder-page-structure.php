@@ -31,12 +31,18 @@ if (!defined('ABSPATH')) {
  * The answer:
  *
  *   {post_id, builder, builder_version, format, status, editable,
- *    base_fingerprint, node_count, truncated, nodes}
+ *    open_state, base_fingerprint, node_count, truncated, nodes}
  *
  * builder is the adapter id and builder_version the builder version the
  * adapter reports for the site (null when it cannot be told); format is
  * "classic", the one format the adapters read; status is the stored post
- * status. base_fingerprint is the page's builder_document_v1 and the nodes
+ * status. open_state says, for an editable draft, whether someone has it
+ * open: autosave_pending when anyone has an autosave of it, else
+ * editor_open when someone other than the current user holds its edit lock,
+ * else null; for a read-only page it is null and neither is read. It is
+ * read with core's wp_get_post_autosave() and wp_check_post_lock() only,
+ * in the order wpmgr/page-edit checks them, and page-edit checks again
+ * before it writes. base_fingerprint is the page's builder_document_v1 and the nodes
  * are the projection of the stored tree, both from one SQL read of the post
  * and its descriptor rows; the builder's document API is never asked, so
  * the read writes nothing. With a node ref the nodes are that node's
@@ -237,6 +243,7 @@ final class BuilderPageStructure
             'format'           => self::FORMAT_CLASSIC,
             'status'           => $status,
             'editable'         => $editable,
+            'open_state'       => $editable ? self::openState($postId) : null,
             'base_fingerprint' => $baseFp,
         ];
         try {
@@ -251,6 +258,32 @@ final class BuilderPageStructure
         }
 
         return ['output' => $head + $nodes];
+    }
+
+    /**
+     * Whether someone has the draft open, as an open_state token, or null:
+     * anyone's autosave of it (ElementorDocument::TARGET_AUTOSAVE), else
+     * someone other than the current user holding its edit lock
+     * (ElementorDocument::TARGET_LOCKED). Core's reads only; the builder's
+     * document API is never asked.
+     *
+     * @param int $postId The draft.
+     * @return string|null
+     */
+    private static function openState(int $postId): ?string
+    {
+        // User id 0 (the int) means an autosave by any user.
+        if (function_exists('wp_get_post_autosave') && wp_get_post_autosave($postId, 0) !== false) {
+            return ElementorDocument::TARGET_AUTOSAVE;
+        }
+        if (!function_exists('wp_check_post_lock') && defined('ABSPATH') && is_readable(ABSPATH . 'wp-admin/includes/post.php')) {
+            require_once ABSPATH . 'wp-admin/includes/post.php';
+        }
+        if (function_exists('wp_check_post_lock') && wp_check_post_lock($postId) !== false) {
+            return ElementorDocument::TARGET_LOCKED;
+        }
+
+        return null;
     }
 
     /**

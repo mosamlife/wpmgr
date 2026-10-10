@@ -8,21 +8,16 @@ import (
 )
 
 // Outcome details of a wpmgr/page-edit refused as a conflict: the closed set
-// the site answers with, and the only values outcome_detail carries.
+// the site answers with (mcp's page-edit conflict reasons, the one set the AI
+// and this outcome both use), and the only values outcome_detail carries.
 const (
 	// DetailChangedSinceRead: the page changed after the AI read it.
-	DetailChangedSinceRead = "changed_since_read"
+	DetailChangedSinceRead = mcp.PageEditConflictChangedSinceRead
 	// DetailEditorOpen: someone has the page open in Elementor.
-	DetailEditorOpen = "editor_open"
+	DetailEditorOpen = mcp.PageEditConflictEditorOpen
 	// DetailAutosavePending: someone has unsaved Elementor changes on it.
-	DetailAutosavePending = "autosave_pending"
+	DetailAutosavePending = mcp.PageEditConflictAutosavePending
 )
-
-var pageEditConflictDetails = map[string]struct{}{
-	DetailChangedSinceRead: {},
-	DetailEditorOpen:       {},
-	DetailAutosavePending:  {},
-}
 
 // outcomeDetailFor is outcome_detail: which conflict refused a page edit,
 // or nil. The outcome recording keeps the site's detail word for a refusal
@@ -33,10 +28,10 @@ func outcomeDetailFor(r sqlc.AssistantAbilityRequest) *string {
 		r.SiteReportedText == nil {
 		return nil
 	}
-	if _, ok := pageEditConflictDetails[*r.SiteReportedText]; !ok {
+	d, ok := mcp.PageEditConflictReason(*r.SiteReportedText)
+	if !ok {
 		return nil
 	}
-	d := *r.SiteReportedText
 	return &d
 }
 

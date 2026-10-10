@@ -404,16 +404,24 @@ func TestElementorNotInstalledContributesNothing(t *testing.T) {
 	f.ElementorActive = false
 	f.BuilderFacts.Elementor = &ElementorFacts{AtomicEditor: tp(false)}
 	f.ElementorAbilities = 0
-	r := Evaluate(f)
-	g := group(t, r, GroupElementor)
-	if g.Installed || len(g.Checks) != 0 || g.Version != "" {
-		t.Fatalf("an uninstalled builder has no checks: %+v", g)
-	}
-	if g.Support != SupportComing {
-		t.Fatalf("support = %q, want coming", g.Support)
-	}
-	if r.Status != StatusReady || r.FixCount != 0 {
-		t.Fatalf("a site without Elementor must not be red for it: %q %d", r.Status, r.FixCount)
+	// Support says what WPMgr can build on this site, installed or not: the
+	// agent decides it.
+	for agent, support := range map[string]WPMgrSupport{
+		"0.61.160": SupportComing,
+		agentcmd.MinAgentVersionForBuilderAdapters: SupportAvailable,
+	} {
+		f.AgentVersion = agent
+		r := Evaluate(f)
+		g := group(t, r, GroupElementor)
+		if g.Installed || len(g.Checks) != 0 || g.Version != "" {
+			t.Fatalf("agent %s: an uninstalled builder has no checks: %+v", agent, g)
+		}
+		if g.Support != support {
+			t.Fatalf("agent %s: support = %q, want %q", agent, g.Support, support)
+		}
+		if r.Status != StatusReady || r.FixCount != 0 {
+			t.Fatalf("agent %s: a site without Elementor must not be red for it: %q %d", agent, r.Status, r.FixCount)
+		}
 	}
 }
 
@@ -450,13 +458,49 @@ func TestElementorVersionCheck(t *testing.T) {
 
 func TestElementorGroupReportsItsValidatedVersion(t *testing.T) {
 	f := withElementor(readyFacts())
+	f.AgentVersion = agentcmd.MinAgentVersionForBuilderAdapters
 	g := group(t, Evaluate(f), GroupElementor)
-	if !g.Installed || g.Version != "4.3.4" || g.Support != SupportComing || len(g.Checks) != 3 {
+	if !g.Installed || g.Version != "4.3.4" || g.Support != SupportAvailable || len(g.Checks) != 3 {
 		t.Fatalf("elementor group = %+v", g)
 	}
 	f.ElementorVersion = "<script>"
 	if got := group(t, Evaluate(f), GroupElementor).Version; got != "" {
 		t.Fatalf("an unusable version must not be reported, got %q", got)
+	}
+}
+
+// TestElementorGroupIsAvailableOnceTheAgentBuildsIt: WPMgr builds Elementor
+// pages on a site whose agent ships the builder path
+// (MinAgentVersionForBuilderAdapters), so the Elementor group says available
+// there and coming below it, or when the agent's version is not known.
+// Bricks stays coming whatever the agent.
+func TestElementorGroupIsAvailableOnceTheAgentBuildsIt(t *testing.T) {
+	cases := []struct {
+		agent     string
+		elementor WPMgrSupport
+	}{
+		{"0.61.161", SupportAvailable},
+		{agentcmd.MinAgentVersionForBuilderAdapters, SupportAvailable},
+		{"0.61.163", SupportAvailable},
+		{"0.62.0", SupportAvailable},
+		{"1.0.0", SupportAvailable},
+		{"0.61.160", SupportComing},
+		{"0.61.158", SupportComing},
+		{"", SupportComing},
+		{"0.61.161-beta", SupportComing},
+		{"<b>0.61.161", SupportComing},
+	}
+	for _, c := range cases {
+		f := withBricks(withElementor(readyFacts()))
+		f.AgentVersion = c.agent
+		r := Evaluate(f)
+		el := group(t, r, GroupElementor)
+		if el.Support != c.elementor || el.Version != "4.3.4" {
+			t.Fatalf("agent %q with Elementor 4.3.4: support %q, want %q (%+v)", c.agent, el.Support, c.elementor, el)
+		}
+		if got := group(t, r, GroupBricks).Support; got != SupportComing {
+			t.Fatalf("agent %q: bricks support %q, want coming", c.agent, got)
+		}
 	}
 }
 
@@ -789,23 +833,26 @@ func TestInstalledButInactiveBuilderIsNotAFix(t *testing.T) {
 		group    GroupID
 		version  CheckID
 		observed string
+		support  WPMgrSupport
 		rest     []dep
 	}{
 		{"elementor", func() Facts {
 			f := withElementor(readyFacts())
+			f.AgentVersion = agentcmd.MinAgentVersionForBuilderAdapters
 			f.ElementorActive = false
 			return f
-		}, GroupElementor, CheckElementorVersion, "4.3.4", []dep{
+		}, GroupElementor, CheckElementorVersion, "4.3.4", SupportAvailable, []dep{
 			{CheckElementorSwitch, ReasonNeedsElementor},
 			{CheckElementorAtomic, ReasonNeedsElementor},
 		}},
 		{"bricks", func() Facts {
 			f := withBricks(readyFacts())
+			f.AgentVersion = agentcmd.MinAgentVersionForBuilderAdapters
 			f.BricksActive = false
 			f.BricksAbilities = 0
 			f.BuilderFacts.ThemeTemplate = "twentytwentyfive"
 			return f
-		}, GroupBricks, CheckBricksVersion, "2.4.1", []dep{
+		}, GroupBricks, CheckBricksVersion, "2.4.1", SupportComing, []dep{
 			{CheckBricksAbilities, ReasonNeedsBricks},
 		}},
 	}
@@ -816,8 +863,8 @@ func TestInstalledButInactiveBuilderIsNotAFix(t *testing.T) {
 				t.Fatalf("status %q fix_count %d failing %v, want ready 0 []", r.Status, r.FixCount, r.Failing())
 			}
 			g := group(t, r, c.group)
-			if !g.Installed || g.Version != c.observed || g.Support != SupportComing {
-				t.Fatalf("an inactive builder is still an installed one: %+v", g)
+			if !g.Installed || g.Version != c.observed || g.Support != c.support {
+				t.Fatalf("an inactive builder is still an installed one, with support %q: %+v", c.support, g)
 			}
 			expect(t, find(t, r, c.version), StateNotApplicable, ReasonInactive, c.observed)
 			for _, d := range c.rest {

@@ -12,6 +12,7 @@ import {
   type PageEditRow,
 } from "@/test/ability-request-rows";
 
+import { clockTime } from "./ability-card-model";
 import { AiEditingSection } from "./ai-editing-section";
 
 // The approval card for an AI page edit (wpmgr/page-edit), on the site's
@@ -89,6 +90,22 @@ function withOps(ops: EditOpInput[], facts: PageEditRow, over: Partial<AbilityRe
 // --- the pending card ---------------------------------------------------------
 
 describe("a pending page edit", () => {
+  // The control plane opens the window for 24 hours
+  // (apps/api/internal/mcp/ability_write.go, abilityRequestWindow). The instant
+  // used is on a different calendar day from the instant 24 hours later in every
+  // zone, and each expectation is derived from the same instants.
+  it("names the day the request closes when it closes on a later day", async () => {
+    const created_at = "2026-10-10T04:11:41Z";
+    const expires_at = new Date(Date.parse(created_at) + 24 * 60 * 60 * 1000).toISOString();
+    renderTab([pageEditRow({ created_at, expires_at })]);
+    const card = await openCard();
+    const timing = flat(within(card).getByText("Timing", { selector: "dt" }).nextElementSibling);
+    expect(timing.startsWith(`Asked ${clockTime(created_at)} · closes `)).toBe(true);
+    const closes = timing.slice(timing.indexOf(" · closes ") + " · closes ".length);
+    expect(closes).not.toBe(clockTime(expires_at));
+    expect(closes).toContain(new Intl.DateTimeFormat([], { weekday: "short" }).format(new Date(expires_at)));
+  });
+
   it("names the page, the site, who asked and how many changes, each under its tag", async () => {
     renderTab([pageEditRow()]);
     const card = await openCard();

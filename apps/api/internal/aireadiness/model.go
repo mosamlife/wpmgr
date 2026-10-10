@@ -92,8 +92,10 @@ const (
 // WPMgrSupport says whether WPMgr can build pages with a builder yet.
 type WPMgrSupport string
 
-// Support levels. Every builder is "coming" until its builder slice ships;
-// the checks then show whether the site WILL be ready.
+// Support levels. A builder is "coming" while WPMgr cannot build pages with
+// it on the site, and the checks then show whether the site WILL be ready.
+// Elementor is "available" once the site's agent builds Elementor pages
+// (Floors.BuilderAgent); Bricks is "coming".
 const (
 	SupportComing    WPMgrSupport = "coming"
 	SupportAvailable WPMgrSupport = "available"
@@ -161,6 +163,9 @@ type Floors struct {
 	// AbilitiesAPIWP is the first WordPress release that ships the Abilities
 	// API in core. It is not part of the response.
 	AbilitiesAPIWP string
+	// BuilderAgent is the first agent that builds Elementor pages. It decides
+	// the Elementor group's support; it is not part of the response.
+	BuilderAgent string
 }
 
 // BuilderFacts is what the site's agent reported in builder_facts. The zero

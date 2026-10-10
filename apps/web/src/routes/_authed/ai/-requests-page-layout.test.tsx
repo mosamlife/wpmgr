@@ -6,6 +6,7 @@ import type { AbilityRequest } from "@wpmgr/api";
 
 import { createTestQueryClient, renderWithProviders } from "@/test/render";
 import { authKeys } from "@/features/auth/use-auth";
+import { clockTime } from "@/features/ability-requests/ability-card-model";
 import {
   assertDbShape,
   mediaFact,
@@ -305,6 +306,46 @@ describe("a request with only headings, paragraphs and lists", () => {
       expect(within(card).getByText(term)).toBeInTheDocument();
     }
     expect(card).toHaveTextContent("WordPress block editor");
+  });
+});
+
+// --- the Timing row -------------------------------------------------------------
+
+// The approval window is 24 hours (apps/api/internal/mcp/ability_write.go,
+// abilityRequestWindow), so the close is usually on the day after the ask.
+// Nothing here depends on the runner's time zone: the instant used is on a
+// different calendar day from the instant 24 hours later in every zone, the
+// same-day case is built from local calendar fields, and each expectation is
+// derived from the same instants.
+describe("the Timing row", () => {
+  /** The text of the value that follows the "Timing" term of the open card. */
+  async function timingRow(row: AbilityRequest): Promise<string> {
+    renderPage([row]);
+    const card = await openCard();
+    const term = within(card).getByText("Timing");
+    expect(term.tagName).toBe("DT");
+    return (term.nextElementSibling?.textContent ?? "").replace(/\s+/g, " ").trim();
+  }
+
+  const weekdayOf = (iso: string) => new Intl.DateTimeFormat([], { weekday: "short" }).format(new Date(iso));
+
+  it("names the day the request closes when it closes on a later day", async () => {
+    const created_at = "2026-10-10T04:11:41Z";
+    const expires_at = new Date(Date.parse(created_at) + 24 * 60 * 60 * 1000).toISOString();
+    const row = await timingRow(pageCreateRow({ created_at, expires_at }));
+
+    expect(row.startsWith(`Asked ${clockTime(created_at)} · closes `)).toBe(true);
+    // Not the words a person saw before, where both ends read the same.
+    expect(row).not.toBe(`Asked ${clockTime(created_at)} · closes ${clockTime(expires_at)}`);
+    expect(row.slice(row.indexOf(" · closes ") + " · closes ".length)).toContain(weekdayOf(expires_at));
+  });
+
+  it("leaves a close on the day it was asked as a time of day", async () => {
+    const created_at = new Date(2026, 9, 10, 9, 55).toISOString();
+    const expires_at = new Date(2026, 9, 10, 11, 0).toISOString();
+    expect(await timingRow(pageCreateRow({ created_at, expires_at }))).toBe(
+      `Asked ${clockTime(created_at)} · closes ${clockTime(expires_at)}`,
+    );
   });
 });
 
