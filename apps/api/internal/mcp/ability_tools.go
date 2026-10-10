@@ -161,6 +161,10 @@ type abilityEngine struct {
 	// route encodes a reviewed REST route row (SetRouteEncoder); nil leaves
 	// wpmgr/rest-read and wpmgr/rest-write with no routes.
 	route RouteEncoder
+	// drafts reads p.allowed_draft_ids for wpmgr/page-structure and
+	// wpmgr/page-edit; nil when the store does not implement it, and then
+	// neither runs.
+	drafts DraftEligibilityStore
 }
 
 // AbilityRefresher queues one site's inventory refresh. It is unique per
@@ -228,6 +232,9 @@ func (s *Service) EnableAbilityTools(store AbilityStore, agent AbilityAgent, ent
 	s.abilities = &abilityEngine{store: store, agent: agent, entry: entry, cursorKey: key, readLimit: newAbilityReadLimiter()}
 	if rec, ok := store.(AbilitySideEffectRecorder); ok {
 		s.abilities.sideEffects = rec
+	}
+	if d, ok := store.(DraftEligibilityStore); ok {
+		s.abilities.drafts = d
 	}
 	return nil
 }
@@ -550,6 +557,8 @@ func classify(name string, entries []sqlc.AbilityCatalogue, inv *sqlc.SiteAbilit
 	case !abilityAgentMeetsFloor(agentVersion, e.MinAgentVersion):
 		return not(notRunnableAgentOutdated)
 	case isRestAbility(name) && !abilityAgentMeetsFloor(agentVersion, abilityStrPtr(agentcmd.MinAgentVersionForRestCall)):
+		return not(notRunnableAgentOutdated)
+	case isBuilderEditAbility(name) && !abilityAgentMeetsFloor(agentVersion, abilityStrPtr(agentcmd.MinAgentVersionForBuilderEdit)):
 		return not(notRunnableAgentOutdated)
 	}
 	c.runnable = true
@@ -891,8 +900,11 @@ var ownAbilityInputSchemas = map[string]json.RawMessage{
 		`"required":["post_id"],"additionalProperties":false}`),
 	// The agent registers the same bytes (page_create_input.go).
 	AbilityPageCreate: pageCreateInputSchema,
-	AbilityRestRead:  restInputSchema,
-	AbilityRestWrite: restInputSchema,
+	AbilityRestRead:   restInputSchema,
+	AbilityRestWrite:  restInputSchema,
+	// The agent registers the same bytes (page_structure.go, page_edit_input.go).
+	AbilityPageStructure: pageStructureInputSchema,
+	AbilityPageEdit:      pageEditInputSchema,
 }
 
 type describeWPMgr struct {
@@ -1313,6 +1325,9 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 		if c.reason != nil {
 			code = *c.reason
 		}
+		if code == notRunnableAgentOutdated && isBuilderEditAbility(name) && !vendor {
+			return "", builderEditOutdatedRefusal()
+		}
 		if code == notRunnableAgentOutdated {
 			floor, msg := agentcmd.MinAgentVersionForAbilityEngine, msgAbilityOutdated
 			if vendor {
@@ -1375,15 +1390,26 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 	if err != nil {
 		return "", notRunnableRefusal(notRunnableDisabled)
 	}
+	// A structure read names the draft WPMgr created as this input's post,
+	// read now, so the agent never takes a draft as WPMgr's on its own word.
+	var allowedDrafts []int64
+	if name == AbilityPageStructure && !vendor {
+		if allowedDrafts, err = s.allowedDraftIDsFor(ctx, eng, site, input); err != nil {
+			return "", fmt.Errorf("site_ability_run: %w", err)
+		}
+	}
 	// 6. The read, synchronously.
 	callCtx, cancel := context.WithTimeout(ctx, abilityRunTimeout)
 	resp, err := eng.agent.AbilityRun(callCtx, site.row.ID, site.row.Url, agentcmd.AbilityRunCall{
 		Mode: agentcmd.AbilityRunModeRead, RequestID: uuid.New(),
-		Entry: entryBytes, EntrySHA256: entrySum, Input: input,
+		Entry: entryBytes, EntrySHA256: entrySum, Input: input, AllowedDraftIDs: allowedDrafts,
 	})
 	cancel()
 	if err != nil {
 		var refusal *agentcmd.AbilityRunRefusal
+		if errors.As(err, &refusal) && !vendor && builderEditIneligible(name, refusal) {
+			return "", withBuilderEditTarget(builderEditIneligibleRefusal(name, refusal), name, input)
+		}
 		if errors.As(err, &refusal) && vendor {
 			if refusal.Code == "read_side_effect_detected" {
 				s.reportReadSideEffect(ctx, auth, site, c.entry, refusal)
@@ -1429,6 +1455,9 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 // validateOwnInput checks input against our own schema's keys and integer
 // fields. It reports true when the input is bad.
 func validateOwnInput(name string, input []byte) bool {
+	if name == AbilityPageStructure {
+		return pageStructureInputBad(input)
+	}
 	var m map[string]json.RawMessage
 	if json.Unmarshal(input, &m) != nil {
 		return true
@@ -1465,6 +1494,10 @@ type outShape struct {
 	// scalar is a typed leaf from output_fields: "string", "int" or
 	// "bool". Empty is any scalar (the own shapes).
 	scalar string
+	// token is a string leaf of a WPMgr-checked form (a node ref, a
+	// fingerprint): a string matching it is returned unchanged, unfenced, so
+	// the AI can send it back; any other value is dropped.
+	token *regexp.Regexp
 }
 
 var leaf = &outShape{}
@@ -1495,6 +1528,7 @@ var ownAbilityOutputShapes = map[string]*outShape{
 		"text_bytes": leaf, "truncated": leaf,
 		"from_the_site": obj(map[string]*outShape{"title": leaf, "text": leaf}),
 	}),
+	AbilityPageStructure: pageStructureOutputShape,
 }
 
 // fenceAbilityOutput projects the site's output onto the ability's known
@@ -1555,6 +1589,12 @@ func projectOutput(v any, s *outShape) any {
 			out[i] = projectOutput(x, s.items)
 		}
 		return out
+	}
+	if s.token != nil {
+		if t, ok := v.(string); ok && s.token.MatchString(t) {
+			return t
+		}
+		return nil
 	}
 	switch t := v.(type) {
 	case string:

@@ -17,7 +17,11 @@
 # agent path handed no outline, and on each of five defects planted in a copy of
 # the agent's own source (its verify skipped, an undo that says reverted and
 # leaves the post, its digest re-check skipped, the container layout read as off,
-# its undo guard skipped), each on the check meant to see it. It also
+# its undo guard skipped), each on the check meant to see it. On the agent's edit
+# path it proves the render checks hold the page to the texts and links still on
+# it after the call: a text or a link that stays and goes missing is red, a case
+# with no after tree is still held to everything its operations wrote, and an
+# after tree that leaves none of the written texts on the page is red. It also
 # proves what it must NOT block: an honest run, a cached download, a run of one
 # version or one layout out of several, a blueprint that sets some other site
 # option, and, in the planted run, every case that carries no plant and the
@@ -38,7 +42,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 # A developer's own seams must not leak into the cases below.
 unset RT_NPX RT_NODE RT_PINS_FILE RT_BLUEPRINT RT_VERSIONS RT_FIXTURES_DIR RT_AGENT_INCLUDES
-unset RT_PLANT RT_HARNESS_ARGS RT_TIMEOUT RT_ALLOW_FILE_URLS RT_LAYOUTS FAKE_MODE FAKE_ARGS_FILE FAKE_FAIL_VERSION FAKE_FAIL_LAYOUT
+unset RT_PLANT RT_HARNESS_ARGS RT_TIMEOUT RT_TEST_KILL_SETTLE RT_ALLOW_FILE_URLS RT_LAYOUTS FAKE_MODE FAKE_ARGS_FILE FAKE_FAIL_VERSION FAKE_FAIL_LAYOUT
 real_cache="${RT_CACHE:-}"
 unset RT_CACHE
 
@@ -170,6 +174,7 @@ case "${FAKE_MODE:-ok}" in
   fail) echo "rt: FAIL [x containers y] stored: tree: want 1, got 2"; echo "rt: SUMMARY elementor=$ver layout=$layout $tail_ok failed=1"; echo "rt: RESULT FAIL"; exit 1 ;;
   crash) echo "PHP Fatal error: boom"; exit 255 ;;
   hang) sleep 30; exit 0 ;;
+  termexit) exec sleep 30 ;;
   download) mkdir -p "$HOME/.wordpress-playground"; : >"$HOME/.wordpress-playground/custom-ffffffff.zip"; echo "$good"; echo "rt: RESULT OK"; exit 0 ;;
 esac
 FAKE
@@ -353,6 +358,15 @@ said "  and the layout that failed is named" "Elementor 4.3.4 (sections) FAILED"
 said "  and both layouts were run" "2 boot(s), 1 version(s) x 2 layout(s)"
 expect "a boot that never answers is red within the timeout" 2 "${offline[@]}" "RT_CACHE=$tmp/c7" RT_VERSIONS=4.3.4 FAKE_MODE=hang RT_TIMEOUT=2
 said "  and it says how long it waited" "no result after 2s"
+# A boot that dies the instant it is told to stop can be reaped before the check has read its
+# status. The wait after the kill makes that certain; the verdict must still be the timeout.
+expect "a boot that exits at once when it is stopped is a timeout, not a missing verdict" 2 "${offline[@]}" "RT_CACHE=$tmp/c7" RT_VERSIONS=4.3.4 RT_LAYOUTS=containers FAKE_MODE=termexit RT_TIMEOUT=2 RT_TEST_KILL_SETTLE=1
+said "  and it says how long it waited" "no result after 2s"
+not_said "  and it does not call the timeout a missing verdict" "gave no usable verdict"
+expect "the same boot without the wait after the kill is a timeout too" 2 "${offline[@]}" "RT_CACHE=$tmp/c7" RT_VERSIONS=4.3.4 RT_LAYOUTS=containers FAKE_MODE=termexit RT_TIMEOUT=2
+said "  and it says how long it waited" "no result after 2s"
+expect "a wait after the kill that is not a number is red" 2 "${offline[@]}" "RT_CACHE=$tmp/c7" RT_TEST_KILL_SETTLE=soon
+said "  and it says what is wrong" "RT_TEST_KILL_SETTLE must be"
 expect "a CLI that downloads its own WordPress is red" 2 "${offline[@]}" "RT_CACHE=$tmp/c8" RT_VERSIONS=4.3.4 FAKE_MODE=download
 said "  and it says so" "downloaded a WordPress of its own"
 
@@ -386,6 +400,10 @@ else
   said "  and the agent refused digests that are not the precheck's" "rt: ok   [4.3.4 agent-sections digest]"
   said "  and the agent refused to undo a draft a person had edited" "rt: ok   [4.3.4 agent-containers person-edit]"
   said "  and nothing the agent made was left outside the trash" "rt: ok   [4.3.4 agent-sections leftover]"
+  said "  and the edit path ran its cases on a containers site" "rt: ok   [4.3.4 edit-containers set-text-every-field]"
+  said "  and a batch whose later operations take earlier changes off the page passes on a containers site" "rt: ok   [4.3.4 edit-containers change-then-remove]"
+  said "  and on a sections site" "rt: ok   [4.3.4 edit-sections change-then-remove]"
+  said "  and the full restore put the page back" "rt: ok   [4.3.4 edit-containers restore]"
 
   # One boot, five planted defects on five different cases, in both layouts.
   expect "planted defects turn the real round trip red" 1 "${real_c[@]}" "RT_PLANT=plant=unregistered_widget@heading plant=mapper_drift@text plant=render_script@list plant=render_onclick@quote plant=render_text@button"
@@ -424,6 +442,26 @@ sections text golden"
     bad "  cases without a plant did not all pass (ok=$ok_n failing=$failing_cases total=$total_n)"
   fi
   said "  the unregistered widget is the silent drop, reported as a difference in the stored tree" "stored: tree"
+
+  # The edit path's render checks hold the page to what is still on it after the call: one boot, three plants on
+  # three edit cases. The batch that takes its earlier changes off the page is held to the one text it leaves, the
+  # case with a link that stays is held to the link, and a case with no after tree is held to every text it wrote.
+  expect "planted edit render defects turn the real round trip red" 1 "${real_c[@]}" "RT_PLANT=plant=edit_render_drop_text@change-then-remove plant=edit_render_drop_link@set-text-every-field plant=edit_render_text@all-five-operations-entity-text"
+  want="all-five-operations-entity-text render-text
+change-then-remove render-text
+set-text-every-field render-link"
+  got="$(printf '%s\n' "$LAST_OUT" | sed -n -E 's/^rt: FAIL \[[0-9.]+ edit-containers ([a-z0-9-]+)\] ([a-z-]+):.*/\1 \2/p' | sort -u)"
+  if [ "$got" = "$(printf '%s\n' "$want" | sort -u)" ]; then
+    ok "  each plant fails the check it is meant to prove, on its own edit case and no other"
+  else
+    bad "  the failing edit checks are not exactly the planted ones"
+    echo "     want:"; printf '%s\n' "$want" | sort -u | sed 's/^/       /'
+    echo "     got:"; printf '%s\n' "$got" | sed 's/^/       /'
+    echo "$LAST_OUT" | grep '^rt: FAIL' | sed 's/^/     | /' | head -20
+  fi
+  said "  the text the batch leaves on the page is the one it is held to" "[4.3.4 edit-containers change-then-remove] render-text: 1 text(s) not shown as written, first: Find us"
+  said "  and a link that stays on the page is held to it" "[4.3.4 edit-containers set-text-every-field] render-link: no anchor carries the link https://example.com/book"
+  not_said "  and every plant was applied" "] plant:"
 
   # The agent path must look at something: handed no outline, it is red, and names what never ran.
   expect "an agent path handed no outline is red" 1 "${real_c[@]}" "RT_PLANT=plant=agent_no_cases@all"
@@ -488,7 +526,7 @@ sections text golden"
     "'containers'       => false,"
   mutant guard "its undo guard skipped" "rt: FAIL [4.3.4 agent-containers person-edit] refused:" \
     commands/class-ability-run-command.php \
-    '$problem = BuilderPageCreate::revertProblem($postId, $builderRow);' \
+    '$problem = BuilderPageCreate::revertProblem($postId, $builderRow, $chain);' \
     '$problem = null;'
 
   mkdir -p "$tmp/fx-empty"
@@ -497,6 +535,26 @@ sections text golden"
   printf '%s\n' "$empty" >"$tmp/fx-empty/elementor-classic-sections.json"
   expect "golden fixtures with no cases are red" 2 "${real_c[@]}" "RT_FIXTURES_DIR=$tmp/fx-empty"
   said "  and the harness says why" "holds no cases"
+
+  # An edit case whose golden after tree leaves none of the texts its operations wrote on the page would look at
+  # nothing, so it is red and says why.
+  mkdir -p "$tmp/fx-noafter"
+  cp -R "$here/../apps/agent/tests/fixtures/ability-run/." "$tmp/fx-noafter/"
+  if "$node_bin" -e '
+    const fs = require("fs");
+    const [file, name] = process.argv.slice(1);
+    const d = JSON.parse(fs.readFileSync(file, "utf8"));
+    const hit = d.cases.filter((c) => c.name === name);
+    if (hit.length !== 1) { console.error("case " + name + " matched " + hit.length + " time(s)"); process.exit(1); }
+    hit[0].after_tree = [];
+    fs.writeFileSync(file, JSON.stringify(d));
+  ' "$tmp/fx-noafter/elementor-edit-cases.json" set-text-every-field-containers 2>"$tmp/fx-noafter.err"; then
+    expect "an edit case that leaves none of its written texts on the page is red" 1 "${real_c[@]}" "RT_FIXTURES_DIR=$tmp/fx-noafter"
+    said "  and it says the page was held to none of them" "[4.3.4 edit-containers set-text-every-field] render-text: every text the operations wrote is off the page after the call"
+    not_said "  and no other edit case is red for it" "rt: FAIL [4.3.4 edit-containers change-then-remove]"
+  else
+    bad "the edit fixture cannot be mutated to leave nothing on the page: $(cat "$tmp/fx-noafter.err")"
+  fi
 
   expect "a mounted Elementor zip that is not the pinned file is red" 2 "${real_c[@]}" "RT_HARNESS_ARGS=zip_sha256=$zero_sha"
   said "  and the harness says why" "is not the pinned file"

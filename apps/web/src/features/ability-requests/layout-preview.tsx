@@ -18,6 +18,7 @@ import {
   type ImageNode,
   type LinkTarget,
   type OutlineNode,
+  type PageMediaFact,
   type PagePreview,
 } from "./outline-model";
 
@@ -48,14 +49,19 @@ export interface LayoutPreviewProps {
 }
 
 interface Ctx {
-  readonly preview: PagePreview;
+  /**
+   * What the site said about each image when WPMgr checked the request. Null
+   * for an outline that has no such facts (a page edit's): an image is then
+   * shown by its media library number, never by a file name.
+   */
+  readonly media: ReadonlyMap<number, PageMediaFact> | null;
   readonly siteHost: string;
   readonly siteUrl: string | null;
   readonly altFromLibrary: boolean;
 }
 
 export function LayoutPreview({ preview, siteHost, siteUrl, labelledBy, altFromLibrary = false }: LayoutPreviewProps) {
-  const ctx: Ctx = { preview, siteHost, siteUrl: siteUrl ?? null, altFromLibrary };
+  const ctx: Ctx = { media: preview.media, siteHost, siteUrl: siteUrl ?? null, altFromLibrary };
   return (
     // A scrolling region has to be reachable by keyboard to be scrolled by it.
     <div
@@ -69,6 +75,37 @@ export function LayoutPreview({ preview, siteHost, siteUrl, labelledBy, altFromL
         <Txt>{preview.title}</Txt>
       </p>
       <Nodes nodes={preview.outline} ctx={ctx} />
+    </div>
+  );
+}
+
+export interface OutlineFragmentViewProps {
+  /** The nodes one page-edit operation puts on the page, as the AI chose them. */
+  nodes: readonly OutlineNode[];
+  /** The site's host as WPMgr recorded it (site_host), to tell its own links from others. */
+  siteHost: string;
+  /** The site's own address, for "View image in WordPress". Unknown is fine. */
+  siteUrl?: string | null;
+  /** Names the scrolling region for a screen reader. */
+  label: string;
+}
+
+/**
+ * The nodes of one page-edit insert or replace, every value shown, in a
+ * region that scrolls. It has no title and no image facts: a page edit's card
+ * carries none, so an image is shown by its media library number.
+ */
+export function OutlineFragmentView({ nodes, siteHost, siteUrl, label }: OutlineFragmentViewProps) {
+  const ctx: Ctx = { media: null, siteHost, siteUrl: siteUrl ?? null, altFromLibrary: true };
+  return (
+    <div
+      data-testid="change-outline"
+      role="region"
+      aria-label={label}
+      tabIndex={0}
+      className="max-h-64 space-y-2 overflow-y-auto rounded-md bg-muted/30 p-3 text-sm text-foreground"
+    >
+      <Nodes nodes={nodes} ctx={ctx} />
     </div>
   );
 }
@@ -212,19 +249,22 @@ function NodeView({ node, ctx }: { node: OutlineNode; ctx: Ctx }) {
 
 function ImageView({ node, ctx }: { node: ImageNode; ctx: Ctx }) {
   // parsePagePreview refuses an outline with an image that has no fact, so a
-  // missing fact is not reachable; the guard keeps the type honest.
-  const fact = ctx.preview.media.get(node.attachment_id);
+  // missing fact is not reachable on a page-create card; the guard keeps the
+  // type honest. An outline with no facts at all (media null) names the image
+  // by its media library number instead.
+  const fact = ctx.media === null ? null : ctx.media.get(node.attachment_id);
   if (fact === undefined) return null;
-  const size = imageSizeLabel(fact.width, fact.height);
+  const size = fact === null ? null : imageSizeLabel(fact.width, fact.height);
   const align = imageAlignLabel(node.align);
-  const href = editDraftHref(ctx.siteUrl, fact.id);
+  const href = editDraftHref(ctx.siteUrl, node.attachment_id);
+  const filename = fact === null ? null : fact.filename;
   return (
     <div className="space-y-0.5">
       <p className="break-words">
         <Label>Image</Label>
         <span className="text-muted-foreground">
           {" · "}
-          <Txt>{fact.filename}</Txt>
+          {filename === null ? `media library item ${node.attachment_id}` : <Txt>{filename}</Txt>}
           {size ? ` · ${size}` : null}
         </span>
       </p>
@@ -257,7 +297,7 @@ function ImageView({ node, ctx }: { node: ImageNode; ctx: Ctx }) {
               className="font-medium text-primary underline underline-offset-2 hover:opacity-80"
             >
               View image in WordPress{" "}
-              <span className="sr-only">{`(${fact.filename})`}</span>
+              <span className="sr-only">{`(${filename ?? `media library item ${node.attachment_id}`})`}</span>
             </a>
           </p>
         ) : null}

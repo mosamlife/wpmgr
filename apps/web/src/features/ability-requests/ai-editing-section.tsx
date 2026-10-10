@@ -7,6 +7,7 @@ import { ENABLE_NOTICE } from "@/features/ai-trust/ai-trust-copy";
 import { SiteAiModeSetting } from "@/features/ai-trust/site-ai-mode-setting";
 
 import { AbilityRequestCard } from "./ability-request-card";
+import { laterEditCount } from "./page-edit-model";
 import { useAbilityCardActions } from "./use-ability-card-actions";
 import {
   CODE_AGENT_OUTDATED,
@@ -158,6 +159,7 @@ function AbilityRequestList({ siteId, siteUrl }: { siteId: string; siteUrl?: str
               request={r}
               siteUrl={siteUrl}
               currentUserId={me?.user?.id ?? null}
+              laterEdits={laterEditCount(r, requests)}
               notice={actions.notices[r.id] ?? null}
               onApprove={actions.handleApprove}
               onDecline={actions.handleDecline}

@@ -414,7 +414,7 @@ func (q *Queries) ListAIActivityPage(ctx context.Context, arg ListAIActivityPage
 }
 
 const listAbilityRequestsByIDs = `-- name: ListAbilityRequestsByIDs :many
-SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at, checked_target_status
+SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at, checked_target_status, snapshot_sha256, undo_code
 FROM assistant_ability_requests
 WHERE tenant_id = $1
   AND id = ANY($2::uuid[])
@@ -506,6 +506,8 @@ func (q *Queries) ListAbilityRequestsByIDs(ctx context.Context, arg ListAbilityR
 			&i.AskReason,
 			&i.PolicyCheckedAt,
 			&i.CheckedTargetStatus,
+			&i.SnapshotSha256,
+			&i.UndoCode,
 		); err != nil {
 			return nil, err
 		}

@@ -108,6 +108,9 @@ type fakeStore struct {
 	scopeSites []uuid.UUID
 	// scopeSitesScoped is set by ResolveScopeSites; see its comment.
 	scopeSitesScoped bool
+	// scopeSitesTenant is the tenant of the principal the LAST
+	// ResolveScopeSites call ran under.
+	scopeSitesTenant uuid.UUID
 
 	// S6b transport surface.
 	//
@@ -474,6 +477,7 @@ func (f *fakeStore) ResolveScopeSites(_ context.Context, principal db.ScopedPrin
 	f.note("ResolveScopeSites")
 	f.mu.Lock()
 	f.scopeSitesScoped = domain.IsSiteConstrained(principal.GetScope(), principal.GetAllowedSiteIDs())
+	f.scopeSitesTenant = principal.GetTenantID()
 	f.mu.Unlock()
 	return f.scopeSites, nil
 }

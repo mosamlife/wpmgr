@@ -16,7 +16,7 @@ func boolp(b bool) *bool { return &b }
 // restored false, the closed columns kept for the audit row.
 func TestClassifyWrite_PartialRestore(t *testing.T) {
 	now := time.Now()
-	oc := classifyWrite(agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{
+	oc := classifyWrite("", agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{
 		Code: "side_effect_detected", Restored: boolp(false),
 		ColumnsStillChanged: []string{"post_status", "unknown"},
 	}, now)
@@ -35,13 +35,13 @@ func TestClassifyWrite_PartialRestore(t *testing.T) {
 }
 
 func TestClassifyWrite_CleanRestoreUnchanged(t *testing.T) {
-	oc := classifyWrite(agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{
+	oc := classifyWrite("", agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{
 		Code: "side_effect_detected", Restored: boolp(true),
 	}, time.Now())
 	if oc.outcome != OutcomeRefused || oc.restored == nil || !*oc.restored || oc.columnsStillChanged != nil {
 		t.Fatalf("clean restore: %+v", oc)
 	}
-	plain := classifyWrite(agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{Code: "conflict"}, time.Now())
+	plain := classifyWrite("", agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{Code: "conflict"}, time.Now())
 	if plain.restored != nil || plain.columnsStillChanged != nil {
 		t.Fatalf("a refusal with no report grew one: %+v", plain)
 	}
@@ -49,7 +49,7 @@ func TestClassifyWrite_CleanRestoreUnchanged(t *testing.T) {
 
 // The ledger path reads the same report from the stored result.
 func TestOutcomeFromStored_PartialRestore(t *testing.T) {
-	oc, ok := outcomeFromStored([]byte(`{"ok":false,"code":"side_effect_detected","restored":false,"exact":false,
+	oc, ok := outcomeFromStored("", []byte(`{"ok":false,"code":"side_effect_detected","restored":false,"exact":false,
 		"columns_still_changed":["post_name","wp_injected"]}`), time.Now())
 	if !ok || oc.outcome != OutcomeRefused {
 		t.Fatalf("ok=%v outcome=%q", ok, oc.outcome)
@@ -60,7 +60,7 @@ func TestOutcomeFromStored_PartialRestore(t *testing.T) {
 	if !reflect.DeepEqual(oc.columnsStillChanged, []string{"post_name", "unknown"}) {
 		t.Fatalf("columns: %v", oc.columnsStillChanged)
 	}
-	none, _ := outcomeFromStored([]byte(`{"ok":false,"code":"rest_error","restored":false,"changed":false}`), time.Now())
+	none, _ := outcomeFromStored("", []byte(`{"ok":false,"code":"rest_error","restored":false,"changed":false}`), time.Now())
 	if none.restored != nil {
 		t.Fatal("a write that changed nothing was recorded as not restored")
 	}
@@ -96,13 +96,13 @@ func TestRevertReport_Partial(t *testing.T) {
 
 func TestToDTO_Restored(t *testing.T) {
 	r := sqlc.AssistantAbilityRequest{Restored: boolp(false)}
-	b, _ := json.Marshal(toDTO(r, false, "", setterNames{}))
+	b, _ := json.Marshal(toDTO(r, false, "", false, setterNames{}))
 	var m map[string]any
 	_ = json.Unmarshal(b, &m)
 	if v, ok := m["restored"]; !ok || v != false {
 		t.Fatalf("restored on the wire: %s", b)
 	}
-	b, _ = json.Marshal(toDTO(sqlc.AssistantAbilityRequest{}, false, "", setterNames{}))
+	b, _ = json.Marshal(toDTO(sqlc.AssistantAbilityRequest{}, false, "", false, setterNames{}))
 	_ = json.Unmarshal(b, &m)
 	if v, ok := m["restored"]; !ok || v != nil {
 		t.Fatalf("restored null on the wire: %s", b)

@@ -18,6 +18,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
+	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 )
 
 const (
@@ -68,18 +69,23 @@ const (
 	undoVerdictNotReverted
 )
 
-// undoVerdictFor decides a stuck undo from one ledger answer. A failed call
-// or a request still running on the site decides nothing. No ledger row means
-// nothing was ever there to revert. The ledger marks a reverted draft
-// 'trashed'; any other state means the revert did not happen.
-func undoVerdictFor(resp agentcmd.AbilityRunResponse, err error) undoVerdict {
+// undoVerdictFor decides a stuck undo of a request for ability from one
+// ledger answer. A failed call or a request still running on the site
+// decides nothing. No ledger row means nothing was ever there to revert. The
+// ledger marks a reverted draft 'trashed' and an undone page edit
+// 'restored'; any other state means the revert did not happen.
+func undoVerdictFor(ability string, resp agentcmd.AbilityRunResponse, err error) undoVerdict {
 	if err != nil || resp.Inflight {
 		return undoVerdictUnknown
 	}
 	if !resp.Found {
 		return undoVerdictNotReverted
 	}
-	if resp.UndoState == "trashed" {
+	reverted := "trashed"
+	if ability == mcp.AbilityPageEdit {
+		reverted = "restored"
+	}
+	if resp.UndoState == reverted {
 		return undoVerdictReverted
 	}
 	return undoVerdictNotReverted
@@ -108,10 +114,19 @@ func (s *Service) reconcileUndoOne(ctx context.Context, r sqlc.ListStuckAbilityR
 		return nil
 	}
 	var site sqlc.GetSiteRow
+	var row sqlc.AssistantAbilityRequest
 	var found bool
 	if err := s.pool.InTenantTx(ctx, r.TenantID, func(tx pgx.Tx) error {
+		q := sqlc.New(tx)
 		var err error
-		site, err = sqlc.New(tx).GetSite(ctx, sqlc.GetSiteParams{TenantID: r.TenantID, ID: r.SiteID})
+		site, err = q.GetSite(ctx, sqlc.GetSiteParams{TenantID: r.TenantID, ID: r.SiteID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		row, err = q.GetAbilityRequestForSite(ctx, sqlc.GetAbilityRequestForSiteParams{TenantID: r.TenantID, ID: r.ID, SiteID: r.SiteID})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -128,7 +143,7 @@ func (s *Service) reconcileUndoOne(ctx context.Context, r sqlc.ListStuckAbilityR
 		Mode: agentcmd.AbilityRunModeLedger, RequestID: r.ID,
 	})
 	cancel()
-	verdict := undoVerdictFor(resp, err)
+	verdict := undoVerdictFor(row.AbilityName, resp, err)
 	if verdict == undoVerdictUnknown {
 		return nil
 	}

@@ -471,6 +471,11 @@ WHERE tenant_id = @tenant_id
 -- opens the person's undo (undo_state 'available') on a done row. A row with
 -- any undo_state already set is never matched (GH #826): this statement
 -- rewrites the undo columns, and must not reset an undo that is running.
+-- m169: snapshot_sha256 is the hash of the copy the agent kept before an
+-- applied page edit, NULL for every other outcome. It is written once: a row
+-- that already carries one is never matched. An applied page edit with no
+-- hash must be recorded with undo_available_until NULL (no undo); the
+-- table's page_edit_undo_hash_check refuses anything else.
 UPDATE assistant_ability_requests
 SET state = CASE sqlc.arg(outcome)::text
                 WHEN 'created' THEN 'done'
@@ -492,12 +497,14 @@ SET state = CASE sqlc.arg(outcome)::text
     site_reported_text = sqlc.narg(site_reported_text),
     undo_state = CASE WHEN sqlc.narg(undo_available_until)::timestamptz IS NULL
                       THEN NULL ELSE 'available' END,
-    undo_available_until = sqlc.narg(undo_available_until)::timestamptz
+    undo_available_until = sqlc.narg(undo_available_until)::timestamptz,
+    snapshot_sha256 = sqlc.narg(snapshot_sha256)::text
 WHERE tenant_id = @tenant_id
   AND id = @id
   AND state IN ('dispatched', 'outcome_unknown')
   AND outcome IS NULL
-  AND undo_state IS NULL;
+  AND undo_state IS NULL
+  AND snapshot_sha256 IS NULL;
 
 -- ---------------------------------------------------------------------------
 -- Sweeper and reconciler. Each is a plain agent scan, then a per-row
@@ -623,9 +630,13 @@ WHERE tenant_id = @tenant_id
 -- Covers a done row's undo and a recovery undo (GH #826) alike.
 -- restored is the agent's revert report (false: other post columns the site
 -- changed remain); NULL, as on a failure or refusal, keeps the stored value.
+-- undo_code (m169) names why a failed undo failed, snapshot_tampered or
+-- restore_mismatch, and is NULL otherwise. The table refuses any other code,
+-- and a code with any undo_result but failed (23514).
 UPDATE assistant_ability_requests
 SET undo_state = sqlc.arg(undo_result)::text, undo_finished_at = now(),
-    restored = COALESCE(sqlc.narg(restored)::boolean, restored)
+    restored = COALESCE(sqlc.narg(restored)::boolean, restored),
+    undo_code = sqlc.narg(undo_code)::text
 WHERE tenant_id = @tenant_id
   AND id = @id
   AND (state = 'done'
@@ -676,3 +687,61 @@ WHERE (state = 'done'
   AND undo_started_at < now() - (sqlc.arg(stale_after_seconds)::int * interval '1 second')
 ORDER BY random()
 LIMIT @row_limit;
+
+-- ---------------------------------------------------------------------------
+-- Page edit (m169). Reads over one post on one site, in any principal's
+-- tenant transaction; the table's tenant and site-scope policies apply on
+-- top of the predicates here.
+-- ---------------------------------------------------------------------------
+
+-- name: GetEligibleCreatedDraft :one
+-- The draft on this site that WPMgr created with wpmgr/page-create as post
+-- post_id, while it is still WPMgr's to change: a done creation of that post
+-- whose undo has not trashed it and is not trashing it now. The newest such
+-- creation, at most one row; pgx.ErrNoRows means the control plane names no
+-- draft for this post. The agent checks the post itself before it reads or
+-- changes it.
+SELECT id, created_post_id, created_at
+FROM assistant_ability_requests
+WHERE tenant_id = @tenant_id
+  AND site_id = @site_id
+  AND ability_name = 'wpmgr/page-create'
+  AND state = 'done'
+  AND outcome = 'created'
+  AND created_post_id = sqlc.arg(post_id)::bigint
+  AND coalesce(undo_state, '') NOT IN ('undone', 'in_progress')
+  AND trashed IS NOT TRUE
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
+-- name: ListEditRequestsForPost :many
+-- Every wpmgr/page-edit request for post post_id on this site, oldest first
+-- (created_at, then id), with what each one did and where its undo stands.
+-- At most 200 rows: a caller that needs every edit of the post treats 200
+-- rows as possibly incomplete.
+SELECT id, state, outcome, undo_state, snapshot_sha256, created_at
+FROM assistant_ability_requests
+WHERE tenant_id = @tenant_id
+  AND site_id = @site_id
+  AND ability_name = 'wpmgr/page-edit'
+  AND target_post_id = sqlc.arg(post_id)::bigint
+ORDER BY created_at, id
+LIMIT 200;
+
+-- name: NewestUndoableEditForPost :one
+-- The newest applied wpmgr/page-edit of post post_id on this site that has
+-- not been undone, whatever its own undo state: undo goes newest first, so
+-- only this edit may be offered an undo, and only while its own undo is
+-- available and inside its window. pgx.ErrNoRows: no applied edit of the post
+-- is still in effect.
+SELECT id, undo_state, undo_available_until, snapshot_sha256, created_at
+FROM assistant_ability_requests
+WHERE tenant_id = @tenant_id
+  AND site_id = @site_id
+  AND ability_name = 'wpmgr/page-edit'
+  AND target_post_id = sqlc.arg(post_id)::bigint
+  AND state = 'done'
+  AND outcome = 'applied'
+  AND undo_state IS DISTINCT FROM 'undone'
+ORDER BY created_at DESC, id DESC
+LIMIT 1;

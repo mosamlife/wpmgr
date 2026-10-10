@@ -4,7 +4,12 @@ import { client } from "@wpmgr/api";
 import { toast } from "@/components/toast";
 import { toError } from "@/features/auth/use-auth";
 
-// Superadmin-only hooks for the vulnerability feed configuration endpoints.
+// Hooks for the vulnerability feed configuration endpoints.
+//
+// The server admits the same principals it admits to the instance email
+// settings: a superadmin, or the owner of the install's only organisation.
+// `me.can_manage_instance_email` reports that decision, so a page that mounts
+// these hooks checks it first and never fires a request the server would refuse.
 //
 // These are hand-written Gin routes at /api/v1/admin/vuln-feed/* and are NOT
 // in the generated OpenAPI SDK. They follow the same pattern as use-admin.ts.

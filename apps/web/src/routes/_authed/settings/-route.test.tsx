@@ -84,6 +84,23 @@ describe("SETTINGS_NAV_ITEMS — Email / SMTP carries instanceEmailOnly, not org
   });
 });
 
+// GH #361: the vulnerability feed key follows the same authority as the instance
+// email settings, so its entry carries the same flag and sits beside Email / SMTP.
+// The layout and page behaviour is exercised through the real routes in
+// -vuln-feed.test.tsx; this pins the item definition itself.
+describe("SETTINGS_NAV_ITEMS — Vulnerability feed carries instanceEmailOnly, not orgOnly", () => {
+  it("is gated by instanceEmailOnly and not by orgOnly, and sits directly after Email / SMTP", () => {
+    const feed = SETTINGS_NAV_ITEMS.find((item) => item.label === "Vulnerability feed");
+    expect(feed).toBeDefined();
+    expect(feed?.to).toBe("/settings/vuln-feed");
+    expect(feed?.instanceEmailOnly).toBe(true);
+    expect(feed?.orgOnly).not.toBe(true);
+
+    const labels = SETTINGS_NAV_ITEMS.map((item) => item.label);
+    expect(labels.indexOf("Vulnerability feed")).toBe(labels.indexOf("Email / SMTP") + 1);
+  });
+});
+
 describe("SettingsLayout — Email / SMTP link follows can_manage_instance_email", () => {
   // A tenant owner: org-scoped, so every orgOnly item would show, but that is
   // NOT what gates Email / SMTP — only the explicit capability does.

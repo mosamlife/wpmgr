@@ -23,6 +23,7 @@ import { cn } from "@/lib/utils";
 import { useSites } from "@/features/sites/use-sites";
 import { useAudit, useAuditVerify } from "@/features/audit/use-audit";
 import { AuditIntegrityReport } from "@/features/audit/audit-integrity-report";
+import { ACTION_PRESETS } from "@/features/audit/action-presets";
 import { AuditEntryRow, AuditRunRow } from "@/features/audit/audit-row";
 import { groupRuns } from "@/features/audit/group-runs";
 import { actionLabel, classifySeverity, type AuditSeverity } from "@/features/audit/labels";
@@ -63,22 +64,6 @@ export const Route = createFileRoute("/_authed/audit")({
 // ---------------------------------------------------------------------------
 
 const PAGE_LIMIT = 50;
-
-// Quick-filter presets for the action field. Prefixes match the real
-// emitted keys (apps/api/internal/audit/audit.go + each domain's Record call
-// sites) — the previous "cache."/"settings."/"security." chips silently
-// missed site.cache.*, smtp.settings.*, and site_security_*/auth.2fa.*.
-const ACTION_PRESETS: { label: string; value: string }[] = [
-  { label: "All events", value: "" },
-  { label: "File manager", value: "site.files." },
-  { label: "Backups", value: "backup." },
-  { label: "Restores", value: "restore." },
-  { label: "Updates", value: "update." },
-  { label: "Security", value: "site_security" },
-  { label: "2FA", value: "auth.2fa." },
-  { label: "SMTP", value: "smtp.settings." },
-  { label: "Cache", value: "site.cache." },
-];
 
 type OutcomeFilter = "all" | AuditSeverity;
 

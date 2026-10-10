@@ -211,13 +211,20 @@ final class WpConfigEditor
         // framework-managed wp-config.php (e.g. Roots/Bedrock, whose actual
         // constant definitions live in a required config file rather than
         // wp-config.php itself) — refuse to insert a raw define even in this
-        // edge case, so we never race the framework's own definition.
+        // edge case, so we never race the framework's own definition. A
+        // comment is not configuration (GH #884): the signal must survive
+        // with comments removed, read the same way ManagedCore reads it. When
+        // the source cannot be lexed the file is still treated as managed,
+        // because writing is the irreversible side.
         if (self::isManagedConfigContent($content)) {
-            $this->lastNotice = sprintf(
-                "%s was not written: wp-config.php appears to be managed by a framework such as Roots/Bedrock (references Roots\\WPConfig\\Config / requires config/application.php) — inserting a raw define here could conflict with the framework's own constant management.",
-                $name
-            );
-            return true;
+            $code = self::withoutComments($content);
+            if ($code === null || self::isManagedConfigContent($code)) {
+                $this->lastNotice = sprintf(
+                    "%s was not written: wp-config.php appears to be managed by a framework such as Roots/Bedrock (references Roots\\WPConfig\\Config / requires config/application.php) — inserting a raw define here could conflict with the framework's own constant management.",
+                    $name
+                );
+                return true;
+            }
         }
 
         if (!$this->isWritable()) {
@@ -360,6 +367,37 @@ final class WpConfigEditor
         }
 
         return preg_match('/\brequire(_once)?\b[^;]*config\/application\.php/', $content) === 1;
+    }
+
+    /**
+     * PHP source with its comments replaced by a space, so a commented-out
+     * line never reads as configuration. token_get_all() only splits the text
+     * into tokens and never runs it.
+     *
+     * Null when the tokenizer extension is unavailable, so each caller decides
+     * what an unreadable signal means: WPMgr\Agent\Support\ManagedCore treats
+     * it as no evidence, and {@see setConstant()} treats the file as managed
+     * and does not write.
+     *
+     * @param string $source PHP source.
+     * @return string|null
+     */
+    public static function withoutComments(string $source): ?string
+    {
+        if (!function_exists('token_get_all')) {
+            return null;
+        }
+
+        $code = '';
+        foreach (token_get_all($source) as $token) {
+            if (!is_array($token)) {
+                $code .= $token;
+            } else {
+                $code .= ($token[0] === T_COMMENT || $token[0] === T_DOC_COMMENT) ? ' ' : $token[1];
+            }
+        }
+
+        return $code;
     }
 
     // -------------------------------------------------------------------------

@@ -56,6 +56,29 @@ export function pausedCount(sites: Site[]): number {
   return sites.reduce((n, site) => (isMonitoringPaused(site) ? n + 1 : n), 0);
 }
 
+// ── The Monitoring filter (GH #568) ─────────────────────────────────────────
+//
+// A pause is not a connection state, so it has an axis of its own on the Sites
+// list rather than a value in Status. The two values are display labels, which
+// is also what the URL stores, the same convention the Status axis follows.
+
+export const MONITORING_FILTER_ACTIVE = "Active";
+export const MONITORING_FILTER_PAUSED = "Paused";
+
+/** Both values, always offered: the axis is the pause flag, not a set derived
+ *  from whichever rows happen to be loaded. */
+export const MONITORING_FILTER_OPTIONS: readonly string[] = [
+  MONITORING_FILTER_ACTIVE,
+  MONITORING_FILTER_PAUSED,
+];
+
+/** Which Monitoring filter value a site falls under. */
+export function monitoringFilterLabelOf(site: Site): string {
+  return isMonitoringPaused(site)
+    ? MONITORING_FILTER_PAUSED
+    : MONITORING_FILTER_ACTIVE;
+}
+
 /**
  * The fleet count line. "34 sites, 2 paused" rather than a quiet "34": a pause
  * nobody can see from the roster is a pause the operator forgets, and then

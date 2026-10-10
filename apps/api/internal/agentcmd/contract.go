@@ -1,5 +1,7 @@
 package agentcmd
 
+import "encoding/json"
+
 // This file is the AUTHORITATIVE CP->agent command contract for the M3 bulk
 // update feature. The wp-agent-engineer mirrors these shapes in
 // apps/agent/includes/commands/class-update-command.php and a new
@@ -78,14 +80,58 @@ type UpdateRequest struct {
 //	snapshot_id  opaque token the agent returns when it took a pre-update
 //	             snapshot; the CP echoes it back in a rollback command.
 //	log          short human-readable detail (WP-CLI output tail / error text).
+//	skip_reason  why a "skipped" item was skipped (GH #367): one of the
+//	             SkipReason values below. The agent sends it only on a skipped
+//	             row, and an agent older than the field never sends it.
 type ItemResult struct {
-	Type        string `json:"type"`
-	Slug        string `json:"slug"`
-	FromVersion string `json:"from_version"`
-	ToVersion   string `json:"to_version"`
-	Status      string `json:"status"`
-	SnapshotID  string `json:"snapshot_id,omitempty"`
-	Log         string `json:"log,omitempty"`
+	Type        string     `json:"type"`
+	Slug        string     `json:"slug"`
+	FromVersion string     `json:"from_version"`
+	ToVersion   string     `json:"to_version"`
+	Status      string     `json:"status"`
+	SnapshotID  string     `json:"snapshot_id,omitempty"`
+	Log         string     `json:"log,omitempty"`
+	SkipReason  SkipReason `json:"skip_reason,omitempty"`
+}
+
+// SkipReason is why the agent skipped an update item (GH #367). The set is
+// closed: the agent's UpdateCommand SKIP_* constants, and nothing else.
+type SkipReason string
+
+const (
+	// SkipNone is a skip that carries no reason, or one this build does not
+	// know.
+	SkipNone SkipReason = ""
+	// SkipNotInstalled: the plugin or theme is not installed on the site.
+	SkipNotInstalled SkipReason = "not_installed"
+	// SkipSelfTarget: the item is the WPMgr agent's own plugin, which updates
+	// over its own channel and never through an update task.
+	SkipSelfTarget SkipReason = "self_target"
+	// SkipCoreManaged: Composer manages WordPress core on the site.
+	SkipCoreManaged SkipReason = "core_managed"
+	// SkipFileModsDisallowed: the site disallows file changes
+	// (DISALLOW_FILE_MODS, or the file_mod_allowed filter).
+	SkipFileModsDisallowed SkipReason = "file_mods_disallowed"
+)
+
+// UnmarshalJSON keeps a decoded SkipReason inside the closed set. A value
+// outside it, in any spelling, and anything that is not a JSON string, decode
+// as SkipNone: an unknown reason reads as a skip with no reason, and its text
+// is never carried any further. It never fails the decode, so a malformed
+// skip_reason cannot turn the result around it into a failed command.
+func (r *SkipReason) UnmarshalJSON(data []byte) error {
+	var s string
+	if json.Unmarshal(data, &s) != nil {
+		*r = SkipNone
+		return nil
+	}
+	switch v := SkipReason(s); v {
+	case SkipNotInstalled, SkipSelfTarget, SkipCoreManaged, SkipFileModsDisallowed:
+		*r = v
+	default:
+		*r = SkipNone
+	}
+	return nil
 }
 
 // Item result status values (agent -> CP).

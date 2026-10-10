@@ -26,6 +26,17 @@ jobs:
         with:
           persist-credentials: false
 
+      # Docker Hub meters anonymous pulls per source address and hosted runners
+      # share addresses, so the testcontainers pulls in the Test step below can
+      # be refused with "toomanyrequests" for reasons that have nothing to do
+      # with the code. This sends the daemon's pulls through Google's public
+      # mirror of Docker Hub; see scripts/ci-docker-mirror.sh. It exits 2 when
+      # the mirror cannot be made active, so a runner that cannot use it fails
+      # here, by name, and not later as a test failure.
+      - name: Pull images through the Docker Hub mirror
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-docker-mirror.sh
+
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
@@ -209,6 +220,14 @@ jobs:
           GOWORK: "off"
           CGO_ENABLED: "0"
         run: scripts/check-mcp-site-containment.sh
+
+      # Which registry each of this job's image pulls was resolved against,
+      # read back from the daemon's own log. Informational: it never fails the
+      # job, and it runs even when an earlier step did.
+      - name: Docker mirror report
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-docker-mirror.sh --report
 
   # ---- JS / web ----
   js:
@@ -516,6 +535,19 @@ jobs:
       - name: Version surface guard (openapi, changelog page, badge, agent, install pins)
         run: scripts/check-version-surfaces.sh
 
+      # ---- media-encoder reaper check (GH #290) ------------------------------
+      # The media-encoder image runs tini as PID 1 so the processes Chromium
+      # orphans get reaped instead of piling up as zombies. The check that asks
+      # a running container whether that is true is
+      # scripts/check-media-encoder-reaps.sh, and release.yml runs it for real
+      # against the built image before the image is pushed. What runs HERE is
+      # its self-test: fixture /proc trees served through a fake docker, no
+      # Docker needed. It covers the zombie, the wrong PID 1, the honest cases
+      # that must stay green, and every way the check can learn nothing, which
+      # must exit 2 and never 0.
+      - name: "Media-encoder reaper check self-test (GH #290)"
+        run: scripts/check-media-encoder-reaps_test.sh
+
       # ---- The integration tests' S3 store image -----------------------------
       # GH #819: that image was pinned twice, as a Go literal and as a literal in
       # api-integration.yml's pre-pull, and its registry stopped serving it. The
@@ -533,6 +565,18 @@ jobs:
 
       - name: S3 test image guard (digest-pinned, named once, pre-pull derives it)
         run: scripts/test-s3-image.sh --check
+
+      # ---- The Docker Hub mirror step the Docker-using jobs run ---------------
+      # scripts/ci-docker-mirror.sh points a runner's daemon at Google's public
+      # Docker Hub mirror so anonymous pulls stop failing on Docker Hub's rate
+      # limit. The jobs that pull (go, rls-cross-tenant, schema-sync,
+      # nginx-routing) run the script itself; this runs its suite, which uses a
+      # fake docker, systemctl, sudo and journalctl and so needs no daemon and
+      # no network. Self-test in this job for the same reason as the guards
+      # above: a script that fails open would otherwise only be noticed when a
+      # pull limit hit a job.
+      - name: Docker mirror script self-test
+        run: scripts/ci-docker-mirror_test.sh
 
 
       # ---- License surfaces --------------------------------------------------
@@ -678,6 +722,11 @@ jobs:
         with:
           persist-credentials: false
 
+      # The guard below starts a postgres with `docker run`, an anonymous Docker
+      # Hub pull. See scripts/ci-docker-mirror.sh.
+      - name: Pull images through the Docker Hub mirror
+        run: scripts/ci-docker-mirror.sh
+
       - name: "RLS cross-tenant guard self-test (GH #470)"
         run: scripts/check-rls-cross-tenant_test.sh
 
@@ -689,6 +738,10 @@ jobs:
       # not skip and does not pass.
       - name: "RLS cross-tenant guard (live, GH #470)"
         run: scripts/check-rls-cross-tenant.sh
+
+      - name: Docker mirror report
+        if: always()
+        run: scripts/ci-docker-mirror.sh --report
 
   # ---- db/schema.sql and atlas.sum against the migrations (GH #759) ----
   # schema.sql is sqlc's input and Atlas's desired state, but the server never
@@ -713,11 +766,20 @@ jobs:
         with:
           persist-credentials: false
 
+      # Both the self-test and the guard start a postgres with `docker run`,
+      # an anonymous Docker Hub pull. See scripts/ci-docker-mirror.sh.
+      - name: Pull images through the Docker Hub mirror
+        run: scripts/ci-docker-mirror.sh
+
       - name: "schema sync guard self-test (GH #759)"
         run: scripts/check-schema-sync_test.sh
 
       - name: "schema.sql and atlas.sum match the migrations (GH #759)"
         run: scripts/check-schema-sync.sh
+
+      - name: Docker mirror report
+        if: always()
+        run: scripts/ci-docker-mirror.sh --report
 
   # ---- nginx routing (infra/nginx/nginx.conf) ----
   # `nginx -t` only checks syntax; it does not catch a public Go route with no
@@ -736,6 +798,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # Both steps below pull from Docker Hub: nginx:1.27-alpine directly, and
+      # node:22-alpine plus nginx:1.27-alpine again as the FROM lines of the
+      # image the smoke test builds. A daemon-level mirror covers the build as
+      # well as the run, which renaming the nginx reference would not. See
+      # scripts/ci-docker-mirror.sh.
+      - name: Pull images through the Docker Hub mirror
+        run: scripts/ci-docker-mirror.sh
+
       - name: nginx -t (syntax)
         run: |
           docker run --rm \
@@ -744,6 +814,10 @@ jobs:
 
       - name: Routing smoke test (real infra/Dockerfile.web image vs stub upstream)
         run: infra/nginx/routing_smoke_test.sh
+
+      - name: Docker mirror report
+        if: always()
+        run: scripts/ci-docker-mirror.sh --report
 
   # ---- Page builder block markup ----
   # The agent's generated block markup must parse and validate under the real
@@ -855,13 +929,25 @@ jobs:
       # the version guards as one set was wrong about where they run. It is now
       # one of the checks in scripts/check-version-surfaces.sh, with the other
       # four, in the Security audit job, and it has a regression test.
+      #
+      # redis is declared so every run loads the real ext-redis \Redis class.
+      # The object-cache tests build their fake on top of whichever \Redis is
+      # loaded, and without the extension they fall back to a constants-only
+      # stub, so what they exercise used to depend on the runner image.
+      # fail-fast turns an extension that did not install into a red step
+      # instead of a quieter test run.
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
           php-version: "8.3"
-          extensions: sodium, openssl
+          extensions: sodium, openssl, redis
           tools: composer:v2
           coverage: none
+        env:
+          fail-fast: true
+
+      - name: PHP extensions loaded
+        run: php -m
 
       # The guard's own regression suite. It needs php and nothing else, so a
       # guard whose behaviour has regressed is caught here, before the composer
@@ -874,6 +960,12 @@ jobs:
       - name: Agent PHPStan guard self-test
         working-directory: ${{ github.workspace }}
         run: scripts/check-agent-phpstan_test.sh
+
+      # The suite completeness guard's own regression suite, first, for the
+      # same reason.
+      - name: PHPUnit completeness guard self-test
+        working-directory: ${{ github.workspace }}
+        run: scripts/check-phpunit-complete_test.sh
 
       - name: Get composer cache dir
         id: composer-cache
@@ -889,8 +981,27 @@ jobs:
       - name: Install dependencies
         run: composer install --prefer-dist --no-interaction --no-progress
 
+      # The list of every test this configuration must run, written before the
+      # run so the completeness check below has something to count against.
+      - name: List the tests the run must execute
+        run: vendor/bin/phpunit --list-tests-xml "$RUNNER_TEMP/phpunit-tests.xml"
+
       - name: Test
-        run: composer test
+        run: |
+          rm -f "$RUNNER_TEMP/phpunit-junit.xml"
+          composer test -- --log-junit "$RUNNER_TEMP/phpunit-junit.xml"
+
+      # A PHP fatal error raised inside a test ends PHPUnit partway through the
+      # suite, and an exit() reached from a test can end it with status 0. The
+      # Test step's own red then names one error, or there is no red at all.
+      # This step says whether every listed test ran, and how many did not. It
+      # runs after a failed Test step too (not after a cancel), because that is
+      # when it matters. scripts/check-phpunit-complete.sh holds the logic and
+      # its self-test runs above.
+      - name: Every listed test ran
+        if: ${{ !cancelled() }}
+        working-directory: ${{ github.workspace }}
+        run: scripts/check-phpunit-complete.sh --list "$RUNNER_TEMP/phpunit-tests.xml" --junit "$RUNNER_TEMP/phpunit-junit.xml"
 
       # PHPStan over the plugin. The plugin has owned a level 8 PHPStan config
       # with the WordPress extension, the stubs and a baseline for a long time,

@@ -85,6 +85,23 @@
                 "parent": "8b9c0d1",
                 "kind": "locked",
                 "label": "Form"
+            },
+            {
+                "ref": "c2f3a4b",
+                "parent": "8b9c0d1",
+                "kind": "image",
+                "editable": [
+                    "caption"
+                ]
+            },
+            {
+                "ref": "d3a4b5c",
+                "parent": "8b9c0d1",
+                "kind": "buttons",
+                "editable": [
+                    "text",
+                    "url"
+                ]
             }
         ]
     },
@@ -195,6 +212,34 @@
             "go": "accept"
         },
         {
+            "name": "remove-section-holding-locked",
+            "rule": "holder_of_locked_not_removed",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"remove\",\"ref\":\"7a8b9c0\"}]}",
+            "agent": "node_not_editable",
+            "go": "accept"
+        },
+        {
+            "name": "replace-column-holding-locked",
+            "rule": "holder_of_locked_not_replaced",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"replace\",\"ref\":\"8b9c0d1\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Hello\"}]}]}",
+            "agent": "node_not_editable",
+            "go": "accept"
+        },
+        {
+            "name": "move-holder-of-locked-in-then-remove",
+            "rule": "holder_of_locked_not_removed",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"move\",\"ref\":\"8b9c0d1\",\"before\":\"2b3c4d5\"},{\"op\":\"remove\",\"ref\":\"1a2b3c4\"}]}",
+            "agent": "node_not_editable",
+            "go": "accept"
+        },
+        {
+            "name": "move-holder-of-locked-out-then-remove",
+            "rule": "holder_of_locked_not_removed",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"move\",\"ref\":\"8b9c0d1\",\"before\":\"2b3c4d5\"},{\"op\":\"remove\",\"ref\":\"7a8b9c0\"}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
             "name": "move-on-beaver",
             "rule": "op_declared_by_builder",
             "builder": "beaver",
@@ -229,6 +274,98 @@
             "rule": "valid_batch",
             "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"3c4d5e6\",\"field\":\"text\",\"text\":\"Autumn sale\"},{\"op\":\"insert\",\"into\":\"2b3c4d5\",\"position\":\"first\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Open every day.\"}]},{\"op\":\"replace\",\"ref\":\"5e6f7a8\",\"outline\":[{\"type\":\"heading\",\"level\":3,\"text\":\"Our team\"}]},{\"op\":\"remove\",\"ref\":\"6f7a8b9\"},{\"op\":\"move\",\"ref\":\"9c0d1e2\",\"after\":\"a0d1e2f\"}]}",
             "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "ref-removed-then-used",
+            "rule": "ref_not_removed_earlier",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"remove\",\"ref\":\"2b3c4d5\"},{\"op\":\"set_text\",\"ref\":\"3c4d5e6\",\"field\":\"text\",\"text\":\"Autumn sale\"}]}",
+            "agent": "ops_invalid",
+            "go": "accept"
+        },
+        {
+            "name": "anchor-replaced-earlier",
+            "rule": "anchor_not_replaced_earlier",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"replace\",\"ref\":\"1a2b3c4\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Opening hours\"}]},{\"op\":\"insert\",\"after\":\"4d5e6f7\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Hello\"}]}]}",
+            "agent": "ops_invalid",
+            "go": "accept"
+        },
+        {
+            "name": "insert-into-leaf",
+            "rule": "insert_into_takes_children",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"insert\",\"into\":\"4d5e6f7\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Hello\"}]}]}",
+            "agent": "node_not_editable",
+            "go": "accept"
+        },
+        {
+            "name": "move-into-own-subtree",
+            "rule": "move_not_into_own_subtree",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"move\",\"ref\":\"7a8b9c0\",\"after\":\"9c0d1e2\"}]}",
+            "agent": "node_not_editable",
+            "go": "accept"
+        },
+        {
+            "name": "new-nodes-401",
+            "rule": "new_nodes_at_most_400",
+            "note": "Generated: eight inserts of 50 paragraphs after eight leaves, then one insert of 1 paragraph into a column; paragraph texts \"New 1\" to \"New 401\". 401 new nodes, one over the limit, with 414 nodes on the page after.",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"insert\",\"after\":\"3c4d5e6\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"New 1\"},{\"type\":\"paragraph\",\"text\":\"New 2\"},{\"type\":\"paragraph\",\"text\":\"New 3\"},{\"type\":\"paragraph\",\"text\":\"New 4\"},{\"type\":\"paragraph\",\"text\":\"New 5\"},{\"type\":\"paragraph\",\"text\":\"New 6\"},{\"type\":\"paragraph\",\"text\":\"New 7\"},{\"type\":\"paragraph\",\"text\":\"New 8\"},{\"type\":\"paragraph\",\"text\":\"New 9\"},{\"type\":\"paragraph\",\"text\":\"New 10\"},{\"type\":\"paragraph\",\"text\":\"New 11\"},{\"type\":\"paragraph\",\"text\":\"New 12\"},{\"type\":\"paragraph\",\"text\":\"New 13\"},{\"type\":\"paragraph\",\"text\":\"New 14\"},{\"type\":\"paragraph\",\"text\":\"New 15\"},{\"type\":\"paragraph\",\"text\":\"New 16\"},{\"type\":\"paragraph\",\"text\":\"New 17\"},{\"type\":\"paragraph\",\"text\":\"New 18\"},{\"type\":\"paragraph\",\"text\":\"New 19\"},{\"type\":\"paragraph\",\"text\":\"New 20\"},{\"type\":\"paragraph\",\"text\":\"New 21\"},{\"type\":\"paragraph\",\"text\":\"New 22\"},{\"type\":\"paragraph\",\"text\":\"New 23\"},{\"type\":\"paragraph\",\"text\":\"New 24\"},{\"type\":\"paragraph\",\"text\":\"New 25\"},{\"type\":\"paragraph\",\"text\":\"New 26\"},{\"type\":\"paragraph\",\"text\":\"New 27\"},{\"type\":\"paragraph\",\"text\":\"New 28\"},{\"type\":\"paragraph\",\"text\":\"New 29\"},{\"type\":\"paragraph\",\"text\":\"New 30\"},{\"type\":\"paragraph\",\"text\":\"New 31\"},{\"type\":\"paragraph\",\"text\":\"New 32\"},{\"type\":\"paragraph\",\"text\":\"New 33\"},{\"type\":\"paragraph\",\"text\":\"New 34\"},{\"type\":\"paragraph\",\"text\":\"New 35\"},{\"type\":\"paragraph\",\"text\":\"New 36\"},{\"type\":\"paragraph\",\"text\":\"New 37\"},{\"type\":\"paragraph\",\"text\":\"New 38\"},{\"type\":\"paragraph\",\"text\":\"New 39\"},{\"type\":\"paragraph\",\"text\":\"New 40\"},{\"type\":\"paragraph\",\"text\":\"New 41\"},{\"type\":\"paragraph\",\"text\":\"New 42\"},{\"type\":\"paragraph\",\"text\":\"New 43\"},{\"type\":\"paragraph\",\"text\":\"New 44\"},{\"type\":\"paragraph\",\"text\":\"New 45\"},{\"type\":\"paragraph\",\"text\":\"New 46\"},{\"type\":\"paragraph\",\"text\":\"New 47\"},{\"type\":\"paragraph\",\"text\":\"New 48\"},{\"type\":\"paragraph\",\"text\":\"New 49\"},{\"type\":\"paragraph\",\"text\":\"New 50\"}]},{\"op\":\"insert\",\"after\":\"4d5e6f7\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"New 51\"},{\"type\":\"paragraph\",\"text\":\"New 52\"},{\"type\":\"paragraph\",\"text\":\"New 53\"},{\"type\":\"paragraph\",\"text\":\"New 54\"},{\"type\":\"paragraph\",\"text\":\"New 55\"},{\"type\":\"paragraph\",\"text\":\"New 56\"},{\"type\":\"paragraph\",\"text\":\"New 57\"},{\"type\":\"paragraph\",\"text\":\"New 58\"},{\"type\":\"paragraph\",\"text\":\"New 59\"},{\"type\":\"paragraph\",\"text\":\"New 60\"},{\"type\":\"paragraph\",\"text\":\"New 61\"},{\"type\":\"paragraph\",\"text\":\"New 62\"},{\"type\":\"paragraph\",\"text\":\"New 63\"},{\"type\":\"paragraph\",\"text\":\"New 64\"},{\"type\":\"paragraph\",\"text\":\"New 65\"},{\"type\":\"paragraph\",\"text\":\"New 66\"},{\"type\":\"paragraph\",\"text\":\"New 67\"},{\"type\":\"paragraph\",\"text\":\"New 68\"},{\"type\":\"paragraph\",\"text\":\"New 69\"},{\"type\":\"paragraph\",\"text\":\"New 70\"},{\"type\":\"paragraph\",\"text\":\"New 71\"},{\"type\":\"paragraph\",\"text\":\"New 72\"},{\"type\":\"paragraph\",\"text\":\"New 73\"},{\"type\":\"paragraph\",\"text\":\"New 74\"},{\"type\":\"paragraph\",\"text\":\"New 75\"},{\"type\":\"paragraph\",\"text\":\"New 76\"},{\"type\":\"paragraph\",\"text\":\"New 77\"},{\"type\":\"paragraph\",\"text\":\"New 78\"},{\"type\":\"paragraph\",\"text\":\"New 79\"},{\"type\":\"paragraph\",\"text\":\"New 80\"},{\"type\":\"paragraph\",\"text\":\"New 81\"},{\"type\":\"paragraph\",\"text\":\"New 82\"},{\"type\":\"paragraph\",\"text\":\"New 83\"},{\"type\":\"paragraph\",\"text\":\"New 84\"},{\"type\":\"paragraph\",\"text\":\"New 85\"},{\"type\":\"paragraph\",\"text\":\"New 86\"},{\"type\":\"paragraph\",\"text\":\"New 87\"},{\"type\":\"paragraph\",\"text\":\"New 88\"},{\"type\":\"paragraph\",\"text\":\"New 89\"},{\"type\":\"paragraph\",\"text\":\"New 90\"},{\"type\":\"paragraph\",\"text\":\"New 91\"},{\"type\":\"paragraph\",\"text\":\"New 92\"},{\"type\":\"paragraph\",\"text\":\"New 93\"},{\"type\":\"paragraph\",\"text\":\"New 94\"},{\"type\":\"paragraph\",\"text\":\"New 95\"},{\"type\":\"paragraph\",\"text\":\"New 96\"},{\"type\":\"paragraph\",\"text\":\"New 97\"},{\"type\":\"paragraph\",\"text\":\"New 98\"},{\"type\":\"paragraph\",\"text\":\"New 99\"},{\"type\":\"paragraph\",\"text\":\"New 100\"}]},{\"op\":\"insert\",\"after\":\"5e6f7a8\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"New 101\"},{\"type\":\"paragraph\",\"text\":\"New 102\"},{\"type\":\"paragraph\",\"text\":\"New 103\"},{\"type\":\"paragraph\",\"text\":\"New 104\"},{\"type\":\"paragraph\",\"text\":\"New 105\"},{\"type\":\"paragraph\",\"text\":\"New 106\"},{\"type\":\"paragraph\",\"text\":\"New 107\"},{\"type\":\"paragraph\",\"text\":\"New 108\"},{\"type\":\"paragraph\",\"text\":\"New 109\"},{\"type\":\"paragraph\",\"text\":\"New 110\"},{\"type\":\"paragraph\",\"text\":\"New 111\"},{\"type\":\"paragraph\",\"text\":\"New 112\"},{\"type\":\"paragraph\",\"text\":\"New 113\"},{\"type\":\"paragraph\",\"text\":\"New 114\"},{\"type\":\"paragraph\",\"text\":\"New 115\"},{\"type\":\"paragraph\",\"text\":\"New 116\"},{\"type\":\"paragraph\",\"text\":\"New 117\"},{\"type\":\"paragraph\",\"text\":\"New 118\"},{\"type\":\"paragraph\",\"text\":\"New 119\"},{\"type\":\"paragraph\",\"text\":\"New 120\"},{\"type\":\"paragraph\",\"text\":\"New 121\"},{\"type\":\"paragraph\",\"text\":\"New 122\"},{\"type\":\"paragraph\",\"text\":\"New 123\"},{\"type\":\"paragraph\",\"text\":\"New 124\"},{\"type\":\"paragraph\",\"text\":\"New 125\"},{\"type\":\"paragraph\",\"text\":\"New 126\"},{\"type\":\"paragraph\",\"text\":\"New 127\"},{\"type\":\"paragraph\",\"text\":\"New 128\"},{\"type\":\"paragraph\",\"text\":\"New 129\"},{\"type\":\"paragraph\",\"text\":\"New 130\"},{\"type\":\"paragraph\",\"text\":\"New 131\"},{\"type\":\"paragraph\",\"text\":\"New 132\"},{\"type\":\"paragraph\",\"text\":\"New 133\"},{\"type\":\"paragraph\",\"text\":\"New 134\"},{\"type\":\"paragraph\",\"text\":\"New 135\"},{\"type\":\"paragraph\",\"text\":\"New 136\"},{\"type\":\"paragraph\",\"text\":\"New 137\"},{\"type\":\"paragraph\",\"text\":\"New 138\"},{\"type\":\"paragraph\",\"text\":\"New 139\"},{\"type\":\"paragraph\",\"text\":\"New 140\"},{\"type\":\"paragraph\",\"text\":\"New 141\"},{\"type\":\"paragraph\",\"text\":\"New 142\"},{\"type\":\"paragraph\",\"text\":\"New 143\"},{\"type\":\"paragraph\",\"text\":\"New 144\"},{\"type\":\"paragraph\",\"text\":\"New 145\"},{\"type\":\"paragraph\",\"text\":\"New 146\"},{\"type\":\"paragraph\",\"text\":\"New 147\"},{\"type\":\"paragraph\",\"text\":\"New 148\"},{\"type\":\"paragraph\",\"text\":\"New 149\"},{\"type\":\"paragraph\",\"text\":\"New 150\"}]},{\"op\":\"insert\",\"after\":\"6f7a8b9\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"New 151\"},{\"type\":\"paragraph\",\"text\":\"New 152\"},{\"type\":\"paragraph\",\"text\":\"New 153\"},{\"type\":\"paragraph\",\"text\":\"New 154\"},{\"type\":\"paragraph\",\"text\":\"New 155\"},{\"type\":\"paragraph\",\"text\":\"New 156\"},{\"type\":\"paragraph\",\"text\":\"New 157\"},{\"type\":\"paragraph\",\"text\":\"New 158\"},{\"type\":\"paragraph\",\"text\":\"New 159\"},{\"type\":\"paragraph\",\"text\":\"New 160\"},{\"type\":\"paragraph\",\"text\":\"New 161\"},{\"type\":\"paragraph\",\"text\":\"New 162\"},{\"type\":\"paragraph\",\"text\":\"New 163\"},{\"type\":\"paragraph\",\"text\":\"New 164\"},{\"type\":\"paragraph\",\"text\":\"New 165\"},{\"type\":\"paragraph\",\"text\":\"New 166\"},{\"type\":\"paragraph\",\"text\":\"New 167\"},{\"type\":\"paragraph\",\"text\":\"New 168\"},{\"type\":\"paragraph\",\"text\":\"New 169\"},{\"type\":\"paragraph\",\"text\":\"New 170\"},{\"type\":\"paragraph\",\"text\":\"New 171\"},{\"type\":\"paragraph\",\"text\":\"New 172\"},{\"type\":\"paragraph\",\"text\":\"New 173\"},{\"type\":\"paragraph\",\"text\":\"New 174\"},{\"type\":\"paragraph\",\"text\":\"New 175\"},{\"type\":\"paragraph\",\"text\":\"New 176\"},{\"type\":\"paragraph\",\"text\":\"New 177\"},{\"type\":\"paragraph\",\"text\":\"New 178\"},{\"type\":\"paragraph\",\"text\":\"New 179\"},{\"type\":\"paragraph\",\"text\":\"New 180\"},{\"type\":\"paragraph\",\"text\":\"New 181\"},{\"type\":\"paragraph\",\"text\":\"New 182\"},{\"type\":\"paragraph\",\"text\":\"New 183\"},{\"type\":\"paragraph\",\"text\":\"New 184\"},{\"type\":\"paragraph\",\"text\":\"New 185\"},{\"type\":\"paragraph\",\"text\":\"New 186\"},{\"type\":\"paragraph\",\"text\":\"New 187\"},{\"type\":\"paragraph\",\"text\":\"New 188\"},{\"type\":\"paragraph\",\"text\":\"New 189\"},{\"type\":\"paragraph\",\"text\":\"New 190\"},{\"type\":\"paragraph\",\"text\":\"New 191\"},{\"type\":\"paragraph\",\"text\":\"New 192\"},{\"type\":\"paragraph\",\"text\":\"New 193\"},{\"type\":\"paragraph\",\"text\":\"New 194\"},{\"type\":\"paragraph\",\"text\":\"New 195\"},{\"type\":\"paragraph\",\"text\":\"New 196\"},{\"type\":\"paragraph\",\"text\":\"New 197\"},{\"type\":\"paragraph\",\"text\":\"New 198\"},{\"type\":\"paragraph\",\"text\":\"New 199\"},{\"type\":\"paragraph\",\"text\":\"New 200\"}]},{\"op\":\"insert\",\"after\":\"9c0d1e2\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"New 201\"},{\"type\":\"paragraph\",\"text\":\"New 202\"},{\"type\":\"paragraph\",\"text\":\"New 203\"},{\"type\":\"paragraph\",\"text\":\"New 204\"},{\"type\":\"paragraph\",\"text\":\"New 205\"},{\"type\":\"paragraph\",\"text\":\"New 206\"},{\"type\":\"paragraph\",\"text\":\"New 207\"},{\"type\":\"paragraph\",\"text\":\"New 208\"},{\"type\":\"paragraph\",\"text\":\"New 209\"},{\"type\":\"paragraph\",\"text\":\"New 210\"},{\"type\":\"paragraph\",\"text\":\"New 211\"},{\"type\":\"paragraph\",\"text\":\"New 212\"},{\"type\":\"paragraph\",\"text\":\"New 213\"},{\"type\":\"paragraph\",\"text\":\"New 214\"},{\"type\":\"paragraph\",\"text\":\"New 215\"},{\"type\":\"paragraph\",\"text\":\"New 216\"},{\"type\":\"paragraph\",\"text\":\"New 217\"},{\"type\":\"paragraph\",\"text\":\"New 218\"},{\"type\":\"paragraph\",\"text\":\"New 219\"},{\"type\":\"paragraph\",\"text\":\"New 220\"},{\"type\":\"paragraph\",\"text\":\"New 221\"},{\"type\":\"paragraph\",\"text\":\"New 222\"},{\"type\":\"paragraph\",\"text\":\"New 223\"},{\"type\":\"paragraph\",\"text\":\"New 224\"},{\"type\":\"paragraph\",\"text\":\"New 225\"},{\"type\":\"paragraph\",\"text\":\"New 226\"},{\"type\":\"paragraph\",\"text\":\"New 227\"},{\"type\":\"paragraph\",\"text\":\"New 228\"},{\"type\":\"paragraph\",\"text\":\"New 229\"},{\"type\":\"paragraph\",\"text\":\"New 230\"},{\"type\":\"paragraph\",\"text\":\"New 231\"},{\"type\":\"paragraph\",\"text\":\"New 232\"},{\"type\":\"paragraph\",\"text\":\"New 233\"},{\"type\":\"paragraph\",\"text\":\"New 234\"},{\"type\":\"paragraph\",\"text\":\"New 235\"},{\"type\":\"paragraph\",\"text\":\"New 236\"},{\"type\":\"paragraph\",\"text\":\"New 237\"},{\"type\":\"paragraph\",\"text\":\"New 238\"},{\"type\":\"paragraph\",\"text\":\"New 239\"},{\"type\":\"paragraph\",\"text\":\"New 240\"},{\"type\":\"paragraph\",\"text\":\"New 241\"},{\"type\":\"paragraph\",\"text\":\"New 242\"},{\"type\":\"paragraph\",\"text\":\"New 243\"},{\"type\":\"paragraph\",\"text\":\"New 244\"},{\"type\":\"paragraph\",\"text\":\"New 245\"},{\"type\":\"paragraph\",\"text\":\"New 246\"},{\"type\":\"paragraph\",\"text\":\"New 247\"},{\"type\":\"paragraph\",\"text\":\"New 248\"},{\"type\":\"paragraph\",\"text\":\"New 249\"},{\"type\":\"paragraph\",\"text\":\"New 250\"}]},{\"op\":\"insert\",\"after\":\"a0d1e2f\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"New 251\"},{\"type\":\"paragraph\",\"text\":\"New 252\"},{\"type\":\"paragraph\",\"text\":\"New 253\"},{\"type\":\"paragraph\",\"text\":\"New 254\"},{\"type\":\"paragraph\",\"text\":\"New 255\"},{\"type\":\"paragraph\",\"text\":\"New 256\"},{\"type\":\"paragraph\",\"text\":\"New 257\"},{\"type\":\"paragraph\",\"text\":\"New 258\"},{\"type\":\"paragraph\",\"text\":\"New 259\"},{\"type\":\"paragraph\",\"text\":\"New 260\"},{\"type\":\"paragraph\",\"text\":\"New 261\"},{\"type\":\"paragraph\",\"text\":\"New 262\"},{\"type\":\"paragraph\",\"text\":\"New 263\"},{\"type\":\"paragraph\",\"text\":\"New 264\"},{\"type\":\"paragraph\",\"text\":\"New 265\"},{\"type\":\"paragraph\",\"text\":\"New 266\"},{\"type\":\"paragraph\",\"text\":\"New 267\"},{\"type\":\"paragraph\",\"text\":\"New 268\"},{\"type\":\"paragraph\",\"text\":\"New 269\"},{\"type\":\"paragraph\",\"text\":\"New 270\"},{\"type\":\"paragraph\",\"text\":\"New 271\"},{\"type\":\"paragraph\",\"text\":\"New 272\"},{\"type\":\"paragraph\",\"text\":\"New 273\"},{\"type\":\"paragraph\",\"text\":\"New 274\"},{\"type\":\"paragraph\",\"text\":\"New 275\"},{\"type\":\"paragraph\",\"text\":\"New 276\"},{\"type\":\"paragraph\",\"text\":\"New 277\"},{\"type\":\"paragraph\",\"text\":\"New 278\"},{\"type\":\"paragraph\",\"text\":\"New 279\"},{\"type\":\"paragraph\",\"text\":\"New 280\"},{\"type\":\"paragraph\",\"text\":\"New 281\"},{\"type\":\"paragraph\",\"text\":\"New 282\"},{\"type\":\"paragraph\",\"text\":\"New 283\"},{\"type\":\"paragraph\",\"text\":\"New 284\"},{\"type\":\"paragraph\",\"text\":\"New 285\"},{\"type\":\"paragraph\",\"text\":\"New 286\"},{\"type\":\"paragraph\",\"text\":\"New 287\"},{\"type\":\"paragraph\",\"text\":\"New 288\"},{\"type\":\"paragraph\",\"text\":\"New 289\"},{\"type\":\"paragraph\",\"text\":\"New 290\"},{\"type\":\"paragraph\",\"text\":\"New 291\"},{\"type\":\"paragraph\",\"text\":\"New 292\"},{\"type\":\"paragraph\",\"text\":\"New 293\"},{\"type\":\"paragraph\",\"text\":\"New 294\"},{\"type\":\"paragraph\",\"text\":\"New 295\"},{\"type\":\"paragraph\",\"text\":\"New 296\"},{\"type\":\"paragraph\",\"text\":\"New 297\"},{\"type\":\"paragraph\",\"text\":\"New 298\"},{\"type\":\"paragraph\",\"text\":\"New 299\"},{\"type\":\"paragraph\",\"text\":\"New 300\"}]},{\"op\":\"insert\",\"after\":\"c2f3a4b\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"New 301\"},{\"type\":\"paragraph\",\"text\":\"New 302\"},{\"type\":\"paragraph\",\"text\":\"New 303\"},{\"type\":\"paragraph\",\"text\":\"New 304\"},{\"type\":\"paragraph\",\"text\":\"New 305\"},{\"type\":\"paragraph\",\"text\":\"New 306\"},{\"type\":\"paragraph\",\"text\":\"New 307\"},{\"type\":\"paragraph\",\"text\":\"New 308\"},{\"type\":\"paragraph\",\"text\":\"New 309\"},{\"type\":\"paragraph\",\"text\":\"New 310\"},{\"type\":\"paragraph\",\"text\":\"New 311\"},{\"type\":\"paragraph\",\"text\":\"New 312\"},{\"type\":\"paragraph\",\"text\":\"New 313\"},{\"type\":\"paragraph\",\"text\":\"New 314\"},{\"type\":\"paragraph\",\"text\":\"New 315\"},{\"type\":\"paragraph\",\"text\":\"New 316\"},{\"type\":\"paragraph\",\"text\":\"New 317\"},{\"type\":\"paragraph\",\"text\":\"New 318\"},{\"type\":\"paragraph\",\"text\":\"New 319\"},{\"type\":\"paragraph\",\"text\":\"New 320\"},{\"type\":\"paragraph\",\"text\":\"New 321\"},{\"type\":\"paragraph\",\"text\":\"New 322\"},{\"type\":\"paragraph\",\"text\":\"New 323\"},{\"type\":\"paragraph\",\"text\":\"New 324\"},{\"type\":\"paragraph\",\"text\":\"New 325\"},{\"type\":\"paragraph\",\"text\":\"New 326\"},{\"type\":\"paragraph\",\"text\":\"New 327\"},{\"type\":\"paragraph\",\"text\":\"New 328\"},{\"type\":\"paragraph\",\"text\":\"New 329\"},{\"type\":\"paragraph\",\"text\":\"New 330\"},{\"type\":\"paragraph\",\"text\":\"New 331\"},{\"type\":\"paragraph\",\"text\":\"New 332\"},{\"type\":\"paragraph\",\"text\":\"New 333\"},{\"type\":\"paragraph\",\"text\":\"New 334\"},{\"type\":\"paragraph\",\"text\":\"New 335\"},{\"type\":\"paragraph\",\"text\":\"New 336\"},{\"type\":\"paragraph\",\"text\":\"New 337\"},{\"type\":\"paragraph\",\"text\":\"New 338\"},{\"type\":\"paragraph\",\"text\":\"New 339\"},{\"type\":\"paragraph\",\"text\":\"New 340\"},{\"type\":\"paragraph\",\"text\":\"New 341\"},{\"type\":\"paragraph\",\"text\":\"New 342\"},{\"type\":\"paragraph\",\"text\":\"New 343\"},{\"type\":\"paragraph\",\"text\":\"New 344\"},{\"type\":\"paragraph\",\"text\":\"New 345\"},{\"type\":\"paragraph\",\"text\":\"New 346\"},{\"type\":\"paragraph\",\"text\":\"New 347\"},{\"type\":\"paragraph\",\"text\":\"New 348\"},{\"type\":\"paragraph\",\"text\":\"New 349\"},{\"type\":\"paragraph\",\"text\":\"New 350\"}]},{\"op\":\"insert\",\"after\":\"d3a4b5c\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"New 351\"},{\"type\":\"paragraph\",\"text\":\"New 352\"},{\"type\":\"paragraph\",\"text\":\"New 353\"},{\"type\":\"paragraph\",\"text\":\"New 354\"},{\"type\":\"paragraph\",\"text\":\"New 355\"},{\"type\":\"paragraph\",\"text\":\"New 356\"},{\"type\":\"paragraph\",\"text\":\"New 357\"},{\"type\":\"paragraph\",\"text\":\"New 358\"},{\"type\":\"paragraph\",\"text\":\"New 359\"},{\"type\":\"paragraph\",\"text\":\"New 360\"},{\"type\":\"paragraph\",\"text\":\"New 361\"},{\"type\":\"paragraph\",\"text\":\"New 362\"},{\"type\":\"paragraph\",\"text\":\"New 363\"},{\"type\":\"paragraph\",\"text\":\"New 364\"},{\"type\":\"paragraph\",\"text\":\"New 365\"},{\"type\":\"paragraph\",\"text\":\"New 366\"},{\"type\":\"paragraph\",\"text\":\"New 367\"},{\"type\":\"paragraph\",\"text\":\"New 368\"},{\"type\":\"paragraph\",\"text\":\"New 369\"},{\"type\":\"paragraph\",\"text\":\"New 370\"},{\"type\":\"paragraph\",\"text\":\"New 371\"},{\"type\":\"paragraph\",\"text\":\"New 372\"},{\"type\":\"paragraph\",\"text\":\"New 373\"},{\"type\":\"paragraph\",\"text\":\"New 374\"},{\"type\":\"paragraph\",\"text\":\"New 375\"},{\"type\":\"paragraph\",\"text\":\"New 376\"},{\"type\":\"paragraph\",\"text\":\"New 377\"},{\"type\":\"paragraph\",\"text\":\"New 378\"},{\"type\":\"paragraph\",\"text\":\"New 379\"},{\"type\":\"paragraph\",\"text\":\"New 380\"},{\"type\":\"paragraph\",\"text\":\"New 381\"},{\"type\":\"paragraph\",\"text\":\"New 382\"},{\"type\":\"paragraph\",\"text\":\"New 383\"},{\"type\":\"paragraph\",\"text\":\"New 384\"},{\"type\":\"paragraph\",\"text\":\"New 385\"},{\"type\":\"paragraph\",\"text\":\"New 386\"},{\"type\":\"paragraph\",\"text\":\"New 387\"},{\"type\":\"paragraph\",\"text\":\"New 388\"},{\"type\":\"paragraph\",\"text\":\"New 389\"},{\"type\":\"paragraph\",\"text\":\"New 390\"},{\"type\":\"paragraph\",\"text\":\"New 391\"},{\"type\":\"paragraph\",\"text\":\"New 392\"},{\"type\":\"paragraph\",\"text\":\"New 393\"},{\"type\":\"paragraph\",\"text\":\"New 394\"},{\"type\":\"paragraph\",\"text\":\"New 395\"},{\"type\":\"paragraph\",\"text\":\"New 396\"},{\"type\":\"paragraph\",\"text\":\"New 397\"},{\"type\":\"paragraph\",\"text\":\"New 398\"},{\"type\":\"paragraph\",\"text\":\"New 399\"},{\"type\":\"paragraph\",\"text\":\"New 400\"}]},{\"op\":\"insert\",\"into\":\"2b3c4d5\",\"position\":\"last\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"New 401\"}]}]}",
+            "agent": "page_too_large",
+            "go": "accept"
+        },
+        {
+            "name": "set-text-url-not-http",
+            "rule": "set_text_url_rule",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"d3a4b5c\",\"field\":\"url\",\"text\":\"javascript:alert(1)\"}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "set-text-text-with-angle-bracket",
+            "rule": "set_text_text_rule",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"3c4d5e6\",\"field\":\"text\",\"text\":\"<b>Autumn sale</b>\"}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "set-text-alt-on-elementor-image",
+            "rule": "elementor_image_offers_caption_only",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"c2f3a4b\",\"field\":\"alt\",\"text\":\"Our team\"}]}",
+            "agent": "node_not_editable",
+            "go": "accept"
+        },
+        {
+            "name": "set-text-alt-with-bracket",
+            "rule": "set_text_alt_rule",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"5e6f7a8\",\"field\":\"alt\",\"text\":\"Our team [1]\"}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "set-text-caption-500-characters",
+            "rule": "set_text_caption_rule",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"5e6f7a8\",\"field\":\"caption\",\"text\":\"éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\"}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "set-text-caption-501-characters",
+            "rule": "set_text_caption_rule",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"5e6f7a8\",\"field\":\"caption\",\"text\":\"ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\"}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "set-text-button-text-80-characters",
+            "rule": "set_text_button_text_rule",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"d3a4b5c\",\"field\":\"text\",\"text\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "set-text-button-text-81-characters",
+            "rule": "set_text_button_text_rule",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"d3a4b5c\",\"field\":\"text\",\"text\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}]}",
+            "agent": "bad_input",
             "go": "accept"
         }
     ]

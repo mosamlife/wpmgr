@@ -98,12 +98,39 @@ interface BuilderAdapter
     public function buildCreate(array $spec, IdSeed $ids, array $mediaById): array;
 
     /**
+     * The tree a page's stored document rows hold, decoded; null when they
+     * do not hold exactly one document that decodes to this builder's tree.
+     * Pure.
+     *
+     * @param array<mixed> $rowsByKey Descriptor key => the key's stored rows in meta_id order, as BuilderDocumentFingerprint::read() gives them.
+     * @return array<mixed>|null
+     */
+    public function storedTree(array $rowsByKey): ?array;
+
+    /**
      * The builder-neutral projection of a stored tree. Pure.
      *
      * @param array<mixed> $tree Decoded stored tree.
      * @return Projection
      */
     public function project(array $tree): Projection;
+
+    /**
+     * Plan a wpmgr/page-edit call: read the post's stored document and apply
+     * the operations to it in order, building the new document. No
+     * WordPress write. New node ids come from $ids only, so a precheck and
+     * its write on the same stored page build the same bytes. Each change
+     * describes one operation; touched names the nodes whose text changed and
+     * the nodes made. A refusal carries the operation's index, or null for a
+     * rule over the whole call.
+     *
+     * @param int                              $postId    Post id.
+     * @param list<array<string, mixed>>       $ops       Operations as PageEditValidator::parse() normalised them.
+     * @param IdSeed                           $ids       Deterministic node ids for this request.
+     * @param array<int, array<string, mixed>> $mediaById Media facts by attachment id, for new images.
+     * @return array{doc?: NativeDocument, changes?: list<array<string, mixed>>, touched?: list<string>, new_count?: int, code?: string, detail?: string, op_index?: int|null}
+     */
+    public function planEdit(int $postId, array $ops, IdSeed $ids, array $mediaById): array;
 
     /**
      * Store the document on the post through the builder's own save path.
@@ -125,4 +152,32 @@ interface BuilderAdapter
      *                     else a short token naming the first mismatch.
      */
     public function verifyCreated(int $postId, NativeDocument $doc, int $principal, string $requestId): ?string;
+
+    /**
+     * Read an edited page back and compare it with what planEdit() built and
+     * with the page's snapshot taken before the save: the post is still a
+     * draft; its type, author, parent and slug, and the page's document rows
+     * the edit does not write, are as the snapshot holds them; the whole
+     * stored document, untouched nodes included, is the planned one; and
+     * what the edit wrote passes the adapter's allowlist and leaf rules.
+     *
+     * @param int                  $postId Post id.
+     * @param NativeDocument       $doc    What planEdit() built.
+     * @param array<string, mixed> $before The page's snapshot, as BuilderDocumentSnapshot::decode() gives it.
+     * @return string|null Null when the stored page is exactly what was
+     *                     planned, else a short token naming the first
+     *                     mismatch.
+     */
+    public function verifyEdited(int $postId, NativeDocument $doc, array $before): ?string;
+
+    /**
+     * Drop what the builder keeps about one post outside the post's rows,
+     * after BuilderDocumentRestore has put the rows back and deleted the
+     * descriptor's derived keys: generated files, style caches and the like.
+     * Only this post's, never a site-wide clear. Never throws.
+     *
+     * @param int $postId Post id.
+     * @return void
+     */
+    public function afterRestore(int $postId): void;
 }

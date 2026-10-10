@@ -91,6 +91,12 @@ func (r *RefreshEnqueuerImpl) EnqueueRefreshDiagnostics(ctx context.Context, ten
 	// IngestDiagnostics treats an unparseable body as an error so it does not
 	// silently drop a malformed response. Per-category upserts that touch the
 	// repo are RLS-scoped via the tenantID argument.
+	//
+	// A reply without a valid collected_at is refused with a validation error
+	// and nothing is stored (GH #618). That refusal is final for this click:
+	// the refresh makes no second agent call, skips host inference below, and
+	// the wrapped error keeps its domain kind, so the operator gets a 422
+	// naming the code rather than a 500.
 	if _, ierr := r.sink.IngestDiagnostics(ctx, tenantID, siteID, body); ierr != nil {
 		return fmt.Errorf("ingest agent response: %w", ierr)
 	}

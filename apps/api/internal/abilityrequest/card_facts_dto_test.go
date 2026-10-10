@@ -25,7 +25,7 @@ func TestRequestDTOCarriesCardFacts(t *testing.T) {
 		ID: uuid.New(), SiteID: uuid.New(), AbilityName: "wpmgr/rest-write", State: "pending",
 		PresentedDigest: digest, RouteID: &route, RouteSha256: &sum, CardFacts: []byte(storedCard),
 	}
-	b, err := json.Marshal(toDTO(row, true, "", setterNames{}))
+	b, err := json.Marshal(toDTO(row, true, "", false, setterNames{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,13 +55,13 @@ func TestRequestDTOCarriesCardFacts(t *testing.T) {
 
 	// A row without a card (page-create) serialises card_facts as null.
 	row.CardFacts, row.RouteID, row.RouteSha256 = nil, nil, nil
-	b, _ = json.Marshal(toDTO(row, true, "", setterNames{}))
+	b, _ = json.Marshal(toDTO(row, true, "", false, setterNames{}))
 	if !strings.Contains(string(b), `"card_facts":null`) || !strings.Contains(string(b), `"route_id":null`) {
 		t.Fatalf("non-rest row: %s", b)
 	}
 	// Anything but an object is never passed through.
 	row.CardFacts = []byte(`"<script>"`)
-	b, _ = json.Marshal(toDTO(row, true, "", setterNames{}))
+	b, _ = json.Marshal(toDTO(row, true, "", false, setterNames{}))
 	if !strings.Contains(string(b), `"card_facts":null`) {
 		t.Fatalf("a non-object card reached the wire: %s", b)
 	}

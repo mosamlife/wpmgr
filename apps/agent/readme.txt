@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.161
+Stable tag: 0.61.163
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -138,7 +138,7 @@ Only for a small number of opt-in features that must run before WordPress finish
 
 == Privacy / What data is sent and where ==
 
-This plugin does not contact any external service until you connect it to a WPMgr control plane that you choose. There is NO default endpoint; the agent is inert until you supply a control-plane URL and complete a one-time, signed enrollment from that control plane. That control plane is either a WPMgr instance you self-host or the hosted WPMgr service at https://manage.wpmgr.app.
+This plugin contacts nothing until you connect it to a WPMgr control plane you choose, self-hosted or the hosted service at https://manage.wpmgr.app. There is NO default endpoint: it is inert until you supply a control-plane URL and complete a one-time, signed enrollment.
 
 Once connected, the agent communicates only with the control-plane URL you configured. It sends the following, only to that endpoint, and only for the management actions you or your schedules initiate:
 
@@ -147,8 +147,9 @@ Once connected, the agent communicates only with the control-plane URL you confi
 - Backup archives (not encrypted by this plugin): when you run or schedule a backup, the agent archives your database and/or files and uploads them to the storage destination your control plane configured. Protection at rest comes from that destination. Archive contents may include your site's content and personal data.
 - Rendered HTML: for CSS optimization (used-CSS generation), the agent submits rendered HTML of selected pages so unused CSS can be computed. Used only to produce optimized stylesheets.
 - Diagnostics and activity logs: error logs, performance and cache statistics, and a record of management actions, sent so they can be surfaced in the dashboard.
+- AI requests from an assistant you connect to your WPMgr dashboard: the results of the reads it asks for, such as published page and post text, titles and excerpts, media details and what reviewed abilities on the site return, and previews of the drafts and changes it proposes.
 
-The agent does not sell or share this data with third parties. It receives signed, allow-listed commands (backup, restore, update, cache operations) from your control plane; it does NOT download or execute arbitrary remote PHP code.
+The agent does not sell or share this data with third parties.
 
 **Real User Monitoring (when you enable it)**
 
@@ -284,7 +285,24 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 == Changelog ==
 
-The entries below summarize the notable changes since 0.34.0. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+The entries below summarize the notable changes since 0.53.0. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+
+= 0.61.163 =
+* Added: An AI connected through WPMgr can now read the structure of a page built in Elementor and edit a draft it created there, in one batch: set text, insert, replace, remove or move elements. Each edit waits for your approval in WPMgr and nothing is published. A published page or post built in Elementor can be read this way too, but never changed. WPMgr needs this version on the site for it.
+* Added: An edit is refused, and changes nothing, when someone has the page open in Elementor or has unsaved changes to it, when the page changed after the AI read it, when it would remove or replace anything that holds an element the AI cannot edit, or on a site whose database tables cannot roll back a failed change. If Elementor's save does not leave exactly the approved page, the site puts the page back as it was.
+* Added: Each edit can be undone from WPMgr, newest first. An undo puts back only what that edit wrote, so later changes such as a featured image stay. The site keeps a copy of the page from before each edit for 15 days and deletes expired copies hourly.
+* Changed: Undoing an Elementor draft the AI created now also works after the AI has edited it through WPMgr, as long as nobody else has changed it.
+
+= 0.61.162 =
+* Changed: The agent now needs an explicit instruction from WPMgr before it downgrades WordPress core. A core rollback without it is refused and changes nothing. Plugin and theme rollbacks are unchanged.
+* Changed: A site that disallows file changes no longer gets core updates from WPMgr, the same as WordPress itself.
+* Fixed: On a site where Composer manages WordPress core, a core update is now skipped and reported as not changing core, with a note to update core in composer.json and redeploy. A core update that fails before any core file is replaced now says core was not changed. After a core update or rollback the agent reports the version installed on disk, where it used to report the old version as up to date.
+* Fixed: A backup makes up to three attempts at a chunk upload when the storage reports a temporary problem, and waits up to 120 seconds for each. When an upload still fails, the message names the storage host and the status or network error.
+* Fixed: A site that refuses a signed command now says which check refused it, such as a site clock out of step with WPMgr's, instead of one general invalid-token answer.
+* Fixed: Deleting the plugin now removes everything the agent saved under its wpmgr_agent_ option names on that site and, on multisite, in the network settings. A setting whose name differs only in letter case or accents is left alone.
+* Fixed: A restore that fails after swapping in files or the database keeps what the automatic rollback needs. A restore that has ended keeps none of its run settings.
+* Fixed: A plugin or theme update is reported as already up to date only when WordPress's update check covered it. A rejected rollback or update no longer clears maintenance mode another update put in place. A wp-config.php that mentions a framework only in a comment no longer stops the agent adding its constants. Image address rewriting leaves a value with no address to change exactly as it was.
+* Fixed: The listing, and the Re-enroll and Disconnect text in WordPress admin, no longer say backup archives are encrypted. This plugin does not encrypt them. The privacy section now lists the data AI requests carry.
 
 = 0.61.161 =
 * Added: An AI connected through WPMgr can now create a draft page or post in Elementor from an outline, with your approval for each request in WPMgr. The outline can use headings, paragraphs, lists, quotes, tables, separators, buttons, spacing, sections and columns, and images that are already in the site's media library. The draft is built from Elementor's own classic widgets, in containers or in sections and columns, whichever the site's Elementor is set up for. Nothing is published, and undo moves the draft to the trash while nobody has edited it.
@@ -447,40 +465,13 @@ The entries below summarize the notable changes since 0.34.0. This project ships
 = 0.53.0 =
 * New: file integrity monitoring. A scan (core files, wp-content, or the full install) compares file hashes against WordPress.org checksums for core and wp.org-hosted plugins and themes, and against a learned per-site baseline for everything else, flagging changed, added, or removed files.
 
-= 0.52.0 =
-* New: per-site WordPress hardening controls (disable file editor, restrict XML-RPC and the REST API, restrict login identifiers, force unique nicknames, block author-archive user enumeration, force SSL/HSTS, disable directory browsing, block PHP execution in uploads, protect system files). All off by default and opt-in; the control plane and the operator's own session can never be locked out by a hardening rule.
-* New: a per-site ban list (blocked IP addresses, CIDR ranges, and user agents), enforced at early boot and at the web-server config level. Broad blocks covering all addresses or private/loopback ranges are rejected, and the operator's own allow-listed IPs always bypass the ban.
-
-= 0.51.2 =
-* Changed: the early-boot security helpers (the login-protection ban list and the Error Monitor fatal-error trap) are now installed as a must-use plugin file only once you turn on the corresponding feature, and removed again the moment you turn it off or deactivate the plugin. A freshly activated agent writes nothing outside its own plugin folder until you opt in to one of these features.
-
-= 0.48.2 =
-* Fixed: one-click "Log in to wp-admin" no longer triggers a second two-factor challenge on sites running another two-factor plugin; it now lands directly in wp-admin. Sites running a security plugin that replaces the login flow entirely now get a clear "sign in normally" message instead of a loop.
-
-= 0.46.0 =
-* Changed: local backups are stored under the uploads directory (with a deny-all .htaccess and an index.php guard) instead of wp-content directly, with a best-effort migration of any existing local backups.
-* Changed: the object-cache drop-in installer's transient cleanup and the media URL rewriter's postmeta lookup now bind their values through prepared-statement placeholders.
-
-= 0.45.0 =
-* New: the page-cache drop-in nudges WP-Cron on a cache hit when the cron marker is more than 60 seconds stale, so scheduled tasks keep running on a fully page-cached, low-traffic site where WordPress itself rarely boots.
-
-= 0.44.0 =
-* New: a signed, cheap liveness ("ping") command the control plane can use to verify a quiet site is actually reachable (and wake WP-Cron) before ever marking it disconnected, instead of relying solely on traffic-driven heartbeats.
-
-= 0.41.0 =
-* New: an optional, off-by-default persistent Redis object cache for the dynamic, uncacheable side of WordPress (logged-in users, admin screens, carts and checkout, REST responses, and database round-trips the page cache cannot serve). Configured and tested per site from the control plane before it can be enabled; degrades safely to an in-memory array cache on any connection failure so the site never goes down because of it.
-
-= 0.36.0 =
-* New: multiple named email connections with per-connection encrypted credentials, per-sender routing, and automatic fallback retry. The agent routes outgoing mail by matching the FROM address to a connection key, falls back to the default connection, and retries once via a configured fallback connection when the primary send fails. The email log records the connection key actually used, plus attachment names and sizes.
-
-= 0.35.0 =
-* New: per-site email delivery and logging. Route this site's outgoing email through Amazon SES, SendGrid, Mailgun, Postmark, or any SMTP server, configured from the WPMgr dashboard. Every send is logged (with optional bounce and complaint suppression), and known-bad addresses are skipped automatically. Email sending is unchanged until you configure a provider.
-
-= 0.34.0 =
-* Changed: one-click wp-admin login is more reliable and now lands past common two-factor prompts. The login token still expires, is single-use, and is bound to the site and your role.
-* Changed: site connection status is steadier. The connection indicator no longer briefly flips to "degraded" on healthy low-traffic sites, and a "Re-check connection" action forces an immediate refresh from the dashboard.
-
 == Upgrade Notice ==
+
+= 0.61.163 =
+Lets a connected AI read an Elementor page and edit a draft it created, with your approval for each edit and an undo for each change. WPMgr needs this version on the site for it. Nothing is published.
+
+= 0.61.162 =
+Backup uploads retry temporary storage errors and name the cause when they fail. Core updates are skipped on Composer-managed sites and report the installed version afterwards, and a core rollback needs an explicit instruction from WPMgr. The listing no longer says backups are encrypted: this plugin does not encrypt them.
 
 = 0.61.161 =
 Lets a connected AI create a draft page or post in Elementor from an outline, with your approval for each request in WPMgr. Nothing is published, and undo moves the draft to the trash.

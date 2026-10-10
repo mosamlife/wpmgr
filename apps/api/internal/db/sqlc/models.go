@@ -285,6 +285,8 @@ type AssistantAbilityRequest struct {
 	AskReason            *string            `json:"ask_reason"`
 	PolicyCheckedAt      pgtype.Timestamptz `json:"policy_checked_at"`
 	CheckedTargetStatus  *string            `json:"checked_target_status"`
+	SnapshotSha256       *string            `json:"snapshot_sha256"`
+	UndoCode             *string            `json:"undo_code"`
 }
 
 type AssistantCachePurgeRequest struct {

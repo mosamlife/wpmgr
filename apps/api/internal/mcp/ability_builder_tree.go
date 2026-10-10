@@ -94,9 +94,19 @@ type phpObject []phpPair
 type phpList []any
 
 // phpEncode appends v as PHP's json_encode with no flags writes it. v is a
-// phpObject, a phpList, a string or a bool; anything else is refused.
+// phpObject, a phpList, a string, a bool, a json.Number (written as its own
+// text) or nil (null); anything else is refused.
 func phpEncode(b *strings.Builder, v any) bool {
 	switch x := v.(type) {
+	case nil:
+		b.WriteString("null")
+		return true
+	case json.Number:
+		if x == "" {
+			return false
+		}
+		b.WriteString(string(x))
+		return true
 	case string:
 		s, ok := phpJSONString(x)
 		b.WriteString(s)
@@ -160,19 +170,34 @@ func phpEncodeBytes(v any) ([]byte, bool) {
 // as PHP escapes them, an empty object as []. A number, null, trailing data
 // or nesting beyond maxDepth is refused: the trees compared here hold none.
 func phpCanonicalJSON(raw []byte, maxDepth int) ([]byte, bool) {
+	v, ok := phpDecodeDocument(raw, maxDepth, false)
+	if !ok {
+		return nil, false
+	}
+	return phpEncodeBytes(v)
+}
+
+// phpDecodeDocument decodes one JSON value into phpObject, phpList, string
+// and bool values; with scalars, numbers (as json.Number, their text kept)
+// and null (nil) too. Trailing data or nesting beyond maxDepth is refused.
+func phpDecodeDocument(raw []byte, maxDepth int, scalars bool) (any, bool) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
-	v, ok := phpDecodeValue(dec, maxDepth)
+	v, ok := phpDecodeAny(dec, maxDepth, scalars)
 	if !ok {
 		return nil, false
 	}
 	if _, err := dec.Token(); err != io.EOF {
 		return nil, false
 	}
-	return phpEncodeBytes(v)
+	return v, true
 }
 
 func phpDecodeValue(dec *json.Decoder, depth int) (any, bool) {
+	return phpDecodeAny(dec, depth, false)
+}
+
+func phpDecodeAny(dec *json.Decoder, depth int, scalars bool) (any, bool) {
 	tok, err := dec.Token()
 	if err != nil {
 		return nil, false
@@ -182,6 +207,10 @@ func phpDecodeValue(dec *json.Decoder, depth int) (any, bool) {
 		return t, true
 	case bool:
 		return t, true
+	case json.Number:
+		return t, scalars
+	case nil:
+		return nil, scalars
 	case json.Delim:
 		if depth <= 0 {
 			return nil, false
@@ -190,7 +219,7 @@ func phpDecodeValue(dec *json.Decoder, depth int) (any, bool) {
 		case '[':
 			list := phpList{}
 			for dec.More() {
-				item, ok := phpDecodeValue(dec, depth-1)
+				item, ok := phpDecodeAny(dec, depth-1, scalars)
 				if !ok {
 					return nil, false
 				}
@@ -208,7 +237,7 @@ func phpDecodeValue(dec *json.Decoder, depth int) (any, bool) {
 				if err != nil || !isString {
 					return nil, false
 				}
-				val, ok := phpDecodeValue(dec, depth-1)
+				val, ok := phpDecodeAny(dec, depth-1, scalars)
 				if !ok {
 					return nil, false
 				}
@@ -255,6 +284,10 @@ type elementorBuild struct {
 	ids        *elementorIDs
 	urls       map[int64]string
 	containers bool
+	// anyImage maps an image whose attachment id has no known address
+	// with an empty address: for comparing projections, which never show
+	// an image's address.
+	anyImage bool
 }
 
 // elementorLeafAt is a leaf with its outline path.
@@ -281,6 +314,13 @@ func elementorClassicTree(input []byte, requestID string, containers bool, media
 		urls[m.ID] = m.URL
 	}
 	b := &elementorBuild{ids: &elementorIDs{requestID: requestID, taken: map[string]bool{}}, urls: urls, containers: containers}
+	return b.top(outline, "outline")
+}
+
+// top maps outline nodes as the top of a page: a run of leaves in one
+// wrapper, a group or a columns node as a top-level element. A node's path
+// is listPath followed by "[i]".
+func (b *elementorBuild) top(outline []json.RawMessage, listPath string) (phpList, bool) {
 	tree := phpList{}
 	var run []elementorLeafAt
 	flush := func() bool {
@@ -295,7 +335,7 @@ func elementorClassicTree(input []byte, requestID string, containers bool, media
 		return ok
 	}
 	for i, raw := range outline {
-		path := fmt.Sprintf("outline[%d]", i)
+		path := fmt.Sprintf("%s[%d]", listPath, i)
 		n, ok := jsonObjectOf(raw)
 		if !ok {
 			return nil, false
@@ -649,6 +689,9 @@ func (b *elementorBuild) image(n map[string]json.RawMessage, path string) (phpLi
 		}
 	}
 	url, known := b.urls[id]
+	if !known && b.anyImage {
+		known = true
+	}
 	if !stringIn(align, elementorImageAligns) || !known {
 		return nil, false
 	}

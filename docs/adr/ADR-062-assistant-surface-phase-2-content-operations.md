@@ -1476,3 +1476,144 @@ report. An account qualifies if it is on a paid plan in good standing or has
 existed for at least 30 days. When a superadmin turns the tool back on, the
 count starts again, and only reports made after that point count toward the
 next fleet-wide disable. One unusual account cannot disable a tool for everyone.
+
+## Amendments (2026-10-09)
+
+Two amendments record what builder editing ships: A-062-9 (putting a builder
+page back) and A-062-14 (which drafts the AI may change). No decision text
+above is rewritten.
+
+### A-062-9: A builder page is put back from WPMgr's own copy, and an undo puts back only what its change wrote
+
+A page built with a page builder keeps its document in the page's post meta,
+outside what the reviewed REST routes of A-062-5 write. WPMgr's agent code
+changes that document, and WPMgr's agent code puts it back. This amendment is
+the boundary of the second operation. It gives the content service user no
+capability. The AI cannot start a restore: the automatic restore belongs to a
+write that failed its own checks, and an undo starts only when a person asks
+for it in the dashboard.
+
+**The copy.** Before a write has any effect, the agent stores a copy of the
+page. It reads with SQL alone, so the copy holds what the database holds and
+never what an object cache holds. It keeps every column of the posts row that
+the page's fingerprint covers (the hash that ties an edit to the page the AI
+read), with the modified time, the filtered content, the author and the dates;
+every post meta row of the page except the editor's lock, as the stored bytes,
+in row order, with each key's row count; and the ids of the page's revisions.
+The copy is one option that is not autoloaded, named for the request. It is
+WPMgr's own record: a restore does not read WordPress revisions, so it does not
+depend on whether the site keeps them.
+
+The write is refused, and nothing changes, when the copy cannot be stored, when
+the bytes read back from the database are not the bytes written, when the copy
+is over the size cap, or when the page it holds is not the page the AI read
+when it asked. The copy's sha256 goes on the site's ledger row for the request
+(the ledger is the agent's own record of each request) and on the control
+plane's request row. A copy is kept one day past the undo window, then swept,
+and uninstalling the plugin removes every copy.
+
+**Two restores, one method.**
+
+- **In the call that wrote.** If the save is refused or throws, the stored page
+  is not the page the card showed, the write did something outside the page, or
+  the change cannot be recorded, the agent puts the page back in the same call.
+  Every post meta row of the page becomes the copy's row, in the copy's order.
+  Two things are left aside: the editor's lock, which is never touched, and the
+  builder's derived caches, which are deleted for the builder to rebuild. A key
+  the write added is deleted, and a key it removed comes back with its row
+  count. Every column in the copy is written back. The page's fingerprint is
+  then read again and must equal the one it had before the write. If it does
+  not, the answer is `restore_mismatch` and never "restored". Revisions the
+  failed save made are left in place.
+- **A person's undo of one change.** Only the post meta keys and the posts
+  columns that change wrote go back. The ledger records each of them with the
+  hash of its bytes before the change and after it. An undo restores a key or a
+  column only while it still holds the bytes the change left. If any one has
+  moved on, nothing is written and the answer is `conflict`, which names
+  nothing from the site. Everything else on the page stays as it is. So a
+  featured image a person approved after the change survives the undo, and two
+  changes that wrote the same key are undone newest first. Each key and column
+  is then read back and must hold the bytes it held before the change, or the
+  answer is `restore_mismatch`. An undo is refused, and nothing is written,
+  when the page is no longer a draft, when someone else has it open in the
+  editor, or when an autosave of it exists.
+
+**How rows are written.** A restore is a set of direct statements on the posts
+and post meta tables. The reads that decide it and the writes run in one
+transaction, rolled back on any database error. It is never the WordPress meta
+API and never the builder's own save, so no meta hook fires for a restored row,
+no value is slashed, unslashed or serialised, and what comes back does not
+depend on the builder or the content filters accepting the old bytes. A
+serialised array, JSON with escaped characters, a URL with escaped slashes, an
+empty string, a NULL and a key with several rows come back as the bytes they
+were. Afterwards the page's object caches are dropped and the builder clears
+what it caches for that page, and only that page. In an undo the builder's
+derived keys are deleted and never guarded, so a cache the builder rebuilt
+after the change is never a reason to refuse it.
+
+**What binds a restore to its copy.** A restore reads the copy taken for the
+request it undoes and no other, and takes the page from the site's ledger row
+for that request, never from input. An undo carries the copy's hash as the
+control plane recorded it, and the agent refuses it unless the hash on its
+ledger row, the hash in the signed command and the hash of the stored copy all
+agree. A change the control plane holds no hash for has no undo.
+
+**What it does not do.**
+
+- It does not reach outside the page. It writes the page's own posts row and
+  post meta rows and nothing else. It does not reverse what another plugin did
+  elsewhere in reaction to a save. The write is watched for that, and a write
+  that does something outside the page is refused and the page is put back.
+- It is not a way to write a page. It writes only bytes from a copy WPMgr took
+  before a change of its own, never bytes from the AI.
+- It is not specific to one builder. Every builder adapter WPMgr adds uses this
+  restore and none has its own. Elementor is the first.
+
+### A-062-14: Only a draft WPMgr created for the AI is eligible, and the control plane and the site must both say so
+
+An ability that reads a draft as editable, or changes one, for the AI applies
+this one rule to decide which drafts it may touch. A draft is eligible only
+when both halves hold.
+
+- **The control plane names it.** The signed command lists the post, as
+  `allowed_draft_ids`, only when a completed `wpmgr/page-create` request on
+  this site created that post and the undo of that request has not trashed it
+  and is not trashing it. The control plane reads the list for the call, and
+  again at dispatch for a write, and never reuses one from an earlier call. It
+  names at most the one post the call is about.
+- **The site agrees.** The post carries exactly one creation marker, and the
+  marker names a request. The site's ledger holds that request as a completed
+  `wpmgr/page-create` whose created post is this post and whose undo did not
+  trash it. The post is a draft. A post or a ledger row the agent cannot read
+  is not eligible.
+
+Neither half is enough alone. The marker is post meta and travels with a copy of
+the post, but the ledger row names the post the request created, and the
+control plane lists the original and never the copy. A copy of an eligible
+draft is therefore not eligible. A list the agent cannot parse refuses the
+call.
+
+**What stays eligible.** A person's own edits to an eligible draft do not end
+its eligibility. It ends when the post stops being a draft or when the undo of
+its creation trashes it. A person's work in the editor is protected by the
+checks every change makes anyway: an edit lock held by someone else, an
+autosave, and the fingerprint of the page the AI read.
+
+**What the AI is told.** One answer for every post that is not eligible. A
+read is refused with `post_not_readable` and a write with
+`target_not_eligible`, each with one fixed hint, and the answer is the same
+whether the post is private, scheduled, pending, password protected, a
+person's own draft, missing or built with another builder. The reason the agent
+found goes only to the record a person sees in WPMgr. The answer cannot be used
+to learn the status or the builder of a post the AI has no right to.
+
+**What it does not cover.**
+
+- Reading a published page is a separate, narrower rule. `wpmgr/page-structure`
+  shows a published page or post with no password read only, with no field
+  offered for change. No ability changes one.
+- A draft a person made does not become eligible by being edited, copied or
+  named. Widening this rule, for example so that a person can hand the AI a
+  draft, is a change to this amendment.
+- Every later ability that reads or changes a draft for the AI applies this rule
+  and no other, so that "a draft the AI may touch" means one thing.

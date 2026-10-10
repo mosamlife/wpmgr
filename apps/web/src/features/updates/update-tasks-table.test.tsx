@@ -4,6 +4,22 @@ import type { UpdateTask } from "@wpmgr/api";
 
 import { renderWithProviders } from "@/test/render";
 import {
+  CLOCK_403_DETAIL,
+  CLOCK_403_RAW_ERROR,
+  HEALTH_CHECK_FAILED_REASON,
+  CORE_LEFT_AS_IS_DETAIL,
+  CORE_NO_CHANGE_UNHEALTHY_DETAIL,
+  ROLLBACK_RAW_ERROR,
+  CORE_ROLLBACK_UNDELIVERABLE_DETAIL,
+  FIREWALL_403_DETAIL,
+  FIREWALL_403_RAW_ERROR,
+  PLUGIN_SITE_DOWN_DETAIL,
+  SKIP_CORE_MANAGED_DETAIL,
+  SKIP_FILE_MODS_DISALLOWED_DETAIL,
+  SKIP_NOT_INSTALLED_DETAIL,
+  SKIP_SELF_TARGET_DETAIL,
+} from "@/test/update-task-details";
+import {
   parseWireTask,
   serverRetryFields,
 } from "@/test/update-task-fixtures";
@@ -222,6 +238,209 @@ describe("UpdateTasksTable: GH #755 round 2 redirect-failure condition on a skip
 });
 
 // ---------------------------------------------------------------------------
+// GH #679: an update outcome reads in full.
+//
+// The control plane writes the sentence an operator acts on into a task's
+// detail and keeps the raw reply in its error. The Detail cell used to clip
+// every ordinary detail to one line, so a firewall or clock explanation was
+// readable only as a tooltip. jsdom has no layout, so "clipped" is checked the
+// way the markup states it: no element from the text up to its table cell may
+// carry a class that cuts text off.
+// ---------------------------------------------------------------------------
+
+const CLIPPING_CLASS =
+  /(^|\s)(truncate|text-ellipsis|whitespace-nowrap|line-clamp-\d+|overflow-hidden)(\s|$)/;
+
+function expectUnclipped(el: HTMLElement) {
+  const cell = el.closest("td");
+  expect(cell, "the text is inside a table cell").not.toBeNull();
+  for (
+    let node: HTMLElement | null = el;
+    node && node !== cell?.parentElement;
+    node = node.parentElement
+  ) {
+    expect(node.className, `<${node.tagName.toLowerCase()}> clips its text`).not.toMatch(
+      CLIPPING_CLASS,
+    );
+  }
+}
+
+describe("UpdateTasksTable: a refused update reads in full (GH #679)", () => {
+  it.each([
+    ["a firewall block", FIREWALL_403_DETAIL, FIREWALL_403_RAW_ERROR],
+    ["a clock difference", CLOCK_403_DETAIL, CLOCK_403_RAW_ERROR],
+  ])(
+    "shows the sentence for %s unclipped, and keeps the raw reply behind the log",
+    (_label, detail, rawError) => {
+      renderWithProviders(
+        <UpdateTasksTable
+          tasks={[buildTask({ status: "failed", detail, error: rawError })]}
+        />,
+      );
+      const row = screen.getByTestId("update-task-row");
+
+      expectUnclipped(within(row).getByText(detail));
+
+      // The raw reply is not what the row says; it is one click away.
+      expect(screen.queryByText(rawError)).not.toBeInTheDocument();
+      fireEvent.click(within(row).getByRole("button", { name: /view log/i }));
+      expect(screen.getByText(rawError)).toBeInTheDocument();
+    },
+  );
+
+  it("gives any long detail the same room, so no message needs its own rule", () => {
+    // worker.go: the detail a succeeded apply carries when the public probe
+    // could not confirm the front end.
+    const detail =
+      "updated; signed agent check confirmed the backend healthy, but the public probe was inconclusive after 3 attempt(s): status=404 Not Found, so the front end could not be separately confirmed";
+    renderWithProviders(
+      <UpdateTasksTable tasks={[buildTask({ status: "succeeded", detail })]} />,
+    );
+    expectUnclipped(
+      within(screen.getByTestId("update-task-row")).getByText(detail),
+    );
+  });
+
+  it("still points a failed task that has no detail at its log", () => {
+    renderWithProviders(
+      <UpdateTasksTable
+        tasks={[
+          buildTask({
+            status: "failed",
+            detail: undefined,
+            error: FIREWALL_403_RAW_ERROR,
+          }),
+        ]}
+      />,
+    );
+    const row = screen.getByTestId("update-task-row");
+    expect(within(row).getByText("See log for details")).toBeInTheDocument();
+    expect(
+      within(row).getByRole("button", { name: /view log/i }),
+    ).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GH #415: WordPress core has no automatic recovery.
+//
+// The chip that says "recovery attempted" describes the agent's update
+// watchdog, which exists for plugins and themes only. A core task whose
+// rollback could not be delivered is a site that needs a person, and the chip
+// must say so; a core task the control plane left in place is an ordinary
+// failure.
+// ---------------------------------------------------------------------------
+
+function coreTask(overrides: Partial<UpdateTask>): UpdateTask {
+  return buildTask({
+    target_type: "core",
+    target_slug: "core",
+    from_version: "6.6.2",
+    to_version: "6.7.1",
+    ...overrides,
+  });
+}
+
+describe("UpdateTasksTable: WordPress core outcomes (GH #415)", () => {
+  it("says manual recovery is needed, not that recovery was attempted, when core's rollback could not be delivered", () => {
+    renderWithProviders(
+      <UpdateTasksTable
+        tasks={[
+          coreTask({
+            status: "failed",
+            detail: CORE_ROLLBACK_UNDELIVERABLE_DETAIL,
+            error: ROLLBACK_RAW_ERROR,
+          }),
+        ]}
+      />,
+    );
+    const row = screen.getByTestId("update-task-row");
+
+    expect(
+      within(row).getByText("Site down, manual recovery needed"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Site down, recovery attempted"),
+    ).not.toBeInTheDocument();
+    // The whole sentence is in the alert, unclipped, and it is the same
+    // sentence the chip summarises.
+    const alert = within(row).getByRole("alert");
+    expect(alert).toHaveTextContent(CORE_ROLLBACK_UNDELIVERABLE_DETAIL);
+    expectUnclipped(alert);
+  });
+
+  it.each([
+    ["left as is after a failed health check", CORE_LEFT_AS_IS_DETAIL],
+    [
+      "reported no change but failed the health check",
+      CORE_NO_CHANGE_UNHEALTHY_DETAIL,
+    ],
+  ])(
+    "keeps a plain Failed chip for core that %s, with its full sentence",
+    (_label, detail) => {
+      renderWithProviders(
+        <UpdateTasksTable
+          tasks={[
+            coreTask({
+              status: "failed",
+              detail,
+              error: HEALTH_CHECK_FAILED_REASON,
+            }),
+          ]}
+        />,
+      );
+      const row = screen.getByTestId("update-task-row");
+
+      expect(within(row).getByText("Failed")).toBeInTheDocument();
+      expect(
+        screen.queryByText(/^Site down,/),
+      ).not.toBeInTheDocument();
+      expectUnclipped(within(row).getByText(detail));
+    },
+  );
+
+  it("does not call a core task that was rolled back a site that is down", () => {
+    renderWithProviders(
+      <UpdateTasksTable
+        tasks={[
+          coreTask({
+            status: "rolled_back",
+            detail: `rolled back: ${HEALTH_CHECK_FAILED_REASON}`,
+          }),
+        ]}
+      />,
+    );
+    const row = screen.getByTestId("update-task-row");
+    expect(within(row).getByText("Rolled back")).toBeInTheDocument();
+    expect(screen.queryByText(/^Site down,/)).not.toBeInTheDocument();
+  });
+
+  it("keeps the recovery-attempted chip for a plugin, where the agent's watchdog does run", () => {
+    renderWithProviders(
+      <UpdateTasksTable
+        tasks={[
+          buildTask({
+            status: "failed",
+            detail: PLUGIN_SITE_DOWN_DETAIL,
+            error: ROLLBACK_RAW_ERROR,
+          }),
+        ]}
+      />,
+    );
+    const row = screen.getByTestId("update-task-row");
+    expect(
+      within(row).getByText("Site down, recovery attempted"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Site down, manual recovery needed"),
+    ).not.toBeInTheDocument();
+    expect(within(row).getByRole("alert")).toHaveTextContent(
+      PLUGIN_SITE_DOWN_DETAIL,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // GH #336 - per-task retry selection
 //
 // The table is the only place an operator can compose a retry set, so these
@@ -229,6 +448,35 @@ describe("UpdateTasksTable: GH #755 round 2 redirect-failure condition on a skip
 // only where the SERVER said the task may be retried, a row that has none
 // still says why, and adding the column does not misalign the log row.
 // ---------------------------------------------------------------------------
+
+// GH #367: a skip that says why reads as the control plane's sentence, in
+// full, under the plain Skipped chip. None of these is a site-down or a
+// redirect condition, so none of them gets an alert.
+describe("UpdateTasksTable: a skip that says why (GH #367)", () => {
+  it.each([
+    ["Composer manages core", "core", SKIP_CORE_MANAGED_DETAIL],
+    ["file changes are disallowed", "core", SKIP_FILE_MODS_DISALLOWED_DETAIL],
+    ["the plugin is not installed", "plugin", SKIP_NOT_INSTALLED_DETAIL],
+    ["the plugin is the agent itself", "plugin", SKIP_SELF_TARGET_DETAIL],
+  ] as const)(
+    "shows the whole sentence for a skip because %s",
+    (_label, target, detail) => {
+      const task =
+        target === "core"
+          ? coreTask({ status: "skipped", detail })
+          : buildTask({ status: "skipped", detail });
+      renderWithProviders(<UpdateTasksTable tasks={[task]} />);
+      const row = screen.getByTestId("update-task-row");
+
+      expect(within(row).getByText("Skipped")).toBeInTheDocument();
+      expect(within(row).queryByRole("alert")).not.toBeInTheDocument();
+      expect(
+        within(row).queryByText(/already up to date/i),
+      ).not.toBeInTheDocument();
+      expectUnclipped(within(row).getByText(detail));
+    },
+  );
+});
 
 function makeSelection(
   overrides: Partial<TaskTableSelection> = {},

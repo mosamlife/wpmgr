@@ -384,7 +384,8 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 	adminH.SetAuditRecorder(auditRec)
 	// vuln-feed key-management sub-routes are only mounted once wired via
 	// SetVulnFeed — mirrors cmd/wpmgr/main.go's adminH.SetVulnFeed(...) call.
-	adminH.SetVulnFeed(nil, admin.NewVulnFeedKeyService(admin.NewInstanceSettingsRepo(pool), nil, "", nil, logger))
+	adminH.SetVulnFeed(nil, admin.NewVulnFeedKeyService(admin.NewInstanceSettingsRepo(pool), nil, "", nil, logger),
+		admingate.NewInstanceEmailPoolStore(pool, true))
 	// GH #322: SetAgentMirror, mirrors cmd/wpmgr/main.go's
 	// adminH.SetAgentMirror(...) call, so POST /admin/agent-mirror/check
 	// mounts here exactly as it does in production. Args are all disabled/nil

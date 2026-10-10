@@ -1,8 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 
 import { renderWithProviders } from "@/test/render";
 import { mockMutationResult, mockQueryResult } from "@/test/query-mocks";
+import {
+  CLOCK_403_DETAIL,
+  CLOCK_403_RAW_ERROR,
+  CORE_LEFT_AS_IS_DETAIL,
+  CORE_ROLLBACK_UNDELIVERABLE_DETAIL,
+  FIREWALL_403_DETAIL,
+  FIREWALL_403_RAW_ERROR,
+  HEALTH_CHECK_FAILED_REASON,
+  PLUGIN_SITE_DOWN_DETAIL,
+  ROLLBACK_RAW_ERROR,
+} from "@/test/update-task-details";
 
 import { AvailableUpdatesCard } from "./available-updates-card";
 import type { UpdateRun, UpdateRunCreate } from "@wpmgr/api";
@@ -301,5 +312,156 @@ describe("AvailableUpdatesCard as_of honesty (GH #553)", () => {
     expect(
       screen.getByText("Could not load available updates"),
     ).toBeInTheDocument();
+  });
+});
+
+// GH #679, GH #415: a row that did not update says what happened.
+//
+// The control plane writes the sentence an operator acts on into the task's
+// detail and keeps the raw reply in its error. The row used to print the error,
+// so the reply from the site's firewall was the text on the card and the
+// guidance never reached it. The raw reply is still there, one click away.
+describe("AvailableUpdatesCard update outcomes (GH #679, GH #415)", () => {
+  const AKISMET = {
+    type: "plugin" as const,
+    slug: "akismet/akismet.php",
+    name: "Akismet",
+    version: "5.0",
+    new_version: "5.1",
+    active: true,
+  };
+
+  function row(overrides: Partial<RowUpdate>): RowUpdate {
+    return { ...IDLE_ROW, taskId: "task-1", ...overrides };
+  }
+
+  function renderPluginRow(update: RowUpdate) {
+    setup(payload({ items: [AKISMET] }), null);
+    mockedUseRowUpdate.mockReturnValue(update);
+    return renderWithProviders(<AvailableUpdatesCard siteId="site-1" />);
+  }
+
+  function renderCoreRow(update: RowUpdate) {
+    setup(
+      payload({ core_update: { current_version: "6.6.2", new_version: "6.7.1" } }),
+      null,
+    );
+    mockedUseCoreRowUpdate.mockReturnValue(update);
+    return renderWithProviders(<AvailableUpdatesCard siteId="site-1" />);
+  }
+
+  it.each([
+    ["a firewall block", FIREWALL_403_DETAIL, FIREWALL_403_RAW_ERROR],
+    ["a clock difference", CLOCK_403_DETAIL, CLOCK_403_RAW_ERROR],
+  ])(
+    "shows the guidance for %s on the row, and the raw reply only under Show log",
+    (_label, detail, rawError) => {
+      renderPluginRow(
+        row({ state: "failed", progress: detail, error: rawError }),
+      );
+
+      expect(screen.getByText(detail)).toBeInTheDocument();
+      expect(screen.queryByText(/status 403 body=/)).not.toBeInTheDocument();
+      expect(screen.queryByText(rawError)).not.toBeInTheDocument();
+
+      const toggle = screen.getByRole("button", { name: /show log/i });
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(toggle);
+
+      expect(screen.getByText(rawError)).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /hide log/i }),
+      ).toHaveAttribute("aria-expanded", "true");
+    },
+  );
+
+  it("shows the error itself when a failed row has no detail to lead with", () => {
+    renderPluginRow(
+      row({ state: "failed", progress: undefined, error: FIREWALL_403_RAW_ERROR }),
+    );
+
+    expect(screen.getByText(FIREWALL_403_RAW_ERROR)).toBeInTheDocument();
+    // Nothing is hidden behind a log that would only repeat it.
+    expect(
+      screen.queryByRole("button", { name: /show log/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("says the update failed when the row has neither a detail nor an error", () => {
+    renderPluginRow(row({ state: "failed" }));
+
+    expect(screen.getByText("Update failed")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /show log/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("says why a row was rolled back instead of only that it was", () => {
+    const detail = `rolled back: ${HEALTH_CHECK_FAILED_REASON}`;
+    renderPluginRow(row({ state: "rolled_back", progress: detail }));
+
+    expect(screen.getByText(detail)).toBeInTheDocument();
+  });
+
+  it("leads a plugin row that went down with the watchdog sentence, and keeps the rollback error behind the log", () => {
+    renderPluginRow(
+      row({
+        state: "failed",
+        progress: PLUGIN_SITE_DOWN_DETAIL,
+        error: ROLLBACK_RAW_ERROR,
+      }),
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(PLUGIN_SITE_DOWN_DETAIL);
+    expect(screen.queryByText(ROLLBACK_RAW_ERROR)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /show log/i }));
+    expect(screen.getByText(ROLLBACK_RAW_ERROR)).toBeInTheDocument();
+  });
+
+  it("leads the WordPress core row with the sentence that says nothing restores core, never with a claim that recovery was attempted", () => {
+    renderCoreRow(
+      row({
+        state: "failed",
+        progress: CORE_ROLLBACK_UNDELIVERABLE_DETAIL,
+        error: ROLLBACK_RAW_ERROR,
+      }),
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      CORE_ROLLBACK_UNDELIVERABLE_DETAIL,
+    );
+    expect(
+      screen.queryByText(/recovery was attempted/i),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(ROLLBACK_RAW_ERROR)).not.toBeInTheDocument();
+  });
+
+  it("shows core left as is in full, as an ordinary failure", () => {
+    renderCoreRow(
+      row({
+        state: "failed",
+        progress: CORE_LEFT_AS_IS_DETAIL,
+        error: HEALTH_CHECK_FAILED_REASON,
+      }),
+    );
+
+    expect(screen.getByText(CORE_LEFT_AS_IS_DETAIL)).toBeInTheDocument();
+    expect(screen.queryByText(HEALTH_CHECK_FAILED_REASON)).not.toBeInTheDocument();
+  });
+
+  it("leaves a succeeded row as Updated", () => {
+    renderPluginRow(row({ state: "succeeded" }));
+
+    expect(screen.getByText("Updated")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /show log/i })).not.toBeInTheDocument();
+  });
+
+  it("keeps a skipped row as Skipped and does not turn the control plane's note into a claim that the plugin is current", () => {
+    // A skipped row says only what its status says. The note the control
+    // plane stores with the task is not repeated as a claim about the version.
+    renderPluginRow(row({ state: "skipped", progress: "already up to date" }));
+
+    expect(screen.getByText("Skipped")).toBeInTheDocument();
+    expect(screen.queryByText(/already up to date/i)).not.toBeInTheDocument();
   });
 });

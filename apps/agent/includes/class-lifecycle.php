@@ -30,6 +30,7 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent;
 
+use WPMgr\Agent\Abilities\Builders\BuilderDocumentSnapshot;
 use WPMgr\Agent\Commands\AgentSelfUpdateCommand;
 use WPMgr\Agent\Commands\MetadataCommand;
 use WPMgr\Agent\Commands\ObjectcacheDisableCommand;
@@ -90,6 +91,18 @@ final class Lifecycle
         self::NAME_PREFIX,
         '_site_transient_' . self::NAME_PREFIX,
         '_site_transient_timeout_' . self::NAME_PREFIX,
+    ];
+
+    /**
+     * Prefixes of per-site option rows the agent owns outside its namespace:
+     * the page snapshots taken before a builder write. Uninstall removes them
+     * from the options table the way it removes the namespace, as an anchored
+     * prefix matched byte for byte; they are never network options.
+     *
+     * @var list<string>
+     */
+    private const OWNED_OPTION_PREFIXES = [
+        BuilderDocumentSnapshot::OPTION_PREFIX,
     ];
 
     /**
@@ -379,8 +392,9 @@ final class Lifecycle
      * which Disconnect keeps so older backups stay restorable, goes too, since
      * the install is going away entirely.
      *
-     * Leaves no named option ({@see ownedOptions()}) and no row in the agent's
-     * namespace ({@see self::NAME_PREFIX}), and removes nothing else: a row is
+     * Leaves no named option ({@see ownedOptions()}), no row in the agent's
+     * namespace ({@see self::NAME_PREFIX}) and no row under an owned prefix
+     * ({@see self::OWNED_OPTION_PREFIXES}), and removes nothing else: a row is
      * deleted only when its stored name is exactly one the agent owns
      * ({@see deleteOwnedRows()}).
      *
@@ -579,12 +593,15 @@ final class Lifecycle
     /**
      * Delete the rows the agent owns: each named option ({@see ownedOptions()})
      * and every row in the namespace, from the options table and, on
-     * multisite, from the current network's network table. The namespace
-     * covers names written by another release, names built at runtime, and
-     * the value and timeout rows of transients and site transients.
+     * multisite, from the current network's network table, and every row
+     * under an owned prefix ({@see self::OWNED_OPTION_PREFIXES}) from the
+     * options table. The namespace covers names written by another release,
+     * names built at runtime, and the value and timeout rows of transients and
+     * site transients.
      *
      * A row is deleted only when its stored name, byte for byte, is a named
-     * option or begins with a namespace form ({@see ownedRows()}). The queries
+     * option or begins with a namespace form or an owned prefix
+     * ({@see ownedRows()}). The queries
      * only narrow the search: they compare under the column's collation, which
      * usually ignores case, so they can return WPMGR_AGENT_X for wpmgr_agent_x,
      * and deleting by name, in SQL or through the options API, would remove
@@ -618,8 +635,8 @@ final class Lifecycle
             );
             $rows += self::ownedRows($found, $name, false);
         }
-        foreach (self::OPTIONS_TABLE_FORMS as $form) {
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- uninstall must find every row in the namespace; no API lists options by prefix, and a cached answer could miss rows.
+        foreach (array_merge(self::OPTIONS_TABLE_FORMS, self::OWNED_OPTION_PREFIXES) as $form) {
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- uninstall must find every row in the namespace and under an owned prefix; no API lists options by prefix, and a cached answer could miss rows.
             $found = $wpdb->get_results(
                 $wpdb->prepare(
                     "SELECT option_id AS id, option_name AS name FROM {$wpdb->options} WHERE option_name LIKE %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
@@ -631,13 +648,15 @@ final class Lifecycle
         }
         foreach ($rows as $id => $name) {
             // The id alone picks the row; the name only refuses an id that has
-            // since been given to another row.
+            // since been given to another row. HEX() compares the stored bytes,
+            // so a name that differs from ours only in case or accents is
+            // refused too; MySQL, MariaDB and SQLite all return it upper-case.
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- only a delete by primary key is exact; the options API deletes every row whose name the collation matches. Cache entries are dropped below.
             $wpdb->query(
                 $wpdb->prepare( // @phpstan-ignore argument.type (prepare() returns null only when placeholders and values disagree, which this fixed statement rules out)
-                    "DELETE FROM {$wpdb->options} WHERE option_id = %d AND option_name = %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
+                    "DELETE FROM {$wpdb->options} WHERE option_id = %d AND HEX(option_name) = %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
                     $id,
-                    $name
+                    strtoupper(bin2hex($name))
                 )
             );
             if ($forgetCached) {
@@ -686,10 +705,10 @@ final class Lifecycle
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- only a delete by primary key is exact; the network options API deletes every row whose name the collation matches. Cache entries are dropped below.
             $wpdb->query(
                 $wpdb->prepare( // @phpstan-ignore argument.type (prepare() returns null only when placeholders and values disagree, which this fixed statement rules out)
-                    "DELETE FROM {$wpdb->sitemeta} WHERE meta_id = %d AND site_id = %d AND meta_key = %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
+                    "DELETE FROM {$wpdb->sitemeta} WHERE meta_id = %d AND site_id = %d AND HEX(meta_key) = %s", // @phpstan-ignore argument.type (the only interpolation is core's own table name)
                     $id,
                     $networkId,
-                    $name
+                    strtoupper(bin2hex($name))
                 )
             );
             if ($forgetCached) {

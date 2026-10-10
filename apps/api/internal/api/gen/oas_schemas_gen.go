@@ -3350,6 +3350,17 @@ type AbilityRequest struct {
 	DecidedAt       OptNilDateTime           `json:"decided_at"`
 	Outcome         OptNilString             `json:"outcome"`
 	OutcomeCode     OptNilString             `json:"outcome_code"`
+	// Which conflict refused a wpmgr/page-edit (`outcome_code` conflict): the page changed after the AI
+	// read it (changed_since_read), someone has it open in Elementor (editor_open), or someone has unsaved
+	// Elementor changes on it (autosave_pending). Null for every other request. A closed value, never the
+	// site's own words.
+	OutcomeDetail OptNilAbilityRequestOutcomeDetail `json:"outcome_detail"`
+	// What a wpmgr/page-edit refused with `outcome_code` side_effect_detected changed outside the page
+	// while Elementor saved it: the site's active Elementor kit (active_kit), another post or page or its
+	// data (other_posts), categories or tags (terms), a site setting (site_settings), or a user account, a
+	// role or the site's administrators (users). Null when the site named changes of more than one kind or
+	// of none of these, and for every other request. A closed value, never the site's own words.
+	OutsideChange OptNilAbilityRequestOutsideChange `json:"outside_change"`
 	// Why an approved request was closed without being sent; nothing was changed on the site. Values
 	// include `setting_changed` (the site's setting changed after the approval and before the change ran)
 	// and `class_changed` (WPMgr changed how this kind of change is handled after the approval and before
@@ -3360,11 +3371,17 @@ type AbilityRequest struct {
 	// A failed wpmgr/rest-write's report on putting the post back. True: the whole post is as it was.
 	// False: WPMgr put back what it could, but the post is not fully as it was; show the request as
 	// needing attention. Null when nothing needed putting back, and for every other ability.
-	Restored           OptNilBool     `json:"restored"`
-	UndoState          OptNilString   `json:"undo_state"`
-	UndoAvailableUntil OptNilDateTime `json:"undo_available_until"`
-	// Whether `POST .../undo` would start an undo now: a done request inside its undo window, or the draft
-	// a failed or given-up page creation left on the site. Show the undo action exactly when this is true.
+	Restored  OptNilBool   `json:"restored"`
+	UndoState OptNilString `json:"undo_state"`
+	// Why a failed undo (`undo_state` failed) failed: the copy the site kept of the page for this change
+	// was changed on the site, so WPMgr did not use it and nothing changed (snapshot_tampered), or the
+	// site's put-back did not read back as that copy (restore_mismatch). Null for every other request. A
+	// closed value, never the site's own words.
+	UndoCode           OptNilAbilityRequestUndoCode `json:"undo_code"`
+	UndoAvailableUntil OptNilDateTime               `json:"undo_available_until"`
+	// Whether `POST .../undo` would start an undo now: a done request inside its undo window (for a page
+	// edit, only the newest applied edit of its page not yet undone), or the draft a failed or given-up
+	// page creation left on the site. Show the undo action exactly when this is true.
 	UndoOffered bool `json:"undo_offered"`
 	// True once WPMgr stopped checking the site for the outcome of a write whose reply was lost. The
 	// result is final: the person should look at the site's drafts.
@@ -3396,6 +3413,10 @@ type AbilityRequest struct {
 	// Null for a page in a WordPress editor, and for every other ability. A card for a request whose
 	// editor is a page builder cannot be shown in full without it and must not be approvable.
 	PageBuilder OptNilAbilityRequestPageBuilder `json:"page_builder"`
+	// The card of a wpmgr/page-edit request: the post, the page builder, each change and the page's
+	// outline after the edit, as WPMgr checked them against the site's precheck. Null for every other
+	// ability. A page-edit request without it cannot be shown in full and must not be approvable.
+	PageEdit OptNilAbilityRequestPageEdit `json:"page_edit"`
 }
 
 // GetID returns the value of ID.
@@ -3508,6 +3529,16 @@ func (s *AbilityRequest) GetOutcomeCode() OptNilString {
 	return s.OutcomeCode
 }
 
+// GetOutcomeDetail returns the value of OutcomeDetail.
+func (s *AbilityRequest) GetOutcomeDetail() OptNilAbilityRequestOutcomeDetail {
+	return s.OutcomeDetail
+}
+
+// GetOutsideChange returns the value of OutsideChange.
+func (s *AbilityRequest) GetOutsideChange() OptNilAbilityRequestOutsideChange {
+	return s.OutsideChange
+}
+
 // GetNotSentReason returns the value of NotSentReason.
 func (s *AbilityRequest) GetNotSentReason() OptNilString {
 	return s.NotSentReason
@@ -3531,6 +3562,11 @@ func (s *AbilityRequest) GetRestored() OptNilBool {
 // GetUndoState returns the value of UndoState.
 func (s *AbilityRequest) GetUndoState() OptNilString {
 	return s.UndoState
+}
+
+// GetUndoCode returns the value of UndoCode.
+func (s *AbilityRequest) GetUndoCode() OptNilAbilityRequestUndoCode {
+	return s.UndoCode
 }
 
 // GetUndoAvailableUntil returns the value of UndoAvailableUntil.
@@ -3591,6 +3627,11 @@ func (s *AbilityRequest) GetAskReason() OptNilAIAskReason {
 // GetPageBuilder returns the value of PageBuilder.
 func (s *AbilityRequest) GetPageBuilder() OptNilAbilityRequestPageBuilder {
 	return s.PageBuilder
+}
+
+// GetPageEdit returns the value of PageEdit.
+func (s *AbilityRequest) GetPageEdit() OptNilAbilityRequestPageEdit {
+	return s.PageEdit
 }
 
 // SetID sets the value of ID.
@@ -3703,6 +3744,16 @@ func (s *AbilityRequest) SetOutcomeCode(val OptNilString) {
 	s.OutcomeCode = val
 }
 
+// SetOutcomeDetail sets the value of OutcomeDetail.
+func (s *AbilityRequest) SetOutcomeDetail(val OptNilAbilityRequestOutcomeDetail) {
+	s.OutcomeDetail = val
+}
+
+// SetOutsideChange sets the value of OutsideChange.
+func (s *AbilityRequest) SetOutsideChange(val OptNilAbilityRequestOutsideChange) {
+	s.OutsideChange = val
+}
+
 // SetNotSentReason sets the value of NotSentReason.
 func (s *AbilityRequest) SetNotSentReason(val OptNilString) {
 	s.NotSentReason = val
@@ -3726,6 +3777,11 @@ func (s *AbilityRequest) SetRestored(val OptNilBool) {
 // SetUndoState sets the value of UndoState.
 func (s *AbilityRequest) SetUndoState(val OptNilString) {
 	s.UndoState = val
+}
+
+// SetUndoCode sets the value of UndoCode.
+func (s *AbilityRequest) SetUndoCode(val OptNilAbilityRequestUndoCode) {
+	s.UndoCode = val
 }
 
 // SetUndoAvailableUntil sets the value of UndoAvailableUntil.
@@ -3786,6 +3842,11 @@ func (s *AbilityRequest) SetAskReason(val OptNilAIAskReason) {
 // SetPageBuilder sets the value of PageBuilder.
 func (s *AbilityRequest) SetPageBuilder(val OptNilAbilityRequestPageBuilder) {
 	s.PageBuilder = val
+}
+
+// SetPageEdit sets the value of PageEdit.
+func (s *AbilityRequest) SetPageEdit(val OptNilAbilityRequestPageEdit) {
+	s.PageEdit = val
 }
 
 func (*AbilityRequest) approveAbilityRequestRes() {}
@@ -4320,6 +4381,125 @@ func (s *AbilityRequestOrgList) SetOffset(val int32) {
 
 func (*AbilityRequestOrgList) listAbilityRequestsRes() {}
 
+// Which conflict refused a wpmgr/page-edit (`outcome_code` conflict): the page changed after the AI
+// read it (changed_since_read), someone has it open in Elementor (editor_open), or someone has unsaved
+// Elementor changes on it (autosave_pending). Null for every other request. A closed value, never the
+// site's own words.
+type AbilityRequestOutcomeDetail string
+
+const (
+	AbilityRequestOutcomeDetailChangedSinceRead AbilityRequestOutcomeDetail = "changed_since_read"
+	AbilityRequestOutcomeDetailEditorOpen       AbilityRequestOutcomeDetail = "editor_open"
+	AbilityRequestOutcomeDetailAutosavePending  AbilityRequestOutcomeDetail = "autosave_pending"
+)
+
+// AllValues returns all AbilityRequestOutcomeDetail values.
+func (AbilityRequestOutcomeDetail) AllValues() []AbilityRequestOutcomeDetail {
+	return []AbilityRequestOutcomeDetail{
+		AbilityRequestOutcomeDetailChangedSinceRead,
+		AbilityRequestOutcomeDetailEditorOpen,
+		AbilityRequestOutcomeDetailAutosavePending,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestOutcomeDetail) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestOutcomeDetailChangedSinceRead:
+		return []byte(s), nil
+	case AbilityRequestOutcomeDetailEditorOpen:
+		return []byte(s), nil
+	case AbilityRequestOutcomeDetailAutosavePending:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestOutcomeDetail) UnmarshalText(data []byte) error {
+	switch AbilityRequestOutcomeDetail(data) {
+	case AbilityRequestOutcomeDetailChangedSinceRead:
+		*s = AbilityRequestOutcomeDetailChangedSinceRead
+		return nil
+	case AbilityRequestOutcomeDetailEditorOpen:
+		*s = AbilityRequestOutcomeDetailEditorOpen
+		return nil
+	case AbilityRequestOutcomeDetailAutosavePending:
+		*s = AbilityRequestOutcomeDetailAutosavePending
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// What a wpmgr/page-edit refused with `outcome_code` side_effect_detected changed outside the page
+// while Elementor saved it: the site's active Elementor kit (active_kit), another post or page or its
+// data (other_posts), categories or tags (terms), a site setting (site_settings), or a user account, a
+// role or the site's administrators (users). Null when the site named changes of more than one kind or
+// of none of these, and for every other request. A closed value, never the site's own words.
+type AbilityRequestOutsideChange string
+
+const (
+	AbilityRequestOutsideChangeActiveKit    AbilityRequestOutsideChange = "active_kit"
+	AbilityRequestOutsideChangeOtherPosts   AbilityRequestOutsideChange = "other_posts"
+	AbilityRequestOutsideChangeTerms        AbilityRequestOutsideChange = "terms"
+	AbilityRequestOutsideChangeSiteSettings AbilityRequestOutsideChange = "site_settings"
+	AbilityRequestOutsideChangeUsers        AbilityRequestOutsideChange = "users"
+)
+
+// AllValues returns all AbilityRequestOutsideChange values.
+func (AbilityRequestOutsideChange) AllValues() []AbilityRequestOutsideChange {
+	return []AbilityRequestOutsideChange{
+		AbilityRequestOutsideChangeActiveKit,
+		AbilityRequestOutsideChangeOtherPosts,
+		AbilityRequestOutsideChangeTerms,
+		AbilityRequestOutsideChangeSiteSettings,
+		AbilityRequestOutsideChangeUsers,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestOutsideChange) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestOutsideChangeActiveKit:
+		return []byte(s), nil
+	case AbilityRequestOutsideChangeOtherPosts:
+		return []byte(s), nil
+	case AbilityRequestOutsideChangeTerms:
+		return []byte(s), nil
+	case AbilityRequestOutsideChangeSiteSettings:
+		return []byte(s), nil
+	case AbilityRequestOutsideChangeUsers:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestOutsideChange) UnmarshalText(data []byte) error {
+	switch AbilityRequestOutsideChange(data) {
+	case AbilityRequestOutsideChangeActiveKit:
+		*s = AbilityRequestOutsideChangeActiveKit
+		return nil
+	case AbilityRequestOutsideChangeOtherPosts:
+		*s = AbilityRequestOutsideChangeOtherPosts
+		return nil
+	case AbilityRequestOutsideChangeTerms:
+		*s = AbilityRequestOutsideChangeTerms
+		return nil
+	case AbilityRequestOutsideChangeSiteSettings:
+		*s = AbilityRequestOutsideChangeSiteSettings
+		return nil
+	case AbilityRequestOutsideChangeUsers:
+		*s = AbilityRequestOutsideChangeUsers
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // The page builder of a wpmgr/page-create request. `version` came from the site: render it as plain
 // text.
 // Ref: #/components/schemas/AbilityRequestPageBuilder
@@ -4372,6 +4552,622 @@ func (s *AbilityRequestPageBuilder) SetVersion(val string) {
 // SetLayout sets the value of Layout.
 func (s *AbilityRequestPageBuilder) SetLayout(val string) {
 	s.Layout = val
+}
+
+// A wpmgr/page-edit card. Every value under a `from_the_site` member came from the site: render it as
+// plain text in the "From the site" slot. A change's `after` is the text the AI asked for. The other
+// strings are WPMgr's.
+// Ref: #/components/schemas/AbilityRequestPageEdit
+type AbilityRequestPageEdit struct {
+	Kind    AbilityRequestPageEditKind    `json:"kind"`
+	Post    AbilityRequestPageEditPost    `json:"post"`
+	Builder AbilityRequestPageEditBuilder `json:"builder"`
+	// One per operation, in the order they apply.
+	Changes      []AbilityRequestPageEditChange `json:"changes"`
+	AfterOutline OptAbilityRequestPageOutline   `json:"after_outline"`
+	// True when the page's outline after the edit was too large to keep on the card; `after_outline` is
+	// then absent.
+	AfterOutlineOmitted OptBool `json:"after_outline_omitted"`
+	// When WPMgr checked the edit on the site.
+	CheckedAt time.Time `json:"checked_at"`
+}
+
+// GetKind returns the value of Kind.
+func (s *AbilityRequestPageEdit) GetKind() AbilityRequestPageEditKind {
+	return s.Kind
+}
+
+// GetPost returns the value of Post.
+func (s *AbilityRequestPageEdit) GetPost() AbilityRequestPageEditPost {
+	return s.Post
+}
+
+// GetBuilder returns the value of Builder.
+func (s *AbilityRequestPageEdit) GetBuilder() AbilityRequestPageEditBuilder {
+	return s.Builder
+}
+
+// GetChanges returns the value of Changes.
+func (s *AbilityRequestPageEdit) GetChanges() []AbilityRequestPageEditChange {
+	return s.Changes
+}
+
+// GetAfterOutline returns the value of AfterOutline.
+func (s *AbilityRequestPageEdit) GetAfterOutline() OptAbilityRequestPageOutline {
+	return s.AfterOutline
+}
+
+// GetAfterOutlineOmitted returns the value of AfterOutlineOmitted.
+func (s *AbilityRequestPageEdit) GetAfterOutlineOmitted() OptBool {
+	return s.AfterOutlineOmitted
+}
+
+// GetCheckedAt returns the value of CheckedAt.
+func (s *AbilityRequestPageEdit) GetCheckedAt() time.Time {
+	return s.CheckedAt
+}
+
+// SetKind sets the value of Kind.
+func (s *AbilityRequestPageEdit) SetKind(val AbilityRequestPageEditKind) {
+	s.Kind = val
+}
+
+// SetPost sets the value of Post.
+func (s *AbilityRequestPageEdit) SetPost(val AbilityRequestPageEditPost) {
+	s.Post = val
+}
+
+// SetBuilder sets the value of Builder.
+func (s *AbilityRequestPageEdit) SetBuilder(val AbilityRequestPageEditBuilder) {
+	s.Builder = val
+}
+
+// SetChanges sets the value of Changes.
+func (s *AbilityRequestPageEdit) SetChanges(val []AbilityRequestPageEditChange) {
+	s.Changes = val
+}
+
+// SetAfterOutline sets the value of AfterOutline.
+func (s *AbilityRequestPageEdit) SetAfterOutline(val OptAbilityRequestPageOutline) {
+	s.AfterOutline = val
+}
+
+// SetAfterOutlineOmitted sets the value of AfterOutlineOmitted.
+func (s *AbilityRequestPageEdit) SetAfterOutlineOmitted(val OptBool) {
+	s.AfterOutlineOmitted = val
+}
+
+// SetCheckedAt sets the value of CheckedAt.
+func (s *AbilityRequestPageEdit) SetCheckedAt(val time.Time) {
+	s.CheckedAt = val
+}
+
+// Where an insert or a move puts its nodes: `after`, `before` or `into` the node `ref`, `first` or
+// `last` among its children for `into`. `label` is WPMgr's words for a node it does not edit.
+// Ref: #/components/schemas/AbilityRequestPageEditAnchor
+type AbilityRequestPageEditAnchor struct {
+	Ref      string                                  `json:"ref"`
+	How      AbilityRequestPageEditAnchorHow         `json:"how"`
+	Position OptAbilityRequestPageEditAnchorPosition `json:"position"`
+	Kind     string                                  `json:"kind"`
+	Level    OptInt64                                `json:"level"`
+	Label    OptString                               `json:"label"`
+}
+
+// GetRef returns the value of Ref.
+func (s *AbilityRequestPageEditAnchor) GetRef() string {
+	return s.Ref
+}
+
+// GetHow returns the value of How.
+func (s *AbilityRequestPageEditAnchor) GetHow() AbilityRequestPageEditAnchorHow {
+	return s.How
+}
+
+// GetPosition returns the value of Position.
+func (s *AbilityRequestPageEditAnchor) GetPosition() OptAbilityRequestPageEditAnchorPosition {
+	return s.Position
+}
+
+// GetKind returns the value of Kind.
+func (s *AbilityRequestPageEditAnchor) GetKind() string {
+	return s.Kind
+}
+
+// GetLevel returns the value of Level.
+func (s *AbilityRequestPageEditAnchor) GetLevel() OptInt64 {
+	return s.Level
+}
+
+// GetLabel returns the value of Label.
+func (s *AbilityRequestPageEditAnchor) GetLabel() OptString {
+	return s.Label
+}
+
+// SetRef sets the value of Ref.
+func (s *AbilityRequestPageEditAnchor) SetRef(val string) {
+	s.Ref = val
+}
+
+// SetHow sets the value of How.
+func (s *AbilityRequestPageEditAnchor) SetHow(val AbilityRequestPageEditAnchorHow) {
+	s.How = val
+}
+
+// SetPosition sets the value of Position.
+func (s *AbilityRequestPageEditAnchor) SetPosition(val OptAbilityRequestPageEditAnchorPosition) {
+	s.Position = val
+}
+
+// SetKind sets the value of Kind.
+func (s *AbilityRequestPageEditAnchor) SetKind(val string) {
+	s.Kind = val
+}
+
+// SetLevel sets the value of Level.
+func (s *AbilityRequestPageEditAnchor) SetLevel(val OptInt64) {
+	s.Level = val
+}
+
+// SetLabel sets the value of Label.
+func (s *AbilityRequestPageEditAnchor) SetLabel(val OptString) {
+	s.Label = val
+}
+
+type AbilityRequestPageEditAnchorHow string
+
+const (
+	AbilityRequestPageEditAnchorHowAfter  AbilityRequestPageEditAnchorHow = "after"
+	AbilityRequestPageEditAnchorHowBefore AbilityRequestPageEditAnchorHow = "before"
+	AbilityRequestPageEditAnchorHowInto   AbilityRequestPageEditAnchorHow = "into"
+)
+
+// AllValues returns all AbilityRequestPageEditAnchorHow values.
+func (AbilityRequestPageEditAnchorHow) AllValues() []AbilityRequestPageEditAnchorHow {
+	return []AbilityRequestPageEditAnchorHow{
+		AbilityRequestPageEditAnchorHowAfter,
+		AbilityRequestPageEditAnchorHowBefore,
+		AbilityRequestPageEditAnchorHowInto,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestPageEditAnchorHow) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestPageEditAnchorHowAfter:
+		return []byte(s), nil
+	case AbilityRequestPageEditAnchorHowBefore:
+		return []byte(s), nil
+	case AbilityRequestPageEditAnchorHowInto:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestPageEditAnchorHow) UnmarshalText(data []byte) error {
+	switch AbilityRequestPageEditAnchorHow(data) {
+	case AbilityRequestPageEditAnchorHowAfter:
+		*s = AbilityRequestPageEditAnchorHowAfter
+		return nil
+	case AbilityRequestPageEditAnchorHowBefore:
+		*s = AbilityRequestPageEditAnchorHowBefore
+		return nil
+	case AbilityRequestPageEditAnchorHowInto:
+		*s = AbilityRequestPageEditAnchorHowInto
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityRequestPageEditAnchorPosition string
+
+const (
+	AbilityRequestPageEditAnchorPositionFirst AbilityRequestPageEditAnchorPosition = "first"
+	AbilityRequestPageEditAnchorPositionLast  AbilityRequestPageEditAnchorPosition = "last"
+)
+
+// AllValues returns all AbilityRequestPageEditAnchorPosition values.
+func (AbilityRequestPageEditAnchorPosition) AllValues() []AbilityRequestPageEditAnchorPosition {
+	return []AbilityRequestPageEditAnchorPosition{
+		AbilityRequestPageEditAnchorPositionFirst,
+		AbilityRequestPageEditAnchorPositionLast,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestPageEditAnchorPosition) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestPageEditAnchorPositionFirst:
+		return []byte(s), nil
+	case AbilityRequestPageEditAnchorPositionLast:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestPageEditAnchorPosition) UnmarshalText(data []byte) error {
+	switch AbilityRequestPageEditAnchorPosition(data) {
+	case AbilityRequestPageEditAnchorPositionFirst:
+		*s = AbilityRequestPageEditAnchorPositionFirst
+		return nil
+	case AbilityRequestPageEditAnchorPositionLast:
+		*s = AbilityRequestPageEditAnchorPositionLast
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityRequestPageEditBuilder struct {
+	// The page builder, such as `elementor`.
+	ID string `json:"id"`
+	// The builder's version on the site; render it as plain text.
+	Version string `json:"version"`
+	// What the builder edits the page in, such as `classic`.
+	Format string `json:"format"`
+}
+
+// GetID returns the value of ID.
+func (s *AbilityRequestPageEditBuilder) GetID() string {
+	return s.ID
+}
+
+// GetVersion returns the value of Version.
+func (s *AbilityRequestPageEditBuilder) GetVersion() string {
+	return s.Version
+}
+
+// GetFormat returns the value of Format.
+func (s *AbilityRequestPageEditBuilder) GetFormat() string {
+	return s.Format
+}
+
+// SetID sets the value of ID.
+func (s *AbilityRequestPageEditBuilder) SetID(val string) {
+	s.ID = val
+}
+
+// SetVersion sets the value of Version.
+func (s *AbilityRequestPageEditBuilder) SetVersion(val string) {
+	s.Version = val
+}
+
+// SetFormat sets the value of Format.
+func (s *AbilityRequestPageEditBuilder) SetFormat(val string) {
+	s.Format = val
+}
+
+// One change. `set_text` changes `field` of node `ref` to `after`; `insert` puts new nodes
+// (`new_refs`) by `anchor`; `replace` puts `new_refs` where `ref` was; `remove` takes `ref` and
+// everything in it off the page; `move` puts `ref` by `anchor`.
+// Ref: #/components/schemas/AbilityRequestPageEditChange
+type AbilityRequestPageEditChange struct {
+	Op  AbilityRequestPageEditChangeOp `json:"op"`
+	Ref OptString                      `json:"ref"`
+	// What the node is, such as `heading` or `paragraph`.
+	Kind OptString `json:"kind"`
+	// A heading's level.
+	Level OptInt64                             `json:"level"`
+	Field OptAbilityRequestPageEditChangeField `json:"field"`
+	// The text the AI asked for (set_text).
+	After OptString `json:"after"`
+	// Every node the change makes, parent first.
+	NewRefs     []string                                   `json:"new_refs"`
+	Anchor      OptAbilityRequestPageEditAnchor            `json:"anchor"`
+	FromTheSite OptAbilityRequestPageEditChangeFromTheSite `json:"from_the_site"`
+}
+
+// GetOp returns the value of Op.
+func (s *AbilityRequestPageEditChange) GetOp() AbilityRequestPageEditChangeOp {
+	return s.Op
+}
+
+// GetRef returns the value of Ref.
+func (s *AbilityRequestPageEditChange) GetRef() OptString {
+	return s.Ref
+}
+
+// GetKind returns the value of Kind.
+func (s *AbilityRequestPageEditChange) GetKind() OptString {
+	return s.Kind
+}
+
+// GetLevel returns the value of Level.
+func (s *AbilityRequestPageEditChange) GetLevel() OptInt64 {
+	return s.Level
+}
+
+// GetField returns the value of Field.
+func (s *AbilityRequestPageEditChange) GetField() OptAbilityRequestPageEditChangeField {
+	return s.Field
+}
+
+// GetAfter returns the value of After.
+func (s *AbilityRequestPageEditChange) GetAfter() OptString {
+	return s.After
+}
+
+// GetNewRefs returns the value of NewRefs.
+func (s *AbilityRequestPageEditChange) GetNewRefs() []string {
+	return s.NewRefs
+}
+
+// GetAnchor returns the value of Anchor.
+func (s *AbilityRequestPageEditChange) GetAnchor() OptAbilityRequestPageEditAnchor {
+	return s.Anchor
+}
+
+// GetFromTheSite returns the value of FromTheSite.
+func (s *AbilityRequestPageEditChange) GetFromTheSite() OptAbilityRequestPageEditChangeFromTheSite {
+	return s.FromTheSite
+}
+
+// SetOp sets the value of Op.
+func (s *AbilityRequestPageEditChange) SetOp(val AbilityRequestPageEditChangeOp) {
+	s.Op = val
+}
+
+// SetRef sets the value of Ref.
+func (s *AbilityRequestPageEditChange) SetRef(val OptString) {
+	s.Ref = val
+}
+
+// SetKind sets the value of Kind.
+func (s *AbilityRequestPageEditChange) SetKind(val OptString) {
+	s.Kind = val
+}
+
+// SetLevel sets the value of Level.
+func (s *AbilityRequestPageEditChange) SetLevel(val OptInt64) {
+	s.Level = val
+}
+
+// SetField sets the value of Field.
+func (s *AbilityRequestPageEditChange) SetField(val OptAbilityRequestPageEditChangeField) {
+	s.Field = val
+}
+
+// SetAfter sets the value of After.
+func (s *AbilityRequestPageEditChange) SetAfter(val OptString) {
+	s.After = val
+}
+
+// SetNewRefs sets the value of NewRefs.
+func (s *AbilityRequestPageEditChange) SetNewRefs(val []string) {
+	s.NewRefs = val
+}
+
+// SetAnchor sets the value of Anchor.
+func (s *AbilityRequestPageEditChange) SetAnchor(val OptAbilityRequestPageEditAnchor) {
+	s.Anchor = val
+}
+
+// SetFromTheSite sets the value of FromTheSite.
+func (s *AbilityRequestPageEditChange) SetFromTheSite(val OptAbilityRequestPageEditChangeFromTheSite) {
+	s.FromTheSite = val
+}
+
+type AbilityRequestPageEditChangeField string
+
+const (
+	AbilityRequestPageEditChangeFieldText    AbilityRequestPageEditChangeField = "text"
+	AbilityRequestPageEditChangeFieldURL     AbilityRequestPageEditChangeField = "url"
+	AbilityRequestPageEditChangeFieldAlt     AbilityRequestPageEditChangeField = "alt"
+	AbilityRequestPageEditChangeFieldCaption AbilityRequestPageEditChangeField = "caption"
+)
+
+// AllValues returns all AbilityRequestPageEditChangeField values.
+func (AbilityRequestPageEditChangeField) AllValues() []AbilityRequestPageEditChangeField {
+	return []AbilityRequestPageEditChangeField{
+		AbilityRequestPageEditChangeFieldText,
+		AbilityRequestPageEditChangeFieldURL,
+		AbilityRequestPageEditChangeFieldAlt,
+		AbilityRequestPageEditChangeFieldCaption,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestPageEditChangeField) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestPageEditChangeFieldText:
+		return []byte(s), nil
+	case AbilityRequestPageEditChangeFieldURL:
+		return []byte(s), nil
+	case AbilityRequestPageEditChangeFieldAlt:
+		return []byte(s), nil
+	case AbilityRequestPageEditChangeFieldCaption:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestPageEditChangeField) UnmarshalText(data []byte) error {
+	switch AbilityRequestPageEditChangeField(data) {
+	case AbilityRequestPageEditChangeFieldText:
+		*s = AbilityRequestPageEditChangeFieldText
+		return nil
+	case AbilityRequestPageEditChangeFieldURL:
+		*s = AbilityRequestPageEditChangeFieldURL
+		return nil
+	case AbilityRequestPageEditChangeFieldAlt:
+		*s = AbilityRequestPageEditChangeFieldAlt
+		return nil
+	case AbilityRequestPageEditChangeFieldCaption:
+		*s = AbilityRequestPageEditChangeFieldCaption
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityRequestPageEditChangeFromTheSite struct {
+	// The node's text before the change, field by field.
+	Before AbilityRequestPageEditChangeFromTheSiteBefore `json:"before"`
+}
+
+// GetBefore returns the value of Before.
+func (s *AbilityRequestPageEditChangeFromTheSite) GetBefore() AbilityRequestPageEditChangeFromTheSiteBefore {
+	return s.Before
+}
+
+// SetBefore sets the value of Before.
+func (s *AbilityRequestPageEditChangeFromTheSite) SetBefore(val AbilityRequestPageEditChangeFromTheSiteBefore) {
+	s.Before = val
+}
+
+// The node's text before the change, field by field.
+type AbilityRequestPageEditChangeFromTheSiteBefore map[string]string
+
+func (s *AbilityRequestPageEditChangeFromTheSiteBefore) init() AbilityRequestPageEditChangeFromTheSiteBefore {
+	m := *s
+	if m == nil {
+		m = map[string]string{}
+		*s = m
+	}
+	return m
+}
+
+type AbilityRequestPageEditChangeOp string
+
+const (
+	AbilityRequestPageEditChangeOpSetText AbilityRequestPageEditChangeOp = "set_text"
+	AbilityRequestPageEditChangeOpInsert  AbilityRequestPageEditChangeOp = "insert"
+	AbilityRequestPageEditChangeOpReplace AbilityRequestPageEditChangeOp = "replace"
+	AbilityRequestPageEditChangeOpRemove  AbilityRequestPageEditChangeOp = "remove"
+	AbilityRequestPageEditChangeOpMove    AbilityRequestPageEditChangeOp = "move"
+)
+
+// AllValues returns all AbilityRequestPageEditChangeOp values.
+func (AbilityRequestPageEditChangeOp) AllValues() []AbilityRequestPageEditChangeOp {
+	return []AbilityRequestPageEditChangeOp{
+		AbilityRequestPageEditChangeOpSetText,
+		AbilityRequestPageEditChangeOpInsert,
+		AbilityRequestPageEditChangeOpReplace,
+		AbilityRequestPageEditChangeOpRemove,
+		AbilityRequestPageEditChangeOpMove,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestPageEditChangeOp) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestPageEditChangeOpSetText:
+		return []byte(s), nil
+	case AbilityRequestPageEditChangeOpInsert:
+		return []byte(s), nil
+	case AbilityRequestPageEditChangeOpReplace:
+		return []byte(s), nil
+	case AbilityRequestPageEditChangeOpRemove:
+		return []byte(s), nil
+	case AbilityRequestPageEditChangeOpMove:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestPageEditChangeOp) UnmarshalText(data []byte) error {
+	switch AbilityRequestPageEditChangeOp(data) {
+	case AbilityRequestPageEditChangeOpSetText:
+		*s = AbilityRequestPageEditChangeOpSetText
+		return nil
+	case AbilityRequestPageEditChangeOpInsert:
+		*s = AbilityRequestPageEditChangeOpInsert
+		return nil
+	case AbilityRequestPageEditChangeOpReplace:
+		*s = AbilityRequestPageEditChangeOpReplace
+		return nil
+	case AbilityRequestPageEditChangeOpRemove:
+		*s = AbilityRequestPageEditChangeOpRemove
+		return nil
+	case AbilityRequestPageEditChangeOpMove:
+		*s = AbilityRequestPageEditChangeOpMove
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityRequestPageEditKind string
+
+const (
+	AbilityRequestPageEditKindBuilderEdit AbilityRequestPageEditKind = "builder_edit"
+)
+
+// AllValues returns all AbilityRequestPageEditKind values.
+func (AbilityRequestPageEditKind) AllValues() []AbilityRequestPageEditKind {
+	return []AbilityRequestPageEditKind{
+		AbilityRequestPageEditKindBuilderEdit,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestPageEditKind) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestPageEditKindBuilderEdit:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestPageEditKind) UnmarshalText(data []byte) error {
+	switch AbilityRequestPageEditKind(data) {
+	case AbilityRequestPageEditKindBuilderEdit:
+		*s = AbilityRequestPageEditKindBuilderEdit
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityRequestPageEditPost struct {
+	// The post the edit changes, a draft WPMgr created.
+	ID          int64                                 `json:"id"`
+	FromTheSite AbilityRequestPageEditPostFromTheSite `json:"from_the_site"`
+}
+
+// GetID returns the value of ID.
+func (s *AbilityRequestPageEditPost) GetID() int64 {
+	return s.ID
+}
+
+// GetFromTheSite returns the value of FromTheSite.
+func (s *AbilityRequestPageEditPost) GetFromTheSite() AbilityRequestPageEditPostFromTheSite {
+	return s.FromTheSite
+}
+
+// SetID sets the value of ID.
+func (s *AbilityRequestPageEditPost) SetID(val int64) {
+	s.ID = val
+}
+
+// SetFromTheSite sets the value of FromTheSite.
+func (s *AbilityRequestPageEditPost) SetFromTheSite(val AbilityRequestPageEditPostFromTheSite) {
+	s.FromTheSite = val
+}
+
+type AbilityRequestPageEditPostFromTheSite struct {
+	Title string `json:"title"`
+}
+
+// GetTitle returns the value of Title.
+func (s *AbilityRequestPageEditPostFromTheSite) GetTitle() string {
+	return s.Title
+}
+
+// SetTitle sets the value of Title.
+func (s *AbilityRequestPageEditPostFromTheSite) SetTitle(val string) {
+	s.Title = val
 }
 
 // One image a wpmgr/page-create request places. `filename` came from the site: render it as plain
@@ -4500,6 +5296,140 @@ func (s *AbilityRequestPageMediaMime) UnmarshalText(data []byte) error {
 	}
 }
 
+// A page's outline as WPMgr reads it: `node_count` nodes in all, the first `nodes` in page order,
+// `truncated` when some were left out.
+// Ref: #/components/schemas/AbilityRequestPageOutline
+type AbilityRequestPageOutline struct {
+	NodeCount int64                           `json:"node_count"`
+	Truncated bool                            `json:"truncated"`
+	Nodes     []AbilityRequestPageOutlineNode `json:"nodes"`
+}
+
+// GetNodeCount returns the value of NodeCount.
+func (s *AbilityRequestPageOutline) GetNodeCount() int64 {
+	return s.NodeCount
+}
+
+// GetTruncated returns the value of Truncated.
+func (s *AbilityRequestPageOutline) GetTruncated() bool {
+	return s.Truncated
+}
+
+// GetNodes returns the value of Nodes.
+func (s *AbilityRequestPageOutline) GetNodes() []AbilityRequestPageOutlineNode {
+	return s.Nodes
+}
+
+// SetNodeCount sets the value of NodeCount.
+func (s *AbilityRequestPageOutline) SetNodeCount(val int64) {
+	s.NodeCount = val
+}
+
+// SetTruncated sets the value of Truncated.
+func (s *AbilityRequestPageOutline) SetTruncated(val bool) {
+	s.Truncated = val
+}
+
+// SetNodes sets the value of Nodes.
+func (s *AbilityRequestPageOutline) SetNodes(val []AbilityRequestPageOutlineNode) {
+	s.Nodes = val
+}
+
+// One node. `parent` is `root` or an earlier node's ref. A node of kind `locked` is one WPMgr does not
+// edit, with WPMgr's `label` for it; every other node lists the fields an edit may change and its text
+// from the site.
+// Ref: #/components/schemas/AbilityRequestPageOutlineNode
+type AbilityRequestPageOutlineNode struct {
+	Ref         string                                      `json:"ref"`
+	Parent      string                                      `json:"parent"`
+	Kind        string                                      `json:"kind"`
+	Level       OptInt64                                    `json:"level"`
+	Editable    []string                                    `json:"editable"`
+	FromTheSite OptAbilityRequestPageOutlineNodeFromTheSite `json:"from_the_site"`
+	Label       OptString                                   `json:"label"`
+}
+
+// GetRef returns the value of Ref.
+func (s *AbilityRequestPageOutlineNode) GetRef() string {
+	return s.Ref
+}
+
+// GetParent returns the value of Parent.
+func (s *AbilityRequestPageOutlineNode) GetParent() string {
+	return s.Parent
+}
+
+// GetKind returns the value of Kind.
+func (s *AbilityRequestPageOutlineNode) GetKind() string {
+	return s.Kind
+}
+
+// GetLevel returns the value of Level.
+func (s *AbilityRequestPageOutlineNode) GetLevel() OptInt64 {
+	return s.Level
+}
+
+// GetEditable returns the value of Editable.
+func (s *AbilityRequestPageOutlineNode) GetEditable() []string {
+	return s.Editable
+}
+
+// GetFromTheSite returns the value of FromTheSite.
+func (s *AbilityRequestPageOutlineNode) GetFromTheSite() OptAbilityRequestPageOutlineNodeFromTheSite {
+	return s.FromTheSite
+}
+
+// GetLabel returns the value of Label.
+func (s *AbilityRequestPageOutlineNode) GetLabel() OptString {
+	return s.Label
+}
+
+// SetRef sets the value of Ref.
+func (s *AbilityRequestPageOutlineNode) SetRef(val string) {
+	s.Ref = val
+}
+
+// SetParent sets the value of Parent.
+func (s *AbilityRequestPageOutlineNode) SetParent(val string) {
+	s.Parent = val
+}
+
+// SetKind sets the value of Kind.
+func (s *AbilityRequestPageOutlineNode) SetKind(val string) {
+	s.Kind = val
+}
+
+// SetLevel sets the value of Level.
+func (s *AbilityRequestPageOutlineNode) SetLevel(val OptInt64) {
+	s.Level = val
+}
+
+// SetEditable sets the value of Editable.
+func (s *AbilityRequestPageOutlineNode) SetEditable(val []string) {
+	s.Editable = val
+}
+
+// SetFromTheSite sets the value of FromTheSite.
+func (s *AbilityRequestPageOutlineNode) SetFromTheSite(val OptAbilityRequestPageOutlineNodeFromTheSite) {
+	s.FromTheSite = val
+}
+
+// SetLabel sets the value of Label.
+func (s *AbilityRequestPageOutlineNode) SetLabel(val OptString) {
+	s.Label = val
+}
+
+type AbilityRequestPageOutlineNodeFromTheSite map[string]string
+
+func (s *AbilityRequestPageOutlineNodeFromTheSite) init() AbilityRequestPageOutlineNodeFromTheSite {
+	m := *s
+	if m == nil {
+		m = map[string]string{}
+		*s = m
+	}
+	return m
+}
+
 type AbilityRequestState string
 
 const (
@@ -4591,6 +5521,51 @@ func (s *AbilityRequestState) UnmarshalText(data []byte) error {
 		return nil
 	case AbilityRequestStateNotSent:
 		*s = AbilityRequestStateNotSent
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Why a failed undo (`undo_state` failed) failed: the copy the site kept of the page for this change
+// was changed on the site, so WPMgr did not use it and nothing changed (snapshot_tampered), or the
+// site's put-back did not read back as that copy (restore_mismatch). Null for every other request. A
+// closed value, never the site's own words.
+type AbilityRequestUndoCode string
+
+const (
+	AbilityRequestUndoCodeSnapshotTampered AbilityRequestUndoCode = "snapshot_tampered"
+	AbilityRequestUndoCodeRestoreMismatch  AbilityRequestUndoCode = "restore_mismatch"
+)
+
+// AllValues returns all AbilityRequestUndoCode values.
+func (AbilityRequestUndoCode) AllValues() []AbilityRequestUndoCode {
+	return []AbilityRequestUndoCode{
+		AbilityRequestUndoCodeSnapshotTampered,
+		AbilityRequestUndoCodeRestoreMismatch,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestUndoCode) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestUndoCodeSnapshotTampered:
+		return []byte(s), nil
+	case AbilityRequestUndoCodeRestoreMismatch:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestUndoCode) UnmarshalText(data []byte) error {
+	switch AbilityRequestUndoCode(data) {
+	case AbilityRequestUndoCodeSnapshotTampered:
+		*s = AbilityRequestUndoCodeSnapshotTampered
+		return nil
+	case AbilityRequestUndoCodeRestoreMismatch:
+		*s = AbilityRequestUndoCodeRestoreMismatch
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -37561,6 +38536,282 @@ func (o OptAbilityCatalogueInputStatus) Or(d AbilityCatalogueInputStatus) Abilit
 	return d
 }
 
+// NewOptAbilityRequestPageEditAnchor returns new OptAbilityRequestPageEditAnchor with value set to v.
+func NewOptAbilityRequestPageEditAnchor(v AbilityRequestPageEditAnchor) OptAbilityRequestPageEditAnchor {
+	return OptAbilityRequestPageEditAnchor{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityRequestPageEditAnchor is optional AbilityRequestPageEditAnchor.
+type OptAbilityRequestPageEditAnchor struct {
+	Value AbilityRequestPageEditAnchor
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityRequestPageEditAnchor was set.
+func (o OptAbilityRequestPageEditAnchor) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityRequestPageEditAnchor) Reset() {
+	var v AbilityRequestPageEditAnchor
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityRequestPageEditAnchor) SetTo(v AbilityRequestPageEditAnchor) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityRequestPageEditAnchor) Get() (v AbilityRequestPageEditAnchor, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityRequestPageEditAnchor) Or(d AbilityRequestPageEditAnchor) AbilityRequestPageEditAnchor {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityRequestPageEditAnchorPosition returns new OptAbilityRequestPageEditAnchorPosition with value set to v.
+func NewOptAbilityRequestPageEditAnchorPosition(v AbilityRequestPageEditAnchorPosition) OptAbilityRequestPageEditAnchorPosition {
+	return OptAbilityRequestPageEditAnchorPosition{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityRequestPageEditAnchorPosition is optional AbilityRequestPageEditAnchorPosition.
+type OptAbilityRequestPageEditAnchorPosition struct {
+	Value AbilityRequestPageEditAnchorPosition
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityRequestPageEditAnchorPosition was set.
+func (o OptAbilityRequestPageEditAnchorPosition) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityRequestPageEditAnchorPosition) Reset() {
+	var v AbilityRequestPageEditAnchorPosition
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityRequestPageEditAnchorPosition) SetTo(v AbilityRequestPageEditAnchorPosition) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityRequestPageEditAnchorPosition) Get() (v AbilityRequestPageEditAnchorPosition, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityRequestPageEditAnchorPosition) Or(d AbilityRequestPageEditAnchorPosition) AbilityRequestPageEditAnchorPosition {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityRequestPageEditChangeField returns new OptAbilityRequestPageEditChangeField with value set to v.
+func NewOptAbilityRequestPageEditChangeField(v AbilityRequestPageEditChangeField) OptAbilityRequestPageEditChangeField {
+	return OptAbilityRequestPageEditChangeField{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityRequestPageEditChangeField is optional AbilityRequestPageEditChangeField.
+type OptAbilityRequestPageEditChangeField struct {
+	Value AbilityRequestPageEditChangeField
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityRequestPageEditChangeField was set.
+func (o OptAbilityRequestPageEditChangeField) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityRequestPageEditChangeField) Reset() {
+	var v AbilityRequestPageEditChangeField
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityRequestPageEditChangeField) SetTo(v AbilityRequestPageEditChangeField) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityRequestPageEditChangeField) Get() (v AbilityRequestPageEditChangeField, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityRequestPageEditChangeField) Or(d AbilityRequestPageEditChangeField) AbilityRequestPageEditChangeField {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityRequestPageEditChangeFromTheSite returns new OptAbilityRequestPageEditChangeFromTheSite with value set to v.
+func NewOptAbilityRequestPageEditChangeFromTheSite(v AbilityRequestPageEditChangeFromTheSite) OptAbilityRequestPageEditChangeFromTheSite {
+	return OptAbilityRequestPageEditChangeFromTheSite{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityRequestPageEditChangeFromTheSite is optional AbilityRequestPageEditChangeFromTheSite.
+type OptAbilityRequestPageEditChangeFromTheSite struct {
+	Value AbilityRequestPageEditChangeFromTheSite
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityRequestPageEditChangeFromTheSite was set.
+func (o OptAbilityRequestPageEditChangeFromTheSite) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityRequestPageEditChangeFromTheSite) Reset() {
+	var v AbilityRequestPageEditChangeFromTheSite
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityRequestPageEditChangeFromTheSite) SetTo(v AbilityRequestPageEditChangeFromTheSite) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityRequestPageEditChangeFromTheSite) Get() (v AbilityRequestPageEditChangeFromTheSite, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityRequestPageEditChangeFromTheSite) Or(d AbilityRequestPageEditChangeFromTheSite) AbilityRequestPageEditChangeFromTheSite {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityRequestPageOutline returns new OptAbilityRequestPageOutline with value set to v.
+func NewOptAbilityRequestPageOutline(v AbilityRequestPageOutline) OptAbilityRequestPageOutline {
+	return OptAbilityRequestPageOutline{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityRequestPageOutline is optional AbilityRequestPageOutline.
+type OptAbilityRequestPageOutline struct {
+	Value AbilityRequestPageOutline
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityRequestPageOutline was set.
+func (o OptAbilityRequestPageOutline) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityRequestPageOutline) Reset() {
+	var v AbilityRequestPageOutline
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityRequestPageOutline) SetTo(v AbilityRequestPageOutline) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityRequestPageOutline) Get() (v AbilityRequestPageOutline, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityRequestPageOutline) Or(d AbilityRequestPageOutline) AbilityRequestPageOutline {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityRequestPageOutlineNodeFromTheSite returns new OptAbilityRequestPageOutlineNodeFromTheSite with value set to v.
+func NewOptAbilityRequestPageOutlineNodeFromTheSite(v AbilityRequestPageOutlineNodeFromTheSite) OptAbilityRequestPageOutlineNodeFromTheSite {
+	return OptAbilityRequestPageOutlineNodeFromTheSite{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityRequestPageOutlineNodeFromTheSite is optional AbilityRequestPageOutlineNodeFromTheSite.
+type OptAbilityRequestPageOutlineNodeFromTheSite struct {
+	Value AbilityRequestPageOutlineNodeFromTheSite
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityRequestPageOutlineNodeFromTheSite was set.
+func (o OptAbilityRequestPageOutlineNodeFromTheSite) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityRequestPageOutlineNodeFromTheSite) Reset() {
+	var v AbilityRequestPageOutlineNodeFromTheSite
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityRequestPageOutlineNodeFromTheSite) SetTo(v AbilityRequestPageOutlineNodeFromTheSite) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityRequestPageOutlineNodeFromTheSite) Get() (v AbilityRequestPageOutlineNodeFromTheSite, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityRequestPageOutlineNodeFromTheSite) Or(d AbilityRequestPageOutlineNodeFromTheSite) AbilityRequestPageOutlineNodeFromTheSite {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptAdminAccountTimelineEntryMetadata returns new OptAdminAccountTimelineEntryMetadata with value set to v.
 func NewOptAdminAccountTimelineEntryMetadata(v AdminAccountTimelineEntryMetadata) OptAdminAccountTimelineEntryMetadata {
 	return OptAdminAccountTimelineEntryMetadata{
@@ -41719,6 +42970,142 @@ func (o OptNilAbilityRequestCardFacts) Or(d AbilityRequestCardFacts) AbilityRequ
 	return d
 }
 
+// NewOptNilAbilityRequestOutcomeDetail returns new OptNilAbilityRequestOutcomeDetail with value set to v.
+func NewOptNilAbilityRequestOutcomeDetail(v AbilityRequestOutcomeDetail) OptNilAbilityRequestOutcomeDetail {
+	return OptNilAbilityRequestOutcomeDetail{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAbilityRequestOutcomeDetail is optional nullable AbilityRequestOutcomeDetail.
+type OptNilAbilityRequestOutcomeDetail struct {
+	Value AbilityRequestOutcomeDetail
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAbilityRequestOutcomeDetail was set.
+func (o OptNilAbilityRequestOutcomeDetail) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAbilityRequestOutcomeDetail) Reset() {
+	var v AbilityRequestOutcomeDetail
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAbilityRequestOutcomeDetail) SetTo(v AbilityRequestOutcomeDetail) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAbilityRequestOutcomeDetail) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAbilityRequestOutcomeDetail) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AbilityRequestOutcomeDetail
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAbilityRequestOutcomeDetail) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAbilityRequestOutcomeDetail) Get() (v AbilityRequestOutcomeDetail, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAbilityRequestOutcomeDetail) Or(d AbilityRequestOutcomeDetail) AbilityRequestOutcomeDetail {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAbilityRequestOutsideChange returns new OptNilAbilityRequestOutsideChange with value set to v.
+func NewOptNilAbilityRequestOutsideChange(v AbilityRequestOutsideChange) OptNilAbilityRequestOutsideChange {
+	return OptNilAbilityRequestOutsideChange{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAbilityRequestOutsideChange is optional nullable AbilityRequestOutsideChange.
+type OptNilAbilityRequestOutsideChange struct {
+	Value AbilityRequestOutsideChange
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAbilityRequestOutsideChange was set.
+func (o OptNilAbilityRequestOutsideChange) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAbilityRequestOutsideChange) Reset() {
+	var v AbilityRequestOutsideChange
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAbilityRequestOutsideChange) SetTo(v AbilityRequestOutsideChange) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAbilityRequestOutsideChange) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAbilityRequestOutsideChange) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AbilityRequestOutsideChange
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAbilityRequestOutsideChange) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAbilityRequestOutsideChange) Get() (v AbilityRequestOutsideChange, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAbilityRequestOutsideChange) Or(d AbilityRequestOutsideChange) AbilityRequestOutsideChange {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptNilAbilityRequestPageBuilder returns new OptNilAbilityRequestPageBuilder with value set to v.
 func NewOptNilAbilityRequestPageBuilder(v AbilityRequestPageBuilder) OptNilAbilityRequestPageBuilder {
 	return OptNilAbilityRequestPageBuilder{
@@ -41787,6 +43174,74 @@ func (o OptNilAbilityRequestPageBuilder) Or(d AbilityRequestPageBuilder) Ability
 	return d
 }
 
+// NewOptNilAbilityRequestPageEdit returns new OptNilAbilityRequestPageEdit with value set to v.
+func NewOptNilAbilityRequestPageEdit(v AbilityRequestPageEdit) OptNilAbilityRequestPageEdit {
+	return OptNilAbilityRequestPageEdit{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAbilityRequestPageEdit is optional nullable AbilityRequestPageEdit.
+type OptNilAbilityRequestPageEdit struct {
+	Value AbilityRequestPageEdit
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAbilityRequestPageEdit was set.
+func (o OptNilAbilityRequestPageEdit) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAbilityRequestPageEdit) Reset() {
+	var v AbilityRequestPageEdit
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAbilityRequestPageEdit) SetTo(v AbilityRequestPageEdit) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAbilityRequestPageEdit) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAbilityRequestPageEdit) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AbilityRequestPageEdit
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAbilityRequestPageEdit) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAbilityRequestPageEdit) Get() (v AbilityRequestPageEdit, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAbilityRequestPageEdit) Or(d AbilityRequestPageEdit) AbilityRequestPageEdit {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptNilAbilityRequestPageMediaArray returns new OptNilAbilityRequestPageMediaArray with value set to v.
 func NewOptNilAbilityRequestPageMediaArray(v []AbilityRequestPageMedia) OptNilAbilityRequestPageMediaArray {
 	return OptNilAbilityRequestPageMediaArray{
@@ -41849,6 +43304,74 @@ func (o OptNilAbilityRequestPageMediaArray) Get() (v []AbilityRequestPageMedia, 
 
 // Or returns value if set, or given parameter if does not.
 func (o OptNilAbilityRequestPageMediaArray) Or(d []AbilityRequestPageMedia) []AbilityRequestPageMedia {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAbilityRequestUndoCode returns new OptNilAbilityRequestUndoCode with value set to v.
+func NewOptNilAbilityRequestUndoCode(v AbilityRequestUndoCode) OptNilAbilityRequestUndoCode {
+	return OptNilAbilityRequestUndoCode{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAbilityRequestUndoCode is optional nullable AbilityRequestUndoCode.
+type OptNilAbilityRequestUndoCode struct {
+	Value AbilityRequestUndoCode
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAbilityRequestUndoCode was set.
+func (o OptNilAbilityRequestUndoCode) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAbilityRequestUndoCode) Reset() {
+	var v AbilityRequestUndoCode
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAbilityRequestUndoCode) SetTo(v AbilityRequestUndoCode) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAbilityRequestUndoCode) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAbilityRequestUndoCode) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AbilityRequestUndoCode
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAbilityRequestUndoCode) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAbilityRequestUndoCode) Get() (v AbilityRequestUndoCode, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAbilityRequestUndoCode) Or(d AbilityRequestUndoCode) AbilityRequestUndoCode {
 	if v, ok := o.Get(); ok {
 		return v
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 )
 
 // GH #824: an answer that settles nothing releases the undo for a retry;
@@ -114,7 +115,7 @@ func TestUndoKindFor(t *testing.T) {
 		if got := undoKindFor(row, "0.61.157", now); got != c.want {
 			t.Errorf("%s: got %d, want %d", c.name, got, c.want)
 		}
-		if UndoOffered(row, "0.61.157", now) != (c.want != undoKindNone) {
+		if UndoOffered(row, "0.61.157", false, now) != (c.want != undoKindNone) {
 			t.Errorf("%s: undo_offered disagrees with the undo the service would run", c.name)
 		}
 	}
@@ -150,7 +151,7 @@ func TestUndoVerdictFor(t *testing.T) {
 		{"no ledger row", agentcmd.AbilityRunResponse{Found: false}, nil, undoVerdictNotReverted},
 	}
 	for _, c := range cases {
-		if got := undoVerdictFor(c.resp, c.err); got != c.want {
+		if got := undoVerdictFor(mcp.AbilityPageCreate, c.resp, c.err); got != c.want {
 			t.Errorf("%s: got %d, want %d", c.name, got, c.want)
 		}
 	}

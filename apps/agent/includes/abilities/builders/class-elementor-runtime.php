@@ -17,7 +17,8 @@ if (!defined('ABSPATH')) {
  * class_exists() is asked without autoloading, so on a site without Elementor
  * nothing is loaded and every method answers "cannot tell". Every call is
  * guarded, and anything Elementor throws becomes that answer (null, false or
- * 0); no method throws. Nothing here writes.
+ * 0); no method throws. The one write is deletePostCss(), which asks Elementor
+ * to delete one post's generated CSS.
  */
 final class ElementorRuntime implements ElementorApi
 {
@@ -29,6 +30,9 @@ final class ElementorRuntime implements ElementorApi
 
     /** The constant Elementor defines its version in. */
     public const VERSION_CONSTANT = 'ELEMENTOR_VERSION';
+
+    /** Elementor's post CSS file class, which its files manager builds. */
+    public const POST_CSS_CLASS = 'Elementor\\Core\\Files\\CSS\\Post';
 
     /** A plain version token: a digit first, at most 32 bytes. */
     private const RE_VERSION = '/^[0-9][0-9A-Za-z._+-]{0,31}$/D';
@@ -210,6 +214,36 @@ final class ElementorRuntime implements ElementorApi
         } catch (\Throwable $e) {
             return null;
         }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * The object is the one Elementor's own post CSS create() returns: its
+     * files manager builds it from the class name and the post id. Its
+     * delete() removes the file under Elementor's uploads folder and the
+     * post's CSS meta.
+     */
+    public function deletePostCss(int $postId): bool
+    {
+        if ($postId <= 0) {
+            return false;
+        }
+        try {
+            $file = $this->call('files_manager', 'get', [self::POST_CSS_CLASS, [$postId]]);
+            if (!is_object($file)) {
+                return false;
+            }
+            $delete = [$file, 'delete'];
+            if (!is_callable($delete)) {
+                return false;
+            }
+            $delete();
+        } catch (\Throwable $e) {
+            return false;
+        }
+
+        return true;
     }
 
     /**

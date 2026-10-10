@@ -111,7 +111,7 @@ final class UpdateInFlight
     private const PURPOSE = 'update-inflight';
 
     /**
-     * A marker older than this is treated as orphaned (the request that
+     * A marker this old or older is treated as orphaned (the request that
      * wrote it was torn down without reaching its own cleanup) rather than
      * possibly belonging to a still-running apply. UpdateCommand::execute()
      * bounds an apply to a 900s (15 min) `set_time_limit()` specifically so
@@ -250,14 +250,20 @@ final class UpdateInFlight
      * start of a fresh `update` command (the "next agent request" path) and
      * a recurring cron sweep (the "cron sweep" path, gcSweep() below) — both
      * share this exact method so a test can exercise it directly with
-     * injected SnapshotManager/UpdateRunner doubles.
+     * injected SnapshotManager/UpdateRunner doubles and a fixed clock.
      *
      * @param SnapshotManager $snapshots Snapshot store used to perform the restore.
      * @param UpdateRunner|null $runner  Used for the F2 live-directory health
      *                                   check; defaults to a real instance.
+     * @param int|null $now              Unix time each marker's age is measured
+     *                                   against; defaults to time(). Production
+     *                                   callers omit it. A test passes a fixed
+     *                                   value so the STALE_AFTER_SECONDS
+     *                                   boundary is exercised to the exact
+     *                                   second.
      * @return void
      */
-    public static function healStaleIfPresent(SnapshotManager $snapshots, ?UpdateRunner $runner = null): void
+    public static function healStaleIfPresent(SnapshotManager $snapshots, ?UpdateRunner $runner = null, ?int $now = null): void
     {
         $dir = StoragePaths::dataBase(self::PURPOSE);
         if ($dir === '' || !is_dir($dir)) {
@@ -265,7 +271,7 @@ final class UpdateInFlight
         }
 
         $runner = $runner ?? new UpdateRunner();
-        $now    = time();
+        $now    = $now ?? time();
 
         foreach (self::markerFiles($dir) as $file) {
             $marker = self::readMarker($file);

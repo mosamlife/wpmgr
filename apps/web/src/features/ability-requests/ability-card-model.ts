@@ -78,6 +78,9 @@ export function elementorCardRows(b: PageBuilderFacts): readonly CardRow[] {
 }
 
 export const NOTHING_PUBLISHED = "Nothing is published. Undo moves the draft to the trash.";
+/** A draft's undo refused because someone edited it in WordPress after WPMgr's own changes. */
+export const CHAIN_TOUCHED_COPY =
+  "WPMgr won't move this draft to the trash: someone edited it in WordPress after WPMgr's changes.";
 export const GAVE_UP_COPY =
   "WPMgr could not confirm whether the draft was created. Check the site's drafts.";
 export const UNDO_RETRY_COPY = "The site didn't answer. Try Undo again.";
@@ -214,7 +217,7 @@ function hasCreatedPost(r: AbilityRequest): boolean {
  * "failed") and leaves `trashed` as it was, on done, failed and
  * outcome_unknown rows alike. Null when no undo result applies.
  */
-function undoStatus(r: AbilityRequest, trashedCounts: boolean): AbilityStatus | null {
+function undoStatus(r: AbilityRequest, trashedCounts: boolean, laterEdits: number): AbilityStatus | null {
   if (r.undo_state === "undone" || (trashedCounts && r.trashed === true)) {
     return { kind: "undone", text: "Moved to the trash." };
   }
@@ -231,7 +234,10 @@ function undoStatus(r: AbilityRequest, trashedCounts: boolean): AbilityStatus | 
   if (r.undo_state === "refused_conflict") {
     return {
       kind: "undo_refused",
-      text: "The draft was edited since, so WPMgr left it alone. Remove it in WordPress if you do not want it.",
+      text:
+        laterEdits > 0
+          ? CHAIN_TOUCHED_COPY
+          : "The draft was edited since, so WPMgr left it alone. Remove it in WordPress if you do not want it.",
       draftMayExist: true,
     };
   }
@@ -269,12 +275,12 @@ export function automaticStatus(r: AbilityRequest, status: AbilityStatus): Abili
   return open ? { ...status, text: OUTCOME_UNKNOWN_LINE } : status;
 }
 
-export function abilityStatus(r: AbilityRequest): AbilityStatus {
-  return automaticStatus(r, baseAbilityStatus(r));
+export function abilityStatus(r: AbilityRequest, laterEdits = 0): AbilityStatus {
+  return automaticStatus(r, baseAbilityStatus(r, laterEdits));
 }
 
 /** The status as a person's own approval reads it; `abilityStatus` adjusts it for an automatic one. */
-function baseAbilityStatus(r: AbilityRequest): AbilityStatus {
+function baseAbilityStatus(r: AbilityRequest, laterEdits: number): AbilityStatus {
   const noun = isPostRequest(r) ? "post" : "page";
   switch (r.state) {
     case "pending":
@@ -284,7 +290,7 @@ function baseAbilityStatus(r: AbilityRequest): AbilityStatus {
     case "dispatched":
       return { kind: "running", text: `WPMgr is creating the draft ${noun}.` };
     case "outcome_unknown": {
-      const undone = undoStatus(r, false);
+      const undone = undoStatus(r, false, laterEdits);
       if (undone) return undone;
       if (r.resolve_gave_up) {
         return {
@@ -306,14 +312,14 @@ function baseAbilityStatus(r: AbilityRequest): AbilityStatus {
     }
     case "done": {
       return (
-        undoStatus(r, true) ?? {
+        undoStatus(r, true, laterEdits) ?? {
           kind: "done",
           text: isElementorRequest(r) ? "Draft created in Elementor." : "Draft created.",
         }
       );
     }
     case "failed": {
-      const undone = undoStatus(r, false);
+      const undone = undoStatus(r, false, laterEdits);
       if (undone) return undone;
       if (hasCreatedPost(r)) {
         if (r.trashed === true) {

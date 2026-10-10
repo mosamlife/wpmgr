@@ -64,7 +64,7 @@ import type { TagMatchMode } from "@/features/sites/use-sites";
 //
 // Two modes that transform into each other via a FLIP layout animation:
 //
-//   IDLE   [List|Grid] [Search  ⌘K] [Client▾] [Status▾] [Tags▾]  [Density|CardSize] [Add site]
+//   IDLE   [List|Grid] [Search  ⌘K] [Client▾] [Status▾] [Monitoring▾] [Tags▾]  [Density|CardSize] [Add site]
 //   ACTION [N sites selected · Clear] [Update plugins (N)▾] [Run backup]
 //          [Restore...] [Open in wp-admin (N)] [More▾]
 //
@@ -131,6 +131,18 @@ export interface SitesToolbarProps {
   onStatusToggle?: (status: string) => void;
   /** Called to clear all status filters. */
   onStatusesClear?: () => void;
+  /**
+   * GH #568. Values for the Monitoring dropdown (Active / Paused). A pause is
+   * not a connection state, so it is an axis of its own beside Status. The
+   * dropdown renders only when `onMonitoringToggle` is supplied.
+   */
+  monitoringOptions?: readonly string[];
+  /** Currently selected Monitoring values (controlled multi-select). */
+  selectedMonitoring?: readonly string[];
+  /** Called when a Monitoring value is toggled. */
+  onMonitoringToggle?: (value: string) => void;
+  /** Called to clear the Monitoring filter. */
+  onMonitoringClear?: () => void;
   /** Available agent-freshness values for the Agent dropdown (agent-releases visibility). */
   agentStatusOptions?: readonly string[];
   /** Currently selected agent-freshness values (controlled multi-select). */
@@ -260,6 +272,10 @@ function IdleMode({
   selectedStatuses = [],
   onStatusToggle,
   onStatusesClear,
+  monitoringOptions = [],
+  selectedMonitoring = [],
+  onMonitoringToggle,
+  onMonitoringClear,
   agentStatusOptions = [],
   selectedAgentStatuses = [],
   onAgentStatusToggle,
@@ -329,6 +345,19 @@ function IdleMode({
           onClear={onStatusesClear ?? (() => {})}
           ariaLabel="Filter by status"
         />
+
+        {/* Monitoring: paused or active (GH #568). Beside Status rather than
+            inside it because a pause is not a connection state. */}
+        {onMonitoringToggle ? (
+          <MultiSelectDropdown
+            label="Monitoring"
+            options={monitoringOptions}
+            selected={selectedMonitoring}
+            onToggle={onMonitoringToggle}
+            onClear={onMonitoringClear ?? (() => {})}
+            ariaLabel="Filter by monitoring"
+          />
+        ) : null}
 
         {/* Agent: freshness classification (agent-releases visibility) */}
         <MultiSelectDropdown

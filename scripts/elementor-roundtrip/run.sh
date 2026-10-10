@@ -51,6 +51,9 @@
 #   RT_HARNESS_ARGS     space separated key=value tokens appended to the harness's
 #                       arguments; a later token overrides an earlier one
 #   RT_TIMEOUT          seconds one boot may take (default 600)
+#   RT_TEST_KILL_SETTLE seconds to wait between sending the kill at the timeout and
+#                       reading the boot's status (default 0), so a test can make the
+#                       killed boot certain to have been reaped before the status is read
 #   RT_ALLOW_FILE_URLS  1 lets a pin name a file:// url
 set -euo pipefail
 
@@ -251,6 +254,8 @@ done
 
 timeout_s="${RT_TIMEOUT-600}"
 case "$timeout_s" in '' | *[!0-9]* | 0) die "RT_TIMEOUT must be a whole number of seconds, 1 or more: '$timeout_s'" ;; esac
+kill_settle="${RT_TEST_KILL_SETTLE-0}"
+case "$kill_settle" in '' | *[!0-9]*) die "RT_TEST_KILL_SETTLE must be a whole number of seconds: '$kill_settle'" ;; esac
 
 # --- cache: absolute, and never somewhere a cleanup could hurt -------------------------
 cache="${RT_CACHE:-${XDG_CACHE_HOME:-${HOME:-}/.cache}/wpmgr-elementor-roundtrip}"
@@ -357,20 +362,26 @@ for v in "${selected[@]}"; do
       >"$log" 2>&1 &
     child=$!
     set -e
+    # The timeout is decided from the clock, recorded before the kill is sent, and the status
+    # comes from that record: a boot that is reaped the moment it is stopped has no process
+    # left to look at, and looking would turn a timeout into a missing verdict.
     waited=0
+    timed_out=0
     while kill -0 "$child" 2>/dev/null; do
       if [ "$waited" -ge "$timeout_s" ]; then
+        timed_out=1
         pkill -P "$child" 2>/dev/null || true
         kill "$child" 2>/dev/null || true
+        [ "$kill_settle" -eq 0 ] || sleep "$kill_settle"
         break
       fi
       sleep 1
       waited=$((waited + 1))
     done
     set +e
-    if kill -0 "$child" 2>/dev/null; then
-      rc=124
+    if [ "$timed_out" -eq 1 ]; then
       wait "$child" 2>/dev/null
+      rc=124
     else
       wait "$child"
       rc=$?

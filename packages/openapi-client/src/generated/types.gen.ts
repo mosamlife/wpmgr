@@ -4729,6 +4729,39 @@ export type AbilityRequest = {
   outcome?: string;
   outcome_code?: string;
   /**
+   * Which conflict refused a wpmgr/page-edit (`outcome_code`
+   * conflict): the page changed after the AI read it
+   * (changed_since_read), someone has it open in Elementor
+   * (editor_open), or someone has unsaved Elementor changes on it
+   * (autosave_pending). Null for every other request. A closed
+   * value, never the site's own words.
+   *
+   */
+  outcome_detail?:
+    | "changed_since_read"
+    | "editor_open"
+    | "autosave_pending"
+    | null;
+  /**
+   * What a wpmgr/page-edit refused with `outcome_code`
+   * side_effect_detected changed outside the page while Elementor
+   * saved it: the site's active Elementor kit (active_kit), another
+   * post or page or its data (other_posts), categories or tags
+   * (terms), a site setting (site_settings), or a user account, a
+   * role or the site's administrators (users). Null when the site
+   * named changes of more than one kind or of none of these, and
+   * for every other request. A closed value, never the site's own
+   * words.
+   *
+   */
+  outside_change?:
+    | "active_kit"
+    | "other_posts"
+    | "terms"
+    | "site_settings"
+    | "users"
+    | null;
+  /**
    * Why an approved request was closed without being sent; nothing
    * was changed on the site. Values include `setting_changed` (the
    * site's setting changed after the approval and before the change
@@ -4749,12 +4782,23 @@ export type AbilityRequest = {
    */
   restored?: boolean;
   undo_state?: string;
+  /**
+   * Why a failed undo (`undo_state` failed) failed: the copy the
+   * site kept of the page for this change was changed on the site,
+   * so WPMgr did not use it and nothing changed (snapshot_tampered),
+   * or the site's put-back did not read back as that copy
+   * (restore_mismatch). Null for every other request. A closed
+   * value, never the site's own words.
+   *
+   */
+  undo_code?: "snapshot_tampered" | "restore_mismatch" | null;
   undo_available_until?: string;
   /**
    * Whether `POST .../undo` would start an undo now: a done request
-   * inside its undo window, or the draft a failed or given-up page
-   * creation left on the site. Show the undo action exactly when
-   * this is true.
+   * inside its undo window (for a page edit, only the newest applied
+   * edit of its page not yet undone), or the draft a failed or
+   * given-up page creation left on the site. Show the undo action
+   * exactly when this is true.
    *
    */
   undo_offered: boolean;
@@ -4824,6 +4868,147 @@ export type AbilityRequest = {
    *
    */
   page_builder?: AbilityRequestPageBuilder;
+  /**
+   * The card of a wpmgr/page-edit request: the post, the page
+   * builder, each change and the page's outline after the edit, as
+   * WPMgr checked them against the site's precheck. Null for every
+   * other ability. A page-edit request without it cannot be shown in
+   * full and must not be approvable.
+   *
+   */
+  page_edit?: AbilityRequestPageEdit;
+};
+
+/**
+ * A wpmgr/page-edit card. Every value under a `from_the_site` member
+ * came from the site: render it as plain text in the "From the site"
+ * slot. A change's `after` is the text the AI asked for. The other
+ * strings are WPMgr's.
+ *
+ */
+export type AbilityRequestPageEdit = {
+  kind: "builder_edit";
+  post: {
+    /**
+     * The post the edit changes, a draft WPMgr created.
+     */
+    id: number;
+    from_the_site: {
+      title: string;
+    };
+  };
+  builder: {
+    /**
+     * The page builder, such as `elementor`.
+     */
+    id: string;
+    /**
+     * The builder's version on the site; render it as plain text.
+     */
+    version: string;
+    /**
+     * What the builder edits the page in, such as `classic`.
+     */
+    format: string;
+  };
+  /**
+   * One per operation, in the order they apply.
+   */
+  changes: Array<AbilityRequestPageEditChange>;
+  after_outline?: AbilityRequestPageOutline;
+  /**
+   * True when the page's outline after the edit was too large to
+   * keep on the card; `after_outline` is then absent.
+   *
+   */
+  after_outline_omitted?: boolean;
+  /**
+   * When WPMgr checked the edit on the site.
+   */
+  checked_at: string;
+};
+
+/**
+ * One change. `set_text` changes `field` of node `ref` to `after`;
+ * `insert` puts new nodes (`new_refs`) by `anchor`; `replace` puts
+ * `new_refs` where `ref` was; `remove` takes `ref` and everything in it
+ * off the page; `move` puts `ref` by `anchor`.
+ *
+ */
+export type AbilityRequestPageEditChange = {
+  op: "set_text" | "insert" | "replace" | "remove" | "move";
+  ref?: string;
+  /**
+   * What the node is, such as `heading` or `paragraph`.
+   */
+  kind?: string;
+  /**
+   * A heading's level.
+   */
+  level?: number;
+  field?: "text" | "url" | "alt" | "caption";
+  /**
+   * The text the AI asked for (set_text).
+   */
+  after?: string;
+  /**
+   * Every node the change makes, parent first.
+   */
+  new_refs?: Array<string>;
+  anchor?: AbilityRequestPageEditAnchor;
+  from_the_site?: {
+    /**
+     * The node's text before the change, field by field.
+     */
+    before: {
+      [key: string]: string;
+    };
+  };
+};
+
+/**
+ * Where an insert or a move puts its nodes: `after`, `before` or
+ * `into` the node `ref`, `first` or `last` among its children for
+ * `into`. `label` is WPMgr's words for a node it does not edit.
+ *
+ */
+export type AbilityRequestPageEditAnchor = {
+  ref: string;
+  how: "after" | "before" | "into";
+  position?: "first" | "last";
+  kind: string;
+  level?: number;
+  label?: string;
+};
+
+/**
+ * A page's outline as WPMgr reads it: `node_count` nodes in all, the
+ * first `nodes` in page order, `truncated` when some were left out.
+ *
+ */
+export type AbilityRequestPageOutline = {
+  node_count: number;
+  truncated: boolean;
+  nodes: Array<AbilityRequestPageOutlineNode>;
+};
+
+/**
+ * One node. `parent` is `root` or an earlier node's ref. A node of kind
+ * `locked` is one WPMgr does not edit, with WPMgr's `label` for it;
+ * every other node lists the fields an edit may change and its text
+ * from the site.
+ *
+ */
+export type AbilityRequestPageOutlineNode = {
+  ref: string;
+  parent: string;
+  kind: string;
+  level?: number;
+  editable?: Array<string>;
+  from_the_site?: {
+    [key: string]: string;
+  };
+  label?: string;
 };
 
 /**
@@ -19253,6 +19438,12 @@ export type UndoAbilityRequestErrors = {
   404: Error;
   /**
    * The change can no longer be undone from WPMgr
+   * (`ability_request_undo_unavailable`; for a page edit, also while
+   * a later edit of the same page is still in effect), or a page
+   * edit of the draft is still being made or undone
+   * (`ability_request_undo_busy`; the undo stays offered). Nothing
+   * was sent to the site.
+   *
    */
   409: Error;
   /**

@@ -105,7 +105,7 @@ func TestWorkerLayoutRequestOldAgentNotSent(t *testing.T) {
 func TestOutcomeFromStored_PageLayoutCodes(t *testing.T) {
 	for _, code := range []string{"image_not_available", "image_url_unusable", "layout_needs_block_editor", "layout_invalid", "link_invalid"} {
 		raw := json.RawMessage(`{"ok":false,"outcome":"refused","code":"` + code + `","detail":"attachment_id 42"}`)
-		oc, ok := outcomeFromStored(raw, time.Now())
+		oc, ok := outcomeFromStored("", raw, time.Now())
 		if !ok || oc.outcome != OutcomeRefused || oc.code == nil || *oc.code != code {
 			t.Errorf("%s: outcome %+v (ok %v)", code, oc, ok)
 		}
@@ -122,7 +122,7 @@ func TestRequestDTOPageMedia(t *testing.T) {
 		ID: uuid.New(), SiteID: uuid.New(), AbilityName: mcp.AbilityPageCreate, State: "pending",
 		InputJson: layoutInput, CardCopyVersion: mcp.AbilityCardCopyVersionLayout, CardFacts: []byte(storedPageCard),
 	}
-	b, err := json.Marshal(toDTO(row, true, "", setterNames{}))
+	b, err := json.Marshal(toDTO(row, true, "", false, setterNames{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestRequestDTOPageMedia(t *testing.T) {
 		"extra field":   []byte(strings.Replace(storedPageCard, `"id": 7,`, `"id": 7, "url": "https://x.example/a.png",`, 1)),
 	} {
 		row.CardFacts = card
-		b, _ := json.Marshal(toDTO(row, true, "", setterNames{}))
+		b, _ := json.Marshal(toDTO(row, true, "", false, setterNames{}))
 		if !strings.Contains(string(b), `"page_media":null`) || !strings.Contains(string(b), `"card_facts":null`) {
 			t.Errorf("%s: %s", name, b)
 		}
@@ -159,7 +159,7 @@ func TestRequestDTOPageMedia(t *testing.T) {
 	// A rest-write card is unchanged, and has no page_media.
 	rest := sqlc.AssistantAbilityRequest{ID: uuid.New(), SiteID: uuid.New(), AbilityName: mcp.AbilityRestWrite,
 		State: "pending", CardFacts: []byte(storedCard)}
-	b, _ = json.Marshal(toDTO(rest, true, "", setterNames{}))
+	b, _ = json.Marshal(toDTO(rest, true, "", false, setterNames{}))
 	if !strings.Contains(string(b), `"page_media":null`) || strings.Contains(string(b), `"card_facts":null`) {
 		t.Fatalf("rest-write row: %s", b)
 	}

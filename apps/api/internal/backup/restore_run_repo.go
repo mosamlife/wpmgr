@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -48,6 +49,35 @@ type RestoreRunStore interface {
 	// ListRestoreEvents returns restore_run_events for a run ordered by id ASC.
 	// If afterID > 0 only rows with id > afterID are returned (incremental).
 	ListRestoreEvents(ctx context.Context, tenantID, runID uuid.UUID, afterID int64, limit int) ([]RestoreRunEvent, error)
+	// ListStalledRestoreRuns lists, across tenants, the queued and running
+	// restore runs whose updated_at is older than stallAfter, oldest first and
+	// at most limit rows.
+	ListStalledRestoreRuns(ctx context.Context, stallAfter time.Duration, limit int) ([]StalledRestoreRun, error)
+	// FailStalledRestoreRun marks one run failed, with finished_at set and a
+	// failed event appended in the same transaction, only while it is still
+	// queued or running and its updated_at is still older than StallAfter.
+	// It reports whether the run changed.
+	FailStalledRestoreRun(ctx context.Context, in FailStalledRestoreRunInput) (bool, error)
+}
+
+// StalledRestoreRun is one queued or running restore run that has not
+// reported progress within the restore stall timeout.
+type StalledRestoreRun struct {
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	SiteID     uuid.UUID
+	SnapshotID uuid.UUID
+	Status     string
+	UpdatedAt  time.Time
+}
+
+// FailStalledRestoreRunInput identifies the stalled run to fail and the
+// threshold it must still be past when the fail runs.
+type FailStalledRestoreRunInput struct {
+	TenantID   uuid.UUID
+	RunID      uuid.UUID
+	StallAfter time.Duration
+	Message    string
 }
 
 // CreateRestoreRunInput carries the parameters for inserting a new restore run.
@@ -404,6 +434,91 @@ func (r *RestoreRunRepo) ListRestoreEvents(ctx context.Context, tenantID, runID 
 		events = []RestoreRunEvent{}
 	}
 	return events, err
+}
+
+// ---------------------------------------------------------------------------
+// Stalled restore runs (restore stall watchdog)
+// ---------------------------------------------------------------------------
+
+// ListStalledRestoreRuns lists queued and running restore runs, across
+// tenants, whose updated_at is older than stallAfter. It runs under the agent
+// transaction (restore_runs_agent policy) because the watchdog has no tenant.
+func (r *RestoreRunRepo) ListStalledRestoreRuns(ctx context.Context, stallAfter time.Duration, limit int) ([]StalledRestoreRun, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	ival := pgtype.Interval{Microseconds: stallAfter.Microseconds(), Valid: true}
+	var out []StalledRestoreRun
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT id, tenant_id, site_id, snapshot_id, status, updated_at
+			FROM restore_runs
+			WHERE status IN ('queued', 'running')
+			  AND updated_at < now() - $1::interval
+			ORDER BY updated_at ASC, id ASC
+			LIMIT $2`,
+			ival, limit,
+		)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var s StalledRestoreRun
+			if err := rows.Scan(&s.ID, &s.TenantID, &s.SiteID, &s.SnapshotID, &s.Status, &s.UpdatedAt); err != nil {
+				return err
+			}
+			out = append(out, s)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// FailStalledRestoreRun fails one stalled run in its own tenant transaction.
+// The UPDATE repeats the list's conditions, so a run that reported progress,
+// finished, or was failed by another path after the list keeps its state and
+// the call reports false. The failed event is written only when the run
+// changed.
+func (r *RestoreRunRepo) FailStalledRestoreRun(ctx context.Context, in FailStalledRestoreRunInput) (bool, error) {
+	ival := pgtype.Interval{Microseconds: in.StallAfter.Microseconds(), Valid: true}
+	failed := false
+	err := r.pool.InTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
+		var id uuid.UUID
+		err := tx.QueryRow(ctx, `
+			UPDATE restore_runs
+			SET status = 'failed', error = $3, finished_at = now(), updated_at = now()
+			WHERE id = $1
+			  AND tenant_id = $2
+			  AND status IN ('queued', 'running')
+			  AND updated_at < now() - $4::interval
+			RETURNING id`,
+			in.RunID, in.TenantID, in.Message, ival,
+		).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO restore_run_events
+				(tenant_id, restore_run_id, phase, status, message, occurred_at)
+			VALUES ($1, $2, 'failed', 'failed', $3, now())`,
+			in.TenantID, in.RunID, in.Message,
+		); err != nil {
+			return err
+		}
+		failed = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return failed, nil
 }
 
 // ---------------------------------------------------------------------------

@@ -45,6 +45,7 @@ import { Route as PortalSitesSiteIdRouteImport } from './routes/portal/sites.$si
 import { Route as AuthedWelcomeCheckoutRouteImport } from './routes/_authed/welcome.checkout'
 import { Route as AuthedUpdatesRunIdRouteImport } from './routes/_authed/updates/$runId'
 import { Route as AuthedSitesSiteIdRouteImport } from './routes/_authed/sites/$siteId'
+import { Route as AuthedSettingsVulnFeedRouteImport } from './routes/_authed/settings/vuln-feed'
 import { Route as AuthedSettingsTagsRouteImport } from './routes/_authed/settings/tags'
 import { Route as AuthedSettingsSmtpRouteImport } from './routes/_authed/settings/smtp'
 import { Route as AuthedSettingsSecurityRouteImport } from './routes/_authed/settings/security'
@@ -268,6 +269,11 @@ const AuthedSitesSiteIdRoute = AuthedSitesSiteIdRouteImport.update({
   id: '/sites/$siteId',
   path: '/sites/$siteId',
   getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedSettingsVulnFeedRoute = AuthedSettingsVulnFeedRouteImport.update({
+  id: '/vuln-feed',
+  path: '/vuln-feed',
+  getParentRoute: () => AuthedSettingsRouteRoute,
 } as any)
 const AuthedSettingsTagsRoute = AuthedSettingsTagsRouteImport.update({
   id: '/tags',
@@ -552,6 +558,7 @@ export interface FileRoutesByFullPath {
   '/settings/security': typeof AuthedSettingsSecurityRoute
   '/settings/smtp': typeof AuthedSettingsSmtpRoute
   '/settings/tags': typeof AuthedSettingsTagsRoute
+  '/settings/vuln-feed': typeof AuthedSettingsVulnFeedRoute
   '/sites/$siteId': typeof AuthedSitesSiteIdRouteWithChildren
   '/updates/$runId': typeof AuthedUpdatesRunIdRoute
   '/welcome/checkout': typeof AuthedWelcomeCheckoutRoute
@@ -629,6 +636,7 @@ export interface FileRoutesByTo {
   '/settings/security': typeof AuthedSettingsSecurityRoute
   '/settings/smtp': typeof AuthedSettingsSmtpRoute
   '/settings/tags': typeof AuthedSettingsTagsRoute
+  '/settings/vuln-feed': typeof AuthedSettingsVulnFeedRoute
   '/updates/$runId': typeof AuthedUpdatesRunIdRoute
   '/welcome/checkout': typeof AuthedWelcomeCheckoutRoute
   '/portal/sites/$siteId': typeof PortalSitesSiteIdRoute
@@ -710,6 +718,7 @@ export interface FileRoutesById {
   '/_authed/settings/security': typeof AuthedSettingsSecurityRoute
   '/_authed/settings/smtp': typeof AuthedSettingsSmtpRoute
   '/_authed/settings/tags': typeof AuthedSettingsTagsRoute
+  '/_authed/settings/vuln-feed': typeof AuthedSettingsVulnFeedRoute
   '/_authed/sites/$siteId': typeof AuthedSitesSiteIdRouteWithChildren
   '/_authed/updates/$runId': typeof AuthedUpdatesRunIdRoute
   '/_authed/welcome/checkout': typeof AuthedWelcomeCheckoutRoute
@@ -793,6 +802,7 @@ export interface FileRouteTypes {
     | '/settings/security'
     | '/settings/smtp'
     | '/settings/tags'
+    | '/settings/vuln-feed'
     | '/sites/$siteId'
     | '/updates/$runId'
     | '/welcome/checkout'
@@ -870,6 +880,7 @@ export interface FileRouteTypes {
     | '/settings/security'
     | '/settings/smtp'
     | '/settings/tags'
+    | '/settings/vuln-feed'
     | '/updates/$runId'
     | '/welcome/checkout'
     | '/portal/sites/$siteId'
@@ -950,6 +961,7 @@ export interface FileRouteTypes {
     | '/_authed/settings/security'
     | '/_authed/settings/smtp'
     | '/_authed/settings/tags'
+    | '/_authed/settings/vuln-feed'
     | '/_authed/sites/$siteId'
     | '/_authed/updates/$runId'
     | '/_authed/welcome/checkout'
@@ -1257,6 +1269,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/sites/$siteId'
       preLoaderRoute: typeof AuthedSitesSiteIdRouteImport
       parentRoute: typeof AuthedRoute
+    }
+    '/_authed/settings/vuln-feed': {
+      id: '/_authed/settings/vuln-feed'
+      path: '/vuln-feed'
+      fullPath: '/settings/vuln-feed'
+      preLoaderRoute: typeof AuthedSettingsVulnFeedRouteImport
+      parentRoute: typeof AuthedSettingsRouteRoute
     }
     '/_authed/settings/tags': {
       id: '/_authed/settings/tags'
@@ -1617,6 +1636,7 @@ interface AuthedSettingsRouteRouteChildren {
   AuthedSettingsSecurityRoute: typeof AuthedSettingsSecurityRoute
   AuthedSettingsSmtpRoute: typeof AuthedSettingsSmtpRoute
   AuthedSettingsTagsRoute: typeof AuthedSettingsTagsRoute
+  AuthedSettingsVulnFeedRoute: typeof AuthedSettingsVulnFeedRoute
   AuthedSettingsIndexRoute: typeof AuthedSettingsIndexRoute
 }
 
@@ -1629,6 +1649,7 @@ const AuthedSettingsRouteRouteChildren: AuthedSettingsRouteRouteChildren = {
   AuthedSettingsSecurityRoute: AuthedSettingsSecurityRoute,
   AuthedSettingsSmtpRoute: AuthedSettingsSmtpRoute,
   AuthedSettingsTagsRoute: AuthedSettingsTagsRoute,
+  AuthedSettingsVulnFeedRoute: AuthedSettingsVulnFeedRoute,
   AuthedSettingsIndexRoute: AuthedSettingsIndexRoute,
 }
 

@@ -193,6 +193,10 @@ export function siteNameMap(sites: Site[] | undefined): Map<string, string> {
 // this helper rather than re-deriving the pattern locally, so the condition
 // reads consistently (and never as a generic "rollback failed") everywhere.
 //
+// GH #415: that recovery exists for plugins and themes only. WordPress core
+// has no watchdog and no snapshot, so a core task whose site is down is a site
+// that needs a person, and the helper says which of the two a task is.
+//
 // DISPLAY ONLY, AND DELIBERATELY SO (GH #336). This and `isAgentNotEligible`
 // match prose the AGENT frequently authored, so they pick a badge label and
 // nothing else. No safety or selection decision may read them: whether a task
@@ -204,27 +208,63 @@ const SITE_DOWN_RECOVERY_PATTERN =
   /site[- ]wide|site is down|not responding|undeliverable|filesystem recovery|automatic recovery|watchdog/i;
 
 /**
- * True when a terminal (failed/rolled_back) task's detail/error text
- * describes the site-wide-fatal + undeliverable-rollback + auto-filesystem-
- * recovery condition, as opposed to an ordinary update failure or rollback.
+ * The two ways a site can be down after an update.
+ *
+ * - `recovery_attempted`: a plugin or theme update broke the site and the
+ *   agent's update watchdog tries to restore the files on its own.
+ * - `manual_recovery`: WordPress core broke the site. Nothing restores core
+ *   automatically.
  */
-export function isSiteDownRecovery(
-  status: string,
-  detail?: string,
-  error?: string,
-): boolean {
-  if (!SITE_DOWN_RECOVERY_STATUSES.has(status)) return false;
-  return SITE_DOWN_RECOVERY_PATTERN.test(`${detail ?? ""} ${error ?? ""}`);
+export type SiteDownKind = "recovery_attempted" | "manual_recovery";
+
+/** The fields of a task that decide whether it is a site-down outcome. */
+export interface SiteDownInput {
+  status: string;
+  target_type: string;
+  detail?: string;
+  error?: string;
 }
 
-/** Distinct, actionable label for the site-down-recovery condition. Never
- * collapse this into the generic "Rolled back"/"Failed" copy. */
-export const SITE_DOWN_RECOVERY_LABEL = "Site down, recovery attempted";
+/**
+ * Which site-down outcome a terminal task describes, or null for an ordinary
+ * failure or rollback.
+ *
+ * For a plugin or theme, the condition is named by the task's detail or by the
+ * agent's error text. For core, only the control plane's own detail decides,
+ * and only on a failed task: a rolled back core task was restored, and the
+ * error log of a core task is the transport's or the health check's text, not
+ * a statement about the site.
+ */
+export function siteDownKind(task: SiteDownInput): SiteDownKind | null {
+  if (!SITE_DOWN_RECOVERY_STATUSES.has(task.status)) return null;
+  if (task.target_type === "core") {
+    return task.status === "failed" &&
+      SITE_DOWN_RECOVERY_PATTERN.test(task.detail ?? "")
+      ? "manual_recovery"
+      : null;
+  }
+  return SITE_DOWN_RECOVERY_PATTERN.test(
+    `${task.detail ?? ""} ${task.error ?? ""}`,
+  )
+    ? "recovery_attempted"
+    : null;
+}
+
+/** Distinct, actionable label for a site-down outcome. Never collapse this
+ * into the generic "Rolled back"/"Failed" copy. */
+export function siteDownLabel(kind: SiteDownKind): string {
+  return kind === "manual_recovery"
+    ? "Site down, manual recovery needed"
+    : "Site down, recovery attempted";
+}
 
 /** Fallback body copy when the backend detail is empty but the condition is
  * detected from `error` alone. */
-export const SITE_DOWN_RECOVERY_FALLBACK_DETAIL =
-  "The site went down site-wide during this update. Automatic filesystem recovery was attempted; manual filesystem recovery may be required.";
+export function siteDownFallbackDetail(kind: SiteDownKind): string {
+  return kind === "manual_recovery"
+    ? "The site is down after the WordPress core update. Nothing restores WordPress core automatically, so the site needs manual recovery."
+    : "The site went down site-wide during this update. Automatic filesystem recovery was attempted; manual filesystem recovery may be required.";
+}
 
 // GH #755 round 2, DISPLAY ONLY, same discipline as isSiteDownRecovery
 // above: this reads the control plane's own composed prose to pick a

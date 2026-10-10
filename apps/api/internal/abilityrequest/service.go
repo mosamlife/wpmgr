@@ -363,6 +363,52 @@ func (s *Service) AgentVersions(ctx context.Context, p domain.Principal, rows []
 	return out
 }
 
+// NewestEdits returns which of rows' wpmgr/page-edit requests are the newest
+// applied edit of their post that has not been undone, for the card's
+// undo_offered: undo goes newest first, so an older edit offers none. Only a
+// row whose own undo is open is looked up, with one read per post. It reads
+// under the caller's principal. On a read error it logs and returns what it
+// has: a page edit missing from the answer offers no undo, which is the safe
+// answer.
+func (s *Service) NewestEdits(ctx context.Context, p domain.Principal, rows []sqlc.AssistantAbilityRequest) map[uuid.UUID]bool {
+	out := map[uuid.UUID]bool{}
+	type post struct {
+		site uuid.UUID
+		id   int64
+	}
+	want := map[post]struct{}{}
+	now := s.clock()
+	for _, r := range rows {
+		if r.AbilityName != mcp.AbilityPageEdit || r.TargetPostID == nil || undoKindFor(r, "", now) != undoKindDone {
+			continue
+		}
+		want[post{site: r.SiteID, id: *r.TargetPostID}] = struct{}{}
+	}
+	if len(want) == 0 {
+		return out
+	}
+	err := s.runAsCaller(ctx, p, func(q *sqlc.Queries, _ pgx.Tx) error {
+		for k := range want {
+			newest, err := q.NewestUndoableEditForPost(ctx, sqlc.NewestUndoableEditForPostParams{
+				TenantID: p.TenantID, SiteID: k.site, PostID: k.id,
+			})
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			out[newest.ID] = true
+		}
+		return nil
+	})
+	if err != nil {
+		s.logger.WarnContext(ctx, "ability request: newest page edits not read; no page edit undo offered",
+			slog.Any("error", err))
+	}
+	return out
+}
+
 // requestStates is m156's closed state set, the org list's filter values.
 var requestStates = map[string]struct{}{
 	"pending": {}, "approved": {}, "declined": {}, "withdrawn": {}, "expired": {},

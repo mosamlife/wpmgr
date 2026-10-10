@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Abilities;
 
+use WPMgr\Agent\Abilities\Builders\BuilderContract;
+use WPMgr\Agent\Abilities\Builders\BuilderPageStructure;
 use WPMgr\Agent\Support\ArrayShape;
 
 // Direct-file-access guard: keep above the docblock.
@@ -19,9 +21,14 @@ if (!defined('ABSPATH')) {
  * The engine never calls a site-registered ability that merely carries a
  * wpmgr/ name: resolution goes through this map only.
  *
- * The three reads write nothing, and text that came from the site
+ * The reads write nothing, and text that came from the site
  * (titles, page text, ability labels) is returned only under a
  * `from_the_site` key, so the control plane can fence it as data.
+ *
+ * wpmgr/page-structure is a read that runs only through the engine: whether
+ * a draft may be read depends on the drafts the control plane names in the
+ * signed call, so it is neither run through run() nor registered with the
+ * Abilities API (see Builders\BuilderPageStructure).
  *
  * wpmgr/page-create and wpmgr/rest-write are the writes. Neither is run
  * through run() or registered with the Abilities API: the engine's write mode
@@ -37,6 +44,8 @@ final class OwnAbilities
     public const NAME_PAGE_CREATE = 'wpmgr/page-create';
     public const NAME_REST_READ   = RestCall::NAME_READ;
     public const NAME_REST_WRITE  = RestCall::NAME_WRITE;
+    public const NAME_PAGE_STRUCTURE = 'wpmgr/page-structure';
+    public const NAME_PAGE_EDIT      = 'wpmgr/page-edit';
 
     private const CATEGORY = 'wpmgr';
 
@@ -70,7 +79,7 @@ final class OwnAbilities
      */
     public static function names(): array
     {
-        return [self::NAME_INVENTORY, self::NAME_FACTS, self::NAME_CONTENT, self::NAME_PAGE_CREATE, self::NAME_REST_READ, self::NAME_REST_WRITE];
+        return [self::NAME_INVENTORY, self::NAME_FACTS, self::NAME_CONTENT, self::NAME_PAGE_CREATE, self::NAME_REST_READ, self::NAME_REST_WRITE, self::NAME_PAGE_STRUCTURE, self::NAME_PAGE_EDIT];
     }
 
     /**
@@ -102,7 +111,7 @@ final class OwnAbilities
      */
     public static function abilityClass(string $name): string
     {
-        if ($name === self::NAME_PAGE_CREATE || $name === self::NAME_REST_WRITE) {
+        if ($name === self::NAME_PAGE_CREATE || $name === self::NAME_REST_WRITE || $name === self::NAME_PAGE_EDIT) {
             return 'write';
         }
 
@@ -139,6 +148,10 @@ final class OwnAbilities
                 // The one schema text the control plane also publishes; both
                 // sides are tested against the shared contract fixture.
                 return PageCreateBuilder::inputSchema();
+            case self::NAME_PAGE_STRUCTURE:
+                return BuilderContract::pageStructureInputSchema();
+            case self::NAME_PAGE_EDIT:
+                return BuilderContract::pageEditInputSchema();
             default:
                 return ['type' => 'object', 'properties' => new \stdClass(), 'additionalProperties' => false];
         }
@@ -176,6 +189,10 @@ final class OwnAbilities
                     }
                 }
             }
+        }
+
+        if ($name === self::NAME_PAGE_STRUCTURE) {
+            return BuilderPageStructure::inputProblem($props);
         }
 
         if ($name === self::NAME_CONTENT) {
@@ -250,6 +267,8 @@ final class OwnAbilities
                 return ['output' => self::siteFacts($input)];
             case self::NAME_CONTENT:
                 return self::contentRead($input);
+            case self::NAME_PAGE_STRUCTURE:
+                return ['refusal' => ['code' => 'mode_not_available', 'detail' => 'wpmgr/page-structure runs only through the engine']];
             default:
                 return ['refusal' => ['code' => 'ability_unknown', 'detail' => 'not an ability this agent implements']];
         }

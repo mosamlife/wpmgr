@@ -1009,6 +1009,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// gap in the phpbu pipeline is age-encrypt for a multi-GB site); only a
 		// hard stall (default 30m) actually fails the run.
 		progressWatchdog = backup.NewProgressWatchdogWorker(backupSvc, cfg.Backup.StallSoftTimeout, cfg.Backup.StallHardTimeout, logger)
+		progressWatchdog.SetRestoreStallTimeout(cfg.Backup.RestoreStallTimeout)
 		backupH = backup.NewHandler(backupSvc, backupHub, auditRec)
 		backupAgentH = backup.NewAgentHandler(backupSvc, auditRec)
 		restoreRunH = backup.NewRestoreRunHandler(backupSvc)
@@ -1116,9 +1117,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	sendEmailWorker := mailer.NewSendEmailWorker(mailerSvc)
 	smtpSettingsSvc := settings.NewService(settings.NewRepo(pool), siteDestAgeID, mailerSvc, logger)
 	// The SMTP relay is install-wide, so its routes are gated on instance-level
-	// authority. instanceEmailGate is built ONCE and handed to both the route
-	// gate here and authH.SetInstanceAuthorityGate below (the Me capability),
-	// so the two read the same hosted flag. It is the admin console's
+	// authority. instanceEmailGate is built ONCE and handed to the route gate
+	// here, the vulnerability-feed key routes (adminH.SetVulnFeed) and
+	// authH.SetInstanceAuthorityGate below (the Me capability), so all of them
+	// read the same hosted flag. It is the admin console's
 	// admingate.PoolStore plus the install-owner arm, which is live only when
 	// WPMGR_HOSTED is not true. The agent-mirror gates keep the plain
 	// admingate.NewPoolStore and never see that arm.
@@ -2229,6 +2231,31 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// GH #428: one agent-release mirror check a few minutes after this start.
+	// The periodic job's first run is a full interval after River's scheduler
+	// starts, so without this an install that restarted to upgrade to a release
+	// carrying a new agent was not offered it for six hours or more. The check
+	// waits out the request spacing recorded in agent_mirror_state, and at most
+	// one is ever outstanding, so a restart loop cannot spend the GitHub budget.
+	// A failure here is logged and never fails boot: the periodic job remains.
+	if cfg.Update.AgentMirrorEnabled {
+		if bc, bcErr := agentupstream.EnqueueBootCheck(ctx, riverClient, agentMirrorRepo, time.Now()); bcErr != nil {
+			logger.Warn("agent release mirror: could not queue the check that follows startup; the next check is the periodic one",
+				slog.String("error", bcErr.Error()))
+		} else {
+			logger.Info("agent release mirror: check queued to follow startup",
+				slog.Time("scheduled_at", bc.ScheduledAt),
+				slog.Bool("queued", bc.Queued),
+				slog.Bool("deferred_for_request_spacing", bc.Deferred))
+			if bc.RequestTimeLowered {
+				logger.Warn("agent release mirror: the recorded time of the last upstream request was ahead of this host's clock, so it was reset to now; check the clocks on this install")
+			}
+			if bc.LowerErr != nil {
+				logger.Warn("agent release mirror: the recorded time of the last upstream request is ahead of this host's clock and could not be reset, so the request spacing may refuse the startup check",
+					slog.String("error", bc.LowerErr.Error()))
+			}
+		}
+	}
 	mediaRiverClient, err := newMediaRiverClient(pool.Pool, logger, riverClient, mediaRiverSchema)
 	if err != nil {
 		return err
@@ -2803,8 +2830,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	adminH.SetAbilityRoutes(abilityAdminH.RegisterAdmin)
 	// m80 — wire the vuln-feed key management into the admin handler.
 	// vulnFeedKeySvc already has its feed-refresh enqueuer set (wired in the
-	// vuln River block above), so this call sees a fully-wired service.
-	adminH.SetVulnFeed(vulnRepo, vulnFeedKeySvc)
+	// vuln River block above), so this call sees a fully-wired service. The
+	// feed-key routes are gated by the same instanceEmailGate as the SMTP
+	// settings routes and the Me capability, so all three give one answer.
+	adminH.SetVulnFeed(vulnRepo, vulnFeedKeySvc, instanceEmailGate)
 	// GH #322: superadmin manual "check now" for the upstream agent-release
 	// mirror. wired=(agentMirror != nil) mirrors the SAME "object storage
 	// actually configured" gate the periodic worker itself checks, so a
@@ -4322,9 +4351,15 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 
 	// GH #302 — mirror the public upstream agent release into THIS install's own
 	// object storage, so a self-hosted control plane has a release channel at all.
-	// ONE JOB PER INSTALL (not per site, not per tenant), every 6 hours with
-	// jitter, MaxWorkers 1. RunOnStart: false — boot is not the moment to reach
-	// out to the public internet, and the first tick is at most 6 hours away.
+	// ONE JOB PER INSTALL (not per site, not per tenant), MaxWorkers 1.
+	//
+	// Two things schedule it. This periodic job runs every 6 hours with jitter,
+	// counted from when River's scheduler starts, so a restart pushes its next
+	// run a full interval out. GH #428: the boot check queued in run() right
+	// after startRiver (agentupstream.EnqueueBootCheck) runs one check a few
+	// minutes after each start instead, which is what a self-hoster who just
+	// upgraded to a release carrying a new agent needs. RunOnStart stays false
+	// because River also re-runs it on every change of leader, not only at boot.
 	//
 	// The worker is registered unconditionally so jobs already queued drain during
 	// a rolling redeploy; it no-ops when the feature is off (the default) or when
@@ -4332,17 +4367,7 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	if d.agentMirrorWorker != nil {
 		river.AddWorker(workers, d.agentMirrorWorker)
 		queues[agentupstream.MirrorQueue] = river.QueueConfig{MaxWorkers: 1}
-		periodics = append(periodics, river.NewPeriodicJob(
-			river.PeriodicInterval(agentupstream.MirrorInterval),
-			func() (river.JobArgs, *river.InsertOpts) {
-				// Fresh jitter per tick (see agentupstream.MirrorJitter): every
-				// self-hosted install would otherwise fetch on a boundary derived
-				// from its own boot time, and installs that boot together would
-				// hit GitHub in lockstep.
-				return agentupstream.MirrorArgs{Trigger: agentupstream.TriggerPeriodic}, agentupstream.PeriodicInsertOpts()
-			},
-			&river.PeriodicJobOpts{RunOnStart: false},
-		))
+		periodics = append(periodics, agentupstream.NewMirrorPeriodicJob())
 	}
 	// m103 (GH #247) — batched vulnerability-alert dispatch. Debounced
 	// enqueue happens in RescanSiteWorker.Work (5-minute delay + 10-minute

@@ -5,7 +5,8 @@
  * Fixtures:
  *   page-edit-schema.json       generated; regenerate with WPMGR_WRITE_FIXTURES=1, never hand-edit
  *   page-structure-schema.json  generated; regenerate with WPMGR_WRITE_FIXTURES=1, never hand-edit
- *   page-edit-ops-cases.json    hand-authored accept/refuse table (agent code + Go verdict)
+ *   page-edit-ops-cases.json    hand-authored accept/refuse table (agent code + Go verdict); a case with
+ *                               a "note" says how its input was generated
  *
  * @package WPMgr\Agent\Tests\Builders
  */
@@ -30,37 +31,50 @@ final class BuilderContractFixturesTest extends TestCase
      * that shows it: the agent's answer and the control plane's.
      */
     private const RULES = [
-        'operations_at_least_one' => ['bad_input', 'refuse'],
-        'operations_at_most_25'   => ['bad_input', 'refuse'],
-        'op_known'                => ['bad_input', 'refuse'],
-        'ref_charset'             => ['bad_input', 'refuse'],
-        'ref_at_most_32'          => ['bad_input', 'refuse'],
-        'ref_at_most_once'        => ['ops_invalid', 'refuse'],
-        'insert_one_anchor'       => ['bad_input', 'refuse'],
-        'position_only_with_into' => ['bad_input', 'refuse'],
-        'outline_at_most_50'      => ['bad_input', 'refuse'],
-        'field_in_editable'       => ['node_not_editable', 'accept'],
-        'ref_on_page'             => ['node_not_found', 'accept'],
-        'locked_not_set_text'     => ['node_not_editable', 'accept'],
-        'locked_not_replaced'     => ['node_not_editable', 'accept'],
-        'locked_not_removed'      => ['node_not_editable', 'accept'],
-        'locked_not_moved'        => ['node_not_editable', 'accept'],
-        'op_declared_by_builder'  => ['op_not_supported_by_builder', 'accept'],
-        'input_at_most_64_kib'    => ['bad_input', 'refuse'],
-        'valid_batch'             => ['ok', 'accept'],
+        'operations_at_least_one'             => ['bad_input', 'refuse'],
+        'operations_at_most_25'               => ['bad_input', 'refuse'],
+        'op_known'                            => ['bad_input', 'refuse'],
+        'ref_charset'                         => ['bad_input', 'refuse'],
+        'ref_at_most_32'                      => ['bad_input', 'refuse'],
+        'ref_at_most_once'                    => ['ops_invalid', 'refuse'],
+        'insert_one_anchor'                   => ['bad_input', 'refuse'],
+        'position_only_with_into'             => ['bad_input', 'refuse'],
+        'outline_at_most_50'                  => ['bad_input', 'refuse'],
+        'field_in_editable'                   => ['node_not_editable', 'accept'],
+        'ref_on_page'                         => ['node_not_found', 'accept'],
+        'locked_not_set_text'                 => ['node_not_editable', 'accept'],
+        'locked_not_replaced'                 => ['node_not_editable', 'accept'],
+        'locked_not_removed'                  => ['node_not_editable', 'accept'],
+        'locked_not_moved'                    => ['node_not_editable', 'accept'],
+        'holder_of_locked_not_removed'        => ['node_not_editable', 'accept'],
+        'holder_of_locked_not_replaced'       => ['node_not_editable', 'accept'],
+        'op_declared_by_builder'            => ['op_not_supported_by_builder', 'accept'],
+        'input_at_most_64_kib'                => ['bad_input', 'refuse'],
+        'valid_batch'                         => ['ok', 'accept'],
+        'ref_not_removed_earlier'             => ['ops_invalid', 'accept'],
+        'anchor_not_replaced_earlier'         => ['ops_invalid', 'accept'],
+        'insert_into_takes_children'          => ['node_not_editable', 'accept'],
+        'move_not_into_own_subtree'           => ['node_not_editable', 'accept'],
+        'new_nodes_at_most_400'               => ['page_too_large', 'accept'],
+        'set_text_url_rule'                   => ['bad_input', 'refuse'],
+        'set_text_text_rule'                  => ['bad_input', 'refuse'],
+        'elementor_image_offers_caption_only' => ['node_not_editable', 'accept'],
+        'set_text_alt_rule'                   => ['bad_input', 'refuse'],
+        'set_text_caption_rule'               => ['bad_input', 'refuse'],
+        'set_text_button_text_rule'           => ['bad_input', 'accept'],
     ];
 
     /** Rules whose cases must also show the accepted side of the boundary. */
-    private const BOUNDARY_RULES = ['input_at_most_64_kib'];
+    private const BOUNDARY_RULES = ['input_at_most_64_kib', 'set_text_caption_rule', 'set_text_button_text_rule'];
 
-    private const AGENT_VERDICTS = ['ok', 'bad_input', 'ops_invalid', 'node_not_found', 'node_not_editable', 'op_not_supported_by_builder'];
+    private const AGENT_VERDICTS = ['ok', 'bad_input', 'ops_invalid', 'node_not_found', 'node_not_editable', 'op_not_supported_by_builder', 'page_too_large'];
 
     private const GO_VERDICTS = ['accept', 'refuse'];
 
     /** The builder ids an editor may name. */
     private const BUILDERS = ['elementor', 'beaver', 'wpbakery', 'divi5', 'bricks', 'breakdance', 'oxygen6'];
 
-    private const CASE_KEYS = ['name', 'rule', 'builder', 'input', 'generate', 'agent', 'go'];
+    private const CASE_KEYS = ['name', 'rule', 'note', 'builder', 'input', 'generate', 'agent', 'go'];
 
     // -------------------------------------------------------------------------
     // Schemas
@@ -204,6 +218,10 @@ final class BuilderContractFixturesTest extends TestCase
             $this->assertArrayHasKey($case['rule'], self::RULES, $name . ': unknown rule');
             $this->assertContains($case['agent'], self::AGENT_VERDICTS, $name);
             $this->assertContains($case['go'], self::GO_VERDICTS, $name);
+            if (isset($case['note'])) {
+                $this->assertIsString($case['note'], $name);
+                $this->assertNotSame('', $case['note'], $name . ': a note says how the case was made');
+            }
             if ($case['agent'] === 'ok') {
                 $this->assertSame('accept', $case['go'], $name . ': what the agent accepts, the control plane accepts');
             }

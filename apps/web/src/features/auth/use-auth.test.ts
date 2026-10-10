@@ -1,24 +1,81 @@
 import { describe, it, expect } from "vitest";
 import {
+  hasOrg,
   isSuperadminAllowedPath,
   canWriteSiteContext,
   canManageInstanceEmail,
 } from "./use-auth";
 import type { Me } from "@wpmgr/api";
 
-// A superadmin has no org and is pinned to /admin by the _authed gate, EXCEPT
-// their own per-user account settings (profile + 2FA) — otherwise they can
-// never enable their own 2FA (GH admin-panel report).
-describe("isSuperadminAllowedPath", () => {
+const TENANT_ID = "00000000-0000-0000-0000-0000000000aa";
+const USER_ID = "00000000-0000-0000-0000-000000000001";
+
+// A superadmin Me. With no overrides it belongs to no organisation.
+function superadminMe(overrides: Partial<Me> = {}): Me {
+  return {
+    user: {
+      id: USER_ID,
+      email: "operator@wpmgr.test",
+      name: "Operator",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      is_superadmin: true,
+    },
+    memberships: [],
+    ...overrides,
+  };
+}
+
+const NO_ORG = superadminMe();
+const MEMBER_OF_ORG = superadminMe({
+  memberships: [{ user_id: USER_ID, tenant_id: TENANT_ID, role: "owner" }],
+  active_tenant_id: TENANT_ID,
+});
+// Reaches an organisation only through a share: no membership row, but the
+// server reports that organisation as the active one.
+const ACTIVE_TENANT_ONLY = superadminMe({ active_tenant_id: TENANT_ID });
+
+// The one definition of "has an organisation". The create-organisation screen,
+// the superadmin gate and the sidebar all ask it.
+describe("hasOrg", () => {
+  it("is false for a missing user", () => {
+    expect(hasOrg(null)).toBe(false);
+    expect(hasOrg(undefined)).toBe(false);
+  });
+
+  it("is false with no membership and no active tenant", () => {
+    expect(hasOrg(NO_ORG)).toBe(false);
+  });
+
+  it("is true with a membership, whatever the role", () => {
+    expect(hasOrg(MEMBER_OF_ORG)).toBe(true);
+    expect(
+      hasOrg(
+        superadminMe({
+          memberships: [{ user_id: USER_ID, tenant_id: TENANT_ID, role: "viewer" }],
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("is true with only an active tenant (a share, not a membership)", () => {
+    expect(hasOrg(ACTIVE_TENANT_ONLY)).toBe(true);
+  });
+});
+
+// A superadmin with no organisation is pinned to /admin by the _authed gate,
+// EXCEPT their own per-user account settings (profile + 2FA), otherwise they
+// can never enable their own 2FA (GH admin-panel report).
+describe("isSuperadminAllowedPath, for a superadmin with no organisation", () => {
   it("allows the admin area and its children", () => {
-    expect(isSuperadminAllowedPath("/admin")).toBe(true);
-    expect(isSuperadminAllowedPath("/admin/accounts")).toBe(true);
-    expect(isSuperadminAllowedPath("/admin/accounts/abc123")).toBe(true);
+    expect(isSuperadminAllowedPath(NO_ORG, "/admin")).toBe(true);
+    expect(isSuperadminAllowedPath(NO_ORG, "/admin/accounts")).toBe(true);
+    expect(isSuperadminAllowedPath(NO_ORG, "/admin/accounts/abc123")).toBe(true);
   });
 
   it("allows the superadmin's own personal account + security settings", () => {
-    expect(isSuperadminAllowedPath("/settings/account")).toBe(true);
-    expect(isSuperadminAllowedPath("/settings/security")).toBe(true);
+    expect(isSuperadminAllowedPath(NO_ORG, "/settings/account")).toBe(true);
+    expect(isSuperadminAllowedPath(NO_ORG, "/settings/security")).toBe(true);
   });
 
   // Instance SMTP capability gating (5ae87b71): the settings allow-list
@@ -27,24 +84,58 @@ describe("isSuperadminAllowedPath", () => {
   // PATH a superadmin may attempt to reach; the page itself refuses a
   // superadmin the server does not admit via can_manage_instance_email).
   it("allows /settings/smtp (the instance SMTP relay)", () => {
-    expect(isSuperadminAllowedPath("/settings/smtp")).toBe(true);
+    expect(isSuperadminAllowedPath(NO_ORG, "/settings/smtp")).toBe(true);
   });
 
   it("admits /settings/smtp exactly, and nothing merely prefixed by it", () => {
     // A prefix-match bug here would silently open every /settings/smtp*
     // path, not just the one route the server actually gates this way.
-    expect(isSuperadminAllowedPath("/settings/smtp-other")).toBe(false);
-    expect(isSuperadminAllowedPath("/settings/smtp/anything")).toBe(false);
+    expect(isSuperadminAllowedPath(NO_ORG, "/settings/smtp-other")).toBe(false);
+    expect(isSuperadminAllowedPath(NO_ORG, "/settings/smtp/anything")).toBe(false);
+  });
+
+  // GH #361: the vulnerability feed key follows the same authority as the
+  // instance email settings, and the settings nav offers it beside Email / SMTP.
+  // A superadmin with no organisation sees that entry in the settings layout, so
+  // the path it links to must open for them. Exact string, like /settings/smtp.
+  it("allows /settings/vuln-feed (the instance vulnerability feed key), and only that exact path", () => {
+    expect(isSuperadminAllowedPath(NO_ORG, "/settings/vuln-feed")).toBe(true);
+    expect(isSuperadminAllowedPath(NO_ORG, "/settings/vuln-feed-other")).toBe(false);
+    expect(isSuperadminAllowedPath(NO_ORG, "/settings/vuln-feed/anything")).toBe(false);
   });
 
   it("still keeps the superadmin OUT of the tenant-scoped shell", () => {
-    expect(isSuperadminAllowedPath("/")).toBe(false);
-    expect(isSuperadminAllowedPath("/sites")).toBe(false);
-    expect(isSuperadminAllowedPath("/uptime")).toBe(false);
+    expect(isSuperadminAllowedPath(NO_ORG, "/")).toBe(false);
+    expect(isSuperadminAllowedPath(NO_ORG, "/sites")).toBe(false);
+    expect(isSuperadminAllowedPath(NO_ORG, "/uptime")).toBe(false);
     // org-scoped settings pages must stay blocked (they'd 403 with no org)
-    expect(isSuperadminAllowedPath("/settings/organization")).toBe(false);
-    expect(isSuperadminAllowedPath("/settings/billing")).toBe(false);
-    expect(isSuperadminAllowedPath("/settings/members")).toBe(false);
+    expect(isSuperadminAllowedPath(NO_ORG, "/settings/organization")).toBe(false);
+    expect(isSuperadminAllowedPath(NO_ORG, "/settings/billing")).toBe(false);
+    expect(isSuperadminAllowedPath(NO_ORG, "/settings/members")).toBe(false);
+  });
+});
+
+// GH #434. The same account, once it belongs to an organisation, is a member of
+// it like anyone else and the gate has nothing to hold back.
+describe("isSuperadminAllowedPath, for a superadmin who belongs to an organisation", () => {
+  it("allows the tenant-scoped shell, not only the admin area", () => {
+    for (const path of [
+      "/",
+      "/sites",
+      "/sites/abc123",
+      "/uptime",
+      "/settings/organization",
+      "/settings/billing",
+      "/settings/members",
+      "/admin",
+      "/admin/accounts",
+    ]) {
+      expect(isSuperadminAllowedPath(MEMBER_OF_ORG, path), path).toBe(true);
+    }
+  });
+
+  it("allows it for an active tenant reached through a share, too", () => {
+    expect(isSuperadminAllowedPath(ACTIVE_TENANT_ONLY, "/sites")).toBe(true);
   });
 });
 
