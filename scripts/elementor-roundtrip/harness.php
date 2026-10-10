@@ -1480,8 +1480,8 @@ function rt_edit_after_view(AbilityRunCommand $cmd, array $createEntry, array $e
 
 /**
  * Run the agent's edit path on this site: every edit case that names the layout
- * of this boot, then the full restore. See the steps 8 to 10 and the restore in
- * the file header.
+ * of this boot, then the full restore and the edit after a view. See the steps 8
+ * to 10, the restore and the edit after a view in the file header.
  *
  * @param array<string,list<string>> $plants  Plant kinds by case name.
  * @param bool                       $noCases Plant: hand the edit path no case at all.
@@ -1741,7 +1741,7 @@ function rt_edit_phase(string $layout, string $stored, int $principal, array $pl
         $report($name, $c);
     }
 
-    // An edit after a view. It runs last among the scenarios: a look at a page is the one the run makes.
+    // An edit after a view. It runs after the other scenarios, so the look it makes does not touch theirs.
     if (!$noCases && is_array($afterView)) {
         $name = (string) ($afterView['name'] ?? 'after-view');
         [$c, $ids] = rt_edit_after_view($cmd, $createEntry, $editEntry, $afterView, $stored, $plants[$name] ?? [], $tagBase . ' ' . $name);
