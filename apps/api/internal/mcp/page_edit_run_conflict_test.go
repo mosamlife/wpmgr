@@ -122,7 +122,8 @@ func TestPageEditPrecheckConflictNamesTheReasonAndHint(t *testing.T) {
 			[]string{"save or discard", "wpmgr/page-structure"}},
 		{"markup outside the set", "<b>x", true, "", false, []string{"wpmgr/page-structure"}},
 		{"an instruction outside the set", plantedInstruction, true, "", false, []string{"wpmgr/page-structure"}},
-		{"a near miss of a member", "editor_open ", true, "", false, []string{"wpmgr/page-structure"}},
+		{"a member in another case", "Editor_Open", true, "", false, []string{"wpmgr/page-structure"}},
+		{"a member with more after it", "editor_opened", true, "", false, []string{"wpmgr/page-structure"}},
 	}
 	hints := map[string]string{}
 	for _, c := range cases {
