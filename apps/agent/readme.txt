@@ -285,7 +285,7 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 == Changelog ==
 
-The entries below summarize the notable changes since 0.48.2. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+The entries below summarize the notable changes since 0.53.0. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
 = 0.61.163 =
 * Added: An AI connected through WPMgr can now read the structure of a page built in Elementor and edit a draft it created there, in one batch: set text, insert, replace, remove or move elements. Each edit waits for your approval in WPMgr and nothing is published. A published page or post built in Elementor can be read this way too, but never changed. WPMgr needs this version on the site for it.
@@ -464,16 +464,6 @@ The entries below summarize the notable changes since 0.48.2. This project ships
 
 = 0.53.0 =
 * New: file integrity monitoring. A scan (core files, wp-content, or the full install) compares file hashes against WordPress.org checksums for core and wp.org-hosted plugins and themes, and against a learned per-site baseline for everything else, flagging changed, added, or removed files.
-
-= 0.52.0 =
-* New: per-site WordPress hardening controls (disable file editor, restrict XML-RPC and the REST API, restrict login identifiers, force unique nicknames, block author-archive user enumeration, force SSL/HSTS, disable directory browsing, block PHP execution in uploads, protect system files). All off by default and opt-in; the control plane and the operator's own session can never be locked out by a hardening rule.
-* New: a per-site ban list (blocked IP addresses, CIDR ranges, and user agents), enforced at early boot and at the web-server config level. Broad blocks covering all addresses or private/loopback ranges are rejected, and the operator's own allow-listed IPs always bypass the ban.
-
-= 0.51.2 =
-* Changed: the early-boot security helpers (the login-protection ban list and the Error Monitor fatal-error trap) are now installed as a must-use plugin file only once you turn on the corresponding feature, and removed again the moment you turn it off or deactivate the plugin. A freshly activated agent writes nothing outside its own plugin folder until you opt in to one of these features.
-
-= 0.48.2 =
-* Fixed: one-click "Log in to wp-admin" no longer triggers a second two-factor challenge on sites running another two-factor plugin; it now lands directly in wp-admin. Sites running a security plugin that replaces the login flow entirely now get a clear "sign in normally" message instead of a loop.
 
 == Upgrade Notice ==
 
