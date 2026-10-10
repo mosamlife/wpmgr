@@ -92,6 +92,10 @@ var (
 	pageStructureBuilderToken = regexp.MustCompile(`^[a-z0-9]{1,32}$`)
 	pageStructureWordToken    = regexp.MustCompile(`^[a-z_]{1,32}$`)
 	pageStructureFieldToken   = regexp.MustCompile(`^(?:text|url|alt|caption)$`)
+	// pageStructureOpenStateToken is open_state's closed set: the draft is
+	// open in the editor, or has unsaved builder changes (null is neither).
+	pageStructureOpenStateToken = regexp.MustCompile(`^(?:` + PageEditConflictEditorOpen + `|` +
+		PageEditConflictAutosavePending + `)$`)
 )
 
 // tokenLeaf is a string leaf the AI uses as given: a value matching re passes
@@ -104,13 +108,15 @@ var (
 )
 
 // pageStructureOutputShape mirrors the agent's page-structure answer:
-// {post_id, builder, builder_version, format, status, editable,
+// {post_id, builder, builder_version, format, status, editable, open_state,
 // base_fingerprint, node_count, truncated, nodes}, each node {ref, parent,
 // kind, level?, editable, from_the_site} or, locked, {ref, parent, kind,
-// label}. Site text is only ever under from_the_site, and fenced.
+// label}. Site text is only ever under from_the_site, and fenced. open_state
+// is editor_open, autosave_pending or null; any other value is dropped.
 var pageStructureOutputShape = obj(map[string]*outShape{
 	"post_id": intLeaf, "builder": tokenLeaf(pageStructureBuilderToken), "builder_version": leaf,
 	"format": tokenLeaf(pageStructureWordToken), "status": leaf, "editable": boolLeaf,
+	"open_state":       tokenLeaf(pageStructureOpenStateToken),
 	"base_fingerprint": tokenLeaf(pageEditFingerprintPattern), "node_count": intLeaf, "truncated": boolLeaf,
 	"nodes": list(obj(map[string]*outShape{
 		"ref": tokenLeaf(pageEditRefPattern), "parent": tokenLeaf(pageEditRefPattern), "kind": tokenLeaf(pageStructureWordToken),

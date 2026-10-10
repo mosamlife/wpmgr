@@ -385,6 +385,48 @@ func TestPageStructureOutputFencesSiteTextAndKeepsRefs(t *testing.T) {
 	}
 }
 
+// TestPageStructureOutputKeepsTheOpenStateToken: the agent's open_state (a
+// draft open in the editor, or with unsaved builder changes, or null) reaches
+// the AI unchanged; any other value is dropped, so no site text rides on it.
+func TestPageStructureOutputKeepsTheOpenStateToken(t *testing.T) {
+	answer := func(state string) json.RawMessage {
+		return json.RawMessage(`{"post_id":418,"builder":"elementor","status":"draft","editable":true,` +
+			`"open_state":` + state + `,"node_count":0,"truncated":false,"nodes":[]}`)
+	}
+	for in, want := range map[string]string{
+		`"editor_open"`:                `"open_state":"editor_open"`,
+		`"autosave_pending"`:           `"open_state":"autosave_pending"`,
+		`null`:                         `"open_state":null`,
+		`"changed_since_read"`:         `"open_state":null`,
+		`"Editor_Open"`:                `"open_state":null`,
+		`"editor_open "`:               `"open_state":null`,
+		`"<b>x"`:                       `"open_state":null`,
+		`"` + plantedInstruction + `"`: `"open_state":null`,
+		`true`:                         `"open_state":null`,
+		`["editor_open"]`:              `"open_state":null`,
+	} {
+		out, truncated := fenceAbilityOutput(AbilityPageStructure, &sqlc.AbilityCatalogue{Source: "wpmgr"}, answer(in),
+			abilityRunDefaultOutputBytes)
+		if truncated {
+			t.Fatalf("%s: a small structure was withheld", in)
+		}
+		if !strings.Contains(string(out), want) {
+			t.Errorf("%s: output lacks %s: %s", in, want, out)
+		}
+		for _, never := range []string{"<b>x", `<b>x`, plantedInstruction, "Editor_Open", `"editor_open "`} {
+			if strings.Contains(string(out), never) {
+				t.Errorf("%s: output carries %s: %s", in, never, out)
+			}
+		}
+	}
+	// An answer without the field (an older agent) gains none.
+	out, _ := fenceAbilityOutput(AbilityPageStructure, &sqlc.AbilityCatalogue{Source: "wpmgr"},
+		json.RawMessage(`{"post_id":418,"status":"draft","editable":true,"nodes":[]}`), abilityRunDefaultOutputBytes)
+	if strings.Contains(string(out), "open_state") {
+		t.Fatalf("an answer without open_state gained one: %s", out)
+	}
+}
+
 // --- The builder edit floor -------------------------------------------------------
 
 var m169MinAgentVersion = regexp.MustCompile(`'(wpmgr/page-(?:structure|edit))'[\s\S]{0,200}?'([0-9]+\.[0-9]+\.[0-9]+)'`)
