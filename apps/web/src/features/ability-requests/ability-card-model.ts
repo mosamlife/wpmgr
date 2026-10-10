@@ -1,5 +1,7 @@
 import type { AbilityRequest } from "@wpmgr/api";
 
+import { formatRequestWindow } from "@/lib/request-window";
+
 import { ELEMENTOR_EDITOR, type PageBuilderFacts } from "./outline-model";
 
 // Pure logic for the AI page-creation approval card (engine slice E2). Every
@@ -165,6 +167,15 @@ export function clockTime(iso: string | null | undefined): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "an unreadable time";
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/**
+ * The Timing row of a pending ability card: "Asked 09:41 AM · closes Sun, Oct 11,
+ * 09:41 AM". The close names its day when it is not the day of the ask.
+ */
+export function abilityTiming(r: Pick<AbilityRequest, "created_at" | "expires_at">): string {
+  const w = formatRequestWindow(r.created_at, r.expires_at);
+  return `Asked ${w.asked} · closes ${w.closes}`;
 }
 
 export type AbilityStatusKind =

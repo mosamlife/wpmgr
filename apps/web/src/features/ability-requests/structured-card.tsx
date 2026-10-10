@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { setUpForLine } from "@/features/ai-requests/request-card-model";
 
-import { clockTime, isPending } from "./ability-card-model";
+import { abilityTiming, isPending } from "./ability-card-model";
 import type { AbilityRequestCardProps } from "./ability-request-card";
 import {
   REST_NOT_SHOWABLE_COPY,
@@ -63,9 +63,7 @@ export function StructuredAbilityCard(props: AbilityRequestCardProps & { canUndo
         {pending ? (
           <>
             <dt className="text-muted-foreground">Timing</dt>
-            <dd className="text-foreground">
-              Asked {clockTime(request.created_at)} · closes {clockTime(request.expires_at)}
-            </dd>
+            <dd className="text-foreground">{abilityTiming(request)}</dd>
           </>
         ) : null}
       </dl>

@@ -17,7 +17,7 @@ import {
   NOTHING_PUBLISHED,
   abilityCardTitle,
   abilityStatus,
-  clockTime,
+  abilityTiming,
   draftLinks,
   editorName,
   elementorCardRows,
@@ -135,9 +135,7 @@ function PageCreateCard({
         {pending ? (
           <>
             <dt className="text-muted-foreground">Timing</dt>
-            <dd className="text-foreground">
-              Asked {clockTime(request.created_at)} · closes {clockTime(request.expires_at)}
-            </dd>
+            <dd className="text-foreground">{abilityTiming(request)}</dd>
           </>
         ) : null}
       </dl>

@@ -1,12 +1,12 @@
 import type { AssistantRequest } from "@wpmgr/api";
 
 import { Button } from "@/components/ui/button";
+import { formatRequestWindow } from "@/lib/request-window";
 import { cn } from "@/lib/utils";
 
 import { PageAddress } from "./page-address";
 import {
   cardTitle,
-  formatTime,
   ifApproveCopy,
   isActionable,
   requestStatusLine,
@@ -46,6 +46,7 @@ export function RequestCard({
   const status = requestStatusLine(request, currentUserId);
   const actionable = isActionable(request);
   const setUpFor = setUpForLine(request);
+  const timing = formatRequestWindow(request.created_at, request.expires_at);
   const busy = approvePending || declinePending;
 
   return (
@@ -79,7 +80,7 @@ export function RequestCard({
           {actionable ? (
             <span className="text-muted-foreground">
               {" "}
-              · asked {formatTime(request.created_at)} · closes {formatTime(request.expires_at)}
+              · asked {timing.asked} · closes {timing.closes}
             </span>
           ) : null}
         </dd>
