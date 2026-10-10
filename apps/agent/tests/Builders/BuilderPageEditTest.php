@@ -533,6 +533,29 @@ final class BuilderPageEditTest extends TestCase
         $this->assertSame(['builder_not_available', 'tables_not_transactional'], self::codeOf($this->plan($input)));
     }
 
+    public function test_a_sqlite_site_takes_the_edit_without_reading_the_catalogue(): void
+    {
+        // The SQLite database integration's driver, whose catalogue cannot
+        // name a table's storage engine: SQLite has one, with transactions.
+        $sqlite          = SqliteEngineWpdb::asDriver($this->rows);
+        $this->wpdb      = $sqlite;
+        $GLOBALS['wpdb'] = $sqlite;
+        $this->assertInstanceOf(SqliteEngineWpdb::DRIVER_CLASS, $sqlite);
+
+        $input = $this->input(self::ops());
+        $r     = $this->approvedWrite($input);
+        $this->assertSame([true, 'applied'], [$r['ok'] ?? null, $r['outcome'] ?? null], (string) json_encode($r));
+        $this->assertSame(0, $sqlite->catalogueReads, 'information_schema is never read on SQLite');
+        $this->assertSame('completed', AbilityLedger::get(self::EDIT)['phase'] ?? null);
+        $this->assertSame([], $this->wpdb->claims, 'the claim is released');
+
+        // The same unreadable catalogue behind any other database class
+        // still refuses before anything is written.
+        $this->storePage(self::page());
+        $this->rows->failOn = 'information_schema';
+        $this->assertSame(['builder_not_available', 'table_engine_unreadable'], self::codeOf($this->plan($this->input(self::ops()))));
+    }
+
     public function test_ineligible_target_single_code(): void
     {
         $input = $this->input(self::ops());

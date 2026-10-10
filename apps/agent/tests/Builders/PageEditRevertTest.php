@@ -11,7 +11,7 @@
  * seam; the draft's document stores the elements as Elementor's save does.
  * Post, meta and snapshot rows live in FakeBuilderWpdb behind EngineWpdb,
  * which keeps the ledger's claim rows; the ledger rows are this test's
- * options.
+ * options, which get_option() answers from a per-request cache as core does.
  *
  * @package WPMgr\Agent\Tests\Builders
  */
@@ -115,6 +115,18 @@ final class PageEditRevertTest extends TestCase
     /** @var (\Closure(string, mixed): bool)|null True for an update_option() the site's database fails. */
     private ?\Closure $refuseOption = null;
 
+    /**
+     * @var array<string,mixed> This request's options cache, as core keeps it
+     *      without a persistent object cache: get_option() answers a name it
+     *      has read or written in this request from here, so a write another
+     *      request makes to $options meanwhile is not seen until
+     *      wp_cache_delete($name, 'options'). Emptied when a request starts.
+     */
+    private array $optionCache = [];
+
+    /** @var array<string,true> Names this request found missing, as core's notoptions. */
+    private array $notOptions = [];
+
     protected function set_up(): void
     {
         parent::set_up();
@@ -147,11 +159,37 @@ final class PageEditRevertTest extends TestCase
         Functions\when('remove_filter')->alias($release);
         Functions\when('remove_action')->alias($release);
         $this->refuseOption = null;
+        $this->optionCache  = [];
+        $this->notOptions   = [];
+        // The options API as core runs it against this request's cache.
+        Functions\when('get_option')->alias(function ($name, $default = false) {
+            $name = (string) $name;
+            if (array_key_exists($name, $this->optionCache)) {
+                return $this->optionCache[$name];
+            }
+            if (isset($this->notOptions[$name])) {
+                return $default;
+            }
+            if (!array_key_exists($name, $this->options)) {
+                $this->notOptions[$name] = true;
+
+                return $default;
+            }
+
+            return $this->optionCache[$name] = $this->options[$name];
+        });
         Functions\when('update_option')->alias(function ($name, $value) {
-            if ($this->refuseOption !== null && ($this->refuseOption)((string) $name, $value)) {
+            $name = (string) $name;
+            // Core compares with what get_option() answers, cached or not.
+            if ($value === \get_option($name)) {
                 return false;
             }
-            $this->options[$name] = $value;
+            if ($this->refuseOption !== null && ($this->refuseOption)($name, $value)) {
+                return false;
+            }
+            $this->options[$name]     = $value;
+            $this->optionCache[$name] = $value;
+            unset($this->notOptions[$name]);
 
             return true;
         });
@@ -159,10 +197,15 @@ final class PageEditRevertTest extends TestCase
             if ($snap($name)) {
                 return $this->rows->addOptionLikeCore((string) $name, $value, $unused, $autoload);
             }
-            if (array_key_exists($name, $this->options)) {
+            $name = (string) $name;
+            // Core asks get_option(), so this request's cache, whether the
+            // option exists.
+            if (!isset($this->notOptions[$name]) && \get_option($name) !== false) {
                 return false;
             }
-            $this->options[$name] = $value;
+            $this->options[$name]     = $value;
+            $this->optionCache[$name] = $value;
+            unset($this->notOptions[$name]);
 
             return true;
         });
@@ -170,19 +213,28 @@ final class PageEditRevertTest extends TestCase
             if ($snap($name)) {
                 return $this->rows->deleteOptionLikeCore((string) $name);
             }
-            $had = array_key_exists($name, $this->options);
-            unset($this->options[$name]);
+            $name = (string) $name;
+            $had  = array_key_exists($name, $this->options);
+            unset($this->options[$name], $this->optionCache[$name]);
+            if ($had) {
+                $this->notOptions[$name] = true;
+            }
 
             return $had;
         });
-        Functions\when('get_option')->alias(fn ($name, $default = false) => array_key_exists($name, $this->options) ? $this->options[$name] : $default);
+        Functions\when('wp_cache_delete')->alias(function ($key, $group = '') {
+            if ($group === 'options') {
+                unset($this->optionCache[(string) $key]);
+            }
+
+            return true;
+        });
         Functions\when('get_site_option')->alias(static fn ($name, $default = false) => $default);
         Functions\when('get_current_blog_id')->justReturn(1);
         Functions\when('is_user_logged_in')->justReturn(false);
         Functions\when('register_rest_route')->justReturn(true);
         Functions\when('wc_get_page_id')->justReturn(-1);
         Functions\when('clean_post_cache')->justReturn(null);
-        Functions\when('wp_cache_delete')->justReturn(true);
         Functions\when('wp_kses_post')->returnArg();
         Functions\when('get_post_meta')->justReturn('');
         Functions\when('wp_get_post_autosave')->alias(function ($id, $user = 0) {
@@ -912,7 +964,10 @@ final class PageEditRevertTest extends TestCase
      */
     private function post(string $cmd, string $body, ?string $pd): array
     {
-        $request = new \WP_REST_Request('POST', '/wpmgr/v1/command/' . $cmd);
+        // A new request: nothing of the options is cached yet.
+        $this->optionCache = [];
+        $this->notOptions  = [];
+        $request           = new \WP_REST_Request('POST', '/wpmgr/v1/command/' . $cmd);
         $request->set_url_params(['command' => $cmd]);
         $request->set_header('Content-Type', 'application/json');
         $request->set_header('Accept', 'application/json');
