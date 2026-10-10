@@ -12,7 +12,7 @@ import {
 import type { AbilityRequest, AssistantRequest, Me } from "@wpmgr/api";
 
 import { createTestQueryClient, renderWithProviders } from "@/test/render";
-import { assertDbShape, pageCreateRow } from "@/test/ability-request-rows";
+import { assertDbShape, pageCreateRow, pageEditRow } from "@/test/ability-request-rows";
 import { authKeys } from "@/features/auth/use-auth";
 import { abilityRequestKeys } from "@/features/ability-requests/use-ability-requests";
 import { DEEP_LINK_MAX_PAGES, useDeepLink } from "@/features/ai-requests/use-deep-link";
@@ -230,6 +230,20 @@ describe("arriving by the link to a request that waits", () => {
     expect(scrollSpy.mock.contexts).toEqual([target]);
   });
 
+  it("does the same for a change to a draft in Elementor (a page edit)", async () => {
+    abilityRows = [
+      pending(NEWER, "Shop A"),
+      pageEditRow({ id: TARGET, site_label: "Shop B", site_id: "site-Shop B" }),
+    ];
+    mount(`/ai/requests?request=${TARGET}`);
+
+    const target = await articleOf("Change a draft in Elementor · Shop B");
+    const other = await articleOf("Create a draft page · Shop A");
+    await waitFor(() => expect(declineIn(target)).toHaveFocus());
+    expect(declineIn(other)).not.toHaveFocus();
+    expect(scrollSpy.mock.contexts).toEqual([target]);
+  });
+
   it("is the Decline button that acts: pressing it declines the named request and no other", async () => {
     abilityRows = [pending(NEWER, "Shop A"), pending(TARGET, "Shop B")];
     declineMock.mockReturnValue(ok({ ...abilityRows[1]!, state: "declined", decided_at: "2026-10-01T09:58:00Z" }));
@@ -298,6 +312,27 @@ describe("arriving by the link to a request already answered or closed", () => {
     expect(within(target).queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
     expect(scrollSpy.mock.contexts).toEqual([target]);
     // The first waiting card does not take the focus from it.
+    expect(declineIn(await articleOf("Create a draft page · Shop A"))).not.toHaveFocus();
+  });
+
+  it("puts focus on the card of a page edit already applied, which has nothing to decide", async () => {
+    abilityRows = [
+      pending(NEWER, "Shop A"),
+      pageEditRow({
+        id: TARGET,
+        site_label: "Shop B",
+        state: "done",
+        outcome: "applied",
+        decided_at: "2026-10-01T09:58:00Z",
+      }),
+    ];
+    mount(`/ai/requests?request=${TARGET}`);
+
+    const target = await articleOf("Change a draft in Elementor · Shop B");
+    await waitFor(() => expect(target).toHaveFocus());
+    expect(within(target).getByText("Draft changed in Elementor.")).toBeInTheDocument();
+    expect(within(target).queryByRole("button", { name: "Decline" })).not.toBeInTheDocument();
+    expect(scrollSpy.mock.contexts).toEqual([target]);
     expect(declineIn(await articleOf("Create a draft page · Shop A"))).not.toHaveFocus();
   });
 

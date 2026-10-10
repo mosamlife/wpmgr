@@ -1,7 +1,11 @@
 import { z } from "zod";
 import type { AbilityRequest } from "@wpmgr/api";
 
+import { settingNotSentLine } from "@/features/ai-trust/ai-trust-copy";
+
 import {
+  approvedNotStartedText,
+  automaticStatus,
   clockTime,
   notSentText,
   type AbilityStatus,
@@ -30,6 +34,11 @@ export const PAGE_EDIT_ABILITY = "wpmgr/page-edit";
 /** A wpmgr/page-edit request. */
 export function isPageEdit(r: AbilityRequest): boolean {
   return r.ability_name === PAGE_EDIT_ABILITY;
+}
+
+/** "Change a draft in Elementor · Shop". The site name is the site's own label, rendered as text. */
+export function pageEditCardTitle(siteLabel: string): string {
+  return `Change a draft in Elementor · ${siteLabel}`;
 }
 
 // --- The AI's input ---------------------------------------------------------
@@ -717,8 +726,18 @@ export function failedEditStatus(
   return { ...base, text: EDIT_FAILED_COPY, tone: "neutral" };
 }
 
-/** The status line of a page edit in every state, for the card under its body. */
+/**
+ * The status line of a page edit in every state, for the card under its body.
+ * A change a site's setting approved is decided by no person, so where WPMgr
+ * cannot vouch for the result the line says so in the one sentence every card
+ * uses (approval tiers, `automaticStatus`).
+ */
 export function pageEditStatus(r: AbilityRequest): PageEditStatus {
+  return automaticStatus(r, basePageEditStatus(r));
+}
+
+/** The status as a person's own approval reads it; `pageEditStatus` adjusts it for an automatic one. */
+function basePageEditStatus(r: AbilityRequest): PageEditStatus {
   const plain = (kind: AbilityStatusKind, text: string, links = false): PageEditStatus => ({
     kind,
     text,
@@ -729,10 +748,7 @@ export function pageEditStatus(r: AbilityRequest): PageEditStatus {
     case "pending":
       return plain("pending", "Waiting for your decision.");
     case "approved":
-      return plain(
-        "approved",
-        `Approved at ${clockTime(r.decided_at)}. Not started yet. WPMgr sends it to the site shortly.`,
-      );
+      return plain("approved", approvedNotStartedText(r));
     case "dispatched":
       return plain("running", "WPMgr is changing the draft.");
     case "outcome_unknown":
@@ -768,7 +784,11 @@ export function pageEditStatus(r: AbilityRequest): PageEditStatus {
     case "failed":
       return failedEditStatus(r.outcome_code, r.restored, r.outcome, r.outcome_detail, r.outside_change);
     case "not_sent":
-      return plain("not_sent", `Nothing was sent: ${notSentText(r.not_sent_reason)}. Nothing was changed.`);
+      return plain(
+        "not_sent",
+        settingNotSentLine(r.not_sent_reason) ??
+          `Nothing was sent: ${notSentText(r.not_sent_reason)}. Nothing was changed.`,
+      );
     case "declined":
       return plain("declined", `Declined at ${clockTime(r.decided_at)}. Nothing was changed.`);
     case "withdrawn":

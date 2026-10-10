@@ -7,6 +7,12 @@ import { PageError } from "@/components/feedback/page-error";
 import { AbilityRequestCard } from "@/features/ability-requests/ability-request-card";
 import { RanAutomaticallyChip } from "@/features/ability-requests/auto-approval";
 import { abilityCardTitle, abilityStatus, clockTime } from "@/features/ability-requests/ability-card-model";
+import {
+  isPageEdit,
+  laterEditCount,
+  pageEditCardTitle,
+  pageEditStatus,
+} from "@/features/ability-requests/page-edit-model";
 import { isRestWrite, parseRestCardFacts, restCardTitle, restWriteStatus } from "@/features/ability-requests/rest-card-model";
 import { useAbilityCardActions } from "@/features/ability-requests/use-ability-card-actions";
 import { RequestCard } from "@/features/ai-requests/request-card";
@@ -24,13 +30,15 @@ import { useAiActivityPages, type ActivityFilters } from "./use-ai-trust";
 function itemTitle(item: AiActivityItem): string {
   if (item.kind === "cache_purge_request") return cardTitle(item.request);
   const r = item.request;
+  if (isPageEdit(r)) return pageEditCardTitle(r.site_label);
   return isRestWrite(r) ? restCardTitle(parseRestCardFacts(r), r.site_label) : abilityCardTitle(r);
 }
 
-function itemStatus(item: AiActivityItem, currentUserId: string | null): string {
+function itemStatus(item: AiActivityItem, currentUserId: string | null, laterEdits: number): string {
   if (item.kind === "cache_purge_request") return requestStatusLine(item.request, currentUserId).text;
   const r = item.request;
-  return isRestWrite(r) ? restWriteStatus(r).text : abilityStatus(r).text;
+  if (isPageEdit(r)) return pageEditStatus(r).text;
+  return isRestWrite(r) ? restWriteStatus(r).text : abilityStatus(r, laterEdits).text;
 }
 
 function itemTime(item: AiActivityItem): string {
@@ -55,6 +63,9 @@ export function AiActivityList({
   const [open, setOpen] = useState<string | null>(null);
 
   const items = query.data?.pages.flatMap((p) => p.items) ?? [];
+  // A page creation's Undo also covers the page edits made to its draft since;
+  // the feed counts the ones it has loaded, as the queues do.
+  const requests = items.flatMap((i) => (i.kind === "ability_request" ? [i.request] : []));
   const filtered = filters.filter !== "all" || filters.siteId !== undefined || filters.grantId !== undefined;
 
   // A principal without site.content.edit is refused the feed. The list is
@@ -111,6 +122,7 @@ export function AiActivityList({
           const title = itemTitle(item);
           const expanded = open === key;
           const auto = item.kind === "ability_request" && ranAutomatically(item.request.approval);
+          const laterEdits = item.kind === "ability_request" ? laterEditCount(item.request, requests) : 0;
           return (
             <li key={key} className="space-y-2 rounded-lg border border-border bg-card p-3">
               <div className="flex flex-wrap items-start justify-between gap-2">
@@ -122,7 +134,7 @@ export function AiActivityList({
                   <p className="text-xs text-muted-foreground">
                     {itemTime(item)} · {item.request.grant_label}
                   </p>
-                  <p className="text-sm text-foreground">{itemStatus(item, currentUserId)}</p>
+                  <p className="text-sm text-foreground">{itemStatus(item, currentUserId, laterEdits)}</p>
                 </div>
                 <Button
                   type="button"
@@ -140,6 +152,7 @@ export function AiActivityList({
                   <AbilityRequestCard
                     request={item.request}
                     currentUserId={currentUserId}
+                    laterEdits={laterEdits}
                     notice={actions.notices[item.request.id] ?? null}
                     onApprove={actions.handleApprove}
                     onDecline={actions.handleDecline}

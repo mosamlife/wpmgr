@@ -267,9 +267,10 @@ function failureEndStateKnown(r: AbilityRequest): boolean {
  * the card says so in one plain sentence and names where to read the answer
  * (design §8.9). The kind is unchanged, so a failure keeps its red border and
  * its place under "Failed or result unknown". A person's own approval is
- * untouched, and so is a failure whose end state is known.
+ * untouched, and so is a failure whose end state is known. Whatever else a
+ * card's status carries (a tone, links) is kept.
  */
-export function automaticStatus(r: AbilityRequest, status: AbilityStatus): AbilityStatus {
+export function automaticStatus<S extends AbilityStatus>(r: AbilityRequest, status: S): S {
   if (!ranAutomatically(r.approval)) return status;
   const open = status.kind === "unknown_outcome" || (status.kind === "failed" && !failureEndStateKnown(r));
   return open ? { ...status, text: OUTCOME_UNKNOWN_LINE } : status;
