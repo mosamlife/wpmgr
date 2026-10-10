@@ -12161,11 +12161,13 @@ CREATE TRIGGER assistant_cache_purge_requests_approval_backstop
     FOR EACH ROW
     EXECUTE FUNCTION ai_approval_backstop();
 
--- The seeded classes: wpmgr/page-create makes the AI's own drafts; the two
--- REST write routes are classed by the checked status of their target.
+-- The seeded classes: wpmgr/page-create makes the AI's own drafts and
+-- wpmgr/page-edit changes them; the two REST write routes are classed by the
+-- checked status of their target. wpmgr/page-structure, a read, stays on the
+-- default.
 UPDATE ability_catalogue
 SET change_class = 'ai_draft'
-WHERE name = 'wpmgr/page-create'
+WHERE name IN ('wpmgr/page-create', 'wpmgr/page-edit')
   AND source = 'wpmgr'
   AND change_class = 'always_ask';
 

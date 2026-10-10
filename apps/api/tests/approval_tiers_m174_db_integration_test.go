@@ -144,7 +144,9 @@ func m174UUID(u uuid.UUID) pgtype.UUID { return pgtype.UUID{Bytes: u, Valid: tru
 // and returns 42501, not no row); drop "s.ai_mode_source =
 // NEW.approval_mode_source" from ai_approval_backstop (the raw UPDATE with a
 // wrong source is then accepted); drop "approval_mode_source IS NOT NULL"
-// from the policy shape CHECK (the trigger-less UPDATE is then accepted).
+// from assistant_ability_requests_policy_approval_shape_check or from
+// assistant_cache_purge_requests_policy_approval_shape_check (that table's
+// trigger-less UPDATE is then accepted).
 func TestM174PolicyApprovalRecordsModeSource(t *testing.T) {
 	ctx := context.Background()
 	pool := startPostgres(t)
@@ -246,32 +248,138 @@ WHERE tenant_id = $1 AND id = $2`, tenant, req.ID, src, mode.AiModeVersion, user
 		t.Fatalf("usage: %v", err)
 	}
 
-	// The CHECKs hold with the triggers out of the way: an approved policy
-	// row with no mode source, and a person row with one, are both refused.
+	// The CHECKs hold with the triggers out of the way, on both request
+	// tables: an approved policy row with no mode source is refused by that
+	// table's policy shape CHECK, and a person row with a mode source by the
+	// mode source CHECK. Each refusal must come from the named constraint: a
+	// refusal from another CHECK would leave the named one unproven.
 	pending := aarInsert(t, pool, acprSitePrincipal(tenant, site), aarParams(tenant, site, grant.ID, "src-2"))
+	purge := acprInsert(t, pool, acprSitePrincipal(tenant, site), acprParams(tenant, site, grant.ID, "src-3"))
 	admin := connectAdmin(t, pool)
 	defer admin.Close()
-	for name, stmt := range map[string]string{
-		"policy approval with no mode source": `
+	for _, c := range []struct {
+		what, constraint, stmt string
+		id                     uuid.UUID
+	}{
+		{
+			what:       "site change: policy approval with no mode source",
+			constraint: "assistant_ability_requests_policy_approval_shape_check",
+			id:         pending.ID,
+			stmt: `
 UPDATE assistant_ability_requests
 SET state = 'approved', approval_source = 'policy', approval_site_mode = 'ai_drafts',
     approval_mode_version = 1, approval_setter_user_id = $2, approval_setter_set_at = now(),
     base_change_class = 'ai_draft', change_class = 'ai_draft', decided_at = now(),
     dispatch_deadline_at = now() + interval '10 minutes', policy_checked_at = now()
 WHERE id = $1`,
-		"person row with a mode source": `
+		},
+		{
+			what:       "site change: person row with a mode source",
+			constraint: "assistant_ability_requests_approval_mode_source_check",
+			id:         pending.ID,
+			stmt: `
 UPDATE assistant_ability_requests SET approval_mode_source = 'person' WHERE id = $1 AND $2::uuid IS NOT NULL`,
+		},
+		{
+			what:       "cache clear: policy approval with no mode source",
+			constraint: "assistant_cache_purge_requests_policy_approval_shape_check",
+			id:         purge.ID,
+			stmt: `
+UPDATE assistant_cache_purge_requests
+SET state = 'approved_undispatched', approval_source = 'policy', approval_site_mode = 'ai_drafts',
+    approval_mode_version = 1, approval_setter_user_id = $2, approval_setter_set_at = now(),
+    base_change_class = 'operational', change_class = 'operational', decided_at = now(),
+    policy_checked_at = now()
+WHERE id = $1`,
+		},
 	} {
 		err := admin.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
 				return err
 			}
-			_, err := tx.Exec(ctx, stmt, pending.ID, user)
+			_, err := tx.Exec(ctx, c.stmt, c.id, user)
 			return err
 		})
-		if m174Code(err) != "23514" {
-			t.Fatalf("%s: err = %v (code %s), want 23514", name, err, m174Code(err))
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23514" || pgErr.ConstraintName != c.constraint {
+			t.Errorf("%s: err = %v (code %s); want 23514 at %s", c.what, err, m174Code(err), c.constraint)
+			continue
 		}
+		t.Logf("ok   %s: refused 23514 at %s", c.what, pgErr.ConstraintName)
+	}
+}
+
+// TestM174SeedClassesPageEditAsAIDraft proves that once every migration has
+// run, the catalogue as the trust page reads it (the shipped
+// ListAdmittedAbilityCatalogue, as wpmgr_app) has wpmgr/page-edit and
+// wpmgr/page-create classed ai_draft, and wpmgr/page-structure, a read, on
+// the default always_ask. It also proves a superadmin cannot class
+// page-structure ai_draft: it has no undo, and
+// ability_catalogue_change_class_snapshot_check refuses it.
+//
+// Mutations: drop 'wpmgr/page-edit' from m174's seed UPDATE (page-edit reads
+// always_ask); give m174 an ordinal that sorts before m169's (m169 inserts
+// page-edit after the seed ran, and it reads always_ask); drop
+// ability_catalogue_change_class_snapshot_check (the re-class of
+// page-structure is accepted).
+func TestM174SeedClassesPageEditAsAIDraft(t *testing.T) {
+	ctx := context.Background()
+	pool := startPostgres(t)
+	tenant := seedTenant(t, pool, "m174-seed-"+uuid.NewString()[:8])
+
+	var entries []sqlc.AbilityCatalogue
+	if err := pool.RunTenantTx(ctx, acprOrgPrincipal(tenant), func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "RunTenantTx (m174 read catalogue)")
+		var err error
+		entries, err = sqlc.New(tx).ListAdmittedAbilityCatalogue(ctx)
+		return err
+	}); err != nil {
+		t.Fatalf("read the admitted catalogue: %v", err)
+	}
+	byName := map[string]sqlc.AbilityCatalogue{}
+	for _, e := range entries {
+		if e.Source == "wpmgr" {
+			byName[e.Name] = e
+		}
+	}
+	for _, want := range []struct{ name, class, changeClass string }{
+		{"wpmgr/page-edit", "write", "ai_draft"},
+		{"wpmgr/page-create", "write", "ai_draft"},
+		{"wpmgr/page-structure", "read", "always_ask"},
+	} {
+		e, ok := byName[want.name]
+		if !ok {
+			t.Errorf("%s: not in the admitted catalogue", want.name)
+			continue
+		}
+		if e.Class != want.class || e.ChangeClass != want.changeClass {
+			t.Errorf("%s: class %s, change_class %s; want %s, %s", want.name, e.Class, e.ChangeClass, want.class, want.changeClass)
+			continue
+		}
+		t.Logf("ok   %s: class %s, change_class %s", want.name, e.Class, e.ChangeClass)
+	}
+
+	structure, ok := byName["wpmgr/page-structure"]
+	if !ok {
+		t.Fatalf("wpmgr/page-structure is not in the admitted catalogue")
+	}
+	actor := m174User(t, pool)
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
+	if _, err := admin.Exec(ctx, `UPDATE users SET is_superadmin = true WHERE id = $1`, actor); err != nil {
+		t.Fatalf("make the actor a superadmin: %v", err)
+	}
+	err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (m174 re-class page-structure)")
+		var out string
+		return tx.QueryRow(ctx, `SELECT set_ability_change_class($1, 'ability', $2, 'ai_draft')`,
+			actor, structure.EntryID.String()).Scan(&out)
+	})
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" || pgErr.ConstraintName != "ability_catalogue_change_class_snapshot_check" {
+		t.Errorf("a superadmin classing wpmgr/page-structure ai_draft: err = %v (code %s); want 23514 at ability_catalogue_change_class_snapshot_check", err, m174Code(err))
+	} else {
+		t.Logf("ok   a superadmin classing wpmgr/page-structure ai_draft: refused 23514 at %s", pgErr.ConstraintName)
 	}
 }
 

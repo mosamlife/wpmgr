@@ -217,9 +217,15 @@
 -- entry or route hash moves. For wpmgr/rest-write the route's class is the
 -- stored class; the entry's own class is not consulted.
 --
--- Seeds: wpmgr/page-create is 'ai_draft'; the two REST write routes
--- (wp-v2-pages-update-fields, wp-v2-posts-update-fields) are
--- 'by_target_status'. Both catalogues are ENABLE, not FORCE, row level
+-- Seeds: wpmgr/page-create (makes the AI's own drafts) and wpmgr/page-edit
+-- (m169: changes only a draft WPMgr created, and publishes nothing) are
+-- 'ai_draft'; the two REST write routes (wp-v2-pages-update-fields,
+-- wp-v2-posts-update-fields) are 'by_target_status'. m169 seeds
+-- wpmgr/page-edit and sorts before this file, so its row exists when the
+-- seed runs. wpmgr/page-structure (m169) is a read: no request is ever made
+-- for it, so its class is never consulted, and it stays on the default. Its
+-- snapshot is 'none', so the snapshot CHECK below admits only 'always_ask'
+-- or 'operational' for it. Both catalogues are ENABLE, not FORCE, row level
 -- security and the migration role owns them, so each seed is a plain UPDATE.
 -- A missing row raises a NOTICE and stays on the default, which waits for a
 -- person.
@@ -244,12 +250,17 @@
 -- CONVERGE PATH AND RE-RUN
 -- ===========================================================================
 --
--- None needed: m174 is new. ADD COLUMN IF NOT EXISTS, DROP CONSTRAINT IF
--- EXISTS before each ADD, CREATE OR REPLACE FUNCTION, DROP TRIGGER IF EXISTS
--- before each CREATE TRIGGER, guarded UNIQUE and seeds make a re-run converge
--- on the same end state. A re-run's backfills touch only rows still on their
--- DDL defaults (sites still 'unset' with AI editing on; person-created grants
--- never switched since), which is the same rule the first run applied.
+-- None needed on any install: none had applied m174 when it merged. Its
+-- ordinal sorts after m176 and m169 so that the page-edit seed finds m169's
+-- row. A database that ran this file under its pre-merge ordinal,
+-- 20261009070000, applies it again under this one: ADD COLUMN IF NOT EXISTS,
+-- DROP CONSTRAINT IF EXISTS before each ADD, CREATE OR REPLACE FUNCTION, DROP
+-- TRIGGER IF EXISTS before each CREATE TRIGGER, guarded UNIQUE and seeds make
+-- that run converge on the same end state, and it classes wpmgr/page-edit,
+-- which m169 inserted on the default after the earlier run. A re-run's
+-- backfills touch only rows still on their DDL defaults (sites still 'unset'
+-- with AI editing on; person-created grants never switched since), which is
+-- the same rule the first run applied.
 --
 -- LOCK WAIT. Each lock is waited for at most five seconds; a timeout rolls the
 -- file back and fails the boot with the previous revision left serving.
@@ -1151,7 +1162,7 @@ DECLARE
 BEGIN
     UPDATE "public"."ability_catalogue"
     SET "change_class" = 'ai_draft'
-    WHERE "name" = 'wpmgr/page-create'
+    WHERE "name" IN ('wpmgr/page-create', 'wpmgr/page-edit')
       AND "source" = 'wpmgr'
       AND "change_class" = 'always_ask';
     GET DIAGNOSTICS v_entries = ROW_COUNT;
@@ -1168,6 +1179,12 @@ BEGIN
         WHERE "name" = 'wpmgr/page-create' AND "source" = 'wpmgr' AND "change_class" = 'ai_draft'
     ) THEN
         RAISE NOTICE 'm174: wpmgr/page-create is not classed ai_draft; every page creation waits for a person until a superadmin classes it';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM "public"."ability_catalogue"
+        WHERE "name" = 'wpmgr/page-edit' AND "source" = 'wpmgr' AND "change_class" = 'ai_draft'
+    ) THEN
+        RAISE NOTICE 'm174: wpmgr/page-edit is not classed ai_draft; every page edit waits for a person until a superadmin classes it';
     END IF;
     IF (SELECT count(*) FROM "public"."rest_route_catalogue"
         WHERE "route_id" IN ('wp-v2-pages-update-fields', 'wp-v2-posts-update-fields')

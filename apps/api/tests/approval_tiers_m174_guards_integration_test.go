@@ -37,7 +37,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
-const m174gVersion = "20261009070000_m174_approval_tiers"
+const m174gVersion = "20261010020000_m174_approval_tiers"
 
 var errM174gRollback = errors.New("m174g: roll back")
 
@@ -379,8 +379,10 @@ func m174gForceHeld(t *testing.T, pool *db.Pool, table string) bool {
 // Mutations: delete the NO FORCE and row_security lines from the sites DO
 // block (the sites stay unset, or Migrate fails); create sites_ai_mode_guard
 // before the DO block (Migrate fails: the guard refuses launch_default);
-// drop the "content_editing_enabled_by IS NOT NULL" filter from the first
-// UPDATE (Migrate fails on the CHECKs).
+// drop both the "content_editing_enabled_by IS NOT NULL" and the
+// "content_editing_enabled_by <> nil uuid" filters from the first UPDATE
+// (Migrate fails on sites_ai_mode_above_ask_names_setter_check). Either
+// filter alone still excludes a NULL enabler, so dropping one is not caught.
 func TestLaunchBackfill(t *testing.T) {
 	ctx := context.Background()
 	w := m174gBackfillWorld(t)
@@ -447,10 +449,13 @@ func TestLaunchBackfill(t *testing.T) {
 // guard is in place after the backfill.
 //
 // Mutations: delete the NO FORCE and row_security lines from the
-// mcp_grants DO block (the person's connection stays never); drop
-// "created_by_user_id IS NOT NULL" from the backfill (Migrate fails on
-// mcp_grants_ai_auto_names_setter_check); create mcp_grants_ai_auto_guard
-// before the DO block (Migrate fails: the guard refuses the backfill).
+// mcp_grants DO block (the person's connection stays never); drop both the
+// "created_by_user_id IS NOT NULL" and the "created_by_user_id <> nil uuid"
+// filters from the backfill (Migrate fails on
+// mcp_grants_ai_auto_names_setter_check; either filter alone still excludes
+// a NULL creator, so dropping one is not caught); create
+// mcp_grants_ai_auto_guard before the DO block (Migrate fails: the guard
+// refuses the backfill).
 func TestGrantBackfillKeyMintedStaysNever(t *testing.T) {
 	w := m174gBackfillWorld(t)
 
