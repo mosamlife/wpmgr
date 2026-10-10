@@ -6,6 +6,7 @@ type AbilityRequestCardFacts = NonNullable<AbilityRequest["card_facts"]>;
 
 import { createTestQueryClient, renderWithProviders } from "@/test/render";
 import { authKeys } from "@/features/auth/use-auth";
+import { clockTime } from "@/features/ability-requests/ability-card-model";
 
 import { Route } from "./requests";
 
@@ -126,6 +127,23 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("rest-write structured card", () => {
+  // The control plane opens the window for 24 hours
+  // (apps/api/internal/mcp/ability_write.go, abilityRequestWindow). The instant
+  // used is on a different calendar day from the instant 24 hours later in every
+  // zone, and each expectation is derived from the same instants.
+  it("names the day the request closes when it closes on a later day", async () => {
+    const created_at = "2026-10-10T04:11:41Z";
+    const expires_at = new Date(Date.parse(created_at) + 24 * 60 * 60 * 1000).toISOString();
+    renderPage([restRow({ created_at, expires_at })]);
+    const card = await screen.findByRole("article", { name: /Change a page's title or excerpt/ });
+    const term = within(card).getByText("Timing", { selector: "dt" });
+    const timing = (term.nextElementSibling?.textContent ?? "").replace(/\s+/g, " ").trim();
+    expect(timing.startsWith(`Asked ${clockTime(created_at)} · closes `)).toBe(true);
+    const closes = timing.slice(timing.indexOf(" · closes ") + " · closes ".length);
+    expect(closes).not.toBe(clockTime(expires_at));
+    expect(closes).toContain(new Intl.DateTimeFormat([], { weekday: "short" }).format(new Date(expires_at)));
+  });
+
   it("a live pending card shows the route, the warning, the target and before to after", async () => {
     renderPage([restRow()]);
     const card = await screen.findByRole("article", { name: /Change a page's title or excerpt/ });
