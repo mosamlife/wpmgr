@@ -61,10 +61,13 @@
  *      changes off the page (a later operation removes or replaces the section
  *      that holds them). For a case with a golden after tree, an operation is
  *      held to the page only if an element it wrote is in that tree: the
- *      element a set_text changed, or an element the preview lists as made by
- *      an insert or a replace. A case without one is held to everything its
- *      operations wrote, and a case whose operations leave none of their texts
- *      on the page is red, since it would look at nothing.
+ *      element the fixture's change names for a set_text, or an element it
+ *      lists as made by an insert or a replace. The fixture's changes are
+ *      used and not the precheck's, because the precheck runs under a request
+ *      id of its own and so makes its new elements under other ids. A case
+ *      without a golden after tree is held to everything its operations wrote,
+ *      and a case whose operations leave none of their texts on the page is
+ *      red, since it would look at nothing.
  *
  * Together the cases must have applied all five operations: set_text, insert,
  * replace, remove and move.
@@ -981,7 +984,7 @@ function rt_node_ids(array $nodes, array &$out): void
  * change that names no element it wrote is held to the page, and so is every
  * change when the page after the call is not known.
  *
- * @param array<mixed>            $change One entry of the preview's changes.
+ * @param array<mixed>            $change One entry of the golden fixture's changes.
  * @param array<string,true>|null $live   The ids of the elements on the page after the call, or null.
  */
 function rt_wrote_on_page(array $change, ?array $live): bool
@@ -1018,7 +1021,7 @@ function rt_wrote_on_page(array $change, ?array $live): bool
  * section that held them).
  *
  * @param list<array<string,mixed>> $ops     The operations, as the AI sends them.
- * @param array<mixed>              $changes The preview's changes, one per operation, in order.
+ * @param array<mixed>              $changes The golden fixture's changes, one per operation, in order, or none.
  * @param array<string,true>|null   $live    The ids of the elements on the page after the call, or null when the case has no such tree.
  * @return array{texts:list<string>,links:list<string>,off:int} What the page must show, and how many written texts are off the page.
  */
@@ -1317,7 +1320,7 @@ function rt_edit_phase(string $layout, string $stored, int $principal, array $pl
                 'seed'   => $shared ? null : $case['seed'],
                 'before' => $shared ? $case['before_tree'] : null,
                 'ops'    => $case['ops'],
-                'golden' => $shared ? ['request_id' => (string) ($case['request_id'] ?? ''), 'after' => $case['after_tree']] : null,
+                'golden' => $shared ? ['request_id' => (string) ($case['request_id'] ?? ''), 'after' => $case['after_tree'], 'changes' => is_array($case['changes'] ?? null) ? $case['changes'] : []] : null,
             ];
         }
     }
@@ -1406,13 +1409,16 @@ function rt_edit_phase(string $layout, string $stored, int $principal, array $pl
                 $c->ck('edit-mode', $mode === ['builder'], 'the edit mode rows are ' . rt_brief($mode));
 
                 // 10. Render the edited page. A later operation of the batch can take an earlier one off the page,
-                // so a case with a golden after tree is held to the operations whose elements that tree still holds.
-                $live = null;
+                // so a case with a golden after tree is held to the operations whose elements that tree still holds,
+                // as the fixture's own changes name them (the precheck's new elements have ids of its own request).
+                $live  = null;
+                $wrote = [];
                 if (is_array($spec['golden'])) {
-                    $live = [];
+                    $live  = [];
+                    $wrote = $spec['golden']['changes'];
                     rt_node_ids($spec['golden']['after'], $live);
                 }
-                $held = rt_held_to_page($ops, $changes, $live);
+                $held = rt_held_to_page($ops, $wrote, $live);
                 $gone = [];
                 foreach ($changes as $change) {
                     if (is_array($change)) {
