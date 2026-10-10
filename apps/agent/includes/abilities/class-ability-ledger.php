@@ -57,11 +57,11 @@ final class AbilityLedger
     }
 
     /**
-     * The row for a request as the options table holds it now, or null.
-     * get() can answer this request's cached copy of the row, which misses a
-     * write another request made since; this drops that copy first, so the
-     * row is read from the table, and get() and update() later in this
-     * request start from what it read.
+     * The row for a request, or null, as get() answers it once this
+     * request's cached copy of the row is dropped. get() can answer that
+     * copy, which misses a write another request made since; with it
+     * dropped, a row this request has read is read again from the options
+     * table, and get() and update() later in this request start from it.
      *
      * @param string $requestId Request id (validated UUID).
      * @return array<string,mixed>|null
