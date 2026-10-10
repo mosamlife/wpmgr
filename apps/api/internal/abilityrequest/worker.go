@@ -707,8 +707,8 @@ func (s *Service) reserve(ctx context.Context, p domain.Principal, a DispatchArg
 		if !acquired {
 			return &transientError{code: AttemptOrgBusy}
 		}
-		// Every write to a site's mode or a connection's switch holds the
-		// tenant's policy lock until it commits. Holding it here, before the
+		// aitrust's writes to a site's mode and a connection's switch hold the
+		// tenant's policy lock until they commit. Holding it here, before the
 		// site dispatch lock as aipolicy/locks.go orders them, means such a
 		// write either committed before the re-check below reads it or waits
 		// for this reservation to commit. A person's approval relies on no
