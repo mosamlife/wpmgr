@@ -39,6 +39,9 @@ final class ElementorDocumentTest extends TestCase
 
     private const REQUEST = '11111111-2222-4333-8444-777777777777';
 
+    /** Name prefix of Elementor's style-cache validity options. */
+    private const CACHE = 'elementor_atomic_cache_validity__';
+
     /** Locales tried, in order, for one whose numeric name is not "C". */
     private const LOCALES = ['de_DE.UTF-8', 'de_DE.utf8', 'C.UTF-8', 'en_US.UTF-8', 'en_US.utf8'];
 
@@ -388,6 +391,129 @@ final class ElementorDocumentTest extends TestCase
         $this->assertSame('side_effect_detected', $doc->save(self::TARGET, self::tree(), self::KIT)['code'] ?? null);
     }
 
+    public function test_style_cache_write_that_only_clears_the_target_is_the_saves_own(): void
+    {
+        $document = $this->api->addDocument(self::TARGET);
+        $doc      = new ElementorDocument($this->api);
+
+        // The target's entry goes, the other post's entry stays as it was.
+        $old = ['state' => false, 'children' => [self::TARGET => self::viewedEntry(), self::OTHER => ['state' => true, 'meta' => '6ac9bb9c3d4e5']]];
+        $new = ['state' => false, 'children' => [self::OTHER => ['state' => true, 'meta' => '6ac9bb9c3d4e5']]];
+        $document->onSave = function () use ($old, $new): bool {
+            $this->fire('updated_option', self::CACHE . 'local', $old, $new);
+
+            return true;
+        };
+        $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+        $this->assertSame([true, []], [$result['ok'], $result['scope']['violations'] ?? null], (string) json_encode($result));
+        $this->assertSame([], $this->hooks, 'nothing left installed after the save');
+
+        // Elementor's own clears as a save makes them after a view: the
+        // target was the root's only entry (left as an empty list, or with no
+        // list at all), or one of several; and a re-validation of the
+        // target's own entry. Every supported version, and an unknown one.
+        $document->onSave = function (): bool {
+            $this->fire('updated_option', self::CACHE . 'global', ['state' => false, 'children' => [self::TARGET => self::viewedEntry()]], ['state' => false, 'children' => []]);
+            $this->fire('updated_option', self::CACHE . 'component-styles-related-posts', ['state' => false, 'children' => [self::TARGET => ['state' => true, 'meta' => []]]], ['state' => false]);
+            $this->fire('updated_option', self::CACHE . 'global_related', ['state' => true, 'meta' => 'm', 'children' => [self::TARGET => true, self::OTHER => false]], ['state' => true, 'meta' => 'm', 'children' => [self::OTHER => false]]);
+            $this->fire('updated_option', self::CACHE . 'local', ['state' => false, 'children' => [self::OTHER => true]], ['state' => false, 'children' => [self::OTHER => true, self::TARGET => self::viewedEntry()]]);
+
+            return true;
+        };
+        foreach (['3.20.4', '3.35.9', '4.3.4', null] as $version) {
+            $this->api->version = $version;
+            $result             = $doc->save(self::TARGET, self::tree(), self::KIT);
+            $this->assertSame([true, []], [$result['ok'], $result['scope']['violations'] ?? null], (string) $version . ': ' . json_encode($result));
+        }
+    }
+
+    public function test_style_cache_write_that_touches_another_post_is_outside_the_page(): void
+    {
+        $document = $this->api->addDocument(self::TARGET);
+        $doc      = new ElementorDocument($this->api);
+        $other    = ['state' => true, 'meta' => '6ac9bb9c3d4e5'];
+        $both     = ['state' => false, 'children' => [self::TARGET => self::viewedEntry(), self::OTHER => $other]];
+        $name     = self::CACHE . 'local';
+
+        $refused = [
+            'the other post\'s entry changed'           => fn () => $this->fire('updated_option', $name, $both, ['state' => false, 'children' => [self::OTHER => ['state' => false]]]),
+            'the other post\'s entry removed'           => fn () => $this->fire('updated_option', $name, $both, ['state' => false]),
+            'the other post\'s entry added'             => fn () => $this->fire('updated_option', $name, ['state' => false, 'children' => [self::TARGET => self::viewedEntry()]], $both),
+            'the root\'s own state changed'             => fn () => $this->fire('updated_option', $name, $both, ['state' => true, 'children' => [self::OTHER => $other]]),
+            'the entries reordered'                     => fn () => $this->fire('updated_option', $name, ['state' => false, 'children' => [self::OTHER => $other, 99 => true]], ['state' => false, 'children' => [99 => true, self::OTHER => $other]]),
+            'a root deleted that still held the other'  => function () use ($name, $both): void {
+                $this->options[$name] = $both;
+                $this->fire('delete_option', $name);
+                unset($this->options[$name]);
+                $this->fire('deleted_option', $name);
+            },
+            'a root added holding more than the target' => fn () => $this->fire('added_option', $name, $both),
+            'an unreadable value before'                => fn () => $this->fire('updated_option', $name, 'a:1:{', ['state' => false]),
+            'an unreadable value after'                 => fn () => $this->fire('updated_option', $name, ['state' => false], 'x'),
+            'unreadable on both sides'                  => fn () => $this->fire('updated_option', $name, 'x', 'y'),
+            'children that are not a list of entries'   => fn () => $this->fire('updated_option', $name, ['state' => false, 'children' => 'x'], ['state' => false]),
+            'a stored null'                             => fn () => $this->fire('updated_option', $name, null, ['state' => false]),
+            'a name with the prefix inside it'          => fn () => $this->fire('updated_option', 'x' . $name, $both, ['state' => false, 'children' => [self::OTHER => $other]]),
+        ];
+        foreach ($refused as $why => $write) {
+            $document->onSave = static function () use ($write): bool {
+                $write();
+
+                return true;
+            };
+            $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+            $this->assertSame(['side_effect_detected', ['option_written']], [$result['code'] ?? null, $result['scope']['violations'] ?? null], $why . ': ' . json_encode($result));
+            $this->assertSame('the save wrote outside the page: option_written', $result['detail'] ?? null, $why);
+            $this->assertSame([], $this->hooks, $why . ': nothing left installed');
+        }
+
+        $allowed = [
+            'a root added holding only the target'  => fn () => $this->fire('added_option', $name, ['state' => false, 'children' => [self::TARGET => self::viewedEntry()]]),
+            'a root deleted that held only the target' => function () use ($name): void {
+                $this->options[$name] = ['state' => false, 'children' => [self::TARGET => self::viewedEntry()]];
+                $this->fire('delete_option', $name);
+                unset($this->options[$name]);
+                $this->fire('deleted_option', $name);
+            },
+            'a bare false root'                     => fn () => $this->fire('updated_option', $name, false, ['state' => false, 'children' => [self::TARGET => true]]),
+        ];
+        foreach ($allowed as $why => $write) {
+            $document->onSave = static function () use ($write): bool {
+                $write();
+
+                return true;
+            };
+            $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+            $this->assertSame([true, []], [$result['ok'], $result['scope']['violations'] ?? null], $why . ': ' . json_encode($result));
+        }
+
+        // A save that throws after such a write leaves nothing installed.
+        $document->onSave = function () use ($name): bool {
+            $this->fire('added_option', $name, ['state' => false, 'children' => [self::TARGET => true]]);
+            throw new \RuntimeException('Elementor failed');
+        };
+        $this->assertSame('builder_crashed', $doc->save(self::TARGET, self::tree(), self::KIT)['code'] ?? null);
+        $this->assertSame([], $this->hooks, 'the scope is disarmed after a throw');
+
+        // Building the elements without saving never has the allowance.
+        $this->api->elementFactory = fn (array $node): object => new class ($node, fn () => $this->fire('added_option', $name, ['state' => false, 'children' => [self::TARGET => true]])) {
+            /** @param array<string, mixed> $node Node. */
+            public function __construct(private array $node, private \Closure $write)
+            {
+            }
+
+            /** @return array<string, mixed> */
+            public function get_data_for_save(): array
+            {
+                ($this->write)();
+
+                return $this->node;
+            }
+        };
+        $this->assertSame('side_effect_detected', $doc->precheckTree(self::tree())['code'] ?? null, 'a style-cache write during the dry run');
+        $this->assertSame([], $this->hooks);
+    }
+
     public function test_whole_tree_verify_catches_changed_untouched_node(): void
     {
         $tree = self::tree();
@@ -527,6 +653,16 @@ final class ElementorDocumentTest extends TestCase
             }
         }
         throw new \LogicException('the columns golden is missing');
+    }
+
+    /**
+     * A post's entry in a style-cache root after a view of its draft.
+     *
+     * @return array<string, mixed>
+     */
+    private static function viewedEntry(): array
+    {
+        return ['state' => false, 'children' => ['preview' => ['state' => true, 'meta' => '6ac9bdfc0a1b2']]];
     }
 
     /**
