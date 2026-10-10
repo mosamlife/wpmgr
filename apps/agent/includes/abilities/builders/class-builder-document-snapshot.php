@@ -360,7 +360,8 @@ final class BuilderDocumentSnapshot
 
     /**
      * Schedules HOOK_SWEEP hourly, the first run an hour after $now, unless
-     * it is scheduled already.
+     * it is scheduled already. Never throws, so a page-edit write never fails
+     * on it.
      *
      * @param int $now Current time.
      * @return void
@@ -370,10 +371,14 @@ final class BuilderDocumentSnapshot
         if (!function_exists('wp_next_scheduled') || !function_exists('wp_schedule_event')) {
             return;
         }
-        if (wp_next_scheduled(self::HOOK_SWEEP) !== false) {
-            return;
+        try {
+            if (wp_next_scheduled(self::HOOK_SWEEP) === false) {
+                wp_schedule_event($now + 3600, 'hourly', self::HOOK_SWEEP);
+            }
+        } catch (\Throwable $e) {
+            // The next page-edit write, activation or re-arm schedules it.
+            unset($e);
         }
-        wp_schedule_event($now + 3600, 'hourly', self::HOOK_SWEEP);
     }
 
     /**
