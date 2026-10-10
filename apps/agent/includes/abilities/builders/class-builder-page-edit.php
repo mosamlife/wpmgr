@@ -424,7 +424,9 @@ final class BuilderPageEdit
      * before the edit, nothing is written and the undo is recorded; otherwise
      * the undo runs as above. A refusal that wrote nothing leaves undo_state
      * as the undo found it. The row's undo_state is read again inside the
-     * claim on the post.
+     * claim on the post, from the options table rather than this request's
+     * cached copy, so an undo another request finished while this one waited
+     * for the claim answers already_reverted and writes nothing.
      *
      * @param string                             $requestId    The token-bound request.
      * @param string                             $signedHash   The snapshot hash the signed parameters carry (revertHash()).
@@ -469,8 +471,9 @@ final class BuilderPageEdit
             return self::fail('target_in_flight', 'another engine call holds this post');
         }
         try {
-            // Inside the claim: the row as the last undo of this edit left it.
-            $state = (AbilityLedger::get($requestId) ?? [])['undo_state'] ?? null;
+            // Inside the claim: the row as the last undo of this edit left it,
+            // read from the table, not from this request's cache.
+            $state = (AbilityLedger::getStored($requestId) ?? [])['undo_state'] ?? null;
             if ($state === 'restored') {
                 return ['ok' => true, 'outcome' => 'already_reverted', 'mode' => 'revert', 'request_id' => $requestId, 'post_id' => $postId, 'restored' => true];
             }

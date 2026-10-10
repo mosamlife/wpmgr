@@ -46,7 +46,9 @@ if (!defined('ABSPATH')) {
  * says whether the site's posts and postmeta tables can take that
  * transaction: both must use a storage engine that supports transactions,
  * as information_schema lists them, or a failed restore could not be rolled
- * back, so wpmgr/page-edit refuses before it writes anything. The descriptor's
+ * back, so wpmgr/page-edit refuses before it writes anything. A site whose
+ * database handle is the SQLite database integration's driver takes it
+ * without that read. The descriptor's
  * derived keys (caches the builder rebuilds from the page) are deleted, never
  * restored or guarded. After the commit the post's object caches are
  * dropped and the adapter's afterRestore() drops what the builder caches
@@ -96,6 +98,9 @@ final class BuilderDocumentRestore
      * @var \WeakMap<object, array<string, string|null>>|null
      */
     private static ?\WeakMap $engineAnswers = null;
+
+    /** The database class the SQLite database integration installs as $wpdb (a wpdb subclass). */
+    private const SQLITE_DRIVER = 'WP_SQLite_DB';
 
     private const RE_SHA256 = '/^[0-9a-f]{64}$/D';
 
@@ -215,6 +220,12 @@ final class BuilderDocumentRestore
      * not listed. Read once per database handle and table names, so once per
      * request.
      *
+     * On a site whose database handle is an instance of SQLITE_DRIVER the
+     * answer is null and nothing is read: SQLite has one storage engine, it
+     * supports transactions, and that driver runs START TRANSACTION, COMMIT
+     * and ROLLBACK as SQLite transactions. Every other handle is answered
+     * from information_schema as above.
+     *
      * @return string|null
      */
     public static function transactionProblem(): ?string
@@ -222,6 +233,9 @@ final class BuilderDocumentRestore
         global $wpdb;
         if (!is_object($wpdb)) {
             return self::DETAIL_ENGINE_UNREADABLE;
+        }
+        if (is_a($wpdb, self::SQLITE_DRIVER)) {
+            return null;
         }
         $posts    = $wpdb->posts ?? null;
         $postmeta = $wpdb->postmeta ?? null;
