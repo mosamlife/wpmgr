@@ -352,8 +352,9 @@ func (s *Service) connectionSetterValid(ctx context.Context, tenantID uuid.UUID,
 // it records that person as the one who allowed it even when the switch
 // already reads site_setting. never is open to every caller the route
 // admits. A site-constrained principal is refused either way. The write
-// takes the tenant's policy lock, so it waits for a decision in flight, and
-// commits with its audit row.
+// takes the tenant's policy lock, so it waits for a decision in flight and
+// for the reservation of a change a setting approved, and commits with its
+// audit row.
 func (s *Service) SetConnectionAuto(ctx context.Context, p domain.Principal, grantID uuid.UUID, auto aipolicy.ConnectionAuto) (ConnectionAuto, error) {
 	if !auto.Known() {
 		return ConnectionAuto{}, domain.Validation("invalid_ai_auto", "ai_auto must be site_setting or never")

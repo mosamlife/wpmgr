@@ -5,9 +5,10 @@ package abilityrequest
 //
 //   scan (agent read) -> per-row job -> grant checks in Go -> site checks
 //   under a single-site principal -> ONE reservation (lifecycle try-lock,
-//   per-site lock, lifecycle FOR SHARE, in-flight check, compare-and-set
-//   with the approved entry hash in its WHERE) -> send write with expected{}
-//   and no transaction open -> record the outcome (compare-and-set).
+//   the tenant policy lock for a change a setting approved, per-site lock,
+//   lifecycle FOR SHARE, in-flight check, compare-and-set with the approved
+//   entry hash in its WHERE) -> send write with expected{} and no
+//   transaction open -> record the outcome (compare-and-set).
 //
 // A write is NEVER resent. A lost reply moves the row to outcome_unknown, and
 // only ledger mode resolves it.
@@ -690,9 +691,10 @@ func (s *Service) checkSite(ctx context.Context, run siteTxRunner, p domain.Prin
 	return plan, true, err
 }
 
-// reserve: lifecycle try-lock, per-site lock, lifecycle FOR SHARE, the
-// in-flight check, then the compare-and-set whose WHERE carries the
-// deadline and the approved entry hash (W1), and its audit row.
+// reserve: lifecycle try-lock, the tenant policy lock when a setting approved
+// the change, per-site lock, lifecycle FOR SHARE, the in-flight check, then
+// the compare-and-set whose WHERE carries the deadline and the approved
+// entry hash (W1), and its audit row.
 func (s *Service) reserve(ctx context.Context, p domain.Principal, a DispatchArgs, plan dispatchPlan) (bool, error) {
 	reserved := false
 	err := s.runSiteTx(ctx, p, a.SiteID, func(tx pgx.Tx, q *sqlc.Queries) error {
@@ -704,6 +706,19 @@ func (s *Service) reserve(ctx context.Context, p domain.Principal, a DispatchArg
 		}
 		if !acquired {
 			return &transientError{code: AttemptOrgBusy}
+		}
+		// Every write to a site's mode or a connection's switch holds the
+		// tenant's policy lock until it commits. Holding it here, before the
+		// site dispatch lock as aipolicy/locks.go orders them, means such a
+		// write either committed before the re-check below reads it or waits
+		// for this reservation to commit. A person's approval relies on no
+		// setting, so its reservation does not take it.
+		if plan.row.ApprovalSource != approvalSourcePerson {
+			if err := q.TakeAssistantRequestXactLock(ctx, sqlc.TakeAssistantRequestXactLockParams{
+				LockKey: policyTenantLockKey, LockID: a.TenantID.String(),
+			}); err != nil {
+				return fmt.Errorf("policy lock: %w", err)
+			}
 		}
 		if err := q.TakeAssistantRequestXactLock(ctx, sqlc.TakeAssistantRequestXactLockParams{
 			LockKey: siteDispatchLockKey, LockID: a.SiteID.String(),
@@ -731,9 +746,8 @@ func (s *Service) reserve(ctx context.Context, p domain.Principal, a DispatchArg
 		}
 		// A request a setting approved is sent only while that setting, and
 		// the connection's switch, still allow it, and its class is still
-		// the one it was approved under. The settings routes take the site
-		// dispatch lock held here, so neither can move before the
-		// reservation below commits.
+		// the one it was approved under. The policy lock taken above keeps
+		// both from moving before the reservation below commits.
 		why, err := policyNotSendable(ctx, tx, plan.row)
 		if err != nil {
 			return fmt.Errorf("re-check the setting that approved the request: %w", err)

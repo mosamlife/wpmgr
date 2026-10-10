@@ -43,7 +43,9 @@ import (
 
 // policyTenantLockKey is the transaction lock every automatic approval in a
 // tenant takes, from either request table, so the budget counts are exact.
-// Taken before the site dispatch lock, never while holding it.
+// The reservation of a change a setting approved takes it too (reserve), so
+// a setting write cannot land between its re-check and its commit. Taken
+// before the site dispatch lock, never while holding it.
 const policyTenantLockKey = aipolicy.PolicyTenantLockKey
 
 // decideAttempts bounds the restarts when the setting moves under Decide.

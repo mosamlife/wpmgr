@@ -8,14 +8,16 @@ package aipolicy
 // PolicyTenantLockKey while holding AbilitySiteDispatchLockKey.
 const (
 	// PolicyTenantLockKey, keyed on the tenant id, is held by every automatic
-	// approval in the tenant and by every write to a site's mode or a
-	// connection's switch, so a decision never reads a setting that is
-	// changing.
+	// approval in the tenant, by the reservation that sends a change a
+	// setting approved, and by every write to a site's mode or a
+	// connection's switch. A decision never reads a setting that is
+	// changing, and a setting write either commits before the reservation
+	// re-checks it or waits for that reservation to commit.
 	PolicyTenantLockKey = "assistant_policy_tenant"
 	// AbilitySiteDispatchLockKey, keyed on the site id, is held by the
 	// reservation that sends an approved site change while it re-checks the
-	// setting that approved it. A setting write takes it after
+	// setting that approved it. A write to a site's mode takes it after
 	// PolicyTenantLockKey, so it waits for a reservation in flight, and the
-	// next reservation reads the new setting.
+	// next reservation reads the new mode.
 	AbilitySiteDispatchLockKey = "assistant_ability_site_dispatch"
 )

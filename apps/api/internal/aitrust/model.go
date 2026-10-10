@@ -5,8 +5,9 @@
 //
 // Loosening any of it needs a person signed in to WPMgr, checked here in the
 // service and again by the database's guard triggers; tightening needs only
-// the route's permission. Every write takes the tenant's policy lock, then
-// the site dispatch lock, and commits its audit row in the same transaction.
+// the route's permission. Every write takes the tenant's policy lock (a
+// site's mode also takes that site's dispatch lock after it), and commits
+// its audit row in the same transaction.
 //
 // internal/mcp never imports this package: no tool can change a setting.
 package aitrust
