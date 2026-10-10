@@ -1880,8 +1880,14 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	aiTrustH := aitrust.NewHandler(aiTrustSvc)
 	// The one-time notice to organisations whose sites moved to Auto for AI
 	// drafts at launch: run at start-up and hourly until every one is told.
+	// WPMGR_AI_LAUNCH_NOTICE=off holds it; the first boot that reads on sends
+	// it then.
+	aiLaunchNoticeOn := cfg.AI.LaunchNoticeOn()
+	if !aiLaunchNoticeOn {
+		logger.Info("ai launch notice: held by WPMGR_AI_LAUNCH_NOTICE; nothing is claimed or sent until it is on")
+	}
 	aiLaunchNoticeWorker := aitrust.NewLaunchNoticeWorker(aitrust.NewLaunchNotifier(
-		aiTrustRepo, aiLaunchNoticeMailer{svc: mailerSvc}, cfg.PublicBaseURL, logger))
+		aiTrustRepo, aiLaunchNoticeMailer{svc: mailerSvc}, cfg.PublicBaseURL, aiLaunchNoticeOn, logger))
 	abilityTenantH := abilities.NewTenantHandler(abilities.NewTenantRepo(pool, auditRec), admingate.NewPoolStore(pool))
 	// AI readiness: the advisory per-site checklist and its fleet rollup. The
 	// refresh enqueuers are set once River has started, below.
@@ -3845,7 +3851,9 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	// ADR-065: the AI launch notice. RunOnStart, because the notice belongs
 	// to the deploy that moved the sites; then hourly, which retries a
 	// notice that was not delivered. Each site is claimed by one run at a
-	// time, so a second run never sends a second notice for it.
+	// time, so a second run never sends a second notice for it. While
+	// WPMGR_AI_LAUNCH_NOTICE holds the notice the job still runs, and claims
+	// and sends nothing.
 	if d.aiLaunchNoticeWorker != nil {
 		river.AddWorker(workers, d.aiLaunchNoticeWorker)
 		periodics = append(periodics, river.NewPeriodicJob(

@@ -24,6 +24,8 @@ type noticeStore struct {
 	releases   map[uuid.UUID][]LaunchNoticeClaim
 	// releaseCtxErr is the context's error each release saw.
 	releaseCtxErr []error
+	// lists and claims count the calls that reached the store.
+	lists, claims int
 }
 
 func newNoticeStore() *noticeStore {
@@ -35,6 +37,7 @@ func newNoticeStore() *noticeStore {
 }
 
 func (f *noticeStore) TenantsAwaitingLaunchNotice(context.Context) ([]uuid.UUID, error) {
+	f.lists++
 	var out []uuid.UUID
 	for t, c := range f.waiting {
 		if len(c.Sites) > 0 {
@@ -46,6 +49,7 @@ func (f *noticeStore) TenantsAwaitingLaunchNotice(context.Context) ([]uuid.UUID,
 }
 
 func (f *noticeStore) ClaimLaunchNotice(_ context.Context, t uuid.UUID) (LaunchNoticeClaim, error) {
+	f.claims++
 	if err := f.claimErr[t]; err != nil {
 		return LaunchNoticeClaim{}, err
 	}
@@ -105,7 +109,13 @@ func noticeClaim(n int, recipients ...string) LaunchNoticeClaim {
 }
 
 func quietNotifier(store LaunchNoticeStore, m LaunchNoticeMailer) *LaunchNotifier {
-	return NewLaunchNotifier(store, m, "https://wpmgr.test/", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return switchedNotifier(store, m, true)
+}
+
+// switchedNotifier is the notifier a boot builds with WPMGR_AI_LAUNCH_NOTICE
+// on (true) or off (false).
+func switchedNotifier(store LaunchNoticeStore, m LaunchNoticeMailer, on bool) *LaunchNotifier {
+	return NewLaunchNotifier(store, m, "https://wpmgr.test/", on, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 // TestLaunchNoticeReleasesAnUndeliveredNotice proves one notice per

@@ -157,7 +157,9 @@ func lnAll(bs []bool, want bool) bool {
 // active owners and admins get exactly one notice across three runs, naming
 // only that organisation's launch-default sites; a notice whose send failed
 // is released and sent by the next run; sites a person chose, or with AI
-// editing off, are never named or stamped.
+// editing off, are never named or stamped. Before any of that, a run with the
+// notice held (WPMGR_AI_LAUNCH_NOTICE=off) stamps no site and sends nothing,
+// so the runs with it on are the ones that tell each organisation.
 //
 // Mutation: list the organisations with no tenant or agent scope in the
 // transaction; as wpmgr_app that list is empty under FORCE row security, and
@@ -172,9 +174,18 @@ func TestLaunchNoticeEmailsOncePerTenant(t *testing.T) {
 	b := lnSeedOrg(t, pool, admin, authRepo, "b")
 
 	mail := &lnMailer{failFirst: map[uuid.UUID]bool{b.id: true}, attempts: map[uuid.UUID]int{}, delivered: map[uuid.UUID][]lnNotice{}}
-	notifier := aitrust.NewLaunchNotifier(aitrust.NewRepo(pool, audit.NewRecorder(pool, domain.SystemClock{})), mail,
-		"https://wpmgr.test", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	repo := aitrust.NewRepo(pool, audit.NewRecorder(pool, domain.SystemClock{}))
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 
+	held, err := aitrust.NewLaunchNotifier(repo, mail, "https://wpmgr.test", false, quiet).Run(ctx)
+	if err != nil || held != (aitrust.LaunchNoticeRun{}) || len(mail.attempts) != 0 {
+		t.Fatalf("held run %+v, err %v, %d organisations sent to; want nothing done", held, err, len(mail.attempts))
+	}
+	if !lnAll(lnStamped(t, pool, a.id, a.launchSites), false) || !lnAll(lnStamped(t, pool, b.id, b.launchSites), false) {
+		t.Fatalf("a held run stamped a launch-default site")
+	}
+
+	notifier := aitrust.NewLaunchNotifier(repo, mail, "https://wpmgr.test", true, quiet)
 	run1, err := notifier.Run(ctx)
 	if err != nil {
 		t.Fatalf("first run: %v", err)

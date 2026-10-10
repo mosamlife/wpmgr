@@ -33,6 +33,9 @@ import (
 //   - The job runs when the control plane starts and every
 //     LaunchNoticeInterval after that, and does nothing once every
 //     organisation has been told.
+//   - WPMGR_AI_LAUNCH_NOTICE=off holds the notice: a run neither claims nor
+//     sends, so every site keeps waiting, and the first run after the
+//     setting reads on tells each organisation then, once.
 
 // LaunchNoticeInterval is how often the notice job runs after the run at
 // start-up.
@@ -66,12 +69,16 @@ type LaunchNotifier struct {
 	store   LaunchNoticeStore
 	mailer  LaunchNoticeMailer
 	baseURL string
+	on      bool
 	log     *slog.Logger
 }
 
 // NewLaunchNotifier builds the notifier. publicBaseURL is
-// WPMGR_PUBLIC_BASE_URL, for the link to each site's setting.
-func NewLaunchNotifier(store LaunchNoticeStore, mailer LaunchNoticeMailer, publicBaseURL string, log *slog.Logger) *LaunchNotifier {
+// WPMGR_PUBLIC_BASE_URL, for the link to each site's setting. on is
+// WPMGR_AI_LAUNCH_NOTICE as config.AIConfig.LaunchNoticeOn reads it; when it
+// is false the notice is held, and a run touches neither the database nor
+// the mailer.
+func NewLaunchNotifier(store LaunchNoticeStore, mailer LaunchNoticeMailer, publicBaseURL string, on bool, log *slog.Logger) *LaunchNotifier {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -79,6 +86,7 @@ func NewLaunchNotifier(store LaunchNoticeStore, mailer LaunchNoticeMailer, publi
 		store:   store,
 		mailer:  mailer,
 		baseURL: strings.TrimRight(strings.TrimSpace(publicBaseURL), "/"),
+		on:      on,
 		log:     log,
 	}
 }
@@ -99,9 +107,14 @@ type LaunchNoticeRun struct {
 
 // Run tells every organisation that has sites awaiting the notice. One
 // organisation's failure never stops the others; it is logged, counted, and
-// retried by a later run.
+// retried by a later run. A held notifier returns at once and does nothing.
 func (n *LaunchNotifier) Run(ctx context.Context) (LaunchNoticeRun, error) {
 	var run LaunchNoticeRun
+	if !n.on {
+		// Held: no site is claimed, so each keeps waiting for the first run
+		// after the setting reads on.
+		return run, nil
+	}
 	tenants, err := n.store.TenantsAwaitingLaunchNotice(ctx)
 	if err != nil {
 		return run, fmt.Errorf("list the organisations awaiting the AI launch notice: %w", err)
