@@ -11,6 +11,8 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { setUpForLine } from "@/features/ai-requests/request-card-model";
+import { useDeepLinkFocus } from "@/features/ai-requests/use-deep-link";
+import { ranAutomatically } from "@/features/ai-trust/ai-trust-copy";
 
 import {
   NOT_SHOWABLE_COPY,
@@ -20,6 +22,7 @@ import {
   isPending,
 } from "./ability-card-model";
 import type { AbilityRequestCardProps } from "./ability-request-card";
+import { AutoApprovalRows, RanAutomaticallyChip, WaitingBecauseRow } from "./auto-approval";
 import {
   CHECKS_COPY,
   EFFECT_COPY,
@@ -30,6 +33,7 @@ import {
   changesCount,
   checkedLine,
   editUndoView,
+  pageEditCardTitle,
   pageEditStatus,
   parsePageEdit,
   undoPromise,
@@ -46,6 +50,10 @@ import { useWindowOpen } from "./use-window-open";
 // (site address, the draft's title, the text before, the page after) under
 // "From the site". All of it is a React text node: no innerHTML, no <img> of
 // site content, and links are built from the site's address and an integer id.
+//
+// A site's setting can approve a page edit with no person deciding (approval
+// tiers), so the card also says "Ran automatically" and what allowed it, says
+// why it waits when it does, and takes the focus an AI's link names.
 
 export function PageEditCard({
   request,
@@ -58,11 +66,15 @@ export function PageEditCard({
   undoPending = false,
   notice,
   autoFocusDecline = false,
+  deepLinked = false,
   className,
+  currentUserId,
 }: AbilityRequestCardProps) {
   const view = parsePageEdit(request);
   const pending = isPending(request);
+  const { articleRef, declineRef } = useDeepLinkFocus(deepLinked, pending);
   const status = pageEditStatus(request);
+  const auto = ranAutomatically(request.approval);
   const windowOpen = useWindowOpen(
     request.undo_available_until,
     request.state === "done" && request.undo_state === "available",
@@ -72,16 +84,25 @@ export function PageEditCard({
   const changesLabelId = useId();
   const setUpFor = setUpForLine(request);
   const busy = approvePending || declinePending;
-  const title = `Change a draft in Elementor · ${request.site_label}`;
+  const title = pageEditCardTitle(request.site_label);
   const links = status.links && view ? editLinks(siteUrl, view.postId) : [];
 
   return (
     <article
+      ref={articleRef}
       aria-label={title}
-      className={cn("space-y-3 rounded-lg border border-border bg-card p-4", className)}
+      tabIndex={deepLinked ? -1 : undefined}
+      className={cn(
+        "space-y-3 rounded-lg border border-border bg-card p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]",
+        auto && status.kind === "failed" && "border-destructive",
+        className,
+      )}
     >
       <div className="space-y-1">
-        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+          {auto ? <RanAutomaticallyChip /> : null}
+        </div>
         <div>
           <p className="text-xs font-medium text-muted-foreground">From the site</p>
           <p className="text-sm text-muted-foreground">{request.site_host}</p>
@@ -114,6 +135,8 @@ export function PageEditCard({
         <dd className="min-w-0 break-words text-foreground">{request.grant_label}</dd>
         <dt className="text-muted-foreground">Set up for</dt>
         <dd className="min-w-0 break-words text-foreground">{setUpFor.primary}</dd>
+        <WaitingBecauseRow request={request} />
+        <AutoApprovalRows request={request} currentUserId={currentUserId} />
         {pending ? (
           <>
             <dt className="text-muted-foreground">Timing</dt>
@@ -173,6 +196,7 @@ export function PageEditCard({
           {/* Decline first in the DOM and focused on the first card: the safe
               choice is the default. Each request is decided on its own. */}
           <Button
+            ref={declineRef}
             type="button"
             variant="outline"
             autoFocus={autoFocusDecline}

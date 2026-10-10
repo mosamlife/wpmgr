@@ -199,6 +199,8 @@ func (s *Service) runPageEditChecked(ctx context.Context, auth AuthorizedRequest
 	if err != nil {
 		return "", err
 	}
+	// The approval package decides it, after the commit.
+	res = s.decideAbility(ctx, eng.writes, auth, res)
 	b, err := json.Marshal(res)
 	if err != nil {
 		return "", fmt.Errorf("encode ability request result: %w", err)

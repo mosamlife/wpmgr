@@ -5,9 +5,10 @@ package abilityrequest
 //
 //   scan (agent read) -> per-row job -> grant checks in Go -> site checks
 //   under a single-site principal -> ONE reservation (lifecycle try-lock,
-//   per-site lock, lifecycle FOR SHARE, in-flight check, compare-and-set
-//   with the approved entry hash in its WHERE) -> send write with expected{}
-//   and no transaction open -> record the outcome (compare-and-set).
+//   the tenant policy lock for a change a setting approved, per-site lock,
+//   lifecycle FOR SHARE, in-flight check, compare-and-set with the approved
+//   entry hash in its WHERE) -> send write with expected{} and no
+//   transaction open -> record the outcome (compare-and-set).
 //
 // A write is NEVER resent. A lost reply moves the row to outcome_unknown, and
 // only ledger mode resolves it.
@@ -28,6 +29,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
+	"github.com/mosamlife/wpmgr/apps/api/internal/aipolicy"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -61,7 +63,7 @@ const (
 	scanRowLimit        = 200
 	maxSiteReportedText = 512
 
-	siteDispatchLockKey = "assistant_ability_site_dispatch"
+	siteDispatchLockKey = aipolicy.AbilitySiteDispatchLockKey
 	// lifecycleLockKey must equal org.LifecycleLockKey; a test pins it.
 	lifecycleLockKey = "org_lifecycle"
 )
@@ -93,6 +95,11 @@ const (
 	// m161: the REST route a rest-write request was approved against.
 	ReasonRouteChanged  = "route_changed"
 	ReasonRouteDisabled = "route_disabled"
+	// m174: a request the site's setting approved, whose setting, or whose
+	// connection's switch, no longer allows it when it is sent; or whose
+	// catalogue entry or route was re-classed since.
+	ReasonSettingChanged = "setting_changed"
+	ReasonClassChanged   = "class_changed"
 )
 
 // Transient reasons; the row stays approved.
@@ -684,9 +691,10 @@ func (s *Service) checkSite(ctx context.Context, run siteTxRunner, p domain.Prin
 	return plan, true, err
 }
 
-// reserve: lifecycle try-lock, per-site lock, lifecycle FOR SHARE, the
-// in-flight check, then the compare-and-set whose WHERE carries the
-// deadline and the approved entry hash (W1), and its audit row.
+// reserve: lifecycle try-lock, the tenant policy lock when a setting approved
+// the change, per-site lock, lifecycle FOR SHARE, the in-flight check, then
+// the compare-and-set whose WHERE carries the deadline and the approved
+// entry hash (W1), and its audit row.
 func (s *Service) reserve(ctx context.Context, p domain.Principal, a DispatchArgs, plan dispatchPlan) (bool, error) {
 	reserved := false
 	err := s.runSiteTx(ctx, p, a.SiteID, func(tx pgx.Tx, q *sqlc.Queries) error {
@@ -698,6 +706,19 @@ func (s *Service) reserve(ctx context.Context, p domain.Principal, a DispatchArg
 		}
 		if !acquired {
 			return &transientError{code: AttemptOrgBusy}
+		}
+		// aitrust's writes to a site's mode and a connection's switch hold the
+		// tenant's policy lock until they commit. Holding it here, before the
+		// site dispatch lock as aipolicy/locks.go orders them, means such a
+		// write either committed before the re-check below reads it or waits
+		// for this reservation to commit. A person's approval relies on no
+		// setting, so its reservation does not take it.
+		if plan.row.ApprovalSource != approvalSourcePerson {
+			if err := q.TakeAssistantRequestXactLock(ctx, sqlc.TakeAssistantRequestXactLockParams{
+				LockKey: policyTenantLockKey, LockID: a.TenantID.String(),
+			}); err != nil {
+				return fmt.Errorf("policy lock: %w", err)
+			}
 		}
 		if err := q.TakeAssistantRequestXactLock(ctx, sqlc.TakeAssistantRequestXactLockParams{
 			LockKey: siteDispatchLockKey, LockID: a.SiteID.String(),
@@ -722,6 +743,17 @@ func (s *Service) reserve(ctx context.Context, p domain.Principal, a DispatchArg
 		}
 		if busy {
 			return &transientError{code: AttemptSiteBusy}
+		}
+		// A request a setting approved is sent only while that setting, and
+		// the connection's switch, still allow it, and its class is still
+		// the one it was approved under. The policy lock taken above keeps
+		// both from moving before the reservation below commits.
+		why, err := policyNotSendable(ctx, tx, plan.row)
+		if err != nil {
+			return fmt.Errorf("re-check the setting that approved the request: %w", err)
+		}
+		if why != "" {
+			return s.closeNotSent(ctx, tx, q, a.TenantID, a.RequestID, why)
 		}
 		n, err := q.ReserveAbilityRequestForDispatch(ctx, sqlc.ReserveAbilityRequestForDispatchParams{
 			TenantID: a.TenantID, ID: a.RequestID,

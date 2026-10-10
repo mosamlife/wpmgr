@@ -137,7 +137,7 @@ func TestUndoCodeOnTheWire(t *testing.T) {
 		{row("in_progress", "restore_mismatch"), "<null>"},
 		{row("", "snapshot_tampered"), "<null>"},
 	} {
-		if got := toDTO(c.r, false, "", false).UndoCode; undoCodeStr(got) != c.want {
+		if got := toDTO(c.r, false, "", false, setterNames{}).UndoCode; undoCodeStr(got) != c.want {
 			t.Fatalf("undo_state %s undo_code %s: on the wire %s, want %s",
 				undoCodeStr(c.r.UndoState), undoCodeStr(c.r.UndoCode), undoCodeStr(got), c.want)
 		}
@@ -146,7 +146,7 @@ func TestUndoCodeOnTheWire(t *testing.T) {
 		"snapshot_tampered": row(UndoFailed, "snapshot_tampered"),
 		"<null>":            row(UndoDone, ""),
 	} {
-		b, err := json.Marshal(toDTO(r, false, "", false))
+		b, err := json.Marshal(toDTO(r, false, "", false, setterNames{}))
 		if err != nil {
 			t.Fatal(err)
 		}

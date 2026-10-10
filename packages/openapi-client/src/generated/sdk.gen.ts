@@ -411,6 +411,9 @@ import type {
   GetAgentLatestVersionData,
   GetAgentLatestVersionErrors,
   GetAgentLatestVersionResponses,
+  GetAiConnectionUsageData,
+  GetAiConnectionUsageErrors,
+  GetAiConnectionUsageResponses,
   GetAlertConfigData,
   GetAlertConfigResponses,
   GetBackupData,
@@ -553,6 +556,9 @@ import type {
   GetScheduleRunData,
   GetScheduleRunErrors,
   GetScheduleRunResponses,
+  GetSiteAiModeData,
+  GetSiteAiModeErrors,
+  GetSiteAiModeResponses,
   GetSiteAiReadinessData,
   GetSiteAiReadinessErrors,
   GetSiteAiReadinessResponses,
@@ -669,6 +675,9 @@ import type {
   ListAdminUserSitesErrors,
   ListAdminUserSitesResponses,
   ListAdminUsersResponses,
+  ListAiActivityData,
+  ListAiActivityErrors,
+  ListAiActivityResponses,
   ListApiKeysData,
   ListApiKeysErrors,
   ListApiKeysResponses,
@@ -868,6 +877,9 @@ import type {
   PurgeCacheData,
   PurgeCacheErrors,
   PurgeCacheResponses,
+  PutAiConnectionAutoData,
+  PutAiConnectionAutoErrors,
+  PutAiConnectionAutoResponses,
   PutAlertConfigData,
   PutAlertConfigErrors,
   PutAlertConfigResponses,
@@ -901,6 +913,9 @@ import type {
   PutPerfConfigData,
   PutPerfConfigErrors,
   PutPerfConfigResponses,
+  PutSiteAiModeData,
+  PutSiteAiModeErrors,
+  PutSiteAiModeResponses,
   PutSiteAppHealthSettingsData,
   PutSiteAppHealthSettingsErrors,
   PutSiteAppHealthSettingsResponses,
@@ -6954,6 +6969,178 @@ export const enableSiteContentEditing = <ThrowOnError extends boolean = false>(
       ...options.headers,
     },
   });
+
+/**
+ * Read how much AI connections may do on a site without asking
+ *
+ * A site's mode decides which changes an AI connection makes run at once
+ * and which wait for a person to approve them:
+ *
+ * - `ask`: every change waits for a person.
+ * - `ai_drafts`: a draft the AI makes, and an edit to a draft it made,
+ * runs at once and can be undone. Everything else waits.
+ * - `full`: reserved. The mode routes never set it.
+ *
+ * The answer also says who chose the mode and when, the `version` a
+ * change must echo, whether the setting would be honoured today
+ * (`setter_valid`), which modes the caller may choose and why a mode is
+ * not offered (`options`), and what each mode covers (`kinds`). All of
+ * it is WPMgr's own text except `set_by_name`, a person's name: render
+ * it as plain text.
+ *
+ * Requires `site.content.read` and access to the site.
+ *
+ */
+export const getSiteAiMode = <ThrowOnError extends boolean = false>(
+  options: Options<GetSiteAiModeData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetSiteAiModeResponses,
+    GetSiteAiModeErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/ai/mode", ...options });
+
+/**
+ * Choose how much AI connections may do on a site without asking
+ *
+ * Sets the site's mode to `ask` or `ai_drafts`. The body carries the
+ * `version` the caller last read. If the mode was changed since, nothing
+ * is saved and the answer is 409 `stale_version`, whose `details` carry
+ * the current `mode` and `version`. Saving the mode that is already set
+ * is allowed and records the caller as the person who chose it; that is
+ * how a setting is chosen again once the person who chose it lost the
+ * access it needs (`setter_valid` is false).
+ *
+ * Only a signed-in person can raise the mode to `ai_drafts`. Any other
+ * caller, API keys included, is refused with 403 `session_required`, and
+ * an MCP bearer token is refused with 401. Lowering to `ask` is open to
+ * every caller who holds `site.content.edit`; made by a caller that is
+ * not a signed-in person it is recorded with source `tightened` and no
+ * person. A body that names `full` is refused with 422
+ * `use_full_auto_route`, because this route does not set it. While the
+ * organisation's AI is paused, raising is refused with 409 `paused`;
+ * lowering never is.
+ *
+ * The change and its audit row commit together. The body must be JSON.
+ *
+ * Requires `site.content.edit` and access to the site.
+ *
+ */
+export const putSiteAiMode = <ThrowOnError extends boolean = false>(
+  options: Options<PutSiteAiModeData, ThrowOnError>,
+) =>
+  (options.client ?? client).put<
+    PutSiteAiModeResponses,
+    PutSiteAiModeErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/ai/mode",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Read what an AI connection has run automatically this hour
+ *
+ * For one AI connection: whether it may run changes automatically
+ * (`ai_auto`), who allowed that and whether the permission still holds
+ * (`auto_setter_valid`), and how much it has run automatically in the
+ * rolling window against the limits WPMgr sets. The limits are fixed by
+ * the server and cannot be edited. Above a limit a change waits for a
+ * person instead of running; the connection is not refused.
+ *
+ * `auto_setter_valid` is the check the decision engine runs on every
+ * request: the person who allowed the connection must still be a full
+ * member who can manage connections, with an active account. When it is
+ * false, every change from the connection waits for a person until one
+ * allows it again with `PUT .../auto`.
+ *
+ * Requires `apikey:read`. A connection is an organisation-wide
+ * credential, so a site-constrained principal is refused with 403
+ * `org_scope_required`.
+ *
+ */
+export const getAiConnectionUsage = <ThrowOnError extends boolean = false>(
+  options: Options<GetAiConnectionUsageData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetAiConnectionUsageResponses,
+    GetAiConnectionUsageErrors,
+    ThrowOnError
+  >({ url: "/api/v1/ai/connections/{grantId}/usage", ...options });
+
+/**
+ * Allow or stop automatic changes from an AI connection
+ *
+ * `site_setting` lets the connection run changes automatically wherever
+ * a site's mode allows it. `never` makes every change from the
+ * connection wait for a person, whatever any site's mode says. A
+ * connection can only narrow what a site's mode allows, never widen it.
+ *
+ * Saving `site_setting` needs a signed-in person who holds
+ * `apikey:manage`, and records that person as the one who allowed it,
+ * even when the connection is already set to `site_setting`; that is how
+ * a connection is allowed again once the person who allowed it lost the
+ * access it needs (`auto_setter_valid` is false). Any other caller, API
+ * keys included, is refused with 403 `session_required`, and an MCP
+ * bearer token with 401. While the organisation's AI is paused, saving
+ * `site_setting` is refused with 409 `paused`. Saving `never` is open to
+ * every caller who holds `apikey:manage`.
+ *
+ * A connection is an organisation-wide credential, so a
+ * site-constrained principal is refused with 403 `org_scope_required`.
+ * A connection created with an API key starts on `never`. The change
+ * and its audit row commit together. The body must be JSON.
+ *
+ * Requires `apikey:manage`.
+ *
+ */
+export const putAiConnectionAuto = <ThrowOnError extends boolean = false>(
+  options: Options<PutAiConnectionAutoData, ThrowOnError>,
+) =>
+  (options.client ?? client).put<
+    PutAiConnectionAutoResponses,
+    PutAiConnectionAutoErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/ai/connections/{grantId}/auto",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List what AI connections changed on the organisation's sites
+ *
+ * Every request an AI connection made that a person or a setting
+ * approved, newest first, from both kinds of request (site changes and
+ * cache clears) in one list. A request that was never approved (still
+ * waiting, declined, withdrawn or expired) is not listed; the request
+ * queues list those. Each item carries the same request object the
+ * queues return, so a card can be shown from it without another call.
+ * For a site change, `approval` says whether a person or a setting
+ * approved it.
+ *
+ * Paged by keyset on `(created_at, id)`: pass the previous page's
+ * `next_cursor` as `cursor`. `next_cursor` is null on the last page. A
+ * site collaborator sees only requests on their own sites.
+ *
+ * Requires `site.content.edit`.
+ *
+ */
+export const listAiActivity = <ThrowOnError extends boolean = false>(
+  options?: Options<ListAiActivityData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListAiActivityResponses,
+    ListAiActivityErrors,
+    ThrowOnError
+  >({ url: "/api/v1/ai/activity", ...options });
 
 /**
  * Whether an AI assistant can work on this site

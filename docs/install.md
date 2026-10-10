@@ -114,6 +114,7 @@ example for each — read it top-to-bottom. Key env vars (all prefixed `WPMGR_`)
 | `WPMGR_WORDFENCE_API_KEY` | vulnerability-feed API key fallback (the key saved in the superadmin UI takes precedence) | (empty) |
 | `WPMGR_SCREENSHOT_READY_WAIT` | screenshot capture wait budget in whole seconds (media-encoder; raise on slow hosting) | `8` |
 | `WPMGR_HOSTED` | managed-SaaS entitlements switch; hosted only, leave unset on self-host | `false` |
+| `WPMGR_AI_LAUNCH_NOTICE` | the one-time email telling each organisation that its sites with AI editing on now run AI drafts without asking. `off` holds it: nothing is claimed or sent, and the first boot that reads `on` (or finds the variable unset) sends it then, once per organisation. Any other value also holds it and is named in a config advisory at boot | `on` |
 | `VITE_API_BASE_URL` | API base for the SPA | `http://localhost:8080` |
 
 ### Proxy hops: `WPMGR_AUTH_PROXY_HOPS` {#proxy-hops}

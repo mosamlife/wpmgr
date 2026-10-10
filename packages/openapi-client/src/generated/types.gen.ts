@@ -4761,6 +4761,14 @@ export type AbilityRequest = {
     | "site_settings"
     | "users"
     | null;
+  /**
+   * Why an approved request was closed without being sent; nothing
+   * was changed on the site. Values include `setting_changed` (the
+   * site's setting changed after the approval and before the change
+   * ran) and `class_changed` (WPMgr changed how this kind of change is
+   * handled after the approval and before it ran).
+   *
+   */
   not_sent_reason?: string;
   created_post_id?: number;
   trashed?: boolean;
@@ -4822,6 +4830,35 @@ export type AbilityRequest = {
    *
    */
   page_media?: Array<AbilityRequestPageMedia>;
+  /**
+   * How the request was approved: by a person, or by the site's
+   * setting with no person deciding. Null while the request has not
+   * been approved, and for a request that never will be (declined,
+   * withdrawn or expired).
+   *
+   */
+  approval?: AbilityRequestApproval | null;
+  /**
+   * The kind of change WPMgr decided this request is, from its own
+   * records. Null until WPMgr has decided, and for a request made
+   * before kinds existed.
+   *
+   */
+  change_class?: AiChangeClass | null;
+  /**
+   * WPMgr's name for `change_class` as copy uses it, for example
+   * `edits to published pages`. Null when `change_class` is null or
+   * `always_ask`.
+   *
+   */
+  change_kind_name?: string | null;
+  /**
+   * Why this request was left for a person instead of being approved
+   * by a setting. Stays set after a person approves it. Null when
+   * WPMgr did not record a reason.
+   *
+   */
+  ask_reason?: AiAskReason | null;
   /**
    * The page builder that builds a wpmgr/page-create request's page, as
    * the site's precheck named it. Null for a page in a WordPress
@@ -5070,6 +5107,513 @@ export type ContentEditingState = {
    */
   principal_user_id?: number;
   enabled_by?: string;
+};
+
+/**
+ * How much AI connections may do on a site without a person's approval.
+ * `ask`: every change waits. `ai_drafts`: a draft the AI makes, and an
+ * edit to a draft it made, runs at once; everything else waits. `full`:
+ * reserved; the mode routes never set it.
+ *
+ */
+export const AiMode = {
+  ASK: "ask",
+  AI_DRAFTS: "ai_drafts",
+  FULL: "full",
+} as const;
+
+/**
+ * How much AI connections may do on a site without a person's approval.
+ * `ask`: every change waits. `ai_drafts`: a draft the AI makes, and an
+ * edit to a draft it made, runs at once; everything else waits. `full`:
+ * reserved; the mode routes never set it.
+ *
+ */
+export type AiMode = (typeof AiMode)[keyof typeof AiMode];
+
+/**
+ * Where the mode came from. `unset`: nobody has chosen, so the site asks
+ * every time. `migration`: AI editing was already on when modes were
+ * introduced and no person is on record as having turned it on, so the
+ * site asks every time. `launch_default`: set to `ai_drafts` for the
+ * person who had turned AI editing on when modes were introduced.
+ * `enable_default`: set to `ai_drafts` when a person turned AI editing
+ * on. `person`: a signed-in person chose it. `tightened`: lowered to
+ * `ask` by a caller that was not a signed-in person.
+ *
+ */
+export const AiModeSource = {
+  UNSET: "unset",
+  MIGRATION: "migration",
+  LAUNCH_DEFAULT: "launch_default",
+  ENABLE_DEFAULT: "enable_default",
+  PERSON: "person",
+  TIGHTENED: "tightened",
+} as const;
+
+/**
+ * Where the mode came from. `unset`: nobody has chosen, so the site asks
+ * every time. `migration`: AI editing was already on when modes were
+ * introduced and no person is on record as having turned it on, so the
+ * site asks every time. `launch_default`: set to `ai_drafts` for the
+ * person who had turned AI editing on when modes were introduced.
+ * `enable_default`: set to `ai_drafts` when a person turned AI editing
+ * on. `person`: a signed-in person chose it. `tightened`: lowered to
+ * `ask` by a caller that was not a signed-in person.
+ *
+ */
+export type AiModeSource = (typeof AiModeSource)[keyof typeof AiModeSource];
+
+/**
+ * The kind of a change, as WPMgr classes it from its own records and
+ * never from anything the AI sent. `ai_draft`: creates a draft, or edits
+ * a draft the AI made. `operational`: changes no content, such as a cache
+ * clear. `unpublished`: edits unpublished content the AI did not make.
+ * `live`: changes something visitors can see now. `publish`: publishes
+ * or schedules. `update`: updates a plugin or theme. `always_ask`: waits
+ * for a person in every mode.
+ *
+ */
+export const AiChangeClass = {
+  AI_DRAFT: "ai_draft",
+  OPERATIONAL: "operational",
+  UNPUBLISHED: "unpublished",
+  LIVE: "live",
+  PUBLISH: "publish",
+  UPDATE: "update",
+  ALWAYS_ASK: "always_ask",
+} as const;
+
+/**
+ * The kind of a change, as WPMgr classes it from its own records and
+ * never from anything the AI sent. `ai_draft`: creates a draft, or edits
+ * a draft the AI made. `operational`: changes no content, such as a cache
+ * clear. `unpublished`: edits unpublished content the AI did not make.
+ * `live`: changes something visitors can see now. `publish`: publishes
+ * or schedules. `update`: updates a plugin or theme. `always_ask`: waits
+ * for a person in every mode.
+ *
+ */
+export type AiChangeClass = (typeof AiChangeClass)[keyof typeof AiChangeClass];
+
+/**
+ * Why a request was left for a person instead of being approved by a
+ * setting. `kind_always_asks`: this kind of change waits in every mode.
+ * `unknown_target_state`: WPMgr could not tell whether visitors would
+ * see the change. `site_mode_ask`: the site is set to ask every time.
+ * `kind_not_in_mode`: the site's mode does not run this kind of change
+ * on its own. `setter_lacks_permission`: the person who chose the site's
+ * mode no longer has the access it needs. `over_change_budget`: the
+ * connection used its automatic changes for now. `over_site_cap`: the
+ * connection reached its limit on sites changed this hour.
+ * `connection_never_auto`: the connection is set to `never`.
+ * `connection_setter_invalid`: the person who allowed the connection to
+ * run changes automatically can no longer manage connections.
+ * `not_checked`: WPMgr could not check the request against the setting
+ * in time. A client that meets a reason it does not know shows the
+ * request as waiting for a person.
+ *
+ */
+export const AiAskReason = {
+  KIND_ALWAYS_ASKS: "kind_always_asks",
+  UNKNOWN_TARGET_STATE: "unknown_target_state",
+  SITE_MODE_ASK: "site_mode_ask",
+  KIND_NOT_IN_MODE: "kind_not_in_mode",
+  SETTER_LACKS_PERMISSION: "setter_lacks_permission",
+  OVER_CHANGE_BUDGET: "over_change_budget",
+  OVER_SITE_CAP: "over_site_cap",
+  CONNECTION_NEVER_AUTO: "connection_never_auto",
+  CONNECTION_SETTER_INVALID: "connection_setter_invalid",
+  NOT_CHECKED: "not_checked",
+} as const;
+
+/**
+ * Why a request was left for a person instead of being approved by a
+ * setting. `kind_always_asks`: this kind of change waits in every mode.
+ * `unknown_target_state`: WPMgr could not tell whether visitors would
+ * see the change. `site_mode_ask`: the site is set to ask every time.
+ * `kind_not_in_mode`: the site's mode does not run this kind of change
+ * on its own. `setter_lacks_permission`: the person who chose the site's
+ * mode no longer has the access it needs. `over_change_budget`: the
+ * connection used its automatic changes for now. `over_site_cap`: the
+ * connection reached its limit on sites changed this hour.
+ * `connection_never_auto`: the connection is set to `never`.
+ * `connection_setter_invalid`: the person who allowed the connection to
+ * run changes automatically can no longer manage connections.
+ * `not_checked`: WPMgr could not check the request against the setting
+ * in time. A client that meets a reason it does not know shows the
+ * request as waiting for a person.
+ *
+ */
+export type AiAskReason = (typeof AiAskReason)[keyof typeof AiAskReason];
+
+/**
+ * The `code` of a refusal from the AI-trust routes, in the `Error`
+ * envelope. `session_required` (403): loosening needs a signed-in
+ * person. `role_required`: the caller's role does not allow the choice;
+ * it appears as an option's `reason`, and a route answers a missing
+ * permission with the generic `insufficient_permission`.
+ * `org_scope_required` (403): the action needs full organisation
+ * membership, and a site-constrained principal is refused whatever role
+ * it holds on a site. `stale_version` (409): the mode was changed since
+ * the caller read it. `agent_outdated` (409): the site's plugin is older
+ * than the choice needs. `paused` (409): the organisation's AI is
+ * paused, so raising is refused; lowering never is. `use_full_auto_route`
+ * (422): the mode route does not set `full`.
+ *
+ */
+export const AiControlRefusalCode = {
+  SESSION_REQUIRED: "session_required",
+  ROLE_REQUIRED: "role_required",
+  ORG_SCOPE_REQUIRED: "org_scope_required",
+  STALE_VERSION: "stale_version",
+  AGENT_OUTDATED: "agent_outdated",
+  PAUSED: "paused",
+  USE_FULL_AUTO_ROUTE: "use_full_auto_route",
+} as const;
+
+/**
+ * The `code` of a refusal from the AI-trust routes, in the `Error`
+ * envelope. `session_required` (403): loosening needs a signed-in
+ * person. `role_required`: the caller's role does not allow the choice;
+ * it appears as an option's `reason`, and a route answers a missing
+ * permission with the generic `insufficient_permission`.
+ * `org_scope_required` (403): the action needs full organisation
+ * membership, and a site-constrained principal is refused whatever role
+ * it holds on a site. `stale_version` (409): the mode was changed since
+ * the caller read it. `agent_outdated` (409): the site's plugin is older
+ * than the choice needs. `paused` (409): the organisation's AI is
+ * paused, so raising is refused; lowering never is. `use_full_auto_route`
+ * (422): the mode route does not set `full`.
+ *
+ */
+export type AiControlRefusalCode =
+  (typeof AiControlRefusalCode)[keyof typeof AiControlRefusalCode];
+
+/**
+ * One mode the dashboard offers, and whether this caller can choose it now.
+ */
+export type AiModeOption = {
+  mode: AiMode;
+  /**
+   * Whether this caller could save this mode now. The mode that is already set is choosable too.
+   */
+  choosable: boolean;
+  /**
+   * Why the mode is not choosable; null when it is. When several
+   * apply, the first of `role_required`, `org_scope_required`,
+   * `session_required`, `paused`, `agent_outdated` is given.
+   * `role_required`: the caller's role does not allow the choice.
+   * `org_scope_required`: the choice needs full organisation
+   * membership. `session_required`: the caller is not a signed-in
+   * person. `paused`: the organisation's AI is paused.
+   * `agent_outdated`: the site's plugin is older than
+   * `min_agent_version`.
+   *
+   */
+  reason:
+    | "role_required"
+    | "org_scope_required"
+    | "session_required"
+    | "paused"
+    | "agent_outdated"
+    | null;
+};
+
+/**
+ * A reviewed tool whose changes on a site are of one kind.
+ */
+export type AiChangeKindAbility = {
+  /**
+   * The tool's name, for example `wpmgr/page-create`.
+   */
+  name: string;
+  /**
+   * WPMgr's title for the tool.
+   */
+  title: string;
+};
+
+/**
+ * What happens to one kind of change under one mode.
+ */
+export type AiModeDecision = {
+  mode: AiMode;
+  /**
+   * `auto`: the change runs at once, and a person can undo it where
+   * the card offers Undo. `ask`: it waits for a person.
+   *
+   */
+  outcome: "auto" | "ask";
+};
+
+/**
+ * One row of the table of what each mode covers.
+ */
+export type AiChangeKind = {
+  change_class: AiChangeClass;
+  /**
+   * WPMgr's name for the kind, as copy uses it, for example `edits to published pages`.
+   */
+  name: string;
+  /**
+   * The reviewed tools whose changes on this site are of this kind.
+   */
+  abilities: Array<AiChangeKindAbility>;
+  /**
+   * What happens to a change of this kind under each mode, in `options` order.
+   */
+  decisions: Array<AiModeDecision>;
+};
+
+/**
+ * A site's AI mode: how much AI connections may do on the site without a
+ * person's approval, who chose it, and what the dashboard needs to offer
+ * a change. A person's name is the only text in it that did not come
+ * from WPMgr.
+ *
+ */
+export type SiteAiMode = {
+  site_id: string;
+  mode: AiMode;
+  source: AiModeSource;
+  /**
+   * The compare-and-set token. Send it back unchanged with `PUT`. It
+   * moves by one whenever the mode, the person who chose it or the
+   * source changes, and at no other time.
+   *
+   */
+  version: number;
+  /**
+   * The person who chose the mode. Null when nobody did.
+   */
+  set_by_user_id?: string | null;
+  /**
+   * That person's name as WPMgr stores it; render it as plain text.
+   * Null when nobody chose the mode, or the account was deleted.
+   *
+   */
+  set_by_name?: string | null;
+  /**
+   * True when a person is on record as having chosen the mode and that account has since been deleted.
+   */
+  set_by_account_deleted: boolean;
+  /**
+   * When the mode was chosen. Null when nobody chose it.
+   */
+  set_at?: string | null;
+  /**
+   * Whether the setting would be honoured today. `ask` has nothing to
+   * honour and is always valid. For `ai_drafts` this is the check the
+   * decision engine runs on every request: the person who chose it must
+   * still be allowed to have chosen it, as a member of the organisation
+   * with an active account and access to the site. When false, every
+   * change on the site waits for a person until someone chooses a mode
+   * again.
+   *
+   */
+  setter_valid: boolean;
+  /**
+   * True while the organisation's AI is paused. Nothing runs, automatic or not, until an owner resumes it.
+   */
+  ai_paused: boolean;
+  /**
+   * The least WPMgr plugin version a site needs for an option whose `reason` is `agent_outdated`.
+   */
+  min_agent_version: string;
+  /**
+   * One entry per mode the dashboard offers, in display order.
+   */
+  options: Array<AiModeOption>;
+  /**
+   * What each mode covers, one row per kind of change the decision
+   * engine handles, in display order. `always_ask` never appears: it
+   * waits in every mode.
+   *
+   */
+  kinds: Array<AiChangeKind>;
+};
+
+export type PutSiteAiModeRequest = {
+  mode: "ask" | "ai_drafts";
+  /**
+   * The `version` the caller last read.
+   */
+  version: number;
+};
+
+/**
+ * Whether an AI connection may run changes automatically. `site_setting`:
+ * wherever a site's mode allows it. `never`: every change from the
+ * connection waits for a person.
+ *
+ */
+export const AiAuto = { SITE_SETTING: "site_setting", NEVER: "never" } as const;
+
+/**
+ * Whether an AI connection may run changes automatically. `site_setting`:
+ * wherever a site's mode allows it. `never`: every change from the
+ * connection waits for a person.
+ *
+ */
+export type AiAuto = (typeof AiAuto)[keyof typeof AiAuto];
+
+/**
+ * One count against one fixed limit.
+ */
+export type AiUsageBucket = {
+  /**
+   * Automatic changes counted in the window.
+   */
+  used: number;
+  /**
+   * The server's fixed limit for the window. Above it, a change waits for a person.
+   */
+  limit: number;
+};
+
+/**
+ * An AI connection's switch for automatic changes, and the person whose
+ * authority keeps it on.
+ *
+ */
+export type AiConnectionAuto = {
+  grant_id: string;
+  ai_auto: AiAuto;
+  /**
+   * The person who allowed the connection to run changes automatically. Null when nobody did.
+   */
+  auto_set_by_user_id?: string | null;
+  /**
+   * That person's name as WPMgr stores it; render it as plain text.
+   * Null when nobody allowed it, or the account was deleted.
+   *
+   */
+  auto_set_by_name?: string | null;
+  /**
+   * True when a person is on record as having allowed it and that account has since been deleted.
+   */
+  auto_set_by_account_deleted: boolean;
+  /**
+   * When it was allowed. Null when nobody allowed it.
+   */
+  auto_set_at?: string | null;
+  /**
+   * Whether the permission still holds. `never` has nothing to honour
+   * and is always valid. For `site_setting` this is the check the
+   * decision engine runs on every request: the person who allowed it
+   * must still be a full member of the organisation who can manage
+   * connections, with an active account. When false, every change from
+   * the connection waits for a person until one allows it again.
+   *
+   */
+  auto_setter_valid: boolean;
+  /**
+   * True when no person is on record as having created the connection, because it was created with an API key.
+   */
+  created_with_api_key: boolean;
+};
+
+/**
+ * An AI connection's switch and what it has run automatically in the
+ * rolling window. `draft_changes` counts automatic changes to drafts;
+ * `draft_sites` counts the distinct sites they were on. Both limits are
+ * fixed by the server. Above a limit, a change waits for a person.
+ *
+ */
+export type AiConnectionUsage = AiConnectionAuto & {
+  /**
+   * Length in minutes of the rolling window every count covers.
+   */
+  window_minutes: number;
+  draft_changes: AiUsageBucket;
+  draft_sites: AiUsageBucket;
+};
+
+export type PutAiConnectionAutoRequest = {
+  ai_auto: AiAuto;
+};
+
+/**
+ * The site setting an automatic approval relied on, copied onto the
+ * request when it was approved and never read back from the site, so it
+ * stays true after the setting changes.
+ *
+ */
+export type AiApprovalSetting = {
+  /**
+   * The mode the site was in.
+   */
+  mode: "ai_drafts" | "full";
+  /**
+   * Where that mode came from; see `AIModeSource`.
+   */
+  source: "launch_default" | "enable_default" | "person";
+  /**
+   * The person who chose the mode.
+   */
+  set_by_user_id?: string | null;
+  /**
+   * That person's name as WPMgr stores it; render it as plain text.
+   * Null when the account was deleted.
+   *
+   */
+  set_by_name?: string | null;
+  /**
+   * True when that account has since been deleted.
+   */
+  set_by_account_deleted: boolean;
+  /**
+   * When the mode was chosen.
+   */
+  set_at?: string | null;
+};
+
+/**
+ * How an approved request was approved. A request approved by a setting
+ * was not decided by any person; `setting` says which setting and whose.
+ *
+ */
+export type AbilityRequestApproval = {
+  /**
+   * `person`: a signed-in person approved it from the dashboard.
+   * `policy`: the site's setting approved it.
+   *
+   */
+  source: "person" | "policy";
+  /**
+   * The setting a `policy` approval relied on. Null for `person`.
+   */
+  setting?: AiApprovalSetting | null;
+};
+
+export type AiActivityAbilityRequest = {
+  kind: "ability_request";
+  request: AbilityRequest;
+};
+
+export type AiActivityCachePurgeRequest = {
+  kind: "cache_purge_request";
+  request: AssistantRequest;
+};
+
+/**
+ * One approved request, of either kind. Switch on `kind`.
+ */
+export type AiActivityItem =
+  | ({
+      kind: "ability_request";
+    } & AiActivityAbilityRequest)
+  | ({
+      kind: "cache_purge_request";
+    } & AiActivityCachePurgeRequest);
+
+export type AiActivityPage = {
+  items: Array<AiActivityItem>;
+  /**
+   * Pass as `cursor` for the next page. Null on the last page.
+   */
+  next_cursor: string | null;
 };
 
 /**
@@ -9797,6 +10341,11 @@ export type UserId = string;
 export type OrgId = string;
 
 export type VersionId = string;
+
+/**
+ * The AI connection's id, the `id` the connections list returns.
+ */
+export type AiGrantId = string;
 
 export type GetHealthzData = {
   body?: never;
@@ -19042,6 +19591,256 @@ export type EnableSiteContentEditingResponses = {
 
 export type EnableSiteContentEditingResponse =
   EnableSiteContentEditingResponses[keyof EnableSiteContentEditingResponses];
+
+export type GetSiteAiModeData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/mode";
+};
+
+export type GetSiteAiModeErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Missing site.content.read
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+};
+
+export type GetSiteAiModeError = GetSiteAiModeErrors[keyof GetSiteAiModeErrors];
+
+export type GetSiteAiModeResponses = {
+  /**
+   * The site's mode
+   */
+  200: SiteAiMode;
+};
+
+export type GetSiteAiModeResponse =
+  GetSiteAiModeResponses[keyof GetSiteAiModeResponses];
+
+export type PutSiteAiModeData = {
+  body: PutSiteAiModeRequest;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/ai/mode";
+};
+
+export type PutSiteAiModeErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * `session_required`: raising without a signed-in person. Or the
+   * caller is missing site.content.edit (`insufficient_permission`).
+   *
+   */
+  403: Error;
+  /**
+   * The site is not the caller's
+   */
+  404: Error;
+  /**
+   * Nothing was saved; the error code names why. `stale_version`: the
+   * mode was changed since the caller read it. `paused`: the
+   * organisation's AI is paused. `agent_outdated`: the site's WPMgr
+   * plugin is older than the mode needs.
+   *
+   */
+  409: Error;
+  /**
+   * The body was not application/json
+   */
+  415: Error;
+  /**
+   * The body is not valid, or it names `full` (`use_full_auto_route`).
+   *
+   */
+  422: Error;
+};
+
+export type PutSiteAiModeError = PutSiteAiModeErrors[keyof PutSiteAiModeErrors];
+
+export type PutSiteAiModeResponses = {
+  /**
+   * Saved; the site's mode as it now stands
+   */
+  200: SiteAiMode;
+};
+
+export type PutSiteAiModeResponse =
+  PutSiteAiModeResponses[keyof PutSiteAiModeResponses];
+
+export type GetAiConnectionUsageData = {
+  body?: never;
+  path: {
+    /**
+     * The AI connection's id, the `id` the connections list returns.
+     */
+    grantId: string;
+  };
+  query?: never;
+  url: "/api/v1/ai/connections/{grantId}/usage";
+};
+
+export type GetAiConnectionUsageErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Missing apikey:read, or a site-constrained principal (`org_scope_required`)
+   */
+  403: Error;
+  /**
+   * There is no such connection in the caller's organisation
+   */
+  404: Error;
+};
+
+export type GetAiConnectionUsageError =
+  GetAiConnectionUsageErrors[keyof GetAiConnectionUsageErrors];
+
+export type GetAiConnectionUsageResponses = {
+  /**
+   * The connection's switch and usage
+   */
+  200: AiConnectionUsage;
+};
+
+export type GetAiConnectionUsageResponse =
+  GetAiConnectionUsageResponses[keyof GetAiConnectionUsageResponses];
+
+export type PutAiConnectionAutoData = {
+  body: PutAiConnectionAutoRequest;
+  path: {
+    /**
+     * The AI connection's id, the `id` the connections list returns.
+     */
+    grantId: string;
+  };
+  query?: never;
+  url: "/api/v1/ai/connections/{grantId}/auto";
+};
+
+export type PutAiConnectionAutoErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * `session_required`: allowing without a signed-in person.
+   * `org_scope_required`: a site-constrained principal. Or the caller
+   * is missing apikey:manage (`insufficient_permission`).
+   *
+   */
+  403: Error;
+  /**
+   * There is no such connection in the caller's organisation
+   */
+  404: Error;
+  /**
+   * Nothing was saved. `paused`: the organisation's AI is paused. Or
+   * the connection is revoked or expired.
+   *
+   */
+  409: Error;
+  /**
+   * The body was not application/json
+   */
+  415: Error;
+  /**
+   * The body is not valid
+   */
+  422: Error;
+};
+
+export type PutAiConnectionAutoError =
+  PutAiConnectionAutoErrors[keyof PutAiConnectionAutoErrors];
+
+export type PutAiConnectionAutoResponses = {
+  /**
+   * Saved; the connection's switch as it now stands
+   */
+  200: AiConnectionAuto;
+};
+
+export type PutAiConnectionAutoResponse =
+  PutAiConnectionAutoResponses[keyof PutAiConnectionAutoResponses];
+
+export type ListAiActivityData = {
+  body?: never;
+  path?: never;
+  query?: {
+    /**
+     * `all` lists every approved request. `ran_automatically`: approved
+     * by a setting. `approved_by_person`: approved by a signed-in
+     * person. `failed_or_unknown`: the change failed, or WPMgr could
+     * not confirm its result. `undone`: a person undid it.
+     *
+     */
+    filter?:
+      | "all"
+      | "ran_automatically"
+      | "approved_by_person"
+      | "failed_or_unknown"
+      | "undone";
+    /**
+     * Only requests on this site.
+     */
+    site_id?: string;
+    /**
+     * Only requests made through this AI connection.
+     */
+    grant_id?: string;
+    limit?: number;
+    /**
+     * The `next_cursor` of the previous page. Opaque; do not build one.
+     */
+    cursor?: string;
+  };
+  url: "/api/v1/ai/activity";
+};
+
+export type ListAiActivityErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Missing site.content.edit
+   */
+  403: Error;
+  /**
+   * The filter, a site or connection id, the limit or the cursor is not valid
+   */
+  422: Error;
+};
+
+export type ListAiActivityError =
+  ListAiActivityErrors[keyof ListAiActivityErrors];
+
+export type ListAiActivityResponses = {
+  /**
+   * A page of activity
+   */
+  200: AiActivityPage;
+};
+
+export type ListAiActivityResponse =
+  ListAiActivityResponses[keyof ListAiActivityResponses];
 
 export type GetSiteAiReadinessData = {
   body?: never;

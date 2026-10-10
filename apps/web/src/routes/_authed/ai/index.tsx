@@ -144,6 +144,7 @@ function AiConnectionsPage() {
           isRetrying={query.isFetching}
           revokingId={revoke.isPending ? (pending?.id ?? null) : null}
           onRevoke={(c) => setPending(c)}
+          canManage={mayCreate}
           connectAction={
             mayCreate ? (
               <Button asChild variant="outline" size="sm">

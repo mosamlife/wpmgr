@@ -239,35 +239,59 @@ func (s *Service) List(ctx context.Context, p domain.Principal, siteID *uuid.UUI
 		if err != nil {
 			return err
 		}
-		names := map[uuid.UUID]*string{}
-		out.Requests = make([]Request, 0, len(rows))
-		for _, row := range rows {
-			req := requestFromRow(row, withDigest)
-			if req.DecidedByUserID != nil {
-				id := *req.DecidedByUserID
-				name, seen := names[id]
-				if !seen {
-					u, uerr := q.GetUserByID(ctx, id)
-					switch {
-					case uerr == nil:
-						n := u.Name
-						name = &n
-					case errNoRow(uerr):
-						name = nil
-					default:
-						return uerr
-					}
-					names[id] = name
-				}
-				req.DecidedByName = name
-				req.DecidedByDeleted = name == nil
-			}
-			out.Requests = append(out.Requests, req)
-		}
-		return nil
+		out.Requests, err = requestsWithDeciders(ctx, q, rows, withDigest)
+		return err
 	})
 	if err != nil {
 		return Queue{}, domain.Internal("assistant_requests_list_failed", "failed to list AI requests").WithCause(err)
+	}
+	return out, nil
+}
+
+// requestsWithDeciders maps rows to requests and names each deciding person,
+// in the caller's transaction. A decider whose account no longer exists is
+// marked deleted.
+func requestsWithDeciders(ctx context.Context, q *sqlc.Queries, rows []sqlc.AssistantCachePurgeRequest, withDigest bool) ([]Request, error) {
+	names := map[uuid.UUID]*string{}
+	out := make([]Request, 0, len(rows))
+	for _, row := range rows {
+		req := requestFromRow(row, withDigest)
+		if req.DecidedByUserID != nil {
+			id := *req.DecidedByUserID
+			name, seen := names[id]
+			if !seen {
+				u, uerr := q.GetUserByID(ctx, id)
+				switch {
+				case uerr == nil:
+					n := u.Name
+					name = &n
+				case errNoRow(uerr):
+					name = nil
+				default:
+					return nil, uerr
+				}
+				names[id] = name
+			}
+			req.DecidedByName = name
+			req.DecidedByDeleted = name == nil
+		}
+		out = append(out, req)
+	}
+	return out, nil
+}
+
+// Render maps rows the caller already read to requests as the queue returns
+// them, naming each deciding person under the caller's principal.
+func (s *Service) Render(ctx context.Context, p domain.Principal, rows []sqlc.AssistantCachePurgeRequest) ([]Request, error) {
+	withDigest := p.Type == domain.PrincipalUser
+	var out []Request
+	err := s.repo.runAsCaller(ctx, p, func(tx pgx.Tx) error {
+		var err error
+		out, err = requestsWithDeciders(ctx, sqlc.New(tx), rows, withDigest)
+		return err
+	})
+	if err != nil {
+		return nil, domain.Internal("assistant_requests_list_failed", "failed to list AI requests").WithCause(err)
 	}
 	return out, nil
 }

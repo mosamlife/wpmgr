@@ -11,7 +11,8 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 )
 
-// The web shows ability requests on the site's Content tab.
+// The web shows ability requests on the site's Content tab, and a waiting
+// request's result tells the AI to hand the person its approval_url.
 func TestAbilityCreatedResult_PointsAtTheContentTab(t *testing.T) {
 	site := uuid.New()
 	res := abilityResultFromRow(sqlc.AssistantAbilityRequest{
@@ -20,8 +21,11 @@ func TestAbilityCreatedResult_PointsAtTheContentTab(t *testing.T) {
 	if res.ReviewPath != "/sites/"+site.String()+"/content" {
 		t.Fatalf("review_path = %q", res.ReviewPath)
 	}
-	if !strings.Contains(res.Message, "Review it on the site's Content tab in WPMgr") {
-		t.Fatalf("message does not name the Content tab: %q", res.Message)
+	if res.Approval != "ask" {
+		t.Fatalf("approval = %q, want ask", res.Approval)
+	}
+	if !strings.Contains(res.Message, "give them approval_url") {
+		t.Fatalf("message does not point the person at approval_url: %q", res.Message)
 	}
 }
 

@@ -399,18 +399,41 @@ func (s *Service) Me(ctx context.Context, userID uuid.UUID) (User, []Membership,
 }
 
 // RoleInTenant returns the user's role in a tenant, or false if not a member.
-// It reads the caller's own membership rows via the self-read policy.
+// It reads the caller's own membership rows via the self-read policy. A
+// lookup error reads as "not a member".
 func (s *Service) RoleInTenant(ctx context.Context, userID, tenantID uuid.UUID) (authz.Role, bool) {
+	role, member, _ := s.MembershipRole(ctx, userID, tenantID)
+	return role, member
+}
+
+// MembershipRole is RoleInTenant with the lookup error kept, for a caller
+// that must tell "not a member" from "could not check". On an error it
+// returns ("", false, err), which is what RoleInTenant answers.
+func (s *Service) MembershipRole(ctx context.Context, userID, tenantID uuid.UUID) (authz.Role, bool, error) {
 	memberships, err := s.repo.ListMembershipsForUser(ctx, userID)
 	if err != nil {
-		return "", false
+		return "", false, err
 	}
 	for _, m := range memberships {
 		if m.TenantID == tenantID {
-			return m.Role, true
+			return m.Role, true, nil
 		}
 	}
-	return "", false
+	return "", false, nil
+}
+
+// AccountStatus returns users.status for userID ('active', 'pending' or
+// 'disabled'). found is false when the account no longer exists. Any other
+// read failure is returned as an error.
+func (s *Service) AccountStatus(ctx context.Context, userID uuid.UUID) (status string, found bool, err error) {
+	u, err := s.repo.GetUserByID(ctx, userID)
+	if err != nil {
+		if de, ok := domain.AsDomain(err); ok && de.Kind == domain.KindNotFound {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return u.Status, true, nil
 }
 
 // UpsertOIDCUser resolves a generic-OIDC identity to a session.

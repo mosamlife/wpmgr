@@ -38,6 +38,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentupstream"
 	"github.com/mosamlife/wpmgr/apps/api/internal/aireadiness"
+	"github.com/mosamlife/wpmgr/apps/api/internal/aitrust"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/assistantrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
@@ -1857,12 +1858,36 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		abilityReqSvc.SetRouteEncoder(abilities.SendableRoute)
 		abilityReqSvc.SetEnabler(ocCmdClient)
 	}
+	// Approval tiers (ADR-065): the approval package decides each new write
+	// request under the site's setting. The setter checks build each person's
+	// principal through the session authenticator's own code path.
+	abilityReqSvc.SetPolicy(abilityrequest.NewPolicyRepo(pool, auditRec), authn)
+	mcpSvc.SetAbilityDecider(abilityReqSvc)
+	mcpSvc.SetPublicBaseURL(cfg.PublicBaseURL)
 	abilityReqScanWorker := abilityrequest.NewScanWorker(abilityReqSvc)
 	abilityReqDispatchWorker := abilityrequest.NewDispatchWorker(abilityReqSvc)
 	abilityReqSweepWorker := abilityrequest.NewSweepWorker(abilityReqSvc)
 	abilityReqReconcileWorker := abilityrequest.NewReconcileWorker(abilityReqSvc)
 	abilityReqUndoReconcileWorker := abilityrequest.NewUndoReconcileWorker(abilityReqSvc)
 	abilityReqH := abilityrequest.NewHandler(abilityReqSvc)
+	// AI trust settings (ADR-065): a site's mode, a connection's switch and
+	// usage, and the activity feed. Setter validity uses the session
+	// authenticator's own builder, as the decision engine does; the feed
+	// renders each request with its own queue's renderer.
+	aiTrustRepo := aitrust.NewRepo(pool, auditRec)
+	aiTrustSvc := aitrust.NewService(aiTrustRepo, authn, logger)
+	aiTrustSvc.SetRenderers(abilityReqH, assistantReqH)
+	aiTrustH := aitrust.NewHandler(aiTrustSvc)
+	// The one-time notice to organisations whose sites moved to Auto for AI
+	// drafts at launch: run at start-up and hourly until every one is told.
+	// WPMGR_AI_LAUNCH_NOTICE=off holds it; the first boot that reads on sends
+	// it then.
+	aiLaunchNoticeOn := cfg.AI.LaunchNoticeOn()
+	if !aiLaunchNoticeOn {
+		logger.Info("ai launch notice: held by WPMGR_AI_LAUNCH_NOTICE; nothing is claimed or sent until it is on")
+	}
+	aiLaunchNoticeWorker := aitrust.NewLaunchNoticeWorker(aitrust.NewLaunchNotifier(
+		aiTrustRepo, aiLaunchNoticeMailer{svc: mailerSvc}, cfg.PublicBaseURL, aiLaunchNoticeOn, logger))
 	abilityTenantH := abilities.NewTenantHandler(abilities.NewTenantRepo(pool, auditRec), admingate.NewPoolStore(pool))
 	// AI readiness: the advisory per-site checklist and its fleet rollup. The
 	// refresh enqueuers are set once River has started, below.
@@ -2107,6 +2132,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		siteSweepWorker:          siteSweepWorker,
 		siteEventPruneWorker:     siteEventPruneWorker,
 		siteAutoResumeWorker:     siteAutoResumeWorker,
+		aiLaunchNoticeWorker:     aiLaunchNoticeWorker,
 		siteAdoptURLWorker:       siteAdoptURLWorker,
 		updateWorker:             updateWorker,
 		updateReaperWorker:       updateReaperWorker,
@@ -2413,6 +2439,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// The AI request scan enqueues one dispatch job per due approved request.
 	assistantReqScanWorker.SetEnqueuer(assistantrequest.NewRiverEnqueuer(riverClient))
 	abilityReqScanWorker.SetEnqueuer(abilityrequest.NewRiverEnqueuer(riverClient))
+	abilityReqSvc.SetDispatchEnqueuer(abilityrequest.NewRiverEnqueuer(riverClient))
 
 	// ADR-046 Performance Suite: wire the RUCSS enqueuer + perf ingest service
 	// now that River has started. The ingest service stashes the agent-posted
@@ -3116,6 +3143,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		AbilityRequestH:   abilityReqH,
 		AbilityTenantH:    abilityTenantH,
 		AIReadinessH:      aiReadinessH,
+		AITrustH:          aiTrustH,
 		MCPDiscoveryH:     mcpDiscoveryH,
 		FilesH:            filesH,
 		UpdateH:           updateH,
@@ -3585,6 +3613,8 @@ type riverDeps struct {
 	siteSweepWorker      *site.SweepWorker
 	siteEventPruneWorker *site.EventPruneWorker
 	siteAutoResumeWorker *site.AutoResumeWorker
+	// ADR-065: the one-time AI launch notice (always wired).
+	aiLaunchNoticeWorker *aitrust.LaunchNoticeWorker
 	// GH #755: adopts an agent-reported address off the push (always wired).
 	siteAdoptURLWorker *site.AdoptReportedURLWorker
 	updateWorker       *update.Worker
@@ -3817,6 +3847,20 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	// so an extra run at boot costs one index read.
 	if d.siteAdoptURLWorker != nil {
 		river.AddWorker(workers, d.siteAdoptURLWorker)
+	}
+	// ADR-065: the AI launch notice. RunOnStart, because the notice belongs
+	// to the deploy that moved the sites; then hourly, which retries a
+	// notice that was not delivered. Each site is claimed by one run at a
+	// time, so a second run never sends a second notice for it. While
+	// WPMGR_AI_LAUNCH_NOTICE holds the notice the job still runs, and claims
+	// and sends nothing.
+	if d.aiLaunchNoticeWorker != nil {
+		river.AddWorker(workers, d.aiLaunchNoticeWorker)
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(aitrust.LaunchNoticeInterval),
+			func() (river.JobArgs, *river.InsertOpts) { return aitrust.LaunchNoticeArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: true},
+		))
 	}
 	if d.siteAutoResumeWorker != nil {
 		river.AddWorker(workers, d.siteAutoResumeWorker)

@@ -250,6 +250,15 @@ type Querier interface {
 	// so a caller that does not yet know the customer id (should not happen once
 	// a subscription exists, but keeps this query safe to reuse) cannot blank it.
 	ApplyBillingSubscriptionState(ctx context.Context, arg ApplyBillingSubscriptionStateParams) error
+	// The default a site gets when a person turns AI editing on: Auto for AI
+	// drafts, source 'enable_default', that person as the setter. Run it in the
+	// same transaction as MarkSiteContentEditingEnabled, with that person's
+	// app.user_id. It moves only a site whose mode no one has set ('unset') and
+	// whose AI editing is on, so turning AI editing on again never resets a
+	// choice a person made, the launch default or a tightening. No row
+	// (pgx.ErrNoRows) means the site already carries a mode and nothing changed,
+	// or the site is not visible to the caller.
+	ApplySiteAIModeEnableDefault(ctx context.Context, arg ApplySiteAIModeEnableDefaultParams) (ApplySiteAIModeEnableDefaultRow, error)
 	// Bulk-apply's per-site write: computes dedup(tags ∪ @add) − @remove
 	// entirely in SQL from the CURRENT row (never from a stale client-side read).
 	// 0 affected rows means the site does not exist in this tenant (the handler
@@ -261,6 +270,20 @@ type Querier interface {
 	// (pgx.ErrNoRows) is the refusal: already decided, withdrawn, expired, or the
 	// card the approver saw is not the one stored.
 	ApproveAbilityRequest(ctx context.Context, arg ApproveAbilityRequestParams) (AssistantAbilityRequest, error)
+	// m174. The approval by a site's setting, as one compare-and-set. Run it in
+	// the organisation-wide tenant transaction the decision opens (db.InTenantTx:
+	// no user and no site allowlist in the transaction), under the tenant's
+	// policy lock. It approves only a request that still waits for its first
+	// decision, inside its window, while the site's mode, the mode's source, its
+	// version, its setter and its set time are exactly the ones the decision
+	// relied on, the mode allows the class, and the connection is active and
+	// runs by the site's setting. All of them are recorded on the row.
+	//
+	// No row (pgx.ErrNoRows) means one of those no longer holds: nothing was
+	// written, and the caller decides again from a fresh read. ai_approval_backstop
+	// re-checks every condition at the row, so a statement that drops one of them
+	// is refused by the database rather than approving.
+	ApproveAbilityRequestByPolicy(ctx context.Context, arg ApproveAbilityRequestByPolicyParams) (AssistantAbilityRequest, error)
 	// The digest, the state and the window are all in the WHERE clause, and
 	// decided_at is now(). No row (pgx.ErrNoRows) is the refusal: already
 	// decided, withdrawn, expired, or the facts changed under the reader.
@@ -396,6 +419,14 @@ type Querier interface {
 	// Multi-instance safe: no external SELECT, no RETURNING on nothing.
 	// Runs under InAgentTx.
 	ClaimAlertSlot(ctx context.Context, arg ClaimAlertSlotParams) (EmailAlertState, error)
+	// One tenant's sites still on the launch default whose owners have not been
+	// told, claimed by stamping ai_mode_launch_emailed_at. Every row this
+	// statement claims carries the same stamp (now() is the transaction's start
+	// time); pass it to ReleaseSiteAILaunchNotices when the send fails, so the
+	// next run claims the sites again. A site whose mode a person has since
+	// chosen is no longer on the launch default and is not claimed. The stamp is
+	// not one of the columns sites_ai_mode_guard watches.
+	ClaimSiteAILaunchNotices(ctx context.Context, tenantID uuid.UUID) ([]ClaimSiteAILaunchNoticesRow, error)
 	// The claim: 'scheduled' -> 'dispatching', for ONE run the scan returned.
 	// Tenant-scoped by id+tenant_id even though the caller runs under InAgentTx,
 	// because the scan already handed us the tenant and naming it costs nothing.
@@ -560,6 +591,10 @@ type Querier interface {
 	ConsumeSiteBoundPairingCode(ctx context.Context, arg ConsumeSiteBoundPairingCodeParams) (ConsumeSiteBoundPairingCodeRow, error)
 	// Mark a challenge used on successful verification.
 	ConsumeTwoFactorChallenge(ctx context.Context, id uuid.UUID) (TwoFactorChallenge, error)
+	// What one connection ran by a site's setting in the window: approvals with
+	// approval_source 'policy' whose class is in classes, and on how many sites.
+	// Site changes only; cache clears are counted from their own table.
+	CountAIConnectionPolicyApprovals(ctx context.Context, arg CountAIConnectionPolicyApprovalsParams) (CountAIConnectionPolicyApprovalsRow, error)
 	// Per site and per builder namespace ('elementor', 'bricks'): how many of the
 	// site's inventoried abilities in that namespace were registered by that
 	// builder itself. One row per (site, namespace) that has at least one
@@ -834,6 +869,19 @@ type Querier interface {
 	// consented to, the token path passes DefaultGrantScopes() because no client
 	// asked for anything -- and both are validated against recognisedScopes in Go
 	// before they arrive, on top of the vocabulary CHECK here.
+	//
+	// m174: ai_auto_by_creator says whether the connection may run changes by
+	// each site's setting from the start. A connection a signed-in person creates
+	// (dashboard mint or consent) passes true and records its creator as the
+	// person who allowed it (ai_auto_set_by = created_by_user_id); a connection
+	// minted with an API key passes false and starts on 'never'. false is the
+	// zero value, so a caller that omits the field creates a connection on
+	// 'never', the setting that loosens nothing. mcp_grants_ai_auto_guard refuses
+	// 'site_setting' unless app.user_id in the transaction is the recorded
+	// setter, and mcp_grants_ai_auto_names_setter_check refuses it with no
+	// creator, so true is honoured only for the signed-in creator. The cast on
+	// the second use of created_by_user_id keeps the server's inferred type for
+	// that parameter uuid in both places.
 	CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) (McpGrant, error)
 	// ---------------------------------------------------------------------------
 	// backup_manifest_entries
@@ -1394,6 +1442,15 @@ type Querier interface {
 	// Returns the total row count for the fleet snapshot list (for next_offset
 	// calculation). Uses the same predicates as FleetListSnapshots.
 	FleetListSnapshotsCount(ctx context.Context, arg FleetListSnapshotsCountParams) (int64, error)
+	// ---------------------------------------------------------------------------
+	// The connection's switch and usage
+	// ---------------------------------------------------------------------------
+	// The connection's switch: 'site_setting' (runs a change where the site's
+	// mode allows it) or 'never', who allowed it and when, and whether that
+	// account still exists. created_by_user_id is NULL for a connection minted
+	// with an API key. No row (pgx.ErrNoRows) when there is no such connection in
+	// the tenant, or the transaction is site-scoped.
+	GetAIConnectionAuto(ctx context.Context, arg GetAIConnectionAutoParams) (GetAIConnectionAutoRow, error)
 	GetAPIKey(ctx context.Context, arg GetAPIKeyParams) (ApiKey, error)
 	// GetAPIKeyByPrefix resolves a presented key by its unique prefix. This runs
 	// WITHOUT a tenant GUC (the auth layer does not yet know the tenant), so it must
@@ -1869,6 +1926,45 @@ type Querier interface {
 	// explicit tenant_id match in the ON clause is defense-in-depth + keeps the
 	// planner on the PK index (project convention — see clients.sql).
 	GetSite(ctx context.Context, arg GetSiteParams) (GetSiteRow, error)
+	// ai_trust (m174): the site's AI mode, the connection's switch, the
+	// connection's automatic usage, the AI activity feed, and the one-time
+	// notice to organisations whose sites moved to the launch default.
+	//
+	// WHICH TRANSACTION, PER STATEMENT.
+	//
+	//   * The site mode statements run in the caller's own tenant transaction
+	//     (db.RunTenantTx with the request's principal). sites is FORCE ROW LEVEL
+	//     SECURITY with sites_tenant_isolation and the RESTRICTIVE
+	//     sites_site_scope, so a site collaborator reads and writes only their own
+	//     sites. sites_ai_mode_guard decides who may write which mode: a mode
+	//     above ask is written only with app.user_id equal to the recorded setter,
+	//     and with no user the only write is down to ask, recorded as tightened.
+	//   * The connection statements run in an organisation-wide tenant
+	//     transaction. mcp_grants_site_scope_select and _update refuse every
+	//     grant row while app.site_scope is 'on', so a site-scoped principal reads
+	//     and writes none (a connection is an organisation-wide credential).
+	//     mcp_grants_ai_auto_guard requires app.user_id to be the recorded setter
+	//     whenever a connection is allowed to run by the site's setting.
+	//   * The usage count runs organisation-wide (db.InTenantTx), as the decision
+	//     engine's own count does: a site allowlist in the transaction would
+	//     undercount and fail open.
+	//   * The activity page runs under the caller's principal: row security
+	//     narrows a site collaborator to their own sites on both request tables.
+	//   * The launch notice runs once per tenant under db.InTenantTx. sites is
+	//     FORCE ROW LEVEL SECURITY, so a statement with no tenant in the
+	//     transaction sees no site and claims nothing.
+	//
+	// TIME IS THE DATABASE'S. Windows arrive as whole seconds and are measured
+	// against now() in the database.
+	// ---------------------------------------------------------------------------
+	// The site's AI mode
+	// ---------------------------------------------------------------------------
+	// The site's mode, how it was chosen, by whom and when, its version, and
+	// whether AI editing is on. set_by_name is a person's name (render it as
+	// text); set_by_account_deleted is true when a setter is recorded and that
+	// account no longer exists. No row (pgx.ErrNoRows) when the site is not
+	// visible to the caller.
+	GetSiteAIMode(ctx context.Context, arg GetSiteAIModeParams) (GetSiteAIModeRow, error)
 	// One ability on one site. pgx.ErrNoRows when the site did not report it.
 	GetSiteAbilityInventoryEntry(ctx context.Context, arg GetSiteAbilityInventoryEntryParams) (SiteAbilityInventory, error)
 	// The site's last refresh. pgx.ErrNoRows means the site has never been
@@ -2231,6 +2327,11 @@ type Querier interface {
 	// is generated and never written. m161: route_id, route_sha256 and
 	// card_facts are set together for wpmgr/rest-write and are NULL for every
 	// other ability (the table's CHECKs refuse anything else).
+	// m174: checked_target_status is the raw post status the precheck checked
+	// (restTargetFacts.Status, compared exactly, never the card's cleaned copy).
+	// NULL for an ability with no target, page-create among them. It is written
+	// here only: no UPDATE grant covers it and ai_approval_backstop refuses any
+	// change to it.
 	InsertAbilityRequest(ctx context.Context, arg InsertAbilityRequestParams) (AssistantAbilityRequest, error)
 	// Agent-auth path (app.agent GUC). The unique (site_id, nonce) index makes a
 	// replayed nonce a no-op via ON CONFLICT, returning 0 rows affected.
@@ -2402,6 +2503,26 @@ type Querier interface {
 	// caller handles the normal way (errors.Is(err, pgx.ErrNoRows)).
 	LastProcessedBillingEventOccurredAtForTenant(ctx context.Context, arg LastProcessedBillingEventOccurredAtForTenantParams) (time.Time, error)
 	LinkUserOIDC(ctx context.Context, arg LinkUserOIDCParams) (User, error)
+	// ---------------------------------------------------------------------------
+	// AI activity
+	// ---------------------------------------------------------------------------
+	// One page of the activity feed: every approved request from both request
+	// tables, newest first, keyset on (created_at, id). It returns which table
+	// and which id; ListAbilityRequestsByIDs and
+	// ListAssistantCachePurgeRequestsByIDs read the rows, in the same
+	// transaction.
+	//
+	// Approved means the request entered the approved states: for site changes
+	// approved, dispatched, done, failed, not_sent or outcome_unknown; for cache
+	// clears approved_undispatched or dispatched. Waiting, declined, withdrawn
+	// and expired requests are not listed.
+	//
+	// filter is one of all, ran_automatically (approved by a setting or a
+	// session), approved_by_person, failed_or_unknown or undone; anything else
+	// lists nothing. site_id and grant_id narrow the page when set. The first
+	// page passes NULL cursor_created_at and cursor_id; a later page passes the
+	// created_at and id of the previous page's last row.
+	ListAIActivityPage(ctx context.Context, arg ListAIActivityPageParams) ([]ListAIActivityPageRow, error)
 	// AI readiness (per-site checklist and fleet column). Read-only queries over
 	// tables that already exist: sites (with its components JSONB) and the m155
 	// ability inventory with its run record. No migration.
@@ -2543,6 +2664,8 @@ type Querier interface {
 	// collaborator to their own sites.
 	// ---------------------------------------------------------------------------
 	ListAbilityRequests(ctx context.Context, arg ListAbilityRequestsParams) ([]AssistantAbilityRequest, error)
+	// The site-change rows of one activity page, newest first.
+	ListAbilityRequestsByIDs(ctx context.Context, arg ListAbilityRequestsByIDsParams) ([]AssistantAbilityRequest, error)
 	ListAbilityRequestsForSite(ctx context.Context, arg ListAbilityRequestsForSiteParams) ([]AssistantAbilityRequest, error)
 	// m160 R4. Every entry switched off for this tenant, for filtering a whole
 	// catalogue read in one statement. Run in the tenant's transaction.
@@ -2581,6 +2704,8 @@ type Querier interface {
 	// reads mcp_grants.
 	// ---------------------------------------------------------------------------
 	ListAssistantCachePurgeRequests(ctx context.Context, arg ListAssistantCachePurgeRequestsParams) ([]AssistantCachePurgeRequest, error)
+	// The cache-clear rows of one activity page, newest first.
+	ListAssistantCachePurgeRequestsByIDs(ctx context.Context, arg ListAssistantCachePurgeRequestsByIDsParams) ([]AssistantCachePurgeRequest, error)
 	ListAssistantCachePurgeRequestsForSite(ctx context.Context, arg ListAssistantCachePurgeRequestsForSiteParams) ([]AssistantCachePurgeRequest, error)
 	// Newest-first, matching the web "Audit" page contract (page 1 = most recent;
 	// Next/Prev page via OFFSET now walks BACKWARD in time). actor_user_name/
@@ -3488,6 +3613,10 @@ type Querier interface {
 	// (waveOrder sorts by the same pair), so an agent rollout's canary is the
 	// first row of the table.
 	ListUpdateTasksForRunWithSiteName(ctx context.Context, arg ListUpdateTasksForRunWithSiteNameParams) ([]ListUpdateTasksForRunWithSiteNameRow, error)
+	// Display names for the setters and approvers recorded on rows the caller
+	// has already read in its own tenant. An id with no row is an account that
+	// no longer exists. Pass only ids read from the caller's tenant.
+	ListUserNamesByIDs(ctx context.Context, ids []uuid.UUID) ([]ListUserNamesByIDsRow, error)
 	// The pre-m110 identity as it still sits on users.oidc_*, for a sign-in whose
 	// user_identities row was never written (see AdoptLegacyIdentity).
 	//
@@ -4063,6 +4192,10 @@ type Querier interface {
 	// because BeginAbilityRequestRecoveryUndo starts only from undo_state NULL;
 	// the person can begin it again, with a fresh window.
 	ReleaseAbilityRequestUndo(ctx context.Context, arg ReleaseAbilityRequestUndoParams) (int64, error)
+	// Undoes one claim after a failed send. It clears only the stamp that claim
+	// wrote (claimed_at is the stamp ClaimSiteAILaunchNotices returned), so it
+	// never clears a later claim or a notice that was sent.
+	ReleaseSiteAILaunchNotices(ctx context.Context, arg ReleaseSiteAILaunchNoticesParams) (int64, error)
 	// ReleaseTenantAssistantKillSwitch clears the pause after an incident.
 	//
 	// IT CLEARS THE REASON IN THE SAME STATEMENT, and it must: the reason is part
@@ -4308,6 +4441,14 @@ type Querier interface {
 	// MarkAbilityRequestOutcomeUnknown, never retried.
 	ScanStaleDispatchedAbilityRequests(ctx context.Context, arg ScanStaleDispatchedAbilityRequestsParams) ([]ScanStaleDispatchedAbilityRequestsRow, error)
 	ScanStaleDispatchedAssistantCachePurgeRequests(ctx context.Context, arg ScanStaleDispatchedAssistantCachePurgeRequestsParams) ([]ScanStaleDispatchedAssistantCachePurgeRequestsRow, error)
+	// Sets the connection's switch. 'site_setting' records set_by, the signed-in
+	// person allowing it, even when the switch already reads 'site_setting'
+	// (that is how a connection is allowed again after the person who allowed it
+	// lost the access it needs). 'never' records no person. Only an active,
+	// unexpired connection is written. No row (pgx.ErrNoRows) means there is no
+	// such connection, or it is revoked or expired; GetAIConnectionAuto tells
+	// the two apart.
+	SetAIConnectionAuto(ctx context.Context, arg SetAIConnectionAutoParams) (SetAIConnectionAutoRow, error)
 	// Stamp the in-flight db_clean job id + start time for the watchdog.
 	// Runs under app.agent (cross-tenant scheduled path) or InTenantTx (operator).
 	SetActiveDBCleanJob(ctx context.Context, arg SetActiveDBCleanJobParams) error
@@ -4359,6 +4500,29 @@ type Querier interface {
 	// attempt_error (GH #791) is cleared when the run completes; a completed run
 	// never carries an outstanding attempt error. Any other status leaves it.
 	SetScheduleRunStatusBySnapshot(ctx context.Context, arg SetScheduleRunStatusBySnapshotParams) (BackupScheduleRun, error)
+	// Sets the site's mode as a compare-and-set on ai_mode_version. Exactly one
+	// row comes back for a visible site:
+	//
+	//   * applied = true: the write was made. When the mode, its source or its
+	//     setter differ from what is stored, the version moves by one and the set
+	//     time and step-up are recorded; when all three are what is stored, the
+	//     row is left as it is (saving the setting that is already set changes
+	//     nothing).
+	//   * applied = false: expected_version is not the stored version. Nothing
+	//     was written, and the row carries the stored mode and version, which is
+	//     what a 409 stale_version answer reports.
+	//
+	// No row (pgx.ErrNoRows) means the site is not visible to the caller.
+	//
+	// The values an applied = false row carries are the ones this statement's
+	// snapshot saw. A caller that holds the tenant's policy lock, as every mode
+	// writer does, has no concurrent mode write to miss.
+	//
+	// set_by is the signed-in person recording the choice, or NULL for a
+	// lowering made without one (source 'tightened'). step_up is NULL except for
+	// Full auto. sites_ai_mode_guard refuses a combination a caller may not
+	// write.
+	SetSiteAIMode(ctx context.Context, arg SetSiteAIModeParams) (SetSiteAIModeRow, error)
 	// Stores the per-site age PUBLIC recipient backups are encrypted to. The CP
 	// never holds the matching identity (private key); it cannot decrypt backups.
 	SetSiteAgeRecipient(ctx context.Context, arg SetSiteAgeRecipientParams) (Site, error)

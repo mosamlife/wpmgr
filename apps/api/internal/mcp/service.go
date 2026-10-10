@@ -354,6 +354,14 @@ type Service struct {
 	// abilities is the ability engine's wiring (EnableAbilityTools). Nil
 	// means the four ability tools are neither listed nor run.
 	abilities *abilityEngine
+
+	// abilityDecider decides a just-created write request under the site's
+	// setting (SetAbilityDecider). Nil: every request waits for a person.
+	abilityDecider AbilityDecider
+
+	// publicBaseURL is WPMGR_PUBLIC_BASE_URL, for the absolute approval_url
+	// a waiting request's result carries (SetPublicBaseURL).
+	publicBaseURL string
 }
 
 func NewService(store Store) *Service {
@@ -1332,6 +1340,12 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 			// makes an inferred row indistinguishable from a chosen one at
 			// exactly the screen that exists to tell them apart.
 			SetupClient: nil,
+
+			// m174. A connection a signed-in person consents to may run
+			// changes where each site's setting allows it, with that person
+			// recorded as the one who allowed it. One approved with an API key
+			// starts on 'never' until a person allows it (ADR-065).
+			AiAutoByCreator: aiAutoByCreator(req.Principal),
 		},
 		func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams {
 			return sqlc.CreateMCPAuthorizationCodeParams{

@@ -46,6 +46,7 @@ each file (see "Status line formats" below — the tree is not normalized).
 | 062 | Assistant surface, Phase 2: governed fleet content operations | Accepted (2026-08-31, amended the same day by A1); items 3, 4, 9 and 10 open as ship blockers | 2026-08-27 | [ADR-062-assistant-surface-phase-2-content-operations.md](./ADR-062-assistant-surface-phase-2-content-operations.md) |
 | 063 | Repository licensing, and the rules for third-party reuse | Accepted | 2026-08-24 | [ADR-063-licensing-and-third-party-reuse.md](./ADR-063-licensing-and-third-party-reuse.md) |
 | 064 | Governed per-site and organisation context | Accepted (2026-08-31) | 2026-08-27 | [ADR-064-governed-site-org-context.md](./ADR-064-governed-site-org-context.md) |
+| 065 | AI writes are decided by tier; a person sets the tiers | Accepted (2026-10-09); takes effect in two merges | 2026-10-09 | [ADR-065-ai-writes-decided-by-tier.md](./ADR-065-ai-writes-decided-by-tier.md) |
 
 Not part of the numbering: [`font-subsetting-phase2-plan.md`](./font-subsetting-phase2-plan.md)
 is a build plan, not a decision record. It lives in this directory because it
@@ -74,7 +75,7 @@ Two files don't fit any of the three and are findings, not table artifacts:
 ## Numbering
 
 Numbers are allocated in this file and are never reused, including the ones
-below that have no file. **The next free number is 065.**
+below that have no file. **The next free number is 066.**
 
 | Number(s) | What happened |
 |---|---|

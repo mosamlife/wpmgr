@@ -83,6 +83,11 @@ WHERE tenant_id = @tenant_id
 -- is generated and never written. m161: route_id, route_sha256 and
 -- card_facts are set together for wpmgr/rest-write and are NULL for every
 -- other ability (the table's CHECKs refuse anything else).
+-- m174: checked_target_status is the raw post status the precheck checked
+-- (restTargetFacts.Status, compared exactly, never the card's cleaned copy).
+-- NULL for an ability with no target, page-create among them. It is written
+-- here only: no UPDATE grant covers it and ai_approval_backstop refuses any
+-- change to it.
 INSERT INTO assistant_ability_requests (
     id,
     tenant_id, site_id, proposed_by_grant_id,
@@ -92,7 +97,7 @@ INSERT INTO assistant_ability_requests (
     site_label, site_host, grant_label, grant_via, setup_client,
     title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version,
     digest_nonce, presented_digest, state, expires_at,
-    route_id, route_sha256, card_facts
+    route_id, route_sha256, card_facts, checked_target_status
 ) VALUES (
     COALESCE(sqlc.narg(id)::uuid, gen_random_uuid()),
     @tenant_id, @site_id, @proposed_by_grant_id,
@@ -103,7 +108,8 @@ INSERT INTO assistant_ability_requests (
     sqlc.narg(title_excerpt), sqlc.narg(editor), sqlc.narg(post_type),
     @effect_copy, @snapshot, @card_copy_version,
     @digest_nonce, @presented_digest, 'pending', @expires_at,
-    sqlc.narg(route_id), sqlc.narg(route_sha256), sqlc.narg(card_facts)
+    sqlc.narg(route_id), sqlc.narg(route_sha256), sqlc.narg(card_facts),
+    sqlc.narg(checked_target_status)
 )
 ON CONFLICT (tenant_id, site_id, proposed_by_grant_id, ability_name, target_key)
     WHERE state = 'pending'
@@ -209,6 +215,54 @@ WHERE tenant_id = @tenant_id
   AND presented_digest = @presented_digest
   AND state = 'pending'
   AND expires_at > now()
+RETURNING *;
+
+-- name: ApproveAbilityRequestByPolicy :one
+-- m174. The approval by a site's setting, as one compare-and-set. Run it in
+-- the organisation-wide tenant transaction the decision opens (db.InTenantTx:
+-- no user and no site allowlist in the transaction), under the tenant's
+-- policy lock. It approves only a request that still waits for its first
+-- decision, inside its window, while the site's mode, the mode's source, its
+-- version, its setter and its set time are exactly the ones the decision
+-- relied on, the mode allows the class, and the connection is active and
+-- runs by the site's setting. All of them are recorded on the row.
+--
+-- No row (pgx.ErrNoRows) means one of those no longer holds: nothing was
+-- written, and the caller decides again from a fresh read. ai_approval_backstop
+-- re-checks every condition at the row, so a statement that drops one of them
+-- is refused by the database rather than approving.
+UPDATE assistant_ability_requests AS r
+SET state = 'approved',
+    approval_source = 'policy',
+    approval_site_mode = sqlc.arg(site_mode)::text,
+    approval_mode_source = sqlc.arg(mode_source)::text,
+    approval_mode_version = sqlc.arg(mode_version)::bigint,
+    approval_setter_user_id = sqlc.arg(setter_user_id)::uuid,
+    approval_setter_set_at = sqlc.arg(setter_set_at)::timestamptz,
+    base_change_class = sqlc.arg(base_change_class)::text,
+    change_class = sqlc.arg(change_class)::text,
+    decided_at = now(),
+    dispatch_deadline_at = now() + (sqlc.arg(dispatch_window_seconds)::int * interval '1 second'),
+    policy_checked_at = now()
+WHERE r.tenant_id = sqlc.arg(tenant_id)::uuid
+  AND r.id = sqlc.arg(id)::uuid
+  AND r.site_id = sqlc.arg(site_id)::uuid
+  AND r.state = 'pending'
+  AND r.policy_checked_at IS NULL
+  AND r.expires_at > now()
+  AND EXISTS (
+      SELECT 1
+      FROM sites s
+      WHERE s.tenant_id = r.tenant_id
+        AND s.id = r.site_id
+        AND s.ai_mode = sqlc.arg(site_mode)::text
+        AND s.ai_mode_source = sqlc.arg(mode_source)::text
+        AND s.ai_mode_version = sqlc.arg(mode_version)::bigint
+        AND s.ai_mode_set_by = sqlc.arg(setter_user_id)::uuid
+        AND s.ai_mode_set_at = sqlc.arg(setter_set_at)::timestamptz
+        AND ai_mode_allows(s.ai_mode, sqlc.arg(change_class)::text)
+  )
+  AND mcp_grant_runs_by_setting(r.tenant_id, r.proposed_by_grant_id)
 RETURNING *;
 
 -- name: DeclineAbilityRequest :one

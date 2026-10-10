@@ -14,7 +14,7 @@ import (
 )
 
 const adminUpsertAbilityCatalogueEntry = `-- name: AdminUpsertAbilityCatalogueEntry :one
-SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id, output_fields FROM admin_upsert_ability_catalogue_entry(
+SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id, output_fields, change_class FROM admin_upsert_ability_catalogue_entry(
     $1::uuid,
     $2::uuid,
     $3::text,
@@ -166,6 +166,7 @@ func (q *Queries) AdminUpsertAbilityCatalogueEntry(ctx context.Context, arg Admi
 		&i.UpdatedAt,
 		&i.UpdatedByUserID,
 		&i.OutputFields,
+		&i.ChangeClass,
 	)
 	return i, err
 }
@@ -194,7 +195,7 @@ func (q *Queries) DeleteStaleSiteAbilityInventory(ctx context.Context, arg Delet
 }
 
 const getAbilityCatalogueEntry = `-- name: GetAbilityCatalogueEntry :one
-SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id, output_fields FROM ability_catalogue
+SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id, output_fields, change_class FROM ability_catalogue
 WHERE entry_id = $1::uuid
 `
 
@@ -238,6 +239,7 @@ func (q *Queries) GetAbilityCatalogueEntry(ctx context.Context, entryID uuid.UUI
 		&i.UpdatedAt,
 		&i.UpdatedByUserID,
 		&i.OutputFields,
+		&i.ChangeClass,
 	)
 	return i, err
 }
@@ -331,7 +333,7 @@ func (q *Queries) IsAbilityDisabledForTenant(ctx context.Context, arg IsAbilityD
 }
 
 const listAbilityCatalogue = `-- name: ListAbilityCatalogue :many
-SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id, output_fields FROM ability_catalogue
+SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id, output_fields, change_class FROM ability_catalogue
 ORDER BY name, version_min NULLS FIRST
 `
 
@@ -381,6 +383,7 @@ func (q *Queries) ListAbilityCatalogue(ctx context.Context) ([]AbilityCatalogue,
 			&i.UpdatedAt,
 			&i.UpdatedByUserID,
 			&i.OutputFields,
+			&i.ChangeClass,
 		); err != nil {
 			return nil, err
 		}
@@ -393,7 +396,7 @@ func (q *Queries) ListAbilityCatalogue(ctx context.Context) ([]AbilityCatalogue,
 }
 
 const listAbilityCatalogueAudit = `-- name: ListAbilityCatalogueAudit :many
-SELECT id, entry_id, name, action, actor_user_id, before_row_sha256, after_row_sha256, before_entry_sha256, after_entry_sha256, before_enabled, after_enabled, at FROM ability_catalogue_audit
+SELECT id, entry_id, name, action, actor_user_id, before_row_sha256, after_row_sha256, before_entry_sha256, after_entry_sha256, before_enabled, after_enabled, at, before_change_class, after_change_class FROM ability_catalogue_audit
 WHERE entry_id = $1::uuid
 ORDER BY id DESC
 LIMIT $2::int
@@ -427,6 +430,8 @@ func (q *Queries) ListAbilityCatalogueAudit(ctx context.Context, arg ListAbility
 			&i.BeforeEnabled,
 			&i.AfterEnabled,
 			&i.At,
+			&i.BeforeChangeClass,
+			&i.AfterChangeClass,
 		); err != nil {
 			return nil, err
 		}
@@ -469,7 +474,7 @@ func (q *Queries) ListAbilityTenantDisabledEntryIDs(ctx context.Context, tenantI
 
 const listAdmittedAbilityCatalogue = `-- name: ListAdmittedAbilityCatalogue :many
 
-SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id, output_fields FROM ability_catalogue
+SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id, output_fields, change_class FROM ability_catalogue
 WHERE status = 'admitted' AND enabled
 ORDER BY name, version_min NULLS FIRST
 `
@@ -525,6 +530,7 @@ func (q *Queries) ListAdmittedAbilityCatalogue(ctx context.Context) ([]AbilityCa
 			&i.UpdatedAt,
 			&i.UpdatedByUserID,
 			&i.OutputFields,
+			&i.ChangeClass,
 		); err != nil {
 			return nil, err
 		}
@@ -658,7 +664,7 @@ func (q *Queries) ReenableAbilityForTenant(ctx context.Context, arg ReenableAbil
 }
 
 const stampWpmgrAbilityEntryHash = `-- name: StampWpmgrAbilityEntryHash :one
-SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id, output_fields FROM stamp_wpmgr_ability_entry_hash(
+SELECT entry_id, name, source, class, status, enabled, approval_mode, permission_mode, integration_id, owner_dir, version_min, version_max_tested, min_wp_version, min_agent_version, schema_struct_sha256, dynamic_enum_paths, title, description, usage, operator_permission, target, snapshot, preview, arg_render, effect_copy, limits, nested_allow, global_option_keys, integration_block, admission, entry_sha256, created_at, updated_at, updated_by_user_id, output_fields, change_class FROM stamp_wpmgr_ability_entry_hash(
     $1::uuid,
     $2::text
 )
@@ -713,6 +719,7 @@ func (q *Queries) StampWpmgrAbilityEntryHash(ctx context.Context, arg StampWpmgr
 		&i.UpdatedAt,
 		&i.UpdatedByUserID,
 		&i.OutputFields,
+		&i.ChangeClass,
 	)
 	return i, err
 }

@@ -27,6 +27,7 @@ import {
   okResult,
   readiness,
 } from "@/features/ai-readiness/readiness-fixtures";
+import { siteAiMode } from "@/features/ai-trust/ai-trust-fixtures";
 
 import { Route as ContentRoute } from "./$siteId.content";
 
@@ -38,7 +39,10 @@ import { Route as ContentRoute } from "./$siteId.content";
 //   - 409 site_unreachable, 503 ai_readiness_refresh_unavailable, 404
 //     site_not_found: apps/api/internal/aireadiness/service.go;
 //   - 403 insufficient_permission: apps/api/internal/authz/middleware.go;
-//   - the error envelope {code, message}: apps/api/internal/server/httpx/respond.go.
+//   - the error envelope {code, message}: apps/api/internal/server/httpx/respond.go;
+//   - the site's AI mode, read by the AI editing card on the same route:
+//     GET /api/v1/sites/{siteId}/ai/mode, apps/api/internal/aitrust/handler.go
+//     (getMode), body built by the siteAiMode fixture from aitrust/dto.go.
 
 // The refetch window after "Check again" is part of the owner's contract: every
 // 15 seconds, at most 8 times. Written out here, not imported, so the test pins
@@ -53,6 +57,10 @@ const getEditing = vi.fn();
 const enableEditing = vi.fn();
 const listReqs = vi.fn();
 const getInv = vi.fn();
+// The AI editing card below the readiness card reads the site's AI mode. It is
+// stubbed with the rest of the network edge, so a Retry button on the page is
+// the readiness card's and never a mode request that went to a real fetch.
+const getAiMode = vi.fn();
 
 vi.mock("@wpmgr/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@wpmgr/api")>();
@@ -65,6 +73,7 @@ vi.mock("@wpmgr/api", async (importOriginal) => {
     enableSiteContentEditing: (...a: unknown[]): unknown => enableEditing(...a),
     listSiteAbilityRequests: (...a: unknown[]): unknown => listReqs(...a),
     getSiteContentInventory: (...a: unknown[]): unknown => getInv(...a),
+    getSiteAiMode: (...a: unknown[]): unknown => getAiMode(...a),
   };
 });
 
@@ -141,10 +150,11 @@ function renderTab(who: "operator" | "viewer" | Me = "operator", opts: { fleetRe
 }
 
 beforeEach(() => {
-  for (const m of [getReadiness, getFleetReadiness, refreshReadiness, getEditing, enableEditing, listReqs, getInv]) {
+  for (const m of [getReadiness, getFleetReadiness, refreshReadiness, getEditing, enableEditing, listReqs, getInv, getAiMode]) {
     m.mockReset();
   }
   getReadiness.mockResolvedValue(okResult(readiness()));
+  getAiMode.mockResolvedValue(okResult(siteAiMode(SITE_ID)));
   getFleetReadiness.mockResolvedValue(okResult({ sites: [fleetSite({ site_id: SITE_ID })] }));
   getEditing.mockResolvedValue(okResult({ site_id: SITE_ID, enabled: true }));
   listReqs.mockResolvedValue(okResult({ requests: [], limit: 50, offset: 0 }));
@@ -200,6 +210,9 @@ describe("loading and load failure", () => {
     const queryClient = renderTab();
     const c = await card();
     expect(c.getByText("WordPress 7.1.")).toBeInTheDocument();
+    // The AI editing card below has read its mode. Without this wait, the
+    // absence of a Retry button further down could be that card still loading.
+    await screen.findByTestId("ai-mode-card");
 
     // "Check again" refetches the card as soon as the site has been asked, and
     // that read fails.

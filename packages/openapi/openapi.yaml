@@ -118,6 +118,12 @@ tags:
     description: Requests an AI connection made to clear a site's cache. Each one waits for a person to approve or decline it; nothing is sent to a site without that approval.
   - name: ai-readiness
     description: A per-site checklist of what an AI assistant needs on the site, and a fleet rollup of it. Advisory only; nothing is allowed or refused because of it.
+  - name: ai-trust
+    description: >-
+      How much an AI connection may change on its own: each site's mode, each
+      connection's switch and usage, and the feed of everything an AI
+      connection changed. Only a signed-in person can loosen any of it; the AI
+      cannot.
   - name: object-cache
     description: Per-site object (Redis/Memcached) cache management — config, test, enable/disable, flush, and stats history.
   - name: settings
@@ -9762,6 +9768,338 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/ai/mode:
+    get:
+      operationId: getSiteAIMode
+      summary: Read how much AI connections may do on a site without asking
+      description: |
+        A site's mode decides which changes an AI connection makes run at once
+        and which wait for a person to approve them:
+
+        - `ask`: every change waits for a person.
+        - `ai_drafts`: a draft the AI makes, and an edit to a draft it made,
+          runs at once and can be undone. Everything else waits.
+        - `full`: reserved. The mode routes never set it.
+
+        The answer also says who chose the mode and when, the `version` a
+        change must echo, whether the setting would be honoured today
+        (`setter_valid`), which modes the caller may choose and why a mode is
+        not offered (`options`), and what each mode covers (`kinds`). All of
+        it is WPMgr's own text except `set_by_name`, a person's name: render
+        it as plain text.
+
+        Requires `site.content.read` and access to the site.
+      tags: [ai-trust]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: The site's mode
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteAIMode"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Missing site.content.read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The site is not the caller's
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      operationId: putSiteAIMode
+      summary: Choose how much AI connections may do on a site without asking
+      description: |
+        Sets the site's mode to `ask` or `ai_drafts`. The body carries the
+        `version` the caller last read. If the mode was changed since, nothing
+        is saved and the answer is 409 `stale_version`, whose `details` carry
+        the current `mode` and `version`. Saving the mode that is already set
+        is allowed and records the caller as the person who chose it; that is
+        how a setting is chosen again once the person who chose it lost the
+        access it needs (`setter_valid` is false).
+
+        Only a signed-in person can raise the mode to `ai_drafts`. Any other
+        caller, API keys included, is refused with 403 `session_required`, and
+        an MCP bearer token is refused with 401. Lowering to `ask` is open to
+        every caller who holds `site.content.edit`; made by a caller that is
+        not a signed-in person it is recorded with source `tightened` and no
+        person. A body that names `full` is refused with 422
+        `use_full_auto_route`, because this route does not set it. While the
+        organisation's AI is paused, raising is refused with 409 `paused`;
+        lowering never is.
+
+        The change and its audit row commit together. The body must be JSON.
+
+        Requires `site.content.edit` and access to the site.
+      tags: [ai-trust]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PutSiteAIModeRequest"
+      responses:
+        "200":
+          description: Saved; the site's mode as it now stands
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteAIMode"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            `session_required`: raising without a signed-in person. Or the
+            caller is missing site.content.edit (`insufficient_permission`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The site is not the caller's
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: |
+            Nothing was saved; the error code names why. `stale_version`: the
+            mode was changed since the caller read it. `paused`: the
+            organisation's AI is paused. `agent_outdated`: the site's WPMgr
+            plugin is older than the mode needs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: The body was not application/json
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: |
+            The body is not valid, or it names `full` (`use_full_auto_route`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/ai/connections/{grantId}/usage:
+    get:
+      operationId: getAIConnectionUsage
+      summary: Read what an AI connection has run automatically this hour
+      description: |
+        For one AI connection: whether it may run changes automatically
+        (`ai_auto`), who allowed that and whether the permission still holds
+        (`auto_setter_valid`), and how much it has run automatically in the
+        rolling window against the limits WPMgr sets. The limits are fixed by
+        the server and cannot be edited. Above a limit a change waits for a
+        person instead of running; the connection is not refused.
+
+        `auto_setter_valid` is the check the decision engine runs on every
+        request: the person who allowed the connection must still be a full
+        member who can manage connections, with an active account. When it is
+        false, every change from the connection waits for a person until one
+        allows it again with `PUT .../auto`.
+
+        Requires `apikey:read`. A connection is an organisation-wide
+        credential, so a site-constrained principal is refused with 403
+        `org_scope_required`.
+      tags: [ai-trust]
+      parameters:
+        - $ref: "#/components/parameters/AIGrantId"
+      responses:
+        "200":
+          description: The connection's switch and usage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AIConnectionUsage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Missing apikey:read, or a site-constrained principal (`org_scope_required`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: There is no such connection in the caller's organisation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/ai/connections/{grantId}/auto:
+    put:
+      operationId: putAIConnectionAuto
+      summary: Allow or stop automatic changes from an AI connection
+      description: |
+        `site_setting` lets the connection run changes automatically wherever
+        a site's mode allows it. `never` makes every change from the
+        connection wait for a person, whatever any site's mode says. A
+        connection can only narrow what a site's mode allows, never widen it.
+
+        Saving `site_setting` needs a signed-in person who holds
+        `apikey:manage`, and records that person as the one who allowed it,
+        even when the connection is already set to `site_setting`; that is how
+        a connection is allowed again once the person who allowed it lost the
+        access it needs (`auto_setter_valid` is false). Any other caller, API
+        keys included, is refused with 403 `session_required`, and an MCP
+        bearer token with 401. While the organisation's AI is paused, saving
+        `site_setting` is refused with 409 `paused`. Saving `never` is open to
+        every caller who holds `apikey:manage`.
+
+        A connection is an organisation-wide credential, so a
+        site-constrained principal is refused with 403 `org_scope_required`.
+        A connection created with an API key starts on `never`. The change
+        and its audit row commit together. The body must be JSON.
+
+        Requires `apikey:manage`.
+      tags: [ai-trust]
+      parameters:
+        - $ref: "#/components/parameters/AIGrantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PutAIConnectionAutoRequest"
+      responses:
+        "200":
+          description: Saved; the connection's switch as it now stands
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AIConnectionAuto"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            `session_required`: allowing without a signed-in person.
+            `org_scope_required`: a site-constrained principal. Or the caller
+            is missing apikey:manage (`insufficient_permission`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: There is no such connection in the caller's organisation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: |
+            Nothing was saved. `paused`: the organisation's AI is paused. Or
+            the connection is revoked or expired.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: The body was not application/json
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The body is not valid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/ai/activity:
+    get:
+      operationId: listAIActivity
+      summary: List what AI connections changed on the organisation's sites
+      description: |
+        Every request an AI connection made that a person or a setting
+        approved, newest first, from both kinds of request (site changes and
+        cache clears) in one list. A request that was never approved (still
+        waiting, declined, withdrawn or expired) is not listed; the request
+        queues list those. Each item carries the same request object the
+        queues return, so a card can be shown from it without another call.
+        For a site change, `approval` says whether a person or a setting
+        approved it.
+
+        Paged by keyset on `(created_at, id)`: pass the previous page's
+        `next_cursor` as `cursor`. `next_cursor` is null on the last page. A
+        site collaborator sees only requests on their own sites.
+
+        Requires `site.content.edit`.
+      tags: [ai-trust]
+      parameters:
+        - name: filter
+          in: query
+          required: false
+          description: |
+            `all` lists every approved request. `ran_automatically`: approved
+            by a setting. `approved_by_person`: approved by a signed-in
+            person. `failed_or_unknown`: the change failed, or WPMgr could
+            not confirm its result. `undone`: a person undid it.
+          schema:
+            type: string
+            enum: [all, ran_automatically, approved_by_person, failed_or_unknown, undone]
+            default: all
+        - name: site_id
+          in: query
+          required: false
+          description: Only requests on this site.
+          schema:
+            type: string
+            format: uuid
+        - name: grant_id
+          in: query
+          required: false
+          description: Only requests made through this AI connection.
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          description: The `next_cursor` of the previous page. Opaque; do not build one.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A page of activity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AIActivityPage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Missing site.content.edit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The filter, a site or connection id, the limit or the cursor is not valid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/sites/{siteId}/ai/readiness:
     get:
       operationId: getSiteAIReadiness
@@ -14853,6 +15191,14 @@ components:
       name: versionId
       in: path
       required: true
+      schema:
+        type: string
+        format: uuid
+    AIGrantId:
+      name: grantId
+      in: path
+      required: true
+      description: The AI connection's id, the `id` the connections list returns.
       schema:
         type: string
         format: uuid
@@ -20548,7 +20894,15 @@ components:
             named changes of more than one kind or of none of these, and
             for every other request. A closed value, never the site's own
             words.
-        not_sent_reason: { type: string, nullable: true }
+        not_sent_reason:
+          type: string
+          nullable: true
+          description: |
+            Why an approved request was closed without being sent; nothing
+            was changed on the site. Values include `setting_changed` (the
+            site's setting changed after the approval and before the change
+            ran) and `class_changed` (WPMgr changed how this kind of change is
+            handled after the approval and before it ran).
         created_post_id: { type: integer, format: int64, nullable: true }
         trashed: { type: boolean, nullable: true }
         restored:
@@ -20610,6 +20964,37 @@ components:
             the outline has no image, and for every other ability. A card whose
             outline names an image with no entry here cannot be shown in full
             and must not be approvable.
+        approval:
+          anyOf:
+            - $ref: "#/components/schemas/AbilityRequestApproval"
+            - type: "null"
+          description: |
+            How the request was approved: by a person, or by the site's
+            setting with no person deciding. Null while the request has not
+            been approved, and for a request that never will be (declined,
+            withdrawn or expired).
+        change_class:
+          anyOf:
+            - $ref: "#/components/schemas/AIChangeClass"
+            - type: "null"
+          description: |
+            The kind of change WPMgr decided this request is, from its own
+            records. Null until WPMgr has decided, and for a request made
+            before kinds existed.
+        change_kind_name:
+          type: [string, "null"]
+          description: |
+            WPMgr's name for `change_class` as copy uses it, for example
+            `edits to published pages`. Null when `change_class` is null or
+            `always_ask`.
+        ask_reason:
+          anyOf:
+            - $ref: "#/components/schemas/AIAskReason"
+            - type: "null"
+          description: |
+            Why this request was left for a person instead of being approved
+            by a setting. Stays set after a person approves it. Null when
+            WPMgr did not record a reason.
         page_builder:
           allOf:
             - $ref: "#/components/schemas/AbilityRequestPageBuilder"
@@ -20886,6 +21271,424 @@ components:
           nullable: true
           description: The WordPress user id of the site's content service user.
         enabled_by: { type: string, format: uuid, nullable: true }
+    AIMode:
+      type: string
+      enum: [ask, ai_drafts, full]
+      description: |
+        How much AI connections may do on a site without a person's approval.
+        `ask`: every change waits. `ai_drafts`: a draft the AI makes, and an
+        edit to a draft it made, runs at once; everything else waits. `full`:
+        reserved; the mode routes never set it.
+    AIModeSource:
+      type: string
+      enum: [unset, migration, launch_default, enable_default, person, tightened]
+      description: |
+        Where the mode came from. `unset`: nobody has chosen, so the site asks
+        every time. `migration`: AI editing was already on when modes were
+        introduced and no person is on record as having turned it on, so the
+        site asks every time. `launch_default`: set to `ai_drafts` for the
+        person who had turned AI editing on when modes were introduced.
+        `enable_default`: set to `ai_drafts` when a person turned AI editing
+        on. `person`: a signed-in person chose it. `tightened`: lowered to
+        `ask` by a caller that was not a signed-in person.
+    AIChangeClass:
+      type: string
+      enum: [ai_draft, operational, unpublished, live, publish, update, always_ask]
+      description: |
+        The kind of a change, as WPMgr classes it from its own records and
+        never from anything the AI sent. `ai_draft`: creates a draft, or edits
+        a draft the AI made. `operational`: changes no content, such as a cache
+        clear. `unpublished`: edits unpublished content the AI did not make.
+        `live`: changes something visitors can see now. `publish`: publishes
+        or schedules. `update`: updates a plugin or theme. `always_ask`: waits
+        for a person in every mode.
+    AIAskReason:
+      type: string
+      enum:
+        - kind_always_asks
+        - unknown_target_state
+        - site_mode_ask
+        - kind_not_in_mode
+        - setter_lacks_permission
+        - over_change_budget
+        - over_site_cap
+        - connection_never_auto
+        - connection_setter_invalid
+        - not_checked
+      description: |
+        Why a request was left for a person instead of being approved by a
+        setting. `kind_always_asks`: this kind of change waits in every mode.
+        `unknown_target_state`: WPMgr could not tell whether visitors would
+        see the change. `site_mode_ask`: the site is set to ask every time.
+        `kind_not_in_mode`: the site's mode does not run this kind of change
+        on its own. `setter_lacks_permission`: the person who chose the site's
+        mode no longer has the access it needs. `over_change_budget`: the
+        connection used its automatic changes for now. `over_site_cap`: the
+        connection reached its limit on sites changed this hour.
+        `connection_never_auto`: the connection is set to `never`.
+        `connection_setter_invalid`: the person who allowed the connection to
+        run changes automatically can no longer manage connections.
+        `not_checked`: WPMgr could not check the request against the setting
+        in time. A client that meets a reason it does not know shows the
+        request as waiting for a person.
+    AIControlRefusalCode:
+      type: string
+      enum:
+        - session_required
+        - role_required
+        - org_scope_required
+        - stale_version
+        - agent_outdated
+        - paused
+        - use_full_auto_route
+      description: |
+        The `code` of a refusal from the AI-trust routes, in the `Error`
+        envelope. `session_required` (403): loosening needs a signed-in
+        person. `role_required`: the caller's role does not allow the choice;
+        it appears as an option's `reason`, and a route answers a missing
+        permission with the generic `insufficient_permission`.
+        `org_scope_required` (403): the action needs full organisation
+        membership, and a site-constrained principal is refused whatever role
+        it holds on a site. `stale_version` (409): the mode was changed since
+        the caller read it. `agent_outdated` (409): the site's plugin is older
+        than the choice needs. `paused` (409): the organisation's AI is
+        paused, so raising is refused; lowering never is. `use_full_auto_route`
+        (422): the mode route does not set `full`.
+    AIModeOption:
+      type: object
+      description: One mode the dashboard offers, and whether this caller can choose it now.
+      required: [mode, choosable, reason]
+      properties:
+        mode:
+          $ref: "#/components/schemas/AIMode"
+        choosable:
+          type: boolean
+          description: Whether this caller could save this mode now. The mode that is already set is choosable too.
+        reason:
+          type: [string, "null"]
+          enum: [role_required, org_scope_required, session_required, paused, agent_outdated, null]
+          description: |
+            Why the mode is not choosable; null when it is. When several
+            apply, the first of `role_required`, `org_scope_required`,
+            `session_required`, `paused`, `agent_outdated` is given.
+            `role_required`: the caller's role does not allow the choice.
+            `org_scope_required`: the choice needs full organisation
+            membership. `session_required`: the caller is not a signed-in
+            person. `paused`: the organisation's AI is paused.
+            `agent_outdated`: the site's plugin is older than
+            `min_agent_version`.
+    AIChangeKindAbility:
+      type: object
+      description: A reviewed tool whose changes on a site are of one kind.
+      required: [name, title]
+      properties:
+        name:
+          type: string
+          description: The tool's name, for example `wpmgr/page-create`.
+        title:
+          type: string
+          description: WPMgr's title for the tool.
+    AIModeDecision:
+      type: object
+      description: What happens to one kind of change under one mode.
+      required: [mode, outcome]
+      properties:
+        mode:
+          $ref: "#/components/schemas/AIMode"
+        outcome:
+          type: string
+          enum: [auto, ask]
+          description: |
+            `auto`: the change runs at once, and a person can undo it where
+            the card offers Undo. `ask`: it waits for a person.
+    AIChangeKind:
+      type: object
+      description: One row of the table of what each mode covers.
+      required: [change_class, name, abilities, decisions]
+      properties:
+        change_class:
+          $ref: "#/components/schemas/AIChangeClass"
+        name:
+          type: string
+          description: WPMgr's name for the kind, as copy uses it, for example `edits to published pages`.
+        abilities:
+          type: array
+          description: The reviewed tools whose changes on this site are of this kind.
+          items:
+            $ref: "#/components/schemas/AIChangeKindAbility"
+        decisions:
+          type: array
+          description: What happens to a change of this kind under each mode, in `options` order.
+          items:
+            $ref: "#/components/schemas/AIModeDecision"
+    SiteAIMode:
+      type: object
+      description: |
+        A site's AI mode: how much AI connections may do on the site without a
+        person's approval, who chose it, and what the dashboard needs to offer
+        a change. A person's name is the only text in it that did not come
+        from WPMgr.
+      required:
+        - site_id
+        - mode
+        - source
+        - version
+        - set_by_account_deleted
+        - setter_valid
+        - ai_paused
+        - min_agent_version
+        - options
+        - kinds
+      properties:
+        site_id: { type: string, format: uuid }
+        mode:
+          $ref: "#/components/schemas/AIMode"
+        source:
+          $ref: "#/components/schemas/AIModeSource"
+        version:
+          type: integer
+          format: int64
+          minimum: 0
+          description: |
+            The compare-and-set token. Send it back unchanged with `PUT`. It
+            moves by one whenever the mode, the person who chose it or the
+            source changes, and at no other time.
+        set_by_user_id:
+          type: [string, "null"]
+          format: uuid
+          description: The person who chose the mode. Null when nobody did.
+        set_by_name:
+          type: [string, "null"]
+          description: |
+            That person's name as WPMgr stores it; render it as plain text.
+            Null when nobody chose the mode, or the account was deleted.
+        set_by_account_deleted:
+          type: boolean
+          description: True when a person is on record as having chosen the mode and that account has since been deleted.
+        set_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the mode was chosen. Null when nobody chose it.
+        setter_valid:
+          type: boolean
+          description: |
+            Whether the setting would be honoured today. `ask` has nothing to
+            honour and is always valid. For `ai_drafts` this is the check the
+            decision engine runs on every request: the person who chose it must
+            still be allowed to have chosen it, as a member of the organisation
+            with an active account and access to the site. When false, every
+            change on the site waits for a person until someone chooses a mode
+            again.
+        ai_paused:
+          type: boolean
+          description: True while the organisation's AI is paused. Nothing runs, automatic or not, until an owner resumes it.
+        min_agent_version:
+          type: string
+          description: The least WPMgr plugin version a site needs for an option whose `reason` is `agent_outdated`.
+        options:
+          type: array
+          description: One entry per mode the dashboard offers, in display order.
+          items:
+            $ref: "#/components/schemas/AIModeOption"
+        kinds:
+          type: array
+          description: |
+            What each mode covers, one row per kind of change the decision
+            engine handles, in display order. `always_ask` never appears: it
+            waits in every mode.
+          items:
+            $ref: "#/components/schemas/AIChangeKind"
+    PutSiteAIModeRequest:
+      type: object
+      required: [mode, version]
+      properties:
+        mode:
+          type: string
+          enum: [ask, ai_drafts]
+        version:
+          type: integer
+          format: int64
+          minimum: 0
+          description: The `version` the caller last read.
+    AIAuto:
+      type: string
+      enum: [site_setting, never]
+      description: |
+        Whether an AI connection may run changes automatically. `site_setting`:
+        wherever a site's mode allows it. `never`: every change from the
+        connection waits for a person.
+    AIUsageBucket:
+      type: object
+      description: One count against one fixed limit.
+      required: [used, limit]
+      properties:
+        used:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Automatic changes counted in the window.
+        limit:
+          type: integer
+          format: int32
+          minimum: 1
+          description: The server's fixed limit for the window. Above it, a change waits for a person.
+    AIConnectionAuto:
+      type: object
+      description: |
+        An AI connection's switch for automatic changes, and the person whose
+        authority keeps it on.
+      required:
+        - grant_id
+        - ai_auto
+        - auto_set_by_account_deleted
+        - auto_setter_valid
+        - created_with_api_key
+      properties:
+        grant_id: { type: string, format: uuid }
+        ai_auto:
+          $ref: "#/components/schemas/AIAuto"
+        auto_set_by_user_id:
+          type: [string, "null"]
+          format: uuid
+          description: The person who allowed the connection to run changes automatically. Null when nobody did.
+        auto_set_by_name:
+          type: [string, "null"]
+          description: |
+            That person's name as WPMgr stores it; render it as plain text.
+            Null when nobody allowed it, or the account was deleted.
+        auto_set_by_account_deleted:
+          type: boolean
+          description: True when a person is on record as having allowed it and that account has since been deleted.
+        auto_set_at:
+          type: [string, "null"]
+          format: date-time
+          description: When it was allowed. Null when nobody allowed it.
+        auto_setter_valid:
+          type: boolean
+          description: |
+            Whether the permission still holds. `never` has nothing to honour
+            and is always valid. For `site_setting` this is the check the
+            decision engine runs on every request: the person who allowed it
+            must still be a full member of the organisation who can manage
+            connections, with an active account. When false, every change from
+            the connection waits for a person until one allows it again.
+        created_with_api_key:
+          type: boolean
+          description: True when no person is on record as having created the connection, because it was created with an API key.
+    AIConnectionUsage:
+      description: |
+        An AI connection's switch and what it has run automatically in the
+        rolling window. `draft_changes` counts automatic changes to drafts;
+        `draft_sites` counts the distinct sites they were on. Both limits are
+        fixed by the server. Above a limit, a change waits for a person.
+      allOf:
+        - $ref: "#/components/schemas/AIConnectionAuto"
+        - type: object
+          required: [window_minutes, draft_changes, draft_sites]
+          properties:
+            window_minutes:
+              type: integer
+              format: int32
+              description: Length in minutes of the rolling window every count covers.
+            draft_changes:
+              $ref: "#/components/schemas/AIUsageBucket"
+            draft_sites:
+              $ref: "#/components/schemas/AIUsageBucket"
+    PutAIConnectionAutoRequest:
+      type: object
+      required: [ai_auto]
+      properties:
+        ai_auto:
+          $ref: "#/components/schemas/AIAuto"
+    AIApprovalSetting:
+      type: object
+      description: |
+        The site setting an automatic approval relied on, copied onto the
+        request when it was approved and never read back from the site, so it
+        stays true after the setting changes.
+      required: [mode, source, set_by_account_deleted]
+      properties:
+        mode:
+          type: string
+          enum: [ai_drafts, full]
+          description: The mode the site was in.
+        source:
+          type: string
+          enum: [launch_default, enable_default, person]
+          description: Where that mode came from; see `AIModeSource`.
+        set_by_user_id:
+          type: [string, "null"]
+          format: uuid
+          description: The person who chose the mode.
+        set_by_name:
+          type: [string, "null"]
+          description: |
+            That person's name as WPMgr stores it; render it as plain text.
+            Null when the account was deleted.
+        set_by_account_deleted:
+          type: boolean
+          description: True when that account has since been deleted.
+        set_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the mode was chosen.
+    AbilityRequestApproval:
+      type: object
+      description: |
+        How an approved request was approved. A request approved by a setting
+        was not decided by any person; `setting` says which setting and whose.
+      required: [source]
+      properties:
+        source:
+          type: string
+          enum: [person, policy]
+          description: |
+            `person`: a signed-in person approved it from the dashboard.
+            `policy`: the site's setting approved it.
+        setting:
+          anyOf:
+            - $ref: "#/components/schemas/AIApprovalSetting"
+            - type: "null"
+          description: The setting a `policy` approval relied on. Null for `person`.
+    AIActivityAbilityRequest:
+      type: object
+      required: [kind, request]
+      properties:
+        kind:
+          type: string
+          enum: [ability_request]
+        request:
+          $ref: "#/components/schemas/AbilityRequest"
+    AIActivityCachePurgeRequest:
+      type: object
+      required: [kind, request]
+      properties:
+        kind:
+          type: string
+          enum: [cache_purge_request]
+        request:
+          $ref: "#/components/schemas/AssistantRequest"
+    AIActivityItem:
+      description: One approved request, of either kind. Switch on `kind`.
+      oneOf:
+        - $ref: "#/components/schemas/AIActivityAbilityRequest"
+        - $ref: "#/components/schemas/AIActivityCachePurgeRequest"
+      discriminator:
+        propertyName: kind
+        mapping:
+          ability_request: "#/components/schemas/AIActivityAbilityRequest"
+          cache_purge_request: "#/components/schemas/AIActivityCachePurgeRequest"
+    AIActivityPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AIActivityItem"
+        next_cursor:
+          type: [string, "null"]
+          description: Pass as `cursor` for the next page. Null on the last page.
     SiteAIReadiness:
       type: object
       description: |

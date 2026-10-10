@@ -252,6 +252,16 @@ func Advisories(cfg Config) []Issue {
 			issues = append(issues, *issue)
 		}
 	}
+
+	// The AI launch notice: a value that is neither on nor off holds the
+	// notice (see AIConfig.LaunchNoticeOn). Only that one email waits, so it
+	// is an advisory, and the boot says so rather than holding it silently.
+	if _, recognised := cfg.AI.launchNotice(); !recognised {
+		issues = append(issues, Issue{
+			Name:   "WPMGR_AI_LAUNCH_NOTICE",
+			Reason: "is neither on nor off, so the AI launch notice is held; set it to on to send the notice, or to off to keep holding it",
+		})
+	}
 	return issues
 }
 

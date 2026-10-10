@@ -403,8 +403,8 @@ function PermissionsBlock({
             <span className="font-medium text-[var(--color-foreground)]">
               It cannot approve anything.
             </span>{" "}
-            Site changes are made elsewhere in wpmgr, never by this connection. There is no
-            setting or mode that lets this connection do it instead.
+            Only a signed-in person can approve a change, or set how much an AI may do on a
+            site. A connection can never raise its own limits.
           </li>
           <li>
             <span className="font-medium text-[var(--color-foreground)]">

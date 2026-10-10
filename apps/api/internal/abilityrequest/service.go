@@ -109,6 +109,12 @@ type Service struct {
 	// siteAccess decides whether p may act on siteID. Production is
 	// authz.AuthorizeSite; tests replace it.
 	siteAccess func(ctx context.Context, p domain.Principal, siteID uuid.UUID) bool
+	// policy and setters are the approval-tier engine (decide.go). Nil until
+	// wired: every request then waits for a person.
+	policy  PolicyStore
+	setters SetterResolver
+	// dispatchEnqueuer sends a request approved by a setting at once.
+	dispatchEnqueuer Enqueuer
 }
 
 // NewService builds the service; the write switch starts off.

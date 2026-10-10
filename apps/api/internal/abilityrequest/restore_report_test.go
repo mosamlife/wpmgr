@@ -96,13 +96,13 @@ func TestRevertReport_Partial(t *testing.T) {
 
 func TestToDTO_Restored(t *testing.T) {
 	r := sqlc.AssistantAbilityRequest{Restored: boolp(false)}
-	b, _ := json.Marshal(toDTO(r, false, "", false))
+	b, _ := json.Marshal(toDTO(r, false, "", false, setterNames{}))
 	var m map[string]any
 	_ = json.Unmarshal(b, &m)
 	if v, ok := m["restored"]; !ok || v != false {
 		t.Fatalf("restored on the wire: %s", b)
 	}
-	b, _ = json.Marshal(toDTO(sqlc.AssistantAbilityRequest{}, false, "", false))
+	b, _ = json.Marshal(toDTO(sqlc.AssistantAbilityRequest{}, false, "", false, setterNames{}))
 	_ = json.Unmarshal(b, &m)
 	if v, ok := m["restored"]; !ok || v != nil {
 		t.Fatalf("restored null on the wire: %s", b)
