@@ -30,6 +30,13 @@ final class EngineWpdb
     public ?\Closure $beforeSnapshotRead = null;
 
     /**
+     * @var (\Closure(string): void)|null Runs with the claim's option name
+     *      just after each claim row is inserted: another call finishing
+     *      while this one waited for the claim.
+     */
+    public ?\Closure $afterClaim = null;
+
+    /**
      * @param FakeBuilderWpdb $rows Posts, postmeta and options rows.
      */
     public function __construct(public readonly FakeBuilderWpdb $rows)
@@ -103,6 +110,9 @@ final class EngineWpdb
                 return 0;
             }
             $this->claims[(string) $args[0]] = (string) $args[1];
+            if ($this->afterClaim !== null) {
+                ($this->afterClaim)((string) $args[0]);
+            }
 
             return 1;
         }

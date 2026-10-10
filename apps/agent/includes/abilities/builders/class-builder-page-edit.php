@@ -422,9 +422,9 @@ final class BuilderPageEdit
      * the row keeps UNDO_RESTORING. The next undo of the edit then finishes
      * it: when every key and column the edit wrote already holds what it held
      * before the edit, nothing is written and the undo is recorded; otherwise
-     * the undo runs as above. A refusal that wrote nothing puts undo_state
-     * back to available. The row's undo_state is read again inside the claim
-     * on the post.
+     * the undo runs as above. A refusal that wrote nothing leaves undo_state
+     * as the undo found it. The row's undo_state is read again inside the
+     * claim on the post.
      *
      * @param string                             $requestId    The token-bound request.
      * @param string                             $signedHash   The snapshot hash the signed parameters carry (revertHash()).

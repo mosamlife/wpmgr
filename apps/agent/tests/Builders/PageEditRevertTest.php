@@ -112,6 +112,9 @@ final class PageEditRevertTest extends TestCase
     /** @var list<array{0:string,1:callable,2:int,3:int}> */
     private array $hooks = [];
 
+    /** @var (\Closure(string, mixed): bool)|null True for an update_option() the site's database fails. */
+    private ?\Closure $refuseOption = null;
+
     protected function set_up(): void
     {
         parent::set_up();
@@ -143,7 +146,11 @@ final class PageEditRevertTest extends TestCase
         Functions\when('add_action')->alias($capture);
         Functions\when('remove_filter')->alias($release);
         Functions\when('remove_action')->alias($release);
+        $this->refuseOption = null;
         Functions\when('update_option')->alias(function ($name, $value) {
+            if ($this->refuseOption !== null && ($this->refuseOption)((string) $name, $value)) {
+                return false;
+            }
             $this->options[$name] = $value;
 
             return true;
@@ -500,6 +507,118 @@ final class PageEditRevertTest extends TestCase
         $this->assertSame(['ok' => true, 'outcome' => 'already_reverted', 'mode' => 'revert', 'request_id' => self::EDIT, 'post_id' => self::DRAFT, 'restored' => true], $again);
         $this->assertSame($state, $this->state(self::DRAFT), 'nothing written again');
         $this->assertCount(1, $this->api->callsTo('deletePostCss'), 'the caches are dropped once');
+    }
+
+    public function test_an_undo_the_ledger_cannot_record_is_never_done_and_the_next_undo_finishes_it(): void
+    {
+        $this->enable();
+        $before  = $this->byKey(self::DRAFT);
+        $post    = $this->rows->postRow(self::DRAFT);
+        $baseFp  = $this->fp();
+        $applied = $this->edit(self::EDIT, self::ops());
+        $hash    = $applied['snapshot_sha256'];
+        $ledger  = 'wpmgr_ability_ledger_' . self::EDIT;
+
+        // The page goes back, then the ledger cannot take the undo's record.
+        $this->refuseOption = static fn (string $name, $value): bool => $name === $ledger && is_array($value) && ($value['undo_state'] ?? null) === 'restored';
+        $r = $this->undo(self::EDIT, $hash);
+        $this->assertSame([false, 'data_unreadable', true], [$r['ok'] ?? null, $r['code'] ?? null, $r['restored'] ?? null], 'never answered as done: ' . json_encode($r));
+        $this->assertSame($before, $this->byKey(self::DRAFT), 'the page is back');
+        $this->assertSame($post, $this->rows->postRow(self::DRAFT));
+        $this->assertSame('restoring', $this->options[$ledger]['undo_state'], 'the row says an undo started and may have put the page back');
+        $this->assertSame([], $this->wpdb->claims, 'the target claim is released');
+
+        // The next undo finishes it, writes nothing again, and records it.
+        $this->refuseOption = null;
+        $rows  = $this->rowsOfPost(self::DRAFT);
+        $again = $this->undo(self::EDIT, $hash);
+        $this->assertSame(['ok' => true, 'outcome' => 'reverted', 'mode' => 'revert', 'request_id' => self::EDIT, 'post_id' => self::DRAFT, 'restored' => true], $again);
+        $this->assertSame($rows, $this->rowsOfPost(self::DRAFT), 'nothing written again');
+        $row = $this->options[$ledger];
+        $this->assertSame(['restored', $baseFp], [$row['undo_state'], $row['restored_fp']]);
+        $this->assertIsInt($row['reverted_at']);
+
+        $last = $this->undo(self::EDIT, $hash);
+        $this->assertSame(['ok' => true, 'outcome' => 'already_reverted', 'mode' => 'revert', 'request_id' => self::EDIT, 'post_id' => self::DRAFT, 'restored' => true], $last);
+    }
+
+    public function test_an_undo_that_cannot_record_its_start_writes_nothing(): void
+    {
+        $this->enable();
+        $before  = $this->byKey(self::DRAFT);
+        $applied = $this->edit(self::EDIT, self::ops());
+        $ledger  = 'wpmgr_ability_ledger_' . self::EDIT;
+        $state   = $this->state(self::DRAFT);
+
+        $this->refuseOption = static fn (string $name): bool => $name === $ledger;
+        $r = $this->undo(self::EDIT, $applied['snapshot_sha256']);
+        $this->assertSame([false, 'data_unreadable'], [$r['ok'] ?? null, $r['code'] ?? null], (string) json_encode($r));
+        $this->assertArrayNotHasKey('restored', $r);
+        $this->assertSame($state, $this->state(self::DRAFT), 'nothing written, the row still available');
+        $this->assertSame([], $this->api->callsTo('deletePostCss'));
+
+        $this->refuseOption = null;
+        $r = $this->undo(self::EDIT, $applied['snapshot_sha256']);
+        $this->assertSame(['reverted', true], [$r['outcome'] ?? null, $r['restored'] ?? null], (string) json_encode($r));
+        $this->assertSame($before, $this->byKey(self::DRAFT));
+    }
+
+    public function test_an_undo_left_restoring_runs_again_or_refuses_a_page_that_moved_on(): void
+    {
+        $this->enable();
+        $before  = $this->byKey(self::DRAFT);
+        $applied = $this->edit(self::EDIT, self::ops());
+        $ledger  = 'wpmgr_ability_ledger_' . self::EDIT;
+
+        // An undo marked its start and its restore never landed: the page
+        // still holds the edit, and the next undo puts it back.
+        $this->options[$ledger]['undo_state'] = 'restoring';
+        $r = $this->undo(self::EDIT, $applied['snapshot_sha256']);
+        $this->assertSame(['reverted', true], [$r['outcome'] ?? null, $r['restored'] ?? null], (string) json_encode($r));
+        $this->assertSame($before, $this->byKey(self::DRAFT));
+        $this->assertSame('restored', $this->options[$ledger]['undo_state']);
+
+        // Another edit, whose undo marked its start, and someone saved the
+        // page since: it holds neither what the edit left nor what it found.
+        // Nothing is written and the row is left as it was.
+        $second = $this->edit(self::EDIT2, [['op' => 'set_text', 'ref' => self::HEADING, 'field' => 'text', 'text' => 'Autumn prices']]);
+        $ledger = 'wpmgr_ability_ledger_' . self::EDIT2;
+        $this->options[$ledger]['undo_state'] = 'restoring';
+        foreach ($this->rows->metaRowsOf(self::DRAFT) as $meta) {
+            if ($meta['meta_key'] === ElementorDocument::KEY_DATA) {
+                $this->rows->delete($this->rows->postmeta, ['meta_id' => $meta['meta_id']]);
+                $this->rows->insert($this->rows->postmeta, ['post_id' => self::DRAFT, 'meta_key' => ElementorDocument::KEY_DATA, 'meta_value' => str_replace('Autumn', 'Winter', (string) $meta['meta_value'])]);
+            }
+        }
+        $state = $this->state(self::DRAFT);
+        $r     = $this->undo(self::EDIT2, $second['snapshot_sha256']);
+        $this->assertSame(['conflict', 'changed_after_this_change'], [$r['code'] ?? null, $r['detail'] ?? null], (string) json_encode($r));
+        $this->assertSame($state, $this->state(self::DRAFT), 'nothing written, the row still restoring');
+    }
+
+    public function test_an_undo_finished_while_this_one_waited_for_the_post_answers_already_reverted(): void
+    {
+        $this->enable();
+        $applied = $this->edit(self::EDIT, self::ops());
+        $hash    = $applied['snapshot_sha256'];
+        $ledger  = 'wpmgr_ability_ledger_' . self::EDIT;
+        $done    = $this->undo(self::EDIT, $hash);
+        $this->assertSame('reverted', $done['outcome'] ?? null, (string) json_encode($done));
+        $finished = $this->options[$ledger];
+        $state    = $this->state(self::DRAFT);
+
+        // This undo read the row before the other one recorded its undo, and
+        // takes the claim on the post after it.
+        $this->options[$ledger]['undo_state'] = 'available';
+        $this->wpdb->afterClaim = function (string $name) use ($ledger, $finished): void {
+            if ($name === 'wpmgr_ability_target_' . self::DRAFT) {
+                $this->options[$ledger] = $finished;
+                $this->wpdb->afterClaim = null;
+            }
+        };
+        $r = $this->undo(self::EDIT, $hash);
+        $this->assertSame(['ok' => true, 'outcome' => 'already_reverted', 'mode' => 'revert', 'request_id' => self::EDIT, 'post_id' => self::DRAFT, 'restored' => true], $r);
+        $this->assertSame($state, $this->state(self::DRAFT), 'nothing written: the row still says restored');
     }
 
     public function test_revert_parameters_and_ledger_rows(): void
