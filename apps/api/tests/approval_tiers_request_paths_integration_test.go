@@ -15,6 +15,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -57,9 +59,29 @@ type atAgent struct {
 	nextPost int64
 	status   map[int64]string
 	writes   []agentcmd.AbilityRunCall
+	// edit answers wpmgr/page-edit once a test turns page edits on
+	// (atWorld.enablePageEdit); until then the site refuses them.
+	edit *atPageEdit
 }
 
 func newATAgent() *atAgent { return &atAgent{nextPost: 1000, status: map[int64]string{}} }
+
+// nextCreated makes post the next page the site creates.
+func (a *atAgent) nextCreated(post int64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.nextPost = post - 1
+}
+
+// editCalls is every wpmgr/page-edit call the site was sent, in order.
+func (a *atAgent) editCalls() []agentcmd.AbilityRunCall {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.edit == nil {
+		return nil
+	}
+	return append([]agentcmd.AbilityRunCall(nil), a.edit.calls...)
+}
 
 func (a *atAgent) setStatus(post int64, status string) {
 	a.mu.Lock()
@@ -76,6 +98,9 @@ func (a *atAgent) writeCount() int {
 func (a *atAgent) AbilityRun(_ context.Context, _ uuid.UUID, _ string, call agentcmd.AbilityRunCall) (agentcmd.AbilityRunResponse, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if atEntryName(call.Entry) == mcp.AbilityPageEdit {
+		return a.answerPageEdit(call)
+	}
 	rest := call.RouteSHA256 != ""
 	switch call.Mode {
 	case agentcmd.AbilityRunModePrecheck:
@@ -901,4 +926,277 @@ func TestDraftBudget(t *testing.T) {
 	if !strings.Contains(fmt.Sprint(res["message"]), "Do not split the work") {
 		t.Fatalf("message = %v", res["message"])
 	}
+}
+
+// atPageEditFixture is the agent's own recorded wpmgr/page-edit precheck.
+const atPageEditFixture = "../../agent/tests/fixtures/ability-run/page-edit-preview.json"
+
+// atPageEdit is that precheck: an edit of one draft built in Elementor
+// (post), the page's fingerprint before it, the preview and its digest. It
+// keeps every page-edit call the site was sent.
+type atPageEdit struct {
+	Input           string          `json:"input"`
+	BaseFingerprint string          `json:"base_fingerprint"`
+	PreviewDigest   string          `json:"preview_digest"`
+	Preview         json.RawMessage `json:"preview"`
+	post            int64
+	calls           []agentcmd.AbilityRunCall
+}
+
+func readATPageEdit(t *testing.T) *atPageEdit {
+	t.Helper()
+	b, err := os.ReadFile(atPageEditFixture)
+	if err != nil {
+		t.Fatalf("read %s: %v", atPageEditFixture, err)
+	}
+	var e atPageEdit
+	if err := json.Unmarshal(b, &e); err != nil {
+		t.Fatalf("decode %s: %v", atPageEditFixture, err)
+	}
+	var in struct {
+		PostID int64 `json:"post_id"`
+	}
+	if err := json.Unmarshal([]byte(e.Input), &in); err != nil || in.PostID < 1 || len(e.Preview) == 0 {
+		t.Fatalf("%s carries no edit of a post (%v)", atPageEditFixture, err)
+	}
+	e.post = in.PostID
+	return &e
+}
+
+// atEntryName is the name in the catalogue entry a call was sent with.
+func atEntryName(entry []byte) string {
+	var e struct {
+		Name string `json:"name"`
+	}
+	_ = json.Unmarshal(entry, &e)
+	return e.Name
+}
+
+// answerPageEdit is the site's side of a wpmgr/page-edit call, with a.mu
+// held. As the agent does, it changes the post only while the control plane
+// names it among the drafts WPMgr created (allowed_draft_ids). A precheck
+// answers the recorded preview, its digest bound to the entry hash and the
+// input sent, whose members are all lowercase hex, which PHP and Go encode
+// alike. A write applies the change only with the digests that precheck
+// answered, and reports the hash of the copy it kept for the undo.
+func (a *atAgent) answerPageEdit(call agentcmd.AbilityRunCall) (agentcmd.AbilityRunResponse, error) {
+	e := a.edit
+	if e == nil {
+		return agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{Code: "ability_not_on_site"}
+	}
+	e.calls = append(e.calls, call)
+	var in struct {
+		PostID int64 `json:"post_id"`
+	}
+	if json.Unmarshal(call.Input, &in) != nil || in.PostID != e.post {
+		return agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{Code: "bad_input"}
+	}
+	if !slices.Contains(call.AllowedDraftIDs, in.PostID) {
+		return agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{Code: "target_not_eligible"}
+	}
+	pre := e2Hex(e2Arr(call.EntrySHA256, e2Hex(call.Input), e.BaseFingerprint, e.PreviewDigest))
+	switch call.Mode {
+	case agentcmd.AbilityRunModePrecheck:
+		return agentcmd.AbilityRunResponse{OK: true, Outcome: "prechecked", Mode: "precheck", Ability: mcp.AbilityPageEdit,
+			RequestID: call.RequestID.String(), Valid: true, BaseFingerprint: e.BaseFingerprint,
+			PreviewDigest: e.PreviewDigest, PrecheckDigest: pre, Preview: e.Preview}, nil
+	case agentcmd.AbilityRunModeWrite:
+		if x := call.Expected; x == nil || x.PrecheckDigest != pre || x.PreviewDigest != e.PreviewDigest {
+			return agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{Code: "preview_changed"}
+		}
+		a.writes = append(a.writes, call)
+		return agentcmd.AbilityRunResponse{OK: true, Outcome: "applied", Mode: "write", PostID: in.PostID,
+			SnapshotSHA256: e2Hex([]byte("copy-" + call.RequestID.String()))}, nil
+	}
+	return agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{Code: "bad_mode"}
+}
+
+// enablePageEdit brings site to the page-edit floor with wpmgr/page-edit in
+// its inventory, and has the site answer page edits as atPageEdit does.
+func (w *atWorld) enablePageEdit(t *testing.T, site uuid.UUID) *atPageEdit {
+	t.Helper()
+	if _, err := w.admin.Exec(context.Background(), `UPDATE sites SET agent_version = $3 WHERE tenant_id = $1 AND id = $2`,
+		w.tenant, site, agentcmd.MinAgentVersionForBuilderEdit); err != nil {
+		t.Fatalf("arrange the page-edit floor: %v", err)
+	}
+	m155Refresh(t, w.pool, w.tenant, site, mcp.AbilityPageCreate, mcp.AbilityRestWrite, mcp.AbilityPageEdit)
+	e := readATPageEdit(t)
+	w.agent.mu.Lock()
+	w.agent.edit = e
+	w.agent.mu.Unlock()
+	return e
+}
+
+// aiDraftOf has the AI create post as a draft on site over HTTP, run at
+// once under the site's setting, and returns the creation's request id.
+func (w *atWorld) aiDraftOf(t *testing.T, bearer string, site uuid.UUID, post int64) string {
+	t.Helper()
+	w.agent.nextCreated(post)
+	id := wantRanAutomatically(t, "the AI's draft", w.askPage(t, bearer, site, "Our services").wantOK(t, "the AI's draft"))
+	if p := w.row(t, id).createdPost; p == nil || *p != post {
+		t.Fatalf("the AI's draft recorded created post %v, want %d", p, post)
+	}
+	return id
+}
+
+// askEdit runs site_ability_run for e's page edit over HTTP.
+func (w *atWorld) askEdit(t *testing.T, bearer string, site uuid.UUID, e *atPageEdit) cpeRPC {
+	t.Helper()
+	var input map[string]any
+	if err := json.Unmarshal([]byte(e.Input), &input); err != nil {
+		t.Fatalf("page-edit input: %v", err)
+	}
+	return cpeCall(t, w.eng, bearer, mcp.ToolSiteAbilityRun, map[string]any{
+		"site_id": site.String(), "name": mcp.AbilityPageEdit, "input": input,
+	})
+}
+
+// chooseMode sets site's mode as the owner chooses it: the shipped
+// compare-and-set, in the owner's own tenant transaction.
+func (w *atWorld) chooseMode(t *testing.T, site uuid.UUID, mode string) {
+	t.Helper()
+	ctx := context.Background()
+	expected := w.mode(t, site).version
+	if err := w.pool.RunTenantTx(ctx, w.owner, func(tx pgx.Tx) error {
+		row, err := sqlc.New(tx).SetSiteAIMode(ctx, sqlc.SetSiteAIModeParams{
+			Mode: mode, Source: "person", SetBy: m174UUID(w.owner.UserID),
+			TenantID: w.tenant, SiteID: site, ExpectedVersion: expected,
+		})
+		if err == nil && !row.Applied {
+			err = fmt.Errorf("not applied: stored version %d", row.AiModeVersion)
+		}
+		return err
+	}); err != nil {
+		t.Fatalf("choose %s: %v", mode, err)
+	}
+	if m := w.mode(t, site); m.mode != mode || m.source != "person" {
+		t.Fatalf("chosen %s: %+v", mode, m)
+	}
+}
+
+// draftUsage is the connection's automatic changes in the draft classes as
+// a decision counts them: the production statement, in the approving
+// transaction, as wpmgr_app.
+func (w *atWorld) draftUsage(t *testing.T, grant, site uuid.UUID) aipolicy.Usage {
+	t.Helper()
+	ctx := context.Background()
+	var u aipolicy.Usage
+	repo := abilityrequest.NewPolicyRepo(w.pool, audit.NewRecorder(w.pool, domain.SystemClock{}))
+	if err := repo.Approving(ctx, w.tenant, func(tx abilityrequest.PolicyTx) error {
+		var err error
+		u, err = tx.DraftUsage(ctx, w.tenant, grant, site)
+		return err
+	}); err != nil {
+		t.Fatalf("read the draft budget: %v", err)
+	}
+	return u
+}
+
+// editOutcome is what a page edit's row records of the change.
+func (w *atWorld) editOutcome(t *testing.T, id string) (outcome *string, target *int64, snapshot *string) {
+	t.Helper()
+	if err := w.admin.QueryRow(context.Background(),
+		`SELECT outcome, target_post_id, snapshot_sha256 FROM assistant_ability_requests WHERE id = $1`, id).
+		Scan(&outcome, &target, &snapshot); err != nil {
+		t.Fatalf("read page edit %s: %v", id, err)
+	}
+	return outcome, target, snapshot
+}
+
+// auditActor is the actor of the newest action audit row for request id.
+func (w *atWorld) auditActor(t *testing.T, id, action string) string {
+	t.Helper()
+	var actor string
+	if err := w.admin.QueryRow(context.Background(), `SELECT actor_type FROM audit_log
+		WHERE tenant_id = $1 AND action = $2 AND target_id = $3 ORDER BY created_at DESC LIMIT 1`,
+		w.tenant, action, id).Scan(&actor); err != nil {
+		t.Fatalf("read the %s audit row of %s: %v", action, id, err)
+	}
+	return actor
+}
+
+// TestPageEditAutoOnAIDraftsSite: as a page creation is on a site on Auto
+// for AI drafts (TestPageCreateAutoOnAIDraftsSite), a page edit of the AI's
+// own draft, asked over HTTP, is approved by the site's setting as ai_draft
+// with no person named as decider, the setting it relied on recorded and a
+// policy audit row, and runs at once. It counts against the connection's
+// draft budget.
+func TestPageEditAutoOnAIDraftsSite(t *testing.T) {
+	w := newATWorld(t, 1)
+	site := w.sites[0]
+	w.enableAI(t, site)
+	edit := w.enablePageEdit(t, site)
+	grantID, bearer := w.mint(t, w.owner, "Priya's laptop")
+	w.aiDraftOf(t, bearer, site, edit.post)
+	before := w.draftUsage(t, grantID, site)
+	if before.Changes != 1 {
+		t.Fatalf("draft budget before the edit: %+v, want the draft's creation alone", before)
+	}
+
+	id := wantRanAutomatically(t, "edit the AI's draft", w.askEdit(t, bearer, site, edit).wantOK(t, "edit the AI's draft"))
+	r := w.row(t, id)
+	if r.state != "done" || r.approvalSource != "policy" || r.decidedBy != nil || atStr(r.baseClass) != "ai_draft" ||
+		atStr(r.class) != "ai_draft" || atStr(r.modeSource) != "enable_default" || r.setter == nil || *r.setter != w.owner.UserID {
+		t.Fatalf("page edit row: state %s source %s base %s class %s mode source %s setter %v decided by %v",
+			r.state, r.approvalSource, atStr(r.baseClass), atStr(r.class), atStr(r.modeSource), r.setter, r.decidedBy)
+	}
+	if got := w.auditActor(t, id, audit.ActionAbilityRequestApproved); got != audit.ActorPolicy {
+		t.Fatalf("approval audit actor %q, want %q", got, audit.ActorPolicy)
+	}
+	outcome, target, snapshot := w.editOutcome(t, id)
+	if atStr(outcome) != "applied" || target == nil || *target != edit.post || snapshot == nil {
+		t.Fatalf("page edit outcome %s on post %v with copy hash %s, want applied to post %d with a hash",
+			atStr(outcome), target, atStr(snapshot), edit.post)
+	}
+	calls := w.agent.editCalls()
+	if len(calls) != 2 || calls[0].Mode != agentcmd.AbilityRunModePrecheck || calls[1].Mode != agentcmd.AbilityRunModeWrite {
+		t.Fatalf("page-edit calls to the site: %d, want a precheck then a write", len(calls))
+	}
+	if w.agent.writeCount() != 2 {
+		t.Fatalf("writes sent = %d, want 2: the draft and the edit", w.agent.writeCount())
+	}
+	after := w.draftUsage(t, grantID, site)
+	if after.Changes != before.Changes+1 || after.Sites != 1 || !after.SiteCounted {
+		t.Fatalf("draft budget after the edit: %+v, want one more change than %+v, on the same site", after, before)
+	}
+	t.Logf("page edit %s approved by the setting: class=%s outcome=%s; draft budget %d -> %d changes",
+		id, atStr(r.class), atStr(outcome), before.Changes, after.Changes)
+}
+
+// TestPageEditWaitsOnAskSite: as a page creation does on an Ask site
+// (TestPageCreateWaitsOnAskSite), a page edit of the AI's own draft on a
+// site a person set to Ask waits with site_mode_ask, recorded on the row and
+// in a policy audit row, and its answer says why and where a person decides
+// it: ask_reason, the absolute approval_url and the reason's message. The
+// site is sent the precheck only, and the draft budget does not move.
+func TestPageEditWaitsOnAskSite(t *testing.T) {
+	w := newATWorld(t, 1)
+	site := w.sites[0]
+	w.enableAI(t, site)
+	edit := w.enablePageEdit(t, site)
+	grantID, bearer := w.mint(t, w.owner, "Priya's laptop")
+	w.aiDraftOf(t, bearer, site, edit.post)
+	w.chooseMode(t, site, "ask")
+	before := w.draftUsage(t, grantID, site)
+
+	id := wantWaits(t, "edit on an Ask site", w.askEdit(t, bearer, site, edit).wantOK(t, "edit on an Ask site"),
+		aipolicy.AskSiteModeAsk)
+	r := w.row(t, id)
+	if r.state != "pending" || atStr(r.askReason) != "site_mode_ask" || atStr(r.class) != "ai_draft" || r.decidedBy != nil {
+		t.Fatalf("page edit row: state %s ask %s class %s decided by %v, want pending, site_mode_ask, ai_draft, no one",
+			r.state, atStr(r.askReason), atStr(r.class), r.decidedBy)
+	}
+	if got := w.auditActor(t, id, audit.ActionAbilityRequestAsked); got != audit.ActorPolicy {
+		t.Fatalf("asked audit actor %q, want %q", got, audit.ActorPolicy)
+	}
+	if calls := w.agent.editCalls(); len(calls) != 1 || calls[0].Mode != agentcmd.AbilityRunModePrecheck {
+		t.Fatalf("page-edit calls to the site: %d, want the precheck only", len(calls))
+	}
+	if w.agent.writeCount() != 1 {
+		t.Fatalf("writes sent = %d, want 1: the draft only", w.agent.writeCount())
+	}
+	if after := w.draftUsage(t, grantID, site); after.Changes != before.Changes {
+		t.Fatalf("draft budget %+v after a waiting edit, want it unchanged from %+v", after, before)
+	}
+	t.Logf("page edit %s waits: ask_reason=%s", id, atStr(r.askReason))
 }
