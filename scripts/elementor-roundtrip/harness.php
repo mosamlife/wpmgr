@@ -53,10 +53,18 @@
  *      previewed tree: the whole tree, read here with SQL, equal in value,
  *      type and key order to the tree the precheck planned, so no node the
  *      edit did not touch was dropped or rewritten;
- *  10. render: the edited page must hold every text the operations wrote as
- *      written (an ampersand, an entity-shaped text and a bracket are shown
- *      literally), none of the texts they removed, the links they set, no
- *      script element and no on* attribute.
+ *  10. render: the edited page must hold every text the operations wrote that
+ *      is still on the page after the call, as written (an ampersand, an
+ *      entity-shaped text and a bracket are shown literally), none of the
+ *      texts they removed, the links they set that are still on the page, no
+ *      script element and no on* attribute. A batch can take its own earlier
+ *      changes off the page (a later operation removes or replaces the section
+ *      that holds them). For a case with a golden after tree, an operation is
+ *      held to the page only if an element it wrote is in that tree: the
+ *      element a set_text changed, or an element the preview lists as made by
+ *      an insert or a replace. A case without one is held to everything its
+ *      operations wrote, and a case whose operations leave none of their texts
+ *      on the page is red, since it would look at nothing.
  *
  * Together the cases must have applied all five operations: set_text, insert,
  * replace, remove and move.
@@ -135,6 +143,10 @@ const RT_PLANTS = [
     'edit_render_script',
     // Every ampersand in the page an edit case rendered is escaped twice.
     'edit_render_text',
+    // A text the operations wrote, and that is still on the page after the call, is missing from the page an edit case rendered.
+    'edit_render_drop_text',
+    // A link the operations wrote, and that is still on the page after the call, is missing from the page an edit case rendered.
+    'edit_render_drop_link',
     // After an edit case is written, Elementor's stored copy loses one setting of an element the edit did not touch.
     'edit_drops_setting',
     // After the full restore, one preserved postmeta row differs from its bytes before the write (use the case name "restore").
@@ -943,21 +955,130 @@ function rt_links($node, array &$out): void
 }
 
 /**
+ * The ids of the elements of a tree, at any depth.
+ *
+ * @param array<mixed>       $nodes Elements.
+ * @param array<string,true> $out   Gets one entry per id.
+ */
+function rt_node_ids(array $nodes, array &$out): void
+{
+    foreach ($nodes as $node) {
+        if (!is_array($node)) {
+            continue;
+        }
+        if (is_string($node['id'] ?? null) && $node['id'] !== '') {
+            $out[$node['id']] = true;
+        }
+        if (is_array($node['elements'] ?? null)) {
+            rt_node_ids($node['elements'], $out);
+        }
+    }
+}
+
+/**
+ * Whether an element an operation wrote is on the page after the call: the
+ * element a set_text changed, or any element an insert or a replace made. A
+ * change that names no element it wrote is held to the page, and so is every
+ * change when the page after the call is not known.
+ *
+ * @param array<mixed>            $change One entry of the preview's changes.
+ * @param array<string,true>|null $live   The ids of the elements on the page after the call, or null.
+ */
+function rt_wrote_on_page(array $change, ?array $live): bool
+{
+    if ($live === null) {
+        return true;
+    }
+    $op = $change['op'] ?? '';
+    if ($op === 'set_text') {
+        $wrote = [$change['ref'] ?? null];
+    } elseif ($op === 'insert' || $op === 'replace') {
+        $wrote = is_array($change['new_refs'] ?? null) ? $change['new_refs'] : [];
+    } else {
+        $wrote = [];
+    }
+    $named = false;
+    foreach ($wrote as $id) {
+        if (!is_string($id) || $id === '') {
+            continue;
+        }
+        $named = true;
+        if (isset($live[$id])) {
+            return true;
+        }
+    }
+
+    return !$named;
+}
+
+/**
+ * The texts and the links the page of an edit case is held to: those the
+ * operations wrote, without the ones of an operation whose elements are off the
+ * page after the call (a later operation of the batch removed or replaced the
+ * section that held them).
+ *
+ * @param list<array<string,mixed>> $ops     The operations, as the AI sends them.
+ * @param array<mixed>              $changes The preview's changes, one per operation, in order.
+ * @param array<string,true>|null   $live    The ids of the elements on the page after the call, or null when the case has no such tree.
+ * @return array{texts:list<string>,links:list<string>,off:int} What the page must show, and how many written texts are off the page.
+ */
+function rt_held_to_page(array $ops, array $changes, ?array $live): array
+{
+    $held = ['texts' => [], 'links' => [], 'off' => 0];
+    $objs = json_decode((string) json_encode($ops, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), false);
+    // The changes name the elements of their operation only when they come one per operation, in order.
+    $paired = count($changes) === count($ops);
+    foreach (is_array($objs) ? array_values($objs) : [] as $i => $op) {
+        $texts = [];
+        $links = [];
+        if (($op->op ?? '') === 'set_text' && in_array($op->field ?? '', ['text', 'caption'], true) && is_string($op->text ?? null)) {
+            $texts[] = $op->text;
+        }
+        rt_texts($op->outline ?? [], $texts);
+        rt_links($op, $links);
+        $change = $paired && is_array($changes[$i] ?? null) && ($changes[$i]['op'] ?? null) === ($op->op ?? '') ? $changes[$i] : null;
+        if ($change !== null && !rt_wrote_on_page($change, $live)) {
+            $held['off'] += count($texts);
+            continue;
+        }
+        array_push($held['texts'], ...$texts);
+        array_push($held['links'], ...$links);
+    }
+
+    return $held;
+}
+
+/**
  * Render a page with Elementor's frontend and hold it to what an edit wrote.
  *
  * @param list<string> $texts Texts the page must show as written.
  * @param list<string> $gone  Texts the page must no longer show.
  * @param list<string> $links Absolute links an anchor of the page must carry.
  * @param list<string> $kinds The plants of the case.
+ * @param int          $off   How many texts the operations wrote are off the page after the call, and so not in $texts.
  */
-function rt_render_checks(RtChecks $c, int $postId, array $texts, array $gone, array $links, array $kinds): void
+function rt_render_checks(RtChecks $c, int $postId, array $texts, array $gone, array $links, array $kinds, int $off = 0): void
 {
-    $plant = static function (string $html) use ($kinds): string {
+    $dropped = ['text' => 0, 'link' => 0];
+    $plant   = static function (string $html) use ($kinds, $texts, $links, &$dropped): string {
         if (in_array('edit_render_script', $kinds, true)) {
             $html .= '<script>alert(1)</script>';
         }
         if (in_array('edit_render_text', $kinds, true)) {
             $html = str_replace('&amp;', '&amp;amp;', $html);
+        }
+        if (in_array('edit_render_drop_text', $kinds, true) && $texts !== []) {
+            $html = str_replace($texts[0], '', $html, $n);
+            $dropped['text'] += $n;
+        }
+        if (in_array('edit_render_drop_link', $kinds, true)) {
+            foreach ($links as $link) {
+                if (strpos($link, 'https://') === 0) {
+                    $html = str_replace($link, '#', $html, $n);
+                    $dropped['link'] += $n;
+                    break;
+                }
+            }
         }
 
         return $html;
@@ -971,6 +1092,12 @@ function rt_render_checks(RtChecks $c, int $postId, array $texts, array $gone, a
     }
     remove_filter('elementor/frontend/the_content', $plant, 99);
     setlocale(LC_NUMERIC, 'C');
+    if (in_array('edit_render_drop_text', $kinds, true)) {
+        $c->ck('plant', $dropped['text'] > 0, 'no text to drop in the rendered page');
+    }
+    if (in_array('edit_render_drop_link', $kinds, true)) {
+        $c->ck('plant', $dropped['link'] > 0, 'no link to drop in the rendered page');
+    }
 
     if (!$c->ck('render-nonempty', is_string($html) && trim($html) !== '', 'the edited page rendered nothing')) {
         return;
@@ -996,7 +1123,8 @@ function rt_render_checks(RtChecks $c, int $postId, array $texts, array $gone, a
         }
     }
     // An edit that wrote text but handed the page nothing to look for would otherwise pass by looking for nothing.
-    $c->ck('render-text', $texts !== [] && $miss === [], $texts === [] ? 'the harness found no text the operations wrote' : count($miss) . ' text(s) not shown as written, first: ' . ($miss[0] ?? ''));
+    $none = $off > 0 ? 'every text the operations wrote is off the page after the call, so the page is held to none of them' : 'the harness found no text the operations wrote';
+    $c->ck('render-text', $texts !== [] && $miss === [], $texts === [] ? $none : count($miss) . ' text(s) not shown as written, first: ' . ($miss[0] ?? ''));
     $still = [];
     foreach ($gone as $t) {
         if (strpos($page, rt_norm($t)) !== false) {
@@ -1277,24 +1405,21 @@ function rt_edit_phase(string $layout, string $stored, int $principal, array $pl
                 $mode = $wpdb->get_col($wpdb->prepare("SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s", $pid, '_elementor_edit_mode'));
                 $c->ck('edit-mode', $mode === ['builder'], 'the edit mode rows are ' . rt_brief($mode));
 
-                // 10. Render the edited page.
-                $texts = [];
-                $links = [];
-                $objs  = json_decode((string) json_encode($ops, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), false);
-                foreach (is_array($objs) ? $objs : [] as $op) {
-                    if (($op->op ?? '') === 'set_text' && in_array($op->field ?? '', ['text', 'caption'], true) && is_string($op->text ?? null)) {
-                        $texts[] = $op->text;
-                    }
-                    rt_texts($op->outline ?? [], $texts);
+                // 10. Render the edited page. A later operation of the batch can take an earlier one off the page,
+                // so a case with a golden after tree is held to the operations whose elements that tree still holds.
+                $live = null;
+                if (is_array($spec['golden'])) {
+                    $live = [];
+                    rt_node_ids($spec['golden']['after'], $live);
                 }
-                rt_links($objs, $links);
+                $held = rt_held_to_page($ops, $changes, $live);
                 $gone = [];
                 foreach ($changes as $change) {
                     if (is_array($change)) {
                         array_push($gone, ...rt_replaced_texts($change));
                     }
                 }
-                rt_render_checks($c, $pid, $texts, array_values(array_diff($gone, $texts)), $links, $kind);
+                rt_render_checks($c, $pid, $held['texts'], array_values(array_diff($gone, $held['texts'])), $held['links'], $kind, $held['off']);
             }
         }
         $report($name, $c);
