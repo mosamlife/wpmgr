@@ -299,6 +299,29 @@ final class PageEditRouterTest extends TestCase
         $this->assertCount(1, $this->api->documents[self::DRAFT]->saves, 'one save');
     }
 
+    public function test_a_write_schedules_the_hourly_sweep_of_expired_copies(): void
+    {
+        $events = [];
+        Functions\when('wp_next_scheduled')->alias(static function ($hook) use (&$events) {
+            return isset($events[$hook]) ? $events[$hook][0] : false;
+        });
+        Functions\when('wp_schedule_event')->alias(static function ($timestamp, $recurrence, $hook) use (&$events): bool {
+            $events[$hook] = [$timestamp, $recurrence];
+
+            return true;
+        });
+        $this->enable();
+        $input = $this->input();
+        $pre   = $this->callP($this->p('precheck', $input, [self::DRAFT]));
+        $this->assertTrue($pre['ok'] ?? null, (string) json_encode($pre));
+        $this->assertSame([], $events, 'a precheck schedules nothing');
+
+        $r = $this->callP($this->p('write', $input, [self::DRAFT], $pre));
+        $this->assertTrue($r['ok'] ?? null, (string) json_encode($r));
+        $this->assertSame([BuilderDocumentSnapshot::HOOK_SWEEP], array_keys($events));
+        $this->assertSame('hourly', $events[BuilderDocumentSnapshot::HOOK_SWEEP][1]);
+    }
+
     public function test_write_needs_the_draft_named_at_dispatch(): void
     {
         $this->enable();

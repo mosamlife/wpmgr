@@ -17,7 +17,11 @@
 # agent path handed no outline, and on each of five defects planted in a copy of
 # the agent's own source (its verify skipped, an undo that says reverted and
 # leaves the post, its digest re-check skipped, the container layout read as off,
-# its undo guard skipped), each on the check meant to see it. It also
+# its undo guard skipped), each on the check meant to see it. On the agent's edit
+# path it proves the render checks hold the page to the texts and links still on
+# it after the call: a text or a link that stays and goes missing is red, a case
+# with no after tree is still held to everything its operations wrote, and an
+# after tree that leaves none of the written texts on the page is red. It also
 # proves what it must NOT block: an honest run, a cached download, a run of one
 # version or one layout out of several, a blueprint that sets some other site
 # option, and, in the planted run, every case that carries no plant and the
@@ -396,6 +400,10 @@ else
   said "  and the agent refused digests that are not the precheck's" "rt: ok   [4.3.4 agent-sections digest]"
   said "  and the agent refused to undo a draft a person had edited" "rt: ok   [4.3.4 agent-containers person-edit]"
   said "  and nothing the agent made was left outside the trash" "rt: ok   [4.3.4 agent-sections leftover]"
+  said "  and the edit path ran its cases on a containers site" "rt: ok   [4.3.4 edit-containers set-text-every-field]"
+  said "  and a batch whose later operations take earlier changes off the page passes on a containers site" "rt: ok   [4.3.4 edit-containers change-then-remove]"
+  said "  and on a sections site" "rt: ok   [4.3.4 edit-sections change-then-remove]"
+  said "  and the full restore put the page back" "rt: ok   [4.3.4 edit-containers restore]"
 
   # One boot, five planted defects on five different cases, in both layouts.
   expect "planted defects turn the real round trip red" 1 "${real_c[@]}" "RT_PLANT=plant=unregistered_widget@heading plant=mapper_drift@text plant=render_script@list plant=render_onclick@quote plant=render_text@button"
@@ -434,6 +442,26 @@ sections text golden"
     bad "  cases without a plant did not all pass (ok=$ok_n failing=$failing_cases total=$total_n)"
   fi
   said "  the unregistered widget is the silent drop, reported as a difference in the stored tree" "stored: tree"
+
+  # The edit path's render checks hold the page to what is still on it after the call: one boot, three plants on
+  # three edit cases. The batch that takes its earlier changes off the page is held to the one text it leaves, the
+  # case with a link that stays is held to the link, and a case with no after tree is held to every text it wrote.
+  expect "planted edit render defects turn the real round trip red" 1 "${real_c[@]}" "RT_PLANT=plant=edit_render_drop_text@change-then-remove plant=edit_render_drop_link@set-text-every-field plant=edit_render_text@all-five-operations-entity-text"
+  want="all-five-operations-entity-text render-text
+change-then-remove render-text
+set-text-every-field render-link"
+  got="$(printf '%s\n' "$LAST_OUT" | sed -n -E 's/^rt: FAIL \[[0-9.]+ edit-containers ([a-z0-9-]+)\] ([a-z-]+):.*/\1 \2/p' | sort -u)"
+  if [ "$got" = "$(printf '%s\n' "$want" | sort -u)" ]; then
+    ok "  each plant fails the check it is meant to prove, on its own edit case and no other"
+  else
+    bad "  the failing edit checks are not exactly the planted ones"
+    echo "     want:"; printf '%s\n' "$want" | sort -u | sed 's/^/       /'
+    echo "     got:"; printf '%s\n' "$got" | sed 's/^/       /'
+    echo "$LAST_OUT" | grep '^rt: FAIL' | sed 's/^/     | /' | head -20
+  fi
+  said "  the text the batch leaves on the page is the one it is held to" "[4.3.4 edit-containers change-then-remove] render-text: 1 text(s) not shown as written, first: Find us"
+  said "  and a link that stays on the page is held to it" "[4.3.4 edit-containers set-text-every-field] render-link: no anchor carries the link https://example.com/book"
+  not_said "  and every plant was applied" "] plant:"
 
   # The agent path must look at something: handed no outline, it is red, and names what never ran.
   expect "an agent path handed no outline is red" 1 "${real_c[@]}" "RT_PLANT=plant=agent_no_cases@all"
@@ -507,6 +535,26 @@ sections text golden"
   printf '%s\n' "$empty" >"$tmp/fx-empty/elementor-classic-sections.json"
   expect "golden fixtures with no cases are red" 2 "${real_c[@]}" "RT_FIXTURES_DIR=$tmp/fx-empty"
   said "  and the harness says why" "holds no cases"
+
+  # An edit case whose golden after tree leaves none of the texts its operations wrote on the page would look at
+  # nothing, so it is red and says why.
+  mkdir -p "$tmp/fx-noafter"
+  cp -R "$here/../apps/agent/tests/fixtures/ability-run/." "$tmp/fx-noafter/"
+  if "$node_bin" -e '
+    const fs = require("fs");
+    const [file, name] = process.argv.slice(1);
+    const d = JSON.parse(fs.readFileSync(file, "utf8"));
+    const hit = d.cases.filter((c) => c.name === name);
+    if (hit.length !== 1) { console.error("case " + name + " matched " + hit.length + " time(s)"); process.exit(1); }
+    hit[0].after_tree = [];
+    fs.writeFileSync(file, JSON.stringify(d));
+  ' "$tmp/fx-noafter/elementor-edit-cases.json" set-text-every-field-containers 2>"$tmp/fx-noafter.err"; then
+    expect "an edit case that leaves none of its written texts on the page is red" 1 "${real_c[@]}" "RT_FIXTURES_DIR=$tmp/fx-noafter"
+    said "  and it says the page was held to none of them" "[4.3.4 edit-containers set-text-every-field] render-text: every text the operations wrote is off the page after the call"
+    not_said "  and no other edit case is red for it" "rt: FAIL [4.3.4 edit-containers change-then-remove]"
+  else
+    bad "the edit fixture cannot be mutated to leave nothing on the page: $(cat "$tmp/fx-noafter.err")"
+  fi
 
   expect "a mounted Elementor zip that is not the pinned file is red" 2 "${real_c[@]}" "RT_HARNESS_ARGS=zip_sha256=$zero_sha"
   said "  and the harness says why" "is not the pinned file"

@@ -412,14 +412,16 @@ final class BuilderPageCreate
      * revisions are the ones its save made, answered as before chains
      * existed.
      *
-     * With a chain, each named request's ledger row must be a completed
-     * wpmgr/page-edit change of this draft, by the same builder. A change
-     * that was undone counts only for its revisions. The others, in the
-     * chain's order, must each start from the fingerprint the one before
-     * left (the first from the creation's), and the last must have left the
-     * draft as it is now. The revisions allowed are the creation's and every
-     * named change's. A refusal then answers one of CHAIN_BROKEN,
-     * FOREIGN_REVISION, AUTOSAVE or LOCKED.
+     * With a chain, each named request's ledger row must be a wpmgr/page-edit
+     * change of this draft: a completed one by the same builder, or a failed
+     * one whose row says the site put the page back (restored true). A
+     * change that was undone, and a failed one put back, count only for
+     * their revisions. The others, in the chain's order, must each start
+     * from the fingerprint the one before left (the first from the
+     * creation's), and the last must have left the draft as it is now. The
+     * revisions allowed are the creation's and every named change's. A
+     * refusal then answers one of CHAIN_BROKEN, FOREIGN_REVISION, AUTOSAVE
+     * or LOCKED.
      *
      * @param int                  $postId    The created draft, from the ledger row.
      * @param array<string, mixed> $ledgerRow The request's ledger row.
@@ -513,8 +515,21 @@ final class BuilderPageCreate
         foreach ($chain as $requestId) {
             $row = AbilityLedger::get($requestId);
             if ($row === null || ($row['ability'] ?? null) !== OwnAbilities::NAME_PAGE_EDIT
-                || ($row['target_post_id'] ?? null) !== $postId || ($row['phase'] ?? null) !== 'completed'
-                || ($row['builder'] ?? null) !== $builder) {
+                || ($row['target_post_id'] ?? null) !== $postId) {
+                return null;
+            }
+
+            // A failed change the site put the page back from left only the
+            // revisions its save made.
+            if (($row['phase'] ?? null) === 'failed' && ($row['restored'] ?? null) === true) {
+                $revisions = self::ledgerRevisions($row['own_revision_ids'] ?? null);
+                if ($revisions === null) {
+                    return null;
+                }
+                $allowed += array_fill_keys($revisions, true);
+                continue;
+            }
+            if (($row['phase'] ?? null) !== 'completed' || ($row['builder'] ?? null) !== $builder) {
                 return null;
             }
             $before    = $row['before_fp'] ?? null;

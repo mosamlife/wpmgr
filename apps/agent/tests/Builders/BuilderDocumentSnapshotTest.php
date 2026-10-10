@@ -513,6 +513,40 @@ final class BuilderDocumentSnapshotTest extends TestCase
         $this->assertSame([160, 'wp_options', 'wpmgr\\_ability\\_snap\\_%', BuilderDocumentSnapshot::SWEEP_WINDOW], $heads[0]['args'], 'a bounded read of the heads only');
     }
 
+    public function test_the_scheduled_sweep_deletes_expired_copies_and_is_scheduled_once_hourly(): void
+    {
+        $this->db->addPost(self::POST_ID, self::post());
+        $this->now = self::NOW - 30 * 86400;
+        $this->assertTrue(BuilderDocumentSnapshot::take(self::POST_ID, self::uuid(1))['ok']);
+        $this->assertTrue(BuilderDocumentSnapshot::take(self::POST_ID, self::uuid(2))['ok']);
+        $this->now = self::NOW;
+        $this->assertTrue(BuilderDocumentSnapshot::take(self::POST_ID, self::uuid(3))['ok']);
+
+        // The cron event, as wp-cron runs it: no argument.
+        BuilderDocumentSnapshot::sweepScheduled();
+        $this->assertSame([BuilderDocumentSnapshot::OPTION_PREFIX . self::uuid(3)], array_column($this->db->optionRows(), 'option_name'), 'the expired copies go, the fresh one stays');
+
+        $events = [];
+        Functions\when('wp_next_scheduled')->alias(static function ($hook) use (&$events) {
+            return isset($events[$hook]) ? $events[$hook][0] : false;
+        });
+        Functions\when('wp_schedule_event')->alias(static function ($timestamp, $recurrence, $hook) use (&$events): bool {
+            $events[$hook] = [$timestamp, $recurrence];
+
+            return true;
+        });
+        BuilderDocumentSnapshot::scheduleSweep(self::NOW);
+        BuilderDocumentSnapshot::scheduleSweep(self::NOW + 60);
+        $this->assertSame([BuilderDocumentSnapshot::HOOK_SWEEP => [self::NOW + 3600, 'hourly']], $events, 'scheduled once, hourly');
+        $this->assertSame('wpmgr_builder_snapshot_sweep', BuilderDocumentSnapshot::HOOK_SWEEP);
+
+        // A scheduler that throws never reaches the page-edit write that called it.
+        Functions\when('wp_next_scheduled')->alias(static function (): void {
+            throw new \RuntimeException('cron unavailable');
+        });
+        BuilderDocumentSnapshot::scheduleSweep(self::NOW);
+    }
+
     public function test_sweep_never_throws_on_a_failed_read(): void
     {
         $this->db->failOnStatement = 'SELECT option_id';

@@ -212,6 +212,34 @@
             "go": "accept"
         },
         {
+            "name": "remove-section-holding-locked",
+            "rule": "holder_of_locked_not_removed",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"remove\",\"ref\":\"7a8b9c0\"}]}",
+            "agent": "node_not_editable",
+            "go": "accept"
+        },
+        {
+            "name": "replace-column-holding-locked",
+            "rule": "holder_of_locked_not_replaced",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"replace\",\"ref\":\"8b9c0d1\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Hello\"}]}]}",
+            "agent": "node_not_editable",
+            "go": "accept"
+        },
+        {
+            "name": "move-holder-of-locked-in-then-remove",
+            "rule": "holder_of_locked_not_removed",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"move\",\"ref\":\"8b9c0d1\",\"before\":\"2b3c4d5\"},{\"op\":\"remove\",\"ref\":\"1a2b3c4\"}]}",
+            "agent": "node_not_editable",
+            "go": "accept"
+        },
+        {
+            "name": "move-holder-of-locked-out-then-remove",
+            "rule": "holder_of_locked_not_removed",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"move\",\"ref\":\"8b9c0d1\",\"before\":\"2b3c4d5\"},{\"op\":\"remove\",\"ref\":\"7a8b9c0\"}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
             "name": "move-on-beaver",
             "rule": "op_declared_by_builder",
             "builder": "beaver",
@@ -258,7 +286,7 @@
         {
             "name": "anchor-replaced-earlier",
             "rule": "anchor_not_replaced_earlier",
-            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"replace\",\"ref\":\"7a8b9c0\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Opening hours\"}]},{\"op\":\"insert\",\"after\":\"9c0d1e2\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Hello\"}]}]}",
+            "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"replace\",\"ref\":\"1a2b3c4\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Opening hours\"}]},{\"op\":\"insert\",\"after\":\"4d5e6f7\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Hello\"}]}]}",
             "agent": "ops_invalid",
             "go": "accept"
         },

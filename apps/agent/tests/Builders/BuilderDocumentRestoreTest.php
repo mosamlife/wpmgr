@@ -199,6 +199,61 @@ final class BuilderDocumentRestoreTest extends TestCase
         $this->assertNull(BuilderDocumentRestore::full(self::POST_ID, $snapshot, $this->descriptor, $this->adapter, $beforeFp));
     }
 
+    public function test_full_restore_reads_back_every_row_and_column_not_only_the_fingerprint(): void
+    {
+        // After the commit something changes what the builder fingerprint
+        // does not cover: the page is not back as the snapshot holds it.
+        $cases = [
+            'a key added'                => function (int $postId): void {
+                $this->db->insert('wp_postmeta', ['post_id' => $postId, 'meta_key' => 'seo_plugin_score', 'meta_value' => '64']);
+            },
+            'a key gone'                 => function (): void {
+                $this->replaceRows('_thumbnail_id', []);
+            },
+            'a NULL row stored empty'    => function (): void {
+                $this->replaceRows('_wpmgr_null', ['']);
+            },
+            'a key\'s rows reordered'    => function (): void {
+                $this->replaceRows('_wpmgr_multi', ['second', 'first', 'first']);
+            },
+            'a key with one row more'    => function (int $postId): void {
+                $this->db->insert('wp_postmeta', ['post_id' => $postId, 'meta_key' => '_wpmgr_multi', 'meta_value' => 'first']);
+            },
+            'the author column'          => function (int $postId): void {
+                $this->db->update('wp_posts', ['post_author' => '9'], ['ID' => $postId]);
+            },
+            'the filtered content'       => function (int $postId): void {
+                $this->db->update('wp_posts', ['post_content_filtered' => 'x'], ['ID' => $postId]);
+            },
+            'the site-time modified date' => function (int $postId): void {
+                $this->db->update('wp_posts', ['post_modified' => '2026-10-09 14:30:00'], ['ID' => $postId]);
+            },
+        ];
+        foreach ($cases as $why => $after) {
+            $this->fresh();
+            $this->seedCorpus();
+            $snapshot = $this->snapshot();
+            $beforeFp = $this->fp();
+            $this->failedSave();
+            $this->onCleanPostCache = $after;
+
+            $this->assertSame(BuilderDocumentRestore::CODE_MISMATCH, BuilderDocumentRestore::full(self::POST_ID, $snapshot, $this->descriptor, $this->adapter, $beforeFp), $why);
+            $this->assertSame($beforeFp, $this->fp(), $why . ': precondition, the fingerprint alone reads as put back');
+        }
+
+        // The edit lock and the builder's derived caches are not compared.
+        $this->fresh();
+        $this->seedCorpus();
+        $snapshot = $this->snapshot();
+        $beforeFp = $this->fp();
+        $this->failedSave();
+        $this->onCleanPostCache = function (int $postId): void {
+            $this->db->insert('wp_postmeta', ['post_id' => $postId, 'meta_key' => '_edit_lock', 'meta_value' => '1760000000:5']);
+            $this->db->insert('wp_postmeta', ['post_id' => $postId, 'meta_key' => '_elementor_css', 'meta_value' => serialize(['status' => 'file'])]);
+        };
+        $this->assertNull(BuilderDocumentRestore::full(self::POST_ID, $snapshot, $this->descriptor, $this->adapter, $beforeFp));
+    }
+
     public function test_full_restore_invalidates_caches_and_css(): void
     {
         // The page was rendered before the edit: Elementor's caches exist.

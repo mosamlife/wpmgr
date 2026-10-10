@@ -28,8 +28,11 @@ if (!defined('ABSPATH')) {
  * snapshot's rows in the snapshot's order (the meta_ids are new, the order is
  * kept): a key the write added is deleted, a key it removed comes back with
  * its row count. Every RESTORE_POST_COLUMNS column goes back to the
- * snapshot's bytes. Revisions the write made are left as they are. The
- * page's fingerprint must then equal the one it had before the write.
+ * snapshot's bytes. Revisions the write made are left as they are. Then
+ * every one of those columns and every meta key but the edit lock and the
+ * derived keys is read back and must hold the snapshot's bytes, each key its
+ * rows in order, and the page's fingerprint must equal the one it had before
+ * the write.
  *
  * scoped() is a person's undo of one change. Only the meta keys and the posts
  * columns the change wrote go back, and only when each still holds exactly
@@ -39,7 +42,13 @@ if (!defined('ABSPATH')) {
  * change.
  *
  * In both, the reads that decide the writes and the writes themselves run in
- * one transaction, rolled back on any database error. The descriptor's
+ * one transaction, rolled back on any database error. transactionProblem()
+ * says whether the site's posts and postmeta tables can take that
+ * transaction: both must use a storage engine that supports transactions,
+ * as information_schema lists them, or a failed restore could not be rolled
+ * back, so wpmgr/page-edit refuses before it writes anything. A site whose
+ * database handle is the SQLite database integration's driver takes it
+ * without that read. The descriptor's
  * derived keys (caches the builder rebuilds from the page) are deleted, never
  * restored or guarded. After the commit the post's object caches are
  * dropped and the adapter's afterRestore() drops what the builder caches
@@ -76,6 +85,23 @@ final class BuilderDocumentRestore
     /** scoped(): the post is gone; nothing was written. */
     public const DETAIL_POST_MISSING = 'post_missing';
 
+    /** transactionProblem(): the posts or postmeta table uses a storage engine without transactions. */
+    public const DETAIL_NOT_TRANSACTIONAL = 'tables_not_transactional';
+
+    /** transactionProblem(): the storage engines of the posts and postmeta tables could not be read. */
+    public const DETAIL_ENGINE_UNREADABLE = 'table_engine_unreadable';
+
+    /**
+     * transactionProblem()'s answers, per database handle (so per request),
+     * by posts and postmeta table names.
+     *
+     * @var \WeakMap<object, array<string, string|null>>|null
+     */
+    private static ?\WeakMap $engineAnswers = null;
+
+    /** The database class the SQLite database integration installs as $wpdb (a wpdb subclass). */
+    private const SQLITE_DRIVER = 'WP_SQLite_DB';
+
     private const RE_SHA256 = '/^[0-9a-f]{64}$/D';
 
     /** The members of a changed key, in any order. */
@@ -86,17 +112,21 @@ final class BuilderDocumentRestore
 
     /**
      * The automatic restore after a failed write: the post goes back to the
-     * snapshot, then its fingerprint is read again.
+     * snapshot, then every restored column and row, and its fingerprint, are
+     * read again.
      *
      * @param int                $postId   Post ID; the snapshot must be of this post.
      * @param array<mixed>       $snapshot What BuilderDocumentSnapshot::decode() returned.
      * @param DocumentDescriptor $d        The adapter's descriptor.
      * @param BuilderAdapter     $a        The adapter.
      * @param string             $beforeFp The page's builder_document_v1 fingerprint before the write.
-     * @return string|null Null when the post is back and its fingerprint equals
-     *                     $beforeFp; otherwise CODE_MISMATCH. A database error
-     *                     rolls the restore back, so the post keeps the rows the
-     *                     failed write left.
+     * @return string|null Null when the post is back: every restored column
+     *                     and every meta key but the edit lock and the derived
+     *                     keys reads back as the snapshot holds it, and its
+     *                     fingerprint equals $beforeFp; otherwise
+     *                     CODE_MISMATCH. A database error rolls the restore
+     *                     back, so the post keeps the rows the failed write
+     *                     left.
      * @throws \InvalidArgumentException When the snapshot is not one of this post, or $beforeFp is not a sha256.
      */
     public static function full(int $postId, array $snapshot, DocumentDescriptor $d, BuilderAdapter $a, string $beforeFp): ?string
@@ -132,12 +162,130 @@ final class BuilderDocumentRestore
 
         self::afterWrite($postId, $a);
         try {
-            $now = BuilderDocumentFingerprint::ofPost($postId, $d->exactKeys);
+            $now = self::read($postId, false);
+            $fp  = BuilderDocumentFingerprint::ofPost($postId, $d->exactKeys);
         } catch (\Throwable $e) {
             return self::CODE_MISMATCH;
         }
+        if ($now === null || !self::holdsSnapshot($now, $snap, $derived)) {
+            return self::CODE_MISMATCH;
+        }
 
-        return $now !== null && hash_equals($beforeFp, $now) ? null : self::CODE_MISMATCH;
+        return $fp !== null && hash_equals($beforeFp, $fp) ? null : self::CODE_MISMATCH;
+    }
+
+    /**
+     * Whether the stored post holds the snapshot: every RESTORE_POST_COLUMNS
+     * column its bytes, and every meta key but the edit lock and the derived
+     * keys its rows, byte for byte and in order, with a key the snapshot
+     * does not hold having no row.
+     *
+     * @param array{rows:list<array{id:int,key:string,value:string|null}>,post:array<string,string>} $now     What read() answered.
+     * @param array{post:array<string,string>,meta:list<array{0:string,1:string|null}>}             $snap    The decoded snapshot.
+     * @param list<string>                                                                          $derived The descriptor's derived keys.
+     * @return bool
+     */
+    private static function holdsSnapshot(array $now, array $snap, array $derived): bool
+    {
+        foreach (BuilderDocumentSnapshot::RESTORE_POST_COLUMNS as $column) {
+            if ($now['post'][$column] !== $snap['post'][$column]) {
+                return false;
+            }
+        }
+        $keys = [];
+        foreach ($snap['meta'] as $pair) {
+            $keys[$pair[0]] = true;
+        }
+        foreach ($now['rows'] as $row) {
+            $keys[$row['key']] = true;
+        }
+        foreach (array_map('strval', array_keys($keys)) as $key) {
+            if ($key === BuilderDocumentSnapshot::EDIT_LOCK_KEY || in_array($key, $derived, true)) {
+                continue;
+            }
+            if (self::currentValues($now['rows'], $key) !== self::snapshotValues($snap['meta'], $key)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Why a restore of this site's posts and postmeta tables could not be all
+     * or nothing, or null when it can: both tables are listed in the current
+     * database's information_schema, each with a storage engine that supports
+     * transactions. DETAIL_NOT_TRANSACTIONAL when one is not (MyISAM, say),
+     * DETAIL_ENGINE_UNREADABLE when the engines cannot be read or a table is
+     * not listed. Read once per database handle and table names, so once per
+     * request.
+     *
+     * On a site whose database handle is an instance of SQLITE_DRIVER the
+     * answer is null and nothing is read: SQLite has one storage engine, it
+     * supports transactions, and that driver runs START TRANSACTION, COMMIT
+     * and ROLLBACK as SQLite transactions. Every other handle is answered
+     * from information_schema as above.
+     *
+     * @return string|null
+     */
+    public static function transactionProblem(): ?string
+    {
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            return self::DETAIL_ENGINE_UNREADABLE;
+        }
+        if (is_a($wpdb, self::SQLITE_DRIVER)) {
+            return null;
+        }
+        $posts    = $wpdb->posts ?? null;
+        $postmeta = $wpdb->postmeta ?? null;
+        if (!is_string($posts) || $posts === '' || !is_string($postmeta) || $postmeta === '') {
+            return self::DETAIL_ENGINE_UNREADABLE;
+        }
+        self::$engineAnswers ??= new \WeakMap();
+        $known = self::$engineAnswers[$wpdb] ?? [];
+        $pair  = $posts . ' ' . $postmeta;
+        if (!array_key_exists($pair, $known)) {
+            $known[$pair]                = self::readTransactionProblem($wpdb, $posts, $postmeta);
+            self::$engineAnswers[$wpdb] = $known;
+        }
+
+        return $known[$pair];
+    }
+
+    /**
+     * transactionProblem() for one pair of tables, read from information_schema.
+     *
+     * @param object $wpdb     The database handle.
+     * @param string $posts    The posts table.
+     * @param string $postmeta The postmeta table.
+     * @return string|null
+     */
+    private static function readTransactionProblem(object $wpdb, string $posts, string $postmeta): ?string
+    {
+        /** @var \wpdb $wpdb */
+        try {
+            $rows = $wpdb->get_results($wpdb->prepare('SELECT t.TABLE_NAME AS table_name, e.TRANSACTIONS AS transactions FROM information_schema.TABLES AS t LEFT JOIN information_schema.ENGINES AS e ON e.ENGINE = t.ENGINE WHERE t.TABLE_SCHEMA = DATABASE() AND t.TABLE_NAME IN (%s, %s)', $posts, $postmeta), ARRAY_A); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- a catalogue read of the two tables' storage engines, cached per request by the caller; both names go through prepare()
+        } catch (\Throwable $e) {
+            return self::DETAIL_ENGINE_UNREADABLE;
+        }
+        if (!is_array($rows) || self::lastError($wpdb)) {
+            return self::DETAIL_ENGINE_UNREADABLE;
+        }
+        $listed = [];
+        foreach ($rows as $row) {
+            $name = is_array($row) ? ($row['table_name'] ?? null) : null;
+            if (!is_string($name)) {
+                return self::DETAIL_ENGINE_UNREADABLE;
+            }
+            $transactions = $row['transactions'] ?? null;
+            if (!is_string($transactions) || strtoupper($transactions) !== 'YES') {
+                return self::DETAIL_NOT_TRANSACTIONAL;
+            }
+            $listed[strtolower($name)] = true;
+        }
+
+        return isset($listed[strtolower($posts)], $listed[strtolower($postmeta)]) ? null : self::DETAIL_ENGINE_UNREADABLE;
     }
 
     /**
@@ -147,12 +295,19 @@ final class BuilderDocumentRestore
      * A changed key that is a derived key or the edit lock is neither guarded
      * nor restored. A key the snapshot does not hold is deleted.
      *
+     * With $resume, an undo of this change already started and may have put
+     * the page back. When every key and column the change wrote already holds
+     * its bytes from before the change, read with the locking reads, nothing
+     * is written; the caches are dropped and the read-back decides, as after
+     * a restore. Otherwise the undo runs as it does without $resume.
+     *
      * @param int                $postId        Post ID; the snapshot must be of this post.
      * @param array<mixed>       $snapshot      What BuilderDocumentSnapshot::decode() returned.
      * @param array<mixed>       $changedKeys   The change's keys: list of {key, before_sha256, after_sha256}.
      * @param array<mixed>       $changedFields The change's posts columns: list of {field, before_sha256, after_sha256}.
      * @param DocumentDescriptor $d             The adapter's descriptor.
      * @param BuilderAdapter     $a             The adapter.
+     * @param bool               $resume        Whether an undo of this change already started.
      * @return array{code:string,detail:string}|null Null when every key and
      *         column is back. CODE_CONFLICT with DETAIL_CHANGED when one no
      *         longer holds what the change left, and CODE_MISMATCH with a DETAIL_
@@ -161,7 +316,7 @@ final class BuilderDocumentRestore
      *         written nothing.
      * @throws \InvalidArgumentException When the snapshot is not one of this post, or a changed key or field is not well formed.
      */
-    public static function scoped(int $postId, array $snapshot, array $changedKeys, array $changedFields, DocumentDescriptor $d, BuilderAdapter $a): ?array
+    public static function scoped(int $postId, array $snapshot, array $changedKeys, array $changedFields, DocumentDescriptor $d, BuilderAdapter $a, bool $resume = false): ?array
     {
         $snap    = self::snapshot($postId, $snapshot);
         $keys    = self::changedKeys($changedKeys);
@@ -191,7 +346,10 @@ final class BuilderDocumentRestore
         $names  = array_column($restore, 'key');
         $failed = self::apply(
             $postId,
-            static function (array $rows, array $post) use ($snap, $restore, $fields, $names, $derived): array {
+            static function (array $rows, array $post) use ($snap, $restore, $fields, $names, $derived, $resume): array {
+                if ($resume && self::holdsBefore($rows, $post, $restore, $fields)) {
+                    return ['delete' => [], 'insert' => [], 'post' => []];
+                }
                 foreach ($restore as $k) {
                     if (!hash_equals($k['after'], self::rowsSha256(self::currentValues($rows, $k['key'])))) {
                         return ['refuse' => self::refusal(self::CODE_CONFLICT, self::DETAIL_CHANGED)];
@@ -233,21 +391,37 @@ final class BuilderDocumentRestore
         } catch (\Throwable $e) {
             $now = null;
         }
-        if ($now === null) {
+        if ($now === null || !self::holdsBefore($now['rows'], $now['post'], $restore, $fields)) {
             return self::refusal(self::CODE_MISMATCH, self::DETAIL_READ_BACK);
-        }
-        foreach ($restore as $k) {
-            if (!hash_equals($k['before'], self::rowsSha256(self::currentValues($now['rows'], $k['key'])))) {
-                return self::refusal(self::CODE_MISMATCH, self::DETAIL_READ_BACK);
-            }
-        }
-        foreach ($fields as $f) {
-            if (!hash_equals($f['before'], hash('sha256', $now['post'][$f['field']]))) {
-                return self::refusal(self::CODE_MISMATCH, self::DETAIL_READ_BACK);
-            }
         }
 
         return null;
+    }
+
+    /**
+     * Whether every restored key and column of a change holds its bytes from
+     * before the change.
+     *
+     * @param list<array{id:int,key:string,value:string|null}> $rows    Stored rows.
+     * @param array<string,string>                             $post    Stored columns.
+     * @param list<array{key:string,before:string,after:string}> $restore The change's keys a restore puts back.
+     * @param list<array{field:string,before:string,after:string}> $fields The change's columns.
+     * @return bool
+     */
+    private static function holdsBefore(array $rows, array $post, array $restore, array $fields): bool
+    {
+        foreach ($restore as $k) {
+            if (!hash_equals($k['before'], self::rowsSha256(self::currentValues($rows, $k['key'])))) {
+                return false;
+            }
+        }
+        foreach ($fields as $f) {
+            if (!hash_equals($f['before'], hash('sha256', $post[$f['field']]))) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

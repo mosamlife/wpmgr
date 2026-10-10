@@ -47,8 +47,12 @@ if (!defined('ABSPATH')) {
  * echoes back; load() computes it over the bytes stored when it is called.
  *
  * A snapshot is kept for RETENTION_SECONDS, one day past the control plane's
- * 14-day undo window. sweep() deletes older ones, and uninstall deletes every
- * row under OPTION_PREFIX.
+ * 14-day undo window. sweep() deletes older ones, a bounded number per call:
+ * on every page-edit write, and every hour from the HOOK_SWEEP cron event,
+ * so a site that stops editing still loses its expired copies. The event is
+ * scheduled on activation, when the agent's recurring events are re-armed,
+ * and by every page-edit write (scheduleSweep()), and cleared on
+ * deactivation. Uninstall deletes every row under OPTION_PREFIX.
  */
 final class BuilderDocumentSnapshot
 {
@@ -85,6 +89,9 @@ final class BuilderDocumentSnapshot
 
     /** At most this many of the oldest rows under the prefix are examined per sweep. */
     public const SWEEP_WINDOW = 200;
+
+    /** The hourly cron event that runs sweepScheduled(). */
+    public const HOOK_SWEEP = 'wpmgr_builder_snapshot_sweep';
 
     /** Bytes of a stored text a sweep reads: every member before "post" fits. */
     private const HEAD_BYTES = 160;
@@ -338,6 +345,40 @@ final class BuilderDocumentSnapshot
         }
 
         return $deleted;
+    }
+
+    /**
+     * The HOOK_SWEEP cron callback: one sweep() with its default bound. Takes
+     * no argument and answers nothing. Never throws.
+     *
+     * @return void
+     */
+    public static function sweepScheduled(): void
+    {
+        self::sweep();
+    }
+
+    /**
+     * Schedules HOOK_SWEEP hourly, the first run an hour after $now, unless
+     * it is scheduled already. Never throws, so a page-edit write never fails
+     * on it.
+     *
+     * @param int $now Current time.
+     * @return void
+     */
+    public static function scheduleSweep(int $now): void
+    {
+        if (!function_exists('wp_next_scheduled') || !function_exists('wp_schedule_event')) {
+            return;
+        }
+        try {
+            if (wp_next_scheduled(self::HOOK_SWEEP) === false) {
+                wp_schedule_event($now + 3600, 'hourly', self::HOOK_SWEEP);
+            }
+        } catch (\Throwable $e) {
+            // The next page-edit write, activation or re-arm schedules it.
+            unset($e);
+        }
     }
 
     /**

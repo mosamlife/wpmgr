@@ -370,6 +370,52 @@ final class ChainTrashTest extends TestCase
         $this->assertSame('trash', $this->rows->postRow(self::DRAFT)['post_status']);
     }
 
+    public function test_trash_after_a_failed_edit_the_site_put_back(): void
+    {
+        $this->enable();
+        $this->edit(self::DRAFT, self::EDIT, self::ops());
+        $afterFirst = $this->fp(self::DRAFT);
+
+        // The next edit's save writes and makes a revision, then fails: the
+        // page is put back and the revision stays.
+        $document         = $this->api->documents[self::DRAFT];
+        $saving           = $document->onSave;
+        $document->onSave = static function ($data) use ($saving): bool {
+            $saving($data);
+
+            return false;
+        };
+        $input = (string) json_encode(['post_id' => self::DRAFT, 'base_fingerprint' => $afterFirst, 'operations' => [['op' => 'set_text', 'ref' => self::HEADING, 'field' => 'text', 'text' => 'Autumn prices']]]);
+        $pre   = $this->callP($this->pEdit('precheck', self::DRAFT, self::EDIT2, $input));
+        $this->assertTrue($pre['ok'] ?? null, (string) json_encode($pre));
+        $failed = $this->callP($this->pEdit('write', self::DRAFT, self::EDIT2, $input, $pre));
+        $this->assertSame([false, true], [$failed['ok'] ?? null, $failed['restored'] ?? null], (string) json_encode($failed));
+        $document->onSave = $saving;
+        $row              = $this->options['wpmgr_ability_ledger_' . self::EDIT2];
+        $this->assertSame(['failed', true], [$row['phase'], $row['restored']]);
+        $this->assertCount(1, $row['own_revision_ids'], 'precondition: the failed save made one revision');
+        $this->assertSame($afterFirst, $this->fp(self::DRAFT), 'precondition: the page is as the first edit left it');
+        $this->assertCount(3, $this->revisions[self::DRAFT]);
+
+        // Left out of the chain, its revision is nobody's change.
+        $this->assertRefusedAndKept(BuilderPageCreate::FOREIGN_REVISION, [self::EDIT], 'the failed edit left out');
+
+        // A failed edit whose row does not say the page was put back breaks the chain.
+        foreach (['not put back' => false, 'no put-back recorded' => null, 'not a boolean' => 'true'] as $why => $restored) {
+            $this->options['wpmgr_ability_ledger_' . self::EDIT2]['restored'] = $restored;
+            if ($restored === null) {
+                unset($this->options['wpmgr_ability_ledger_' . self::EDIT2]['restored']);
+            }
+            $this->assertRefusedAndKept(BuilderPageCreate::CHAIN_BROKEN, [self::EDIT, self::EDIT2], $why);
+        }
+        $this->options['wpmgr_ability_ledger_' . self::EDIT2] = $row;
+
+        // Named in the order the edits were made, the draft goes to the trash.
+        $r = $this->trash(self::CREATE, [self::EDIT, self::EDIT2]);
+        $this->assertSame(['ok' => true, 'outcome' => 'reverted', 'mode' => 'revert', 'request_id' => self::CREATE, 'post_id' => self::DRAFT, 'trashed' => true], $r);
+        $this->assertSame('trash', $this->rows->postRow(self::DRAFT)['post_status']);
+    }
+
     public function test_person_edit_breaks_chain(): void
     {
         $this->enable();

@@ -57,6 +57,23 @@ final class AbilityLedger
     }
 
     /**
+     * The row for a request, or null, as get() answers it once this
+     * request's cached copy of the row is dropped. get() can answer that
+     * copy, which misses a write another request made since; with it
+     * dropped, a row this request has read is read again from the options
+     * table, and get() and update() later in this request start from it.
+     *
+     * @param string $requestId Request id (validated UUID).
+     * @return array<string,mixed>|null
+     */
+    public static function getStored(string $requestId): ?array
+    {
+        wp_cache_delete(self::ROW_PREFIX . strtolower($requestId), 'options');
+
+        return self::get($requestId);
+    }
+
+    /**
      * Create the row. False when a row already exists or the write failed.
      *
      * @param string              $requestId Request id.

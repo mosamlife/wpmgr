@@ -75,12 +75,13 @@ final class PageEditValidatorTest extends TestCase
             ['op' => 'replace', 'ref' => '1a2b3c4', 'outline' => [self::para('Opening hours')]],
             self::insertAt('into', '2b3c4d5', [self::para('Hello')]),
         ]);
-        // A node that moved into a subtree removed later is gone with it.
+        // A node that moved into a subtree removed later is gone with it (on
+        // the page without its locked node, which the removed section holds).
         $this->assertRefused('ops_invalid', 'ref_gone', 2, [
             ['op' => 'move', 'ref' => '2b3c4d5', 'after' => '8b9c0d1'],
             ['op' => 'remove', 'ref' => '7a8b9c0'],
             self::setText('3c4d5e6', 'text', 'Autumn sale'),
-        ]);
+        ], self::pageWithoutLocked());
         // A node that moved out of a subtree removed later is still on the page.
         $this->assertNull(self::check([
             ['op' => 'move', 'ref' => '2b3c4d5', 'after' => '8b9c0d1'],
@@ -146,6 +147,35 @@ final class PageEditValidatorTest extends TestCase
         $this->assertNull(self::check([self::insertAt('after', 'b1e2f3a', [self::para('Hello')])]));
         $this->assertNull(self::check([self::insertAt('before', 'b1e2f3a', [self::para('Hello')])]));
         $this->assertNull(self::check([['op' => 'move', 'ref' => '9c0d1e2', 'after' => 'b1e2f3a']]));
+    }
+
+    public function test_locked_node_never_goes_with_its_holder(): void
+    {
+        // Section 7a8b9c0 holds column 8b9c0d1, which holds the locked b1e2f3a.
+        foreach (['7a8b9c0', '8b9c0d1'] as $holder) {
+            $this->assertRefused('node_not_editable', 'holds_locked', 0, [['op' => 'remove', 'ref' => $holder]]);
+            $this->assertRefused('node_not_editable', 'holds_locked', 0, [['op' => 'replace', 'ref' => $holder, 'outline' => [self::para('Hello')]]]);
+        }
+        $this->assertRefused('node_not_editable', 'holds_locked', 1, [
+            self::setText('9c0d1e2', 'text', 'Autumn sale'),
+            ['op' => 'remove', 'ref' => '7a8b9c0'],
+        ]);
+
+        // The holder is judged on the page as the earlier operations leave it.
+        $this->assertRefused('node_not_editable', 'holds_locked', 1, [
+            ['op' => 'move', 'ref' => '8b9c0d1', 'before' => '2b3c4d5'],
+            ['op' => 'remove', 'ref' => '1a2b3c4'],
+        ]);
+        $this->assertNull(self::check([
+            ['op' => 'move', 'ref' => '8b9c0d1', 'before' => '2b3c4d5'],
+            ['op' => 'remove', 'ref' => '7a8b9c0'],
+        ]), 'a section whose locked node moved out of it may go');
+
+        // A node holding no locked node goes, and a holder may still move.
+        $this->assertNull(self::check([['op' => 'remove', 'ref' => '1a2b3c4']]));
+        $this->assertNull(self::check([['op' => 'replace', 'ref' => '2b3c4d5', 'outline' => [self::para('Hello')]]]));
+        $this->assertNull(self::check([['op' => 'move', 'ref' => '7a8b9c0', 'before' => '1a2b3c4']]));
+        $this->assertNull(self::check([['op' => 'remove', 'ref' => '7a8b9c0']], self::pageWithoutLocked()), 'the same section without its locked node');
     }
 
     public function test_set_text_names_a_field_the_node_offers(): void
@@ -444,6 +474,16 @@ final class PageEditValidatorTest extends TestCase
         self::assertArrayHasKey('input', $r, 'parse() refused: ' . ($r['detail'] ?? ''));
 
         return PageEditValidator::againstPage($r['input'], $nodes ?? self::opsCases()['page']['nodes'], $capabilities ?? self::capabilities('elementor'));
+    }
+
+    /**
+     * The fixture page without its one locked node.
+     *
+     * @return list<array<string,mixed>>
+     */
+    private static function pageWithoutLocked(): array
+    {
+        return array_values(array_filter(self::opsCases()['page']['nodes'], static fn (array $n): bool => $n['kind'] !== 'locked'));
     }
 
     /**

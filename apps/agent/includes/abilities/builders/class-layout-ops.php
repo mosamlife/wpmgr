@@ -24,7 +24,10 @@ if (!defined('ABSPATH')) {
  *   node inside a locked element, never one an operation made. A ref that is
  *   not on the page is node_not_found; one that an earlier operation removed
  *   or replaced, or that sat inside such a node, is ops_invalid. A locked
- *   node is never a target (node_not_editable); it may be an anchor.
+ *   node is never a target (node_not_editable, locked); it may be an anchor.
+ * - A node that holds a locked node at any depth, in the tree the earlier
+ *   operations left, is never removed or replaced (node_not_editable,
+ *   holds_locked), so a locked node never goes with its section or column.
  * - set_text: ElementorClassicMapper::setText() on a node that offers the
  *   field (node_not_editable otherwise).
  * - insert and replace: the outline maps through
@@ -186,6 +189,9 @@ final class LayoutOps
         $fact = $facts[$ref];
         if ($fact['kind'] === 'locked') {
             return self::refuse('node_not_editable', 'locked', $i);
+        }
+        if (($name === 'replace' || $name === 'remove') && self::holdsLocked(self::nodeAt($tree, $path), $facts)) {
+            return self::refuse('node_not_editable', 'holds_locked', $i);
         }
         $parentPath = array_slice($path, 0, -1);
         $index      = $path[count($path) - 1];
@@ -508,6 +514,36 @@ final class LayoutOps
         }
 
         return null;
+    }
+
+    /**
+     * Whether an element inside $node, at any depth, is a locked node of the
+     * page before the call.
+     *
+     * @param array<mixed>                        $node  Stored element.
+     * @param array<string, array<string, mixed>> $facts Projection nodes by ref.
+     * @return bool
+     */
+    private static function holdsLocked(array $node, array $facts): bool
+    {
+        $children = $node['elements'] ?? null;
+        if (!is_array($children)) {
+            return false;
+        }
+        foreach ($children as $child) {
+            if (!is_array($child)) {
+                continue;
+            }
+            $id = $child['id'] ?? null;
+            if (is_string($id) && ($facts[$id]['kind'] ?? null) === 'locked') {
+                return true;
+            }
+            if (self::holdsLocked($child, $facts)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

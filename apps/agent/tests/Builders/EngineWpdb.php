@@ -5,7 +5,8 @@
  * owner's DELETE and the raw read), held in $claims, and the signed-token
  * replay record and its prune, accepted as PageCreateWriteTest has them.
  * Everything else reaches FakeBuilderWpdb, which throws on a statement it
- * does not know.
+ * does not know. SqliteEngineWpdb is this handle as the SQLite database
+ * integration's driver.
  *
  * @package WPMgr\Agent\Tests\Builders
  */
@@ -17,7 +18,7 @@ namespace WPMgr\Agent\Tests\Builders;
 /**
  * The wpdb surface a page-edit call touches, through the command or not.
  */
-final class EngineWpdb
+class EngineWpdb
 {
     /** @var array<string,string> Claim rows by option name. */
     public array $claims = [];
@@ -28,6 +29,13 @@ final class EngineWpdb
      *      and the snapshot.
      */
     public ?\Closure $beforeSnapshotRead = null;
+
+    /**
+     * @var (\Closure(string): void)|null Runs with the claim's option name
+     *      just after each claim row is inserted: another call finishing
+     *      while this one waited for the claim.
+     */
+    public ?\Closure $afterClaim = null;
 
     /**
      * @param FakeBuilderWpdb $rows Posts, postmeta and options rows.
@@ -103,6 +111,9 @@ final class EngineWpdb
                 return 0;
             }
             $this->claims[(string) $args[0]] = (string) $args[1];
+            if ($this->afterClaim !== null) {
+                ($this->afterClaim)((string) $args[0]);
+            }
 
             return 1;
         }

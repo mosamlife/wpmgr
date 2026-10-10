@@ -186,6 +186,21 @@ describe("the confirmation to undo a page edit", () => {
     expect(within(dialog).getByRole("button", { name: "Undo" })).toBeEnabled();
   });
 
+  it("names the draft by its number when the site gave it no title", async () => {
+    renderTab([
+      applied("pe-new", {
+        undo_offered: true,
+        page_edit: editFacts({ post: { id: 418, from_the_site: { title: "" } } }),
+      }),
+    ]);
+    const [card] = await cardsOf(1);
+    fireEvent.click(within(card!).getByRole("button", { name: "Undo this change" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(flat(dialog.querySelector("p"))).toBe(
+      'WPMgr puts back what this change wrote on "#418". Changes approved after it that touched other parts of the page, like a featured image, stay.',
+    );
+  });
+
   it("changes nothing when it is cancelled", async () => {
     const dialog = await askToUndo();
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
@@ -225,6 +240,80 @@ describe("the confirmation to undo a page edit", () => {
     expect(await within(second!).findByRole("button", { name: "Undo this change" })).toBeEnabled();
     expect(within(second!).queryByTestId("undo-later-first")).toBeNull();
     expect(toast.success).toHaveBeenCalledWith("Change undone.");
+  });
+});
+
+// --- an applied edit whose stored card cannot be shown ----------------------------------
+
+// The offer to undo is the row's word, never the card's: the API decides it from
+// the undo state, the window and the newest-edit flag (apps/api/internal/
+// abilityrequest/undo.go, UndoOffered), and it sends page_edit as null when the
+// stored card does not read back (apps/api/internal/abilityrequest/handler.go,
+// pageEditFor). So an applied edit can offer "Undo this change" on a card that
+// shows no page. The button still has to open its confirmation, the confirmation
+// must not name anything the card could not vouch for, and Undo must undo.
+
+describe("the confirmation to undo an applied page edit whose card cannot be shown", () => {
+  const NOT_SHOWABLE =
+    "WPMgr cannot show this request in full, so it cannot be approved here. Decline it and ask the AI again.";
+  const PLAIN_BODY =
+    "WPMgr puts back what this change wrote on the page. Changes approved after it that touched other parts of the page, like a featured image, stay.";
+
+  const unshowable: Array<[string, Partial<AbilityRequest>]> = [
+    ["a stored card that did not read back (page_edit null)", { page_edit: null }],
+    ["an API that sends no page_edit member", { page_edit: undefined }],
+    [
+      "a card for another post than the AI's input",
+      { page_edit: editFacts({ post: { id: 419, from_the_site: { title: "Other draft" } } }) },
+    ],
+  ];
+
+  /** Renders the one applied edit, checks the card really cannot show it, and clicks Undo this change. */
+  async function askToUndo(over: Partial<AbilityRequest>): Promise<{ card: HTMLElement; dialog: HTMLElement }> {
+    renderTab([applied("pe-new", { undo_offered: true, ...over })]);
+    const [card] = await cardsOf(1);
+    expect(card).toHaveTextContent(NOT_SHOWABLE);
+    expect(within(card!).queryByTestId("page-line")).toBeNull();
+    fireEvent.click(within(card!).getByRole("button", { name: "Undo this change" }));
+    return { card: card!, dialog: await screen.findByRole("dialog") };
+  }
+
+  it.each(unshowable)("opens a plain confirmation that names no page, and focuses Cancel: %s", async (_name, over) => {
+    const { dialog } = await askToUndo(over);
+    expect(within(dialog).getByRole("heading", { name: "Undo this change?" })).toBeInTheDocument();
+    expect(flat(dialog.querySelector("p"))).toBe(PLAIN_BODY);
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus());
+    expect(within(dialog).getByRole("button", { name: "Undo" })).toBeEnabled();
+    expect(undoMock).not.toHaveBeenCalled();
+  });
+
+  it.each(unshowable)("undoes this change and no other when Undo is pressed: %s", async (_name, over) => {
+    const { card, dialog } = await askToUndo(over);
+    const undone = applied("pe-new", { undo_state: "undone", ...over });
+    undoMock.mockReturnValue(ok(undone));
+    listSiteMock.mockReturnValue(ok({ requests: [undone], limit: 50, offset: 0 }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Undo" }));
+
+    await waitFor(() =>
+      expect(undoMock).toHaveBeenCalledWith({ path: { siteId: "site-1", requestId: "pe-new" }, body: {} }),
+    );
+    expect(undoMock).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() =>
+      expect(flat(within(card).getByTestId("status-line"))).toBe(
+        "Change undone. The page is back as it was before this change.",
+      ),
+    );
+    expect(within(card).queryByRole("button", { name: /Undo/ })).toBeNull();
+    expect(toast.success).toHaveBeenCalledWith("Change undone.");
+  });
+
+  it("changes nothing when it is cancelled", async () => {
+    const { card, dialog } = await askToUndo({ page_edit: null });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(undoMock).not.toHaveBeenCalled();
+    expect(within(card).getByRole("button", { name: "Undo this change" })).toBeEnabled();
   });
 });
 

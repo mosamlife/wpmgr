@@ -264,6 +264,35 @@ final class LayoutOpsTest extends TestCase
         $this->assertSame([], $r['touched']);
     }
 
+    public function test_locked_node_never_goes_with_its_holder(): void
+    {
+        foreach ([true, false] as $containers) {
+            $tree = self::page($containers);
+            $ref  = self::refs($tree, $containers);
+            // top2 holds the locked widget: directly as a container, or
+            // through its column box2 as a section.
+            foreach (array_unique([$ref['top2'], $ref['box2']]) as $holder) {
+                $this->assertRefused('node_not_editable', 0, $tree, [['op' => 'remove', 'ref' => $holder]], $containers, 'holds_locked');
+                $this->assertRefused('node_not_editable', 0, $tree, [['op' => 'replace', 'ref' => $holder, 'outline' => [self::para('Gone')]]], $containers, 'holds_locked');
+            }
+            $this->assertRefused('node_not_editable', 1, $tree, [self::setText($ref['h3'], 'text', 'Fine'), ['op' => 'remove', 'ref' => $ref['top2']]], $containers, 'holds_locked');
+
+            // A holder may still move, and the lock goes with it unchanged.
+            $r = self::applied($tree, [['op' => 'move', 'ref' => $ref['top2'], 'before' => $ref['top0']]], $containers);
+            $this->assertSame(json_encode(self::byId($tree)[$ref['lock']]), json_encode(self::byId($r['tree'])[$ref['lock']]));
+        }
+
+        // Judged on the tree the earlier operations left: the column holding
+        // the locked widget moves into the row, so the row now holds it.
+        $tree = self::page(false);
+        $ref  = self::refs($tree, false);
+        $move = ['op' => 'move', 'ref' => $ref['box2'], 'before' => $ref['col1']];
+        $this->assertRefused('node_not_editable', 1, $tree, [$move, ['op' => 'remove', 'ref' => $ref['row']]], false, 'holds_locked');
+        $r = self::applied($tree, [$move, ['op' => 'remove', 'ref' => $ref['top2']]], false);
+        $this->assertArrayHasKey($ref['lock'], self::byId($r['tree']), 'the section the lock left may go; the lock stays');
+        $this->assertArrayNotHasKey($ref['top2'], self::byId($r['tree']));
+    }
+
     public function test_move_keeps_node_bytes(): void
     {
         foreach ([true, false] as $containers) {
@@ -509,7 +538,7 @@ final class LayoutOpsTest extends TestCase
         $doc   = json_decode($got, true, 512, JSON_THROW_ON_ERROR);
         $names = array_column($doc['cases'], 'name');
         $this->assertSame(['containers', 'sections'], array_values(array_unique(array_column($doc['cases'], 'layout'))));
-        $this->assertCount(6, $names);
+        $this->assertCount(8, $names);
         foreach ($doc['cases'] as $case) {
             $ops = self::parsed($case['ops']);
             $this->assertNull(PageEditValidator::againstPage(['operations' => $ops], ElementorClassicMapper::project($case['before_tree'])->nodes(), ['operations' => BuilderContract::OPS]), $case['name']);
@@ -550,6 +579,14 @@ final class LayoutOpsTest extends TestCase
                     ['op' => 'remove', 'ref' => $ref['img']],
                     ['op' => 'move', 'ref' => $ref['top2'], 'before' => $ref['top0']],
                     ['op' => 'move', 'ref' => $ref['btn'], 'after' => $ref['h2']],
+                ]],
+                'change-then-remove'   => ['Changes a paragraph, moves a heading beside another and inserts into a column and before a paragraph, then removes the first block and replaces the row, so none of those changes is on the page after the call.', [
+                    self::setText($ref['p1'], 'text', 'Open every day [1].'),
+                    ['op' => 'move', 'ref' => $ref['h3'], 'after' => $ref['h2']],
+                    self::insert(['into' => $ref['col2']], [['type' => 'buttons', 'buttons' => [['text' => 'Email', 'url' => 'https://example.com/mail']]]]),
+                    self::insert(['before' => $ref['one']], [self::para('Before one')]),
+                    ['op' => 'remove', 'ref' => $ref['top0']],
+                    ['op' => 'replace', 'ref' => $ref['row'], 'outline' => [['type' => 'heading', 'level' => 2, 'text' => 'Find us']]],
                 ]],
             ];
             foreach ($sets as $name => [$note, $operations]) {
