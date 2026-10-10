@@ -252,8 +252,10 @@ WHERE tenant_id = $1 AND id = $2`, tenant, req.ID, src, mode.AiModeVersion, user
 	// tables: an approved policy row with no mode source is refused by that
 	// table's policy shape CHECK, and a person row with a mode source by the
 	// mode source CHECK. Each refusal must come from the named constraint: a
-	// refusal from another CHECK would leave the named one unproven.
+	// refusal from another CHECK would leave the named one unproven. Each case
+	// has its own pending row, so one case's outcome cannot decide another's.
 	pending := aarInsert(t, pool, acprSitePrincipal(tenant, site), aarParams(tenant, site, grant.ID, "src-2"))
+	pendingPerson := aarInsert(t, pool, acprSitePrincipal(tenant, site), aarParams(tenant, site, grant.ID, "src-4"))
 	purge := acprInsert(t, pool, acprSitePrincipal(tenant, site), acprParams(tenant, site, grant.ID, "src-3"))
 	admin := connectAdmin(t, pool)
 	defer admin.Close()
@@ -276,7 +278,7 @@ WHERE id = $1`,
 		{
 			what:       "site change: person row with a mode source",
 			constraint: "assistant_ability_requests_approval_mode_source_check",
-			id:         pending.ID,
+			id:         pendingPerson.ID,
 			stmt: `
 UPDATE assistant_ability_requests SET approval_mode_source = 'person' WHERE id = $1 AND $2::uuid IS NOT NULL`,
 		},
