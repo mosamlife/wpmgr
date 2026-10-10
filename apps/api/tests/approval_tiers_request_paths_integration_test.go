@@ -11,6 +11,7 @@ package tests
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -32,6 +33,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/abilityrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/aipolicy"
+	"github.com/mosamlife/wpmgr/apps/api/internal/aitrust"
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
@@ -1199,4 +1201,441 @@ func TestPageEditWaitsOnAskSite(t *testing.T) {
 		t.Fatalf("draft budget %+v after a waiting edit, want it unchanged from %+v", after, before)
 	}
 	t.Logf("page edit %s waits: ask_reason=%s", id, atStr(r.askReason))
+}
+
+// atCapture is a dispatch enqueuer that hands an approved request to the
+// test instead of sending it, so the test runs the dispatch worker itself.
+type atCapture struct {
+	ch chan abilityrequest.DispatchArgs
+}
+
+func (c atCapture) EnqueueDispatch(_ context.Context, a abilityrequest.DispatchArgs) error {
+	select {
+	case c.ch <- a:
+	default:
+	}
+	return nil
+}
+
+// approveWithoutSending asks for a page draft over HTTP with bearer, has
+// the site's setting approve it, and hands back the approved request's
+// dispatch arguments with nothing sent. The AI's answer arrives on the
+// returned channel once the tool stops waiting for the change.
+func (w *atWorld) approveWithoutSending(t *testing.T, wg *sync.WaitGroup, bearer string, site uuid.UUID) (abilityrequest.DispatchArgs, <-chan cpeRPC) {
+	t.Helper()
+	capture := atCapture{ch: make(chan abilityrequest.DispatchArgs, 1)}
+	w.svc.SetDispatchEnqueuer(capture)
+	asked := make(chan cpeRPC, 1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		asked <- w.askPage(t, bearer, site, "Spring sale")
+	}()
+	select {
+	case args := <-capture.ch:
+		if r := w.row(t, args.RequestID.String()); r.state != "approved" || r.approvalSource != "policy" {
+			t.Fatalf("before the dispatch: state %s, source %s; want approved by the site's setting", r.state, r.approvalSource)
+		}
+		return args, asked
+	case res := <-asked:
+		t.Fatalf("the draft was answered before the site's setting approved it: %s", res.raw)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the site's setting did not approve the draft within 30s")
+	}
+	return abilityrequest.DispatchArgs{}, nil
+}
+
+// atAppRole is requireAppRoleInTx for a transaction run off the test's
+// goroutine: it returns the failure instead of failing the test.
+func atAppRole(ctx context.Context, tx pgx.Tx) error {
+	var name string
+	var super, bypass bool
+	if err := tx.QueryRow(ctx,
+		`SELECT current_user, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`).
+		Scan(&name, &super, &bypass); err != nil {
+		return fmt.Errorf("read the connected role: %w", err)
+	}
+	if name != "wpmgr_app" || super || bypass {
+		return fmt.Errorf("transaction runs as %q (rolsuper=%v, rolbypassrls=%v); want wpmgr_app with neither",
+			name, super, bypass)
+	}
+	return nil
+}
+
+// atHold runs hold in a wpmgr_app transaction opened by run, on its own
+// goroutine, and keeps that transaction open until release is closed. It
+// returns once hold has run, with the transaction's backend pid and the
+// channel the transaction's result arrives on.
+func atHold(t *testing.T, wg *sync.WaitGroup, release <-chan struct{},
+	run func(context.Context, func(pgx.Tx) error) error, hold func(context.Context, pgx.Tx) error) (int32, <-chan error) {
+	t.Helper()
+	ctx := context.Background()
+	held := make(chan int32, 1)
+	done := make(chan error, 1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		done <- run(ctx, func(tx pgx.Tx) error {
+			if err := atAppRole(ctx, tx); err != nil {
+				return err
+			}
+			var pid int32
+			if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+				return err
+			}
+			if err := hold(ctx, tx); err != nil {
+				return err
+			}
+			held <- pid
+			<-release
+			return nil
+		})
+	}()
+	select {
+	case pid := <-held:
+		return pid, done
+	case err := <-done:
+		t.Fatalf("the holding transaction ended before it held anything: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the holding transaction held nothing within 30s")
+	}
+	return 0, nil
+}
+
+// atSettle releases every holder, then waits at most a minute for every
+// goroutine the test started, so none outlives it.
+func atSettle(t *testing.T, wg *sync.WaitGroup, release func()) {
+	release()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Minute):
+		t.Error("a goroutine the test started was still running a minute after the holders were released")
+	}
+}
+
+// atPoll asks cond every 10ms, at most 1000 times, and reports whether it
+// held.
+func atPoll(cond func() bool) bool {
+	for i := 0; i < 1000; i++ {
+		if cond() {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+// blockedBehind is the backend that holder blocks while it runs the sqlc
+// statement named stmt, or 0 when none is.
+func (w *atWorld) blockedBehind(t *testing.T, holder int32, stmt string) int32 {
+	t.Helper()
+	var pid int32
+	err := w.admin.QueryRow(context.Background(), `SELECT pid FROM pg_stat_activity
+WHERE $1::int = ANY(pg_blocking_pids(pid)) AND query LIKE '%-- name: ' || $2::text || ' %'
+ORDER BY pid LIMIT 1`, holder, stmt).Scan(&pid)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("read the backends %d blocks: %v", holder, err)
+	}
+	return pid
+}
+
+// requireAppBackend fails unless backend pid runs as wpmgr_app with neither
+// superuser nor BYPASSRLS, the role every install's control plane uses.
+func (w *atWorld) requireAppBackend(t *testing.T, pid int32, what string) {
+	t.Helper()
+	var name string
+	var super, bypass bool
+	if err := w.admin.QueryRow(context.Background(), `SELECT r.rolname, r.rolsuper, r.rolbypassrls
+FROM pg_stat_activity a JOIN pg_roles r ON r.rolname = a.usename WHERE a.pid = $1`, pid).
+		Scan(&name, &super, &bypass); err != nil {
+		t.Fatalf("read the role of %s (backend %d): %v", what, pid, err)
+	}
+	if name != "wpmgr_app" || super || bypass {
+		t.Fatalf("%s runs as %q (rolsuper=%v, rolbypassrls=%v); want wpmgr_app with neither", what, name, super, bypass)
+	}
+}
+
+// notSentReason is the request's state and the reason it was not sent.
+func (w *atWorld) notSentReason(t *testing.T, id uuid.UUID) (state string, reason *string) {
+	t.Helper()
+	if err := w.admin.QueryRow(context.Background(),
+		`SELECT state, not_sent_reason FROM assistant_ability_requests WHERE id = $1`, id).Scan(&state, &reason); err != nil {
+		t.Fatalf("read request %s: %v", id, err)
+	}
+	return state, reason
+}
+
+// TestConnectionNeverSerialisesWithReserve: a person who sets a connection
+// to never wins against the reservation of a change the site's setting
+// approved (ADR-065 Decision 5). When the reservation takes the tenant's
+// policy lock first, the switch waits for it to commit, so the change was
+// already on its way when never was saved. When the switch holds it first,
+// the reservation waits, re-reads the switch after it commits, and closes
+// the request not_sent with setting_changed, and nothing is sent.
+//
+// Each order is fixed by a lock a wpmgr_app transaction holds, and every
+// wait is seen with pg_blocking_pids, never assumed from a sleep. The
+// approval over HTTP, the dispatch worker and aitrust's SetConnectionAuto
+// are the production code, on the wpmgr_app pool.
+//
+// Mutation: drop the policy lock from abilityrequest's reserve. The switch
+// then saves never while a reservation that read site_setting is still open,
+// and a reservation that starts while a switch to never is being written
+// sends the change.
+func TestConnectionNeverSerialisesWithReserve(t *testing.T) {
+	t.Run("the reservation goes first", func(t *testing.T) {
+		ctx := context.Background()
+		w := newATWorld(t, 1)
+		site := w.sites[0]
+		w.enableAI(t, site)
+		grantID, bearer := w.mint(t, w.owner, "Priya's laptop")
+		if g := w.grant(t, grantID); g.auto != "site_setting" {
+			t.Fatalf("the connection starts on %q, want site_setting", g.auto)
+		}
+		var wg sync.WaitGroup
+		releaseCh := make(chan struct{})
+		release := sync.OnceFunc(func() { close(releaseCh) })
+		defer atSettle(t, &wg, release)
+		args, asked := w.approveWithoutSending(t, &wg, bearer, site)
+
+		// The barrier: the approved row held FOR UPDATE, so the reservation
+		// stops at its compare-and-set, after it has re-read the switch.
+		barrierPID, barrierDone := atHold(t, &wg, releaseCh,
+			func(ctx context.Context, fn func(pgx.Tx) error) error { return w.pool.InTenantTx(ctx, w.tenant, fn) },
+			func(ctx context.Context, tx pgx.Tx) error {
+				_, err := tx.Exec(ctx, `SELECT 1 FROM assistant_ability_requests WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
+					w.tenant, args.RequestID)
+				return err
+			})
+
+		dispatched := make(chan error, 1)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dispatched <- abilityrequest.NewDispatchWorker(w.svc).Work(ctx, &river.Job[abilityrequest.DispatchArgs]{Args: args})
+		}()
+		var dispatchPID int32
+		var dispatchErr error
+		dispatchReturned := false
+		atPoll(func() bool {
+			select {
+			case dispatchErr = <-dispatched:
+				dispatchReturned = true
+				return true
+			default:
+			}
+			dispatchPID = w.blockedBehind(t, barrierPID, "ReserveAbilityRequestForDispatch")
+			return dispatchPID != 0
+		})
+		if dispatchReturned {
+			t.Fatalf("the dispatch returned (%v) before it reached its compare-and-set", dispatchErr)
+		}
+		if dispatchPID == 0 {
+			t.Fatal("the reservation was not seen at its compare-and-set within 10s")
+		}
+		w.requireAppBackend(t, dispatchPID, "the reservation")
+		t.Logf("the reservation (backend %d) has re-read the switch and waits at its compare-and-set", dispatchPID)
+
+		trust := aitrust.NewService(aitrust.NewRepo(w.pool, audit.NewRecorder(w.pool, domain.SystemClock{})), nil, nil)
+		switched := make(chan error, 1)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := trust.SetConnectionAuto(ctx, w.owner, grantID, aipolicy.AutoNever)
+			switched <- err
+		}()
+		var switchPID int32
+		var switchErr error
+		switchReturned := false
+		atPoll(func() bool {
+			select {
+			case switchErr = <-switched:
+				switchReturned = true
+				return true
+			default:
+			}
+			switchPID = w.blockedBehind(t, dispatchPID, "TakeAssistantRequestXactLock")
+			return switchPID != 0
+		})
+		stillOpen := w.blockedBehind(t, barrierPID, "ReserveAbilityRequestForDispatch") == dispatchPID
+		if switchReturned {
+			auto := w.grant(t, grantID).auto
+			release()
+			select {
+			case <-dispatched:
+			case <-time.After(30 * time.Second):
+			}
+			t.Fatalf("never was saved (error %v, grant now %q) while the reservation that had read site_setting was "+
+				"still uncommitted (%v); that reservation then sent the change: request %s, writes sent to the site %d",
+				switchErr, auto, stillOpen, w.row(t, args.RequestID.String()).state, w.agent.writeCount())
+		}
+		if switchPID == 0 {
+			t.Fatal("the switch to never was not seen waiting for the reservation within 10s")
+		}
+		if !stillOpen {
+			t.Fatal("the reservation left its compare-and-set while the barrier was held")
+		}
+		w.requireAppBackend(t, switchPID, "the switch to never")
+		if g := w.grant(t, grantID); g.auto != "site_setting" {
+			t.Fatalf("the grant reads %q while the switch waits, want site_setting", g.auto)
+		}
+		t.Logf("the switch to never (backend %d) waits for the reservation (backend %d)", switchPID, dispatchPID)
+
+		release()
+		select {
+		case err := <-barrierDone:
+			if err != nil {
+				t.Fatalf("barrier: %v", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("the barrier did not end within 30s of its release")
+		}
+		select {
+		case err := <-dispatched:
+			if err != nil {
+				t.Fatalf("dispatch: %v", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("the dispatch did not finish within 30s of the barrier's release")
+		}
+		select {
+		case err := <-switched:
+			if err != nil {
+				t.Fatalf("switch to never: %v", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("the switch did not finish within 30s of the reservation's commit")
+		}
+		if r := w.row(t, args.RequestID.String()); r.state != "done" || r.approvalSource != "policy" {
+			t.Fatalf("request: state %s, source %s; want done, approved by the setting", r.state, r.approvalSource)
+		}
+		if n := w.agent.writeCount(); n != 1 {
+			t.Fatalf("writes sent to the site = %d, want 1: the change reserved before never was saved", n)
+		}
+		if g := w.grant(t, grantID); g.auto != "never" {
+			t.Fatalf("the grant reads %q after the switch, want never", g.auto)
+		}
+		select {
+		case rpc := <-asked:
+			if res := rpc.wantOK(t, "the draft"); res["approval"] != "auto" {
+				t.Fatalf("the AI's answer: approval %v, want auto\n%v", res["approval"], res)
+			}
+		case <-time.After(40 * time.Second):
+			t.Fatal("the write call did not answer within 40s")
+		}
+	})
+
+	t.Run("the switch goes first", func(t *testing.T) {
+		ctx := context.Background()
+		w := newATWorld(t, 1)
+		site := w.sites[0]
+		w.enableAI(t, site)
+		grantID, bearer := w.mint(t, w.owner, "Priya's laptop")
+		if g := w.grant(t, grantID); g.auto != "site_setting" {
+			t.Fatalf("the connection starts on %q, want site_setting", g.auto)
+		}
+		var wg sync.WaitGroup
+		releaseCh := make(chan struct{})
+		release := sync.OnceFunc(func() { close(releaseCh) })
+		defer atSettle(t, &wg, release)
+		args, asked := w.approveWithoutSending(t, &wg, bearer, site)
+
+		// The switch mid-write: the shipped lock and statement in the owner's
+		// tenant transaction, as aitrust's inSettingTx runs them, held open
+		// after never is written.
+		switchPID, switchDone := atHold(t, &wg, releaseCh,
+			func(ctx context.Context, fn func(pgx.Tx) error) error { return w.pool.RunTenantTx(ctx, w.owner, fn) },
+			func(ctx context.Context, tx pgx.Tx) error {
+				q := sqlc.New(tx)
+				if err := q.TakeAssistantRequestXactLock(ctx, sqlc.TakeAssistantRequestXactLockParams{
+					LockKey: aipolicy.PolicyTenantLockKey, LockID: w.tenant.String(),
+				}); err != nil {
+					return err
+				}
+				_, err := q.SetAIConnectionAuto(ctx, sqlc.SetAIConnectionAutoParams{
+					AiAuto: string(aipolicy.AutoNever), TenantID: w.tenant, GrantID: grantID,
+				})
+				return err
+			})
+
+		dispatched := make(chan error, 1)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dispatched <- abilityrequest.NewDispatchWorker(w.svc).Work(ctx, &river.Job[abilityrequest.DispatchArgs]{Args: args})
+		}()
+		var dispatchPID int32
+		var dispatchErr error
+		dispatchReturned := false
+		atPoll(func() bool {
+			select {
+			case dispatchErr = <-dispatched:
+				dispatchReturned = true
+				return true
+			default:
+			}
+			dispatchPID = w.blockedBehind(t, switchPID, "TakeAssistantRequestXactLock")
+			return dispatchPID != 0
+		})
+		if dispatchReturned {
+			state, reason := w.notSentReason(t, args.RequestID)
+			t.Fatalf("the dispatch did not wait for the switch to never being written: it returned %v with the "+
+				"request %s (not sent: %s) and %d writes sent to the site", dispatchErr, state, atStr(reason), w.agent.writeCount())
+		}
+		if dispatchPID == 0 {
+			t.Fatal("the reservation was not seen waiting for the switch within 10s")
+		}
+		w.requireAppBackend(t, dispatchPID, "the reservation")
+		if g := w.grant(t, grantID); g.auto != "site_setting" {
+			t.Fatalf("the grant reads %q before the switch commits, want site_setting", g.auto)
+		}
+		t.Logf("the reservation (backend %d) waits for the switch to never (backend %d)", dispatchPID, switchPID)
+
+		release()
+		select {
+		case err := <-switchDone:
+			if err != nil {
+				t.Fatalf("switch to never: %v", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("the switch did not commit within 30s of its release")
+		}
+		select {
+		case err := <-dispatched:
+			if err != nil {
+				t.Fatalf("dispatch: %v", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("the dispatch did not finish within 30s of the switch's commit")
+		}
+		if state, reason := w.notSentReason(t, args.RequestID); state != "not_sent" || atStr(reason) != abilityrequest.ReasonSettingChanged {
+			t.Fatalf("request: state %s, not sent because %s; want not_sent with %s", state, atStr(reason), abilityrequest.ReasonSettingChanged)
+		}
+		if n := w.agent.writeCount(); n != 0 {
+			t.Fatalf("writes sent to the site = %d, want 0", n)
+		}
+		if g := w.grant(t, grantID); g.auto != "never" {
+			t.Fatalf("the grant reads %q after the switch, want never", g.auto)
+		}
+		select {
+		case rpc := <-asked:
+			res := rpc.wantOK(t, "the draft")
+			if res["approval"] != "auto" || res["message"] == aipolicy.MessageDoneBySetting {
+				t.Fatalf("the AI's answer: approval %v, message %v; want auto, and not done\n%v", res["approval"], res["message"], res)
+			}
+			if res["state"] == "done" && res["code"] != abilityrequest.ReasonSettingChanged {
+				t.Fatalf("the AI's answer: code %v, want %s\n%v", res["code"], abilityrequest.ReasonSettingChanged, res)
+			}
+		case <-time.After(40 * time.Second):
+			t.Fatal("the write call did not answer within 40s")
+		}
+	})
 }
