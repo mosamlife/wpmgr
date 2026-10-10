@@ -28,8 +28,11 @@ if (!defined('ABSPATH')) {
  * snapshot's rows in the snapshot's order (the meta_ids are new, the order is
  * kept): a key the write added is deleted, a key it removed comes back with
  * its row count. Every RESTORE_POST_COLUMNS column goes back to the
- * snapshot's bytes. Revisions the write made are left as they are. The
- * page's fingerprint must then equal the one it had before the write.
+ * snapshot's bytes. Revisions the write made are left as they are. Then
+ * every one of those columns and every meta key but the edit lock and the
+ * derived keys is read back and must hold the snapshot's bytes, each key its
+ * rows in order, and the page's fingerprint must equal the one it had before
+ * the write.
  *
  * scoped() is a person's undo of one change. Only the meta keys and the posts
  * columns the change wrote go back, and only when each still holds exactly
@@ -104,17 +107,21 @@ final class BuilderDocumentRestore
 
     /**
      * The automatic restore after a failed write: the post goes back to the
-     * snapshot, then its fingerprint is read again.
+     * snapshot, then every restored column and row, and its fingerprint, are
+     * read again.
      *
      * @param int                $postId   Post ID; the snapshot must be of this post.
      * @param array<mixed>       $snapshot What BuilderDocumentSnapshot::decode() returned.
      * @param DocumentDescriptor $d        The adapter's descriptor.
      * @param BuilderAdapter     $a        The adapter.
      * @param string             $beforeFp The page's builder_document_v1 fingerprint before the write.
-     * @return string|null Null when the post is back and its fingerprint equals
-     *                     $beforeFp; otherwise CODE_MISMATCH. A database error
-     *                     rolls the restore back, so the post keeps the rows the
-     *                     failed write left.
+     * @return string|null Null when the post is back: every restored column
+     *                     and every meta key but the edit lock and the derived
+     *                     keys reads back as the snapshot holds it, and its
+     *                     fingerprint equals $beforeFp; otherwise
+     *                     CODE_MISMATCH. A database error rolls the restore
+     *                     back, so the post keeps the rows the failed write
+     *                     left.
      * @throws \InvalidArgumentException When the snapshot is not one of this post, or $beforeFp is not a sha256.
      */
     public static function full(int $postId, array $snapshot, DocumentDescriptor $d, BuilderAdapter $a, string $beforeFp): ?string
@@ -150,12 +157,53 @@ final class BuilderDocumentRestore
 
         self::afterWrite($postId, $a);
         try {
-            $now = BuilderDocumentFingerprint::ofPost($postId, $d->exactKeys);
+            $now = self::read($postId, false);
+            $fp  = BuilderDocumentFingerprint::ofPost($postId, $d->exactKeys);
         } catch (\Throwable $e) {
             return self::CODE_MISMATCH;
         }
+        if ($now === null || !self::holdsSnapshot($now, $snap, $derived)) {
+            return self::CODE_MISMATCH;
+        }
 
-        return $now !== null && hash_equals($beforeFp, $now) ? null : self::CODE_MISMATCH;
+        return $fp !== null && hash_equals($beforeFp, $fp) ? null : self::CODE_MISMATCH;
+    }
+
+    /**
+     * Whether the stored post holds the snapshot: every RESTORE_POST_COLUMNS
+     * column its bytes, and every meta key but the edit lock and the derived
+     * keys its rows, byte for byte and in order, with a key the snapshot
+     * does not hold having no row.
+     *
+     * @param array{rows:list<array{id:int,key:string,value:string|null}>,post:array<string,string>} $now     What read() answered.
+     * @param array{post:array<string,string>,meta:list<array{0:string,1:string|null}>}             $snap    The decoded snapshot.
+     * @param list<string>                                                                          $derived The descriptor's derived keys.
+     * @return bool
+     */
+    private static function holdsSnapshot(array $now, array $snap, array $derived): bool
+    {
+        foreach (BuilderDocumentSnapshot::RESTORE_POST_COLUMNS as $column) {
+            if ($now['post'][$column] !== $snap['post'][$column]) {
+                return false;
+            }
+        }
+        $keys = [];
+        foreach ($snap['meta'] as $pair) {
+            $keys[$pair[0]] = true;
+        }
+        foreach ($now['rows'] as $row) {
+            $keys[$row['key']] = true;
+        }
+        foreach (array_map('strval', array_keys($keys)) as $key) {
+            if ($key === BuilderDocumentSnapshot::EDIT_LOCK_KEY || in_array($key, $derived, true)) {
+                continue;
+            }
+            if (self::currentValues($now['rows'], $key) !== self::snapshotValues($snap['meta'], $key)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
