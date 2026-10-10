@@ -1,5 +1,5 @@
 {
-  "note": "Edit cases the round trip adds to the shared edit fixture. A case's page is made by the agent's page-create path from \"seed\" (an outline in the form the AI sends it), and its operations name nodes as @kind#n: the n-th node of that kind on the page, in page order, so no case depends on how node ids are made. Every node of a seed has a text of its own, so the page can be held to the texts an edit replaced or removed. \"restore\" is the page the full-restore scenario edits and makes fail after the snapshot. Media id 5 is the one the golden fixtures declare.",
+  "note": "Edit cases the round trip adds to the shared edit fixture. A case's page is made by the agent's page-create path from \"seed\" (an outline in the form the AI sends it), and its operations name nodes as @kind#n: the n-th node of that kind on the page, in page order, so no case depends on how node ids are made. Every node of a seed has a text of its own, so the page can be held to the texts an edit replaced or removed. \"restore\" is the page the full-restore scenario edits and makes fail after the snapshot. \"after_view\" is the page the edit-after-view scenario previews and then edits. Media id 5 is the one the golden fixtures declare.",
   "cases": [
     {
       "name": "all-five-operations-entity-text",
@@ -48,6 +48,16 @@
       { "op": "set_text", "ref": "@heading#0", "field": "text", "text": "Edited restore heading & more [2] \"y\" &amp; &lt;u&gt;" },
       { "op": "replace", "ref": "@quote#0", "outline": [{ "type": "paragraph", "text": "Replacement paragraph & more" }] },
       { "op": "remove", "ref": "@list#0" }
+    ]
+  },
+  "after_view": {
+    "name": "after-view",
+    "seed": [
+      { "type": "heading", "level": 2, "text": "Previewed heading" },
+      { "type": "paragraph", "text": "Previewed paragraph" }
+    ],
+    "ops": [
+      { "op": "set_text", "ref": "@heading#0", "field": "text", "text": "Edited after the preview" }
     ]
   }
 }

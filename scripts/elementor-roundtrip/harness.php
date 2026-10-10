@@ -84,6 +84,16 @@
  * left out of both sides. At the end no post the edit path made may be outside
  * the trash.
  *
+ * And an edit after a view: a draft the agent's page-create path made is
+ * previewed the way a person's browser previews it (the WordPress preview of the
+ * draft as an administrator, then Elementor's page styles for it), and the
+ * agent's ability_run command then prechecks and writes an edit of it. On an
+ * Elementor that keeps style-cache entries per page, the look must have left one
+ * for the page, since a look that left none would make the case look at nothing.
+ * The write must answer "applied" with the stored tree equal to the previewed
+ * one, and the style-cache entries of a second draft, which the edit does not
+ * touch, must be the same after the edit as before it.
+ *
  * Arguments are key=value tokens (the CLI drops numeric-looking tokens):
  *   elementor=<x.y.z>   the Elementor version this boot must run
  *   wp=<x.y>            the WordPress version this boot must run
@@ -154,6 +164,8 @@ const RT_PLANTS = [
     'edit_drops_setting',
     // After the full restore, one preserved postmeta row differs from its bytes before the write (use the case name "restore").
     'restore_row_drift',
+    // While the edit of a previewed page is saved, the style-cache entry of another page is cleared (use the case name "after-view").
+    'edit_view_other_cache',
 ];
 
 const RT_NODE_LIMIT_DEPTH = 64;
@@ -723,7 +735,7 @@ function rt_agent_phase(string $layout, string $stored, int $principal, array $f
 // ---------------------------------------------------------------------------
 
 /** The scenarios the edit phase must have run besides its cases, by name. A run that ran fewer is red. */
-const RT_EDIT_SCENARIOS = ['restore'];
+const RT_EDIT_SCENARIOS = ['restore', 'after-view'];
 
 /** The title of every draft the edit phase makes. */
 const RT_EDIT_TITLE = 'Edit path draft';
@@ -1252,6 +1264,210 @@ function rt_plant_drop_setting(int $postId): bool
     return $wpdb->update($wpdb->postmeta, ['meta_value' => wp_json_encode($tree)], ['post_id' => $postId, 'meta_key' => '_elementor_data'], ['%s'], ['%d', '%s']) !== false;
 }
 
+// ---------------------------------------------------------------------------
+// An edit of a page that has been looked at
+// ---------------------------------------------------------------------------
+
+/** The prefix of the options Elementor keeps the validity of its style caches in, one option per kind of cache. */
+const RT_STYLE_CACHE_PREFIX = 'elementor_atomic_cache_validity__';
+
+/** Elementor's class for those options. */
+const RT_STYLE_CACHE_CLASS = 'Elementor\\Modules\\AtomicWidgets\\Styles\\CacheValidity\\Cache_Validity';
+
+/** The oldest pinned Elementor that keeps them: from there on, a version without the class is red and not skipped. */
+const RT_STYLE_CACHE_SINCE = '3.35.9';
+
+/**
+ * The style-cache entries a page holds, read with SQL: for each option that holds
+ * one, the entry as stored.
+ *
+ * @return array<string,string> Option name => the page's entry, serialized; empty when the page has none.
+ */
+function rt_style_cache_of(int $postId): array
+{
+    global $wpdb;
+    $rows = $wpdb->get_results($wpdb->prepare("SELECT option_name, option_value FROM {$wpdb->options} WHERE option_name LIKE %s ORDER BY option_name", $wpdb->esc_like(RT_STYLE_CACHE_PREFIX) . '%'), ARRAY_A);
+    if (!is_array($rows) || (string) $wpdb->last_error !== '') {
+        rt_broken('the style-cache options cannot be read');
+    }
+    $out = [];
+    foreach ($rows as $row) {
+        $root = maybe_unserialize((string) $row['option_value']);
+        if (is_array($root) && is_array($root['children'] ?? null) && array_key_exists($postId, $root['children'])) {
+            $out[(string) $row['option_name']] = serialize($root['children'][$postId]);
+        }
+    }
+
+    return $out;
+}
+
+/**
+ * Preview a draft the way a person's browser does, as an administrator: the
+ * WordPress main query for ?page_id=<id>&preview=true, then Elementor's frontend
+ * registering its scripts and styles and enqueuing the styles of the page the
+ * main query holds. Elementor enqueues page styles once per request, so this is
+ * the one look of a run. What the look sets up in the request (the query
+ * variables, the main query, the current post and user) is put back, as the next
+ * request of a site would start without it.
+ *
+ * @return array{preview:bool,queried:int,threw:string} What the main query held, and the class of what was thrown, if anything.
+ */
+function rt_view_page(int $postId): array
+{
+    $get   = $_GET;
+    $query = $_SERVER['QUERY_STRING'] ?? null;
+    $uri   = $_SERVER['REQUEST_URI'] ?? null;
+    $seen  = ['preview' => false, 'queried' => 0, 'threw' => ''];
+    wp_set_current_user(1);
+    $_GET['page_id']         = (string) $postId;
+    $_GET['preview']         = 'true';
+    $_SERVER['QUERY_STRING'] = 'page_id=' . $postId . '&preview=true';
+    $_SERVER['REQUEST_URI']  = '/?page_id=' . $postId . '&preview=true';
+    try {
+        wp();
+        $seen['preview'] = is_preview();
+        $seen['queried'] = (int) get_queried_object_id();
+        $frontend        = Plugin::$instance->frontend;
+        $frontend->register_scripts();
+        $frontend->register_styles();
+        $frontend->enqueue_styles();
+    } catch (Throwable $e) {
+        $seen['threw'] = get_class($e);
+    } finally {
+        $_GET = $get;
+        foreach (['QUERY_STRING' => $query, 'REQUEST_URI' => $uri] as $key => $was) {
+            if ($was === null) {
+                unset($_SERVER[$key]);
+            } else {
+                $_SERVER[$key] = $was;
+            }
+        }
+        $GLOBALS['wp_query']     = new WP_Query();
+        $GLOBALS['wp_the_query'] = $GLOBALS['wp_query'];
+        $GLOBALS['post']         = null;
+        setlocale(LC_NUMERIC, 'C');
+        wp_set_current_user(0);
+    }
+
+    return $seen;
+}
+
+/**
+ * The agent's edit path on a page that has been looked at. See the file header.
+ *
+ * @param array{0:string,1:string} $createEntry The page-create entry.
+ * @param array{0:string,1:string} $editEntry   The page-edit entry.
+ * @param array<string,mixed>      $spec        The case: "seed" and "ops".
+ * @param list<string>             $kinds       The plants of the case.
+ * @param string                   $tag         What the notes of the case say they are about.
+ * @return array{0:RtChecks,1:list<int>} The checks, and the drafts the case made.
+ */
+function rt_edit_after_view(AbilityRunCommand $cmd, array $createEntry, array $editEntry, array $spec, string $stored, array $kinds, string $tag): array
+{
+    $c    = new RtChecks();
+    $made = [];
+    if (!is_array($spec['seed'] ?? null) || !is_array($spec['ops'] ?? null)) {
+        $c->ck('case', false, 'the case has no seed or no operations');
+
+        return [$c, $made];
+    }
+
+    // Whether this Elementor keeps style-cache entries, and so whether the look leaves one to check.
+    $cacheClass = class_exists(RT_STYLE_CACHE_CLASS) ? RT_STYLE_CACHE_CLASS : null;
+    $expected   = version_compare(ELEMENTOR_VERSION, RT_STYLE_CACHE_SINCE, '>=');
+    if (!$c->ck('style-cache', $cacheClass !== null || !$expected, 'Elementor ' . ELEMENTOR_VERSION . ' is expected to keep style-cache entries and has no ' . RT_STYLE_CACHE_CLASS)) {
+        return [$c, $made];
+    }
+
+    // The page, and a second one whose style-cache entries the edit must leave as they are.
+    [$pid, $why] = rt_make_draft($cmd, $createEntry, $spec['seed']);
+    if (!$c->ck('seed', $pid > 0, $why)) {
+        return [$c, $made];
+    }
+    $made[] = $pid;
+    $other  = 0;
+    if ($cacheClass !== null) {
+        [$other, $why] = rt_make_draft($cmd, $createEntry, $spec['seed']);
+        if (!$c->ck('seed-other', $other > 0, $why)) {
+            return [$c, $made];
+        }
+        $made[] = $other;
+    }
+
+    // Look at the page.
+    $seen = rt_view_page($pid);
+    $c->ck('view', $seen['threw'] === '' && $seen['preview'] && $seen['queried'] === $pid, $seen['threw'] !== '' ? 'the preview threw ' . $seen['threw'] : 'the preview of page ' . $pid . ' resolved to ' . ($seen['preview'] ? 'post ' . $seen['queried'] : 'no preview'));
+    $otherBefore = [];
+    if ($cacheClass === null) {
+        rt_out(sprintf('note [%s] this Elementor keeps no style-cache entries: the page is previewed and no entry is checked', $tag));
+    } else {
+        // The control: a look that left no entry for the page would make the edit below one of a page nobody looked at.
+        $held = rt_style_cache_of($pid);
+        if ($c->ck('viewed', $held !== [], 'the preview left no style-cache entry for page ' . $pid)) {
+            rt_out(sprintf('note [%s] the preview left style-cache entries for page %d in: %s', $tag, $pid, implode(', ', array_map(static fn (string $option): string => substr($option, strlen(RT_STYLE_CACHE_PREFIX)), array_keys($held)))));
+        }
+        // The second page's entries, made through Elementor's own store.
+        $store = new $cacheClass();
+        $store->validate(['local', (string) $other, 'preview'], 'rt-other');
+        $store->validate(['global', (string) $other, 'preview'], 'rt-other');
+        $store->validate(['component-styles-related-posts', (string) $other], []);
+        $otherBefore = rt_style_cache_of($other);
+        $c->ck('other-seeded', isset($otherBefore[RT_STYLE_CACHE_PREFIX . 'local']), 'the second page holds no entry in the local style cache after it was stored');
+    }
+
+    // The edit, prechecked and written as the router calls it.
+    [$ops, $refWhy] = rt_resolve_refs($spec['ops'], rt_stored_tree($pid)[1] ?? []);
+    if (!$c->ck('refs', $ops !== null, $refWhy)) {
+        return [$c, $made];
+    }
+    $fp = BuilderDocumentFingerprint::ofPost($pid, ElementorDocument::DESCRIPTOR_KEYS);
+    try {
+        $input = json_encode(['post_id' => $pid, 'base_fingerprint' => (string) $fp, 'operations' => $ops], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+    } catch (JsonException $e) {
+        rt_broken('the operations of the edit after a view cannot be encoded');
+    }
+    $rid  = wp_generate_uuid4();
+    $more = ['input' => $input, 'allowed_draft_ids' => [$pid]];
+    $pre  = rt_call($cmd, $editEntry, 'precheck', $rid, $more);
+    if (!$c->ck('precheck', ($pre['ok'] ?? false) === true && ($pre['outcome'] ?? null) === 'prechecked', rt_brief($pre))) {
+        return [$c, $made];
+    }
+    $preview = is_array($pre['preview'] ?? null) ? $pre['preview'] : [];
+    $tree    = $preview['tree'] ?? null;
+    $c->ck('preview-tree', is_array($tree) && $tree !== [], 'the precheck previewed no tree');
+
+    // The plant: while the page is saved, the style-cache entry of the second page is cleared.
+    $planted = in_array('edit_view_other_cache', $kinds, true);
+    $plant   = null;
+    if ($planted && $cacheClass !== null) {
+        $plant = static function () use ($cacheClass, $other): void {
+            (new $cacheClass())->invalidate(['local', (string) $other]);
+        };
+        add_action('elementor/document/after_save', $plant, 30);
+    }
+    try {
+        $w = rt_call($cmd, $editEntry, 'write', $rid, $more + ['expected' => rt_digests($pre)]);
+    } finally {
+        if ($plant !== null) {
+            remove_action('elementor/document/after_save', $plant, 30);
+        }
+    }
+    if ($c->ck('write', ($w['ok'] ?? false) === true && ($w['outcome'] ?? null) === 'applied', rt_brief($w))) {
+        [$rows, $decoded] = rt_stored_tree($pid);
+        $expect           = $stored === 'strings' && is_array($tree) ? rt_scalars_as_strings($tree) : $tree;
+        $d                = $decoded !== null && is_array($expect) ? rt_diff($expect, $decoded, 'tree') : 'expected one _elementor_data row holding a tree, found ' . $rows;
+        $c->ck('stored-tree', $d === null, (string) $d);
+        if ($cacheClass !== null) {
+            $c->ck('other-entries', rt_style_cache_of($other) === $otherBefore, 'the edit changed the style-cache entries of the second page');
+        }
+    }
+    if ($planted) {
+        $c->ck('plant', $cacheClass !== null && !isset(rt_style_cache_of($other)[RT_STYLE_CACHE_PREFIX . 'local']), $cacheClass === null ? 'this Elementor keeps no style-cache entries to clear' : 'the plant cleared nothing: the second page still holds its entry');
+    }
+
+    return [$c, $made];
+}
+
 /**
  * Run the agent's edit path on this site: every edit case that names the layout
  * of this boot, then the full restore. See the steps 8 to 10 and the restore in
@@ -1296,16 +1512,18 @@ function rt_edit_phase(string $layout, string $stored, int $principal, array $pl
     };
 
     // The cases of this layout: the shared fixture's, and the extra file's.
-    $specs   = [];
-    $restore = null;
-    $media   = [];
+    $specs     = [];
+    $restore   = null;
+    $afterView = null;
+    $media     = [];
     foreach (['/rt/fixtures/elementor-edit-cases.json', '/rt/harness/edit-cases-extra.json'] as $file) {
         $loaded = rt_load($file);
         $shared = strpos($file, '/rt/fixtures/') === 0;
         if ($shared) {
             $media = is_array($loaded['arrays']['media'] ?? null) ? $loaded['arrays']['media'] : [];
         } else {
-            $restore = is_array($loaded['arrays']['restore'] ?? null) ? $loaded['arrays']['restore'] : null;
+            $restore   = is_array($loaded['arrays']['restore'] ?? null) ? $loaded['arrays']['restore'] : null;
+            $afterView = is_array($loaded['arrays']['after_view'] ?? null) ? $loaded['arrays']['after_view'] : null;
         }
         foreach ($loaded['arrays']['cases'] as $case) {
             $name = (string) ($case['name'] ?? '');
@@ -1510,6 +1728,18 @@ function rt_edit_phase(string $layout, string $stored, int $principal, array $pl
             rt_trash($pid);
         }
         $out['scenarios'][] = 'restore';
+        $report($name, $c);
+    }
+
+    // An edit after a view. It runs last among the scenarios: a look at a page is the one the run makes.
+    if (!$noCases && is_array($afterView)) {
+        $name = (string) ($afterView['name'] ?? 'after-view');
+        [$c, $ids] = rt_edit_after_view($cmd, $createEntry, $editEntry, $afterView, $stored, $plants[$name] ?? [], $tagBase . ' ' . $name);
+        foreach ($ids as $id) {
+            $made[] = $id;
+            rt_trash($id);
+        }
+        $out['scenarios'][] = 'after-view';
         $report($name, $c);
     }
 
@@ -1961,7 +2191,7 @@ foreach (array_diff(RT_EDIT_SCENARIOS, $rtEdit['scenarios']) as $missing) {
     rt_out('FAIL the edit path did not run the ' . $missing . ' scenario');
 }
 rt_out(sprintf(
-    'SUMMARY elementor=%s layout=%s cases=%d checks=%d texts=%d alts=%d agent=%d refused=%d edit=%d restore=%d failed=%d',
+    'SUMMARY elementor=%s layout=%s cases=%d checks=%d texts=%d alts=%d agent=%d refused=%d edit=%d scenarios=%d failed=%d',
     ELEMENTOR_VERSION,
     $rtArgs['layout'],
     $rtCases,

@@ -404,6 +404,9 @@ else
   said "  and a batch whose later operations take earlier changes off the page passes on a containers site" "rt: ok   [4.3.4 edit-containers change-then-remove]"
   said "  and on a sections site" "rt: ok   [4.3.4 edit-sections change-then-remove]"
   said "  and the full restore put the page back" "rt: ok   [4.3.4 edit-containers restore]"
+  said "  and an edit of a previewed page applied on a containers site" "rt: ok   [4.3.4 edit-containers after-view]"
+  said "  and on a sections site" "rt: ok   [4.3.4 edit-sections after-view]"
+  said "  and the preview had left style-cache entries for the page it edited" "rt: note [4.3.4 edit-sections after-view] the preview left style-cache entries for page"
 
   # One boot, five planted defects on five different cases, in both layouts.
   expect "planted defects turn the real round trip red" 1 "${real_c[@]}" "RT_PLANT=plant=unregistered_widget@heading plant=mapper_drift@text plant=render_script@list plant=render_onclick@quote plant=render_text@button"
@@ -462,6 +465,24 @@ set-text-every-field render-link"
   said "  the text the batch leaves on the page is the one it is held to" "[4.3.4 edit-containers change-then-remove] render-text: 1 text(s) not shown as written, first: Find us"
   said "  and a link that stays on the page is held to it" "[4.3.4 edit-containers set-text-every-field] render-link: no anchor carries the link https://example.com/book"
   not_said "  and every plant was applied" "] plant:"
+
+  # The edit after a view: the page is previewed, then edited, and the edit must apply. One boot, one plant: while the
+  # edit is saved, the style-cache entry of ANOTHER page is cleared. The case is red on its write and on nothing else,
+  # and the plant is applied (the other page held an entry and no longer does).
+  expect "a plant that clears another page's style-cache entry while an edit is saved turns the edit-after-view case red" 1 "${real_c[@]}" "RT_PLANT=plant=edit_view_other_cache@after-view"
+  want="after-view write"
+  got="$(printf '%s\n' "$LAST_OUT" | sed -n -E 's/^rt: FAIL \[[0-9.]+ edit-containers ([a-z0-9-]+)\] ([a-z-]+):.*/\1 \2/p' | sort -u)"
+  if [ "$got" = "$want" ]; then
+    ok "  and it is red on the write of that case, on no other check and on no other case"
+  else
+    bad "  the failing edit checks are not exactly the write of the planted case"
+    echo "     want:"; echo "       $want"
+    echo "     got:"; printf '%s\n' "$got" | sed 's/^/       /'
+    echo "$LAST_OUT" | grep '^rt: FAIL' | sed 's/^/     | /' | head -20
+  fi
+  said "  and the write was refused for the style-cache entry it cleared" "[4.3.4 edit-containers after-view] write: "
+  said "  and the case had looked at a page that held an entry" "rt: note [4.3.4 edit-containers after-view] the preview left style-cache entries for page"
+  not_said "  and the plant was applied" "] plant:"
 
   # The agent path must look at something: handed no outline, it is red, and names what never ran.
   expect "an agent path handed no outline is red" 1 "${real_c[@]}" "RT_PLANT=plant=agent_no_cases@all"
