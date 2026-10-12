@@ -23,8 +23,12 @@ import { PatternBody } from "./pattern-body";
 // card puts no site file on this screen. The site's file name is its word, and
 // is shown as text in a bidi isolate.
 
+type SectionPreview = Pick<DesignedPagePreview, "design" | "sections"> & {
+  readonly media: ReadonlyMap<number, PageMediaFact> | null;
+};
+
 export interface DesignedSectionsProps {
-  preview: DesignedPagePreview;
+  preview: SectionPreview;
   /** The site's host as WPMgr recorded it (site_host), to tell its own links from others. */
   siteHost: string;
   /** The site's own address, for "View image in WordPress". Unknown is fine. */
@@ -54,14 +58,14 @@ export function DesignedSections({ preview, siteHost, siteUrl, labelledBy }: Des
 
 interface SectionViewProps {
   section: SectionNode;
-  preview: DesignedPagePreview;
+  preview: SectionPreview;
   siteHost: string;
   siteUrl: string | null;
 }
 
 function SectionView({ section, preview, siteHost, siteUrl }: SectionViewProps) {
   const swatch = toneSwatch(preview.design.colors, sectionTone(section));
-  const fact = section.background === undefined ? undefined : preview.media.get(section.background.attachment_id);
+  const fact = section.background === undefined ? undefined : preview.media?.get(section.background.attachment_id);
   return (
     <li data-testid="design-section" className="space-y-2 rounded-md border border-border bg-card p-2">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -89,6 +93,11 @@ function SectionView({ section, preview, siteHost, siteUrl }: SectionViewProps) 
           ink={toneSwatch(preview.design.colors, "inverse").chip}
           siteUrl={siteUrl}
         />
+      ) : null}
+      {section.background !== undefined && preview.media === null ? (
+        <p className="text-xs text-muted-foreground">
+          {`Background image · Media #${section.background.attachment_id} · ${backgroundFraming(section.background).overlayWords} · ${backgroundFraming(section.background).focalWords}`}
+        </p>
       ) : null}
       <div className="space-y-2">
         {section.children.map((child, i) =>

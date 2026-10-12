@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import type { AbilityRequest } from "@wpmgr/api";
 
+import { designedEditRow, draftDesign, goldenEditCases, goldenEditRow, readEditInput } from "@/test/designed-page-edit";
 import { renderWithProviders } from "@/test/render";
 import {
   defaultEditOps,
@@ -568,5 +569,48 @@ describe("a removed node and a moved node", () => {
     renderTab([withOps(ops, facts)]);
     const card = await openCard();
     expect(titles(card)).toEqual(["Add before Elementor shortcode"]);
+  });
+});
+
+
+describe("a designed page edit card", () => {
+  it("shows section content, replacement pattern content and before and after path text", async () => {
+    renderTab([designedEditRow()]);
+    const card = await openCard();
+    expect(within(card).queryByText(NOT_SHOWABLE)).toBeNull();
+    expect(titles(card)[0]).toContain("Plan 2 · price");
+    expect(within(card).getByTestId("was")).toHaveTextContent("Before this change");
+    expect(within(card).getByTestId("now")).toHaveTextContent("49");
+    expect(card).toHaveTextContent("#press");
+    expect(card).toHaveTextContent("Where we were mentioned.");
+    expect(card).toHaveTextContent("FAQ · accordion");
+    expect(card).toHaveTextContent("Question 5?");
+    expect(card).toHaveTextContent("The answer to question 5.");
+    expect(within(card).getByTestId("page-after")).toHaveTextContent("Plan 2 · price");
+    expect(within(card).getByRole("button", { name: "Approve" })).toBeEnabled();
+  });
+
+  it("describes images in inserted sections and patterns by their media library numbers", async () => {
+    const c = goldenEditCases.find((candidate) => candidate.name === "landing-insert-sections-with-a-background-and-logos");
+    if (!c) throw new Error("Missing checked section fixture");
+    renderTab([goldenEditRow(c)]);
+    const card = await openCard();
+    expect(within(card).queryByText(NOT_SHOWABLE)).toBeNull();
+    const outlines = within(card).getAllByTestId("change-outline");
+    expect(outlines.some((outline) => flat(outline).includes("Background image"))).toBe(true);
+    expect(outlines.some((outline) => flat(outline).includes("media library item"))).toBe(true);
+    expect(card.querySelector("img")).toBeNull();
+  });
+
+  it.each(["design", "path"])("refuses a malformed %s and keeps approval off", async (part) => {
+    const row = designedEditRow();
+    const input = readEditInput(row.input_json);
+    if (part === "design") input.design = { ...draftDesign, scale: { ...draftDesign.scale, ratio: "other" } };
+    else input.operations[0]!.field = "plans.01.price";
+    renderTab([{ ...row, input_json: JSON.stringify(input) }]);
+    const card = await openCard();
+    expect(within(card).getByText(NOT_SHOWABLE)).toBeInTheDocument();
+    expect(within(card).queryByTestId("page-edit-preview")).toBeNull();
+    expect(within(card).getByRole("button", { name: "Approve" })).toBeDisabled();
   });
 });

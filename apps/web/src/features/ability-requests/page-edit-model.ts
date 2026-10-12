@@ -11,7 +11,12 @@ import {
   type AbilityStatus,
   type AbilityStatusKind,
 } from "./ability-card-model";
-import { ELEMENTOR_VERSION, parseOutlineFragment, readInput, type OutlineNode } from "./outline-model";
+import {
+  ELEMENTOR_VERSION, PATTERN_ITEM_CAPS, designSchema, parseDesignedOutlineFragment,
+  parseOutlineFragment, patternVariantSchema, readInput, type DesignedEditNode, type OutlineNode, type PageDesign,
+} from "./outline-model";
+
+type EditNode = OutlineNode | DesignedEditNode;
 
 // Pure logic for the approval card of "AI changes a draft in Elementor"
 // (wpmgr/page-edit, BF-E). Two sources are read together and must agree:
@@ -46,10 +51,25 @@ export function pageEditCardTitle(siteLabel: string): string {
 const REF_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 const refSchema = z.string().regex(REF_PATTERN);
 const FIELDS = ["text", "url", "alt", "caption"] as const;
-const fieldSchema = z.enum(FIELDS);
+function isPatternField(field: string): boolean {
+  if (field !== field.trim()) return false;
+  const match = /^(features|testimonials|plans|faq|stats)\.(0|[1-9][0-9]?)\.(.+)$/.exec(field);
+  if (match === null) return false;
+  const array = match[1] as "features" | "testimonials" | "plans" | "faq" | "stats";
+  if (Number(match[2]) >= PATTERN_ITEM_CAPS[array][1]) return false;
+  const tail = match[3]!;
+  switch (array) {
+    case "features": return tail === "title" || tail === "text";
+    case "testimonials": return tail === "quote" || tail === "name" || tail === "role";
+    case "plans": return ["name", "price", "period", "cta.text", "cta.url"].includes(tail) || /^features\.[0-7]$/.test(tail);
+    case "faq": return tail === "question" || tail === "answer";
+    case "stats": return tail === "value" || tail === "suffix" || tail === "label";
+  }
+}
+const fieldSchema = z.union([z.enum(FIELDS), z.string().refine(isPatternField)]);
 const positionSchema = z.enum(["first", "last"]);
 
-export type EditField = (typeof FIELDS)[number];
+export type EditField = z.infer<typeof fieldSchema>;
 export type HowAnchor = "after" | "before" | "into";
 
 const outlineJson = z.array(z.unknown());
@@ -67,6 +87,7 @@ const inputSchema = z.strictObject({
   post_id: z.number().int().min(1),
   base_fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
   operations: z.array(operationSchema).min(1).max(25),
+  design: designSchema.optional(),
 });
 
 /** One operation of the AI's input in one shape: the target, the place and the new nodes. */
@@ -77,30 +98,32 @@ export type EditOp =
       readonly how: HowAnchor;
       readonly anchor: string;
       readonly position: "first" | "last" | null;
-      readonly outline: readonly OutlineNode[];
+      readonly outline: readonly EditNode[];
     }
-  | { readonly op: "replace"; readonly ref: string; readonly outline: readonly OutlineNode[] }
+  | { readonly op: "replace"; readonly ref: string; readonly outline: readonly EditNode[] }
   | { readonly op: "remove"; readonly ref: string }
   | { readonly op: "move"; readonly ref: string; readonly how: "after" | "before"; readonly anchor: string };
 
 interface EditInput {
   readonly postId: number;
   readonly ops: readonly EditOp[];
+  readonly design: PageDesign | null;
 }
 
-function normalise(o: z.infer<typeof operationSchema>): EditOp | null {
+function normalise(o: z.infer<typeof operationSchema>, designed: boolean): EditOp | null {
+  const fragment = designed ? parseDesignedOutlineFragment : parseOutlineFragment;
   switch (o.op) {
     case "set_text":
       return { op: "set_text", ref: o.ref, field: o.field, text: o.text };
     case "insert": {
-      const outline = parseOutlineFragment(o.outline);
+      const outline = fragment(o.outline);
       if (outline === null) return null;
       if ("after" in o) return { op: "insert", how: "after", anchor: o.after, position: null, outline };
       if ("before" in o) return { op: "insert", how: "before", anchor: o.before, position: null, outline };
       return { op: "insert", how: "into", anchor: o.into, position: o.position ?? null, outline };
     }
     case "replace": {
-      const outline = parseOutlineFragment(o.outline);
+      const outline = fragment(o.outline);
       return outline === null ? null : { op: "replace", ref: o.ref, outline };
     }
     case "remove":
@@ -119,11 +142,11 @@ function parseInput(inputJson: string): EditInput | null {
   if (!parsed.success) return null;
   const ops: EditOp[] = [];
   for (const o of parsed.data.operations) {
-    const op = normalise(o);
+    const op = normalise(o, parsed.data.design !== undefined);
     if (op === null) return null;
     ops.push(op);
   }
-  return { postId: parsed.data.post_id, ops };
+  return { postId: parsed.data.post_id, ops, design: parsed.data.design ?? null };
 }
 
 // --- The checked card -------------------------------------------------------
@@ -142,6 +165,7 @@ const KINDS = [
   "group",
   "columns",
   "section",
+  "pattern",
   "column",
   "locked",
 ] as const;
@@ -149,12 +173,7 @@ export type NodeKind = (typeof KINDS)[number];
 
 const kindSchema = z.enum(KINDS);
 const levelSchema = z.number().int().min(1).max(6);
-const siteTextSchema = z.strictObject({
-  text: z.string().optional(),
-  url: z.string().optional(),
-  alt: z.string().optional(),
-  caption: z.string().optional(),
-});
+const siteTextSchema = z.record(fieldSchema, z.string());
 type SiteText = z.infer<typeof siteTextSchema>;
 
 const anchorSchema = z.strictObject({
@@ -184,6 +203,7 @@ const outlineNodeSchema = z.strictObject({
   editable: z.array(fieldSchema).optional(),
   from_the_site: siteTextSchema.optional(),
   label: z.string().min(1).optional(),
+  variant: patternVariantSchema.optional(),
 });
 const afterOutlineSchema = z.strictObject({
   node_count: z.number().int().min(0),
@@ -236,6 +256,7 @@ const KIND_LABELS: Record<Exclude<NodeKind, "heading" | "locked">, string> = {
   group: "Section",
   columns: "Columns",
   section: "Section",
+  pattern: "Pattern",
   column: "Column",
 };
 /** The label of a node WPMgr does not edit when the card gives none. */
@@ -251,12 +272,27 @@ export function kindLabel(kind: NodeKind, level: number | undefined, label: stri
   return KIND_LABELS[kind];
 }
 
-const FIELD_VERBS: Record<EditField, string> = {
+const FIELD_VERBS: Record<(typeof FIELDS)[number], string> = {
   text: "Change text",
   url: "Change link",
   caption: "Change caption",
   alt: "Change alt text",
 };
+
+/** A pattern field by item and value, in the reader's document order. */
+export function editFieldWords(field: EditField): string {
+  if (!isPatternField(field)) return field;
+  const [array, index, ...tail] = field.split(".");
+  const item = { features: "Feature", testimonials: "Testimonial", plans: "Plan", faq: "FAQ", stats: "Stat" }[array!];
+  const part = tail[0] === "features" ? `feature ${Number(tail[1]) + 1}`
+    : tail[0] === "cta" ? (tail[1] === "url" ? "button link" : "button text") : tail.join(" ");
+  return `${item} ${Number(index) + 1} · ${part}`;
+}
+
+function fieldVerb(field: EditField): string {
+  if (isPatternField(field)) return field.endsWith(".url") ? "Change link" : "Change text";
+  return FIELD_VERBS[field as (typeof FIELDS)[number]];
+}
 
 export const REPLACE_NOTE = "The replaced block's styling is not kept.";
 
@@ -273,7 +309,7 @@ export interface ChangeLine {
   readonly was?: string;
   readonly now?: string;
   /** insert and replace: the nodes it puts on the page, as the AI chose them. */
-  readonly outline?: readonly OutlineNode[];
+  readonly outline?: readonly EditNode[];
   readonly note?: string;
   /** The line shows text that came from the site. */
   readonly fromSite: boolean;
@@ -310,6 +346,7 @@ export interface PageEditView {
   readonly checkedAt: string;
   /** True when a set_text is among the changes. */
   readonly hasTextChange: boolean;
+  readonly design: PageDesign | null;
 }
 
 function siteTextOf(t: SiteText | undefined): SiteText {
@@ -352,7 +389,8 @@ function agrees(change: Change, op: EditOp): boolean {
         change.anchor === undefined &&
         change.new_refs === undefined &&
         change.kind !== undefined &&
-        change.kind !== "locked"
+        change.kind !== "locked" &&
+        (!isPatternField(op.field) || change.kind === "pattern")
       );
     case "insert":
       return (
@@ -397,7 +435,7 @@ function lineFor(change: Change, op: EditOp, textOf: (ref: string) => SiteText |
       const was = before[op.field] ?? "";
       return {
         op: op.op,
-        title: [ours(`${FIELD_VERBS[op.field]} · ${named}`)],
+        title: [ours(`${fieldVerb(op.field)} · ${named}${isPatternField(op.field) ? ` · ${editFieldWords(op.field)}` : ""}`)],
         was,
         now: op.text,
         fromSite: true,
@@ -446,7 +484,7 @@ const FIELD_ORDER: readonly EditField[] = ["text", "caption", "url", "alt"];
 function textsOf(node: OutlineFact): Array<{ field: EditField; text: string }> {
   const t = siteTextOf(node.from_the_site);
   const out: Array<{ field: EditField; text: string }> = [];
-  for (const field of FIELD_ORDER) {
+  for (const field of [...FIELD_ORDER, ...Object.keys(t).filter(isPatternField)]) {
     const text = t[field];
     if (text !== undefined && text !== "") out.push({ field, text });
   }
@@ -478,7 +516,8 @@ function afterView(facts: Facts, marks: ReadonlyMap<string, Mark>): AfterView | 
   const build = (d: Draft): AfterNode => ({
     ref: d.node.ref,
     kind: d.node.kind,
-    label: kindLabel(d.node.kind, d.node.level, d.node.label),
+    label: d.node.kind === "pattern" && d.node.variant !== undefined
+      ? `Pattern · ${d.node.variant.replace(/-/g, " ")}` : kindLabel(d.node.kind, d.node.level, d.node.label),
     texts: textsOf(d.node),
     mark: marks.get(d.node.ref) ?? null,
     children: d.children.map(build),
@@ -528,6 +567,7 @@ export function parsePageEdit(r: AbilityRequest): PageEditView | null {
     lines,
     after: tree,
     checkedAt: facts.checked_at,
+    design: input.design,
     hasTextChange: input.ops.some((o) => o.op === "set_text"),
   };
 }

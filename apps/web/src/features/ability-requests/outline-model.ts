@@ -613,7 +613,7 @@ const fontFamily = z.string().regex(FONT_FAMILY);
  */
 export const SCALE_RATIOS = ["major_second", "minor_third", "major_third", "perfect_fourth"] as const;
 
-const designSchema = z.strictObject({
+export const designSchema = z.strictObject({
   colors: designColours,
   fonts: z.strictObject({ heading: fontFamily, body: fontFamily }),
   scale: z.strictObject({
@@ -772,6 +772,9 @@ const patternNode = z.discriminatedUnion("pattern", [
   statsPattern,
 ]);
 
+/** The variants a checked pattern projection may name. */
+export const patternVariantSchema = z.union(patternNode.options.map((node) => node.shape.variant));
+
 // --- The page
 
 const sectionNode = z.strictObject({
@@ -810,6 +813,28 @@ const designedInputSchema = z.strictObject({
 export type DesignedLeaf = z.infer<typeof designedLeafNode>;
 export type PatternNode = z.infer<typeof patternNode>;
 export type SectionNode = z.infer<typeof sectionNode>;
+
+/** A section or a child of a section put on a page by an edit. */
+export type DesignedEditNode = SectionNode | SectionNode["children"][number];
+
+/**
+ * Reads an edit fragment with the designed page grammar. Placement, hero
+ * counts and link destinations are checked over the resulting page by the
+ * site's precheck; a fragment may link to a section outside itself.
+ */
+export function parseDesignedOutlineFragment(raw: unknown): readonly DesignedEditNode[] | null {
+  const parsed = z.array(z.union([sectionNode, sectionNode.shape.children.element]))
+    .min(1).max(FRAGMENT_MAX_NODES).safeParse(raw);
+  if (!parsed.success) return null;
+  const sections: SectionNode[] = parsed.data.map((node) => node.type === "section" ? node : {
+    type: "section", anchor: "edit-fragment", children: [node],
+  });
+  const facts = inspectSections(sections);
+  if (facts.elementorRefuses || facts.anchors.some((anchor) => RESERVED_ANCHOR_SET.has(anchor))) return null;
+  if (facts.links.some((url) => url.includes("&") ||
+    (url.startsWith("#") ? anchorOfLink(url) === null : parseLink(url) === null))) return null;
+  return parsed.data;
+}
 
 /** What the page holds beyond its shape, found in one walk. */
 interface DesignedFacts {

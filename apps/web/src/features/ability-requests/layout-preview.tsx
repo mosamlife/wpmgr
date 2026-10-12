@@ -122,7 +122,7 @@ export interface OutlineNodeViewProps {
   /** One node of a designed page's section. */
   node: SectionLeaf;
   /** What the site said about each image the page names. */
-  media: ReadonlyMap<number, PageMediaFact>;
+  media: ReadonlyMap<number, PageMediaFact> | null;
   /** The site's host as WPMgr recorded it (site_host), to tell its own links from others. */
   siteHost: string;
   /** The site's own address, for "View image in WordPress". Unknown is fine. */

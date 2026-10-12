@@ -16,7 +16,7 @@ import { imageAltLabel, quoted, type PageMediaFact, type PatternNode } from "./o
 // into markup, a style or an address.
 
 type Of<K extends PatternNode["pattern"]> = Extract<PatternNode, { pattern: K }>;
-type Media = ReadonlyMap<number, PageMediaFact>;
+type Media = ReadonlyMap<number, PageMediaFact> | null;
 
 export interface PatternBodyProps {
   pattern: PatternNode;
@@ -70,7 +70,7 @@ function Body({ pattern, media, siteHost, siteUrl }: PatternBodyProps) {
 
 /** An image by the file name the site reported, or by its media library number when it reported none. */
 function ImageName({ id, media }: { id: number; media: Media }) {
-  const fact = media.get(id);
+  const fact = media?.get(id);
   return fact === undefined ? <>{`media library item ${id}`}</> : <Txt>{fact.filename}</Txt>;
 }
 
