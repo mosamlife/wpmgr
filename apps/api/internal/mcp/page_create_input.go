@@ -133,8 +133,11 @@ const (
 	pageAtGroup
 	pageAtColumn
 	// pageAtSection is a child of a section, which stands where the top of a
-	// version 2 outline stands.
+	// version 2 outline stands. pageAtHero and pageAtCTA are the children of
+	// those two patterns.
 	pageAtSection
+	pageAtHero
+	pageAtCTA
 )
 
 // pageWalk carries the page-wide counters through one validation. designed is
@@ -332,7 +335,11 @@ func (w *pageWalk) node(raw json.RawMessage, at pagePlace) string {
 	switch kind {
 	case "heading":
 		level, ok := jsonIntOf(n["level"])
-		if !keysWithin(n, "type", "level", "text") || !ok || level < 2 || level > 4 || !isJSONString(n["text"]) {
+		lowest := int64(2)
+		if at == pageAtHero {
+			lowest = 1
+		}
+		if !keysWithin(n, "type", "level", "text") || !ok || level < lowest || level > 4 || !isJSONString(n["text"]) {
 			return pageCreateBadInput
 		}
 		return ""
@@ -472,8 +479,8 @@ func (w *pageWalk) buttonsNode(n map[string]json.RawMessage) string {
 		if !ok {
 			return pageCreateBadInput
 		}
-		if !pageLinkUsable(url) {
-			return pageCreateLinkInvalid
+		if code := w.linkCode(url); code != "" {
+			return code
 		}
 		if raw, has := b["style"]; has {
 			switch style, _ := jsonStringOf(raw); style {
