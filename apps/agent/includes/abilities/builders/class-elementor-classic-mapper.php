@@ -69,8 +69,13 @@ if (!defined('ABSPATH')) {
 final class ElementorClassicMapper
 {
     /**
-     * Every element type and settings path the mapper writes, with its pin.
-     * Numbers are stored as strings, so they are pinned "enum".
+     * Every element type and settings path the mapper and the compilers
+     * write, with its pin. Numbers are stored as strings: a plain number is
+     * pinned "enum", and a style value is pinned by its whole shape. A style
+     * key is listed only once an E1 round-trip probe has stored and rendered
+     * it; a tablet or mobile override is listed only for a control a probe
+     * showed responsive, and LeafPolicy::forBreakpoints() keeps it only on a
+     * site with that breakpoint active.
      */
     public const ALLOWED_KEYS = [
         'container'   => [
@@ -90,6 +95,23 @@ final class ElementorClassicMapper
             'html_tag'              => 'enum',
             '_element_id'           => 'enum',
             '_title'                => 'enum',
+            // Style keys from here on: each one an E1 round-trip probe stored
+            // and rendered, judged whole by its shape pin in the measured form.
+            'padding'                       => 'dimensions',
+            'padding_tablet'                => 'dimensions',
+            'padding_mobile'                => 'dimensions',
+            'background_background'         => 'enum:classic',
+            'background_color'              => 'colour',
+            'background_image'              => 'image',
+            'background_position'           => 'enum:center center',
+            'background_size'               => 'enum:cover',
+            'background_repeat'             => 'enum:no-repeat',
+            'background_overlay_background' => 'enum:classic',
+            'background_overlay_color'      => 'colour',
+            'background_overlay_opacity'    => 'slider:px',
+            'min_height'                    => 'slider:vh',
+            'min_height_mobile'             => 'slider:vh',
+            'flex_justify_content'          => 'enum:center',
         ],
         'section'     => [
             'structure' => 'enum',
@@ -99,11 +121,29 @@ final class ElementorClassicMapper
             '_inline_size' => 'enum',
         ],
         'heading'     => [
-            'title'       => 'html',
-            'header_size' => 'enum',
+            'title'                       => 'html',
+            'header_size'                 => 'enum',
+            'title_color'                 => 'colour',
+            'align'                       => 'enum:left',
+            'typography_typography'       => 'enum:custom',
+            'typography_font_family'      => 'text',
+            'typography_font_size'        => 'slider:px',
+            'typography_font_size_tablet' => 'slider:px',
+            'typography_font_size_mobile' => 'slider:px',
+            'typography_font_weight'      => 'enum:400|600|700',
+            'typography_line_height'      => 'slider:em',
+            'typography_letter_spacing'   => 'slider:em',
         ],
         'text-editor' => [
-            'editor' => 'html',
+            'editor'                    => 'html',
+            'text_color'                => 'colour',
+            'typography_typography'     => 'enum:custom',
+            'typography_font_family'    => 'text',
+            'typography_font_size'      => 'slider:px',
+            'typography_font_weight'    => 'enum:400|600|700',
+            'typography_line_height'    => 'slider:em',
+            'typography_letter_spacing' => 'slider:em',
+            'typography_text_transform' => 'enum:uppercase',
         ],
         'button'      => [
             'text'             => 'html',
@@ -111,6 +151,25 @@ final class ElementorClassicMapper
             'link.is_external' => 'enum',
             'link.nofollow'    => 'enum',
             'align'            => 'enum',
+            // "enum:" takes one value, the empty string.
+            'size'                               => 'enum:md',
+            'button_type'                        => 'enum:',
+            'background_background'              => 'enum:classic',
+            'background_color'                   => 'colour',
+            'button_text_color'                  => 'colour',
+            'button_background_hover_background' => 'enum:classic',
+            'button_background_hover_color'      => 'colour',
+            'hover_color'                        => 'colour',
+            'border_radius'                      => 'dimensions',
+            'border_border'                      => 'enum:solid',
+            'border_width'                       => 'dimensions',
+            'border_color'                       => 'colour',
+            'typography_typography'              => 'enum:custom',
+            'typography_font_family'             => 'text',
+            'typography_font_size'               => 'slider:px',
+            'typography_font_weight'             => 'enum:400|600|700',
+            'typography_line_height'             => 'slider:em',
+            'typography_text_decoration'         => 'enum:underline',
         ],
         'image'       => [
             'image.url'      => 'url',
@@ -120,6 +179,7 @@ final class ElementorClassicMapper
             'align'          => 'enum',
             'caption_source' => 'enum',
             'caption'        => 'html',
+            'width'          => 'slider:px',
         ],
         'divider'     => [],
         'spacer'      => [

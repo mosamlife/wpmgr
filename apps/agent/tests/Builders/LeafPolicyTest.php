@@ -19,6 +19,7 @@ namespace WPMgr\Agent\Tests\Builders;
 use Brain\Monkey;
 use Brain\Monkey\Functions;
 use PHPUnit\Framework\Attributes\DataProvider;
+use WPMgr\Agent\Abilities\Builders\ElementorClassicMapper;
 use WPMgr\Agent\Abilities\Builders\LeafPolicy;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
@@ -261,7 +262,7 @@ final class LeafPolicyTest extends TestCase
     {
         $tree = [$this->widget('h1', 'heading', ['title' => 'Hi', 'title_color' => '#fff'])];
         $this->assertSame(
-            ['code' => 'adapter_key_not_allowed', 'detail' => 'elements[0].settings: a settings key not on the adapter allowlist'],
+            ['code' => 'style_key_not_allowed', 'detail' => 'elements[0].settings: a settings key not on the adapter allowlist'],
             LeafPolicy::checkTree($tree, self::KEYS, self::RULES)
         );
 
@@ -385,7 +386,7 @@ final class LeafPolicyTest extends TestCase
         ];
         $this->assertNull(LeafPolicy::checkTree($page, $keys, self::RULES), 'anchors on WPMgr section containers');
         $this->assertSame(
-            ['code' => 'adapter_key_not_allowed', 'detail' => 'elements[0].settings: a settings key not on the adapter allowlist'],
+            ['code' => 'style_key_not_allowed', 'detail' => 'elements[0].settings: a settings key not on the adapter allowlist'],
             LeafPolicy::checkTree([$page[0]], self::KEYS, self::RULES),
             'the adapter allowlist still has to name the key'
         );
@@ -783,6 +784,109 @@ final class LeafPolicyTest extends TestCase
             LeafPolicy::checkTree($tree, self::KEYS, ['refuse_braces' => 'yes', 'forbidden' => []])
         );
         $this->assertSame('the adapter leaf rules are malformed', LeafPolicy::storedProblem('Hi', ['refuse_braces' => false, 'forbidden' => ['']]));
+    }
+
+    public function testUnknownStyleKeyRefused(): void
+    {
+        $unlisted = ['code' => 'style_key_not_allowed', 'detail' => 'elements[0].settings: a settings key not on the adapter allowlist'];
+        $keys     = ElementorClassicMapper::ALLOWED_KEYS;
+
+        // A style key E1 did not prove, a misspelt one, and unproven members of a proven group.
+        foreach (['title_shadow' => '#15171C', 'title_colour' => '#15171C', 'typography_font_style' => 'italic', 'typography_word_spacing' => ['unit' => 'em', 'size' => '1']] as $key => $value) {
+            $tree = [$this->widget('h1', 'heading', ['title' => 'Hi', 'typography_typography' => 'custom', $key => $value])];
+            $this->assertSame($unlisted, LeafPolicy::checkTree($tree, $keys, self::RULES), $key);
+        }
+        // A key listed for another element is not listed for this one.
+        $this->assertSame($unlisted, LeafPolicy::checkTree([$this->widget('t1', 'text-editor', ['editor' => '<p>Hi</p>', 'title_color' => '#15171C'])], $keys, self::RULES));
+        // An unproven group stays unlisted: a box shadow on a section.
+        $section = ['_title' => self::SECTION, 'box_shadow_box_shadow_type' => 'yes'];
+        $this->assertSame($unlisted, LeafPolicy::checkTree([$this->container('s1', $section, [])], $keys, self::RULES));
+        // A path inside a value that a dotted allowlist does not list.
+        $this->assertSame($unlisted, LeafPolicy::checkTree([$this->container('s1', ['width' => ['unit' => '%', 'size' => '5', 'sizes' => [], 'extra' => 'x']], [])], $keys, self::RULES));
+        // The refusal never echoes the key read from the tree.
+        $tree = [$this->widget('h1', 'heading', ['title' => 'Hi', 'zz_unique_key' => '#15171C'])];
+        $this->assertStringNotContainsString('zz_unique_key', (string) (LeafPolicy::checkTree($tree, $keys, self::RULES)['detail'] ?? ''));
+
+        // Every listed style key in its measured form is accepted.
+        $tree = [$this->widget('h1', 'heading', [
+            'title'                     => 'Hi',
+            'title_color'               => '#15171C',
+            'typography_typography'     => 'custom',
+            'typography_font_family'    => 'Work Sans',
+            'typography_font_size'      => ['unit' => 'px', 'size' => '49'],
+            'typography_font_weight'    => '700',
+            'typography_line_height'    => ['unit' => 'em', 'size' => '1.05'],
+            'typography_letter_spacing' => ['unit' => 'em', 'size' => '-0.02'],
+        ])];
+        $this->assertNull(LeafPolicy::checkTree($tree, $keys, self::RULES));
+
+        // A listed font family key holds a family name, which reaches the post CSS.
+        foreach (['Work Sans", serif; color: red', '', str_repeat('A', 61), "Work\nSans", "Work Sans\n"] as $bad) {
+            $tree = [$this->widget('h1', 'heading', ['title' => 'Hi', 'typography_typography' => 'custom', 'typography_font_family' => $bad])];
+            $this->assertSame(
+                ['code' => 'leaf_unsafe', 'detail' => 'elements[0].settings.typography_font_family: not a font family name of 1 to 60 letters, digits and spaces'],
+                LeafPolicy::checkTree($tree, $keys, self::RULES),
+                var_export($bad, true)
+            );
+        }
+    }
+
+    public function testLaptopSuffixRefused(): void
+    {
+        // Even an allowlist that lists the override and its control cannot have it written.
+        foreach (LeafPolicy::BREAKPOINTS_NOT_WRITTEN as $breakpoint) {
+            $key  = 'typography_font_size_' . $breakpoint;
+            $keys = $this->ruledKeys(['heading' => ['typography_typography' => 'enum:custom', 'typography_font_size' => 'slider:px', $key => 'slider:px']]);
+            $tree = [$this->widget('h1', 'heading', ['title' => 'Hi', 'typography_typography' => 'custom', $key => ['unit' => 'px', 'size' => '40']])];
+            $this->assertSame(
+                ['code' => 'style_key_not_allowed', 'detail' => 'elements[0].settings: a ' . $breakpoint . ' override, which WPMgr does not write; it writes only tablet and mobile overrides'],
+                LeafPolicy::checkTree($tree, $keys, self::RULES),
+                $breakpoint
+            );
+        }
+        $tree = [$this->container('s1', ['_title' => self::SECTION, 'padding_laptop' => ['unit' => 'px', 'top' => '9', 'right' => '9', 'bottom' => '9', 'left' => '9', 'isLinked' => true]], [])];
+        $this->assertSame('style_key_not_allowed', LeafPolicy::checkTree($tree, ElementorClassicMapper::ALLOWED_KEYS, self::RULES)['code'] ?? null);
+
+        // A key that only looks like an override, or names no control, is judged by the allowlist alone.
+        $keys = $this->ruledKeys(['heading' => ['_laptop' => 'text', 'laptop' => 'text']]);
+        $this->assertNull(LeafPolicy::checkTree([$this->widget('h1', 'heading', ['title' => 'Hi', '_laptop' => 'x', 'laptop' => 'y'])], $keys, self::RULES));
+    }
+
+    public function test_overrides_follow_the_sites_active_breakpoints(): void
+    {
+        $sides   = static fn (string $v): array => ['unit' => 'px', 'top' => $v, 'right' => '24', 'bottom' => $v, 'left' => '24', 'isLinked' => false];
+        $section = ['_title' => self::SECTION, 'padding' => $sides('96'), 'padding_tablet' => $sides('72'), 'padding_mobile' => $sides('56')];
+        $tree    = [$this->container('s1', $section, [])];
+        $check   = static fn (?array $active): ?array => LeafPolicy::checkTree($tree, LeafPolicy::forBreakpoints(ElementorClassicMapper::ALLOWED_KEYS, $active), self::RULES);
+
+        $this->assertNull($check(['mobile', 'tablet']));
+        $this->assertNull($check(['mobile', 'tablet', 'laptop']));
+        $tablet = ['code' => 'style_key_not_allowed', 'detail' => 'elements[0].settings: a tablet override WPMgr writes only for a control it lists as responsive on this element, on a site with the tablet breakpoint active'];
+        $mobile = ['code' => 'style_key_not_allowed', 'detail' => 'elements[0].settings: a mobile override WPMgr writes only for a control it lists as responsive on this element, on a site with the mobile breakpoint active'];
+        $this->assertSame($tablet, $check(['mobile']));
+        $this->assertSame($tablet, $check(['laptop']));
+        $this->assertSame($tablet, $check([]));
+        $this->assertSame($tablet, $check(null), 'no known breakpoint means none is active');
+        $this->assertSame($mobile, $check(['tablet']));
+
+        // Without the overrides the same section passes on a site with none active.
+        unset($section['padding_tablet'], $section['padding_mobile']);
+        $this->assertNull(LeafPolicy::checkTree([$this->container('s1', $section, [])], LeafPolicy::forBreakpoints(ElementorClassicMapper::ALLOWED_KEYS, null), self::RULES));
+
+        // forBreakpoints() drops exactly the overrides of inactive breakpoints, dotted paths too.
+        $site = LeafPolicy::forBreakpoints(['container' => ['flex_gap.size' => 'enum', 'flex_gap_mobile.size' => 'enum', 'padding_tablet' => 'dimensions', 'mobile' => 'text']], ['tablet']);
+        $this->assertSame(['container' => ['flex_gap.size' => 'enum', 'padding_tablet' => 'dimensions', 'mobile' => 'text']], $site);
+
+        // A text editor's size is not proven responsive: its override is refused on every site.
+        $text = ['editor' => '<p>Hi</p>', 'typography_typography' => 'custom', 'typography_font_size' => ['unit' => 'px', 'size' => '16'], 'typography_font_size_mobile' => ['unit' => 'px', 'size' => '15']];
+        $this->assertSame($mobile, LeafPolicy::checkTree([$this->widget('t1', 'text-editor', $text)], LeafPolicy::forBreakpoints(ElementorClassicMapper::ALLOWED_KEYS, ['mobile', 'tablet']), self::RULES));
+
+        // An allowlist that lists an override without its control cannot have it written.
+        $keys = $this->ruledKeys(['heading' => ['title_color_tablet' => 'colour']]);
+        $this->assertSame(
+            ['code' => 'style_key_not_allowed', 'detail' => 'elements[0].settings: a tablet override of a control the allowlist does not list for this element'],
+            LeafPolicy::checkTree([$this->widget('h1', 'heading', ['title' => 'Hi', 'title_color_tablet' => '#15171C'])], $keys, self::RULES)
+        );
     }
 
     /**

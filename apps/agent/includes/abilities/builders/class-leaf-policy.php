@@ -33,17 +33,25 @@ if (!defined('ABSPATH')) {
  *   by an earlier element of the tree; and the Navigator label (LABEL_KEY)
  *   only at the top of a container's settings, holding LABEL_PREFIX and a
  *   name. A WPMgr section container is a container at the top of the tree
- *   whose label is SECTION_LABEL.
+ *   whose label is SECTION_LABEL. A settings path the type's own allowlist
+ *   does not list is style_key_not_allowed. A key that overrides a
+ *   breakpoint ("<control>_<breakpoint>") is written only for tablet and
+ *   mobile, only when the allowlist lists the override and the control
+ *   itself; forBreakpoints() drops the overrides of a breakpoint the site
+ *   does not have active, so a tree checked against its answer holds none.
  * - L4 pins: the pin of a settings path picks the extra check for its value.
  *   A shape pin (SHAPE_PINS, or an enum with a list of values) checks the
  *   whole value at its path in exactly one written form and is never walked
  *   into; a hard-denied key anywhere inside it is still refused as a key.
+ *   A key ending in FONT_FAMILY_SUFFIX holds a font family name of the
+ *   outline's form.
  *
  * Nothing is ever stripped or rewritten: a failure refuses the whole call,
- * with leaf_unsafe for a value and adapter_key_not_allowed for a type or a
- * key. Refusal details are WPMgr's own words and node positions, never text
- * read from the tree. This class holds no builder's allowlist; each adapter
- * passes its own.
+ * with leaf_unsafe for a value, adapter_key_not_allowed for a type or a
+ * key outside any allowlist's reach, and style_key_not_allowed for a
+ * settings key an element's allowlist does not take. Refusal details are
+ * WPMgr's own words and node positions, never text read from the tree. This
+ * class holds no builder's allowlist; each adapter passes its own.
  */
 final class LeafPolicy
 {
@@ -52,6 +60,18 @@ final class LeafPolicy
 
     /** A node type or settings key that may not be written. */
     public const CODE_KEY = 'adapter_key_not_allowed';
+
+    /** A settings key the element's own allowlist does not list, or a breakpoint override WPMgr does not write. */
+    public const CODE_STYLE_KEY = 'style_key_not_allowed';
+
+    /** The breakpoints WPMgr writes an override for: a key "<control>_tablet" or "<control>_mobile". */
+    public const BREAKPOINTS_WRITTEN = ['tablet', 'mobile'];
+
+    /** The other breakpoints a builder may define; an override for one is never written. */
+    public const BREAKPOINTS_NOT_WRITTEN = ['mobile_extra', 'tablet_extra', 'laptop', 'widescreen'];
+
+    /** What a settings key holding a font family name ends with. */
+    public const FONT_FAMILY_SUFFIX = 'font_family';
 
     /** Settings keys refused anywhere, compared without regard to case. */
     public const DENIED_KEYS = [
@@ -464,7 +484,16 @@ final class LeafPolicy
             if ($ruled !== null) {
                 return self::refuse($ruled[0], ($ruled[0] === self::CODE_KEY ? $at : $at . '.' . $path) . ': ' . $ruled[1]);
             }
+            if ($prefix === '') {
+                $override = self::overrideProblem($key, $paths);
+                if ($override !== null) {
+                    return self::refuse(self::CODE_STYLE_KEY, $at . ': ' . $override);
+                }
+            }
             $listed = array_key_exists($path, $paths);
+            if ($listed && $prefix === '' && self::endsWith($key, self::FONT_FAMILY_SUFFIX) && !self::isFontFamily($value)) {
+                return self::refuse(self::CODE_UNSAFE, $at . '.' . $path . ': not a font family name of 1 to 60 letters, digits and spaces');
+            }
             if ($listed && self::isShapePin((string) $paths[$path])) {
                 // The whole value, object or string, is the pin's to check; it is never walked into.
                 $why = self::pinProblem($value, (string) $paths[$path], $rules);
@@ -475,7 +504,7 @@ final class LeafPolicy
             }
             if (is_array($value) && $value !== []) {
                 if (!self::isAncestor($path, $paths)) {
-                    return self::refuse(self::CODE_KEY, $at . ': a settings key not on the adapter allowlist');
+                    return self::refuse(self::CODE_STYLE_KEY, $at . ': a settings key not on the adapter allowlist');
                 }
                 $refusal = self::checkSettings($value, $path, $at, $depth + 1, $paths, $rules, [], $anchors);
                 if ($refusal !== null) {
@@ -484,7 +513,7 @@ final class LeafPolicy
                 continue;
             }
             if (!$listed && !($value === [] && self::isAncestor($path, $paths))) {
-                return self::refuse(self::CODE_KEY, $at . ': a settings key not on the adapter allowlist');
+                return self::refuse(self::CODE_STYLE_KEY, $at . ': a settings key not on the adapter allowlist');
             }
             if ($value === []) {
                 // An empty list holds no value to check.
@@ -541,6 +570,111 @@ final class LeafPolicy
         $anchors[$value] = true;
 
         return null;
+    }
+
+    /**
+     * The allowlist for one site: the given one without every path whose
+     * settings key overrides a breakpoint the site does not have active.
+     * $breakpoints is the site's active breakpoint names (ElementorFacts
+     * active_breakpoints); null means none is active, so no override is
+     * kept. A caller that compiles for a site checks its tree against this.
+     *
+     * @param array<string, array<string, string>> $allowedKeys Type, then settings path, then pin.
+     * @param list<string>|null                    $breakpoints Active breakpoint names, or null.
+     * @return array<string, array<string, string>>
+     */
+    public static function forBreakpoints(array $allowedKeys, ?array $breakpoints): array
+    {
+        $active = $breakpoints ?? [];
+        $site   = [];
+        foreach ($allowedKeys as $type => $paths) {
+            $kept = [];
+            foreach ($paths as $path => $pin) {
+                $breakpoint = self::breakpointOf(explode('.', (string) $path, 2)[0]);
+                if ($breakpoint === null || in_array($breakpoint, $active, true)) {
+                    $kept[$path] = $pin;
+                }
+            }
+            $site[$type] = $kept;
+        }
+
+        return $site;
+    }
+
+    /**
+     * The breakpoint a settings key overrides: the name in
+     * BREAKPOINTS_WRITTEN or BREAKPOINTS_NOT_WRITTEN that ends the key after
+     * a "_" and a control name of at least one character, or null.
+     *
+     * @param string $key Settings key.
+     * @return string|null
+     */
+    private static function breakpointOf(string $key): ?string
+    {
+        $found = null;
+        foreach (array_merge(self::BREAKPOINTS_NOT_WRITTEN, self::BREAKPOINTS_WRITTEN) as $name) {
+            if (strlen($key) > strlen($name) + 1 && self::endsWith($key, '_' . $name) && ($found === null || strlen($name) > strlen($found))) {
+                $found = $name;
+            }
+        }
+
+        return $found;
+    }
+
+    /**
+     * The breakpoint rule of a key at the top of a node's settings: null for
+     * a key that overrides no breakpoint, and for a tablet or mobile
+     * override the type's allowlist lists while it also lists the control
+     * itself. An override of any other breakpoint is refused even when an
+     * allowlist names it. Refusal reasons name the breakpoint from WPMgr's
+     * own lists, never the key.
+     *
+     * @param string                $key   Settings key as given.
+     * @param array<string, string> $paths The type's settings paths and pins.
+     * @return string|null Reason.
+     */
+    private static function overrideProblem(string $key, array $paths): ?string
+    {
+        $breakpoint = self::breakpointOf($key);
+        if ($breakpoint === null) {
+            return null;
+        }
+        if (!in_array($breakpoint, self::BREAKPOINTS_WRITTEN, true)) {
+            return 'a ' . $breakpoint . ' override, which WPMgr does not write; it writes only tablet and mobile overrides';
+        }
+        if (!array_key_exists($key, $paths) && !self::isAncestor($key, $paths)) {
+            return 'a ' . $breakpoint . ' override WPMgr writes only for a control it lists as responsive on this element, on a site with the ' . $breakpoint . ' breakpoint active';
+        }
+        $control = substr($key, 0, -strlen('_' . $breakpoint));
+        if (!array_key_exists($control, $paths) && !self::isAncestor($control, $paths)) {
+            return 'a ' . $breakpoint . ' override of a control the allowlist does not list for this element';
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether a value is a font family name the outline accepts
+     * (OutlineV3Schema::FONT_PATTERN).
+     *
+     * @param mixed $value Value.
+     * @return bool
+     */
+    private static function isFontFamily($value): bool
+    {
+        return is_string($value) && preg_match('/' . OutlineV3Schema::FONT_PATTERN . '/D', $value) === 1;
+    }
+
+    /**
+     * Whether a string ends with another.
+     *
+     * @param string $text   Text.
+     * @param string $suffix Suffix.
+     * @return bool
+     */
+    private static function endsWith(string $text, string $suffix): bool
+    {
+        return $suffix !== '' && substr($text, -strlen($suffix)) === $suffix;
     }
 
     /**
