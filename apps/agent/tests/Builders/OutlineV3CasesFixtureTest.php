@@ -396,6 +396,7 @@ final class OutlineV3CasesFixtureTest extends TestCase
             'anchor_not_reserved'       => static fn (array $in): bool => self::anyAnchor($in, static fn (string $a): bool => in_array($a, self::RESERVED, true)),
             'link_anchor_resolves'      => static fn (array $in): bool => self::anyLink($in, static fn (string $u, array $anchors): bool => preg_match('/^#[a-z][a-z0-9-]{1,39}$/D', $u) === 1 && !in_array(substr($u, 1), $anchors, true)),
             'link_anchor_syntax'        => static fn (array $in): bool => self::anyLink($in, static fn (string $u, array $anchors): bool => $u !== '' && $u[0] === '#' && preg_match('/^#[a-z][a-z0-9-]{1,39}$/D', $u) !== 1),
+            'link_no_ampersand'         => static fn (array $in): bool => self::anyLink($in, static fn (string $u, array $anchors): bool => strpos($u, '&') !== false),
             'hero_at_most_once'         => static fn (array $in): bool => self::heroCount($in) > self::MAX_HEROES,
             'hero_first'                => static fn (array $in): bool => self::heroMisplaced($in),
             'h1_inside_hero_only'       => static fn (array $in): bool => self::facts($in)['h1_outside'],

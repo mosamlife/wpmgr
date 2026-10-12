@@ -53,6 +53,7 @@ final class OutlineV3CasesTest extends TestCase
     /** Rules about a block's own links and styles. */
     private const BLOCK_RULES = [
         'link_anchor_syntax',
+        'link_no_ampersand',
         'button_style_enum',
     ];
 
@@ -170,7 +171,7 @@ final class OutlineV3CasesTest extends TestCase
         }
         $this->assertGreaterThanOrEqual(self::MIN_REFUSED_ROWS_RUN, $refused, 'the refused rows are run, so the run cannot pass by accepting everything');
 
-        foreach (['v3-minimal-page', 'v3-full-landing-page', 'sections-21', 'features-2-items', 'icon-not-in-the-list', 'pattern-text-with-markup', 'link-anchor-malformed', 'buttons-in-three-styles', 'hero-first-with-the-h1'] as $name) {
+        foreach (['v3-minimal-page', 'v3-full-landing-page', 'sections-21', 'features-2-items', 'icon-not-in-the-list', 'pattern-text-with-markup', 'link-anchor-malformed', 'button-url-with-an-ampersand', 'hero-button-url-with-an-ampersand', 'plan-cta-url-with-an-ampersand', 'links-with-a-query-and-no-ampersand', 'buttons-in-three-styles', 'hero-first-with-the-h1'] as $name) {
             $this->assertArrayHasKey($name, $rows, $name . ' is run');
         }
         foreach (['anchor-uppercase', 'anchor-41-characters', 'anchor-duplicate', 'anchor-reserved', 'link-anchor-missing', 'hero-in-the-second-section', 'hero-not-the-first-child', 'two-heroes', 'two-heroes-the-first-out-of-place', 'h1-without-a-hero', 'h1-in-a-later-section', 'h1-twice-in-the-hero'] as $name) {
