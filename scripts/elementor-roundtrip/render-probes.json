@@ -868,6 +868,798 @@
       "html_text": [
         "Frame probe heading"
       ]
+    },
+    {
+      "name": "layout-section-container",
+      "about": "A section container: content_width boxed, html_tag section, flex_direction column, the anchor in _element_id, padding as dimension strings with _tablet and _mobile overrides, a classic background colour and the navigator label in _title. The element is a section tag with the boxed class and the anchor as its id, the padding reaches the post CSS once per breakpoint, and the colour is painted on the container.",
+      "trees": {
+        "containers": [
+          {
+            "id": "1a70001",
+            "elType": "container",
+            "settings": {
+              "content_width": "boxed",
+              "html_tag": "section",
+              "flex_direction": "column",
+              "_element_id": "features",
+              "padding": {
+                "unit": "px",
+                "top": "96",
+                "right": "24",
+                "bottom": "96",
+                "left": "24",
+                "isLinked": false
+              },
+              "padding_tablet": {
+                "unit": "px",
+                "top": "72",
+                "right": "24",
+                "bottom": "72",
+                "left": "24",
+                "isLinked": false
+              },
+              "padding_mobile": {
+                "unit": "px",
+                "top": "56",
+                "right": "24",
+                "bottom": "56",
+                "left": "24",
+                "isLinked": false
+              },
+              "background_background": "classic",
+              "background_color": "#F6F5F2",
+              "_title": "WPMgr \u00b7 Section"
+            },
+            "elements": [
+              {
+                "id": "1a70002",
+                "elType": "widget",
+                "settings": {
+                  "title": "Why teams switch",
+                  "header_size": "h2"
+                },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "1a70001",
+          "sel": "",
+          "media": null,
+          "any": [
+            {
+              "--padding-top": "96px",
+              "--padding-bottom": "96px",
+              "--padding-left": "24px",
+              "--padding-right": "24px"
+            },
+            {
+              "--padding-block-start": "96px",
+              "--padding-block-end": "96px",
+              "--padding-inline-start": "24px",
+              "--padding-inline-end": "24px"
+            }
+          ]
+        },
+        {
+          "el": "1a70001",
+          "sel": "",
+          "media": "max-width:1024px",
+          "any": [
+            {
+              "--padding-top": "72px",
+              "--padding-bottom": "72px",
+              "--padding-left": "24px",
+              "--padding-right": "24px"
+            },
+            {
+              "--padding-block-start": "72px",
+              "--padding-block-end": "72px",
+              "--padding-inline-start": "24px",
+              "--padding-inline-end": "24px"
+            }
+          ]
+        },
+        {
+          "el": "1a70001",
+          "sel": "",
+          "media": "max-width:767px",
+          "any": [
+            {
+              "--padding-top": "56px",
+              "--padding-bottom": "56px",
+              "--padding-left": "24px",
+              "--padding-right": "24px"
+            },
+            {
+              "--padding-block-start": "56px",
+              "--padding-block-end": "56px",
+              "--padding-inline-start": "24px",
+              "--padding-inline-end": "24px"
+            }
+          ]
+        },
+        {
+          "el": "1a70001",
+          "sel": ":not(.elementor-motion-effects-element-type-background)",
+          "media": null,
+          "decl": {
+            "background-color": "#F6F5F2"
+          }
+        },
+        {
+          "el": "1a70001",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--flex-direction": "column"
+          }
+        }
+      ],
+      "html_ids": [
+        "features"
+      ],
+      "html_tags": {
+        "features": "section"
+      },
+      "html_text": [
+        "Why teams switch"
+      ],
+      "html_has": [
+        {
+          "sel": "section#features.e-con.e-con-boxed"
+        }
+      ],
+      "plants": {
+        "misspell_key": {
+          "el": "1a70001",
+          "key": "padding"
+        },
+        "drop_activator": {
+          "el": "1a70001",
+          "key": "background_background"
+        }
+      }
+    },
+    {
+      "name": "layout-hero-background",
+      "about": "A hero section container: content_width full, the anchor in _element_id, padding per breakpoint, a classic background colour with a library image (id and url) placed at center center, sized cover and not repeated, an ink overlay at 0.45 opacity, a min_height of 80vh reset to 0vh on mobile, and flex_justify_content center. The placement and colour of the background, the overlay colour and its opacity as a unitless fraction, and the min height per breakpoint reach the post CSS. The image is the harness site's attachment 5 and the post CSS names that attachment's own address, which the probe cannot spell, so the probe holds the placement and not the address.",
+      "trees": {
+        "containers": [
+          {
+            "id": "1a70011",
+            "elType": "container",
+            "settings": {
+              "content_width": "full",
+              "html_tag": "section",
+              "flex_direction": "column",
+              "_element_id": "hero",
+              "padding": {
+                "unit": "px",
+                "top": "128",
+                "right": "24",
+                "bottom": "128",
+                "left": "24",
+                "isLinked": false
+              },
+              "padding_tablet": {
+                "unit": "px",
+                "top": "96",
+                "right": "24",
+                "bottom": "96",
+                "left": "24",
+                "isLinked": false
+              },
+              "padding_mobile": {
+                "unit": "px",
+                "top": "72",
+                "right": "24",
+                "bottom": "72",
+                "left": "24",
+                "isLinked": false
+              },
+              "background_background": "classic",
+              "background_color": "#15171C",
+              "background_image": {
+                "id": "5",
+                "url": "https://example.com/wp-content/uploads/2026/10/hero-1600x900.jpg"
+              },
+              "background_position": "center center",
+              "background_size": "cover",
+              "background_repeat": "no-repeat",
+              "background_overlay_background": "classic",
+              "background_overlay_color": "#15171C",
+              "background_overlay_opacity": {
+                "unit": "px",
+                "size": "0.45"
+              },
+              "min_height": {
+                "unit": "vh",
+                "size": "80"
+              },
+              "min_height_mobile": {
+                "unit": "vh",
+                "size": "0"
+              },
+              "flex_justify_content": "center",
+              "_title": "WPMgr \u00b7 Section"
+            },
+            "elements": [
+              {
+                "id": "1a70012",
+                "elType": "widget",
+                "settings": {
+                  "title": "Launch week",
+                  "header_size": "h1"
+                },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "1a70011",
+          "sel": ":not(.elementor-motion-effects-element-type-background)",
+          "media": null,
+          "decl": {
+            "background-color": "#15171C",
+            "background-position": "center center",
+            "background-repeat": "no-repeat",
+            "background-size": "cover"
+          }
+        },
+        {
+          "el": "1a70011",
+          "sel": "::before",
+          "media": null,
+          "decl": {
+            "background-color": "#15171C"
+          }
+        },
+        {
+          "el": "1a70011",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--overlay-opacity": "0.45"
+          }
+        },
+        {
+          "el": "1a70011",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--min-height": "80vh",
+            "--justify-content": "center"
+          }
+        },
+        {
+          "el": "1a70011",
+          "sel": "",
+          "media": "max-width:767px",
+          "decl": {
+            "--min-height": "0vh"
+          }
+        },
+        {
+          "el": "1a70011",
+          "sel": "",
+          "media": null,
+          "any": [
+            {
+              "--padding-top": "128px",
+              "--padding-bottom": "128px",
+              "--padding-left": "24px",
+              "--padding-right": "24px"
+            },
+            {
+              "--padding-block-start": "128px",
+              "--padding-block-end": "128px",
+              "--padding-inline-start": "24px",
+              "--padding-inline-end": "24px"
+            }
+          ]
+        },
+        {
+          "el": "1a70011",
+          "sel": "",
+          "media": "max-width:1024px",
+          "any": [
+            {
+              "--padding-top": "96px",
+              "--padding-bottom": "96px",
+              "--padding-left": "24px",
+              "--padding-right": "24px"
+            },
+            {
+              "--padding-block-start": "96px",
+              "--padding-block-end": "96px",
+              "--padding-inline-start": "24px",
+              "--padding-inline-end": "24px"
+            }
+          ]
+        },
+        {
+          "el": "1a70011",
+          "sel": "",
+          "media": "max-width:767px",
+          "any": [
+            {
+              "--padding-top": "72px",
+              "--padding-bottom": "72px",
+              "--padding-left": "24px",
+              "--padding-right": "24px"
+            },
+            {
+              "--padding-block-start": "72px",
+              "--padding-block-end": "72px",
+              "--padding-inline-start": "24px",
+              "--padding-inline-end": "24px"
+            }
+          ]
+        }
+      ],
+      "html_ids": [
+        "hero"
+      ],
+      "html_tags": {
+        "hero": "section"
+      },
+      "html_text": [
+        "Launch week"
+      ],
+      "html_has": [
+        {
+          "sel": "section#hero.e-con.e-con-full"
+        },
+        {
+          "sel": "section#hero h1"
+        }
+      ],
+      "plants": {
+        "misspell_key": {
+          "el": "1a70011",
+          "key": "min_height"
+        },
+        "drop_activator": {
+          "el": "1a70011",
+          "key": "background_overlay_background"
+        }
+      }
+    },
+    {
+      "name": "layout-columns-row",
+      "about": "A columns row: an inner row container with flex_direction row, flex_direction_mobile column and flex_gap as a gaps value (column, row, isLinked, unit) per breakpoint, holding two inner child containers with content_width full, a percent width and a width_mobile of 100. The row direction and gap reach the post CSS per breakpoint, and each child's width is written from 768px up with 100% at mobile.",
+      "trees": {
+        "containers": [
+          {
+            "id": "1a70021",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "1a70022",
+                "elType": "container",
+                "settings": {
+                  "flex_direction": "row",
+                  "flex_direction_mobile": "column",
+                  "flex_gap": {
+                    "column": "32",
+                    "row": "32",
+                    "isLinked": true,
+                    "unit": "px"
+                  },
+                  "flex_gap_tablet": {
+                    "column": "24",
+                    "row": "24",
+                    "isLinked": true,
+                    "unit": "px"
+                  },
+                  "flex_gap_mobile": {
+                    "column": "20",
+                    "row": "20",
+                    "isLinked": true,
+                    "unit": "px"
+                  }
+                },
+                "elements": [
+                  {
+                    "id": "1a70023",
+                    "elType": "container",
+                    "settings": {
+                      "content_width": "full",
+                      "width": {
+                        "unit": "%",
+                        "size": "55"
+                      },
+                      "width_mobile": {
+                        "unit": "%",
+                        "size": "100"
+                      }
+                    },
+                    "elements": [
+                      {
+                        "id": "1a70025",
+                        "elType": "widget",
+                        "settings": {
+                          "title": "Copy column",
+                          "header_size": "h2"
+                        },
+                        "elements": [],
+                        "widgetType": "heading"
+                      }
+                    ],
+                    "isInner": true
+                  },
+                  {
+                    "id": "1a70024",
+                    "elType": "container",
+                    "settings": {
+                      "content_width": "full",
+                      "width": {
+                        "unit": "%",
+                        "size": "45"
+                      },
+                      "width_mobile": {
+                        "unit": "%",
+                        "size": "100"
+                      }
+                    },
+                    "elements": [
+                      {
+                        "id": "1a70026",
+                        "elType": "widget",
+                        "settings": {
+                          "title": "Image column",
+                          "header_size": "h2"
+                        },
+                        "elements": [],
+                        "widgetType": "heading"
+                      }
+                    ],
+                    "isInner": true
+                  }
+                ],
+                "isInner": true
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "1a70022",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--flex-direction": "row"
+          }
+        },
+        {
+          "el": "1a70022",
+          "sel": "",
+          "media": "max-width:767px",
+          "decl": {
+            "--flex-direction": "column"
+          }
+        },
+        {
+          "el": "1a70022",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--gap": "32px 32px"
+          }
+        },
+        {
+          "el": "1a70022",
+          "sel": "",
+          "media": "max-width:1024px",
+          "decl": {
+            "--gap": "24px 24px"
+          }
+        },
+        {
+          "el": "1a70022",
+          "sel": "",
+          "media": "max-width:767px",
+          "decl": {
+            "--gap": "20px 20px"
+          }
+        },
+        {
+          "el": "1a70023",
+          "sel": "",
+          "media": "min-width:768px",
+          "decl": {
+            "--width": "55%"
+          }
+        },
+        {
+          "el": "1a70024",
+          "sel": "",
+          "media": "min-width:768px",
+          "decl": {
+            "--width": "45%"
+          }
+        },
+        {
+          "el": "1a70023",
+          "sel": "",
+          "media": "max-width:767px",
+          "decl": {
+            "--width": "100%"
+          }
+        },
+        {
+          "el": "1a70024",
+          "sel": "",
+          "media": "max-width:767px",
+          "decl": {
+            "--width": "100%"
+          }
+        }
+      ],
+      "html_text": [
+        "Copy column",
+        "Image column"
+      ],
+      "html_has": [
+        {
+          "sel": ".e-con.e-con-full",
+          "min": 2
+        }
+      ],
+      "plants": {
+        "misspell_key": {
+          "el": "1a70023",
+          "key": "width"
+        }
+      }
+    },
+    {
+      "name": "layout-columns-row-boxed-children",
+      "about": "Recorded as false: a child container of a row that does not set content_width full is boxed, and its width and width_mobile are written to no rule, so a row of such children is not split by percent. The row's own direction and gap are written, which is the control that the absences below can be wrong about.",
+      "trees": {
+        "containers": [
+          {
+            "id": "1a70031",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "1a70032",
+                "elType": "container",
+                "settings": {
+                  "flex_direction": "row",
+                  "flex_direction_mobile": "column",
+                  "flex_gap": {
+                    "column": "32",
+                    "row": "32",
+                    "isLinked": true,
+                    "unit": "px"
+                  },
+                  "flex_gap_tablet": {
+                    "column": "24",
+                    "row": "24",
+                    "isLinked": true,
+                    "unit": "px"
+                  },
+                  "flex_gap_mobile": {
+                    "column": "20",
+                    "row": "20",
+                    "isLinked": true,
+                    "unit": "px"
+                  }
+                },
+                "elements": [
+                  {
+                    "id": "1a70033",
+                    "elType": "container",
+                    "settings": {
+                      "width": {
+                        "unit": "%",
+                        "size": "55"
+                      },
+                      "width_mobile": {
+                        "unit": "%",
+                        "size": "100"
+                      }
+                    },
+                    "elements": [
+                      {
+                        "id": "1a70035",
+                        "elType": "widget",
+                        "settings": {
+                          "title": "Copy column",
+                          "header_size": "h2"
+                        },
+                        "elements": [],
+                        "widgetType": "heading"
+                      }
+                    ],
+                    "isInner": true
+                  },
+                  {
+                    "id": "1a70034",
+                    "elType": "container",
+                    "settings": {
+                      "width": {
+                        "unit": "%",
+                        "size": "45"
+                      },
+                      "width_mobile": {
+                        "unit": "%",
+                        "size": "100"
+                      }
+                    },
+                    "elements": [
+                      {
+                        "id": "1a70036",
+                        "elType": "widget",
+                        "settings": {
+                          "title": "Image column",
+                          "header_size": "h2"
+                        },
+                        "elements": [],
+                        "widgetType": "heading"
+                      }
+                    ],
+                    "isInner": true
+                  }
+                ],
+                "isInner": true
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "1a70032",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--flex-direction": "row"
+          }
+        },
+        {
+          "el": "1a70032",
+          "sel": "",
+          "media": "max-width:767px",
+          "decl": {
+            "--flex-direction": "column"
+          }
+        },
+        {
+          "el": "1a70032",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--gap": "32px 32px"
+          }
+        },
+        {
+          "el": "1a70032",
+          "sel": "",
+          "media": "max-width:1024px",
+          "decl": {
+            "--gap": "24px 24px"
+          }
+        },
+        {
+          "el": "1a70032",
+          "sel": "",
+          "media": "max-width:767px",
+          "decl": {
+            "--gap": "20px 20px"
+          }
+        }
+      ],
+      "css_absent": [
+        {
+          "el": "1a70033",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--width": "55%"
+          }
+        },
+        {
+          "el": "1a70034",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--width": "45%"
+          }
+        },
+        {
+          "el": "1a70033",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--width": "100%"
+          }
+        },
+        {
+          "el": "1a70034",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--width": "100%"
+          }
+        }
+      ],
+      "html_text": [
+        "Copy column",
+        "Image column"
+      ]
+    },
+    {
+      "name": "layout-group",
+      "about": "A group: an inner container with content_width full and flex_direction column holding a heading.",
+      "trees": {
+        "containers": [
+          {
+            "id": "1a70041",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "1a70042",
+                "elType": "container",
+                "settings": {
+                  "content_width": "full",
+                  "flex_direction": "column"
+                },
+                "elements": [
+                  {
+                    "id": "1a70043",
+                    "elType": "widget",
+                    "settings": {
+                      "title": "Grouped heading",
+                      "header_size": "h2"
+                    },
+                    "elements": [],
+                    "widgetType": "heading"
+                  }
+                ],
+                "isInner": true
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "1a70042",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--flex-direction": "column"
+          }
+        }
+      ],
+      "html_text": [
+        "Grouped heading"
+      ],
+      "html_has": [
+        {
+          "sel": ".e-con.e-con-full"
+        }
+      ]
     }
   ]
 }
