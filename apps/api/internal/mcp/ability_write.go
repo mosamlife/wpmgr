@@ -594,12 +594,13 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 		checked, ok = verifyPageCreatePrecheck(resp, entrySum, input, facts)
 	}
 	if !ok {
-		return "", &toolRefusal{
-			reason: reasonAbilityPrecheckRefused,
-			err: domain.Unavailable(ErrCodeSiteUnreachable, msgAbilitySiteAnswer).
-				WithDetails(map[string]any{"retryable": false}),
-			meta: map[string]any{"code": "precheck_unverifiable"},
-		}
+		return "", precheckUnverifiableRefusal()
+	}
+	// A designed page is approved, stored and sent in the frame its precheck
+	// resolved; an input that names none is stored and sent naming it.
+	var frameRefusal *toolRefusal
+	if input, facts, checked, frameRefusal = bindPageFrame(resp, entrySum, input, facts, checked); frameRefusal != nil {
+		return "", frameRefusal
 	}
 	// Step 8: the creation transaction, which stores the request under the
 	// id its precheck was sent with.
@@ -614,6 +615,17 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 		return "", fmt.Errorf("encode ability request result: %w", err)
 	}
 	return string(b), nil
+}
+
+// precheckUnverifiableRefusal answers a page-create whose precheck answer
+// the control plane could not verify; nothing is stored.
+func precheckUnverifiableRefusal() *toolRefusal {
+	return &toolRefusal{
+		reason: reasonAbilityPrecheckRefused,
+		err: domain.Unavailable(ErrCodeSiteUnreachable, msgAbilitySiteAnswer).
+			WithDetails(map[string]any{"retryable": false}),
+		meta: map[string]any{"code": "precheck_unverifiable"},
+	}
 }
 
 // Fixed hints for a precheck refused over its input (GH #823). The site's
@@ -671,6 +683,10 @@ const (
 	hintPageTemplateUnavailable = "The site does not offer the page template that this page frame needs for the post type. " +
 		"Choose a page_frame whose template the site has: " + pageFrameTheme + " uses the theme's own template, and " +
 		pageFrameFullWidth + " and " + pageFrameCanvas + " use Elementor's page templates."
+	hintPageFrameUnavailable = "This site's theme cannot show a designed page in the page_frame sent. " +
+		"A block theme shows a designed page only as " + pageFrameCanvas + ": the page content alone, without the " +
+		"theme's header, footer or page title. Send page_frame " + pageFrameCanvas + ", or leave page_frame out " +
+		"and the page is built in the frame the site can show."
 )
 
 // precheckRefusalHints are the input-related refusal codes and their fixed
@@ -690,6 +706,7 @@ var precheckRefusalHints = map[string]string{
 	pageDesignContrastLow:           hintDesignContrastLow,
 	pageDesignFontUnknown:           hintFontUnknown,
 	pageFrameTemplateUnavailable:    hintPageTemplateUnavailable,
+	pageFrameUnavailable:            hintPageFrameUnavailable,
 	pageCreateAnchorInvalid:         hintAnchorInvalid,
 	pageCreateAnchorDuplicate:       hintAnchorDuplicate,
 	pageCreateAnchorReserved:        hintAnchorReserved,

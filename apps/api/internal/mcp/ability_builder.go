@@ -399,3 +399,45 @@ func verifyBuilderPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum 
 		},
 	}, true
 }
+
+// msgPageFrameOverLimit is the reason an input cannot carry the frame its
+// site resolved: with the page_frame member added it is over the size limit.
+const msgPageFrameOverLimit = "this site builds the page in the %s frame, and the input must name it; " +
+	"with page_frame added the input is over %d bytes, so shorten the page"
+
+// bindPageFrame binds a designed page to the frame its verified precheck
+// resolved (precheckPageFrame), never to a default: the facts the card and
+// the presented digest bind name that frame, and an input that sends no
+// page_frame is stored and sent to the site with it as its last member, the
+// AI's bytes unchanged before it. The site then builds at the write the frame
+// that was approved, or refuses page_frame_unavailable when its theme no
+// longer shows that frame. The precheck digest returned with such an input is
+// the one the site computes at the write for those bytes: the entry, the
+// input's sha256, and the precheck's base fingerprint and preview digest,
+// which do not depend on the frame. A version 2 page comes back as it was
+// given. The refusal is precheck_unverifiable for an answer that resolved no
+// frame, or names another, and bad_input for an input that cannot carry it.
+func bindPageFrame(resp agentcmd.AbilityRunResponse, entrySum string, input []byte, f pageCreateFacts, pc checkedPrecheck) ([]byte, pageCreateFacts, checkedPrecheck, *toolRefusal) {
+	if f.outlineVersion != pageOutlineVersionDesigned {
+		return input, f, pc, nil
+	}
+	frame, ok := precheckPageFrame(resp.Raw, f)
+	if !ok {
+		return nil, f, pc, precheckUnverifiableRefusal()
+	}
+	f.pageFrame = frame
+	if f.pageFrameSent {
+		return input, f, pc, nil
+	}
+	framed, ok := pageCreateInputWithFrame(input, frame)
+	if !ok {
+		return nil, f, pc, pageCreateInputRefusal(outlineRefusal(pageCreateBadInput, "input", "page_frame",
+			fmt.Sprintf(msgPageFrameOverLimit, frame, abilityRunDefaultInputBytes)))
+	}
+	pre, ok := phpJSONStringArray(entrySum, sha256Hex(framed), pc.baseFingerprint, pc.previewDigest)
+	if !ok {
+		return nil, f, pc, precheckUnverifiableRefusal()
+	}
+	pc.precheckDigest = sha256Hex(pre)
+	return framed, f, pc, nil
+}

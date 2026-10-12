@@ -634,10 +634,12 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"pattern_items_out_of_range": {},
 	"icon_unknown":               {},
 	// Refusals only the site can make for a designed page: a font family its
-	// Elementor does not have, and a page frame whose template its theme does
-	// not offer.
+	// Elementor does not have, a page frame whose template its theme does not
+	// offer, and a page frame its theme cannot show a designed page in (a
+	// block theme shows one only as canvas).
 	"font_unknown":              {},
 	"page_template_unavailable": {},
+	"page_frame_unavailable":    {},
 }
 
 var abilityRunCodeRe = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)

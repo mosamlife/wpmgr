@@ -22,6 +22,7 @@ package mcp
 // page_frame are unknown members, as before.
 
 import (
+	"bytes"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -112,11 +113,14 @@ type pageCreateFacts struct {
 	// outlineVersion is pageOutlineVersionDesigned for a designed page, 0 for
 	// an input without outline_version. design is that page's design, every
 	// field checked and its colours upper case, and pageFrame the frame it
-	// sits in: the input's page_frame, else full_width when the outline has a
-	// hero and theme when it has none. Both are empty for a version 2 input.
+	// sits in: until the precheck answers, the input's page_frame, else the
+	// classic theme's default (pageFrameOf); from then on, the frame the site
+	// resolved (bindPageFrame). pageFrameSent is true when the input sends
+	// page_frame. All three are empty for a version 2 input.
 	outlineVersion int
 	design         *pageDesign
 	pageFrame      string
+	pageFrameSent  bool
 	// usesLayout: the outline holds a block beyond heading, paragraph and
 	// list, so the request needs MinAgentVersionForPageLayout and is shown
 	// with card copy version 2.
@@ -280,6 +284,7 @@ func checkPageCreateInput(input []byte) (pageCreateFacts, pageCreateRefusal) {
 		if f.pageFrame, ok = pageFrameOf(top, outline); !ok {
 			return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
 		}
+		_, f.pageFrameSent = top["page_frame"]
 		if len(outline) > pageCreateMaxSections {
 			return pageCreateFacts{}, outlineRefusal(pageCreateLayoutInvalid, "input", "outline",
 				fmt.Sprintf("a page holds 1 to %d sections; this one has %d", pageCreateMaxSections, len(outline)))
@@ -352,10 +357,11 @@ func pageOutlineVersionOf(top map[string]json.RawMessage) (int, bool) {
 	return 0, false
 }
 
-// pageFrameOf reads page_frame from the input's top level and applies its
-// default. A member that is sent must be one of pageFrames; one that is not
-// sent is full_width when the outline has a hero and theme when it has none.
-// Canvas is only ever asked for.
+// pageFrameOf reads page_frame from the input's top level and applies the
+// classic theme's default. A member that is sent must be one of pageFrames;
+// one that is not sent is full_width when the outline has a hero and theme
+// when it has none. The frame a page is built in is the one its site
+// resolves (resolvedPageFrame), which a block theme makes canvas.
 func pageFrameOf(top map[string]json.RawMessage, outline []json.RawMessage) (string, bool) {
 	raw, has := top["page_frame"]
 	if !has {
@@ -369,6 +375,79 @@ func pageFrameOf(top map[string]json.RawMessage, outline []json.RawMessage) (str
 		return "", false
 	}
 	return frame, true
+}
+
+// resolvedPageFrame is the frame a designed page is built in on a site whose
+// theme is (blockTheme) or is not a block theme, by the rule the site
+// applies. A block theme shows a designed page only as canvas: an input
+// without page_frame gets canvas there, and one that sends theme or
+// full_width is refused page_frame_unavailable (ok false). A classic theme
+// builds the input's page_frame, else full_width when the outline has a hero
+// and theme when it has none. f is a designed page's checked input, before
+// its precheck answered.
+func resolvedPageFrame(f pageCreateFacts, blockTheme bool) (string, bool) {
+	if !blockTheme {
+		return f.pageFrame, slices.Contains(pageFrames, f.pageFrame)
+	}
+	if f.pageFrameSent && f.pageFrame != pageFrameCanvas {
+		return "", false
+	}
+	return pageFrameCanvas, true
+}
+
+// precheckPageFrame is the frame a designed page's precheck answer resolved:
+// the answer's top-level builder_facts, {"block_theme": bool, "page_frame":
+// string}. ok is false when builder_facts is missing or malformed, when the
+// site resolved no frame, or when its frame is not the one resolvedPageFrame
+// gives for this input on a site with that theme. A frame the site did not
+// resolve is never replaced by a default.
+func precheckPageFrame(answer []byte, f pageCreateFacts) (string, bool) {
+	top, ok := jsonObjectOf(answer)
+	if !ok {
+		return "", false
+	}
+	facts, ok := jsonObjectOf(top["builder_facts"])
+	if !ok {
+		return "", false
+	}
+	blockTheme, ok := jsonBoolOf(facts["block_theme"])
+	if !ok {
+		return "", false
+	}
+	frame, ok := jsonStringOf(facts["page_frame"])
+	if !ok {
+		return "", false
+	}
+	want, ok := resolvedPageFrame(f, blockTheme)
+	if !ok || frame != want {
+		return "", false
+	}
+	return want, true
+}
+
+// pageCreateInputWithFrame is input with "page_frame": frame added as its
+// last member: the input's bytes as sent up to its closing brace, without
+// the whitespace after it, then the member. ok is false when input does not
+// end with an object's closing brace or the result is over the input size
+// limit.
+func pageCreateInputWithFrame(input []byte, frame string) ([]byte, bool) {
+	body := bytes.TrimRight(input, " \t\r\n")
+	if len(body) < 2 || body[len(body)-1] != '}' {
+		return nil, false
+	}
+	enc, err := json.Marshal(frame)
+	if err != nil {
+		return nil, false
+	}
+	out := make([]byte, 0, len(body)+len(`,"page_frame":`)+len(enc))
+	out = append(out, body[:len(body)-1]...)
+	out = append(out, `,"page_frame":`...)
+	out = append(out, enc...)
+	out = append(out, '}')
+	if len(out) > abilityRunDefaultInputBytes {
+		return nil, false
+	}
+	return out, true
 }
 
 // pageOutlineHasHero reports whether a section of a version 3 outline holds a
@@ -1262,9 +1341,10 @@ func pageContentImagesMatch(content string, media []pageMediaFact) bool {
 //
 // A designed page's card also holds its design, every field checked and its
 // colours upper case, and its page frame as the page is built in it: the
-// input's page_frame, else the default the control plane applied. The
-// presented digest covers these bytes, so approving the card approves that
-// design in that frame. A version 2 page's card holds neither member.
+// frame the site's precheck resolved (bindPageFrame), which the stored input
+// also names. The presented digest covers these bytes, so approving the card
+// approves that design in that frame. A version 2 page's card holds neither
+// member.
 type pageCardFacts struct {
 	Kind      string           `json:"kind"`
 	Media     []PageCardMedia  `json:"media,omitempty"`
@@ -1475,10 +1555,13 @@ const (
 
 // Refusals that only the site can make, since they depend on its own Elementor
 // and theme: a font family the design names that the site's font registry
-// does not have, and a page frame whose template the theme does not offer.
+// does not have, a page frame whose template the theme does not offer, and a
+// page frame the theme cannot show a designed page in (a block theme shows
+// one only as canvas).
 const (
 	pageDesignFontUnknown        = "font_unknown"
 	pageFrameTemplateUnavailable = "page_template_unavailable"
+	pageFrameUnavailable         = "page_frame_unavailable"
 )
 
 // designFailure is one problem found in a design object. Path and Key

@@ -52,11 +52,12 @@ func TestEveryV3CodeHasHint(t *testing.T) {
 }
 
 // siteOnlyCodes are the refusals that only the site can make: a font family
-// its Elementor does not have, and a page frame whose template its theme does
-// not offer. The control plane never answers them itself, so the codes of the
-// control plane's own answers do not reach them. They are written out here as
-// the agent spells them.
-var siteOnlyCodes = []string{"font_unknown", "page_template_unavailable"}
+// its Elementor does not have, a page frame whose template its theme does not
+// offer, and a page frame its theme cannot show a designed page in. The
+// control plane never answers them itself, so the codes of the control
+// plane's own answers do not reach them. They are written out here as the
+// agent spells them.
+var siteOnlyCodes = []string{"font_unknown", "page_template_unavailable", "page_frame_unavailable"}
 
 // A site-only code is in the closed set of agent refusal codes, so that an
 // answer carrying it is read as itself and not as unknown, and has a fixed
