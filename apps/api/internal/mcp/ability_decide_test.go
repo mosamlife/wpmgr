@@ -72,6 +72,10 @@ func (s namedDraftStore) EligibleDraftIDs(_ context.Context, _ domain.Principal,
 	return []int64{s.post}, nil
 }
 
+func (s namedDraftStore) EligibleDraftCreateInput(_ context.Context, _ domain.Principal, _ uuid.UUID, _ int64) ([]byte, error) {
+	return nil, nil
+}
+
 // pageEditFixtureAgent answers a page-edit precheck with the agent's
 // recorded preview (page-edit-preview.json), its precheck digest bound to
 // the entry and the input it was sent, as the agent binds it.

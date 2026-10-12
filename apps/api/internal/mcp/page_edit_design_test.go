@@ -47,6 +47,7 @@ const (
 // fakeDraftCreateInputs is the store behind a draft's design: the input of
 // the page-create request that made the draft.
 type fakeDraftCreateInputs struct {
+	inputDraftStore
 	input []byte
 	err   error
 	calls []fakeDraftCreateInputsCall
@@ -66,7 +67,7 @@ func (f *fakeDraftCreateInputs) EligibleDraftCreateInput(_ context.Context, p do
 func designEngine(store *fakeDraftCreateInputs) *abilityEngine {
 	e := &abilityEngine{}
 	if store != nil {
-		e.designs = store
+		e.drafts = store
 	}
 	return e
 }
@@ -241,7 +242,7 @@ func TestPageEditDesignOnTheWire(t *testing.T) {
 		e.EntrySha256 = &sum
 		eng := &abilityEngine{agent: agent, entry: testEntryEncoder, readLimit: newAbilityReadLimiter(), drafts: inputDraftStore{}}
 		if store != nil {
-			eng.designs = store
+			eng.drafts = store
 		}
 		// A site on the agent that builds designed pages: the floor of an input
 		// with a design is not what this test is about.

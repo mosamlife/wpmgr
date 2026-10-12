@@ -54,6 +54,10 @@ func (inputDraftStore) EligibleDraftIDs(_ context.Context, _ domain.Principal, _
 	return []int64{postID}, nil
 }
 
+func (inputDraftStore) EligibleDraftCreateInput(_ context.Context, _ domain.Principal, _ uuid.UUID, _ int64) ([]byte, error) {
+	return nil, nil
+}
+
 // pageEditPrecheckRefusal runs pageEditRunInput through runPageEdit against
 // an agent answering reply to the precheck, and returns the refusal.
 func pageEditPrecheckRefusal(t *testing.T, reply map[string]any) *toolRefusal {

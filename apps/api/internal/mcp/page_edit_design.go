@@ -27,19 +27,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
-	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
-
-// DraftDesignStore reads the page-create request that made a draft, for the
-// design a page-edit inherits. *Repo implements it.
-type DraftDesignStore interface {
-	// EligibleDraftCreateInput is the exact input of the wpmgr/page-create
-	// request that made post postID on this site, while the draft is still
-	// WPMgr's to change; nil when there is none.
-	EligibleDraftCreateInput(ctx context.Context, principal domain.Principal, siteID uuid.UUID, postID int64) ([]byte, error)
-}
-
-var _ DraftDesignStore = (*Repo)(nil)
 
 // eligibleDraftInputQueries are the two statements eligibleDraftCreateInput
 // runs: the one that names the eligible draft, and the one that returns the
@@ -88,21 +76,6 @@ func eligibleDraftCreateInput(ctx context.Context, q eligibleDraftInputQueries, 
 		return nil, errDraftInputNamesAnotherRequest
 	}
 	return []byte(created.InputJson), nil
-}
-
-// EligibleDraftCreateInput implements DraftDesignStore: eligibleDraftCreateInput,
-// in the connection's site-scoped transaction.
-func (r *Repo) EligibleDraftCreateInput(ctx context.Context, principal domain.Principal, siteID uuid.UUID, postID int64) ([]byte, error) {
-	var out []byte
-	err := r.runConnectionTx(ctx, principal, "read eligible draft input", func(tx pgx.Tx) error {
-		in, err := eligibleDraftCreateInput(ctx, sqlc.New(tx), principal.TenantID, siteID, postID)
-		out = in
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // draftDesignOf is the design a page-create input made its draft with: the
@@ -203,8 +176,8 @@ func (s *Service) pageEditInheritDesign(ctx context.Context, eng *abilityEngine,
 		return input, f, nil, nil
 	}
 	var inherited *pageDesign
-	if eng.designs != nil {
-		created, err := eng.designs.EligibleDraftCreateInput(ctx, site.p, site.row.ID, f.postID)
+	if eng.drafts != nil {
+		created, err := eng.drafts.EligibleDraftCreateInput(ctx, site.p, site.row.ID, f.postID)
 		if err != nil {
 			return nil, f, nil, fmt.Errorf("read the draft's design: %w", err)
 		}

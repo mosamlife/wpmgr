@@ -233,10 +233,29 @@ func (r *Repo) EligibleDraftIDs(ctx context.Context, principal domain.Principal,
 	return out, nil
 }
 
+// EligibleDraftCreateInput implements DraftEligibilityStore: eligibleDraftCreateInput,
+// in the connection's site-scoped transaction.
+func (r *Repo) EligibleDraftCreateInput(ctx context.Context, principal domain.Principal, siteID uuid.UUID, postID int64) ([]byte, error) {
+	var out []byte
+	err := r.runConnectionTx(ctx, principal, "read eligible draft input", func(tx pgx.Tx) error {
+		in, err := eligibleDraftCreateInput(ctx, sqlc.New(tx), principal.TenantID, siteID, postID)
+		out = in
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DraftEligibilityStore reads which drafts this control plane names to the
-// agent. *Repo implements it.
+// agent and the creation input a page-edit inherits. *Repo implements it.
 type DraftEligibilityStore interface {
 	EligibleDraftIDs(ctx context.Context, principal domain.Principal, siteID uuid.UUID, postID int64) ([]int64, error)
+	// EligibleDraftCreateInput is the exact input of the wpmgr/page-create
+	// request that made post postID on this site, while the draft is still
+	// WPMgr's to change; nil when there is none.
+	EligibleDraftCreateInput(ctx context.Context, principal domain.Principal, siteID uuid.UUID, postID int64) ([]byte, error)
 }
 
 var _ DraftEligibilityStore = (*Repo)(nil)

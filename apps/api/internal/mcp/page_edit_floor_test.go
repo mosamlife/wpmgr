@@ -124,7 +124,7 @@ func TestPageEditRun_DesignedFloorIsPerInput(t *testing.T) {
 		e.EntrySha256 = &sum
 		eng := &abilityEngine{agent: agent, entry: testEntryEncoder, readLimit: newAbilityReadLimiter(), drafts: inputDraftStore{}}
 		if drafts != nil {
-			eng.designs = drafts
+			eng.drafts = drafts
 		}
 		site := abilitySite{row: sqlc.Site{ID: uuid.New(), Url: agent.srv.URL, AgentVersion: agentVersion}}
 		_, err := (&Service{}).runPageEdit(context.Background(), AuthorizedRequest{GrantID: uuid.New()}, eng, site, &e, "example.com", input)
