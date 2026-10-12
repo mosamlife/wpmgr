@@ -1165,7 +1165,7 @@ describe("a designed page as data", () => {
           type: "section",
           anchor: `part-${String.fromCharCode(97 + i)}`,
           ...(i < backgrounds ? { background: { attachment_id: 40 + i } } : {}),
-          children: i === 0 ? [{ type: "paragraph", text: "x" }, ...Array.from({ length: blocks }, (_w, j) => ({ type: "image", attachment_id: 100 + j, alt: "a" }))] : [{ type: "paragraph", text: "x" }],
+          children: i === 0 ? [{ type: "paragraph", text: "x" }, ...Array.from({ length: blocks }, () => ({ type: "image", attachment_id: 100, alt: "a" }))] : [{ type: "paragraph", text: "x" }],
         }));
         return doc;
       };
@@ -1179,7 +1179,8 @@ describe("a designed page as data", () => {
       const withBlocks = (n: number) => {
         const doc = v3Doc("v3-full-landing-page");
         // The page already names 1 background, 6 logos and 3 avatars: 10 images.
-        const blocks = Array.from({ length: n }, (_v, i) => ({ type: "image", attachment_id: 300 + i, alt: "a" }));
+        // One attachment named n times: the cap counts every mention, while the site's facts stay few.
+        const blocks = Array.from({ length: n }, () => ({ type: "image", attachment_id: 300, alt: "a" }));
         asList(sectionAt(doc, 2).children).push(...blocks);
         return doc;
       };
