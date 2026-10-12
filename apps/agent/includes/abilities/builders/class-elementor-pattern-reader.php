@@ -199,6 +199,11 @@ final class ElementorPatternReader
             if (!in_array(self::shape($card), self::CARD_SHAPES, true)) {
                 return null;
             }
+            // A plan lists 1 to the grammar's most features, in a list of positions.
+            $lines = $card['elements'][$card['elements'][2]['widgetType'] === 'text-editor' ? 3 : 2]['settings']['icon_list'] ?? null;
+            if (!is_array($lines) || !ArrayShape::isList($lines) || $lines === [] || count($lines) > OutlineV3Schema::MAX_PLAN_FEATURES) {
+                return null;
+            }
         }
         $out = [];
         foreach ($cards as $k => $card) {
@@ -211,8 +216,7 @@ final class ElementorPatternReader
             if ($period) {
                 self::put($out, 'plans.' . $k . '.period', $parts[2], ['editor'], 'paragraph');
             }
-            $lines = $list['settings']['icon_list'] ?? null;
-            foreach (is_array($lines) ? array_keys($lines) : [] as $j) {
+            foreach (array_keys($list['settings']['icon_list']) as $j) {
                 self::put($out, 'plans.' . $k . '.features.' . $j, $list, ['icon_list', $j, 'text'], 'text');
             }
             self::put($out, 'plans.' . $k . '.cta.text', $button, ['text'], 'text');
@@ -315,7 +319,7 @@ final class ElementorPatternReader
         }
         $settings = $node['settings'] ?? [];
         $children = $node['elements'] ?? [];
-        if (!is_array($settings) || !is_array($children)) {
+        if (!is_array($settings) || !is_array($children) || !ArrayShape::isList($children)) {
             return '?';
         }
         $elType = $node['elType'] ?? null;

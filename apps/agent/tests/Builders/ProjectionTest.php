@@ -484,6 +484,22 @@ final class ProjectionTest extends TestCase
                 array_pop($c['elements'][0]['elements']);
                 return $c;
             }],
+            'pricing: a ninth feature line'                  => ['pricing', 'three-plans', 1, static function (array $c): array {
+                $c['elements'][0]['elements'][3]['settings']['icon_list'] = array_fill(0, 9, ['text' => 'Line', 'selected_icon' => ['value' => 'fas fa-check', 'library' => 'fa-solid'], '_id' => 'abcdef0']);
+                return $c;
+            }],
+            'pricing: no feature line'                       => ['pricing', 'three-plans', 1, static function (array $c): array {
+                $c['elements'][0]['elements'][3]['settings']['icon_list'] = [];
+                return $c;
+            }],
+            'faq: the elements are keyed by name'           => ['faq', 'accordion', 3, static function (array $c): array {
+                $c['elements'] = ['first' => $c['elements'][0]];
+                return $c;
+            }],
+            'stats: the columns are keyed by name'          => ['stats', 'counters', 2, static function (array $c): array {
+                $c['elements'] = ['a' => $c['elements'][0], 'b' => $c['elements'][1]];
+                return $c;
+            }],
             'features split: a third column'                => ['features', 'split', 4, static function (array $c): array {
                 $c['elements'][] = ['id' => 'z000002', 'elType' => 'container', 'settings' => [], 'elements' => [], 'isInner' => true];
                 return $c;
