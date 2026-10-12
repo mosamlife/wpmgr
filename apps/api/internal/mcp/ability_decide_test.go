@@ -72,6 +72,10 @@ func (s namedDraftStore) EligibleDraftIDs(_ context.Context, _ domain.Principal,
 	return []int64{s.post}, nil
 }
 
+func (s namedDraftStore) EligibleDraftCreateInput(_ context.Context, _ domain.Principal, _ uuid.UUID, _ int64) ([]byte, error) {
+	return nil, nil
+}
+
 // pageEditFixtureAgent answers a page-edit precheck with the agent's
 // recorded preview (page-edit-preview.json), its precheck digest bound to
 // the entry and the input it was sent, as the agent binds it.
@@ -92,12 +96,12 @@ func (a *pageEditFixtureAgent) AbilityRun(_ context.Context, _ uuid.UUID, _ stri
 // decidedWriteRouter is the real transport over a site with content editing
 // on, the catalogue entry for ability, writes on, and dec wired as the
 // approval package is in cmd/wpmgr.
-func decidedWriteRouter(t *testing.T, ability string, agent AbilityAgent, store AbilityRequestStore, dec AbilityDecider) (*gin.Engine, uuid.UUID) {
+func decidedWriteRouter(t *testing.T, ability string, agent AbilityAgent, store AbilityRequestStore, dec AbilityDecider, postIDs ...int64) (*gin.Engine, uuid.UUID) {
 	t.Helper()
 	f := newAbilityFixture(t)
 	f.store.recheck.GrantCapabilities = []string{string(CapSitesRead), string(CapAbilityRead), string(CapAbilityRequest)}
 	f.store.recheck.GrantOauthScopes = []string{string(ScopeRead), string(ScopeSite)}
-	f.store.sites[0].AgentVersion = agentcmd.MinAgentVersionForBuilderEdit
+	f.store.sites[0].AgentVersion = agentcmd.MinAgentVersionForDesignedPages
 	f.store.sites[0].ContentEditingEnabledAt = pgtype.Timestamptz{Time: time.Now(), Valid: true}
 	perm := "site.content.edit"
 	entry := catalogueRow(ability, "wpmgr", "write")
@@ -118,7 +122,11 @@ func decidedWriteRouter(t *testing.T, ability string, agent AbilityAgent, store 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	svc := NewService(railReadyStore{f.store}).WithContextResolver(emptyContextResolver()).withAuditRecorder(&capturingRecorder{})
-	if err := svc.EnableAbilityTools(namedDraftStore{fakeAbilityStore: f.ab, post: 120}, agent, testEntryEncoder, "test-secret"); err != nil {
+	postID := int64(120)
+	if len(postIDs) > 0 {
+		postID = postIDs[0]
+	}
+	if err := svc.EnableAbilityTools(namedDraftStore{fakeAbilityStore: f.ab, post: postID}, agent, testEntryEncoder, "test-secret"); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.EnableAbilityWrites(store); err != nil {

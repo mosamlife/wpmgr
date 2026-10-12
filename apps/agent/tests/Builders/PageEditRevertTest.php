@@ -29,6 +29,7 @@ use WPMgr\Agent\Abilities\Builders\BuilderDocumentSnapshot;
 use WPMgr\Agent\Abilities\Builders\DraftEligibility;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
 use WPMgr\Agent\Abilities\Builders\ElementorDocument;
+use WPMgr\Agent\Abilities\Builders\ElementorStyleCache;
 use WPMgr\Agent\Abilities\OwnAbilities;
 use WPMgr\Agent\Commands\AbilityRunCommand;
 use WPMgr\Agent\Commands\ContentEditingEnableCommand;
@@ -748,6 +749,81 @@ final class PageEditRevertTest extends TestCase
      *
      * @return list<array<string,mixed>>
      */
+    public function testUndoOfAViewedDraftKeepsItsDerivedWritesInScope(): void
+    {
+        $this->enable();
+        $baseFp  = $this->fp();
+        $applied = $this->edit(self::EDIT, self::ops());
+
+        // The draft was viewed: the restore's regeneration clears its
+        // style-cache entry, rewrites its CSS row and drops its element cache.
+        $name    = ElementorStyleCache::PREFIX . 'local';
+        $other   = ['state' => true, 'meta' => '6ac9bb9c3d4e5'];
+        $viewed  = ['state' => false, 'children' => [self::OTHER => $other, self::DRAFT => ['state' => true, 'meta' => []]]];
+        $cleared = ['state' => false, 'children' => [self::OTHER => $other]];
+        $armed   = [];
+        $this->api->onRegenerate = function () use ($name, $viewed, $cleared, &$armed): void {
+            $armed = array_column($this->hooks, 0);
+            $this->fire('updated_option', $name, $viewed, $cleared);
+            $this->fire('updated_post_meta', 990, self::DRAFT, '_elementor_css', ['status' => 'file']);
+            $this->fire('deleted_post_meta', [991], self::DRAFT, ElementorDocument::KEY_ELEMENT_CACHE, '');
+        };
+        $r = $this->undo(self::EDIT, $applied['snapshot_sha256']);
+        $this->api->onRegenerate = null;
+
+        $this->assertSame(['ok' => true, 'outcome' => 'reverted', 'mode' => 'revert', 'request_id' => self::EDIT, 'post_id' => self::DRAFT, 'restored' => true], $r);
+        $this->assertContains('updated_option', $armed, 'the restore\'s regeneration runs inside the write scope');
+        $this->assertContains('updated_post_meta', $armed, 'the restore\'s regeneration runs inside the write scope');
+        $this->assertSame($baseFp, $this->fp());
+        $this->assertSame('restored', $this->options['wpmgr_ability_ledger_' . self::EDIT]['undo_state']);
+        $this->assertSame([], $this->wpdb->claims, 'the target claim is released');
+    }
+
+    public function testUndoThatWritesOutsideThePageIsSideEffectDetected(): void
+    {
+        $this->enable();
+        $baseFp = $this->fp();
+        $name   = ElementorStyleCache::PREFIX . 'local';
+        $other  = ['state' => true, 'meta' => '6ac9bb9c3d4e5'];
+        $viewed = ['state' => false, 'children' => [self::OTHER => $other, self::DRAFT => ['state' => true, 'meta' => []]]];
+        $theirs = ['state' => false, 'children' => [self::OTHER => ['state' => false], self::DRAFT => ['state' => true, 'meta' => []]]];
+        $writes = [
+            'another post\'s style-cache entry' => fn () => $this->fire('updated_option', $name, $viewed, $theirs),
+            'another post\'s CSS row'           => fn () => $this->fire('updated_post_meta', 992, self::OTHER, '_elementor_css', ['status' => 'file']),
+            'an option no pattern names'        => fn () => $this->fire('updated_option', 'elementor_unrelated_setting', 'a', 'b'),
+            'the active kit changed'            => fn () => $this->rows->addMeta(993, self::KIT, ElementorDocument::KEY_DATA, '[{"id":"x"}]'),
+        ];
+        $n = 0;
+        foreach ($writes as $why => $write) {
+            $request = sprintf('7777777%d-2222-4333-8444-666666666666', ++$n);
+            $applied = $this->edit($request, self::ops());
+            $this->api->onRegenerate = static function () use ($write): void {
+                $write();
+            };
+            $r = $this->undo($request, $applied['snapshot_sha256']);
+            $this->api->onRegenerate = null;
+
+            $this->assertSame([false, 'side_effect_detected', true], [$r['ok'] ?? null, $r['code'] ?? null, $r['restored'] ?? null], $why . ': ' . json_encode($r));
+            $this->assertSame($baseFp, $this->fp(), $why . ': the page is back');
+            $this->assertSame('restored', $this->options['wpmgr_ability_ledger_' . $request]['undo_state'], $why . ': the undo is recorded');
+            $this->assertSame([], $this->wpdb->claims, $why . ': the target claim is released');
+            $this->assertNotContains('updated_option', array_column($this->hooks, 0), $why . ': the scope is disarmed');
+        }
+    }
+
+    /**
+     * Run the callbacks hooked on $tag, lowest priority first, each with the
+     * number of arguments it accepts.
+     */
+    private function fire(string $tag, mixed ...$args): void
+    {
+        $rows = array_values(array_filter($this->hooks, static fn ($r) => $r[0] === $tag));
+        usort($rows, static fn ($a, $b) => $a[2] <=> $b[2]);
+        foreach ($rows as [, $callback, , $accepted]) {
+            $callback(...array_slice($args, 0, $accepted));
+        }
+    }
+
     private static function page(): array
     {
         $fixture = json_decode((string) file_get_contents(self::FIXTURE), true, 512, JSON_THROW_ON_ERROR);

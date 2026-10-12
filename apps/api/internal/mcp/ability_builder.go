@@ -18,7 +18,8 @@ package mcp
 // What depends on the site (whether Elementor is active, its version, the
 // format the site uses, an image's library alt text) is the agent's to
 // decide at precheck. A builder input then needs
-// agentcmd.MinAgentVersionForBuilderAdapters on the site (PageCreateAgentFloor).
+// agentcmd.MinAgentVersionForBuilderAdapters on the site, and a designed page
+// agentcmd.MinAgentVersionForDesignedPages (PageCreateAgentFloor).
 
 import (
 	"bytes"
@@ -171,6 +172,10 @@ func elementorOutlineProblem(input []byte) *pageBuilderProblem {
 }
 
 func elementorNodeProblem(raw json.RawMessage, path string) *pageBuilderProblem {
+	return elementorNodeProblemWithDesign(raw, path, false)
+}
+
+func elementorNodeProblemWithDesign(raw json.RawMessage, path string, designed bool) *pageBuilderProblem {
 	n, ok := jsonObjectOf(raw)
 	if !ok {
 		return nil
@@ -196,14 +201,18 @@ func elementorNodeProblem(raw json.RawMessage, path string) *pageBuilderProblem 
 			}
 		}
 	case "buttons":
+		styles := elementorButtonStyles
+		if designed {
+			styles = designedButtonStyles
+		}
 		list, _ := jsonArrayOf(n["buttons"])
 		for j, rawButton := range list {
 			at := fmt.Sprintf("%s.buttons[%d]", path, j)
 			b, _ := jsonObjectOf(rawButton)
 			if raw, has := b["style"]; has {
-				if style, _ := jsonStringOf(raw); !stringIn(style, elementorButtonStyles) {
+				if style, _ := jsonStringOf(raw); !stringIn(style, styles) {
 					return &pageBuilderProblem{code: pageNodeNotSupported, node: at, field: "style",
-						allowed: elementorButtonStyles, hint: hintNodeNotSupportedByBuilder}
+						allowed: styles, hint: hintNodeNotSupportedByBuilder}
 				}
 			}
 			if url, _ := jsonStringOf(b["url"]); strings.Contains(url, "&") {
@@ -213,7 +222,7 @@ func elementorNodeProblem(raw json.RawMessage, path string) *pageBuilderProblem 
 	case "group":
 		children, _ := jsonArrayOf(n["children"])
 		for j, child := range children {
-			if p := elementorNodeProblem(child, fmt.Sprintf("%s.children[%d]", path, j)); p != nil {
+			if p := elementorNodeProblemWithDesign(child, fmt.Sprintf("%s.children[%d]", path, j), designed); p != nil {
 				return p
 			}
 		}
@@ -223,7 +232,7 @@ func elementorNodeProblem(raw json.RawMessage, path string) *pageBuilderProblem 
 			col, _ := jsonObjectOf(rawCol)
 			children, _ := jsonArrayOf(col["children"])
 			for m, child := range children {
-				if p := elementorNodeProblem(child, fmt.Sprintf("%s.columns[%d].children[%d]", path, k, m)); p != nil {
+				if p := elementorNodeProblemWithDesign(child, fmt.Sprintf("%s.columns[%d].children[%d]", path, k, m), designed); p != nil {
 					return p
 				}
 			}
@@ -250,6 +259,8 @@ const (
 	msgAbilityBuilderInput      = "the outline uses something this page builder cannot build, so nothing was asked"
 	msgAbilityBuilderOutdated   = "Pages built with a page builder need the WPMgr plugin " +
 		agentcmd.MinAgentVersionForBuilderAdapters + " or later on this site. Nothing was asked."
+	msgAbilityDesignedOutdated = "Designed pages (outline_version 3, design and page_frame) need the WPMgr plugin " +
+		agentcmd.MinAgentVersionForDesignedPages + " or later on this site. Nothing was asked."
 )
 
 // Fixed hints for the builder refusals (GH #823 pattern: our words, never
@@ -263,9 +274,9 @@ const (
 	hintNodeNotSupportedByBuilder = "Elementor builds every outline block, with two limits: a button's style is fill " +
 		"(leave style out or send fill), and an image's align is none or center. node names the outline item to change, " +
 		"field its setting, and allowed the values Elementor builds there."
-	hintImageAltFromLibrary = "An image on an Elementor page shows the alt text saved with the image in the media " +
-		"library. Set alt to that text exactly (wpmgr/rest-read route wp-v2-media-list gives it as alt_text), or ask " +
-		"a person to change it in the media library first."
+	hintImageAltFromLibrary = "An image on an Elementor page, a logo of a logos pattern included, shows the alt text " +
+		"saved with the image in the media library. Set alt to that text exactly (wpmgr/rest-read route " +
+		"wp-v2-media-list gives it as alt_text), or ask a person to change it in the media library first."
 	hintElementorAddressParagraph = "On an Elementor page, a paragraph or quote paragraph whose whole text is one web " +
 		"address becomes an embedded player. Add words around the address, or use a button for the link."
 	hintElementorLinkAmpersand = "A button link on an Elementor page cannot contain &. Use a link without one."
@@ -338,6 +349,12 @@ type builderPreview struct {
 // digest is recomputed over that tree's bytes, so a precheck whose tree
 // differs in any node, setting, id or order is refused before anything is
 // stored.
+//
+// A designed page (outline version 3) is built from containers, so any other
+// layout is refused, and its tree is the one designedClassicTree builds from
+// the input, the request id, the images and the breakpoints the answer's
+// builder_facts name (precheckActiveBreakpoints). An answer that names none
+// of them is never read as naming no breakpoint.
 func verifyBuilderPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum string, input []byte, f pageCreateFacts, requestID string) (checkedPrecheck, bool) {
 	if f.builder != pageBuilderElementor || !precheckDigestsWellFormed(resp) {
 		return checkedPrecheck{}, false
@@ -362,6 +379,10 @@ func verifyBuilderPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum 
 	if pv.Layout != elementorLayoutBoxes && pv.Layout != elementorLayoutRows {
 		return checkedPrecheck{}, false
 	}
+	designed := f.outlineVersion == pageOutlineVersionDesigned
+	if designed && pv.Layout != elementorLayoutBoxes {
+		return checkedPrecheck{}, false
+	}
 	media, ok := verifyPreviewMedia(pv.Media, f)
 	if !ok {
 		return checkedPrecheck{}, false
@@ -369,7 +390,16 @@ func verifyBuilderPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum 
 	if base, ok := pageCreateBaseFingerprint(f.postType, media); !ok || base != resp.BaseFingerprint {
 		return checkedPrecheck{}, false
 	}
-	tree, ok := elementorClassicTree(input, requestID, pv.Layout == elementorLayoutBoxes, media)
+	var tree phpList
+	if designed {
+		breakpoints, known := precheckActiveBreakpoints(resp.Raw)
+		if !known {
+			return checkedPrecheck{}, false
+		}
+		tree, ok = designedClassicTree(input, requestID, breakpoints, media)
+	} else {
+		tree, ok = elementorClassicTree(input, requestID, pv.Layout == elementorLayoutBoxes, media)
+	}
 	if !ok {
 		return checkedPrecheck{}, false
 	}
@@ -395,4 +425,84 @@ func verifyBuilderPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum 
 			Builder: pageBuilderElementor, Format: pv.Format, Version: pv.ElementorVersion, Layout: pv.Layout,
 		},
 	}, true
+}
+
+// precheckActiveBreakpoints are the breakpoints a designed page's precheck
+// answer says its tree was compiled for: the answer's top-level builder_facts
+// member active_breakpoints, a list of names in Elementor's own order, [] for
+// none, and null when the site could not say, which the compile reads as none
+// (a nil list). ok is false when builder_facts or the member is missing or
+// is anything but null or a list of text: a designed page's answer always
+// carries it, and no other value is read as a default.
+func precheckActiveBreakpoints(answer []byte) ([]string, bool) {
+	top, ok := jsonObjectOf(answer)
+	if !ok {
+		return nil, false
+	}
+	facts, ok := jsonObjectOf(top["builder_facts"])
+	if !ok {
+		return nil, false
+	}
+	raw, has := facts["active_breakpoints"]
+	if !has {
+		return nil, false
+	}
+	if strings.TrimSpace(string(raw)) == "null" {
+		return nil, true
+	}
+	list, ok := jsonArrayOf(raw)
+	if !ok {
+		return nil, false
+	}
+	names := make([]string, 0, len(list))
+	for _, item := range list {
+		name, ok := jsonStringOf(item)
+		if !ok {
+			return nil, false
+		}
+		names = append(names, name)
+	}
+	return names, true
+}
+
+// msgPageFrameOverLimit is the reason an input cannot carry the frame its
+// site resolved: with the page_frame member added it is over the size limit.
+const msgPageFrameOverLimit = "this site builds the page in the %s frame, and the input must name it; " +
+	"with page_frame added the input is over %d bytes, so shorten the page"
+
+// bindPageFrame binds a designed page to the frame its verified precheck
+// resolved (precheckPageFrame), never to a default: the facts the card and
+// the presented digest bind name that frame, and an input that sends no
+// page_frame is stored and sent to the site with it as its last member, the
+// AI's bytes unchanged before it. The site then builds at the write the frame
+// that was approved, or refuses page_frame_unavailable when its theme no
+// longer shows that frame. The precheck digest returned with such an input is
+// the one the site computes at the write for those bytes: the entry, the
+// input's sha256, and the precheck's base fingerprint and preview digest,
+// which do not depend on the frame. A version 2 page comes back as it was
+// given. The refusal is precheck_unverifiable for an answer that resolved no
+// frame, or names another, and bad_input for an input that cannot carry it.
+func bindPageFrame(resp agentcmd.AbilityRunResponse, entrySum string, input []byte, f pageCreateFacts, pc checkedPrecheck) ([]byte, pageCreateFacts, checkedPrecheck, *toolRefusal) {
+	if f.outlineVersion != pageOutlineVersionDesigned {
+		return input, f, pc, nil
+	}
+	frame, ok := precheckPageFrame(resp.Raw, f)
+	if !ok {
+		return nil, f, pc, precheckUnverifiableRefusal()
+	}
+	f.pageFrame = frame
+	if f.pageFrameSent {
+		return input, f, pc, nil
+	}
+	framed, ok := pageCreateInputWithFrame(input, frame)
+	if !ok {
+		return nil, f, pc, pageCreateInputRefusal(outlineRefusal(pageCreateBadInput, "input", "page_frame",
+			fmt.Sprintf(msgPageFrameOverLimit, frame, abilityRunDefaultInputBytes)))
+	}
+	pre, ok := phpJSONStringArray(entrySum, sha256Hex(framed), pc.baseFingerprint, pc.previewDigest)
+	if !ok {
+		return nil, f, pc, precheckUnverifiableRefusal()
+	}
+	pc.precheckDigest = sha256Hex(pre)
+	return framed, f, pc, nil
 }

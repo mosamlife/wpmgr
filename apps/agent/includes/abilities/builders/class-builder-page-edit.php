@@ -161,7 +161,7 @@ final class BuilderPageEdit
      * @param string                                  $requestId    The request; new node ids derive from it.
      * @param callable(list<int>): array<string,mixed> $media        Resolves attachment ids to image facts: {facts} or {refusal}.
      * @param array<string, BuilderAdapter>|null      $compiledSeam Tests only: stands in for the compiled set. Production passes none.
-     * @return array<string, mixed> {refusal} or {post_id, adapter, base_fingerprint, builder_version, preview, preview_digest, doc, changes, touched}
+     * @return array<string, mixed> {refusal} or {post_id, adapter, base_fingerprint, builder_version, preview, preview_digest, doc, changes, touched, builder_facts}, builder_facts null for a plain page
      */
     public static function plan(string $inputText, object $entry, array $allowedIds, string $requestId, callable $media, ?array $compiledSeam = null): array
     {
@@ -235,16 +235,33 @@ final class BuilderPageEdit
             return self::refused(LayoutOps::CODE_UNREADABLE, 'the page\'s builder document could not be read');
         }
         if ($rule !== null) {
-            return ['refusal' => self::fail($rule['code'], $rule['detail'], ['op_index' => $rule['op_index']])];
+            return ['refusal' => self::fail($rule['code'], $rule['detail'], ['op_index' => $rule['op_index']] + (isset($rule['refs']) ? ['refs' => $rule['refs']] : []))];
+        }
+        // A section or a pattern is compiled with the page's design: the input's, which the control plane gives it.
+        if (!isset($input['design']) && self::holdsDesignedNodes($input['operations'])) {
+            return self::refused(DesignInput::CODE_NOT_READY, 'a section or a pattern is compiled with the design of the page, and the input has none');
+        }
+
+        // An inserted section whose background is not an image is named as
+        // that before the images are resolved, as page-create names it.
+        $background = self::outlineRefusal($input['operations'], static fn (array $outline, string $at): ?array => ElementorSectionCompiler::backgroundRefusal($outline, static fn (int $id): ?string => self::attachmentMime($id), $at));
+        if ($background !== null) {
+            return ['refusal' => $background];
         }
 
         $mediaById = self::media($input['operations'], $media);
         if (isset($mediaById['refusal'])) {
             return ['refusal' => $mediaById['refusal']];
         }
+        // An inserted logo's alt text is the one saved with its image in the library.
+        $byId    = $mediaById['by_id'];
+        $logoAlt = self::outlineRefusal($input['operations'], static fn (array $outline, string $at): ?array => ElementorPatternCompiler::logoAltRefusal($outline, $byId, $at));
+        if ($logoAlt !== null) {
+            return ['refusal' => $logoAlt];
+        }
 
         try {
-            $planned = $a->planEdit($postId, $input['operations'], new IdSeed($requestId), $mediaById['by_id']);
+            $planned = $a->planEdit($postId, $input['operations'], new IdSeed($requestId), $mediaById['by_id'], $input['design'] ?? null);
         } catch (\Throwable $e) {
             return self::refused('bad_input', 'the operations could not be applied');
         }
@@ -284,7 +301,41 @@ final class BuilderPageEdit
             'doc'              => $doc,
             'changes'          => $planned['changes'],
             'touched'          => $planned['touched'],
+            'builder_facts'    => $a->editFacts($tree, $doc->tree),
         ];
+    }
+
+    /**
+     * The command's answer to a precheck of a plan: the preview and the
+     * digests under the envelope the control plane reads. For a designed page
+     * "builder_facts" ({active_breakpoints}, see ElementorAdapter::editFacts())
+     * stands beside the preview, outside the digests; the answer for a plain
+     * page has no such member.
+     *
+     * @param array<string, mixed> $plan           plan()'s answer, not a refusal.
+     * @param string               $requestId      The request.
+     * @param string               $precheckDigest The command's precheck digest for the plan's base fingerprint and preview digest.
+     * @return array<string, mixed>
+     */
+    public static function precheckAnswer(array $plan, string $requestId, string $precheckDigest): array
+    {
+        $answer = [
+            'ok'               => true,
+            'outcome'          => 'prechecked',
+            'mode'             => 'precheck',
+            'ability'          => OwnAbilities::NAME_PAGE_EDIT,
+            'request_id'       => $requestId,
+            'valid'            => true,
+            'base_fingerprint' => $plan['base_fingerprint'],
+            'preview_digest'   => $plan['preview_digest'],
+            'precheck_digest'  => $precheckDigest,
+            'preview'          => $plan['preview'],
+        ];
+        if (is_array($plan['builder_facts'] ?? null)) {
+            $answer['builder_facts'] = $plan['builder_facts'];
+        }
+
+        return $answer;
     }
 
     /**
@@ -419,7 +470,12 @@ final class BuilderPageEdit
      * Then those keys and columns, and nothing else, go back to the snapshot
      * (BuilderDocumentRestore::scoped(); restore_mismatch when they do not
      * read back as they were), and the ledger row records the undo and the
-     * page's fingerprint after it.
+     * page's fingerprint after it. The restore runs inside the page's write
+     * scope and under the active kit's tripwire
+     * (ElementorAdapter::restoreInScope()), so its derived writes are the
+     * page's own and any other write, or a change to the kit, answers
+     * side_effect_detected; when the page was put back the undo is still
+     * recorded, and the answer says restored.
      *
      * Immediately before the restore the ledger row's undo_state becomes
      * UNDO_RESTORING; an undo that cannot record that is data_unreadable and
@@ -512,18 +568,29 @@ final class BuilderPageEdit
             if (!$resume && !AbilityLedger::update($requestId, ['undo_state' => self::UNDO_RESTORING])) {
                 return self::fail(LayoutOps::CODE_UNREADABLE, 'the undo could not be recorded; nothing was changed', ['post_id' => $postId]);
             }
-            try {
-                $problem = BuilderDocumentRestore::scoped($postId, $snapshot, $keys, $fields, $a->descriptor(), $a, $resume);
-            } catch (\InvalidArgumentException $e) {
+            $descriptor = $a->descriptor();
+            $run        = $a->restoreInScope($postId, static fn () => BuilderDocumentRestore::scoped($postId, $snapshot, $keys, $fields, $descriptor, $a, $resume));
+            $thrown     = $run['thrown'] ?? null;
+            if ($thrown instanceof \Throwable && !$thrown instanceof \InvalidArgumentException) {
+                throw $thrown;
+            }
+            $effect = $run['side_effect'] ?? null;
+            if (($run['ran'] ?? null) !== true) {
+                $problem = ['code' => (string) ($run['code'] ?? LayoutOps::CODE_UNREADABLE), 'detail' => (string) ($run['detail'] ?? 'the page could not be read; nothing was changed')];
+            } elseif ($thrown instanceof \InvalidArgumentException) {
                 $problem = ['code' => 'not_revertible', 'detail' => 'this request has no change that can be undone'];
+            } else {
+                $problem = is_array($run['value'] ?? null) ? $run['value'] : null;
             }
             if ($problem !== null) {
                 if (!$resume && $problem['detail'] !== BuilderDocumentRestore::DETAIL_READ_BACK) {
-                    // Nothing was written: the undo is open as it was.
+                    // Nothing of the page was written: the undo is open as it was.
                     AbilityLedger::update($requestId, ['undo_state' => 'available']);
                 }
 
-                return self::fail($problem['code'], $problem['detail'], ['post_id' => $postId]);
+                return is_string($effect)
+                    ? self::fail(ElementorDocument::CODE_SIDE_EFFECT, $effect, ['post_id' => $postId])
+                    : self::fail($problem['code'], $problem['detail'], ['post_id' => $postId]);
             }
 
             try {
@@ -534,6 +601,11 @@ final class BuilderPageEdit
             if (!AbilityLedger::update($requestId, ['undo_state' => 'restored', 'reverted_at' => time(), 'restored_fp' => $restoredFp])) {
                 // The row keeps UNDO_RESTORING: the next undo records it.
                 return self::fail(LayoutOps::CODE_UNREADABLE, 'the page was put back, but the undo could not be recorded; undo again to finish it', ['post_id' => $postId, 'restored' => true]);
+            }
+            if (is_string($effect)) {
+                // The page is back and the undo is recorded; what was written
+                // outside the page cannot be put back, so it is reported.
+                return self::fail(ElementorDocument::CODE_SIDE_EFFECT, $effect, ['post_id' => $postId, 'restored' => true]);
             }
 
             return ['ok' => true, 'outcome' => 'reverted', 'mode' => 'revert', 'request_id' => $requestId, 'post_id' => $postId, 'restored' => true];
@@ -557,7 +629,7 @@ final class BuilderPageEdit
         $a      = $plan['adapter'] ?? null;
         $doc    = $plan['doc'] ?? null;
         $baseFp = $plan['base_fingerprint'] ?? null;
-        if (!$a instanceof BuilderAdapter || !$doc instanceof NativeDocument || !is_string($baseFp)) {
+        if (!$a instanceof ElementorAdapter || !$doc instanceof NativeDocument || !is_string($baseFp)) {
             return self::failed($ledgerUpdate, self::fail('bad_input', 'the edit was not planned for this write; nothing was changed'));
         }
 
@@ -640,6 +712,12 @@ final class BuilderPageEdit
             'preview_digest'  => $plan['preview_digest'],
             'changes_applied' => count($plan['changes']),
         ];
+        // A stylesheet that was not regenerated does not undo the edit; the
+        // person is told.
+        $warnings = ElementorDocument::warningsOf($saved);
+        if ($warnings !== []) {
+            $result['warnings'] = $warnings;
+        }
         $recorded = $ledgerUpdate([
             'phase'            => 'completed',
             'after_fp'         => $afterFp,
@@ -702,6 +780,64 @@ final class BuilderPageEdit
         }
 
         return $refusal ?? ['code' => 'builder_not_enabled', 'detail' => 'the catalogue entry enables no page builder'];
+    }
+
+    /**
+     * The first operation's refusal of the outline it puts on the page, in
+     * the command's shape with the operation's index; null when none refuses.
+     *
+     * @param list<array<string, mixed>>                                   $ops   Parsed operations.
+     * @param \Closure(array<mixed>, string): (array<string, mixed>|null) $check One check of an outline at its path.
+     * @return array<string, mixed>|null
+     */
+    private static function outlineRefusal(array $ops, \Closure $check): ?array
+    {
+        foreach ($ops as $i => $op) {
+            $outline = $op['outline'] ?? null;
+            $refusal = is_array($outline) ? $check(array_values($outline), 'operations[' . $i . '].outline') : null;
+            if ($refusal !== null) {
+                return Refusal::command($refusal) + ['op_index' => $i];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The type of an attachment the principal may read; null for an id that
+     * names no such attachment.
+     *
+     * @param int $id Attachment id.
+     * @return string|null
+     */
+    private static function attachmentMime(int $id): ?string
+    {
+        $post = get_post($id);
+        if (!is_object($post) || (string) $post->post_type !== 'attachment' || !current_user_can('read_post', $id)) {
+            return null;
+        }
+        $mime = get_post_mime_type($id);
+
+        return is_string($mime) && $mime !== '' ? $mime : null;
+    }
+
+    /**
+     * Whether an operation puts a section or a pattern on the page.
+     *
+     * @param list<array<string, mixed>> $ops Parsed operations.
+     * @return bool
+     */
+    private static function holdsDesignedNodes(array $ops): bool
+    {
+        foreach ($ops as $op) {
+            foreach (is_array($op['outline'] ?? null) ? $op['outline'] : [] as $node) {
+                if (is_array($node) && in_array($node['type'] ?? null, ['section', 'pattern'], true)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -845,9 +981,15 @@ final class BuilderPageEdit
      * Put the page back from its snapshot after a failed save or read-back,
      * record the failure, and answer it.
      *
+     * The restore runs inside the page's write scope and under the active
+     * kit's tripwire (ElementorAdapter::restoreInScope()), as an undo's does.
+     * A page that is not back is restore_mismatch. A page that is back while
+     * the restore wrote outside it, or the kit changed, is
+     * side_effect_detected: that write cannot be put back, so it is reported.
+     *
      * @param int                                  $postId       The target post.
      * @param array<string, mixed>                 $before       The decoded snapshot.
-     * @param BuilderAdapter                       $a            The adapter.
+     * @param ElementorAdapter                     $a            The adapter.
      * @param string                               $baseFp       The page's fingerprint before the write.
      * @param list<int>                            $own          Revisions the save made.
      * @param string                               $code         What failed.
@@ -855,16 +997,25 @@ final class BuilderPageEdit
      * @param callable(array<string, mixed>): bool $ledgerUpdate Merges fields into the ledger row.
      * @return array<string, mixed>
      */
-    private static function putBack(int $postId, array $before, BuilderAdapter $a, string $baseFp, array $own, string $code, string $detail, callable $ledgerUpdate): array
+    private static function putBack(int $postId, array $before, ElementorAdapter $a, string $baseFp, array $own, string $code, string $detail, callable $ledgerUpdate): array
     {
+        $effect = null;
         try {
-            $restored = BuilderDocumentRestore::full($postId, $before, $a->descriptor(), $a, $baseFp) === null;
+            $descriptor = $a->descriptor();
+            $run        = $a->restoreInScope($postId, static fn (): ?string => BuilderDocumentRestore::full($postId, $before, $descriptor, $a, $baseFp));
+            $restored   = ($run['ran'] ?? null) === true && ($run['thrown'] ?? null) === null
+                && array_key_exists('value', $run) && $run['value'] === null;
+            $effect     = is_string($run['side_effect'] ?? null) ? $run['side_effect'] : null;
         } catch (\Throwable $e) {
             $restored = false;
         }
-        $result = $restored
-            ? self::fail($code, $detail, ['post_id' => $postId, 'restored' => true])
-            : self::fail(BuilderDocumentRestore::CODE_MISMATCH, 'the page could not be put back as it was after: ' . $code, ['post_id' => $postId, 'restored' => false]);
+        if (!$restored) {
+            $result = self::fail(BuilderDocumentRestore::CODE_MISMATCH, 'the page could not be put back as it was after: ' . $code, ['post_id' => $postId, 'restored' => false]);
+        } elseif ($effect !== null) {
+            $result = self::fail(ElementorDocument::CODE_SIDE_EFFECT, $effect . ', after: ' . $code, ['post_id' => $postId, 'restored' => true]);
+        } else {
+            $result = self::fail($code, $detail, ['post_id' => $postId, 'restored' => true]);
+        }
         $ledgerUpdate(['phase' => 'failed', 'restored' => $restored, 'own_revision_ids' => $own, 'result' => $result]);
 
         return $result;

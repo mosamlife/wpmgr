@@ -148,6 +148,202 @@ func TestPageEditOpsCasesGoColumn(t *testing.T) {
 	}
 }
 
+// pageEditV3Rows are the version 3 rows of the shared table: the projection of
+// a designed page and the rows that run against it.
+type pageEditV3Rows struct {
+	Page struct {
+		PostID          int64  `json:"post_id"`
+		Builder         string `json:"builder"`
+		BaseFingerprint string `json:"base_fingerprint"`
+	} `json:"v3_page"`
+	Cases []pageEditOpsCase `json:"v3_cases"`
+}
+
+func loadPageEditV3Rows(t *testing.T) pageEditV3Rows {
+	t.Helper()
+	raw, err := os.ReadFile(pageEditOpsCasesFixture)
+	if err != nil {
+		t.Fatalf("read %s: %v", pageEditOpsCasesFixture, err)
+	}
+	var rows pageEditV3Rows
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatalf("decode %s: %v", pageEditOpsCasesFixture, err)
+	}
+	if len(rows.Cases) == 0 || rows.Page.PostID < 1 {
+		t.Fatalf("%s has no version 3 rows", pageEditOpsCasesFixture)
+	}
+	return rows
+}
+
+// TestPageEditV3CasesGoColumn replays every version 3 row of the shared table
+// through everything the control plane checks before precheck. A row the table
+// says the control plane refuses is refused with the agent's code (bad_input);
+// every other row needs the page, and passes.
+func TestPageEditV3CasesGoColumn(t *testing.T) {
+	rows := loadPageEditV3Rows(t)
+	accepted, refused := 0, 0
+	for _, c := range rows.Cases {
+		input := c.caseInput(t)
+		facts, code := validatePageEditInput(input)
+		_, refusal := pageEditPreInputRefusal(input)
+		switch c.Go {
+		case "accept":
+			accepted++
+			if code != "" || refusal != nil {
+				t.Errorf("%s (%s): the control plane refused %q; the table says accept", c.Name, c.Rule, code)
+				continue
+			}
+			if facts.postID != rows.Page.PostID || facts.baseFingerprint != rows.Page.BaseFingerprint || len(facts.ops) == 0 {
+				t.Errorf("%s: an accepted input gave facts %+v", c.Name, facts)
+			}
+		case "refuse":
+			refused++
+			if code == "" || refusal == nil {
+				t.Errorf("%s (%s): the control plane accepted it; the table says refuse", c.Name, c.Rule)
+				continue
+			}
+			if code != c.Agent || c.Agent != pageCreateBadInput {
+				t.Errorf("%s (%s): refused %q, the agent refuses %q", c.Name, c.Rule, code, c.Agent)
+			}
+		default:
+			t.Errorf("%s: go column %q is neither accept nor refuse", c.Name, c.Go)
+		}
+	}
+	if accepted == 0 || refused == 0 {
+		t.Fatalf("the rows must exercise both answers: %d accepted, %d refused", accepted, refused)
+	}
+}
+
+// TestPageEditPathPatternIsThePublishedOne: the pattern a set_text path is
+// matched with is the pattern the published schema gives the field.
+func TestPageEditPathPatternIsThePublishedOne(t *testing.T) {
+	var schema struct {
+		Properties struct {
+			Operations struct {
+				Items struct {
+					OneOf []struct {
+						Properties map[string]json.RawMessage `json:"properties"`
+					} `json:"oneOf"`
+				} `json:"items"`
+			} `json:"operations"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(pageEditInputSchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	var published string
+	for _, alt := range schema.Properties.Operations.Items.OneOf {
+		raw, has := alt.Properties["field"]
+		if !has {
+			continue
+		}
+		var field struct {
+			AnyOf []struct {
+				Pattern string `json:"pattern"`
+			} `json:"anyOf"`
+		}
+		if err := json.Unmarshal(raw, &field); err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range field.AnyOf {
+			if a.Pattern != "" {
+				published = a.Pattern
+			}
+		}
+	}
+	if published == "" {
+		t.Fatal("the schema gives set_text's field no pattern")
+	}
+	if pageEditPathPattern.String() != published {
+		t.Fatalf("the control plane matches paths with %s, the schema publishes %s", pageEditPathPattern, published)
+	}
+}
+
+// TestPageEditPathTextRules: a pattern path takes the rule of its last step.
+func TestPageEditPathTextRules(t *testing.T) {
+	for _, c := range []struct {
+		field, text string
+		ok          bool
+	}{
+		{"plans.1.price", "49", true},
+		{"plans.1.price", "", false},
+		{"plans.1.price", "<b>49</b>", false},
+		{"plans.1.price", "Open [1] now", true},
+		{"plans.1.price", "Open [x] now", false},
+		{"faq.3.answer", strings.Repeat("a", 5000), true},
+		{"faq.3.answer", strings.Repeat("a", 5001), false},
+		{"plans.0.cta.text", strings.Repeat("é", 80), true},
+		{"plans.0.cta.text", strings.Repeat("é", 81), false},
+		{"plans.0.cta.text", "", false},
+		{"plans.0.cta.url", "https://example.com/buy", true},
+		{"plans.0.cta.url", "/buy", true},
+		{"plans.0.cta.url", "#contact", true},
+		{"plans.0.cta.url", "#Contact", false},
+		{"plans.0.cta.url", "#c", false},
+		{"plans.0.cta.url", "#", false},
+		{"plans.0.cta.url", "javascript:alert(1)", false},
+		{"plans.0.cta.url", "http://example.com/", false},
+		{"logos.2.url", "https://example.com/", true},
+		{"logos.2.alt", "", true},
+		{"logos.2.alt", "Team [1]", false},
+		{"logos.2.alt", strings.Repeat("a", 301), false},
+		{"stats.0.value", "1200", true},
+		{"plans.0.cta", "Buy", true},
+		{"plans.1", "49", false},
+		{"plans.01.price", "49", false},
+		{"pricing.1.price", "49", false},
+		{"plans.1.Price", "49", false},
+		{"plans.1.price\n", "49", false},
+		{"plans.1.price ", "49", false},
+		{"plans.0.a.b.c.d", "49", false},
+		{"heading", "49", false},
+		{"url", "#faq", true},
+		{"url", "#Faq", false},
+		{"url", "#", false},
+		{"url", "https://example.com/a#faq", true},
+	} {
+		if got := pageEditFieldTextUsable(c.field, c.text); got != c.ok {
+			t.Errorf("%q %.30q: usable=%v, want %v", c.field, c.text, got, c.ok)
+		}
+	}
+}
+
+// TestPageEditOutlineKeepsVersion2AndAdmitsVersion3: the nodes of both
+// grammars pass where they are judged as they are, and what neither grammar
+// builds does not.
+func TestPageEditOutlineKeepsVersion2AndAdmitsVersion3(t *testing.T) {
+	const fp = "7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7"
+	insert := func(outline string) []byte {
+		return []byte(`{"post_id":418,"base_fingerprint":"` + fp + `","operations":[{"op":"insert","after":"a","outline":` + outline + `}]}`)
+	}
+	section := `{"type":"section","anchor":"press","children":[{"type":"paragraph","text":"Press"}]}`
+	faq := `{"type":"pattern","pattern":"faq","variant":"accordion","faq":[{"question":"Q?","answer":"A."}]}`
+	for name, c := range map[string]struct {
+		outline string
+		ok      bool
+	}{
+		"a version 2 paragraph and list": {`[{"type":"paragraph","text":"Hi"},{"type":"list","ordered":false,"items":["a"]}]`, true},
+		"a section":                      {`[` + section + `]`, true},
+		"a pattern":                      {`[` + faq + `]`, true},
+		"a section and a pattern":        {`[` + section + `,` + faq + `]`, true},
+		"a block, a group and columns": {`[{"type":"separator"},{"type":"group","children":[{"type":"paragraph","text":"x"}]},` +
+			`{"type":"columns","widths":[50,50],"columns":[{"children":[{"type":"paragraph","text":"a"}]},{"children":[{"type":"paragraph","text":"b"}]}]}]`, true},
+		"a section inside a section": {`[{"type":"section","anchor":"outer","children":[` + section + `]}]`, false},
+		"a section inside a group":   {`[{"type":"group","children":[` + section + `]}]`, false},
+		"a level 1 heading":          {`[{"type":"heading","level":1,"text":"Hi"}]`, false},
+		"a node of no grammar":       {`[{"type":"carousel"}]`, false},
+		"two sections, one anchor":   {`[` + section + `,` + section + `]`, false},
+		"a pattern with no items":    {`[{"type":"pattern","pattern":"faq","variant":"accordion","faq":[]}]`, false},
+		"a link to an anchor":        {`[{"type":"buttons","buttons":[{"text":"Go","url":"#press"}]}]`, true},
+		"a link to a bad anchor":     {`[{"type":"buttons","buttons":[{"text":"Go","url":"#Press"}]}]`, false},
+	} {
+		_, code := validatePageEditInput(insert(c.outline))
+		if (code == "") != c.ok {
+			t.Errorf("%s: code = %q, accepted = %v, want %v", name, code, code == "", c.ok)
+		}
+	}
+}
+
 // TestPageEditInputRefusesWhatTheAgentDecoderRefuses: inputs encoding/json
 // would decode but the agent's decoder refuses never pass.
 func TestPageEditInputRefusesWhatTheAgentDecoderRefuses(t *testing.T) {

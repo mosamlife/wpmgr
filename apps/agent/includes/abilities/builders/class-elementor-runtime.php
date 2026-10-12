@@ -15,10 +15,13 @@ if (!defined('ABSPATH')) {
  * Elementor is reached only through its main plugin instance and the public
  * managers on it, and only when its classes are already in memory:
  * class_exists() is asked without autoloading, so on a site without Elementor
- * nothing is loaded and every method answers "cannot tell". Every call is
- * guarded, and anything Elementor throws becomes that answer (null, false or
- * 0); no method throws. The one write is deletePostCss(), which asks Elementor
- * to delete one post's generated CSS.
+ * nothing is loaded and every method answers "cannot tell". The classes
+ * autoloaded are Elementor's fonts class and its base document class, which
+ * Elementor loads on first use: each is asked for only once the main plugin
+ * instance is found. Every call is guarded, and anything Elementor throws
+ * becomes that answer (null, false or 0); no method throws. The writes are
+ * deletePostCss(), which asks Elementor to delete one post's generated CSS,
+ * and regeneratePostCss(), which asks it to make that CSS again.
  */
 final class ElementorRuntime implements ElementorApi
 {
@@ -34,21 +37,50 @@ final class ElementorRuntime implements ElementorApi
     /** Elementor's post CSS file class, which its files manager builds. */
     public const POST_CSS_CLASS = 'Elementor\\Core\\Files\\CSS\\Post';
 
+    /** Elementor's fonts class, which holds its font registry. */
+    public const FONTS_CLASS = 'Elementor\\Fonts';
+
+    /** Elementor's base document class, which names the meta key of a post's cached element output. */
+    public const DOCUMENT_CLASS = 'Elementor\\Core\\Base\\Document';
+
+    /** The constant on that class holding the cache's meta key. */
+    public const CACHE_KEY_CONSTANT = 'CACHE_META_KEY';
+
+    /** Most families a font registry may hold to be read at all. */
+    public const MAX_FONT_FAMILIES = 20000;
+
     /** A plain version token: a digit first, at most 32 bytes. */
     private const RE_VERSION = '/^[0-9][0-9A-Za-z._+-]{0,31}$/D';
 
     /** A positive decimal id that fits an int. */
     private const RE_ID = '/^[1-9][0-9]{0,17}$/D';
 
+    /** A cache's meta key as Elementor spells one: an _elementor_ key with "cache" in its name. */
+    private const RE_CACHE_KEY = '/^_elementor_[a-z0-9_]{0,40}cache[a-z0-9_]{0,40}$/D';
+
+    /** A breakpoint name as Elementor keys one: lowercase letters, digits and _. */
+    private const RE_BREAKPOINT = '/^[a-z][a-z0-9_]{0,31}$/D';
+
+    /** Most breakpoint names reported. */
+    private const MAX_BREAKPOINTS = 16;
+
     /**
      * @param string $pluginClass     Tests only: stands in for Elementor's main plugin class. Production passes none.
      * @param string $utilsClass      Tests only: stands in for Elementor's utility class. Production passes none.
      * @param string $versionConstant Tests only: stands in for Elementor's version constant. Production passes none.
+     * @param string $fontsClass      Tests only: stands in for Elementor's fonts class. Production passes none.
+     * @param string $postCssClass    Tests only: stands in for Elementor's post CSS class. Production passes none.
+     * @param string $proConstant     Tests only: stands in for Elementor Pro's version constant. Production passes none.
+     * @param string $documentClass   Tests only: stands in for Elementor's base document class. Production passes none.
      */
     public function __construct(
         private readonly string $pluginClass = self::PLUGIN_CLASS,
         private readonly string $utilsClass = self::UTILS_CLASS,
-        private readonly string $versionConstant = self::VERSION_CONSTANT
+        private readonly string $versionConstant = self::VERSION_CONSTANT,
+        private readonly string $fontsClass = self::FONTS_CLASS,
+        private readonly string $postCssClass = self::POST_CSS_CLASS,
+        private readonly string $proConstant = ElementorFacts::PRO_VERSION_CONSTANT,
+        private readonly string $documentClass = self::DOCUMENT_CLASS
     ) {
     }
 
@@ -107,6 +139,71 @@ final class ElementorRuntime implements ElementorApi
         }
 
         return self::positiveId($id);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * Elementor's breakpoints manager keys its active breakpoints by name; a
+     * key that is not a plain breakpoint name is not reported.
+     */
+    public function activeBreakpoints(): ?array
+    {
+        try {
+            $active = $this->call('breakpoints', 'get_active_breakpoints', []);
+        } catch (\Throwable $e) {
+            return null;
+        }
+        if (!is_array($active)) {
+            return null;
+        }
+        $names = [];
+        foreach (array_keys($active) as $name) {
+            if (!is_string($name) || preg_match(self::RE_BREAKPOINT, $name) !== 1) {
+                continue;
+            }
+            $names[] = $name;
+            if (count($names) >= self::MAX_BREAKPOINTS) {
+                break;
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * The registry is the map of family to font type that Elementor's fonts
+     * class answers; a family key that is empty is not reported.
+     */
+    public function fontFamilies(): ?array
+    {
+        try {
+            if ($this->plugin() === null) {
+                return null;
+            }
+            $class = $this->fontsClass;
+            $read  = class_exists($class) ? [$class, 'get_fonts'] : null;
+            if ($read === null || !is_callable($read)) {
+                return null;
+            }
+            $fonts = $read();
+        } catch (\Throwable $e) {
+            return null;
+        }
+        if (!is_array($fonts) || count($fonts) > self::MAX_FONT_FAMILIES) {
+            return null;
+        }
+        $families = [];
+        foreach (array_keys($fonts) as $family) {
+            $family = (string) $family;
+            if ($family !== '') {
+                $families[] = $family;
+            }
+        }
+
+        return $families;
     }
 
     /**
@@ -244,6 +341,85 @@ final class ElementorRuntime implements ElementorApi
         }
 
         return true;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * A new post CSS object, from the class's own create(), so what an earlier
+     * render of the post in this request left in Elementor's per-request
+     * file objects is never written again. Its update() writes the
+     * stylesheet file and the CSS meta; its meta then says whether the
+     * stylesheet is a file, and its get_path() says where.
+     */
+    public function regeneratePostCss(int $postId): ?array
+    {
+        if ($postId <= 0) {
+            return null;
+        }
+        try {
+            if ($this->plugin() === null) {
+                return null;
+            }
+            $create = [$this->postCssClass, 'create'];
+            if (!is_callable($create)) {
+                return null;
+            }
+            $file = $create($postId);
+            if (!is_object($file)) {
+                return null;
+            }
+            $update  = [$file, 'update'];
+            $getMeta = [$file, 'get_meta'];
+            $getPath = [$file, 'get_path'];
+            if (!is_callable($update) || !is_callable($getMeta)) {
+                return null;
+            }
+            $update();
+            $meta = $getMeta();
+            $path = is_callable($getPath) ? $getPath() : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+        $status = is_array($meta) ? ($meta['status'] ?? null) : null;
+        if (!is_string($status) || $status === '') {
+            return null;
+        }
+
+        return ['status' => $status, 'path' => is_string($path) ? $path : ''];
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function proActive(): bool
+    {
+        return defined($this->proConstant);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * Elementor's constant is read only once its main plugin instance is
+     * found, and its value is taken only when it is an _elementor_ key that
+     * names a cache, so a key that is a page row, or anything else, is never
+     * the key a caller deletes.
+     */
+    public function elementCacheKey(): string
+    {
+        try {
+            if ($this->plugin() !== null && class_exists($this->documentClass)) {
+                $name = $this->documentClass . '::' . self::CACHE_KEY_CONSTANT;
+                $key  = defined($name) ? constant($name) : null;
+                if (is_string($key) && preg_match(self::RE_CACHE_KEY, $key) === 1) {
+                    return $key;
+                }
+            }
+        } catch (\Throwable $e) {
+            unset($e);
+        }
+
+        return ElementorDocument::KEY_ELEMENT_CACHE;
     }
 
     /**

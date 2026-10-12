@@ -1,10 +1,15 @@
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 
-import { OutlineFragmentView } from "./layout-preview";
+import { OutlineFragmentView, OutlineNodeView } from "./layout-preview";
+import { DesignedSections } from "./designed-sections";
+import { patternWords } from "./design-model";
+import { PatternBody } from "./pattern-body";
+import { type OutlineNode, type PageDesign } from "./outline-model";
 import {
   EDIT_TOO_LARGE_COPY,
+  editFieldWords,
   type AfterNode,
   type AfterView,
   type ChangeLine,
@@ -36,7 +41,7 @@ export function PageEditPreview({ view, siteHost, siteUrl, labelledBy }: PageEdi
     <div data-testid="page-edit-preview" className="rounded-md border border-border">
       <ol aria-labelledby={labelledBy} className="divide-y divide-border">
         {view.lines.map((line, i) => (
-          <ChangeItem key={i} n={i + 1} line={line} siteHost={siteHost} siteUrl={siteUrl} />
+          <ChangeItem key={i} n={i + 1} line={line} design={view.design} siteHost={siteHost} siteUrl={siteUrl} />
         ))}
       </ol>
       <div className="space-y-2 border-t border-border p-3">
@@ -90,12 +95,15 @@ function ChangeItem({
   line,
   siteHost,
   siteUrl,
+  design,
 }: {
+  design: PageDesign | null;
   n: number;
   line: ChangeLine;
   siteHost: string;
   siteUrl?: string | null;
 }) {
+  const fragmentId = useId();
   return (
     <li data-testid="change-line" className="space-y-1.5 px-3 py-2 text-sm">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3">
@@ -123,12 +131,26 @@ function ChangeItem({
       ) : null}
       {line.outline ? (
         <div className="pl-6">
-          <OutlineFragmentView
-            nodes={line.outline}
-            siteHost={siteHost}
-            siteUrl={siteUrl}
-            label={`Change ${n}: what is put on the page`}
-          />
+          {design ? (
+            <div data-testid="change-outline" role="region" aria-label={`Change ${n}: what is put on the page`}
+              tabIndex={0} className="max-h-96 space-y-2 overflow-y-auto">
+              <span id={fragmentId} className="sr-only">{`Change ${n}: what is put on the page`}</span>
+              {line.outline.map((node, i) => node.type === "section" ? (
+                <DesignedSections key={i} preview={{ design, sections: [node], media: null }}
+                  siteHost={siteHost} siteUrl={siteUrl} labelledBy={fragmentId} />
+              ) : node.type === "pattern" ? (
+                <div key={i}>
+                  <p className="font-medium">{patternWords(node)}</p>
+                  <PatternBody pattern={node} media={null} siteHost={siteHost} siteUrl={siteUrl ?? null} />
+                </div>
+              ) : (
+                <OutlineNodeView key={i} node={node} media={null} siteHost={siteHost} siteUrl={siteUrl} />
+              ))}
+            </div>
+          ) : (
+            <OutlineFragmentView nodes={line.outline as readonly OutlineNode[]} siteHost={siteHost}
+              siteUrl={siteUrl} label={`Change ${n}: what is put on the page`} />
+          )}
         </div>
       ) : null}
       {line.note ? <p className="pl-6 text-xs text-muted-foreground">{line.note}</p> : null}
@@ -219,7 +241,7 @@ function AfterNodeView({ node }: { node: AfterNode }) {
         {node.kind === "locked" ? <span className="text-muted-foreground"> (WPMgr does not edit this)</span> : null}
         {node.texts.map((t) => (
           <span key={t.field}>
-            {FIELD_WORDS[t.field] === "" ? " " : <Label>{` ${FIELD_WORDS[t.field]}`}</Label>}
+            {FIELD_WORDS[t.field] === "" ? " " : <Label>{` ${FIELD_WORDS[t.field] ?? editFieldWords(t.field)}`}</Label>}
             {" "}
             {'"'}
             <Txt>{t.text}</Txt>

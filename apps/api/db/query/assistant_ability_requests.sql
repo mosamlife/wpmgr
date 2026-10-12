@@ -714,6 +714,25 @@ WHERE tenant_id = @tenant_id
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
 
+-- name: GetEligibleCreatedDraftInput :one
+-- The exact input_json of the request GetEligibleCreatedDraft names: the
+-- same predicates and the same order, so both name one request, and id is
+-- returned so a caller can check that they did. pgx.ErrNoRows: no eligible
+-- draft for this post. A page edit reads the design its draft was created
+-- with from this input.
+SELECT id, input_json
+FROM assistant_ability_requests
+WHERE tenant_id = @tenant_id
+  AND site_id = @site_id
+  AND ability_name = 'wpmgr/page-create'
+  AND state = 'done'
+  AND outcome = 'created'
+  AND created_post_id = sqlc.arg(post_id)::bigint
+  AND coalesce(undo_state, '') NOT IN ('undone', 'in_progress')
+  AND trashed IS NOT TRUE
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
 -- name: ListEditRequestsForPost :many
 -- Every wpmgr/page-edit request for post post_id on this site, oldest first
 -- (created_at, then id), with what each one did and where its undo stands.

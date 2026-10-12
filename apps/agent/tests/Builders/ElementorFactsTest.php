@@ -13,6 +13,7 @@ namespace WPMgr\Agent\Tests\Builders;
 
 use Brain\Monkey;
 use Brain\Monkey\Functions;
+use WPMgr\Agent\Abilities\Builders\ElementorDocument;
 use WPMgr\Agent\Abilities\Builders\ElementorFacts;
 use WPMgr\Agent\Abilities\Builders\ElementorRuntime;
 use WPMgr\Agent\Abilities\ServicePrincipal;
@@ -42,6 +43,13 @@ final class ElementorFactsTest extends TestCase
     /** @var array<int, object> */
     private array $users = [];
 
+    /**
+     * Post id => meta key => the single value get_post_meta() answers.
+     *
+     * @var array<int, array<string, mixed>>
+     */
+    private array $meta = [];
+
     protected function set_up(): void
     {
         parent::set_up();
@@ -52,6 +60,10 @@ final class ElementorFactsTest extends TestCase
             fn ($name, $default = false) => array_key_exists($name, $this->options) ? $this->options[$name] : $default
         );
         Functions\when('get_userdata')->alias(fn ($id) => $this->users[(int) $id] ?? false);
+        $this->meta = [];
+        Functions\when('get_post_meta')->alias(
+            fn ($id, $key = '', $single = false) => $this->meta[(int) $id][$key] ?? ($single ? '' : [])
+        );
         ElementorPluginStandIn::$instance = null;
         ElementorUtilsStandIn::$sanitise  = null;
     }
@@ -195,6 +207,28 @@ final class ElementorFactsTest extends TestCase
             $facts['role_excluded'] = $unclear;
             $this->assertSame(self::refusal('role_excluded'), ElementorFacts::createRefusal($facts, 'page', 'classic'));
             $this->assertSame(self::refusal('role_excluded'), ElementorFacts::status($facts)->refusal());
+        }
+    }
+
+    public function test_block_theme_is_reported(): void
+    {
+        $api = new FakeElementorApi();
+        $this->assertFalse($this->collect($api)['block_theme'], 'a classic theme');
+
+        Functions\when('wp_is_block_theme')->justReturn(true);
+        $this->assertTrue($this->collect($api)['block_theme'], 'a block theme');
+
+        // A theme that cannot be read counts as a block theme: canvas, the
+        // one frame either kind of theme shows as built, is all it admits.
+        Functions\when('wp_is_block_theme')->alias(static function (): bool {
+            throw new \RuntimeException('the theme cannot be read');
+        });
+        $this->assertTrue($this->collect($api)['block_theme'], 'a read that throws');
+
+        // The reader: only a false fact is a classic theme.
+        $this->assertFalse(ElementorFacts::blockTheme(['block_theme' => false]));
+        foreach ([[], ['block_theme' => true], ['block_theme' => null], ['block_theme' => 0], ['block_theme' => 'no']] as $facts) {
+            $this->assertTrue(ElementorFacts::blockTheme($facts), (string) json_encode($facts));
         }
     }
 
@@ -372,7 +406,7 @@ final class ElementorFactsTest extends TestCase
         ];
         foreach ($throwers as $throw) {
             $plugin = new ElementorPluginStandIn();
-            foreach (['documents', 'elements_manager', 'widgets_manager', 'experiments', 'kits_manager', 'files_manager'] as $name) {
+            foreach (['documents', 'elements_manager', 'widgets_manager', 'experiments', 'kits_manager', 'files_manager', 'breakpoints'] as $name) {
                 $plugin->{$name} = new ElementorManagerStandIn($throw);
             }
             ElementorPluginStandIn::$instance = $plugin;
@@ -496,6 +530,75 @@ final class ElementorFactsTest extends TestCase
             }
         });
         $this->assertFalse($runtime->deletePostCss(41));
+    }
+
+    public function test_runtime_regenerates_post_css_on_a_fresh_post_css_object(): void
+    {
+        ElementorPostCssStandIn::reset();
+        $plugin                           = new ElementorPluginStandIn();
+        ElementorPluginStandIn::$instance = $plugin;
+        $runtime                          = $this->postCssRuntime();
+
+        // A new object for the post, regenerated once, then asked what it left.
+        $this->assertSame(['status' => 'file', 'path' => '/uploads/elementor/css/post-41.css'], $runtime->regeneratePostCss(41));
+        $this->assertSame(['create:41', 'update:41', 'meta:41', 'path:41'], ElementorPostCssStandIn::$events);
+
+        // Another regeneration builds another object, so nothing rendered earlier in the request is written again.
+        ElementorPostCssStandIn::$events = [];
+        $runtime->regeneratePostCss(41);
+        $this->assertSame(['create:41', 'update:41', 'meta:41', 'path:41'], ElementorPostCssStandIn::$events);
+
+        // A page whose stylesheet is printed in the page, or empty.
+        foreach (['inline', 'empty'] as $status) {
+            ElementorPostCssStandIn::$meta = ['status' => $status, 'time' => 5];
+            $this->assertSame(['status' => $status, 'path' => '/uploads/elementor/css/post-41.css'], $runtime->regeneratePostCss(41), $status);
+        }
+
+        // No post: Elementor is not asked.
+        ElementorPostCssStandIn::$events = [];
+        $this->assertNull($runtime->regeneratePostCss(0));
+        $this->assertNull($runtime->regeneratePostCss(-3));
+        $this->assertSame([], ElementorPostCssStandIn::$events);
+
+        // Elementor that cannot answer, or throws: null, never a throw.
+        $cannot = [
+            'update() throws'         => static function (): void {
+                ElementorPostCssStandIn::$throwIn = 'update';
+            },
+            'create() throws'         => static function (): void {
+                ElementorPostCssStandIn::$throwIn = 'create';
+            },
+            'get_meta() throws'       => static function (): void {
+                ElementorPostCssStandIn::$throwIn = 'meta';
+            },
+            'meta is not an array'    => static function (): void {
+                ElementorPostCssStandIn::$meta = 'file';
+            },
+            'meta has no status'      => static function (): void {
+                ElementorPostCssStandIn::$meta = ['time' => 5];
+            },
+            'status is not a string'  => static function (): void {
+                ElementorPostCssStandIn::$meta = ['status' => 1];
+            },
+        ];
+        foreach ($cannot as $why => $set) {
+            ElementorPostCssStandIn::reset();
+            $set();
+            $this->assertNull($runtime->regeneratePostCss(41), $why);
+        }
+
+        // A path that cannot be had is empty, so the caller cannot look at a file.
+        ElementorPostCssStandIn::reset();
+        ElementorPostCssStandIn::$path = null;
+        $this->assertSame(['status' => 'file', 'path' => ''], $runtime->regeneratePostCss(41));
+
+        // A class with no create(), and no Elementor at all.
+        ElementorPostCssStandIn::reset();
+        $this->assertNull((new ElementorRuntime(ElementorPluginStandIn::class, ElementorUtilsStandIn::class, self::VERSION_STANDIN, ElementorRuntime::FONTS_CLASS, \stdClass::class))->regeneratePostCss(41));
+        ElementorPluginStandIn::$instance = null;
+        ElementorPostCssStandIn::$events  = [];
+        $this->assertNull($runtime->regeneratePostCss(41));
+        $this->assertSame([], ElementorPostCssStandIn::$events, 'without Elementor nothing is asked');
     }
 
     public function test_sanitiser_is_elementors_own_where_the_running_elementor_has_one(): void
@@ -622,6 +725,39 @@ final class ElementorFactsTest extends TestCase
         $this->assertNull($this->legacyRuntime()->ksesPostDeep(['a' => '<b>x</b>']));
     }
 
+    public function test_pro_and_the_element_cache_key_are_asked_of_constants(): void
+    {
+        $this->assertFalse(defined('ELEMENTOR_PRO_VERSION'), 'precondition: no Elementor Pro in this process');
+        if (!defined(self::PRO_STANDIN)) {
+            define(self::PRO_STANDIN, '3.35.0');
+        }
+        $this->standInRuntime();
+        $runtime = static fn (string $pro, string $document): ElementorRuntime => new ElementorRuntime(ElementorPluginStandIn::class, ElementorUtilsStandIn::class, self::VERSION_STANDIN, ElementorRuntime::FONTS_CLASS, ElementorRuntime::POST_CSS_CLASS, $pro, $document);
+
+        // Pro is its version constant being defined, the one answer pro_active gives.
+        $this->assertTrue($runtime(self::PRO_STANDIN, ElementorDocumentKeyStandIn::class)->proActive());
+        $this->assertFalse($runtime('WPMGR_TEST_NO_SUCH_PRO_VERSION', ElementorDocumentKeyStandIn::class)->proActive());
+        $this->assertFalse((new ElementorRuntime())->proActive(), 'production asks for ' . ElementorFacts::PRO_VERSION_CONSTANT);
+
+        // The key is Elementor's own spelling where it names a cache, else the default.
+        $default = ElementorDocument::KEY_ELEMENT_CACHE;
+        $plugin  = new ElementorPluginStandIn();
+        $cases   = [
+            'a key Elementor names'                        => [$plugin, ElementorDocumentKeyStandIn::class, '_elementor_element_cache_v2'],
+            'no Elementor instance'                        => [null, ElementorDocumentKeyStandIn::class, $default],
+            'a key that is a page row'                     => [$plugin, ElementorDocumentPageRowStandIn::class, $default],
+            'a key with a character a key never has'       => [$plugin, ElementorDocumentOddKeyStandIn::class, $default],
+            'a key that is not a string'                   => [$plugin, ElementorDocumentIntKeyStandIn::class, $default],
+            'a document class with no such constant'       => [$plugin, \stdClass::class, $default],
+            'no document class'                            => [$plugin, 'Wpmgr_Test_No_Such_Document', $default],
+        ];
+        foreach ($cases as $why => [$instance, $class, $expected]) {
+            ElementorPluginStandIn::$instance = $instance;
+            $this->assertSame($expected, $runtime(self::PRO_STANDIN, $class)->elementCacheKey(), $why);
+        }
+        $this->assertSame($default, (new ElementorRuntime())->elementCacheKey(), 'without Elementor, the default');
+    }
+
     public function test_builder_facts_block_emits_only_reserved_keys(): void
     {
         $this->assertFalse(defined('ELEMENTOR_PRO_VERSION'), 'precondition: no Elementor Pro in this process');
@@ -657,6 +793,102 @@ final class ElementorFactsTest extends TestCase
         $this->assertSame(['service_role_excluded', 'pro_active'], ElementorFacts::BLOCK_KEYS);
     }
 
+    public function testActiveBreakpoints(): void
+    {
+        $api              = new FakeElementorApi();
+        $api->activeKitId = 42;
+
+        // The kit has never saved the key: Elementor's breakpoints manager
+        // answers, and the facts list Elementor's names smallest first.
+        $api->activeBreakpoints = ['tablet', 'mobile'];
+        $this->assertSame(['mobile', 'tablet'], $this->collect($api)['active_breakpoints']);
+        $this->assertCount(1, $api->callsTo('activeBreakpoints'));
+
+        // Kit settings saved without the key, or with it unset, are a kit
+        // that has never saved it.
+        foreach ([['container_width' => ['unit' => 'px', 'size' => '1140']], ['active_breakpoints' => null]] as $settings) {
+            $this->meta[42]['_elementor_page_settings'] = $settings;
+            $api->calls                                  = [];
+            $this->assertSame(['mobile', 'tablet'], $this->collect($api)['active_breakpoints'], var_export($settings, true));
+            $this->assertCount(1, $api->callsTo('activeBreakpoints'));
+        }
+
+        // The list the kit saved is the answer, and the manager is not asked.
+        // Only Elementor's own breakpoint names are kept, in Elementor's order.
+        $saved = [
+            [['viewport_mobile', 'viewport_tablet'], ['mobile', 'tablet']],
+            [['viewport_tablet', 'viewport_mobile', 'viewport_laptop'], ['mobile', 'tablet', 'laptop']],
+            [
+                ['viewport_widescreen', 'viewport_laptop', 'viewport_tablet_extra', 'viewport_tablet', 'viewport_mobile_extra', 'viewport_mobile'],
+                ['mobile', 'mobile_extra', 'tablet', 'tablet_extra', 'laptop', 'widescreen'],
+            ],
+            [['viewport_laptop'], ['laptop']],
+            [[], []],
+            [
+                ['viewport_mobile', 'viewport_mobile', 'viewport_phablet', 'mobile', 'tablet', 'viewport_TABLET', ' viewport_tablet', 'viewport_tablet ', 'viewport_tablet<', 7, null, true, ['viewport_tablet']],
+                ['mobile'],
+            ],
+        ];
+        foreach ($saved as [$list, $expected]) {
+            $this->meta[42]['_elementor_page_settings'] = ['active_breakpoints' => $list];
+            $api->calls                                  = [];
+            $this->assertSame($expected, $this->collect($api)['active_breakpoints'], var_export($list, true));
+            $this->assertSame([], $api->callsTo('activeBreakpoints'));
+        }
+
+        // A saved value that is not a list cannot be read: null, and the
+        // manager is not asked in its place.
+        foreach (['viewport_mobile', 5, true, 1.5] as $bad) {
+            $this->meta[42]['_elementor_page_settings'] = ['active_breakpoints' => $bad];
+            $api->calls                                  = [];
+            $this->assertNull($this->collect($api)['active_breakpoints'], var_export($bad, true));
+            $this->assertSame([], $api->callsTo('activeBreakpoints'));
+        }
+
+        // Settings of another post are not the kit's: with no active kit the
+        // manager answers.
+        $this->meta[42]['_elementor_page_settings'] = ['active_breakpoints' => ['viewport_laptop']];
+        $api->activeKitId                           = 0;
+        $api->activeBreakpoints                     = ['mobile', 'phablet', 'laptop', 'tablet', 'mobile'];
+        $this->assertSame(['mobile', 'tablet', 'laptop'], $this->collect($api)['active_breakpoints']);
+
+        // The manager cannot answer, or Elementor is not loaded: null.
+        $api->activeBreakpoints = null;
+        $this->assertNull($this->collect($api)['active_breakpoints']);
+        $api->activeBreakpoints = ['mobile', 'tablet'];
+        $api->loaded            = false;
+        $this->assertNull($this->collect($api)['active_breakpoints']);
+
+        // A kit read that throws is not answered by the manager either.
+        $api->loaded      = true;
+        $api->activeKitId = 42;
+        Functions\when('get_post_meta')->alias(static fn () => throw new \RuntimeException('meta failed'));
+        $api->calls = [];
+        $this->assertNull($this->collect($api)['active_breakpoints']);
+        $this->assertSame([], $api->callsTo('activeBreakpoints'));
+
+        // The runtime asks Elementor's breakpoints manager and reports the
+        // names it keys its active breakpoints by.
+        $breakpoint = new \stdClass();
+        $answers    = [
+            [['mobile' => $breakpoint, 'tablet' => $breakpoint], ['mobile', 'tablet']],
+            [['laptop' => $breakpoint, 'mobile' => $breakpoint, 'tablet' => $breakpoint], ['laptop', 'mobile', 'tablet']],
+            [[], []],
+            [[0 => $breakpoint, 'Tablet' => $breakpoint, 'tab let' => $breakpoint, 'mobile' => $breakpoint], ['mobile']],
+            ['mobile', null],
+            [null, null],
+            [$breakpoint, null],
+        ];
+        $plugin                           = new ElementorPluginStandIn();
+        ElementorPluginStandIn::$instance = $plugin;
+        $runtime                          = $this->standInRuntime();
+        foreach ($answers as [$answer, $expected]) {
+            $plugin->breakpoints = new ElementorManagerStandIn(static fn () => $answer);
+            $this->assertSame($expected, $runtime->activeBreakpoints(), var_export($answer, true));
+            $this->assertSame([['get_active_breakpoints', []]], $plugin->breakpoints->calls);
+        }
+    }
+
     /**
      * @param FakeElementorApi $api Elementor double.
      * @return array<string, mixed>
@@ -679,6 +911,20 @@ final class ElementorFactsTest extends TestCase
         }
 
         return new ElementorRuntime(ElementorPluginStandIn::class, ElementorUtilsStandIn::class, self::VERSION_STANDIN);
+    }
+
+    /**
+     * A runtime whose post CSS class is the stand-in that records its calls.
+     *
+     * @return ElementorRuntime
+     */
+    private function postCssRuntime(): ElementorRuntime
+    {
+        if (!defined(self::VERSION_STANDIN)) {
+            define(self::VERSION_STANDIN, '3.35.9');
+        }
+
+        return new ElementorRuntime(ElementorPluginStandIn::class, ElementorUtilsStandIn::class, self::VERSION_STANDIN, ElementorRuntime::FONTS_CLASS, ElementorPostCssStandIn::class);
     }
 
     /**
@@ -733,12 +979,14 @@ final class ElementorFactsTest extends TestCase
         $this->assertFalse($runtime->widgetTypeExists('heading'));
         $this->assertNull($runtime->ksesPostDeep(['a' => '<b>x</b>']));
         $this->assertFalse($runtime->deletePostCss(41));
+        $this->assertNull($runtime->activeBreakpoints());
 
         $facts = ElementorFacts::collect($runtime, self::PRINCIPAL);
         $this->assertSame($loaded, $facts['active']);
         $this->assertNull($facts['containers']);
         $this->assertNull($facts['atomic']);
         $this->assertSame(0, $facts['active_kit_id']);
+        $this->assertNull($facts['active_breakpoints']);
     }
 
     /**
@@ -777,6 +1025,86 @@ final class ElementorPluginStandIn
 
     /** @var object|null */
     public $files_manager = null;
+
+    /** @var object|null */
+    public $breakpoints = null;
+}
+
+/**
+ * Stands in for Elementor's post CSS class: create() makes an object for a
+ * post, and every call is recorded in order.
+ */
+final class ElementorPostCssStandIn
+{
+    /** @var list<string> */
+    public static array $events = [];
+
+    /** @var mixed What get_meta() answers. */
+    public static mixed $meta = ['status' => 'file', 'time' => 5];
+
+    /** @var string|null What get_path() answers. */
+    public static ?string $path = '/uploads/elementor/css/post-41.css';
+
+    /** @var string Which call throws: create, update, meta or none. */
+    public static string $throwIn = 'none';
+
+    public function __construct(private readonly int $postId)
+    {
+    }
+
+    public static function reset(): void
+    {
+        self::$events  = [];
+        self::$meta    = ['status' => 'file', 'time' => 5];
+        self::$path    = '/uploads/elementor/css/post-41.css';
+        self::$throwIn = 'none';
+    }
+
+    /**
+     * @param int $postId Post id.
+     * @return self
+     */
+    public static function create(int $postId): self
+    {
+        self::$events[] = 'create:' . $postId;
+        if (self::$throwIn === 'create') {
+            throw new \RuntimeException('Elementor failed');
+        }
+
+        return new self($postId);
+    }
+
+    public function update(): void
+    {
+        self::$events[] = 'update:' . $this->postId;
+        if (self::$throwIn === 'update') {
+            throw new \RuntimeException('Elementor failed');
+        }
+    }
+
+    /**
+     * @param string|null $property Meta property.
+     * @return mixed
+     */
+    public function get_meta($property = null)
+    {
+        self::$events[] = 'meta:' . $this->postId;
+        if (self::$throwIn === 'meta') {
+            throw new \RuntimeException('Elementor failed');
+        }
+
+        return self::$meta;
+    }
+
+    /**
+     * @return string|null
+     */
+    public function get_path()
+    {
+        self::$events[] = 'path:' . $this->postId;
+
+        return self::$path;
+    }
 }
 
 /**
@@ -858,6 +1186,15 @@ final class ElementorManagerStandIn
     }
 
     /**
+     * @param mixed ...$args Arguments.
+     * @return mixed
+     */
+    public function get_active_breakpoints(...$args)
+    {
+        return $this->answer('get_active_breakpoints', $args);
+    }
+
+    /**
      * @param string       $method Method called.
      * @param array<mixed> $args   Arguments.
      * @return mixed
@@ -902,4 +1239,38 @@ final class ElementorLegacyUtilsStandIn
     {
         return 'example.test';
     }
+}
+
+/**
+ * Stands in for Elementor's base document class, which names the meta key of
+ * a post's cached element output.
+ */
+final class ElementorDocumentKeyStandIn
+{
+    public const CACHE_META_KEY = '_elementor_element_cache_v2';
+}
+
+/**
+ * A document class whose constant names a page row, not a cache.
+ */
+final class ElementorDocumentPageRowStandIn
+{
+    public const CACHE_META_KEY = '_elementor_data';
+}
+
+/**
+ * A document class whose constant holds a character no meta key of
+ * Elementor's has.
+ */
+final class ElementorDocumentOddKeyStandIn
+{
+    public const CACHE_META_KEY = '_elementor_cache%';
+}
+
+/**
+ * A document class whose constant is not a string.
+ */
+final class ElementorDocumentIntKeyStandIn
+{
+    public const CACHE_META_KEY = 7;
 }

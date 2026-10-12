@@ -15,8 +15,10 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Tests;
 
+use WPMgr\Agent\Abilities\Builders\BuilderContract;
 use WPMgr\Agent\Abilities\OwnAbilities;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
+use WPMgr\Agent\Tests\Builders\MiniJsonSchema;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -63,6 +65,181 @@ final class PageCreateLayoutTest extends TestCase
     public function test_layout_fixture_matches_the_builder(): void
     {
         $this->assertFixture('page-create-layout.json', self::layoutFixture());
+    }
+
+    /**
+     * Cases of the v3 table that a JSON schema can turn away: a closed
+     * enum, a count, a pattern, a required key. The rest of the table
+     * (reserved or duplicate anchors, hero placement, contrast, pure black)
+     * needs more than a schema can say and is the grammar's.
+     */
+    private const V3_SCHEMA_REFUSES = [
+        'outline-version-4',
+        'page-frame-unknown',
+        'section-raw-padding',
+        'section-without-children',
+        'anchor-uppercase',
+        'anchor-41-characters',
+        'anchor-missing',
+        'design-density-missing',
+        'design-ratio-as-a-number',
+        'design-ratio-unknown-name',
+        'features-2-items',
+        'testimonials-7-items',
+        'pricing-5-plans',
+        'faq-0-items',
+        'logos-11-items',
+        'stats-5-items',
+        'icon-not-in-the-list',
+    ];
+
+    public function testSchemaAdmitsV3(): void
+    {
+        $schema = PageCreateBuilder::inputSchema();
+        $props  = $schema['properties'];
+        foreach (['outline_version', 'design', 'page_frame'] as $key) {
+            $this->assertArrayHasKey($key, $props, $key . ' is a published input');
+        }
+        $this->assertSame(['post_type', 'editor', 'title', 'outline'], $schema['required'], 'version 2 inputs stay valid: v3 keys are never required by the schema');
+        $this->assertFalse($schema['additionalProperties']);
+        $this->assertSame([3], $props['outline_version']['enum']);
+        $this->assertSame(['theme', 'full_width', 'canvas'], $props['page_frame']['enum']);
+
+        $v3 = self::v3Cases();
+        foreach ($v3['cases'] as $case) {
+            $errors = MiniJsonSchema::errors(self::decodeInput($case), $schema);
+            if ($case['agent'] === 'ok') {
+                $this->assertSame([], $errors, $case['name'] . ': the schema admits an accepted v3 case');
+            }
+        }
+        $refused = 0;
+        foreach ($v3['cases'] as $case) {
+            if (!in_array($case['name'], self::V3_SCHEMA_REFUSES, true)) {
+                continue;
+            }
+            ++$refused;
+            $this->assertNotSame([], MiniJsonSchema::errors(self::decodeInput($case), $schema), $case['name'] . ': the schema turns this case away');
+        }
+        $this->assertSame(count(self::V3_SCHEMA_REFUSES), $refused, 'every named refusal is a case of the table');
+
+        // Version 2 is unchanged: everything the grammar accepted is still admitted.
+        $v2 = json_decode((string) file_get_contents(self::FIXTURE_DIR . 'page-create-layout-cases.json'), true);
+        $this->assertIsArray($v2);
+        $admitted = 0;
+        foreach ($v2['cases'] as $case) {
+            if ($case['agent'] !== 'ok') {
+                continue;
+            }
+            ++$admitted;
+            $this->assertSame([], MiniJsonSchema::errors(json_decode($case['input'], false, 32), $schema), $case['name'] . ': a version 2 case is still admitted');
+        }
+        $this->assertGreaterThan(30, $admitted);
+
+        // The icon list is one list: the table's, the schema's.
+        $this->assertSame($v3['icons'], self::iconEnum($schema), 'the schema offers the table\'s closed icon list');
+    }
+
+    public function testEditSchemaAdmitsDesignAndPatternPaths(): void
+    {
+        $edit = BuilderContract::pageEditInputSchema();
+        $this->assertSame(PageCreateBuilder::inputSchema()['properties']['design'], $edit['properties']['design'], 'the design is the page-create design');
+        $this->assertSame(['post_id', 'base_fingerprint', 'operations'], $edit['required'], 'design stays optional on an edit');
+        $this->assertFalse($edit['additionalProperties']);
+
+        $fp   = str_repeat('a', 64);
+        $text = static fn (string $field): object => (object) [
+            'post_id' => 5, 'base_fingerprint' => $fp,
+            'operations' => [(object) ['op' => 'set_text', 'ref' => '1a2b3c4', 'field' => $field, 'text' => 'x']],
+        ];
+        foreach (['text', 'url', 'alt', 'caption', 'plans.1.price', 'faq.3.answer', 'features.0.title', 'plans.1.cta.text', 'plans.2.features.0', 'stats.0.value'] as $field) {
+            $this->assertSame([], MiniJsonSchema::errors($text($field), $edit), $field . ' is a field set_text may name');
+        }
+        foreach (['', 'Text', 'plans.price', 'plans.1', 'plans.x.price', 'plans.01.price', 'plans.100.price', 'carousel.1.title', 'plans.1.Price', 'plans.1.price ', 'plans.1.a.b.c.d'] as $field) {
+            $this->assertNotSame([], MiniJsonSchema::errors($text($field), $edit), '"' . $field . '" is not a field set_text may name');
+        }
+
+        $design = self::decodeInput(self::v3Case('v3-minimal-page'))->design;
+        $with   = (object) [
+            'post_id' => 5, 'base_fingerprint' => $fp, 'design' => $design,
+            'operations' => [(object) ['op' => 'remove', 'ref' => '1a2b3c4']],
+        ];
+        $this->assertSame([], MiniJsonSchema::errors($with, $edit), 'an edit may carry a design');
+        $with->design->radius = 'xl';
+        $this->assertNotSame([], MiniJsonSchema::errors($with, $edit), 'a design on an edit is checked like one on a create');
+
+        // Insert and replace take v3 nodes: a section, and a bare pattern (item edits go through replace).
+        $section = self::decodeInput(self::v3Case('v3-minimal-page'))->outline[0];
+        $pattern = self::decodeInput(self::v3Case('patterns-at-their-smallest-counts'))->outline[2]->children[0];
+        $this->assertSame('pattern', $pattern->type);
+        foreach ([$section, $pattern] as $node) {
+            foreach (['insert' => ['after' => '1a2b3c4'], 'replace' => ['ref' => '1a2b3c4']] as $op => $anchor) {
+                $input = (object) [
+                    'post_id' => 5, 'base_fingerprint' => $fp,
+                    'operations' => [(object) (['op' => $op] + $anchor + ['outline' => [$node]])],
+                ];
+                $this->assertSame([], MiniJsonSchema::errors($input, $edit), $op . ' of a ' . $node->type . ' is admitted');
+            }
+        }
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private static function v3Cases(): array
+    {
+        $raw = file_get_contents(self::FIXTURE_DIR . 'page-create-v3-cases.json');
+        self::assertIsString($raw, 'page-create-v3-cases.json is missing');
+        $doc = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        self::assertIsArray($doc);
+
+        return $doc;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private static function v3Case(string $name): array
+    {
+        foreach (self::v3Cases()['cases'] as $case) {
+            if ($case['name'] === $name) {
+                return $case;
+            }
+        }
+        self::fail('no v3 case named ' . $name);
+    }
+
+    /**
+     * The case input as decoded JSON (objects stay objects).
+     *
+     * @param array<string,mixed> $case Case.
+     */
+    private static function decodeInput(array $case): object
+    {
+        $in = json_decode((string) $case['input'], false, 32);
+        self::assertIsObject($in, (string) $case['name']);
+
+        return $in;
+    }
+
+    /**
+     * The icon names the features item offers.
+     *
+     * @param array<string,mixed> $schema The page-create input schema.
+     * @return list<string>
+     */
+    private static function iconEnum(array $schema): array
+    {
+        foreach ($schema['properties']['outline']['items']['oneOf'] as $item) {
+            if (($item['properties']['type']['const'] ?? null) !== 'section') {
+                continue;
+            }
+            foreach ($item['properties']['children']['items']['oneOf'] as $child) {
+                if (($child['properties']['pattern']['enum'][0] ?? null) === 'features') {
+                    return $child['properties']['features']['items']['properties']['icon']['enum'];
+                }
+            }
+        }
+        self::fail('the section schema offers no features pattern');
     }
 
     // -------------------------------------------------------------------------

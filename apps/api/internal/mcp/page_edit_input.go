@@ -8,15 +8,25 @@ package mcp
 //   - the input is the exact JSON text of an object of at most 65536 bytes,
 //     valid UTF-8, nested at most 32 deep, with no unpaired UTF-16 surrogate
 //     escape (the agent's decoder refuses each of those);
-//   - post_id, base_fingerprint and 1..25 operations, and nothing else;
+//   - post_id, base_fingerprint and 1..25 operations, and an optional design
+//     (page-create's design object, judged as page-create judges it), and
+//     nothing else;
 //   - each operation in the published schema's shape: one anchor per insert
 //     or move, position only on an insert into a node, refs of 1..32
 //     letters, digits, "_" or "-";
-//   - set_text's text through wpmgr/page-create's rule for its field ("text"
-//     the paragraph text rule, "caption" the caption rule, "alt" the alt rule,
-//     "url" the button link rule);
+//   - set_text's field a plain field or a pattern path ("plans.1.price"),
+//     matched whole, and its text through wpmgr/page-create's rule for the
+//     field ("text" the paragraph text rule, "caption" the caption rule, "alt"
+//     the alt rule, "url" the button link rule); a path takes the rule of its
+//     last step (url the link rule, alt the alt rule, cta.text the button text
+//     rule, any other the text rule), and a link may name a section of the
+//     page with "#" and its anchor. Which paths a node offers is the page's;
 //   - each outline (1..50 nodes) through the page-create outline grammar
-//     (page_create_input.go), whose text rules stay the agent's;
+//     (page_create_input.go), version 3 included: a section, a pattern or a
+//     block of version 2, each judged by what it is. Where a node may stand
+//     and whether an anchor or a link is the page's own is the page's:
+//     anchors and links are judged by the agent on the page the whole call
+//     leaves;
 //   - a ref named at most once in the whole call, as a target or an anchor
 //     (ops_invalid).
 //
@@ -57,21 +67,23 @@ const (
 	pageEditMaxTextChars    = 5000
 	pageEditMaxCaptionChars = 500
 	pageEditMaxAltChars     = 300
-	pageEditOpsInvalid      = "ops_invalid"
-	pageEditOpSetText       = "set_text"
-	pageEditOpInsert        = "insert"
-	pageEditOpReplace       = "replace"
-	pageEditOpRemove        = "remove"
-	pageEditOpMove          = "move"
-	pageEditTextRuleText    = "text"
-	pageEditTextRuleAlt     = "alt"
-	pageEditAnchorInto      = "into"
-	pageEditFieldURL        = "url"
-	pageEditFieldAlt        = "alt"
-	pageEditFieldCaption    = "caption"
-	pageEditFieldText       = "text"
-	pageEditPositionFirst   = "first"
-	pageEditPositionLast    = "last"
+	// pageEditMaxButtonTextChars is the length of a button's text: page-create's.
+	pageEditMaxButtonTextChars = 80
+	pageEditOpsInvalid         = "ops_invalid"
+	pageEditOpSetText          = "set_text"
+	pageEditOpInsert           = "insert"
+	pageEditOpReplace          = "replace"
+	pageEditOpRemove           = "remove"
+	pageEditOpMove             = "move"
+	pageEditTextRuleText       = "text"
+	pageEditTextRuleAlt        = "alt"
+	pageEditAnchorInto         = "into"
+	pageEditFieldURL           = "url"
+	pageEditFieldAlt           = "alt"
+	pageEditFieldCaption       = "caption"
+	pageEditFieldText          = "text"
+	pageEditPositionFirst      = "first"
+	pageEditPositionLast       = "last"
 )
 
 var (
@@ -80,6 +92,11 @@ var (
 	pageEditRefPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 	// pageEditFingerprintPattern is BuilderContract::FINGERPRINT_PATTERN.
 	pageEditFingerprintPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	// pageEditPathPattern is what set_text may name beyond the plain fields,
+	// the pattern the published schema gives the field: the pattern, the
+	// position of the item in it from 0, and up to three steps down into the
+	// item. Go's $ matches at the end of the text only.
+	pageEditPathPattern = regexp.MustCompile(`^(features|testimonials|plans|faq|logos|stats)\.(0|[1-9][0-9]?)(\.[a-z0-9_]{1,24}){1,3}$`)
 	// pageTextForbiddenRunes is page-create's class of control characters
 	// (line breaks included), bidi overrides and isolates, the BOM and the
 	// noncharacters U+FFFE and U+FFFF.
@@ -124,49 +141,80 @@ type pageEditFacts struct {
 	postID          int64
 	baseFingerprint string
 	ops             []pageEditOp
+	// design is the input's own design member, every field checked and its
+	// colours upper case; nil when the input sends none.
+	design *pageDesign
+}
+
+// addsNodes reports whether the call puts new nodes on the page: an insert or
+// a replace.
+func (f pageEditFacts) addsNodes() bool {
+	for _, op := range f.ops {
+		if len(op.Outline) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // validatePageEditInput checks input against every page-edit rule that needs
 // no page. It returns the facts, or the agent's refusal code for the first
-// problem: ops_invalid for a ref named twice, bad_input for anything else.
+// problem: ops_invalid for a ref named twice, bad_input for anything else,
+// and for a design the codes of page-create's design.
 func validatePageEditInput(input []byte) (pageEditFacts, string) {
+	f, refusal := checkPageEditInput(input)
+	return f, refusal.Code
+}
+
+// checkPageEditInput is validatePageEditInput with the failures behind a
+// refusal: a design that is refused says which of its fields. The design is
+// judged before the operations, as page-create judges it before the outline.
+func checkPageEditInput(input []byte) (pageEditFacts, pageCreateRefusal) {
+	bad := pageCreateRefusal{Code: pageCreateBadInput}
 	if len(input) > pageEditMaxInputBytes || !utf8.Valid(input) || jsonNestedDeeperThan(input, pageEditMaxDepth) ||
 		jsonHasLoneSurrogate(input) {
-		return pageEditFacts{}, pageCreateBadInput
+		return pageEditFacts{}, bad
 	}
 	top, ok := jsonObjectOf(input)
-	if !ok || !keysExactly(top, []string{"post_id", "base_fingerprint", "operations"},
+	if !ok || !keysExactly(top, []string{"post_id", "base_fingerprint", "operations", "design"},
 		"post_id", "base_fingerprint", "operations") {
-		return pageEditFacts{}, pageCreateBadInput
+		return pageEditFacts{}, bad
 	}
 	var f pageEditFacts
 	if f.postID, ok = jsonIntOf(top["post_id"]); !ok || f.postID < 1 {
-		return pageEditFacts{}, pageCreateBadInput
+		return pageEditFacts{}, bad
 	}
 	if f.baseFingerprint, ok = jsonStringOf(top["base_fingerprint"]); !ok ||
 		!pageEditFingerprintPattern.MatchString(f.baseFingerprint) {
-		return pageEditFacts{}, pageCreateBadInput
+		return pageEditFacts{}, bad
+	}
+	if raw, has := top["design"]; has {
+		design, problem := validatePageDesign(raw)
+		if problem != nil {
+			return pageEditFacts{}, pageCreateRefusal{Code: problem.Code, Failures: refusalFailuresOfDesign(problem.Failures)}
+		}
+		f.design = &design
 	}
 	ops, ok := jsonArrayOf(top["operations"])
 	if !ok || len(ops) == 0 || len(ops) > pageEditMaxOps {
-		return pageEditFacts{}, pageCreateBadInput
+		return pageEditFacts{}, bad
 	}
 	named := make(map[string]struct{}, len(ops)*2)
 	f.ops = make([]pageEditOp, 0, len(ops))
 	for _, raw := range ops {
 		op, ok := pageEditOperation(raw)
 		if !ok {
-			return pageEditFacts{}, pageCreateBadInput
+			return pageEditFacts{}, bad
 		}
 		for _, ref := range op.refs() {
 			if _, twice := named[ref]; twice {
-				return pageEditFacts{}, pageEditOpsInvalid
+				return pageEditFacts{}, pageCreateRefusal{Code: pageEditOpsInvalid}
 			}
 			named[ref] = struct{}{}
 		}
 		f.ops = append(f.ops, op)
 	}
-	return f, ""
+	return f, pageCreateRefusal{}
 }
 
 // pageEditOperation is one operation in its normalised form, or ok=false.
@@ -287,27 +335,47 @@ func pageEditRef(raw json.RawMessage) (string, bool) {
 }
 
 // pageEditOutline is an outline of 1..50 nodes that the page-create outline
-// grammar accepts as the outline of a page of its own. Whatever code the
-// grammar gives, page-edit refuses it as bad_input, as the agent does.
+// grammar accepts, version 3 included. A section is read where a section
+// stands, at the top; every other node as a child of a section, which is
+// where the top of a version 2 outline stands, so a pattern, a block or a
+// group is read as the grammar reads it there. Whether the page offers the
+// place, and whether an anchor or a link is the page's own, is the agent's:
+// the links of the outline are not resolved here. Whatever code the grammar
+// gives, page-edit refuses it as bad_input, as the agent does.
 func pageEditOutline(raw json.RawMessage) ([]json.RawMessage, bool) {
 	list, ok := jsonArrayOf(raw)
 	if !ok || len(list) == 0 || len(list) > pageEditMaxOutlinePerOp {
 		return nil, false
 	}
-	w := pageWalk{seen: map[int64]struct{}{}}
+	w := pageWalk{seen: map[int64]struct{}{}, designed: true}
 	for _, n := range list {
-		if code := w.node(n, pageAtTop); code != "" {
+		at := pageAtSection
+		if pageEditNodeIsSection(n) {
+			at = pageAtTop
+		}
+		if code := w.node(n, at); code != "" {
 			return nil, false
 		}
 	}
 	return list, true
 }
 
-// pageEditFieldTextUsable applies page-create's rule for a set_text field.
+// pageEditNodeIsSection reports whether an outline node is a section.
+func pageEditNodeIsSection(raw json.RawMessage) bool {
+	n, ok := jsonObjectOf(raw)
+	if !ok {
+		return false
+	}
+	kind, _ := jsonStringOf(n["type"])
+	return kind == "section"
+}
+
+// pageEditFieldTextUsable applies page-create's rule for a set_text field: a
+// plain field, or a pattern path, which takes the rule of its last step.
 func pageEditFieldTextUsable(field, text string) bool {
 	switch field {
 	case pageEditFieldURL:
-		return pageLinkUsable(text)
+		return pageEditLinkUsable(text)
 	case pageEditFieldAlt:
 		return pageTextProblem(text, pageEditMaxAltChars, pageEditTextRuleAlt) == ""
 	case pageEditFieldCaption:
@@ -315,7 +383,35 @@ func pageEditFieldTextUsable(field, text string) bool {
 	case pageEditFieldText:
 		return pageTextProblem(text, pageEditMaxTextChars, pageEditTextRuleText) == ""
 	}
+	if pageEditPathPattern.MatchString(field) {
+		return pageEditPathTextUsable(field, text)
+	}
 	return false
+}
+
+// pageEditPathTextUsable is the rule for the text of a pattern path: url the
+// link rule, alt the alt rule, cta.text the button text rule, any other step
+// the paragraph text rule.
+func pageEditPathTextUsable(path, text string) bool {
+	switch {
+	case strings.HasSuffix(path, ".url"):
+		return pageEditLinkUsable(text)
+	case strings.HasSuffix(path, ".alt"):
+		return pageTextProblem(text, pageEditMaxAltChars, pageEditTextRuleAlt) == ""
+	case strings.HasSuffix(path, ".cta.text"):
+		return pageTextProblem(text, pageEditMaxButtonTextChars, pageEditTextRuleText) == ""
+	}
+	return pageTextProblem(text, pageEditMaxTextChars, pageEditTextRuleText) == ""
+}
+
+// pageEditLinkUsable is a link set_text may give: page-create's link, or a
+// link to a section of the page, "#" and an anchor of the anchor's shape.
+// Whether the page has that anchor is the agent's to judge.
+func pageEditLinkUsable(u string) bool {
+	if slug, ok := strings.CutPrefix(u, "#"); ok {
+		return pageAnchorPattern.MatchString(slug)
+	}
+	return pageLinkUsable(u)
 }
 
 // pageTextProblem is page-create's text rule (PageCreateBuilder::textProblem):

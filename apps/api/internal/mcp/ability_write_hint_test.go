@@ -24,6 +24,9 @@ func TestPrecheckRefusalHint(t *testing.T) {
 		"image_not_available":       {"media library", "wp-v2-media-list"},
 		"image_url_unusable":        {"wp-v2-media-list"},
 		"layout_needs_block_editor": {"classic editor", "wordpress_classic", "captions"},
+		// The design of a designed page (outline version 3).
+		"design_not_ready":    {"colors", "fonts", "scale", "radius", "density", "base_px", "ratio", "major_second", "minor_third", "major_third", "perfect_fourth"},
+		"design_contrast_low": {"4.5", "ink", "ground", "surface", "on_accent", "accent"},
 	}
 	for code, wants := range cases {
 		hint := precheckRefusalHint(code)
@@ -34,6 +37,13 @@ func TestPrecheckRefusalHint(t *testing.T) {
 			if !strings.Contains(hint, w) {
 				t.Errorf("%s: hint does not mention %q: %s", code, w, hint)
 			}
+		}
+	}
+	// The ratio is a name: the hint offers none of the numbers a name stands
+	// for, which the run entry would refuse as fractions.
+	for _, n := range []string{"1.125", "1.2", "1.25", "1.333"} {
+		if hint := precheckRefusalHint("design_not_ready"); strings.Contains(hint, n) {
+			t.Errorf("design_not_ready: the hint offers the number %s for the ratio: %s", n, hint)
 		}
 	}
 	// The link hint's list of characters a link may hold names neither ':'

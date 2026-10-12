@@ -26,11 +26,19 @@ use WPMgr\Agent\Abilities\Builders\BuilderContract;
 use WPMgr\Agent\Abilities\Builders\BuilderDocumentFingerprint;
 use WPMgr\Agent\Abilities\Builders\BuilderDocumentRestore;
 use WPMgr\Agent\Abilities\Builders\BuilderDocumentSnapshot;
+use WPMgr\Agent\Abilities\Builders\BuilderPageCreate;
 use WPMgr\Agent\Abilities\Builders\BuilderPageEdit;
+use WPMgr\Agent\Abilities\Builders\DesignTokens;
 use WPMgr\Agent\Abilities\Builders\DraftEligibility;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
 use WPMgr\Agent\Abilities\Builders\ElementorClassicMapper;
 use WPMgr\Agent\Abilities\Builders\ElementorDocument;
+use WPMgr\Agent\Abilities\Builders\ElementorSectionCompiler;
+use WPMgr\Agent\Abilities\Builders\ElementorStyleCache;
+use WPMgr\Agent\Abilities\Builders\IdSeed;
+use WPMgr\Agent\Abilities\Builders\LeafPolicy;
+use WPMgr\Agent\Abilities\Builders\NativeDocument;
+use WPMgr\Agent\Abilities\Builders\OutlineV3;
 use WPMgr\Agent\Abilities\OwnAbilities;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -67,6 +75,17 @@ final class BuilderPageEditTest extends TestCase
 
     /** A colour a person set on the heading: a setting WPMgr never writes. */
     private const PERSON_COLOR = '#c0392b';
+
+    /** A designed page: a section that links to a pricing section. */
+    private const DESIGNED_PAGE = '[{"type":"section","anchor":"top","children":[{"type":"paragraph","text":"Welcome."},{"type":"buttons","buttons":[{"text":"See plans","url":"#plans"}]}]},'
+        . '{"type":"section","anchor":"plans","tone":"surface","children":[{"type":"pattern","pattern":"pricing","variant":"three-plans","plans":['
+        . '{"name":"Starter","price":"$19","period":"per month","features":["One site","Email support"],"cta":{"text":"Choose Starter","url":"https://example.com/start"}},'
+        . '{"name":"Growth","price":"$29","period":"per month","features":["Five sites","Chat support"],"cta":{"text":"Choose Growth","url":"https://example.com/grow"}},'
+        . '{"name":"Scale","price":"$99","period":"per month","features":["Fifty sites","Phone support"],"cta":{"text":"Choose Scale","url":"https://example.com/scale"}}]}]}]';
+
+    /** A section a designed page is given: a paragraph and a testimonials pattern. */
+    private const NEW_SECTION = '[{"type":"section","anchor":"press","children":[{"type":"paragraph","text":"Where we were mentioned."},'
+        . '{"type":"pattern","pattern":"testimonials","variant":"featured","testimonials":[{"quote":"It just works.","name":"Ana","role":"Founder"},{"quote":"Saved us hours.","name":"Ben"}]}]}]';
 
     /** @var list<array{0:string,1:callable,2:int,3:int}> */
     private array $hooks = [];
@@ -226,6 +245,18 @@ final class BuilderPageEditTest extends TestCase
         $this->assertSame($this->currentFp(), $r['after_fp']);
         $this->assertSame($plan['base_fingerprint'], $r['before_fp']);
         $this->assertSame([], $this->wpdb->claims, 'the target claim is released');
+    }
+
+    public function test_a_stylesheet_that_was_not_regenerated_is_a_warning_on_an_applied_edit(): void
+    {
+        $this->api->regenerated = ['status' => 'file', 'path' => sys_get_temp_dir() . '/wpmgr-no-such-dir/post-41.css'];
+
+        $r = $this->approvedWrite($this->input(self::ops()));
+
+        $this->assertSame([true, 'applied'], [$r['ok'] ?? null, $r['outcome'] ?? null], (string) json_encode($r));
+        $this->assertSame(['css_not_regenerated'], array_column($r['warnings'] ?? [], 'code'));
+        $this->assertSame([[self::TARGET]], $this->api->callsTo('regeneratePostCss'), 'regenerated once');
+        $this->assertSame([], $this->api->callsTo('deletePostCss'), 'nothing was put back');
     }
 
     public function test_snapshot_before_any_effect(): void
@@ -642,6 +673,256 @@ final class BuilderPageEditTest extends TestCase
      *
      * @return list<array<string,mixed>>
      */
+    // -------------------------------------------------------------------------
+    // A designed page, end to end through plan() and the write
+    // -------------------------------------------------------------------------
+
+    public function test_a_designed_section_insert_is_planned_written_and_held_to_the_designed_allowlist(): void
+    {
+        $this->storeDesigned();
+        $input = $this->designedInput([['op' => 'insert', 'after' => $this->nodeOf('section', 'top')['ref'], 'outline' => json_decode(self::NEW_SECTION, true)]], true);
+        $plan  = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, (string) json_encode($plan['refusal'] ?? null));
+        $made = $plan['preview']['tree'][1];
+        $this->assertSame(['press', LeafPolicy::SECTION_LABEL], [$made['settings']['_element_id'] ?? null, $made['settings']['_title'] ?? null]);
+        $this->assertArrayHasKey('padding_tablet', $made['settings'], 'compiled for the tablet breakpoint the site has active');
+
+        $r = $this->approvedWrite($input);
+        $this->assertSame([true, 'applied'], [$r['ok'] ?? null, $r['outcome'] ?? null], (string) json_encode($r));
+
+        // Held to the designed allowlist for this site, not to anything wider.
+        $before = $this->snapshotOf(self::EDIT);
+        $tree   = $plan['preview']['tree'];
+        $this->assertNull($this->adapter()->verifyEdited(self::TARGET, new NativeDocument($tree), $before));
+        $extra                              = $tree;
+        $extra[1]['settings']['custom_css'] = 'section{}';
+        $this->storeData($extra);
+        $this->assertSame('leaf_policy', $this->adapter()->verifyEdited(self::TARGET, new NativeDocument($extra), $before), 'a key no designed tree holds');
+        $this->storeData($tree);
+        $this->api->activeBreakpoints = ['mobile'];
+        $this->assertSame('leaf_policy', $this->adapter()->verifyEdited(self::TARGET, new NativeDocument($tree), $before), 'a tablet override, on a site with no tablet breakpoint');
+    }
+
+    public function test_set_text_on_a_pricing_plans_price_is_planned_and_written(): void
+    {
+        $this->storeDesigned();
+        $input = $this->designedInput([['op' => 'set_text', 'ref' => $this->nodeOf('pattern')['ref'], 'field' => 'plans.1.price', 'text' => '$59']], false);
+        $plan  = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, (string) json_encode($plan['refusal'] ?? null));
+        $this->assertSame(str_replace('"$29"', '"$59"', (string) json_encode(self::designedPage())), json_encode($plan['preview']['tree']), 'only the second plan\'s price differs');
+        $this->assertSame(['set_text'], array_column($plan['preview']['changes'], 'op'));
+
+        $r = $this->approvedWrite($input);
+        $this->assertSame([true, 'applied', 1], [$r['ok'] ?? null, $r['outcome'] ?? null, $r['changes_applied'] ?? null], (string) json_encode($r));
+    }
+
+    /**
+     * A plain button of a designed page takes the address of a section of the
+     * page, as the grammar lets it; the written link keeps its other members,
+     * and the edited page is held to the designed allowlist for the site.
+     */
+    public function test_set_text_of_a_button_url_to_an_anchor_is_planned_and_written_on_a_designed_page(): void
+    {
+        $this->storeDesigned();
+        $button = $this->nodeOf('buttons');
+        $input  = $this->designedInput([['op' => 'set_text', 'ref' => $button['ref'], 'field' => 'url', 'text' => '#top']], false);
+        $plan   = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, (string) json_encode($plan['refusal'] ?? null));
+        $this->assertSame(str_replace('"url":"#plans"', '"url":"#top"', (string) json_encode(self::designedPage())), json_encode($plan['preview']['tree']), 'only the button\'s link differs');
+        $this->assertSame([['url' => '#plans'], ['url' => '#top']], [$plan['preview']['changes'][0]['before'], $plan['preview']['changes'][0]['after']]);
+
+        $r = $this->approvedWrite($input);
+        $this->assertSame([true, 'applied', 1], [$r['ok'] ?? null, $r['outcome'] ?? null, $r['changes_applied'] ?? null], (string) json_encode($r));
+
+        // A link to a section the page does not have is still the validator's to refuse, and a bad shape is still bad_input.
+        $this->assertSame(['link_anchor_missing', 'link_leads_nowhere'], self::codeOf($this->plan($this->designedInput([['op' => 'set_text', 'ref' => $button['ref'], 'field' => 'url', 'text' => '#nowhere']], false))));
+        $this->assertSame('bad_input', $this->plan($this->designedInput([['op' => 'set_text', 'ref' => $button['ref'], 'field' => 'url', 'text' => '#Not_An_Anchor']], false))['refusal']['code'] ?? null);
+    }
+
+    /**
+     * A link is one value of the designed allowlist: what an edit wrote into a
+     * link is checked as the whole link, however many of its members changed.
+     * So a plain button's address and a plan's button address are written on a
+     * designed page, a path on the site and a section of the page alike.
+     */
+    public function test_set_text_of_a_path_on_the_site_is_written_to_a_button_of_a_designed_page(): void
+    {
+        $this->storeDesigned();
+        $input = $this->designedInput([['op' => 'set_text', 'ref' => $this->nodeOf('buttons')['ref'], 'field' => 'url', 'text' => '/start']], false);
+        $r     = $this->approvedWrite($input);
+        $this->assertSame([true, 'applied', 1], [$r['ok'] ?? null, $r['outcome'] ?? null, $r['changes_applied'] ?? null], (string) json_encode($r));
+        $this->assertStringContainsString('"url":"\/start","is_external":"","nofollow":""', (string) ($this->rowsOf(ElementorDocument::KEY_DATA)[0] ?? ''));
+    }
+
+    public function test_set_text_of_a_plans_button_address_is_written_on_a_designed_page(): void
+    {
+        $this->storeDesigned();
+        $input = $this->designedInput([['op' => 'set_text', 'ref' => $this->nodeOf('pattern')['ref'], 'field' => 'plans.0.cta.url', 'text' => '#top']], false);
+        $r     = $this->approvedWrite($input);
+        $this->assertSame([true, 'applied', 1], [$r['ok'] ?? null, $r['outcome'] ?? null, $r['changes_applied'] ?? null], (string) json_encode($r));
+        $this->assertStringContainsString('"url":"#top","is_external":"","nofollow":""', (string) ($this->rowsOf(ElementorDocument::KEY_DATA)[0] ?? ''));
+    }
+
+    /**
+     * The precheck of a designed page names the breakpoints its tree is a
+     * function of, as page-create's does; the answer of a plain page names
+     * nothing, and the digests do not hold the facts.
+     */
+    public function test_the_precheck_names_the_active_breakpoints_for_a_designed_page_and_nothing_for_a_plain_one(): void
+    {
+        $plain = $this->plan($this->input(self::ops()));
+        $this->assertArrayNotHasKey('refusal', $plain, (string) json_encode($plain['refusal'] ?? null));
+        $this->assertNull($plain['builder_facts'] ?? null, 'a plain page has no fact');
+        $this->assertArrayNotHasKey('builder_facts', BuilderPageEdit::precheckAnswer($plain, self::EDIT, str_repeat('0', 64)), 'a plain page\'s answer is as it was');
+
+        $this->api->activeBreakpoints = ['mobile'];
+        $this->storeDesigned();
+        $input = $this->designedInput([['op' => 'set_text', 'ref' => $this->nodeOf('pattern')['ref'], 'field' => 'plans.1.price', 'text' => '$59']], false);
+        $plan  = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, (string) json_encode($plan['refusal'] ?? null));
+        $this->assertSame(['active_breakpoints' => ['mobile']], $plan['builder_facts'] ?? null, 'the breakpoints the site has active');
+        $this->assertSame(['active_breakpoints' => ['mobile']], BuilderPageEdit::precheckAnswer($plan, self::EDIT, str_repeat('0', 64))['builder_facts'] ?? null, 'the answer carries them beside the preview');
+
+        $this->api->activeBreakpoints = [];
+        $none = $this->plan($input);
+        $this->assertSame(['active_breakpoints' => []], $none['builder_facts'] ?? null, 'none active is a list, not a missing fact');
+        $this->assertSame($plan['preview_digest'], $none['preview_digest'], 'the facts are beside the preview, not in its digest');
+    }
+
+    /** A page is designed when it holds a designed section before the edit or after it. */
+    public function test_a_page_is_designed_when_the_edit_finds_or_leaves_a_designed_section(): void
+    {
+        $plain    = self::page();
+        $designed = self::designedPage();
+        $adapter  = $this->adapter();
+        $this->assertNull($adapter->editFacts($plain, $plain));
+        $want = ['active_breakpoints' => ['mobile', 'tablet']];
+        $this->assertSame($want, $adapter->editFacts($designed, $designed));
+        $this->assertSame($want, $adapter->editFacts($designed, $plain), 'an edit that takes the last section away still found a designed page');
+        $this->assertSame($want, $adapter->editFacts($plain, $designed), 'an edit that leaves a designed section is a designed page');
+    }
+
+    public function test_a_hero_inserted_below_a_section_is_refused_and_one_above_it_is_planned(): void
+    {
+        $this->storeDesigned();
+        $hero = [['type' => 'section', 'anchor' => 'welcome', 'children' => [['type' => 'pattern', 'pattern' => 'hero', 'variant' => 'centered', 'children' => [['type' => 'heading', 'level' => 1, 'text' => 'Ship faster']]]]]];
+
+        $below = $this->plan($this->designedInput([['op' => 'insert', 'after' => $this->nodeOf('section', 'top')['ref'], 'outline' => $hero]], true));
+        $this->assertSame(['hero_misplaced', 'hero_not_first'], self::codeOf($below));
+
+        $above = $this->plan($this->designedInput([['op' => 'insert', 'before' => $this->nodeOf('section', 'top')['ref'], 'outline' => $hero]], true));
+        $this->assertArrayNotHasKey('refusal', $above, (string) json_encode($above['refusal'] ?? null));
+        $this->assertSame([], $this->rows->optionRows(), 'a precheck stores nothing');
+    }
+
+    public function test_an_inserted_background_that_is_not_an_image_is_refused_naming_its_operation(): void
+    {
+        $this->storeDesigned();
+        $mime = 'application/pdf';
+        Functions\when('get_post')->alias(static fn ($id) => (int) $id === 77 ? (object) ['ID' => 77, 'post_type' => 'attachment'] : null);
+        Functions\when('current_user_can')->justReturn(true);
+        Functions\when('get_post_mime_type')->alias(static function () use (&$mime) {
+            return $mime;
+        });
+        $section = [['type' => 'section', 'anchor' => 'press', 'background' => ['attachment_id' => 77], 'children' => [['type' => 'paragraph', 'text' => 'Where we were mentioned.']]]];
+        $input   = $this->designedInput([
+            ['op' => 'set_text', 'ref' => $this->nodeOf('pattern')['ref'], 'field' => 'plans.0.price', 'text' => '$9'],
+            ['op' => 'insert', 'after' => $this->nodeOf('section', 'plans')['ref'], 'outline' => $section],
+        ], true);
+
+        $plan = $this->plan($input);
+        $this->assertSame(['background_not_image', 1], [$plan['refusal']['code'] ?? null, $plan['refusal']['op_index'] ?? null], (string) json_encode($plan));
+        $this->assertSame(['operations[1].outline[0].background'], array_column($plan['refusal']['failures'] ?? [], 'path'));
+
+        // An image passes this check, and is then resolved as every image is.
+        $mime = 'image/png';
+        $this->assertSame('image_not_available', $this->plan($input)['refusal']['code'] ?? null);
+    }
+
+    public function test_an_inserted_logo_whose_alt_is_not_the_librarys_is_refused_naming_its_operation(): void
+    {
+        $this->storeDesigned();
+        Functions\when('get_post_meta')->alias(static fn ($id, $key = '', $single = false) => $key === BuilderPageCreate::ALT_META_KEY ? 'Logo ' . $id : '');
+        $media = static fn (array $ids): array => ['facts' => array_map(static fn (int $id): array => [
+            'id'           => $id,
+            'url'          => 'https://example.com/wp-content/uploads/2026/10/logo-' . $id . '.png',
+            'filename'     => 'logo-' . $id . '.png',
+            'mime'         => 'image/png',
+            'width'        => 320,
+            'height'       => 120,
+            'modified_gmt' => '2026-10-01 09:00:00',
+        ], $ids)];
+        $input = fn (string $alt): string => $this->designedInput([['op' => 'insert', 'after' => $this->nodeOf('section', 'plans')['ref'], 'outline' => [[
+            'type'     => 'section',
+            'anchor'   => 'press',
+            'children' => [['type' => 'pattern', 'pattern' => 'logos', 'variant' => 'row', 'logos' => [
+                ['attachment_id' => 81, 'alt' => 'Logo 81'],
+                ['attachment_id' => 82, 'alt' => $alt],
+                ['attachment_id' => 83, 'alt' => 'Logo 83'],
+            ]]],
+        ]]]], true);
+
+        $plan = BuilderPageEdit::plan($input('Acme'), $this->entry(), [self::TARGET], self::EDIT, $media, $this->seam());
+        $this->assertSame(['image_alt_from_library', 0], [$plan['refusal']['code'] ?? null, $plan['refusal']['op_index'] ?? null], (string) json_encode($plan));
+        $this->assertSame(['operations[0].outline[0].children[0].logos[1]'], array_column($plan['refusal']['failures'] ?? [], 'path'));
+
+        $same = BuilderPageEdit::plan($input('Logo 82'), $this->entry(), [self::TARGET], self::EDIT, $media, $this->seam());
+        $this->assertArrayNotHasKey('refusal', $same, (string) json_encode($same['refusal'] ?? null));
+    }
+
+    // -------------------------------------------------------------------------
+    // The put-back after a failed edit runs in the page's write scope
+    // -------------------------------------------------------------------------
+
+    public function test_a_failed_edit_of_a_viewed_draft_is_put_back_inside_the_write_scope(): void
+    {
+        $baseFp  = $this->currentFp();
+        $name    = ElementorStyleCache::PREFIX . 'local';
+        $other   = ['state' => true, 'meta' => '6ac9bb9c3d4e5'];
+        $viewed  = ['state' => false, 'children' => [self::OTHER => $other, self::TARGET => ['state' => true, 'meta' => []]]];
+        $cleared = ['state' => false, 'children' => [self::OTHER => $other]];
+        $armed   = null;
+        // The put-back's regeneration, the one after Elementor's CSS was deleted,
+        // clears the draft's own style-cache entry, rewrites its CSS row and drops
+        // its element cache.
+        $this->api->onRegenerate = function () use ($name, $viewed, $cleared, &$armed): void {
+            if ($this->api->callsTo('deletePostCss') === []) {
+                return;
+            }
+            $armed = array_column($this->hooks, 0);
+            $this->fire('updated_option', $name, $viewed, $cleared);
+            $this->fire('updated_post_meta', 990, self::TARGET, '_elementor_css', ['status' => 'file']);
+            $this->fire('deleted_post_meta', [991], self::TARGET, ElementorDocument::KEY_ELEMENT_CACHE, '');
+        };
+        $r = $this->approvedWrite($this->input(self::ops()), self::untouchedChange());
+        $this->api->onRegenerate = null;
+
+        $this->assertSame(['verify_mismatch', true], [$r['code'] ?? null, $r['restored'] ?? null], (string) json_encode($r));
+        $this->assertIsArray($armed, 'the put-back regenerated the stylesheet');
+        $this->assertContains('updated_option', $armed, 'the put-back runs inside the write scope');
+        $this->assertContains('updated_post_meta', $armed, 'the put-back runs inside the write scope');
+        $this->assertSame($baseFp, $this->currentFp(), 'the page is back');
+        $this->assertSame([], $this->hooks, 'the write scope is disarmed');
+    }
+
+    public function test_a_put_back_that_writes_outside_the_page_is_side_effect_detected(): void
+    {
+        $baseFp                  = $this->currentFp();
+        $this->api->onRegenerate = function (): void {
+            if ($this->api->callsTo('deletePostCss') !== []) {
+                $this->fire('updated_post_meta', 992, self::OTHER, '_elementor_css', ['status' => 'file']);
+            }
+        };
+        $r = $this->approvedWrite($this->input(self::ops()), self::untouchedChange());
+        $this->api->onRegenerate = null;
+
+        $this->assertSame([false, 'side_effect_detected', true], [$r['ok'] ?? null, $r['code'] ?? null, $r['restored'] ?? null], (string) json_encode($r));
+        $this->assertStringContainsString('verify_mismatch', (string) $r['detail'], 'the answer still names what failed');
+        $this->assertSame($baseFp, $this->currentFp(), 'the page is back');
+        $this->assertSame(['failed', true], [AbilityLedger::get(self::EDIT)['phase'] ?? null, AbilityLedger::get(self::EDIT)['restored'] ?? null]);
+        $this->assertSame([], $this->hooks, 'the write scope is disarmed');
+    }
+
     private static function ops(): array
     {
         return [
@@ -863,6 +1144,113 @@ final class BuilderPageEditTest extends TestCase
     private static function codeOf(array $plan): array
     {
         return [$plan['refusal']['code'] ?? null, $plan['refusal']['detail'] ?? null];
+    }
+
+    /** A save filter that changes a node the edit did not touch. */
+    private static function untouchedChange(): \Closure
+    {
+        return static function (array $elements): array {
+            $elements[0]['elements'][1]['elements'][0]['settings']['editor'] = '<p>Changed by a filter</p>';
+
+            return $elements;
+        };
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private static function design(): array
+    {
+        return [
+            'colors'  => ['ground' => '#FFFFFF', 'surface' => '#F6F5F2', 'ink' => '#15171C', 'muted' => '#5A606C', 'accent' => '#0D7A63', 'on_accent' => '#FAFAF7'],
+            'fonts'   => ['heading' => 'Manrope', 'body' => 'Work Sans'],
+            'scale'   => ['base_px' => 17, 'ratio' => 'major_third'],
+            'radius'  => 'md',
+            'density' => 'normal',
+        ];
+    }
+
+    /**
+     * DESIGNED_PAGE compiled as page-create compiles it, for a site with the
+     * mobile and tablet breakpoints active.
+     *
+     * @return list<array<string,mixed>>
+     */
+    private static function designedPage(): array
+    {
+        $outline = OutlineV3::validate(json_decode(self::DESIGNED_PAGE, false));
+        self::assertArrayHasKey('outline', $outline, (string) ($outline['detail'] ?? ''));
+        $compiler = new ElementorSectionCompiler(DesignTokens::fromDesign(self::design()), ['mobile', 'tablet'], []);
+        $mapped   = ElementorClassicMapper::map(['outline' => $outline['outline']], new IdSeed('b7e2a4c1-0000-4000-8000-000000000001'), [], true, $compiler);
+        self::assertArrayHasKey('tree', $mapped, (string) ($mapped['detail'] ?? ''));
+
+        return $mapped['tree'];
+    }
+
+    /** The designed page as the target, with every widget a designed page uses registered. */
+    private function storeDesigned(): void
+    {
+        $this->storePage(self::designedPage());
+        $this->api->widgetTypes = array_values(array_unique(array_merge($this->api->widgetTypes, ['icon-list', 'icon-box', 'icon', 'testimonial', 'nested-accordion', 'accordion', 'counter', 'image-box'])));
+    }
+
+    /**
+     * @param list<array<string,mixed>> $ops    Operations.
+     * @param bool                      $design Whether the input carries the page's design.
+     */
+    private function designedInput(array $ops, bool $design): string
+    {
+        $input = ['post_id' => self::TARGET, 'base_fingerprint' => $this->currentFp(), 'operations' => $ops];
+        if ($design) {
+            $input['design'] = self::design();
+        }
+
+        return (string) json_encode($input);
+    }
+
+    /**
+     * The first projection node of $kind on the designed page, with $anchor when given.
+     *
+     * @return array<string,mixed>
+     */
+    private function nodeOf(string $kind, ?string $anchor = null): array
+    {
+        foreach (ElementorClassicMapper::project(self::designedPage())->nodes() as $node) {
+            if ($node['kind'] === $kind && ($anchor === null || ($node['anchor'] ?? null) === $anchor)) {
+                return $node;
+            }
+        }
+        $this->fail('no ' . $kind . ' node ' . (string) $anchor);
+    }
+
+    private function adapter(): ElementorAdapter
+    {
+        return new ElementorAdapter($this->api, self::PRINCIPAL);
+    }
+
+    /**
+     * The snapshot $requestId stored, decoded as the write decodes it.
+     *
+     * @return array<string,mixed>
+     */
+    private function snapshotOf(string $requestId): array
+    {
+        $loaded  = BuilderDocumentSnapshot::load($requestId);
+        $decoded = BuilderDocumentSnapshot::decode((string) ($loaded['json'] ?? ''), $requestId, self::TARGET);
+        $this->assertIsArray($decoded);
+
+        return $decoded;
+    }
+
+    /**
+     * Replaces the target's element data row with $tree.
+     *
+     * @param list<array<string,mixed>> $tree The tree.
+     */
+    private function storeData(array $tree): void
+    {
+        $this->rows->delete($this->rows->postmeta, ['post_id' => self::TARGET, 'meta_key' => ElementorDocument::KEY_DATA]);
+        $this->rows->insert($this->rows->postmeta, ['post_id' => self::TARGET, 'meta_key' => ElementorDocument::KEY_DATA, 'meta_value' => (string) json_encode($tree)]);
     }
 
     /** A media resolver that is never needed: the operations add no image. */

@@ -40,6 +40,30 @@ if (!defined('ABSPATH')) {
  * The same request, input and site give the same bytes, so the write's
  * re-check matches the approved precheck.
  *
+ * An outline version 3 page is built from containers. precheck() refuses it
+ * with containers_required, before anything is built, when the site builds
+ * sections and columns or cannot say; a plain outline is built there as it
+ * always was.
+ *
+ * An outline version 3 page also has a page frame (pageFrame()), stored as
+ * the page template ElementorDocument::pageTemplate() names. The frames a
+ * site admits depend on its theme (pageFrames()): a block theme admits only
+ * canvas, and a frame it does not admit is refused page_frame_unavailable
+ * with the frames it does. precheck() runs again when the write runs, so a
+ * frame the site stopped admitting since the approval is refused, never
+ * replaced. The precheck answers the frame it resolved and the theme fact
+ * in "builder_facts": {block_theme, page_frame}, page_frame null for an
+ * outline before version 3. For an outline version 3 it also answers
+ * "active_breakpoints", the breakpoints the site has active as the tree was
+ * compiled for them: a list in Elementor's own order, [] for none, null when
+ * the site could not say (the compile then writes no override). precheck()
+ * refuses page_template_unavailable when the site does not offer that
+ * template for the post type, since core's post save would put it back to
+ * the default on the next update of the post row. The template is a plain
+ * row of the insert, never written through the document's settings save,
+ * and the read-back requires it to have survived the save. An outline
+ * before version 3 gets no template row.
+ *
  * write() inserts the draft, records it on the ledger, saves the tree through
  * the adapter and reads the page back. A draft that fails any step after the
  * insert is moved to the trash and the answer says so ("trashed"). A created
@@ -67,6 +91,19 @@ final class BuilderPageCreate
 
     /** Preview layout of a tree of sections and columns. */
     public const LAYOUT_SECTIONS = 'sections';
+
+    /** Refusal: the page frame asked for cannot be built with the site's theme. */
+    public const CODE_FRAME_UNAVAILABLE = 'page_frame_unavailable';
+
+    /**
+     * The page frames a block theme shows a designed page in as built:
+     * canvas, the page content only. Its own template and full width show
+     * neither its header and footer parts nor a hidden title as built.
+     */
+    public const BLOCK_THEME_FRAMES = ['canvas'];
+
+    /** The reason page_frame_unavailable gives for a block theme. */
+    public const REASON_FRAME_BLOCK_THEME = 'the site\'s theme is a block theme, which shows a designed page only as canvas: send canvas or leave page_frame out';
 
     /** Codes a failed save may answer with; anything else is builder_save_refused. */
     private const SAVE_CODES = [
@@ -129,7 +166,7 @@ final class BuilderPageCreate
      * @param array<string, mixed>             $facts      The adapter's site facts (ElementorFacts::collect()).
      * @param list<array<string, mixed>>       $mediaFacts Resolved image facts, in outline order.
      * @param string                           $requestId  The request; node ids derive from it.
-     * @return array{refusal?: array<string, mixed>, preview: array<string, mixed>, preview_digest: string, base_fingerprint: string, tree: array<mixed>, doc: NativeDocument|null, title: string}
+     * @return array{refusal?: array<string, mixed>, preview: array<string, mixed>, preview_digest: string, base_fingerprint: string, tree: array<mixed>, doc: NativeDocument|null, title: string, builder_facts?: array{block_theme: bool, page_frame: string|null, active_breakpoints?: list<string>|null}}
      */
     public static function precheck(array $spec, BuilderAdapter $a, array $facts, array $mediaFacts, string $requestId): array
     {
@@ -154,6 +191,37 @@ final class BuilderPageCreate
         if (!is_string($version) || $version === '') {
             return self::refusedPrecheck(AdapterStatus::CODE, 'version_unverified');
         }
+        // A designed page (outline version 3) is built from containers; a site
+        // that builds sections and columns, or cannot say, is refused before
+        // anything is built.
+        if (($spec['outline_version'] ?? null) === OutlineV3Schema::VERSION && ($facts['containers'] ?? null) !== true) {
+            return self::refusedEnvelope(self::containersRequired());
+        }
+        $blockTheme = ElementorFacts::blockTheme($facts);
+        $frame      = self::pageFrame($spec, $blockTheme);
+        $template   = is_string($frame) ? ElementorDocument::pageTemplate($frame) : null;
+        if ($frame === false || (is_string($frame) && $template === null)) {
+            return self::refusedPrecheck('bad_input', 'page_frame must be theme, full_width or canvas, with outline_version 3');
+        }
+        $unfit = is_string($frame) ? self::frameRefusal($frame, $blockTheme) : null;
+        if ($unfit !== null) {
+            return self::refusedEnvelope($unfit);
+        }
+        if ($template !== null) {
+            $why = ElementorDocument::pageTemplateProblem($postType, $template);
+            if ($why !== null) {
+                return self::refusedPrecheck(ElementorDocument::CODE_TEMPLATE_UNAVAILABLE, $why);
+            }
+        }
+        // A design's fonts are judged before anything is built: the closed
+        // family pattern first, then Elementor's font registry.
+        if (array_key_exists('design', $spec)) {
+            $design = $spec['design'];
+            $font   = FontRegistry::refusal(is_array($design) ? ($design['fonts'] ?? null) : null, static fn (): ?array => $a->fontFamilies());
+            if ($font !== null) {
+                return self::refusedEnvelope($font);
+            }
+        }
 
         $byId = [];
         foreach ($mediaFacts as $fact) {
@@ -166,6 +234,13 @@ final class BuilderPageCreate
             }
             $byId[$fact['id']] = $fact;
         }
+        // A logo's alt text is the one saved with its image in the library.
+        if (($spec['outline_version'] ?? null) === OutlineV3Schema::VERSION) {
+            $logoAlt = ElementorPatternCompiler::logoAltRefusal($spec['outline'] ?? null, $byId);
+            if ($logoAlt !== null) {
+                return self::refusedEnvelope($logoAlt);
+            }
+        }
 
         try {
             $built = $a->buildCreate($spec, new IdSeed($requestId), $byId);
@@ -175,6 +250,21 @@ final class BuilderPageCreate
         $doc = $built['doc'] ?? null;
         if (!$doc instanceof NativeDocument) {
             return self::refusedPrecheck((string) ($built['code'] ?? 'bad_input'), (string) ($built['detail'] ?? 'the page could not be built'));
+        }
+        if ($template !== null) {
+            // Plain rows of the insert, never the document's settings save:
+            // the template, and the page settings a page is created with
+            // (written once, here).
+            $rows     = [ElementorDocument::KEY_PAGE_TEMPLATE => $template];
+            $settings = ElementorDocument::createdPageSettings((string) $frame, self::opensWithHero($spec['outline'] ?? null));
+            if ($settings !== null) {
+                $rows[ElementorDocument::KEY_PAGE_SETTINGS] = $settings;
+            }
+            try {
+                $doc = new NativeDocument($doc->tree, array_merge($doc->meta, $rows));
+            } catch (\Throwable $e) {
+                return self::refusedPrecheck('bad_input', 'the page could not be encoded');
+            }
         }
         $problem = $a->document()->precheckTree($doc->tree);
         if ($problem !== null) {
@@ -218,7 +308,130 @@ final class BuilderPageCreate
             'tree'             => $doc->tree,
             'doc'              => $doc,
             'title'            => $storedTitle,
+            'builder_facts'    => self::builderFacts($spec, $a, $blockTheme, $frame),
         ];
+    }
+
+    /**
+     * The facts the precheck answers beside the preview: the theme fact and
+     * the page frame it resolved, and for an outline version 3 the active
+     * breakpoints its tree was compiled for (ElementorAdapter::activeBreakpoints(),
+     * the value the compile read), which with the input, the resolved images
+     * and the request id are everything that tree is a function of.
+     *
+     * @param array<string, mixed> $spec       The page-create spec.
+     * @param ElementorAdapter     $a          The adapter that built the tree.
+     * @param bool                 $blockTheme Whether the site's theme is a block theme.
+     * @param string|null          $frame      The resolved page frame, null before outline version 3.
+     * @return array{block_theme: bool, page_frame: string|null, active_breakpoints?: list<string>|null}
+     */
+    private static function builderFacts(array $spec, ElementorAdapter $a, bool $blockTheme, ?string $frame): array
+    {
+        $facts = ['block_theme' => $blockTheme, 'page_frame' => $frame];
+        if (($spec['outline_version'] ?? null) === OutlineV3Schema::VERSION) {
+            $facts['active_breakpoints'] = $a->activeBreakpoints();
+        }
+
+        return $facts;
+    }
+
+    /**
+     * The refusal of a designed page on a site that builds sections and columns.
+     *
+     * @return array{code:string,detail:string,failures:list<array<string,mixed>>}
+     */
+    private static function containersRequired(): array
+    {
+        return Refusal::make(ElementorClassicMapper::CODE_CONTAINERS_REQUIRED, 'A designed page needs Elementor containers, and this site builds sections and columns.', [[
+            'path'   => 'input',
+            'key'    => 'outline_version',
+            'reason' => 'a designed page needs Elementor containers; turn on the Container feature in Elementor, or send a plain outline without outline_version',
+        ]]);
+    }
+
+    /**
+     * The page frame $spec is built in: its page_frame, or, for an outline
+     * version 3 without one, canvas on a block theme and on a classic theme
+     * full_width when the outline opens with a hero and theme otherwise.
+     * Null for an outline before version 3, whose page gets no template row.
+     * False when page_frame is not one of OutlineV3Schema::PAGE_FRAMES or
+     * comes without outline version 3. A page_frame sent is answered as
+     * sent; whether the site admits it is frameRefusal()'s answer.
+     *
+     * @param array<string, mixed> $spec       A page-create spec.
+     * @param bool                 $blockTheme Whether the site's theme is a block theme (ElementorFacts::blockTheme()).
+     * @return string|false|null
+     */
+    public static function pageFrame(array $spec, bool $blockTheme): string|false|null
+    {
+        $v3 = ($spec['outline_version'] ?? null) === OutlineV3Schema::VERSION;
+        if (array_key_exists('page_frame', $spec)) {
+            $frame = $spec['page_frame'];
+
+            return $v3 && is_string($frame) && in_array($frame, OutlineV3Schema::PAGE_FRAMES, true) ? $frame : false;
+        }
+        if (!$v3) {
+            return null;
+        }
+        if ($blockTheme) {
+            return self::BLOCK_THEME_FRAMES[0];
+        }
+
+        return self::opensWithHero($spec['outline'] ?? null) ? 'full_width' : 'theme';
+    }
+
+    /**
+     * The page frames a designed page may be built in on a site whose theme
+     * is ($blockTheme) or is not a block theme.
+     *
+     * @param bool $blockTheme Whether the site's theme is a block theme.
+     * @return list<string>
+     */
+    public static function pageFrames(bool $blockTheme): array
+    {
+        return $blockTheme ? self::BLOCK_THEME_FRAMES : OutlineV3Schema::PAGE_FRAMES;
+    }
+
+    /**
+     * The page_frame_unavailable refusal for $frame on this site, or null
+     * when the site admits it. The failure lists the frames it admits.
+     *
+     * @param string $frame      A page frame pageFrame() answered.
+     * @param bool   $blockTheme Whether the site's theme is a block theme.
+     * @return array<string, mixed>|null A refusal from Refusal::make().
+     */
+    public static function frameRefusal(string $frame, bool $blockTheme): ?array
+    {
+        $admitted = self::pageFrames($blockTheme);
+        if (in_array($frame, $admitted, true)) {
+            return null;
+        }
+
+        return Refusal::make(self::CODE_FRAME_UNAVAILABLE, 'the page frame cannot be built with the site\'s theme.', [[
+            'path'    => 'input',
+            'key'     => 'page_frame',
+            'reason'  => self::REASON_FRAME_BLOCK_THEME,
+            'allowed' => $admitted,
+        ]]);
+    }
+
+    /**
+     * Whether the first block of the first section is a hero pattern, the
+     * one place the outline grammar lets a hero stand. Nodes may be arrays
+     * or decoded JSON objects.
+     *
+     * @param mixed $outline The outline.
+     * @return bool
+     */
+    private static function opensWithHero(mixed $outline): bool
+    {
+        $section = is_array($outline) ? ($outline[0] ?? null) : null;
+        $section = is_object($section) ? get_object_vars($section) : $section;
+        $blocks  = is_array($section) ? ($section['children'] ?? null) : null;
+        $block   = is_array($blocks) ? ($blocks[0] ?? null) : null;
+        $block   = is_object($block) ? get_object_vars($block) : $block;
+
+        return is_array($block) && ($block['type'] ?? null) === 'pattern' && ($block['pattern'] ?? null) === 'hero';
     }
 
     /**
@@ -340,6 +553,12 @@ final class BuilderPageCreate
             'after_fp'          => $afterFp,
             'verify'            => ['tree_equal' => true, 'status' => 'draft'],
         ];
+        // A stylesheet that was not regenerated does not undo the page; the
+        // person is told.
+        $warnings = ElementorDocument::warningsOf($saved);
+        if ($warnings !== []) {
+            $result['warnings'] = $warnings;
+        }
         // Undo checks a builder draft against this record: the fingerprint
         // its save left and the revisions that save made. A draft without
         // the record could never be undone, so it is not left behind.
@@ -709,6 +928,17 @@ final class BuilderPageCreate
             'doc'              => null,
             'title'            => '',
         ];
+    }
+
+    /**
+     * A precheck refusal that carries the refusal envelope's failures.
+     *
+     * @param array{code:string,detail:string,failures:list<array<string,mixed>>} $refusal From Refusal::make().
+     * @return array{refusal: array<string, mixed>, preview: array<string, mixed>, preview_digest: string, base_fingerprint: string, tree: array<mixed>, doc: null, title: string}
+     */
+    private static function refusedEnvelope(array $refusal): array
+    {
+        return ['refusal' => Refusal::command($refusal)] + self::refusedPrecheck($refusal['code'], $refusal['detail']);
     }
 
     /**

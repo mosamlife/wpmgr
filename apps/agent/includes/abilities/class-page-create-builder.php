@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Abilities;
 
 use WPMgr\Agent\Abilities\Builders\BuilderRegistry;
+use WPMgr\Agent\Abilities\Builders\DesignInput;
+use WPMgr\Agent\Abilities\Builders\OutlineV3;
+use WPMgr\Agent\Abilities\Builders\OutlineV3Schema;
 
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
@@ -21,6 +24,11 @@ if (!defined('ABSPATH')) {
  *   outline           1..200 items; an item is a block, a group or columns
  *   elementor_format  optional, only with "builder:elementor":
  *                     "site_default" (the default) | "classic" | "atomic"
+ *   outline_version   optional, only with "builder:elementor" and elementor_format
+ *                     "classic": 3, a designed page; absent is the outline above
+ *   design            required with outline_version 3, and only then (DesignInput)
+ *   page_frame        optional, only with outline_version 3: "theme" | "full_width"
+ *                     | "canvas"
  *
  * A page-builder editor ("builder:<id>") passes this grammar on its shape;
  * which builders exist, are compiled in and are enabled is decided by the
@@ -207,12 +215,21 @@ final class PageCreateBuilder
      * editor). Nothing is rewritten.
      *
      * @param object $input Decoded input.
-     * @return array{spec?:array{post_type:string,editor:string,title:string,outline:list<array<string,mixed>>,elementor_format?:string},code?:string,detail?:string}
+     * An input with outline_version 3 is a designed page: its outline is
+     * judged by OutlineV3 and its design by DesignInput, and a refusal of
+     * either carries its failures. The spec of such a page also holds
+     * outline_version, design (arrays) and, when sent, page_frame.
+     *
+     * @return array{spec?:array{post_type:string,editor:string,title:string,outline:list<array<string,mixed>>,elementor_format?:string,outline_version?:int,design?:array<string,mixed>,page_frame?:string},code?:string,detail?:string,failures?:list<array<string,mixed>>,pattern?:string,item_schema?:array<string,mixed>}
      */
     public static function validate(object $input): array
     {
         $vars    = get_object_vars($input);
         $allowed = ['post_type', 'editor', 'title', 'outline', 'elementor_format'];
+        // The members of a designed page are admitted by the version that names them.
+        if (array_key_exists('outline_version', $vars)) {
+            $allowed = array_merge($allowed, ['outline_version', 'design', 'page_frame']);
+        }
         foreach (array_keys($vars) as $key) {
             if (!in_array((string) $key, $allowed, true)) {
                 return self::bad('bad_input', 'unknown input field');
@@ -237,6 +254,18 @@ final class PageCreateBuilder
                 return self::bad('bad_input', 'elementor_format must be site_default, classic or atomic');
             }
         }
+        $designed = array_key_exists('outline_version', $vars);
+        if ($designed) {
+            if ($vars['outline_version'] !== OutlineV3Schema::VERSION) {
+                return self::bad('bad_input', 'outline_version must be ' . OutlineV3Schema::VERSION . ' or left out');
+            }
+            if ($editor !== self::EDITOR_BUILDER_ELEMENTOR || $format !== 'classic') {
+                return self::bad('bad_input', 'outline_version ' . OutlineV3Schema::VERSION . ' is only for editor builder:elementor with elementor_format classic');
+            }
+            if (array_key_exists('page_frame', $vars) && (!is_string($vars['page_frame']) || !in_array($vars['page_frame'], OutlineV3Schema::PAGE_FRAMES, true))) {
+                return self::bad('bad_input', 'page_frame must be ' . implode(', ', OutlineV3Schema::PAGE_FRAMES));
+            }
+        }
         $title = $vars['title'] ?? null;
         if (!is_string($title)) {
             return self::bad('bad_input', 'title must be a string');
@@ -244,6 +273,9 @@ final class PageCreateBuilder
         $why = self::textProblem($title, self::MAX_TITLE_CHARS);
         if ($why !== null) {
             return self::bad('create_content_invalid', 'title: ' . $why);
+        }
+        if ($designed) {
+            return self::validateDesigned($vars, $type, $title);
         }
 
         $outline = $vars['outline'] ?? null;
@@ -279,6 +311,96 @@ final class PageCreateBuilder
         }
 
         return ['spec' => $spec];
+    }
+
+    /**
+     * The rest of the input of a designed page, whose version, editor, format
+     * and frame have passed: its design and its outline.
+     *
+     * @param array<string,mixed> $vars  The input's members.
+     * @param string              $type  The post type.
+     * @param string              $title The page title.
+     * @return array<string,mixed> validate()'s answer.
+     */
+    private static function validateDesigned(array $vars, string $type, string $title): array
+    {
+        $design = DesignInput::check($vars['design'] ?? null);
+        if (!isset($design['design'])) {
+            return $design;
+        }
+        $outline = OutlineV3::validate($vars['outline'] ?? null, self::chars($title));
+        if (!isset($outline['outline'])) {
+            return $outline;
+        }
+        $spec = [
+            'post_type'        => $type,
+            'editor'           => self::EDITOR_BUILDER_ELEMENTOR,
+            'title'            => $title,
+            'outline'          => $outline['outline'],
+            'elementor_format' => 'classic',
+            'outline_version'  => OutlineV3Schema::VERSION,
+            'design'           => $design['design'],
+        ];
+        if (array_key_exists('page_frame', $vars)) {
+            $spec['page_frame'] = $vars['page_frame'];
+        }
+
+        return ['spec' => $spec];
+    }
+
+    /**
+     * The page-wide counters an outline version 3 is judged with. Its
+     * grammar (OutlineV3) walks the sections and patterns and hands each block
+     * to v3Block(), so the caps on nodes, images, buttons, tables and text
+     * count the whole page. In this form a heading may be level 1, a button
+     * may be styled text, and a button link may be an in-page "#anchor".
+     *
+     * @param int $titleChars Characters of the page title, which count toward the text cap.
+     * @return array<string,mixed>
+     */
+    public static function v3Counters(int $titleChars = 0): array
+    {
+        return [
+            'total'      => $titleChars,
+            'nodes'      => 0,
+            'images'     => 0,
+            'buttons'    => 0,
+            'tables'     => 0,
+            'block_only' => '',
+            'v3'         => true,
+        ];
+    }
+
+    /**
+     * One block of an outline version 3 container (a leaf, a group or
+     * columns) under the grammar of version 2 with the version 3 forms.
+     *
+     * @param mixed               $node Decoded node.
+     * @param string              $at   Path, for the detail text.
+     * @param bool                $top  Whether the block is a direct child of a section (a group may stand there).
+     * @param array<string,mixed> $ctx  Counters from v3Counters().
+     * @return array{node?:array<string,mixed>,code?:string,detail?:string}
+     */
+    public static function v3Block($node, string $at, bool $top, array &$ctx): array
+    {
+        return self::node($node, $at, $top ? self::AT_TOP : self::AT_GROUP, $ctx);
+    }
+
+    /**
+     * A text value of an outline version 3 pattern under the text rules of
+     * the blocks: 'text' (not empty) or 'alt' (may be empty, no square
+     * bracket). It counts toward the text cap.
+     *
+     * @param mixed               $value Decoded value.
+     * @param string              $where Path, for the detail text.
+     * @param int                 $max   Character limit.
+     * @param string              $rule  'text' or 'alt'.
+     * @param array<string,mixed> $ctx   Counters from v3Counters().
+     * @return string|array{code:string,detail:string} The text, or a refusal.
+     */
+    public static function v3Text($value, string $where, int $max, string $rule, array &$ctx)
+    {
+        return self::plain($value, $where, $max, $rule, $ctx);
     }
 
     /**
@@ -480,16 +602,26 @@ final class PageCreateBuilder
      * optional port 1..65535, no user name or password) or a path on this
      * site (starts with one /, and holds no colon and no "&#"). ASCII from the
      * link character set only, every % followed by two hex digits, no "&"
-     * that starts a character reference, at most 2048 bytes.
+     * that starts a character reference, at most 2048 bytes. In outline
+     * version 3 ($anchors) a link may also be "#" and a section anchor.
      *
-     * @param string $url Link.
+     * @param string $url     Link.
+     * @param bool   $anchors Whether an in-page "#anchor" link is allowed.
      * @return string|null
      */
-    public static function linkProblem(string $url): ?string
+    public static function linkProblem(string $url, bool $anchors = false): ?string
     {
         $shape = self::urlShapeProblem($url);
         if ($shape !== null) {
             return $shape;
+        }
+        if ($anchors && $url[0] === '#') {
+            // An in-page link of outline version 3: "#" and a section anchor.
+            if (preg_match('/^#' . substr(OutlineV3Schema::ANCHOR_PATTERN, 1) . '/D', $url) !== 1) {
+                return 'must be # and a section anchor: a lower-case letter, then 1 to 39 lower-case letters, digits or hyphens';
+            }
+
+            return null;
         }
         if ($url[0] === '/') {
             if (strlen($url) > 1 && ($url[1] === '/' || $url[1] === '\\')) {
@@ -524,6 +656,25 @@ final class PageCreateBuilder
     }
 
     /**
+     * Why a button link of a designed page (outline version 3) is not
+     * acceptable, or null: the rule of linkProblem() with in-page anchors, and
+     * no "&" anywhere in the link, because an Elementor page cannot keep one.
+     * The reason never repeats the link.
+     *
+     * @param string $url Link.
+     * @return string|null
+     */
+    public static function designedLinkProblem(string $url): ?string
+    {
+        $why = self::linkProblem($url, true);
+        if ($why !== null) {
+            return $why;
+        }
+
+        return strpos($url, '&') === false ? null : 'a link on an Elementor page cannot hold "&"; use a link without one';
+    }
+
+    /**
      * The limits, as published to the AI in the catalogue entry.
      *
      * @return array<string,int>
@@ -550,13 +701,61 @@ final class PageCreateBuilder
     /**
      * The JSON schema of the input. The block variants are written out in
      * full at each place they may appear (no $ref), with a group allowing
-     * columns and a column allowing blocks only.
+     * columns and a column allowing blocks only. An outline item may also be
+     * an outline version 3 section (see OutlineV3Schema), which holds the
+     * version 3 forms of those blocks.
      *
      * @return array<string,mixed>
      */
     public static function inputSchema(): array
     {
-        $leaves  = self::leafSchemas();
+        $leaves                = self::leafSchemas();
+        [$columns, $group]     = self::containerSchemas($leaves);
+        $leaves3               = self::leafSchemas(true);
+        [$columns3, $group3]   = self::containerSchemas($leaves3);
+        $section               = OutlineV3Schema::section($leaves3, $group3, $columns3);
+
+        return [
+            'type'                 => 'object',
+            'properties'           => [
+                'post_type' => ['type' => 'string', 'enum' => ['page', 'post']],
+                'editor'    => ['type' => 'string', 'enum' => [self::EDITOR_BLOCKS, self::EDITOR_CLASSIC, self::EDITOR_BUILDER_ELEMENTOR]],
+                'title'     => ['type' => 'string', 'minLength' => 1, 'maxLength' => self::MAX_TITLE_CHARS],
+                'outline'   => [
+                    'type'     => 'array',
+                    'minItems' => 1,
+                    'maxItems' => self::MAX_TOP_LEVEL_NODES,
+                    'items'    => ['oneOf' => array_merge($leaves, [$group, $columns, $section])],
+                ],
+                'elementor_format' => ['type' => 'string', 'enum' => self::ELEMENTOR_FORMATS],
+                'outline_version'  => OutlineV3Schema::versionSchema(),
+                'design'           => OutlineV3Schema::designSchema(),
+                'page_frame'       => OutlineV3Schema::pageFrameSchema(),
+            ],
+            'required'             => ['post_type', 'editor', 'title', 'outline'],
+            'additionalProperties' => false,
+        ];
+    }
+
+    /**
+     * The pattern nodes of outline version 3 as a page-edit outline may hold
+     * them directly: an item edit replaces a pattern node.
+     *
+     * @return list<array<string,mixed>>
+     */
+    public static function patternSchemas(): array
+    {
+        return OutlineV3Schema::patterns(self::leafSchemas(true));
+    }
+
+    /**
+     * The columns and group nodes over one set of leaves, written out in full.
+     *
+     * @param list<array<string,mixed>> $leaves Leaf schemas.
+     * @return array{0:array<string,mixed>,1:array<string,mixed>} Columns, then group.
+     */
+    private static function containerSchemas(array $leaves): array
+    {
         $columns = self::nodeSchema('columns', [
             'widths'  => [
                 'type'     => 'array',
@@ -582,23 +781,7 @@ final class PageCreateBuilder
             'children' => ['type' => 'array', 'minItems' => 1, 'maxItems' => self::MAX_CHILDREN, 'items' => ['oneOf' => array_merge($leaves, [$columns])]],
         ], ['children']);
 
-        return [
-            'type'                 => 'object',
-            'properties'           => [
-                'post_type' => ['type' => 'string', 'enum' => ['page', 'post']],
-                'editor'    => ['type' => 'string', 'enum' => [self::EDITOR_BLOCKS, self::EDITOR_CLASSIC, self::EDITOR_BUILDER_ELEMENTOR]],
-                'title'     => ['type' => 'string', 'minLength' => 1, 'maxLength' => self::MAX_TITLE_CHARS],
-                'outline'   => [
-                    'type'     => 'array',
-                    'minItems' => 1,
-                    'maxItems' => self::MAX_TOP_LEVEL_NODES,
-                    'items'    => ['oneOf' => array_merge($leaves, [$group, $columns])],
-                ],
-                'elementor_format' => ['type' => 'string', 'enum' => self::ELEMENTOR_FORMATS],
-            ],
-            'required'             => ['post_type', 'editor', 'title', 'outline'],
-            'additionalProperties' => false,
-        ];
+        return [$columns, $group];
     }
 
     /**
@@ -652,8 +835,9 @@ final class PageCreateBuilder
                     return self::bad('bad_input', $at . ' has an unknown field');
                 }
                 $level = $n['level'] ?? null;
-                if (!is_int($level) || $level < 2 || $level > 4) {
-                    return self::bad('bad_input', $at . '.level must be 2, 3 or 4');
+                $v3    = ($ctx['v3'] ?? false) === true;
+                if (!is_int($level) || $level < ($v3 ? 1 : 2) || $level > 4) {
+                    return self::bad('bad_input', $at . '.level must be ' . ($v3 ? '1, 2, 3 or 4' : '2, 3 or 4'));
                 }
                 $text = $n['text'] ?? null;
                 $why  = is_string($text) ? self::textProblem($text, self::MAX_TEXT_CHARS) : 'must be a string';
@@ -737,6 +921,14 @@ final class PageCreateBuilder
                 }
 
                 return self::columns($n, $at, $ctx);
+            case 'section':
+            case 'pattern':
+                // Outline version 3 nodes: each has one place, which its own grammar reads.
+                if (($ctx['v3'] ?? false) === true) {
+                    return self::bad('layout_invalid', $at . ($kind === 'section' ? ': a section is a top-level item' : ': a pattern is a child of a section'));
+                }
+
+                return self::bad('create_content_invalid', $at . ' is not a known block type');
             default:
                 return self::bad('create_content_invalid', $at . ' is not a known block type');
         }
@@ -832,15 +1024,17 @@ final class PageCreateBuilder
             if (!is_string($url)) {
                 return self::bad('bad_input', $where . '.url must be a string');
             }
-            $why = self::linkProblem($url);
+            $v3  = ($ctx['v3'] ?? false) === true;
+            $why = $v3 ? self::designedLinkProblem($url) : self::linkProblem($url);
             if ($why !== null) {
                 return self::bad('link_invalid', $where . '.url ' . $why);
             }
             $ctx['total'] += strlen($url);
             $style         = 'fill';
             if (array_key_exists('style', $b)) {
-                if (!is_string($b['style']) || !in_array($b['style'], ['fill', 'outline'], true)) {
-                    return self::bad('bad_input', $where . '.style must be fill or outline');
+                $styles = $v3 ? ['fill', 'outline', 'text'] : ['fill', 'outline'];
+                if (!is_string($b['style']) || !in_array($b['style'], $styles, true)) {
+                    return self::bad('bad_input', $where . '.style must be ' . ($v3 ? 'fill, outline or text' : 'fill or outline'));
                 }
                 $style = $b['style'];
             }
@@ -1170,6 +1364,24 @@ final class PageCreateBuilder
                         self::collectIds($children, $ids);
                     }
                     break;
+                case 'section':
+                    $background = $node['background'] ?? null;
+                    if (is_array($background) && isset($background['attachment_id'])) {
+                        $ids[(int) $background['attachment_id']] = true;
+                    }
+                    self::collectIds($node['children'] ?? [], $ids);
+                    break;
+                case 'pattern':
+                    // A hero and a call to action hold blocks; logos and testimonials hold pictures.
+                    self::collectIds($node['children'] ?? [], $ids);
+                    foreach (['logos', 'testimonials'] as $items) {
+                        foreach ($node[$items] ?? [] as $item) {
+                            if (is_array($item) && isset($item['attachment_id'])) {
+                                $ids[(int) $item['attachment_id']] = true;
+                            }
+                        }
+                    }
+                    break;
             }
         }
     }
@@ -1352,11 +1564,14 @@ final class PageCreateBuilder
     // ---------------------------------------------------------------------
 
     /**
-     * The nine block variants.
+     * The nine block variants. Inside an outline version 3 section a heading
+     * may be level 1 (the hero's, once per page) and a button style may also
+     * be text; the grammar says where.
      *
+     * @param bool $v3 The forms a version 3 section holds.
      * @return list<array<string,mixed>>
      */
-    private static function leafSchemas(): array
+    private static function leafSchemas(bool $v3 = false): array
     {
         $text = ['type' => 'string', 'minLength' => 1, 'maxLength' => self::MAX_TEXT_CHARS];
         $cell = ['type' => 'string', 'maxLength' => self::MAX_CELL_CHARS];
@@ -1364,7 +1579,7 @@ final class PageCreateBuilder
 
         return [
             self::nodeSchema('heading', [
-                'level' => ['type' => 'integer', 'minimum' => 2, 'maximum' => 4],
+                'level' => ['type' => 'integer', 'minimum' => $v3 ? 1 : 2, 'maximum' => 4],
                 'text'  => $text,
             ], ['level', 'text']),
             self::nodeSchema('paragraph', ['text' => $text], ['text']),
@@ -1389,7 +1604,7 @@ final class PageCreateBuilder
                         'properties'           => [
                             'text'  => ['type' => 'string', 'minLength' => 1, 'maxLength' => self::MAX_BUTTON_TEXT_CHARS],
                             'url'   => ['type' => 'string', 'minLength' => 1, 'maxLength' => self::MAX_URL_BYTES],
-                            'style' => ['type' => 'string', 'enum' => ['fill', 'outline']],
+                            'style' => ['type' => 'string', 'enum' => $v3 ? ['fill', 'outline', 'text'] : ['fill', 'outline']],
                         ],
                         'required'             => ['text', 'url'],
                         'additionalProperties' => false,

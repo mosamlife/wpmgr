@@ -25,6 +25,8 @@ use WPMgr\Agent\Abilities\Builders\BuilderDocumentFingerprint;
 use WPMgr\Agent\Abilities\Builders\BuilderPageCreate;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
 use WPMgr\Agent\Abilities\Builders\ElementorDocument;
+use WPMgr\Agent\Abilities\Builders\ElementorFacts;
+use WPMgr\Agent\Abilities\Builders\FontRegistry;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -307,6 +309,8 @@ final class BuilderPageCreateTest extends TestCase
 
         $ok = $this->precheck(self::spec($outline), $request, $facts);
         $this->assertArrayNotHasKey('refusal', $ok);
+        // The facts read the kit's settings; every other read is the alt.
+        $asked = array_values(array_filter($asked, static fn (array $read): bool => $read[1] !== ElementorFacts::KIT_SETTINGS_META));
         $this->assertSame([[5, '_wp_attachment_image_alt', true]], $asked, 'the alt is read from the media library, one value');
         $this->assertSame($golden, $ok['preview']['tree']);
         $this->assertSame($facts, $ok['preview']['media'], 'the preview carries the image facts as resolved');
@@ -322,6 +326,52 @@ final class BuilderPageCreateTest extends TestCase
         unset($this->alts[5]);
         $outline[0]['alt'] = '';
         $this->assertArrayNotHasKey('refusal', $this->precheck(self::spec($outline), $request, $facts));
+    }
+
+    public function test_precheck_checks_the_design_fonts_against_elementors_registry(): void
+    {
+        [$outline, $golden, $request] = self::golden(self::CONTAINERS, 'heading');
+        $this->api->fontFamilies      = ['Manrope', 'Source Sans 3'];
+        $design                       = ['fonts' => ['heading' => 'Manrope', 'body' => 'Source Sans 3']];
+
+        // Registry families pass, and the page is built as before.
+        $ok = $this->precheck(self::spec($outline) + ['design' => $design], $request);
+        $this->assertArrayNotHasKey('refusal', $ok);
+        $this->assertSame($golden, $ok['preview']['tree']);
+        $this->assertCount(1, $this->api->callsTo('fontFamilies'));
+
+        // A family the registry lacks is font_unknown, with the envelope's
+        // failures, before anything is built.
+        $this->api->calls           = [];
+        $design['fonts']['heading'] = 'Manrop';
+        $refused                    = $this->precheck(self::spec($outline) + ['design' => $design], $request);
+        $this->assertSame(false, $refused['refusal']['ok'] ?? null);
+        $this->assertSame('refused', $refused['refusal']['outcome'] ?? null);
+        $this->assertSame('font_unknown', $refused['refusal']['code'] ?? null);
+        $this->assertSame(false, $refused['refusal']['retryable'] ?? null);
+        $this->assertSame(
+            [['path' => 'design.fonts', 'key' => 'heading', 'reason' => FontRegistry::REASON_UNKNOWN, 'allowed' => ['Manrope']]],
+            $refused['refusal']['failures'] ?? null
+        );
+        $this->assertSame([], $this->api->callsTo('createElementInstance'), 'refused before the page is built');
+        $this->assertSame([], $refused['tree']);
+        $this->assertSame('', $refused['preview_digest']);
+
+        // A name outside the closed pattern is refused before the registry is read.
+        $this->api->calls           = [];
+        $design['fonts']['heading'] = 'Manrope;}';
+        $refused                    = $this->precheck(self::spec($outline) + ['design' => $design], $request);
+        $this->assertSame('bad_input', $refused['refusal']['code'] ?? null);
+        $this->assertSame([], $this->api->callsTo('fontFamilies'));
+
+        // A design that is not an object is refused; a spec without a design
+        // reads no registry.
+        $refused = $this->precheck(self::spec($outline) + ['design' => 'Manrope'], $request);
+        $this->assertSame('bad_input', $refused['refusal']['code'] ?? null);
+        $this->api->calls = [];
+        $plain            = $this->precheck(self::spec($outline), $request);
+        $this->assertArrayNotHasKey('refusal', $plain);
+        $this->assertSame([], $this->api->callsTo('fontFamilies'));
     }
 
     public function test_atomic_refused_in_a1(): void
@@ -510,6 +560,24 @@ final class BuilderPageCreateTest extends TestCase
             'own_revision_ids' => [self::REVISION],
             'result'           => $result,
         ], array_diff_key($this->ledgerRow, ['created_post_id' => 1]));
+    }
+
+    public function test_a_stylesheet_that_was_not_regenerated_is_a_warning_on_a_created_draft(): void
+    {
+        [$outline, , $request] = self::golden(self::CONTAINERS, 'columns');
+        $spec                  = self::spec($outline);
+        $built                 = $this->precheck($spec, $request);
+        $this->elementorSaves();
+        $this->api->regenerated = ['status' => 'file', 'path' => sys_get_temp_dir() . '/wpmgr-no-such-dir/post-41.css'];
+
+        $result = $this->write($spec, $request, $built);
+
+        $this->assertTrue($result['ok'] ?? null, (string) json_encode($result));
+        $this->assertSame('created', $result['outcome'] ?? null);
+        $this->assertSame(['css_not_regenerated'], array_column($result['warnings'] ?? [], 'code'));
+        $this->assertSame('draft', $this->rows[self::NEW_ID]['post_status'], 'the draft is kept');
+        $this->assertSame($result, $this->ledgerRow['result'], 'the recorded result carries the warning');
+        $this->assertSame([[self::NEW_ID]], $this->api->callsTo('regeneratePostCss'), 'regenerated once');
     }
 
     public function test_revert_guard_allows_own_revisions_only(): void

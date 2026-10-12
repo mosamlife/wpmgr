@@ -893,10 +893,18 @@ jobs:
   # The guard's self-test runs first so a guard that fails open cannot pass; it
   # also plants defects in a copy of the agent's own source and requires each to
   # turn the check red, and it fills the cache of downloads the real run reuses.
+  # The render probes then run on every pin (the same run), and last
+  # scripts/elementor-roundtrip/plants.sh plants a misspelt setting key and a
+  # group control without its activator in a probe's tree, on every pin, and
+  # requires each run to come back red because of the plant and for no other
+  # reason: a probe that cannot fail is red here. The plants are listed in
+  # scripts/elementor-roundtrip/plants.txt.
+  # The limit is for the three steps together: the self-test alone boots a
+  # WordPress for each case it proves, and each probe added makes every boot longer.
   elementor-roundtrip:
     name: Elementor round trip (pinned versions)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
         with:
@@ -911,6 +919,9 @@ jobs:
 
       - name: Elementor trees survive save and render
         run: scripts/elementor-roundtrip/run.sh
+
+      - name: Planted defects turn the probes red
+        run: scripts/elementor-roundtrip/plants.sh
 
   # ---- PHP agent ----
   php:

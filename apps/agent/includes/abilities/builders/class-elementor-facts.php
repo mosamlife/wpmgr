@@ -81,34 +81,69 @@ final class ElementorFacts
     private const MAX_POST_TYPES = 64;
 
     /**
+     * Elementor's breakpoint names, smallest screen first. The facts list
+     * only these, in this order.
+     */
+    public const BREAKPOINTS = ['mobile', 'mobile_extra', 'tablet', 'tablet_extra', 'laptop', 'widescreen'];
+
+    /** The post meta a kit's settings are saved in. */
+    public const KIT_SETTINGS_META = '_elementor_page_settings';
+
+    /** The kit setting that lists the active breakpoints. */
+    public const KIT_BREAKPOINTS_KEY = 'active_breakpoints';
+
+    /** What the kit's list puts before each breakpoint name. */
+    public const KIT_BREAKPOINT_PREFIX = 'viewport_';
+
+    /**
      * Read the facts.
      *
      * role_excluded is true when a role of the service user is in Elementor's
      * excluded list. When the service user cannot be read, the role it is
      * created with stands in: it holds that role alone or it is refused.
      * post_types keeps only post type keys; an option that is not a list
-     * switches Elementor on for nothing.
+     * switches Elementor on for nothing. active_breakpoints is described at
+     * activeBreakpoints(). block_theme is whether the active theme is a
+     * block theme (see themeIsBlock()); it decides the page frames a
+     * designed page may be built in.
      *
      * @param ElementorApi $api         Elementor.
      * @param int          $principalId The service user's id.
      * @param string       $proConstant Tests only: stands in for Elementor Pro's version constant. Production passes none.
-     * @return array{active: bool, version: string|null, classic_in_range: bool, containers: bool|null, atomic: bool|null, role_excluded: bool, post_types: list<string>, active_kit_id: int, pro_active: bool}
+     * @return array{active: bool, version: string|null, classic_in_range: bool, containers: bool|null, atomic: bool|null, role_excluded: bool, post_types: list<string>, active_kit_id: int, pro_active: bool, active_breakpoints: list<string>|null, block_theme: bool}
      */
     public static function collect(ElementorApi $api, int $principalId, string $proConstant = self::PRO_VERSION_CONSTANT): array
     {
         $version = $api->version();
+        $kitId   = $api->activeKitId();
 
         return [
-            'active'           => $api->loaded(),
-            'version'          => $version,
-            'classic_in_range' => $version !== null && VersionCompare::inRange($version, self::CLASSIC_MIN, self::CLASSIC_MAX),
-            'containers'       => $api->experimentActive(self::EXPERIMENT_CONTAINER),
-            'atomic'           => $api->experimentActive(self::EXPERIMENT_ATOMIC),
-            'role_excluded'    => self::roleExcluded($principalId),
-            'post_types'       => self::postTypes(),
-            'active_kit_id'    => $api->activeKitId(),
-            'pro_active'       => defined($proConstant),
+            'active'             => $api->loaded(),
+            'version'            => $version,
+            'classic_in_range'   => $version !== null && VersionCompare::inRange($version, self::CLASSIC_MIN, self::CLASSIC_MAX),
+            'containers'         => $api->experimentActive(self::EXPERIMENT_CONTAINER),
+            'atomic'             => $api->experimentActive(self::EXPERIMENT_ATOMIC),
+            'role_excluded'      => self::roleExcluded($principalId),
+            'post_types'         => self::postTypes(),
+            'active_kit_id'      => $kitId,
+            'pro_active'         => defined($proConstant),
+            'active_breakpoints' => self::activeBreakpoints($api, $kitId),
+            'block_theme'        => self::themeIsBlock(),
         ];
+    }
+
+    /**
+     * Whether $facts say the active theme is a block theme. Only a false
+     * block_theme is a classic theme: a fact that is missing or of another
+     * type reads as a block theme, which admits only canvas, the frame both
+     * kinds of theme show as built.
+     *
+     * @param array<string, mixed> $facts From collect().
+     * @return bool
+     */
+    public static function blockTheme(array $facts): bool
+    {
+        return ($facts['block_theme'] ?? null) !== false;
     }
 
     /**
@@ -192,6 +227,26 @@ final class ElementorFacts
     }
 
     /**
+     * Whether the active theme is a block theme, as core answers it. A core
+     * without the function has no block themes. A read that throws counts
+     * as a block theme, so the frames it admits are those either kind of
+     * theme shows as built.
+     *
+     * @return bool
+     */
+    private static function themeIsBlock(): bool
+    {
+        if (!function_exists('wp_is_block_theme')) {
+            return false;
+        }
+        try {
+            return wp_is_block_theme() === true;
+        } catch (\Throwable $e) {
+            return true;
+        }
+    }
+
+    /**
      * Whether a role of the service user is in Elementor's excluded list.
      * A stored value that is not a list excludes no role; a read that throws
      * counts as excluded.
@@ -239,6 +294,55 @@ final class ElementorFacts
         }
 
         return $roles;
+    }
+
+    /**
+     * The breakpoints active on this site, as Elementor's names from
+     * BREAKPOINTS in that order: a responsive setting is written for a
+     * breakpoint only when its name is listed here.
+     *
+     * The active kit's saved list is the answer when the kit has saved one.
+     * When it has not (no kit, no saved settings, or settings without the
+     * key), Elementor's breakpoints manager answers, as Elementor itself
+     * then falls back to its defaults. A saved value that is not a list, a
+     * kit read that throws, or a manager that cannot answer gives null, and
+     * a caller then treats no breakpoint as active.
+     *
+     * @param ElementorApi $api   Elementor.
+     * @param int          $kitId The active kit's post id, or 0.
+     * @return list<string>|null
+     */
+    private static function activeBreakpoints(ElementorApi $api, int $kitId): ?array
+    {
+        $settings = null;
+        if ($kitId > 0) {
+            try {
+                $settings = get_post_meta($kitId, self::KIT_SETTINGS_META, true);
+            } catch (\Throwable $e) {
+                return null;
+            }
+        }
+        if (is_array($settings) && isset($settings[self::KIT_BREAKPOINTS_KEY])) {
+            $saved = $settings[self::KIT_BREAKPOINTS_KEY];
+            if (!is_array($saved)) {
+                return null;
+            }
+            $active = [];
+            foreach (self::BREAKPOINTS as $name) {
+                if (in_array(self::KIT_BREAKPOINT_PREFIX . $name, $saved, true)) {
+                    $active[] = $name;
+                }
+            }
+
+            return $active;
+        }
+
+        $reported = $api->activeBreakpoints();
+        if ($reported === null) {
+            return null;
+        }
+
+        return array_values(array_filter(self::BREAKPOINTS, static fn (string $name): bool => in_array($name, $reported, true)));
     }
 
     /**

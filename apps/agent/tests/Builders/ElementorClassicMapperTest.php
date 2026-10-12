@@ -20,7 +20,9 @@ namespace WPMgr\Agent\Tests\Builders;
 use Brain\Monkey;
 use Brain\Monkey\Functions;
 use WPMgr\Agent\Abilities\Builders\BuilderContract;
+use WPMgr\Agent\Abilities\Builders\DesignTokens;
 use WPMgr\Agent\Abilities\Builders\ElementorClassicMapper;
+use WPMgr\Agent\Abilities\Builders\ElementorSectionCompiler;
 use WPMgr\Agent\Abilities\Builders\IdSeed;
 use WPMgr\Agent\Abilities\Builders\LeafPolicy;
 use WPMgr\Agent\Abilities\Builders\Projection;
@@ -32,6 +34,20 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
  */
 final class ElementorClassicMapperTest extends TestCase
 {
+    /**
+     * The E1 round-trip probes whose style keys the allowlist lists. Left
+     * out: the columns probes (their gap and width shapes belong to the
+     * columns compile), the fluid-size probe (a custom-unit size is not
+     * written), the sections smoke probe and the pattern widgets (their
+     * types are listed by the pattern compile).
+     */
+    private const STYLE_PROBES = [
+        'layout-section-container', 'layout-hero-background', 'layout-group',
+        'style-heading-typography', 'style-heading-responsive-size', 'style-text-editor',
+        'style-button-fill', 'style-button-outline', 'style-button-text',
+        'pattern-image', 'frame-google-font',
+    ];
+
     private const FIXTURES = __DIR__ . '/../fixtures/ability-run/';
 
     private const REQUEST = '11111111-2222-4333-8444-777777777777';
@@ -110,10 +126,112 @@ final class ElementorClassicMapperTest extends TestCase
             }
         }
 
-        // The allowlist is exactly what the goldens write: no type or path is listed that no case emits.
+        // A designed section's tag, anchor and label are written by the section compiler, not by these goldens.
+        $design  = [
+            'colors'  => ['ground' => '#FFFFFF', 'surface' => '#F6F5F2', 'ink' => '#15171C', 'muted' => '#5A606C', 'accent' => '#0D7A63', 'on_accent' => '#FAFAF7'],
+            'fonts'   => ['heading' => 'system', 'body' => 'system'],
+            'scale'   => ['base_px' => 17, 'ratio' => 'major_third'],
+            'radius'  => 'md',
+            'density' => 'normal',
+        ];
+        $section = (new ElementorSectionCompiler(DesignTokens::fromDesign($design), ['mobile', 'tablet']))->settings(['anchor' => 'story']);
+        foreach (array_merge(array_keys($section), array_keys(self::leaves($section, ''))) as $path) {
+            if (isset(ElementorClassicMapper::ALLOWED_KEYS['container'][$path])) {
+                $emitted['container'][$path] = true;
+            }
+        }
+
+        // A style key is listed once an E1 probe has stored and rendered it; the compile jobs write those probes byte for byte.
+        foreach (self::STYLE_PROBES as $probe) {
+            $this->walk(RoundTripProbes::tree($probe), function (array $node) use (&$emitted): void {
+                $type = $node['elType'] === 'widget' ? $node['widgetType'] : $node['elType'];
+                foreach (array_keys($node['settings']) as $key) {
+                    if (isset(ElementorClassicMapper::ALLOWED_KEYS[$type][$key])) {
+                        $emitted[$type][$key] = true;
+                    }
+                }
+            });
+        }
+
+        // The allowlist is exactly what the goldens, the section compiler and the E1 style probes write: no type or path is listed that none emits.
         $this->assertSame(array_keys(ElementorClassicMapper::ALLOWED_KEYS), array_values(array_intersect(array_keys(ElementorClassicMapper::ALLOWED_KEYS), array_keys($emitted))));
         foreach (ElementorClassicMapper::ALLOWED_KEYS as $type => $paths) {
             $this->assertSame(array_keys($paths), array_keys(array_intersect_key($paths, $emitted[$type])), $type . ': an allowlisted path no golden writes');
+        }
+    }
+
+    public function test_every_e1_style_probe_passes_the_allowlist_on_a_stock_site(): void
+    {
+        $site    = LeafPolicy::forBreakpoints(ElementorClassicMapper::ALLOWED_KEYS, ['mobile', 'tablet']);
+        $checked = 0;
+        foreach (self::STYLE_PROBES as $probe) {
+            $this->walk(RoundTripProbes::tree($probe), function (array $node, string $at) use ($probe, $site, &$checked): void {
+                $type = $node['elType'] === 'widget' ? $node['widgetType'] : $node['elType'];
+                $this->assertArrayHasKey($type, $site, $probe . ' ' . $at . ': a style probe holds only listed element types');
+                $own             = $node;
+                $own['elements'] = [];
+                if (str_starts_with((string) ($own['settings']['link']['url'] ?? ''), '#')) {
+                    // A link to a section anchor is judged by the anchor-link rule, not by this list.
+                    unset($own['settings']['link']);
+                }
+                $this->assertNull(LeafPolicy::checkTree([$own], $site, ElementorClassicMapper::LEAF_RULES), $probe . ' ' . $at);
+                ++$checked;
+            });
+        }
+        $this->assertGreaterThan(count(self::STYLE_PROBES), $checked, 'every probe holds at least one element');
+
+        // Planted: each probe's first style key renamed, the activator of a group dropped, an override on a site without it.
+        $hero = RoundTripProbes::tree('layout-hero-background')[0];
+        $hero['elements'] = [];
+        $renamed = $hero;
+        $renamed['settings']['background_colour'] = $renamed['settings']['background_color'];
+        unset($renamed['settings']['background_color']);
+        $this->assertSame(LeafPolicy::CODE_STYLE_KEY, LeafPolicy::checkTree([$renamed], $site, ElementorClassicMapper::LEAF_RULES)['code'] ?? null);
+        $this->assertSame(LeafPolicy::CODE_STYLE_KEY, LeafPolicy::checkTree([$hero], LeafPolicy::forBreakpoints(ElementorClassicMapper::ALLOWED_KEYS, ['tablet']), ElementorClassicMapper::LEAF_RULES)['code'] ?? null);
+    }
+
+    public function test_dropping_an_activator_from_an_e1_style_probe_is_refused(): void
+    {
+        $site    = LeafPolicy::forBreakpoints(ElementorClassicMapper::ALLOWED_KEYS, ['mobile', 'tablet']);
+        $planted = 0;
+        foreach (self::STYLE_PROBES as $probe) {
+            $this->walk(RoundTripProbes::tree($probe), function (array $node, string $at) use ($probe, $site, &$planted): void {
+                $own             = $node;
+                $own['elements'] = [];
+                if (str_starts_with((string) ($own['settings']['link']['url'] ?? ''), '#')) {
+                    unset($own['settings']['link']);
+                }
+                foreach (LeafPolicy::GROUP_ACTIVATORS as $group => $rule) {
+                    $members = array_filter(array_keys($own['settings']), static fn ($key): bool => LeafPolicy::groupOf((string) $key) === $group);
+                    if (!isset($own['settings'][$rule[0]]) || $members === []) {
+                        continue;
+                    }
+                    $dropped = $own;
+                    unset($dropped['settings'][$rule[0]]);
+                    $this->assertSame(LeafPolicy::CODE_ACTIVATOR, LeafPolicy::checkTree([$dropped], $site, ElementorClassicMapper::LEAF_RULES)['code'] ?? null, $probe . ' ' . $at . ' without ' . $rule[0]);
+                    ++$planted;
+                }
+            });
+        }
+        // typography on headings, text and buttons; background on sections and buttons; the overlay; border; the hover background.
+        $this->assertGreaterThanOrEqual(12, $planted);
+
+        // The link probe's button writes a background colour with no activator, which the compiler never does.
+        $button = RoundTripProbes::tree('pattern-link-nofollow')[0]['elements'][0];
+        $this->assertSame('button', $button['widgetType']);
+        $this->assertSame(LeafPolicy::CODE_ACTIVATOR, LeafPolicy::checkTree([$button], $site, ElementorClassicMapper::LEAF_RULES)['code'] ?? null);
+
+        // Every listed key of a group family belongs to a group LeafPolicy knows, or is an activator or a standalone control.
+        $activators = array_column(LeafPolicy::GROUP_ACTIVATORS, 0);
+        foreach (ElementorClassicMapper::ALLOWED_KEYS as $type => $paths) {
+            foreach (array_keys($paths) as $path) {
+                $key = explode('.', $path, 2)[0];
+                if (preg_match('/typography|background|border|shadow/', $key) !== 1) {
+                    continue;
+                }
+                $known = in_array($key, $activators, true) || LeafPolicy::groupOf($key) !== null || in_array($key, LeafPolicy::GROUP_STANDALONE, true);
+                $this->assertTrue($known, $type . '.' . $path . ': a group key whose group LeafPolicy does not know');
+            }
         }
     }
 

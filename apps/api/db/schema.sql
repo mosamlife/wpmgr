@@ -9819,11 +9819,12 @@ WHERE NOT EXISTS (
     SELECT 1 FROM ability_catalogue c WHERE c.name = v.name
 );
 
--- m157: wpmgr/page-create, the first admitted write. description and limits
--- are as m166 leaves them (layout outlines, drafts built in Elementor,
--- limits.builders_enabled), and usage as m176 leaves it (the Elementor
--- versions and outline values WPMgr builds); m162, m166 and m176 each clear
--- the entry hash, which the boot stamp fills.
+-- m157: wpmgr/page-create, the first admitted write. limits are as m166
+-- leaves them (layout outlines, drafts built in Elementor,
+-- limits.builders_enabled), and description and usage as m177 leaves them
+-- (the Elementor versions and outline values WPMgr builds, and designed
+-- pages, outline version 3); m162, m166, m176 and m177 each clear the entry
+-- hash, which the boot stamp fills.
 INSERT INTO ability_catalogue (
     name, source, class, status, enabled, approval_mode,
     snapshot, effect_copy, operator_permission, min_agent_version,
@@ -9832,26 +9833,33 @@ INSERT INTO ability_catalogue (
 SELECT 'wpmgr/page-create', 'wpmgr', 'write', 'admitted', true, 'per_call',
        'created_post_trash', 'draft', 'site.content.edit', '0.61.156',
        'Create a draft page',
-       'Creates a new draft page or post from an outline: headings, paragraphs, lists, quotes, tables, separators, ' ||
-       'images already in the site''s media library, and, in the block editor or Elementor, buttons, spacing, ' ||
-       'sections and columns. With editor builder:elementor the draft is built in Elementor, from Elementor''s own ' ||
-       'layout elements and widgets. Nothing is published. Undo moves the draft to the trash.',
-       'Build the page as an outline. A top-level item can be any block, a group (a section) or columns. A group ' ||
-       'holds blocks or columns; a column holds blocks only. Use 2 to 4 columns; widths are optional whole ' ||
-       'percentages that add up to 100. Images must already be in the media library: find an attachment id with ' ||
-       'wpmgr/rest-read route wp-v2-media-list, and write alt text that describes the picture, or an empty alt for ' ||
-       'a decorative one. Button links are https:// addresses or paths on this site that start with /. All text is ' ||
-       'plain: no HTML, shortcodes or template syntax; square brackets only around a number such as [1], and never ' ||
-       'in alt text. On a site that uses the classic editor, send editor wordpress_classic and only headings, ' ||
-       'paragraphs, lists, quotes, tables, separators and images without captions. Layout blocks need the WPMgr ' ||
-       'plugin 0.61.160 or later on the site. On a site with Elementor, send editor builder:elementor to build the ' ||
-       'draft in Elementor from the same outline. The draft is built with Elementor''s classic widgets: leave ' ||
-       'elementor_format out or send classic; site_default, the default, builds classic widgets too. Atomic is not ' ||
-       'available yet: elementor_format atomic is always refused, whatever the site runs. In Elementor, buttons ' ||
-       'cannot use the outline style, a button link cannot contain &, a paragraph cannot be only a web address, ' ||
-       'an image''s align can only be none or center, and an image''s alt text must be exactly the alt text it has ' ||
-       'in the media library. Elementor pages need the WPMgr plugin 0.61.161 or later and Elementor 3.20 to 4.3 on ' ||
-       'the site; a later Elementor is refused until WPMgr verifies it.',
+       'Creates a new draft page or post from an outline: headings, paragraphs, lists, quotes, tables, ' ||
+       'separators, images already in the site''s media library, and, in the block editor or Elementor, buttons, ' ||
+       'spacing, sections and columns. With editor builder:elementor the draft is built in Elementor, from ' ||
+       'Elementor''s own layout elements and widgets. With outline_version 3 it is a designed page: sections ' ||
+       'with tones, backgrounds and anchors, and patterns such as a hero, features, stats, pricing, ' ||
+       'testimonials, questions and a call to action, styled from one design of colours, fonts and spacing. ' ||
+       'Nothing is published. Undo moves the draft to the trash.',
+       'Build the page as an outline. A top-level item can be any block, a group (a section) or columns. A ' ||
+       'group holds blocks or columns; a column holds blocks only. Use 2 to 4 columns; widths are optional ' ||
+       'whole percentages that add up to 100. Images must already be in the media library: find an attachment ' ||
+       'id with wpmgr/rest-read route wp-v2-media-list, and write alt text that describes the picture, or an ' ||
+       'empty alt for a decorative one. Button links are https:// addresses or paths on this site that start ' ||
+       'with /. All text is plain: no HTML, shortcodes or template syntax; square brackets only around a number ' ||
+       'such as [1], and never in alt text. On a site that uses the classic editor, send editor ' ||
+       'wordpress_classic and only headings, paragraphs, lists, quotes, tables, separators and images without ' ||
+       'captions. Layout blocks need the WPMgr plugin 0.61.160 or later on the site. With Elementor, send ' ||
+       'editor builder:elementor: the draft uses Elementor''s classic widgets, and elementor_format atomic is ' ||
+       'always refused. In Elementor, a button link cannot contain &, a paragraph cannot be only a web address, ' ||
+       'an image''s align can only be none or center, and its alt text must be its media library alt text. ' ||
+       'Elementor pages need the WPMgr plugin 0.61.161 or later and Elementor 3.20 to 4.3 on the site. For a ' ||
+       'designed page, send outline_version 3 with a complete design. Colours are never #000000; ink on ground ' ||
+       'and on surface, and on_accent on accent, need 4.5:1 contrast. Fonts are ones Elementor offers, or ' ||
+       'system. page_frame is full_width, title hidden, when there is a hero, else theme; canvas only on ' ||
+       'request. Use up to 20 sections, an anchor on each and #anchor links to them, one hero holding the only ' ||
+       'level 1 heading, patterns for variety and one accent. Style by tokens, never HTML or CSS. Colours and ' ||
+       'fonts go on the page, not the kit, so Undo covers all. Designed pages need the WPMgr plugin 0.61.165 or ' ||
+       'later and Elementor containers; version 2 buttons cannot use the outline style.',
        ('{"max_top_level_nodes":200,"max_nodes":400,"max_columns":4,"max_children":50,"max_images":20,' ||
         '"max_buttons":12,"max_tables":10,"max_table_rows":50,"max_table_columns":6,"max_title_chars":200,' ||
         '"max_text_chars":5000,"max_total_chars":60000,"max_input_bytes":65536,"builders_enabled":["elementor"]}')::jsonb
@@ -9906,7 +9914,9 @@ WHERE NOT EXISTS (
 );
 
 -- m169: wpmgr/page-edit, changes to a draft WPMgr created in a page builder.
--- Undo strategy builder_document.
+-- Undo strategy builder_document. usage as m178 leaves it (pattern paths,
+-- version 3 insert and replace, anchors); m178 clears the entry hash, which
+-- the boot stamp fills.
 INSERT INTO ability_catalogue (
     name, source, class, status, enabled, approval_mode,
     snapshot, preview, effect_copy, operator_permission,
@@ -9925,15 +9935,20 @@ SELECT 'wpmgr/page-edit', 'wpmgr', 'write', 'admitted', true, 'per_call',
        'change wrote, newest change first.',
        'First read the page with wpmgr/page-structure. Send post_id, base_fingerprint (from that read) and ' ||
        'operations: 1 to 25 changes, applied in order. set_text sets one field (text, url, alt or caption) of a ' ||
-       'node whose editable list names it. insert adds outline items after or before a node, or into a node, first ' ||
-       'or last. replace puts outline items in place of a node. remove deletes a node. move puts a node after or ' ||
-       'before another. Outline items use the wpmgr/page-create outline, at most 50 in one change, and all text ' ||
-       'follows its rules: plain text only, and links that are https:// addresses or paths on this site that start ' ||
-       'with /. Change each node at most once in a request, and never name a node an earlier change in the same ' ||
-       'request removed or replaced. Locked nodes cannot be changed, moved or removed. If the page changed after ' ||
-       'your read, the request is refused with conflict: read the page again and send new changes. Only a draft ' ||
-       'WPMgr created with wpmgr/page-create, still a draft, can be changed; any other page is refused with ' ||
-       'target_not_eligible.'
+       'node whose editable list names it; in a pattern, name the field by its path, such as plans.1.price or ' ||
+       'faq.3.answer. insert adds outline items after or before a node, or into a node, first or last. replace ' ||
+       'puts outline items in place of a node; to add or remove items in a pattern, replace the pattern. remove ' ||
+       'deletes a node. move puts a node after or before another. Outline items use the wpmgr/page-create ' ||
+       'outline, at most 50 in one change, and all text follows its rules: plain text only, and links that are ' ||
+       'https:// addresses or paths on this site that start with /. On a designed page, insert and replace also ' ||
+       'take version 3 sections and patterns, built with the design the page was created with unless you send ' ||
+       'design, complete, as wpmgr/page-create takes it; they need the WPMgr plugin 0.61.165 or later. A ' ||
+       '#anchor link must name an anchor on the page after the whole request (link_anchor_missing), and a ' ||
+       'section whose anchor is still linked cannot be removed (anchor_in_use). Change each node at most once ' ||
+       'in a request, and never name a node an earlier change in the same request removed or replaced. Locked ' ||
+       'nodes cannot be changed, moved or removed. If the page changed after your read, the request is refused ' ||
+       'with conflict: read the page again and send new changes. Only a draft WPMgr created with ' ||
+       'wpmgr/page-create, still a draft, can be changed; any other page is refused with target_not_eligible.'
 WHERE NOT EXISTS (
     SELECT 1 FROM ability_catalogue c WHERE c.name = 'wpmgr/page-edit'
 );

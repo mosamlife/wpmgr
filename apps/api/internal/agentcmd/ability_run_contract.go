@@ -86,6 +86,16 @@ const MinAgentVersionForBuilderAdapters = "0.61.161"
 // min_agent_version, and it moves with the release that ships builder edit.
 const MinAgentVersionForBuilderEdit = "0.61.163"
 
+// MinAgentVersionForDesignedPages is the first agent release whose
+// wpmgr/page-create builds a designed Elementor page: outline version 3, with
+// a design, a page frame, sections and patterns. The entry's own floor stays
+// MinAgentVersionForPageCreate, so an outline of version 2 still runs on older
+// agents; the control plane applies this floor to a version 3 input, at run
+// and again at dispatch, so an older agent is never asked to build one. m177's
+// usage text names the same release, and it moves with the number that
+// release ships as.
+const MinAgentVersionForDesignedPages = "0.61.165"
+
 // AbilityRunMaxAllowedDraftIDs bounds p.allowed_draft_ids: the control plane
 // names at most the one post an input is about, so p stays far under
 // AbilityRunMaxPBytes however many drafts WPMgr created on the site.
@@ -609,6 +619,34 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"refused_published":   {},
 	"target_not_draft":    {},
 	"snapshot_unreadable": {},
+	// wpmgr/page-create with a designed page (outline version 3): the design
+	// object is incomplete, or two of its colours are too close to read.
+	"design_not_ready":    {},
+	"design_contrast_low": {},
+	// The anchors, links, hero place, heading and pattern items of a designed
+	// page: refusals of the outline that name where.
+	"anchor_invalid":             {},
+	"anchor_duplicate":           {},
+	"anchor_reserved":            {},
+	"link_anchor_missing":        {},
+	"hero_misplaced":             {},
+	"h1_outside_hero":            {},
+	"pattern_items_out_of_range": {},
+	"icon_unknown":               {},
+	// wpmgr/page-edit on a designed page: a section the call removes, or
+	// replaces without its anchor, is still linked to by a node that stays.
+	"anchor_in_use": {},
+	// Refusals only the site can make for a designed page: a font family its
+	// Elementor does not have, a page frame whose template its theme does not
+	// offer, a page frame its theme cannot show a designed page in (a block
+	// theme shows one only as canvas), a site that builds sections and
+	// columns where a designed page needs containers, and a section
+	// background whose attachment is not an image.
+	"font_unknown":              {},
+	"page_template_unavailable": {},
+	"page_frame_unavailable":    {},
+	"containers_required":       {},
+	"background_not_image":      {},
 }
 
 var abilityRunCodeRe = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)

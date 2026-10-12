@@ -53,16 +53,19 @@ export interface CardRow {
 
 /**
  * The rows under the outline of a page Elementor builds. The first names what
- * Elementor builds the page from, so a page laid out in sections says so.
+ * Elementor builds the page from, so a page laid out in sections says so, and
+ * what styles it: the site's Elementor settings, or, on a designed page, the
+ * design the card shows.
  */
-export function elementorCardRows(b: PageBuilderFacts): readonly CardRow[] {
+export function elementorCardRows(b: PageBuilderFacts, options: { designed?: boolean } = {}): readonly CardRow[] {
   const parts =
     b.format === "classic" && b.layout === "sections" ? "sections, columns and widgets" : "containers and widgets";
+  const styledBy = options.designed === true ? "the design chosen above" : "this site's Elementor settings";
   return [
     {
       label: "Elementor",
       lines: [
-        `Built from Elementor's own ${parts}, styled by this site's Elementor settings.`,
+        `Built from Elementor's own ${parts}, styled by ${styledBy}.`,
         "WPMgr does not change Elementor's site-wide styles, templates, header or footer.",
       ],
     },

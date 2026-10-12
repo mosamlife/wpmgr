@@ -66,8 +66,11 @@ final class PageEditValidator
     /** Decode depth of the input text, as for every ability input. */
     private const MAX_DEPTH = 32;
 
-    /** The input fields, in schema order. */
-    private const INPUT_FIELDS = ['post_id', 'base_fingerprint', 'operations'];
+    /** The input fields, in schema order; `design` is the optional last one. */
+    private const INPUT_FIELDS = ['post_id', 'base_fingerprint', 'operations', 'design'];
+
+    /** The input fields every input has. */
+    private const REQUIRED_FIELDS = ['post_id', 'base_fingerprint', 'operations'];
 
     /** The node kinds an insert may put new nodes into. */
     private const TAKES_CHILDREN = ['section', 'column', 'group', 'columns'];
@@ -85,7 +88,7 @@ final class PageEditValidator
      * Check the input text against every rule that needs no page.
      *
      * @param string $inputText The exact input text.
-     * @return array{input?: array{post_id: int, base_fingerprint: string, operations: list<array<string, mixed>>}, code?: string, detail?: string}
+     * @return array{input?: array{post_id: int, base_fingerprint: string, operations: list<array<string, mixed>>, design?: array<string, mixed>}, code?: string, detail?: string, failures?: list<array<string, mixed>>}
      */
     public static function parse(string $inputText): array
     {
@@ -97,7 +100,7 @@ final class PageEditValidator
             return self::bad('the input must be the JSON text of an object');
         }
         $vars = get_object_vars($input);
-        $bad  = self::keys($vars, self::INPUT_FIELDS, self::INPUT_FIELDS, 'the input');
+        $bad  = self::keys($vars, self::INPUT_FIELDS, self::REQUIRED_FIELDS, 'the input');
         if ($bad !== null) {
             return $bad;
         }
@@ -108,6 +111,15 @@ final class PageEditValidator
         $fingerprint = $vars['base_fingerprint'];
         if (!is_string($fingerprint) || preg_match('/' . BuilderContract::FINGERPRINT_PATTERN . '/D', $fingerprint) !== 1) {
             return self::bad('base_fingerprint must be the 64 lowercase hex characters wpmgr/page-structure gave');
+        }
+        // The design is judged before the operations, as page-create judges it before the outline.
+        $design = null;
+        if (array_key_exists('design', $vars)) {
+            $checked = DesignInput::check($vars['design']);
+            if (!isset($checked['design'])) {
+                return $checked;
+            }
+            $design = $checked['design'];
         }
         $operations = $vars['operations'];
         if (!is_array($operations) || $operations === [] || count($operations) > BuilderContract::MAX_OPS) {
@@ -131,7 +143,12 @@ final class PageEditValidator
             $clean[] = $r['op'];
         }
 
-        return ['input' => ['post_id' => $postId, 'base_fingerprint' => $fingerprint, 'operations' => $clean]];
+        $input = ['post_id' => $postId, 'base_fingerprint' => $fingerprint, 'operations' => $clean];
+        if ($design !== null) {
+            $input['design'] = $design;
+        }
+
+        return ['input' => $input];
     }
 
     /**
@@ -150,6 +167,12 @@ final class PageEditValidator
         $editable = [];
         $parent   = [];
         $weight   = [];
+        $page     = new \stdClass();
+        $page->anchor = [];
+        $page->links  = [];
+        $page->heroes = [];
+        $page->h1s    = [];
+        $page->top    = null;
         foreach ($projectionNodes as $node) {
             $ref = $node['ref'] ?? null;
             $up  = $node['parent'] ?? null;
@@ -163,10 +186,34 @@ final class PageEditValidator
             $editable[$ref] = $k !== 'locked' && is_array($fields) ? $fields : [];
             $parent[$ref]   = $up === Projection::ROOT ? null : $up;
             $weight[$ref]   = 1;
+            if ($up === Projection::ROOT && $page->top === null) {
+                $page->top = $ref;
+            }
+            if ($k === 'section' && isset($node['anchor']) && is_string($node['anchor'])) {
+                $page->anchor[$ref] = $node['anchor'];
+            }
+            $links = [];
+            foreach (is_array($node['links'] ?? null) ? $node['links'] : [] as $link) {
+                if (is_string($link) && strncmp($link, '#', 1) === 0) {
+                    $links[] = substr($link, 1);
+                }
+            }
+            if ($links !== []) {
+                $page->links[$ref] = $links;
+            }
+            if ($k === 'pattern' && ($node['pattern'] ?? null) === 'hero') {
+                $page->heroes[] = $ref;
+            }
+            if ($k === 'heading' && ($node['level'] ?? null) === 1) {
+                $page->h1s[] = $ref;
+            }
         }
 
-        $removed = [];
-        $new     = 0;
+        $removed   = [];
+        $removedBy = [];
+        $new       = 0;
+        $facts     = [];
+        $setLinks  = [];
         foreach ($input['operations'] as $i => $op) {
             $name = (string) $op['op'];
             if (!in_array($name, $declared, true)) {
@@ -203,6 +250,10 @@ final class PageEditValidator
                             return ['code' => 'bad_input', 'detail' => 'operations[' . $i . '].text: ' . $why, 'op_index' => $i];
                         }
                     }
+                    if ($field === 'url' || substr($field, -strlen('.url')) === '.url') {
+                        $text               = (string) $op['text'];
+                        $setLinks[$target][] = ['slug' => strncmp($text, '#', 1) === 0 ? substr($text, 1) : null, 'op' => $i];
+                    }
                     break;
                 case 'insert':
                 case 'replace':
@@ -222,15 +273,22 @@ final class PageEditValidator
                     if ($new > BuilderContract::MAX_NEW_NODES) {
                         return self::refuse('page_too_large', 'new_nodes', $i);
                     }
+                    $facts[$i] = OutlineV3::facts($op['outline']);
+                    $placed    = self::placement($facts[$i], $home, $page, $op, $name, $target, $i);
+                    if ($placed !== null) {
+                        return $placed;
+                    }
                     $parent[self::NEW_KEY . $i] = $home;
                     $weight[self::NEW_KEY . $i] = $count;
                     if ($name === 'replace' && $target !== null) {
-                        $removed[$target] = true;
+                        $removed[$target]   = true;
+                        $removedBy[$target] = $i;
                     }
                     break;
                 case 'remove':
                     if ($target !== null) {
-                        $removed[$target] = true;
+                        $removed[$target]   = true;
+                        $removedBy[$target] = $i;
                     }
                     break;
                 case 'move':
@@ -251,6 +309,156 @@ final class PageEditValidator
         }
         if ($after > BuilderContract::MAX_NODES_AFTER) {
             return self::refuse('page_too_large', 'nodes_after', null);
+        }
+
+        return self::wholePage($page, $facts, $setLinks, $kind, $parent, $removed, $removedBy);
+    }
+
+    /**
+     * The rules for where an insert or a replace puts a designed outline,
+     * judged on the page as the earlier operations left it: a section stands
+     * at the top only, and on a page of sections only sections do; the hero is
+     * the page's first block, and the page has one hero and one level 1
+     * heading.
+     *
+     * @param array<string, mixed> $facts  OutlineV3::facts() of the operation's outline.
+     * @param string|null          $home   The ref of the node the new nodes go into; null at the top.
+     * @param \stdClass            $page   What the projection says: anchor, links, heroes, h1s, top.
+     * @param array<string, mixed> $op     The operation.
+     * @param string               $name   Its name.
+     * @param string|null          $target Its target ref.
+     * @param int                  $i      Its index.
+     * @return array{code: string, detail: string, op_index: int|null}|null
+     */
+    private static function placement(array $facts, ?string $home, \stdClass $page, array $op, string $name, ?string $target, int $i): ?array
+    {
+        if ($facts['sections'] > 0 && $home !== null) {
+            return self::refuse('node_not_editable', 'section_at_top_only', $i);
+        }
+        if ($facts['sections'] === 0 && $home === null && $page->anchor !== []) {
+            return self::refuse('node_not_editable', 'only_sections_at_top', $i);
+        }
+        if ($facts['heroes'] > 0) {
+            $first = ($op['before'] ?? null) === $page->top || ($name === 'replace' && $target === $page->top);
+            if ($home !== null || !$first) {
+                return self::refuse('hero_misplaced', 'hero_not_first', $i);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The rules judged on the page as the whole call leaves it, so the order
+     * of the operations never changes the answer:
+     *
+     *   - a page has one hero and one level 1 heading (layout_invalid);
+     *   - an anchor is on the page once (anchor_duplicate);
+     *   - a section the call removes or replaces whose anchor a node that
+     *     stays still links to is anchor_in_use, naming the linking refs;
+     *   - a link the call makes that leads to an anchor the page does not have
+     *     is link_anchor_missing. A link no operation touched is not judged,
+     *     unless the call took its anchor away.
+     *
+     * @param \stdClass                          $page      What the projection says.
+     * @param array<int, array<string, mixed>>   $facts     OutlineV3::facts() of each outline, by operation.
+     * @param array<string, list<array<string, mixed>>> $setLinks The links set_text gave, by node ref.
+     * @param array<string, string>              $kind      Kind of every node, by ref.
+     * @param array<string, string|null>         $parent    Parent of every node, by ref or new-node key.
+     * @param array<string, true>                $removed   Removed and replaced nodes.
+     * @param array<string, int>                 $removedBy The operation that removed or replaced a node.
+     * @return array{code: string, detail: string, op_index: int|null, refs?: list<string>}|null
+     */
+    private static function wholePage(\stdClass $page, array $facts, array $setLinks, array $kind, array $parent, array $removed, array $removedBy): ?array
+    {
+        // Heroes and level 1 headings.
+        $heroes = 0;
+        $h1s    = 0;
+        foreach ($page->heroes as $ref) {
+            $heroes += self::gone($ref, $parent, $removed) ? 0 : 1;
+        }
+        foreach ($page->h1s as $ref) {
+            $h1s += self::gone($ref, $parent, $removed) ? 0 : 1;
+        }
+        foreach ($facts as $i => $f) {
+            $heroes += $f['heroes'];
+            $h1s    += $f['h1s'];
+            if ($heroes > 1) {
+                return self::refuse('layout_invalid', 'second_hero', $i);
+            }
+            if ($h1s > 1) {
+                return self::refuse('layout_invalid', 'second_h1', $i);
+            }
+        }
+
+        // Anchors before and after the call.
+        $before = [];
+        foreach ($page->anchor as $ref => $slug) {
+            $before[$slug] = $ref;
+        }
+        $have = [];
+        foreach ($page->anchor as $ref => $slug) {
+            if (!self::gone($ref, $parent, $removed)) {
+                $have[$slug] = true;
+            }
+        }
+        foreach ($facts as $i => $f) {
+            foreach ($f['anchors'] as $slug) {
+                if (isset($have[$slug])) {
+                    return self::refuse('anchor_duplicate', 'anchor_twice', $i);
+                }
+                $have[$slug] = true;
+            }
+        }
+
+        // Links after the call: [slug, node ref or null, operation or null, made by the call].
+        $links = [];
+        foreach ($page->links as $ref => $slugs) {
+            if (self::gone($ref, $parent, $removed)) {
+                continue;
+            }
+            $set = $setLinks[$ref] ?? [];
+            // A button keeps one link, which a set_text replaces; a pattern's other links stay.
+            if ($set !== [] && ($kind[$ref] ?? '') !== 'pattern') {
+                continue;
+            }
+            foreach ($slugs as $slug) {
+                $links[] = [$slug, $ref, null, false];
+            }
+        }
+        foreach ($setLinks as $ref => $set) {
+            if (self::gone((string) $ref, $parent, $removed)) {
+                continue;
+            }
+            foreach ($set as $link) {
+                if ($link['slug'] !== null) {
+                    $links[] = [$link['slug'], (string) $ref, $link['op'], true];
+                }
+            }
+        }
+        foreach ($facts as $i => $f) {
+            foreach ($f['links'] as $slug) {
+                $links[] = [$slug, null, $i, true];
+            }
+        }
+
+        $refs  = [];
+        $inUse = null;
+        foreach ($links as [$slug, $ref, $op]) {
+            if (isset($before[$slug]) && !isset($have[$slug])) {
+                $inUse ??= $removedBy[$before[$slug]] ?? null;
+                if ($ref !== null) {
+                    $refs[] = $ref;
+                }
+            }
+        }
+        if ($refs !== [] || $inUse !== null) {
+            return self::refuse('anchor_in_use', 'section_linked', $inUse) + ['refs' => array_values(array_unique($refs))];
+        }
+        foreach ($links as [$slug, $ref, $op, $made]) {
+            if ($made && !isset($have[$slug])) {
+                return self::refuse('link_anchor_missing', 'link_leads_nowhere', $op);
+            }
         }
 
         return null;
@@ -314,8 +522,8 @@ final class PageEditValidator
                     return $bad;
                 }
                 $field = $o['field'];
-                if (!is_string($field) || !in_array($field, BuilderContract::FIELDS, true)) {
-                    return self::bad($at . '.field must be one of ' . implode(', ', BuilderContract::FIELDS));
+                if (!is_string($field) || (!in_array($field, BuilderContract::FIELDS, true) && !self::isPatternPath($field))) {
+                    return self::bad($at . '.field must be one of ' . implode(', ', BuilderContract::FIELDS) . ', or a pattern path such as plans.1.price');
                 }
                 $text = $o['text'];
                 if (!is_string($text) || self::chars($text) > PageCreateBuilder::MAX_TEXT_CHARS) {
@@ -436,6 +644,13 @@ final class PageEditValidator
     /**
      * An outline through page-create's own validation, in its normalised form.
      *
+     * The outline of version 2 is judged as the outline of a page of its own.
+     * An outline that version 2 does not accept is judged by the grammar of
+     * version 3 (OutlineV3::fragment()): a section at the top, or a pattern, a
+     * block, a group and columns as the children of a section, with a link to
+     * an anchor of the page allowed. Whatever code a grammar gives, the answer
+     * is bad_input; which anchors and links the page has is the page's to judge.
+     *
      * @param mixed  $list Decoded outline.
      * @param string $at   Path of its operation.
      * @return array{outline?: list<array<string, mixed>>, code?: string, detail?: string}
@@ -445,14 +660,53 @@ final class PageEditValidator
         if (!is_array($list) || $list === [] || count($list) > BuilderContract::MAX_OUTLINE_PER_OP) {
             return self::bad($at . '.outline must be a list of 1 to ' . BuilderContract::MAX_OUTLINE_PER_OP . ' nodes');
         }
-        $r = PageCreateBuilder::validate(self::pageCreateInput(array_values($list)));
-        if (!isset($r['spec'])) {
-            $detail = (string) ($r['detail'] ?? '');
+        $list = array_values($list);
+        $r    = self::holdsDesignedNode($list) ? [] : PageCreateBuilder::validate(self::pageCreateInput($list));
+        if (isset($r['spec'])) {
+            return ['outline' => $r['spec']['outline']];
+        }
+        $v3 = OutlineV3::fragment($list);
+        if (isset($v3['outline'])) {
+            return ['outline' => $v3['outline']];
+        }
+        // A version 2 outline keeps version 2's words; a designed one gets the grammar's.
+        $why    = $r === [] || self::holdsDesignedMark($list) ? $v3 : $r;
+        $detail = (string) ($why['detail'] ?? '');
 
-            return self::bad(strncmp($detail, 'outline', 7) === 0 ? $at . '.' . $detail : $at . '.outline: ' . $detail);
+        return self::bad(strncmp($detail, 'outline', 7) === 0 ? $at . '.' . $detail : $at . '.outline: ' . $detail);
+    }
+
+    /**
+     * Whether an outline holds a section or a pattern at its top: nodes only
+     * the grammar of version 3 knows.
+     *
+     * @param list<mixed> $list Decoded outline.
+     * @return bool
+     */
+    private static function holdsDesignedNode(array $list): bool
+    {
+        foreach ($list as $node) {
+            if (is_object($node) && in_array($node->type ?? null, ['section', 'pattern'], true)) {
+                return true;
+            }
         }
 
-        return ['outline' => $r['spec']['outline']];
+        return false;
+    }
+
+    /**
+     * Whether an outline holds anything only version 3 gives a meaning to,
+     * so that its refusal is the grammar's: a section or a pattern, a link to
+     * an anchor of the page, or the text style of a button.
+     *
+     * @param list<mixed> $list Decoded outline.
+     * @return bool
+     */
+    private static function holdsDesignedMark(array $list): bool
+    {
+        $text = json_encode($list);
+
+        return self::holdsDesignedNode($list) || (is_string($text) && (strpos($text, '"url":"#') !== false || strpos($text, '"style":"text"') !== false));
     }
 
     /**
@@ -464,9 +718,12 @@ final class PageEditValidator
      */
     private static function fieldProblem(string $field, string $text): ?string
     {
+        if (self::isPatternPath($field)) {
+            return self::pathProblem($field, $text);
+        }
         switch ($field) {
             case 'url':
-                return PageCreateBuilder::linkProblem($text);
+                return self::linkProblem($text);
             case 'alt':
                 return self::pageCreateProblem((object) ['type' => 'image', 'attachment_id' => 1, 'alt' => $text]);
             case 'caption':
@@ -474,6 +731,59 @@ final class PageEditValidator
             default:
                 return self::pageCreateProblem((object) ['type' => 'paragraph', 'text' => $text]);
         }
+    }
+
+    /**
+     * Whether a field names a position in a pattern, such as plans.1.price,
+     * matched whole.
+     *
+     * @param string $field The field.
+     * @return bool
+     */
+    private static function isPatternPath(string $field): bool
+    {
+        return preg_match('/' . OutlineV3Schema::EDIT_PATH_PATTERN . '/D', $field) === 1;
+    }
+
+    /**
+     * Why a text breaks the rule of a pattern path, or null: a path takes the
+     * rule of its last step. url is the link rule, alt the alt rule, cta.text
+     * the button text rule, any other the paragraph text rule.
+     *
+     * @param string $path A pattern path.
+     * @param string $text The text.
+     * @return string|null
+     */
+    private static function pathProblem(string $path, string $text): ?string
+    {
+        $last = substr($path, (int) strrpos($path, '.') + 1);
+        if ($last === 'url') {
+            return self::linkProblem($text);
+        }
+        if ($last === 'alt') {
+            return self::pageCreateProblem((object) ['type' => 'image', 'attachment_id' => 1, 'alt' => $text]);
+        }
+        if (substr($path, -strlen('.cta.text')) === '.cta.text') {
+            return self::pageCreateProblem((object) [
+                'type'    => 'buttons',
+                'buttons' => [(object) ['text' => $text, 'url' => self::CHECK_LINK]],
+            ]);
+        }
+
+        return self::pageCreateProblem((object) ['type' => 'paragraph', 'text' => $text]);
+    }
+
+    /**
+     * Why a link breaks the link rule, or null: page-create's, or a link to a
+     * section of the page, "#" and an anchor of the anchor's shape. Whether
+     * the page has that anchor is the page's to judge.
+     *
+     * @param string $url The link.
+     * @return string|null
+     */
+    private static function linkProblem(string $url): ?string
+    {
+        return PageCreateBuilder::linkProblem($url, true);
     }
 
     /**

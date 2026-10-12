@@ -39,6 +39,22 @@ final class FakeElementorApi implements ElementorApi
     public int $activeKitId = 0;
 
     /**
+     * What activeBreakpoints() answers: the breakpoints manager's names, as
+     * Elementor's defaults give them.
+     *
+     * @var list<string>|null
+     */
+    public ?array $activeBreakpoints = ['mobile', 'tablet'];
+
+    /**
+     * What fontFamilies() answers: the registry the shared case table's font
+     * row gives the site.
+     *
+     * @var list<string>|null
+     */
+    public ?array $fontFamilies = ['Manrope', 'Inter', 'Lora', 'Roboto', 'Source Sans 3'];
+
+    /**
      * Post id => Elementor document stand-in.
      *
      * @var array<int, object>
@@ -75,6 +91,30 @@ final class FakeElementorApi implements ElementorApi
      * @var (\Closure(array<mixed>): ?array<mixed>)|null
      */
     public ?\Closure $kses = null;
+
+    /**
+     * What regeneratePostCss() answers once it has run: the CSS meta status
+     * ("file", "inline" or "empty") and the file path Elementor writes the
+     * stylesheet to. The default is a page with no stylesheet to write. Null
+     * is "cannot be had".
+     *
+     * @var array{status: string, path: string}|null
+     */
+    public ?array $regenerated = ['status' => 'empty', 'path' => ''];
+
+    /**
+     * Runs inside regeneratePostCss(), before it answers: writes the
+     * stylesheet, fires the hooks a regeneration's writes fire, or throws.
+     *
+     * @var (\Closure(int): void)|null
+     */
+    public ?\Closure $onRegenerate = null;
+
+    /** What proActive() answers: Elementor Pro's version constant is defined. */
+    public bool $pro = false;
+
+    /** What elementCacheKey() answers. */
+    public string $elementCacheKey = '_elementor_element_cache';
 
     /**
      * Every call: [method, arguments].
@@ -124,6 +164,26 @@ final class FakeElementorApi implements ElementorApi
         $this->calls[] = ['activeKitId', []];
 
         return $this->loaded ? $this->activeKitId : 0;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function activeBreakpoints(): ?array
+    {
+        $this->calls[] = ['activeBreakpoints', []];
+
+        return $this->loaded ? $this->activeBreakpoints : null;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function fontFamilies(): ?array
+    {
+        $this->calls[] = ['fontFamilies', []];
+
+        return $this->loaded ? $this->fontFamilies : null;
     }
 
     /**
@@ -219,6 +279,45 @@ final class FakeElementorApi implements ElementorApi
         $this->calls[] = ['deletePostCss', [$postId]];
 
         return $this->loaded && $postId > 0;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * Answers $regenerated when loaded and the post id is positive, after
+     * running $onRegenerate; the call is recorded either way.
+     */
+    public function regeneratePostCss(int $postId): ?array
+    {
+        $this->calls[] = ['regeneratePostCss', [$postId]];
+        if (!$this->loaded || $postId < 1) {
+            return null;
+        }
+        if ($this->onRegenerate !== null) {
+            ($this->onRegenerate)($postId);
+        }
+
+        return $this->regenerated;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function proActive(): bool
+    {
+        $this->calls[] = ['proActive', []];
+
+        return $this->pro;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function elementCacheKey(): string
+    {
+        $this->calls[] = ['elementCacheKey', []];
+
+        return $this->elementCacheKey;
     }
 
     /**

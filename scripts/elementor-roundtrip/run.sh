@@ -28,11 +28,13 @@
 # a requested version or layout is not one the check knows; a download fails or does
 # not match its sha256; the Playground CLI downloaded a WordPress of its own; a boot
 # exceeds RT_TIMEOUT seconds; a run prints no verdict, a verdict without cases, a
-# verdict for another layout, a verdict that ran no agent case or no refusal, or a
-# verdict that is not OK; or no version ran.
+# verdict for another layout, a verdict that ran no agent case or no refusal, a
+# verdict that ran no designed page, a verdict that ran no render probe or does
+# not say how many were red, an OK that
+# counts a red probe, or a verdict that is not OK; or no version ran.
 #
-# Exit status: 0 every version passed; 1 a version found a defect; 2 the check
-# could not give a verdict (a missing tool, a bad pin, a crash, a timeout).
+# Exit status: 0 every version passed; 1 a version found a defect (a red probe is one);
+# 2 the check could not give a verdict (a missing tool, a bad pin, a crash, a timeout).
 #
 # Test seams (used by scripts/elementor-roundtrip_test.sh only):
 #   RT_NPX              npx to run (default: npx on PATH)
@@ -413,16 +415,28 @@ for v in "${selected[@]}"; do
     cases="$(printf '%s\n' "$summary" | sed -n 's/.* cases=\([0-9][0-9]*\) .*/\1/p')"
     agent="$(printf '%s\n' "$summary" | sed -n 's/.* agent=\([0-9][0-9]*\) .*/\1/p')"
     refused="$(printf '%s\n' "$summary" | sed -n 's/.* refused=\([0-9][0-9]*\) .*/\1/p')"
+    # The designed pages the agent's create path made and undid (a containers site), or refused for want of
+    # containers (a sections site): a boot that ran none looked at nothing the designed pages rely on.
+    designed="$(printf '%s\n' "$summary" | sed -n 's/.* designed=\([0-9][0-9]*\) .*/\1/p')"
+    # The render probes: how many ran, and how many of those were red. " probes=" cannot match
+    # inside " probes_failed=", so the two reads are independent.
+    probes="$(printf '%s\n' "$summary" | sed -n 's/.* probes=\([0-9][0-9]*\) .*/\1/p')"
+    probes_failed="$(printf '%s\n' "$summary" | sed -n 's/.* probes_failed=\([0-9][0-9]*\) .*/\1/p')"
     layout_ok=0
     case "$summary" in *" layout=$layout "*) layout_ok=1 ;; esac
+    # An OK needs probes that ran and none red: a boot that probed nothing proved no render fact,
+    # and a summary that counts a red probe contradicts an OK whatever the result line says.
     if [ "$rc" -eq 0 ] && [ "$ok_lines" -eq 1 ] && [ "$fail_lines" -eq 0 ] && [ "$layout_ok" -eq 1 ] \
-      && [ -n "$cases" ] && [ "$cases" -gt 0 ] && [ -n "$agent" ] && [ "$agent" -gt 0 ] && [ -n "$refused" ] && [ "$refused" -gt 0 ]; then
+      && [ -n "$cases" ] && [ "$cases" -gt 0 ] && [ -n "$agent" ] && [ "$agent" -gt 0 ] && [ -n "$refused" ] && [ "$refused" -gt 0 ] \
+      && [ -n "$designed" ] && [ "$designed" -gt 0 ] \
+      && [ -n "$probes" ] && [ "$probes" -gt 0 ] && [ -n "$probes_failed" ] && [ "$probes_failed" -eq 0 ]; then
       echo "elementor-roundtrip: Elementor $v ($layout) OK in ${wall}s ($summary)"
     elif [ "$rc" -eq 1 ] && [ "$fail_lines" -eq 1 ] && [ "$ok_lines" -eq 0 ]; then
-      echo "elementor-roundtrip: Elementor $v ($layout) FAILED in ${wall}s" >&2
+      # A red probe is a defect found, the same as any other red check: exit 1, not a missing verdict.
+      echo "elementor-roundtrip: Elementor $v ($layout) FAILED in ${wall}s (probes='${probes}', probes_failed='${probes_failed}')" >&2
       bad=1
     else
-      echo "elementor-roundtrip: Elementor $v ($layout) gave no usable verdict (exit $rc, ${ok_lines} OK line(s), ${fail_lines} FAIL line(s), layout ok=${layout_ok}, cases='${cases}', agent='${agent}', refused='${refused}')" >&2
+      echo "elementor-roundtrip: Elementor $v ($layout) gave no usable verdict (exit $rc, ${ok_lines} OK line(s), ${fail_lines} FAIL line(s), layout ok=${layout_ok}, cases='${cases}', agent='${agent}', refused='${refused}', designed='${designed}', probes='${probes}', probes_failed='${probes_failed}')" >&2
       broken=1
     fi
   done

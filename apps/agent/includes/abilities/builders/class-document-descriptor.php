@@ -26,10 +26,16 @@ if (!defined('ABSPATH')) {
  *                restore, never fingerprinted.
  * - flagKeys     meta keys that mark the post as built with the builder.
  *
- * Immutable. Each list holds distinct non-empty strings.
+ * Immutable. Each list holds distinct non-empty strings. A restore puts every
+ * key but a derived one back byte for byte, so a derived key is never one of
+ * the document's keys (an exact key, a flag key or a key under a prefix) and
+ * never core's page template key (PAGE_TEMPLATE_KEY).
  */
 final class DocumentDescriptor
 {
+    /** Core's page template meta key; a restore always puts it back. */
+    public const PAGE_TEMPLATE_KEY = '_wp_page_template';
+
     /** @var list<string> */
     public readonly array $exactKeys;
 
@@ -47,7 +53,7 @@ final class DocumentDescriptor
      * @param array<string> $prefixes    Meta key prefixes of the document.
      * @param array<string> $derivedKeys Meta keys of derived caches.
      * @param array<string> $flagKeys    Meta keys that mark the builder's posts.
-     * @throws \InvalidArgumentException When a list holds an empty, repeated or non-string key.
+     * @throws \InvalidArgumentException When a list holds an empty, repeated or non-string key, or a derived key is one a restore puts back.
      */
     public function __construct(array $exactKeys, array $prefixes = [], array $derivedKeys = [], array $flagKeys = [])
     {
@@ -55,6 +61,28 @@ final class DocumentDescriptor
         $this->prefixes    = self::keys($prefixes);
         $this->derivedKeys = self::keys($derivedKeys);
         $this->flagKeys    = self::keys($flagKeys);
+        foreach ($this->derivedKeys as $key) {
+            if ($key === self::PAGE_TEMPLATE_KEY || in_array($key, $this->exactKeys, true) || in_array($key, $this->flagKeys, true) || $this->underPrefix($key)) {
+                throw new \InvalidArgumentException('a derived key must not be a key a restore puts back');
+            }
+        }
+    }
+
+    /**
+     * Whether $key starts with one of the document's prefixes, byte for byte.
+     *
+     * @param string $key Meta key.
+     * @return bool
+     */
+    private function underPrefix(string $key): bool
+    {
+        foreach ($this->prefixes as $prefix) {
+            if (str_starts_with($key, $prefix)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

@@ -467,17 +467,17 @@ func TestElementorPreviewDigestIsPHPs(t *testing.T) {
 func TestPageCardFacts_Builder(t *testing.T) {
 	media := []pageMediaFact{{ID: 5, URL: "https://example.com/a.png", Filename: "a.png", Mime: "image/png", Width: 10, Height: 20, ModifiedGMT: "2026-10-01 10:00:00"}}
 	el := &PageCardBuilder{Builder: "elementor", Format: "classic", Version: "3.35.9", Layout: "containers"}
-	if b, err := pageCardFactsJSON(nil, nil); err != nil || b != nil {
+	if b, err := pageCardFactsJSON(nil, nil, nil, ""); err != nil || b != nil {
 		t.Fatalf("no images, no builder: %s %v", b, err)
 	}
-	b, err := pageCardFactsJSON(media, nil)
+	b, err := pageCardFactsJSON(media, nil, nil, "")
 	if err != nil || string(b) != `{"kind":"page_create","media":[{"id":5,"filename":"a.png","mime":"image/png","width":10,"height":20}]}` {
 		t.Fatalf("block-editor card: %s %v", b, err)
 	}
 	if _, ok := ReadPageCardBuilder(b); ok {
 		t.Fatal("a block-editor card named a builder")
 	}
-	b, err = pageCardFactsJSON(nil, el)
+	b, err = pageCardFactsJSON(nil, el, nil, "")
 	if err != nil || string(b) != `{"kind":"page_create","builder":{"builder":"elementor","format":"classic","version":"3.35.9","layout":"containers"}}` {
 		t.Fatalf("builder card: %s %v", b, err)
 	}
@@ -487,7 +487,7 @@ func TestPageCardFacts_Builder(t *testing.T) {
 	if _, ok := ReadPageCardFacts(b); ok {
 		t.Fatal("a card without images gave images")
 	}
-	b, _ = pageCardFactsJSON(media, el)
+	b, _ = pageCardFactsJSON(media, el, nil, "")
 	// As jsonb gives it back: members reordered, spaces added.
 	stored := `{"kind": "page_create", "builder": {"format": "classic", "layout": "containers", "builder": "elementor", "version": "3.35.9"}, "media": [{"id": 5, "mime": "image/png", "width": 10, "height": 20, "filename": "a.png"}]}`
 	for _, s := range []string{string(b), stored} {

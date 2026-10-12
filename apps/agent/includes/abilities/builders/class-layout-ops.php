@@ -107,9 +107,10 @@ final class LayoutOps
      * @param IdSeed                      $ids        Node ids for this request.
      * @param array<mixed>                $mediaById  Media facts by attachment id, for new images.
      * @param bool                        $containers Whether the site has Elementor containers on.
+     * @param ElementorSectionCompiler|null $design   The compiler of the page's design, when the edit carries one: new sections, patterns and groups compile in its look.
      * @return array{tree?: array<mixed>, changes?: list<array<string, mixed>>, touched?: list<string>, new_count?: int, code?: string, detail?: string, op_index?: int|null}
      */
-    public static function apply(array $tree, array $ops, IdSeed $ids, array $mediaById, bool $containers): array
+    public static function apply(array $tree, array $ops, IdSeed $ids, array $mediaById, bool $containers, ?ElementorSectionCompiler $design = null): array
     {
         $pageIds = [];
         if (!self::walkIds($tree, 1, $pageIds)) {
@@ -131,7 +132,7 @@ final class LayoutOps
         $made    = 0;
         foreach (array_values($ops) as $i => $op) {
             $r = is_array($op)
-                ? self::one($tree, $op, $i, $facts, $ids, $mediaById, $containers)
+                ? self::one($tree, $op, $i, $facts, $ids, $mediaById, $containers, $design)
                 : self::refuse('bad_input', 'operations[' . $i . ']: not an operation', $i);
             if (!isset($r['tree'])) {
                 return $r;
@@ -170,12 +171,12 @@ final class LayoutOps
      * @param bool                               $containers The site's layout for top-level nodes.
      * @return array<string, mixed> tree, change, touched and made; or a refusal.
      */
-    private static function one(array $tree, array $op, int $i, array $facts, IdSeed $ids, array $media, bool $containers): array
+    private static function one(array $tree, array $op, int $i, array $facts, IdSeed $ids, array $media, bool $containers, ?ElementorSectionCompiler $design = null): array
     {
         $at   = 'operations[' . $i . ']';
         $name = $op['op'] ?? null;
         if ($name === 'insert') {
-            return self::insert($tree, $op, $i, $facts, $ids, $media, $containers);
+            return self::insert($tree, $op, $i, $facts, $ids, $media, $containers, $design);
         }
         if (!in_array($name, ['set_text', 'replace', 'remove', 'move'], true)) {
             return self::refuse('bad_input', $at . '.op: not an operation', $i);
@@ -208,7 +209,10 @@ final class LayoutOps
                 if (!in_array($field, (array) ($fact['editable'] ?? []), true)) {
                     return self::refuse('node_not_editable', 'field_not_offered', $i);
                 }
-                $set = ElementorClassicMapper::setText(self::nodeAt($tree, $path), (string) $fact['kind'], $field, $text, $at);
+                // The page as the call has left it so far decides whether a link may lead to a section of it.
+                $set = $fact['kind'] === 'pattern'
+                    ? ElementorClassicMapper::setPatternText(self::nodeAt($tree, $path), $field, $text, $at)
+                    : ElementorClassicMapper::setText(self::nodeAt($tree, $path), (string) $fact['kind'], $field, $text, $at, ElementorClassicMapper::holdsDesignedSection($tree));
                 if (!isset($set['node'])) {
                     return self::refuse($set['code'] ?? 'node_not_editable', $set['detail'] ?? $at, $i);
                 }
@@ -221,7 +225,7 @@ final class LayoutOps
                 if (!isset($place['context'], $place['containers'])) {
                     return $place;
                 }
-                $mapped = self::mapped($op, $ids, $media, $place['context'], $place['containers'], $at, $i);
+                $mapped = self::mapped($op, $ids, $media, $place['context'], $place['containers'], $at, $i, $design, $parentPath === [] ? null : self::nodeAt($tree, [$parentPath[0]]));
                 if (!isset($mapped['tree'])) {
                     return $mapped;
                 }
@@ -255,7 +259,7 @@ final class LayoutOps
      * @param bool                               $containers The site's layout for top-level nodes.
      * @return array<string, mixed>
      */
-    private static function insert(array $tree, array $op, int $i, array $facts, IdSeed $ids, array $media, bool $containers): array
+    private static function insert(array $tree, array $op, int $i, array $facts, IdSeed $ids, array $media, bool $containers, ?ElementorSectionCompiler $design = null): array
     {
         $at  = 'operations[' . $i . ']';
         $how = null;
@@ -292,7 +296,7 @@ final class LayoutOps
         if (!isset($place['context'], $place['containers'])) {
             return $place;
         }
-        $mapped = self::mapped($op, $ids, $media, $place['context'], $place['containers'], $at, $i);
+        $mapped = self::mapped($op, $ids, $media, $place['context'], $place['containers'], $at, $i, $design, $parentPath === [] ? null : self::nodeAt($tree, [$parentPath[0]]));
         if (!isset($mapped['tree'])) {
             return $mapped;
         }
@@ -362,12 +366,16 @@ final class LayoutOps
      * @param bool                                         $containers Whether the new nodes are containers.
      * @param string                                       $at    The operation's position.
      * @param int                                          $i     Its index.
+     * @param ElementorSectionCompiler|null                $design The compiler of the page's design, if the edit carries one.
+     * @param array<mixed>|null                            $top   The top-level element the new nodes go into or under, if any.
      * @return array<string, mixed>
      */
-    private static function mapped(array $op, IdSeed $ids, array $media, string $context, bool $containers, string $at, int $i): array
+    private static function mapped(array $op, IdSeed $ids, array $media, string $context, bool $containers, string $at, int $i, ?ElementorSectionCompiler $design = null, ?array $top = null): array
     {
         $outline = is_array($op['outline'] ?? null) ? $op['outline'] : [];
-        $mapped  = ElementorClassicMapper::mapFragment($outline, $ids, $media, $containers, $context, $at . '.');
+        // New nodes inside a designed page's section take that section's tone.
+        $host   = $design !== null && $top !== null ? ['tone' => $design->toneOf(is_array($top['settings'] ?? null) ? $top['settings'] : []), 'align' => 'start'] : null;
+        $mapped = ElementorClassicMapper::mapFragment($outline, $ids, $media, $containers, $context, $at . '.', ElementorClassicMapper::STOCK_BREAKPOINTS, $design, $host);
         if (!isset($mapped['tree'])) {
             return self::refuse($mapped['code'] ?? 'bad_input', $mapped['detail'] ?? $at . '.outline', $i);
         }
@@ -395,11 +403,11 @@ final class LayoutOps
         $parent = self::nodeAt($tree, $parentPath);
         $elType = $parent['elType'] ?? null;
         $kind   = self::kindOf($parent, $facts);
-        if (in_array($kind, self::HOLDS_COLUMNS, true)) {
+        if (self::holdsColumns($parent, $facts)) {
             return self::refuse(self::CODE_PLACEMENT, $at . ': a ' . ($kind === 'section' ? 'section' : 'row of columns') . ' holds only its columns; put new nodes into one of its columns, or beside it', $i);
         }
-        if ($elType === 'container' && in_array($kind, ['group', 'column'], true)) {
-            $top = count($parentPath) === 1 && $kind === 'group';
+        if ($elType === 'container' && in_array($kind, ['group', 'column', 'section'], true)) {
+            $top = count($parentPath) === 1 && in_array($kind, ['group', 'section'], true);
 
             return ['context' => $top ? ElementorClassicMapper::CONTEXT_GROUP : ElementorClassicMapper::CONTEXT_INNER, 'containers' => true];
         }
@@ -426,7 +434,7 @@ final class LayoutOps
             return self::SLOT_TOP;
         }
 
-        return in_array(self::kindOf(self::nodeAt($tree, $parentPath), $facts), self::HOLDS_COLUMNS, true) ? self::SLOT_COLUMN : self::SLOT_CONTENT;
+        return self::holdsColumns(self::nodeAt($tree, $parentPath), $facts) ? self::SLOT_COLUMN : self::SLOT_CONTENT;
     }
 
     /**
@@ -451,7 +459,7 @@ final class LayoutOps
         }
         $parent     = self::nodeAt($tree, $to);
         $parentType = $parent['elType'] ?? null;
-        if (in_array(self::kindOf($parent, $facts), self::HOLDS_COLUMNS, true)) {
+        if (self::holdsColumns($parent, $facts)) {
             return $parentType === 'section' ? $elType === 'column' : $elType === 'container';
         }
         if (!in_array($elType, self::LAYOUT_TYPES, true)) {
@@ -657,6 +665,22 @@ final class LayoutOps
         }
 
         return $ids;
+    }
+
+    /**
+     * Whether a stored element holds only columns: a legacy section and a row
+     * of columns do. A designed section is a container that holds content, as
+     * a group does.
+     *
+     * @param array<mixed>                        $node  Stored element.
+     * @param array<string, array<string, mixed>> $facts Projection nodes by ref.
+     * @return bool
+     */
+    private static function holdsColumns(array $node, array $facts): bool
+    {
+        $kind = self::kindOf($node, $facts);
+
+        return in_array($kind, self::HOLDS_COLUMNS, true) && !(($node['elType'] ?? null) === 'container' && $kind === 'section');
     }
 
     /**

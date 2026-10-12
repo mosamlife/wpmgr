@@ -93,7 +93,12 @@ const V1_TYPES = new Set(["heading", "paragraph", "list"]);
 
 export type PageMediaRow = NonNullable<AbilityRequest["page_media"]>[number];
 
-/** Image ids of an input in document order, distinct, depth first. */
+/**
+ * Attachment ids of an input in document order, distinct, depth first: the
+ * image blocks of a page and, on a designed page, its section backgrounds,
+ * logos and testimonial pictures. Every object that names an attachment is
+ * one the control plane needs a fact for.
+ */
 export function imageIdsOf(inputJson: string): number[] {
   const ids: number[] = [];
   const walk = (node: unknown): void => {
@@ -101,7 +106,7 @@ export function imageIdsOf(inputJson: string): number[] {
       node.forEach(walk);
     } else if (node !== null && typeof node === "object") {
       const o = node as Record<string, unknown>;
-      if (o.type === "image" && typeof o.attachment_id === "number" && !ids.includes(o.attachment_id)) {
+      if (typeof o.attachment_id === "number" && !ids.includes(o.attachment_id)) {
         ids.push(o.attachment_id);
       }
       for (const v of Object.values(o)) walk(v);

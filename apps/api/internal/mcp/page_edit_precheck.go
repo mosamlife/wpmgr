@@ -246,6 +246,10 @@ func verifyPageEditPrecheck(resp agentcmd.AbilityRunResponse, entrySum string, i
 	if cd.Decode(&changes) != nil || cd.More() || len(changes) != len(f.ops) {
 		return checkedPageEdit{}, false
 	}
+	mapping, ok := newPageEditMapping(resp, f, elements, changes, proj)
+	if !ok {
+		return checkedPageEdit{}, false
+	}
 	// No new node takes a ref the input names: those are nodes of the page
 	// before the call.
 	made := map[string]bool{}
@@ -259,13 +263,16 @@ func verifyPageEditPrecheck(resp agentcmd.AbilityRunResponse, entrySum string, i
 		if !pageEditChangeMatches(changes[i], op, elements, made, takenOff) {
 			return checkedPageEdit{}, false
 		}
+		if mapping.isDesigned && !pageEditPlacementMatches(changes[i], op, elements) {
+			return checkedPageEdit{}, false
+		}
 		// New nodes a later operation took off are not on the page to check.
 		if (op.Op == "insert" || op.Op == "replace") && elements[changes[i].NewRefs[0]] != nil {
-			if !pageEditNewNodesMatch(changes[i].NewRefs, op, tree, elements, proj) {
+			if !pageEditNewNodesMatch(changes[i].NewRefs, op, tree, elements, proj, mapping, i) {
 				return checkedPageEdit{}, false
 			}
 		}
-		if op.Op == "set_text" && !pageEditTextLanded(op, proj) {
+		if op.Op == "set_text" && (!pageEditTextLanded(op, proj) || !pageEditSetTextBytes(op, elements, mapping.isDesigned)) {
 			return checkedPageEdit{}, false
 		}
 	}
@@ -385,9 +392,9 @@ func pageEditTextLanded(op pageEditOp, proj *projection) bool {
 
 // pageEditNewNodesMatch: the elements an insert or replace made are exactly
 // the elements under its new top-level nodes, which stand together in one
-// parent, and they project as the operation's outline does when mapped for
-// that place.
-func pageEditNewNodesMatch(newRefs []string, op pageEditOp, tree any, elements map[string]*treeElement, proj *projection) bool {
+// parent. On a designed page their canonical bytes are the mapped outline's;
+// a plain page's nodes are compared by projection.
+func pageEditNewNodesMatch(newRefs []string, op pageEditOp, tree any, elements map[string]*treeElement, proj *projection, mapping *pageEditMapping, opIndex int) bool {
 	set := make(map[string]bool, len(newRefs))
 	for _, r := range newRefs {
 		set[r] = true
@@ -433,13 +440,16 @@ func pageEditNewNodesMatch(newRefs []string, op pageEditOp, tree any, elements m
 	if !ok {
 		return false
 	}
-	want, ok := elementorFragment(op.Outline, place, containers)
-	if !ok {
-		return false
-	}
 	got := make(phpList, 0, len(tops))
 	for _, t := range tops {
 		got = append(got, t.node)
+	}
+	if mapping.designed != nil {
+		return mapping.matches(op, opIndex, place, containers, got, tree, tops[0].path)
+	}
+	want, ok := elementorFragment(op.Outline, place, containers)
+	if !ok {
+		return false
 	}
 	return sameProjection(got, want, parentKind)
 }
@@ -480,9 +490,9 @@ func pageEditPlace(tree any, parent string, elements map[string]*treeElement, pr
 	}
 	kind := proj.nodes[at].kind
 	switch {
-	case p.elType == "container" && (kind == "group" || kind == "column"):
+	case p.elType == "container" && (kind == "group" || kind == "column" || kind == "section"):
 		ctx := fragmentInner
-		if len(p.path) == 1 && kind == "group" {
+		if len(p.path) == 1 && (kind == "group" || kind == "section") {
 			ctx = fragmentGroup
 		}
 		return ctx, true, kind, true

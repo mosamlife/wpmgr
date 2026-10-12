@@ -53,6 +53,29 @@ interface ElementorApi
     public function activeKitId(): int;
 
     /**
+     * The names Elementor's breakpoints manager keys its active breakpoints
+     * by (mobile, tablet, laptop, ...), in the order it reports them. Null
+     * when the manager cannot be asked or does not answer with a list.
+     *
+     * The manager answers from the active kit's saved list when there is
+     * one and from Elementor's defaults when there is none, so this is the
+     * answer to use when the kit has never saved its list.
+     *
+     * @return list<string>|null
+     */
+    public function activeBreakpoints(): ?array;
+
+    /**
+     * The family names in Elementor's font registry, as Elementor keys them:
+     * its own fonts and those other plugins register through Elementor. Null
+     * when Elementor is not loaded, the registry cannot be read or is not a
+     * map, or it holds more families than the runtime reads.
+     *
+     * @return list<string>|null
+     */
+    public function fontFamilies(): ?array;
+
+    /**
      * Elementor's document for a post, read fresh (not from Elementor's
      * per-request cache). Null when there is none.
      *
@@ -117,4 +140,42 @@ interface ElementorApi
      * @return bool
      */
     public function deletePostCss(int $postId): bool;
+
+    /**
+     * Make a post's CSS again through a new post CSS object of Elementor's
+     * own, which writes the stylesheet file and the post's CSS meta, then ask
+     * that object what it left.
+     *
+     * "status" is the status of the post's CSS meta: "file" when the
+     * stylesheet is served as a file, "inline" when it is printed in the page,
+     * "empty" when the page has nothing to style. "path" is the file Elementor
+     * writes a "file" stylesheet to, or "" when it cannot be had.
+     *
+     * Null when the answer cannot be had: the post id is not positive,
+     * Elementor is not loaded or has no post CSS class, Elementor throws, or
+     * its object does not report a status.
+     *
+     * @param int $postId Post id.
+     * @return array{status: string, path: string}|null
+     */
+    public function regeneratePostCss(int $postId): ?array;
+
+    /**
+     * Whether Elementor Pro is active on this request: its version constant
+     * is defined. Asked of the constant alone, so it is the same answer the
+     * site's builder facts give as pro_active.
+     *
+     * @return bool
+     */
+    public function proActive(): bool;
+
+    /**
+     * The post meta key under which Elementor keeps a post's cached element
+     * output: Elementor's own document constant when this request has one
+     * that names a cache, else ElementorDocument::KEY_ELEMENT_CACHE. Always a
+     * key, never empty.
+     *
+     * @return string
+     */
+    public function elementCacheKey(): string;
 }

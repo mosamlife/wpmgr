@@ -372,7 +372,7 @@ func TestPageCreateLayoutFixtureReplays(t *testing.T) {
 		if len(checked.media) != len(c.MediaIDs) {
 			t.Fatalf("%s: %d facts verified, want %d", c.Name, len(checked.media), len(c.MediaIDs))
 		}
-		card, err := pageCardFactsJSON(checked.media, checked.builder)
+		card, err := pageCardFactsJSON(checked.media, checked.builder, nil, "")
 		if err != nil {
 			t.Fatal(err)
 		}

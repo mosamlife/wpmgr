@@ -261,6 +261,14 @@ check-elementor-roundtrip: ## Save and render the agent's Elementor trees, and r
 check-elementor-roundtrip-test: ## Run the Elementor round trip's regression suite
 	scripts/elementor-roundtrip_test.sh
 
+# Plants a defect in a render probe's tree, once for each plant in
+# scripts/elementor-roundtrip/plants.txt and on every pinned Elementor, and
+# requires every run to come back red because of the plant (CI runs it after the
+# round trip). RT_VERSIONS narrows a run to some pins.
+.PHONY: check-elementor-roundtrip-plants
+check-elementor-roundtrip-plants: ## Plant defects in the Elementor render probes and require every one to turn the run red
+	scripts/elementor-roundtrip/plants.sh
+
 # The load-balancer url-map. Twice in one day a route shipped, deployed and was
 # unreachable because the API mounted it and the LB did not route it — POST
 # /mcp, then very nearly the OAuth discovery documents. Both answer 200
@@ -719,6 +727,10 @@ agent-plugincheck: agent-zip-wporg ## AUTHORITATIVE: `wp plugin check` on real W
 	# Always tests the wp.org-identity build ($(AGENT_WPORG_SLUG)) so the META
 	# trademark/updater/readme checks key off the right slug. Exits non-zero on any ERROR row.
 	cd tools/plugincheck && PLUGIN_ZIP="$(PWD)/$(AGENT_WPORG_ZIP)" ./run.sh
+
+.PHONY: agent-plugincheck-name-test
+agent-plugincheck-name-test: ## Run the regression suite for the plugin check's per-checkout compose project name (no Docker)
+	scripts/plugincheck-project-name_test.sh
 
 .PHONY: agent-e2e-objectcache
 agent-e2e-objectcache: agent-zip-wporg ## Run the object-cache E2E harness (Docker; Redis + WordPress + phpredis)

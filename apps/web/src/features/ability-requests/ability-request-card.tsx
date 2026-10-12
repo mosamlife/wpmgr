@@ -8,8 +8,10 @@ import { useDeepLinkFocus } from "@/features/ai-requests/use-deep-link";
 import { UNDO_WINDOW_OVER_LINE, ranAutomatically } from "@/features/ai-trust/ai-trust-copy";
 
 import { AutoApprovalRows, RanAutomaticallyChip, WaitingBecauseRow } from "./auto-approval";
+import { DesignedSections } from "./designed-sections";
+import { DesignSummary } from "./design-summary";
 import { LayoutPreview } from "./layout-preview";
-import { layoutSummary, parsePageBuilder, parsePagePreview } from "./outline-model";
+import { layoutSummary, parseDesignedPagePreview, parsePageBuilder, parsePagePreview } from "./outline-model";
 import { PageEditCard } from "./page-edit-card";
 import { alsoCoversLine, isPageEdit } from "./page-edit-model";
 import { isRestWrite } from "./rest-card-model";
@@ -95,10 +97,18 @@ function PageCreateCard({
   const auto = ranAutomatically(request.approval);
   const elementor = isElementorRequest(request);
   // Null unless every node, every image fact and the page's builder can be
-  // shown in full, and the builder is the editor the request recorded; a null
-  // preview also keeps Approve off.
+  // shown in full, and the builder is the editor the request recorded.
   const parsed = parsePagePreview(request.input_json, request.page_media, request.page_builder);
   const preview = parsed !== null && (parsed.builder !== null) === elementor ? parsed : null;
+  // A designed page (outline version 3) has its own reader, and the two refuse
+  // each other's input. The card shows its design and its sections in full.
+  const designed =
+    preview === null && elementor
+      ? parseDesignedPagePreview(request.input_json, request.page_media, request.page_builder)
+      : null;
+  // What the card can show in full, and the only thing Approve keys on: a
+  // request neither reader accepts shows nothing and cannot be approved.
+  const shown = preview ?? designed;
   const builder = elementor ? parsePageBuilder(request.page_builder) : null;
   const layout = preview ? layoutSummary(preview.outline) : null;
   const outlineLabelId = useId();
@@ -179,17 +189,27 @@ function PageCreateCard({
             labelledBy={outlineLabelId}
             altFromLibrary={preview.builder !== null}
           />
+        ) : designed ? (
+          <div className="space-y-3">
+            <DesignSummary title={designed.title} design={designed.design} pageFrame={designed.pageFrame} />
+            <DesignedSections
+              preview={designed}
+              siteHost={request.site_host}
+              siteUrl={siteUrl}
+              labelledBy={outlineLabelId}
+            />
+          </div>
         ) : (
           <p className="text-sm text-muted-foreground">{NOT_SHOWABLE_COPY}</p>
         )}
       </div>
 
-      {preview?.builder ? (
+      {shown?.builder ? (
         <dl
           data-testid="builder-rows"
           className="grid grid-cols-[minmax(7rem,auto)_1fr] gap-x-4 gap-y-1 text-sm"
         >
-          {elementorCardRows(preview.builder).map((row) => (
+          {elementorCardRows(shown.builder, { designed: designed !== null }).map((row) => (
             <Fragment key={row.label}>
               <dt className="text-muted-foreground">{row.label}</dt>
               <dd className="min-w-0 space-y-0.5 break-words text-foreground">
@@ -250,7 +270,7 @@ function PageCreateCard({
           </Button>
           <Button
             type="button"
-            disabled={busy || preview === null || request.presented_digest === undefined}
+            disabled={busy || shown === null || request.presented_digest === undefined}
             onClick={() => onApprove(request)}
           >
             {approvePending ? "Approving…" : "Approve"}

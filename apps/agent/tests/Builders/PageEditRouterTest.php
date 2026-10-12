@@ -29,6 +29,7 @@ use WPMgr\Agent\Abilities\Builders\BuilderDocumentFingerprint;
 use WPMgr\Agent\Abilities\Builders\BuilderDocumentSnapshot;
 use WPMgr\Agent\Abilities\Builders\DraftEligibility;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
+use WPMgr\Agent\Abilities\Builders\ElementorClassicMapper;
 use WPMgr\Agent\Abilities\Builders\ElementorDocument;
 use WPMgr\Agent\Abilities\OwnAbilities;
 use WPMgr\Agent\Commands\AbilityRunCommand;
@@ -50,6 +51,9 @@ final class PageEditRouterTest extends TestCase
     private const FIXTURE = __DIR__ . '/../fixtures/ability-run/elementor-classic-containers.json';
 
     private const PREVIEW_FIXTURE = __DIR__ . '/../fixtures/ability-run/page-edit-preview.json';
+
+    /** The designed pages the page-edit golden records; one of them is the draft of the designed test. */
+    private const DESIGNED_FIXTURE = __DIR__ . '/../fixtures/ability-run/page-edit-designed-previews.json';
 
     /** The draft WPMgr created. */
     private const DRAFT = 120;
@@ -391,6 +395,53 @@ final class PageEditRouterTest extends TestCase
             $doc['preview_digest'],
             'the preview digest recomputes from the fixture alone'
         );
+    }
+
+    /**
+     * The answer for a designed page names the breakpoints its tree is a
+     * function of, beside the preview and outside the digests, as page-create's
+     * does; the answer for a plain page carries no fact.
+     */
+    public function test_the_answer_for_a_designed_page_carries_the_active_breakpoints(): void
+    {
+        $this->enable();
+        $plain = $this->callP($this->p('precheck', $this->input(), [self::DRAFT]));
+        $this->assertTrue($plain['ok'] ?? null, (string) json_encode($plain));
+        $this->assertArrayNotHasKey('builder_facts', $plain, 'a plain page\'s answer is as it was');
+
+        $golden = json_decode((string) file_get_contents(self::DESIGNED_FIXTURE), true, 512, JSON_THROW_ON_ERROR);
+        $tree   = $golden['pages']['small']['before_tree'];
+        $this->rows->delete($this->rows->postmeta, ['post_id' => self::DRAFT, 'meta_key' => ElementorDocument::KEY_DATA]);
+        $this->rows->insert($this->rows->postmeta, ['post_id' => self::DRAFT, 'meta_key' => ElementorDocument::KEY_DATA, 'meta_value' => (string) json_encode($tree)]);
+        $this->api->widgetTypes       = array_values(array_unique(array_merge($this->api->widgetTypes, ['heading', 'text-editor', 'button', 'image', 'divider', 'spacer', 'icon-box', 'counter', 'testimonial', 'accordion', 'nested-accordion', 'icon-list', 'icon', 'image-box', 'tabs'])));
+        $this->api->version           = '3.35.9';
+        $this->api->activeBreakpoints = ['mobile'];
+
+        $ref = null;
+        foreach (ElementorClassicMapper::project($tree)->nodes() as $node) {
+            if ($node['kind'] === 'buttons') {
+                $ref = $node['ref'];
+                break;
+            }
+        }
+        $this->assertIsString($ref, 'the designed page has a button');
+        $input = (string) json_encode([
+            'post_id'          => self::DRAFT,
+            'base_fingerprint' => BuilderDocumentFingerprint::ofPost(self::DRAFT, ElementorDocument::DESCRIPTOR_KEYS),
+            'operations'       => [['op' => 'set_text', 'ref' => $ref, 'field' => 'text', 'text' => 'See the plans']],
+        ]);
+        $pre = $this->callP($this->p('precheck', $input, [self::DRAFT]));
+        $this->assertTrue($pre['ok'] ?? null, (string) json_encode($pre));
+        $this->assertSame(['active_breakpoints' => ['mobile']], $pre['builder_facts'] ?? null, 'the breakpoints the site has active');
+        $this->assertSame(
+            hash('sha256', (string) json_encode([hash('sha256', $this->entry()), hash('sha256', $input), $pre['base_fingerprint'], $pre['preview_digest']])),
+            $pre['precheck_digest'],
+            'the facts are not in the precheck digest'
+        );
+
+        $this->api->activeBreakpoints = [];
+        $none = $this->callP($this->p('precheck', $input, [self::DRAFT]));
+        $this->assertSame(['active_breakpoints' => []], $none['builder_facts'] ?? null, 'none active is a list, not a missing fact');
     }
 
     // ---- helpers -----------------------------------------------------------

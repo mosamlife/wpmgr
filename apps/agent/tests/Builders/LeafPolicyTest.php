@@ -18,6 +18,8 @@ namespace WPMgr\Agent\Tests\Builders;
 
 use Brain\Monkey;
 use Brain\Monkey\Functions;
+use PHPUnit\Framework\Attributes\DataProvider;
+use WPMgr\Agent\Abilities\Builders\ElementorClassicMapper;
 use WPMgr\Agent\Abilities\Builders\LeafPolicy;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
@@ -48,6 +50,43 @@ final class LeafPolicyTest extends TestCase
         'image'       => ['image.id' => 'int', 'image.url' => 'url'],
         'spacer'      => ['space.unit' => 'enum', 'space.size' => 'int', 'space.sizes' => 'enum'],
     ];
+
+    /** Every pin, as the refusal of an unknown one lists them. */
+    private const PIN_OUTSIDE = 'a pin outside html, text, url, int, enum, slider, dimensions, gaps, colour, switcher, image, link, shadow-offset, repeater-id, counter-number';
+
+    /** A pin carrying an argument its pin does not take. */
+    private const PIN_ARGUMENT = 'a pin argument its pin does not take';
+
+    private const NOT_SLIDER = 'not a slider value: exactly unit and size, unit one of px, em, vh, %, size a decimal number written as a string';
+
+    private const NOT_DIMENSIONS = 'not a dimensions value: exactly unit "px", top, right, bottom and left as decimal numbers of 0 or more written as strings, and isLinked true or false';
+
+    private const NOT_GAPS = 'not a gaps value: exactly column and row as decimal numbers of 0 or more written as strings, isLinked true or false, and unit "px"';
+
+    private const NOT_COLOUR = 'not a colour: an upper-case #RRGGBB, transparent, or rgba(r,g,b,a) with no spaces';
+
+    private const NOT_SWITCHER = 'not a switcher value: "yes" or ""';
+
+    private const NOT_IMAGE = 'not an image value: exactly id and url, or id, url and source "library", with id a whole number above 0 written as a string';
+
+    private const NOT_LINK = 'not a link value: exactly url, is_external and nofollow, with is_external and nofollow each "on" or ""';
+
+    private const NOT_LISTED = 'not one of the values this key takes';
+
+    /** A WPMgr section container's label, written out here rather than read from the class. */
+    private const SECTION = "WPMgr \u{00B7} Section";
+
+    /** A WPMgr pattern container's label. */
+    private const FEATURES = "WPMgr \u{00B7} Features";
+
+    /** The refusal of an anchor anywhere but the top of a section container's settings. */
+    private const OFF_SECTION = 'key _element_id is written only at the top of a WPMgr section container\'s settings';
+
+    /** The refusal of an anchor value outside the SP-09 form. */
+    private const NOT_ANCHOR = 'not an anchor of a lower-case letter, then 1 to 39 lower-case letters, digits or hyphens';
+
+    /** The refusal of a label outside the WPMgr form. */
+    private const NOT_LABEL = 'not a label of the WPMgr prefix, then a name of letters and digits with single spaces or hyphens between words, up to 40 characters';
 
     /** Tags the sanitiser double keeps. */
     private const KEPT_TAGS = ['p', 'h2', 'h3', 'h4', 'ul', 'ol', 'li', 'blockquote', 'cite', 'table', 'tr', 'td', 'b', 'img', 'a'];
@@ -223,7 +262,7 @@ final class LeafPolicyTest extends TestCase
     {
         $tree = [$this->widget('h1', 'heading', ['title' => 'Hi', 'title_color' => '#fff'])];
         $this->assertSame(
-            ['code' => 'adapter_key_not_allowed', 'detail' => 'elements[0].settings: a settings key not on the adapter allowlist'],
+            ['code' => 'style_key_not_allowed', 'detail' => 'elements[0].settings: a settings key not on the adapter allowlist'],
             LeafPolicy::checkTree($tree, self::KEYS, self::RULES)
         );
 
@@ -288,7 +327,6 @@ final class LeafPolicyTest extends TestCase
             'motion_fx prefix'     => [['text' => 'Go', 'motion_fx_motion_fx_scrolling' => 'yes'], 'motion_fx_*'],
             'sticky prefix'        => [['text' => 'Go', 'sticky_on' => ['desktop']], 'sticky*'],
             'case folded'          => [['text' => 'Go', 'Custom_CSS' => 'a{}'], 'custom_css'],
-            '_element_id'          => [['text' => 'Go', '_element_id' => 'x'], '_element_id'],
         ];
         $faulty                  = self::KEYS;
         $faulty['button']        = $faulty['button'] + ['__dynamic__.text' => 'text', 'motion_fx_motion_fx_scrolling' => 'enum', '_element_id' => 'enum'];
@@ -330,6 +368,168 @@ final class LeafPolicyTest extends TestCase
                 ['code' => 'adapter_key_not_allowed', 'detail' => 'elements[0].elements[0]: element type ' . $entry . ' is never written'],
                 LeafPolicy::checkTree($tree, $faulty, self::RULES),
                 $type
+            );
+        }
+    }
+
+    public function test_anchor_written_only_on_a_wpmgr_section_container(): void
+    {
+        $keys = $this->ruledKeys();
+        $page = [
+            $this->container('s1', ['_title' => self::SECTION, '_element_id' => 'pricing', 'content_width' => 'boxed'], [
+                $this->container('p1', ['_title' => self::FEATURES], [$this->widget('h1', 'heading', ['title' => 'Plans'])]),
+            ]),
+            // The anchor may come before the label.
+            $this->container('s2', ['_element_id' => 'ab', '_title' => self::SECTION], []),
+            $this->container('s3', ['_title' => self::SECTION, '_element_id' => 'a' . str_repeat('-9', 19) . 'z'], []),
+            $this->container('s4', ['_title' => self::SECTION], []),
+        ];
+        $this->assertNull(LeafPolicy::checkTree($page, $keys, self::RULES), 'anchors on WPMgr section containers');
+        $this->assertSame(
+            ['code' => 'style_key_not_allowed', 'detail' => 'elements[0].settings: a settings key not on the adapter allowlist'],
+            LeafPolicy::checkTree([$page[0]], self::KEYS, self::RULES),
+            'the adapter allowlist still has to name the key'
+        );
+
+        $deepButton = [$this->container('s1', ['_title' => self::SECTION], [
+            $this->container('c1', [], [$this->widget('b1', 'button', ['text' => 'Go', '_element_id' => 'pricing'])]),
+        ])];
+        $offSection = [
+            'nested container with the section label' => [
+                [$this->container('s1', ['_title' => self::SECTION], [$this->container('s2', ['_element_id' => 'pricing', '_title' => self::SECTION], [])])],
+                'elements[0].elements[0].settings',
+            ],
+            'top-level container with no label'       => [[$this->container('s1', ['_element_id' => 'pricing'], [])], 'elements[0].settings'],
+            'top-level container with a pattern label' => [[$this->container('s1', ['_element_id' => 'pricing', '_title' => self::FEATURES], [])], 'elements[0].settings'],
+            'widget inside a section'                 => [$deepButton, 'elements[0].elements[0].elements[0].settings'],
+            'top-level widget'                        => [[$this->widget('b1', 'button', ['_element_id' => 'pricing'])], 'elements[0].settings'],
+            'inside a settings object'                => [[$this->container('s1', ['_title' => self::SECTION, 'width' => ['unit' => '%', '_element_id' => 'pricing']], [])], 'elements[0].settings'],
+        ];
+        foreach ($offSection as $name => [$tree, $at]) {
+            $this->assertSame(
+                ['code' => 'adapter_key_not_allowed', 'detail' => $at . ': ' . self::OFF_SECTION],
+                LeafPolicy::checkTree($tree, $keys, self::RULES),
+                $name
+            );
+        }
+        $this->assertSame(
+            ['code' => 'adapter_key_not_allowed', 'detail' => 'elements[0].settings: key _element_id is written only in lower case'],
+            LeafPolicy::checkTree([$this->container('s1', ['_title' => self::SECTION, '_Element_ID' => 'pricing'], [])], $this->ruledKeys(['container' => ['_Element_ID' => 'text']]), self::RULES)
+        );
+
+        $badValues = [
+            'upper case'       => 'Pricing',
+            'one character'    => 'a',
+            '41 characters'    => 'a' . str_repeat('-9', 19) . 'za',
+            'digit first'      => '1pricing',
+            'hyphen first'     => '-pricing',
+            'trailing newline' => "pricing\n",
+            'space'            => 'pri cing',
+            'underscore'       => 'pricing_2',
+            'empty'            => '',
+            'not ASCII'        => "pr\u{00ED}cing",
+            'integer'          => 5,
+            'list'             => ['pricing'],
+            'empty list'       => [],
+        ];
+        foreach ($badValues as $name => $value) {
+            $this->assertSame(
+                ['code' => 'leaf_unsafe', 'detail' => 'elements[0].settings._element_id: ' . self::NOT_ANCHOR],
+                LeafPolicy::checkTree([$this->container('s1', ['_title' => self::SECTION, '_element_id' => $value], [])], $keys, self::RULES),
+                $name
+            );
+        }
+        foreach (['content', 'main', 'primary', 'page', 'masthead', 'colophon', 'site-header', 'site-footer', 'wpadminbar'] as $reserved) {
+            $this->assertSame(
+                ['code' => 'leaf_unsafe', 'detail' => 'elements[0].settings._element_id: an anchor the theme or WordPress already uses'],
+                LeafPolicy::checkTree([$this->container('s1', ['_title' => self::SECTION, '_element_id' => $reserved], [])], $keys, self::RULES),
+                $reserved
+            );
+        }
+        $this->assertSame(
+            ['code' => 'leaf_unsafe', 'detail' => 'elements[2].settings._element_id: an anchor an earlier element already uses'],
+            LeafPolicy::checkTree([
+                $this->container('s1', ['_title' => self::SECTION, '_element_id' => 'pricing'], []),
+                $this->container('s2', ['_title' => self::SECTION, '_element_id' => 'faq'], []),
+                $this->container('s3', ['_title' => self::SECTION, '_element_id' => 'pricing'], []),
+            ], $keys, self::RULES)
+        );
+    }
+
+    public function test_label_written_only_with_the_wpmgr_prefix(): void
+    {
+        $keys   = $this->ruledKeys();
+        $labels = [self::SECTION, self::FEATURES, "WPMgr \u{00B7} Pricing card", "WPMgr \u{00B7} Call-to-action", "WPMgr \u{00B7} FAQ 2", "WPMgr \u{00B7} " . str_repeat('ab', 20)];
+        foreach ($labels as $label) {
+            $tree = [$this->container('s1', ['_title' => $label], [$this->container('c1', ['_title' => $label], [])])];
+            $this->assertNull(LeafPolicy::checkTree($tree, $keys, self::RULES), $label);
+        }
+
+        $badValues = [
+            'no prefix'           => 'Section',
+            'prefix lower case'   => "wpmgr \u{00B7} Section",
+            'prefix upper case'   => "WPMGR \u{00B7} Section",
+            'hyphen for the dot'  => 'WPMgr - Section',
+            'no spaces'           => "WPMgr\u{00B7}Section",
+            'no-break space'      => "WPMgr\u{00A0}\u{00B7} Section",
+            'character reference' => 'WPMgr &#183; Section',
+            'prefix only'         => "WPMgr \u{00B7} ",
+            'two spaces'          => "WPMgr \u{00B7}  Section",
+            'trailing space'      => "WPMgr \u{00B7} Section ",
+            'trailing newline'    => "WPMgr \u{00B7} Section\n",
+            'digit first'         => "WPMgr \u{00B7} 2nd",
+            'markup'              => "WPMgr \u{00B7} <b>Section</b>",
+            'quote'               => "WPMgr \u{00B7} Section\"",
+            '41 characters'       => "WPMgr \u{00B7} " . str_repeat('ab', 20) . 'c',
+            'integer'             => 7,
+            'list'                => [self::SECTION],
+            'empty list'          => [],
+        ];
+        foreach ($badValues as $name => $value) {
+            $this->assertSame(
+                ['code' => 'leaf_unsafe', 'detail' => 'elements[0].settings._title: ' . self::NOT_LABEL],
+                LeafPolicy::checkTree([$this->container('s1', ['_title' => $value], [])], $keys, self::RULES),
+                $name
+            );
+        }
+
+        $offContainer = 'key _title is written only at the top of a container\'s settings';
+        $this->assertSame(
+            ['code' => 'adapter_key_not_allowed', 'detail' => 'elements[0].elements[0].settings: ' . $offContainer],
+            LeafPolicy::checkTree([$this->container('s1', [], [$this->widget('b1', 'button', ['text' => 'Go', '_title' => self::SECTION])])], $keys, self::RULES),
+            'a widget'
+        );
+        $this->assertSame(
+            ['code' => 'adapter_key_not_allowed', 'detail' => 'elements[0].settings: ' . $offContainer],
+            LeafPolicy::checkTree([$this->container('s1', ['width' => ['unit' => '%', '_title' => self::SECTION]], [])], $keys, self::RULES),
+            'inside a settings object'
+        );
+        $this->assertSame(
+            ['code' => 'adapter_key_not_allowed', 'detail' => 'elements[0].settings: key _title is written only in lower case'],
+            LeafPolicy::checkTree([$this->container('s1', ['_TITLE' => self::SECTION], [])], $this->ruledKeys(['container' => ['_TITLE' => 'text']]), self::RULES)
+        );
+    }
+
+    public function test_globals_stays_denied(): void
+    {
+        $this->assertContains('__globals__', LeafPolicy::DENIED_KEYS);
+
+        // An allowlist that names a binding is overruled, even on a section container that is otherwise accepted.
+        $keys    = $this->ruledKeys();
+        $section = ['_title' => self::SECTION, '_element_id' => 'pricing'];
+        $this->assertNull(LeafPolicy::checkTree([$this->container('s1', $section, [])], $keys, self::RULES));
+        $cases = [
+            'binding'     => [[$this->container('s1', $section + ['__globals__' => ['background_color' => 'globals/colors?id=primary']], [])], 'elements[0].settings'],
+            'empty map'   => [[$this->container('s1', $section + ['__globals__' => []], [])], 'elements[0].settings'],
+            'case folded' => [[$this->container('s1', $section + ['__GLOBALS__' => ['background_color' => 'globals/colors?id=primary']], [])], 'elements[0].settings'],
+            'nested'      => [[$this->container('s1', $section + ['width' => ['unit' => '%', '__globals__' => []]], [])], 'elements[0].settings'],
+            'on a widget' => [[$this->container('s1', $section, [$this->widget('h1', 'heading', ['title' => 'Hi', '__globals__' => ['title_color' => 'globals/colors?id=primary']])])], 'elements[0].elements[0].settings'],
+        ];
+        foreach ($cases as $name => [$tree, $at]) {
+            $this->assertSame(
+                ['code' => 'adapter_key_not_allowed', 'detail' => $at . ': key __globals__ is never written'],
+                LeafPolicy::checkTree($tree, $keys, self::RULES),
+                $name
             );
         }
     }
@@ -420,9 +620,141 @@ final class LeafPolicyTest extends TestCase
         $odd = self::KEYS;
         $odd['heading']['title'] = 'raw';
         $this->assertSame(
-            ['code' => 'adapter_key_not_allowed', 'detail' => 'elements[0].settings.title: a pin outside html, text, url, int, enum'],
+            ['code' => 'adapter_key_not_allowed', 'detail' => 'elements[0].settings.title: ' . self::PIN_OUTSIDE],
             LeafPolicy::checkTree([$this->widget('h1', 'heading', ['title' => 'Hi'])], $odd, self::RULES)
         );
+    }
+
+    /**
+     * A shape pin takes the whole value at its path in exactly the measured
+     * form and nothing near it: numbers as decimal strings, flags as booleans,
+     * no missing, extra or misspelt member, no unit or colour form beyond the
+     * measured ones, and an enum with a list takes only a listed value.
+     *
+     * @param string                       $pin     Pin of the path "k".
+     * @param mixed                        $value   Value at "k".
+     * @param array{0: string, 1: string}|null $refusal Code and reason, or null when the value is taken.
+     */
+    #[DataProvider('shapeRows')]
+    public function test_shape_pins_take_only_the_measured_forms(string $pin, $value, ?array $refusal): void
+    {
+        $got = LeafPolicy::checkTree([$this->container('c1', ['k' => $value], [])], ['container' => ['k' => $pin]], self::RULES);
+
+        $this->assertSame($refusal === null ? null : ['code' => $refusal[0], 'detail' => 'elements[0].settings.k: ' . $refusal[1]], $got);
+    }
+
+    /**
+     * Taken rows are values of the frozen recipe trees; refused rows are the
+     * near misses Elementor would store and then ignore or misrender.
+     *
+     * @return array<string, array{0: string, 1: mixed, 2: array{0: string, 1: string}|null}>
+     */
+    public static function shapeRows(): array
+    {
+        $u   = 'leaf_unsafe';
+        $k   = 'adapter_key_not_allowed';
+        $pad = ['unit' => 'px', 'top' => '96', 'right' => '24', 'bottom' => '96', 'left' => '24', 'isLinked' => false];
+        $gap = ['column' => '32', 'row' => '32', 'isLinked' => true, 'unit' => 'px'];
+        $img = ['url' => 'https://example.com/wp-content/uploads/2026/10/van-1024x640.png', 'id' => '5', 'source' => 'library'];
+        $lnk = ['url' => 'https://example.com/partner', 'is_external' => 'on', 'nofollow' => 'on'];
+
+        return [
+            'slider px'                       => ['slider', ['unit' => 'px', 'size' => '15'], null],
+            'slider em negative'              => ['slider', ['unit' => 'em', 'size' => '-0.02'], null],
+            'slider em fraction'              => ['slider', ['unit' => 'em', 'size' => '1.05'], null],
+            'slider vh'                       => ['slider', ['unit' => 'vh', 'size' => '80'], null],
+            'slider vh zero'                  => ['slider', ['unit' => 'vh', 'size' => '0'], null],
+            'slider percent'                  => ['slider', ['unit' => '%', 'size' => '55'], null],
+            'slider opacity fraction'         => ['slider', ['unit' => 'px', 'size' => '0.45'], null],
+            'slider members in any order'     => ['slider', ['size' => '18', 'unit' => 'px'], null],
+            'slider narrowed unit'            => ['slider:vh', ['unit' => 'vh', 'size' => '80'], null],
+            'slider two units'                => ['slider:px|em', ['unit' => 'em', 'size' => '1'], null],
+            'slider integer size'             => ['slider', ['unit' => 'px', 'size' => 24], [$u, self::NOT_SLIDER]],
+            'slider float size'               => ['slider', ['unit' => 'px', 'size' => 0.45], [$u, self::NOT_SLIDER]],
+            'slider with sizes'               => ['slider', ['unit' => 'px', 'size' => '24', 'sizes' => []], [$u, self::NOT_SLIDER]],
+            'slider without size'             => ['slider', ['unit' => 'px'], [$u, self::NOT_SLIDER]],
+            'slider rem'                      => ['slider', ['unit' => 'rem', 'size' => '1'], [$u, self::NOT_SLIDER]],
+            'slider custom unit'              => ['slider', ['unit' => 'custom', 'size' => 'clamp(1rem, 2vw, 3rem)'], [$u, self::NOT_SLIDER]],
+            'slider size with unit'           => ['slider', ['unit' => 'px', 'size' => '24px'], [$u, self::NOT_SLIDER]],
+            'slider size newline'             => ['slider', ['unit' => 'px', 'size' => "24\n"], [$u, self::NOT_SLIDER]],
+            'slider size exponent'            => ['slider', ['unit' => 'px', 'size' => '1e3'], [$u, self::NOT_SLIDER]],
+            'slider size empty'               => ['slider', ['unit' => 'px', 'size' => ''], [$u, self::NOT_SLIDER]],
+            'slider size leading zero'        => ['slider', ['unit' => 'px', 'size' => '024'], [$u, self::NOT_SLIDER]],
+            'slider as a string'              => ['slider', '24', [$u, self::NOT_SLIDER]],
+            'slider empty'                    => ['slider', [], [$u, self::NOT_SLIDER]],
+            'slider unit outside the pin'     => ['slider:vh', ['unit' => 'px', 'size' => '80'], [$u, 'not a slider value: exactly unit and size, unit one of vh, size a decimal number written as a string']],
+            'dimensions padding'              => ['dimensions', $pad, null],
+            'dimensions linked fraction'      => ['dimensions', ['unit' => 'px', 'top' => '1.5', 'right' => '1.5', 'bottom' => '1.5', 'left' => '1.5', 'isLinked' => true], null],
+            'dimensions number member'        => ['dimensions', ['top' => 96] + $pad, [$u, self::NOT_DIMENSIONS]],
+            'dimensions flag as empty string' => ['dimensions', ['isLinked' => ''] + $pad, [$u, self::NOT_DIMENSIONS]],
+            'dimensions flag as "1"'          => ['dimensions', ['isLinked' => '1'] + $pad, [$u, self::NOT_DIMENSIONS]],
+            'dimensions em'                   => ['dimensions', ['unit' => 'em'] + $pad, [$u, self::NOT_DIMENSIONS]],
+            'dimensions without left'         => ['dimensions', array_diff_key($pad, ['left' => true]), [$u, self::NOT_DIMENSIONS]],
+            'dimensions misspelt member'      => ['dimensions', ['Top' => '96'] + array_diff_key($pad, ['top' => true]), [$u, self::NOT_DIMENSIONS]],
+            'dimensions extra member'         => ['dimensions', $pad + ['sizes' => []], [$u, self::NOT_DIMENSIONS]],
+            'dimensions negative member'      => ['dimensions', ['left' => '-8'] + $pad, [$u, self::NOT_DIMENSIONS]],
+            'gaps'                            => ['gaps', $gap, null],
+            'gaps as a slider'                => ['gaps', ['unit' => 'px', 'size' => '32'], [$u, self::NOT_GAPS]],
+            'gaps number member'              => ['gaps', ['column' => 32] + $gap, [$u, self::NOT_GAPS]],
+            'gaps flag as a string'           => ['gaps', ['isLinked' => 'yes'] + $gap, [$u, self::NOT_GAPS]],
+            'colour hex'                      => ['colour', '#F6F5F2', null],
+            'colour white'                    => ['colour', '#FFFFFF', null],
+            'colour transparent'              => ['colour', 'transparent', null],
+            'colour rgba'                     => ['colour', 'rgba(246,245,242,0.8)', null],
+            'colour rgba opaque'              => ['colour', 'rgba(21,23,28,1)', null],
+            'colour lower-case hex'           => ['colour', '#f6f5f2', [$u, self::NOT_COLOUR]],
+            'colour short hex'                => ['colour', '#FFF', [$u, self::NOT_COLOUR]],
+            'colour hex with alpha'           => ['colour', '#F6F5F2FF', [$u, self::NOT_COLOUR]],
+            'colour rgba with spaces'         => ['colour', 'rgba(246, 245, 242, 0.8)', [$u, self::NOT_COLOUR]],
+            'colour channel above 255'        => ['colour', 'rgba(256,0,0,1)', [$u, self::NOT_COLOUR]],
+            'colour alpha above 1'            => ['colour', 'rgba(1,2,3,1.5)', [$u, self::NOT_COLOUR]],
+            'colour name'                     => ['colour', 'red', [$u, self::NOT_COLOUR]],
+            'colour variable'                 => ['colour', 'var(--e-global-color-primary)', [$u, self::NOT_COLOUR]],
+            'colour with a declaration'       => ['colour', '#F6F5F2;background:url(x)', [$u, self::NOT_COLOUR]],
+            'colour newline'                  => ['colour', "#F6F5F2\n", [$u, self::NOT_COLOUR]],
+            'colour empty list'               => ['colour', [], [$u, self::NOT_COLOUR]],
+            'switcher on'                     => ['switcher', 'yes', null],
+            'switcher off'                    => ['switcher', '', null],
+            'switcher "on"'                   => ['switcher', 'on', [$u, self::NOT_SWITCHER]],
+            'switcher boolean'                => ['switcher', true, [$u, self::NOT_SWITCHER]],
+            'switcher upper case'             => ['switcher', 'YES', [$u, self::NOT_SWITCHER]],
+            'image background'                => ['image', ['id' => '5', 'url' => 'https://example.com/wp-content/uploads/2026/10/hero-1600x900.jpg'], null],
+            'image library'                   => ['image', $img, null],
+            'image number id'                 => ['image', ['id' => 5] + $img, [$u, self::NOT_IMAGE]],
+            'image zero id'                   => ['image', ['id' => '0'] + $img, [$u, self::NOT_IMAGE]],
+            'image leading zero id'           => ['image', ['id' => '05'] + $img, [$u, self::NOT_IMAGE]],
+            'image other source'              => ['image', ['source' => 'url'] + $img, [$u, self::NOT_IMAGE]],
+            'image without id'                => ['image', array_diff_key($img, ['id' => true]), [$u, self::NOT_IMAGE]],
+            'image extra member'              => ['image', $img + ['alt' => 'Van'], [$u, self::NOT_IMAGE]],
+            'image script address'            => ['image', ['url' => 'javascript:alert(1)'] + $img, [$u, 'not an address the page-create image rule accepts']],
+            'image path address'              => ['image', ['url' => '/wp-content/uploads/van.png'] + $img, [$u, 'not an address the page-create image rule accepts']],
+            'link external nofollow'          => ['link', $lnk, null],
+            'link section anchor'             => ['link', ['url' => '#signup', 'is_external' => '', 'nofollow' => ''], null],
+            'link site path'                  => ['link', ['url' => '/about', 'is_external' => '', 'nofollow' => ''], null],
+            'link without nofollow'           => ['link', array_diff_key($lnk, ['nofollow' => true]), [$u, self::NOT_LINK]],
+            'link nofollow "yes"'             => ['link', ['nofollow' => 'yes'] + $lnk, [$u, self::NOT_LINK]],
+            'link boolean flag'               => ['link', ['is_external' => true] + $lnk, [$u, self::NOT_LINK]],
+            'link custom attributes'          => ['link', $lnk + ['custom_attributes' => 'data-x|1'], [$k, 'key custom_attributes is never written']],
+            'link dynamic member'             => ['link', $lnk + ['__dynamic__' => ['url' => 'x']], [$k, 'key __dynamic__ is never written']],
+            'link script address'             => ['link', ['url' => 'javascript:alert(1)'] + $lnk, [$u, 'not an address the page-create link rule accepts']],
+            'link anchor in upper case'       => ['link', ['url' => '#Signup'] + $lnk, [$u, 'not an address the page-create link rule accepts']],
+            'link with a user'                => ['link', ['url' => 'https://user@example.com/'] + $lnk, [$u, 'not an address the page-create link rule accepts']],
+            'enum listed'                     => ['enum:boxed|full', 'full', null],
+            'enum only empty'                 => ['enum:', '', null],
+            'enum with a space'               => ['enum:center center', 'center center', null],
+            'enum number string'              => ['enum:400|600|700', '600', null],
+            'enum other case'                 => ['enum:boxed|full', 'Boxed', [$u, self::NOT_LISTED]],
+            'enum unlisted'                   => ['enum:boxed|full', 'wide', [$u, self::NOT_LISTED]],
+            'enum boolean'                    => ['enum:boxed|full', true, [$u, self::NOT_LISTED]],
+            'enum empty list'                 => ['enum:boxed|full', [], [$u, self::NOT_LISTED]],
+            'enum empty string unlisted'      => ['enum:boxed|full', '', [$u, self::NOT_LISTED]],
+            'argument on colour'              => ['colour:upper', '#FFFFFF', [$k, self::PIN_ARGUMENT]],
+            'argument on switcher'            => ['switcher:yes', 'yes', [$k, self::PIN_ARGUMENT]],
+            'argument on int'                 => ['int:5', 5, [$k, self::PIN_ARGUMENT]],
+            'slider unit not measured'        => ['slider:rem', ['unit' => 'rem', 'size' => '1'], [$k, self::PIN_ARGUMENT]],
+            'slider empty unit list'          => ['slider:', ['unit' => 'px', 'size' => '1'], [$k, self::PIN_ARGUMENT]],
+            'unknown pin with argument'       => ['raw:x', 'a', [$k, self::PIN_OUTSIDE]],
+        ];
     }
 
     public function test_clean_tree_passes(): void
@@ -452,6 +784,208 @@ final class LeafPolicyTest extends TestCase
             LeafPolicy::checkTree($tree, self::KEYS, ['refuse_braces' => 'yes', 'forbidden' => []])
         );
         $this->assertSame('the adapter leaf rules are malformed', LeafPolicy::storedProblem('Hi', ['refuse_braces' => false, 'forbidden' => ['']]));
+    }
+
+    public function testUnknownStyleKeyRefused(): void
+    {
+        $unlisted = ['code' => 'style_key_not_allowed', 'detail' => 'elements[0].settings: a settings key not on the adapter allowlist'];
+        $keys     = ElementorClassicMapper::ALLOWED_KEYS;
+
+        // A style key E1 did not prove, a misspelt one, and unproven members of a proven group.
+        foreach (['title_shadow' => '#15171C', 'title_colour' => '#15171C', 'typography_font_style' => 'italic', 'typography_word_spacing' => ['unit' => 'em', 'size' => '1']] as $key => $value) {
+            $tree = [$this->widget('h1', 'heading', ['title' => 'Hi', 'typography_typography' => 'custom', $key => $value])];
+            $this->assertSame($unlisted, LeafPolicy::checkTree($tree, $keys, self::RULES), $key);
+        }
+        // A key listed for another element is not listed for this one.
+        $this->assertSame($unlisted, LeafPolicy::checkTree([$this->widget('t1', 'text-editor', ['editor' => '<p>Hi</p>', 'title_color' => '#15171C'])], $keys, self::RULES));
+        // An unproven group stays unlisted: a box shadow on a section.
+        $section = ['_title' => self::SECTION, 'box_shadow_box_shadow_type' => 'yes'];
+        $this->assertSame($unlisted, LeafPolicy::checkTree([$this->container('s1', $section, [])], $keys, self::RULES));
+        // A path inside a value that a dotted allowlist does not list.
+        $this->assertSame($unlisted, LeafPolicy::checkTree([$this->container('s1', ['width' => ['unit' => '%', 'size' => '5', 'sizes' => [], 'extra' => 'x']], [])], $keys, self::RULES));
+        // The refusal never echoes the key read from the tree.
+        $tree = [$this->widget('h1', 'heading', ['title' => 'Hi', 'zz_unique_key' => '#15171C'])];
+        $this->assertStringNotContainsString('zz_unique_key', (string) (LeafPolicy::checkTree($tree, $keys, self::RULES)['detail'] ?? ''));
+
+        // Every listed style key in its measured form is accepted.
+        $tree = [$this->widget('h1', 'heading', [
+            'title'                     => 'Hi',
+            'title_color'               => '#15171C',
+            'typography_typography'     => 'custom',
+            'typography_font_family'    => 'Work Sans',
+            'typography_font_size'      => ['unit' => 'px', 'size' => '49'],
+            'typography_font_weight'    => '700',
+            'typography_line_height'    => ['unit' => 'em', 'size' => '1.05'],
+            'typography_letter_spacing' => ['unit' => 'em', 'size' => '-0.02'],
+        ])];
+        $this->assertNull(LeafPolicy::checkTree($tree, $keys, self::RULES));
+
+        // A listed font family key holds a family name, which reaches the post CSS.
+        foreach (['Work Sans", serif; color: red', '', str_repeat('A', 61), "Work\nSans", "Work Sans\n"] as $bad) {
+            $tree = [$this->widget('h1', 'heading', ['title' => 'Hi', 'typography_typography' => 'custom', 'typography_font_family' => $bad])];
+            $this->assertSame(
+                ['code' => 'leaf_unsafe', 'detail' => 'elements[0].settings.typography_font_family: not a font family name of 1 to 60 letters, digits and spaces'],
+                LeafPolicy::checkTree($tree, $keys, self::RULES),
+                var_export($bad, true)
+            );
+        }
+    }
+
+    public function testLaptopSuffixRefused(): void
+    {
+        // Even an allowlist that lists the override and its control cannot have it written.
+        foreach (LeafPolicy::BREAKPOINTS_NOT_WRITTEN as $breakpoint) {
+            $key  = 'typography_font_size_' . $breakpoint;
+            $keys = $this->ruledKeys(['heading' => ['typography_typography' => 'enum:custom', 'typography_font_size' => 'slider:px', $key => 'slider:px']]);
+            $tree = [$this->widget('h1', 'heading', ['title' => 'Hi', 'typography_typography' => 'custom', $key => ['unit' => 'px', 'size' => '40']])];
+            $this->assertSame(
+                ['code' => 'style_key_not_allowed', 'detail' => 'elements[0].settings: a ' . $breakpoint . ' override, which WPMgr does not write; it writes only tablet and mobile overrides'],
+                LeafPolicy::checkTree($tree, $keys, self::RULES),
+                $breakpoint
+            );
+        }
+        $tree = [$this->container('s1', ['_title' => self::SECTION, 'padding_laptop' => ['unit' => 'px', 'top' => '9', 'right' => '9', 'bottom' => '9', 'left' => '9', 'isLinked' => true]], [])];
+        $this->assertSame('style_key_not_allowed', LeafPolicy::checkTree($tree, ElementorClassicMapper::ALLOWED_KEYS, self::RULES)['code'] ?? null);
+
+        // A key that only looks like an override, or names no control, is judged by the allowlist alone.
+        $keys = $this->ruledKeys(['heading' => ['_laptop' => 'text', 'laptop' => 'text']]);
+        $this->assertNull(LeafPolicy::checkTree([$this->widget('h1', 'heading', ['title' => 'Hi', '_laptop' => 'x', 'laptop' => 'y'])], $keys, self::RULES));
+    }
+
+    public function test_overrides_follow_the_sites_active_breakpoints(): void
+    {
+        $sides   = static fn (string $v): array => ['unit' => 'px', 'top' => $v, 'right' => '24', 'bottom' => $v, 'left' => '24', 'isLinked' => false];
+        $section = ['_title' => self::SECTION, 'padding' => $sides('96'), 'padding_tablet' => $sides('72'), 'padding_mobile' => $sides('56')];
+        $tree    = [$this->container('s1', $section, [])];
+        $check   = static fn (?array $active): ?array => LeafPolicy::checkTree($tree, LeafPolicy::forBreakpoints(ElementorClassicMapper::ALLOWED_KEYS, $active), self::RULES);
+
+        $this->assertNull($check(['mobile', 'tablet']));
+        $this->assertNull($check(['mobile', 'tablet', 'laptop']));
+        $tablet = ['code' => 'style_key_not_allowed', 'detail' => 'elements[0].settings: a tablet override WPMgr writes only for a control it lists as responsive on this element, on a site with the tablet breakpoint active'];
+        $mobile = ['code' => 'style_key_not_allowed', 'detail' => 'elements[0].settings: a mobile override WPMgr writes only for a control it lists as responsive on this element, on a site with the mobile breakpoint active'];
+        $this->assertSame($tablet, $check(['mobile']));
+        $this->assertSame($tablet, $check(['laptop']));
+        $this->assertSame($tablet, $check([]));
+        $this->assertSame($tablet, $check(null), 'no known breakpoint means none is active');
+        $this->assertSame($mobile, $check(['tablet']));
+
+        // Without the overrides the same section passes on a site with none active.
+        unset($section['padding_tablet'], $section['padding_mobile']);
+        $this->assertNull(LeafPolicy::checkTree([$this->container('s1', $section, [])], LeafPolicy::forBreakpoints(ElementorClassicMapper::ALLOWED_KEYS, null), self::RULES));
+
+        // forBreakpoints() drops exactly the overrides of inactive breakpoints, dotted paths too.
+        $site = LeafPolicy::forBreakpoints(['container' => ['flex_gap.size' => 'enum', 'flex_gap_mobile.size' => 'enum', 'padding_tablet' => 'dimensions', 'mobile' => 'text']], ['tablet']);
+        $this->assertSame(['container' => ['flex_gap.size' => 'enum', 'padding_tablet' => 'dimensions', 'mobile' => 'text']], $site);
+
+        // A text editor's size is not proven responsive: its override is refused on every site.
+        $text = ['editor' => '<p>Hi</p>', 'typography_typography' => 'custom', 'typography_font_size' => ['unit' => 'px', 'size' => '16'], 'typography_font_size_mobile' => ['unit' => 'px', 'size' => '15']];
+        $this->assertSame($mobile, LeafPolicy::checkTree([$this->widget('t1', 'text-editor', $text)], LeafPolicy::forBreakpoints(ElementorClassicMapper::ALLOWED_KEYS, ['mobile', 'tablet']), self::RULES));
+
+        // An allowlist that lists an override without its control cannot have it written.
+        $keys = $this->ruledKeys(['heading' => ['title_color_tablet' => 'colour']]);
+        $this->assertSame(
+            ['code' => 'style_key_not_allowed', 'detail' => 'elements[0].settings: a tablet override of a control the allowlist does not list for this element'],
+            LeafPolicy::checkTree([$this->widget('h1', 'heading', ['title' => 'Hi', 'title_color_tablet' => '#15171C'])], $keys, self::RULES)
+        );
+    }
+
+    public function test_group_member_without_its_activator_refused(): void
+    {
+        $keys   = ElementorClassicMapper::ALLOWED_KEYS;
+        $px     = static fn (string $size): array => ['unit' => 'px', 'size' => $size];
+        $sides  = ['unit' => 'px', 'top' => '1.5', 'right' => '1.5', 'bottom' => '1.5', 'left' => '1.5', 'isLinked' => true];
+        $orphan = static fn (string $key, string $group, string $activator, string $on): array => [
+            'code'   => 'group_activator_missing',
+            'detail' => 'elements[0].settings.' . $key . ': a member of the ' . $group . ' group, written only beside ' . $activator . ' set to "' . $on . '"',
+        ];
+        $check  = static fn (array $node, array $allowed): ?array => LeafPolicy::checkTree([$node], $allowed, self::RULES);
+
+        // typography, with a tablet override as a member too.
+        $this->assertSame($orphan('typography_font_size', 'typography', 'typography_typography', 'custom'), $check($this->widget('h1', 'heading', ['title' => 'Hi', 'typography_font_size' => $px('49')]), $keys));
+        $this->assertSame($orphan('typography_font_size_tablet', 'typography', 'typography_typography', 'custom'), $check($this->widget('h1', 'heading', ['title' => 'Hi', 'typography_font_size_tablet' => $px('40')]), $keys));
+        $this->assertNull($check($this->widget('h1', 'heading', ['title' => 'Hi', 'typography_typography' => 'custom', 'typography_font_size' => $px('49'), 'typography_font_size_tablet' => $px('40')]), $keys));
+        // An activator holding another value does not activate its group.
+        $loose = $this->ruledKeys(['heading' => ['typography_typography' => 'text', 'typography_font_size' => 'slider:px']]);
+        foreach (['', 'Custom', 'globals'] as $other) {
+            $this->assertSame($orphan('typography_font_size', 'typography', 'typography_typography', 'custom'), $check($this->widget('h1', 'heading', ['title' => 'Hi', 'typography_typography' => $other, 'typography_font_size' => $px('49')]), $loose), $other);
+        }
+
+        // background on a section, and the overlay, whose own activator the background's does not stand in for.
+        $section = ['_title' => self::SECTION, 'background_color' => '#F6F5F2'];
+        $this->assertSame($orphan('background_color', 'background', 'background_background', 'classic'), $check($this->container('s1', $section, []), $keys));
+        $this->assertNull($check($this->container('s1', ['background_background' => 'classic'] + $section, []), $keys));
+        $overlay = ['_title' => self::SECTION, 'background_background' => 'classic', 'background_overlay_color' => '#15171C', 'background_overlay_opacity' => $px('0.45')];
+        $this->assertSame($orphan('background_overlay_color', 'background_overlay', 'background_overlay_background', 'classic'), $check($this->container('s1', $overlay, []), $keys));
+        $this->assertNull($check($this->container('s1', $overlay + ['background_overlay_background' => 'classic'], []), $keys));
+
+        // border on a button; the radius is its own control and needs no activator.
+        $this->assertSame($orphan('border_width', 'border', 'border_border', 'solid'), $check($this->widget('b1', 'button', ['text' => 'Go', 'border_width' => $sides, 'border_color' => '#0D7A63']), $keys));
+        $this->assertNull($check($this->widget('b1', 'button', ['text' => 'Go', 'border_border' => 'solid', 'border_width' => $sides, 'border_color' => '#0D7A63']), $keys));
+        $this->assertNull($check($this->widget('b1', 'button', ['text' => 'Go', 'border_radius' => ['unit' => 'px', 'top' => '12', 'right' => '12', 'bottom' => '12', 'left' => '12', 'isLinked' => true]]), $keys));
+        // A button's hover background is a group of its own.
+        $this->assertSame($orphan('button_background_hover_color', 'button_background_hover', 'button_background_hover_background', 'classic'), $check($this->widget('b1', 'button', ['text' => 'Go', 'background_background' => 'classic', 'button_background_hover_color' => '#095545']), $keys));
+
+        // box_shadow and a prefixed typography group, through allowlists that list them.
+        $shadow = $this->ruledKeys(['container' => ['box_shadow_box_shadow_type' => 'enum:yes', 'box_shadow_box_shadow' => 'text']]);
+        $this->assertSame($orphan('box_shadow_box_shadow', 'box_shadow', 'box_shadow_box_shadow_type', 'yes'), $check($this->container('c1', ['box_shadow_box_shadow' => 'one'], []), $shadow));
+        $this->assertNull($check($this->container('c1', ['box_shadow_box_shadow_type' => 'yes', 'box_shadow_box_shadow' => 'one'], []), $shadow));
+        $title = $this->ruledKeys(['icon-box' => ['title_typography_typography' => 'enum:custom', 'title_typography_font_size' => 'slider:px']]);
+        $this->assertSame($orphan('title_typography_font_size', 'title_typography', 'title_typography_typography', 'custom'), $check($this->widget('i1', 'icon-box', ['title_typography_font_size' => $px('22')]), $title));
+        $this->assertNull($check($this->widget('i1', 'icon-box', ['title_typography_typography' => 'custom', 'title_typography_font_size' => $px('22')]), $title));
+    }
+
+    public function test_group_of_a_key(): void
+    {
+        $groups = [
+            'typography_font_size'        => 'typography',
+            'typography_font_size_mobile' => 'typography',
+            'title_typography_font_size'  => 'title_typography',
+            'background_color'            => 'background',
+            'background_overlay_opacity'  => 'background_overlay',
+            'button_background_hover_color' => 'button_background_hover',
+            'border_color'                => 'border',
+            'box_shadow_box_shadow'       => 'box_shadow',
+        ];
+        foreach ($groups as $key => $group) {
+            $this->assertSame($group, LeafPolicy::groupOf($key), $key);
+        }
+        $none = [
+            'typography_typography', 'background_background', 'background_overlay_background', 'button_background_hover_background',
+            'border_border', 'box_shadow_box_shadow_type', 'border_radius', 'border_radius_tablet', 'title_color', 'hover_color',
+            'button_text_color', 'typography', 'borderline', 'background', 'padding_mobile',
+        ];
+        foreach ($none as $key) {
+            $this->assertNull(LeafPolicy::groupOf($key), $key);
+        }
+    }
+
+    /**
+     * The test allowlist with the anchor, the label and a binding listed on
+     * types and paths where the policy must still refuse them, so a refusal
+     * proves the policy and not the allowlist.
+     *
+     * @param array<string, array<string, string>> $more Extra paths by type.
+     * @return array<string, array<string, string>>
+     */
+    private function ruledKeys(array $more = []): array
+    {
+        $keys               = self::KEYS;
+        $keys['container'] += [
+            '_element_id'                  => 'text',
+            '_title'                       => 'text',
+            'width._element_id'            => 'text',
+            'width._title'                 => 'text',
+            'width.__globals__'            => 'text',
+            '__globals__.background_color' => 'text',
+            '__GLOBALS__.background_color' => 'text',
+        ];
+        $keys['button']    += ['_element_id' => 'text', '_title' => 'text'];
+        $keys['heading']   += ['__globals__.title_color' => 'text'];
+        foreach ($more as $type => $paths) {
+            $keys[$type] = ($keys[$type] ?? []) + $paths;
+        }
+
+        return $keys;
     }
 
     /**

@@ -11,6 +11,7 @@ on:
     paths:
       - "apps/agent/**"
       - "tools/plugincheck/**"
+      - "scripts/plugincheck-project-name*"
       - "Makefile"
       - ".github/workflows/plugincheck.yml"
   # Manual trigger: build the wp.org-identity submission zip at a specific
@@ -35,6 +36,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # The check runs under a compose project name derived per checkout, so two
+      # runs from two checkouts cannot remove each other's containers. This
+      # suite needs no Docker; it runs first so a broken derivation fails here.
+      - name: Compose project name is unique per checkout
+        run: scripts/plugincheck-project-name_test.sh
 
       # The zip build pulls composer:2 and the check stands up a WordPress,
       # database and wp-cli stack with docker compose: all anonymous Docker Hub

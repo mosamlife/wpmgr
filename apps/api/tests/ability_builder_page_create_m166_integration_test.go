@@ -106,15 +106,15 @@ func m162Landed(t *testing.T, w *e2World) string {
 // moved.
 func m166AssertCopy(t *testing.T, r sqlc.AbilityCatalogue, wantEnabled bool) {
 	t.Helper()
-	m166AssertCopyWithUsage(t, r, wantEnabled, m166Usage)
+	m166AssertCopyWithText(t, r, wantEnabled, m166Description, m166Usage)
 }
 
-// m166AssertCopyWithUsage is m166AssertCopy with the usage a later migration
-// wrote over m166's: on a fresh install, m176's (#890).
-func m166AssertCopyWithUsage(t *testing.T, r sqlc.AbilityCatalogue, wantEnabled bool, wantUsage string) {
+// m166AssertCopyWithText is m166AssertCopy with the description and usage
+// later migrations wrote over m166's: on a fresh install, m177's.
+func m166AssertCopyWithText(t *testing.T, r sqlc.AbilityCatalogue, wantEnabled bool, wantDescription, wantUsage string) {
 	t.Helper()
-	if r.Description != m166Description {
-		t.Fatalf("description = %q, want m166's", r.Description)
+	if r.Description != wantDescription {
+		t.Fatalf("description = %q\nwant:\n%q", r.Description, wantDescription)
 	}
 	if r.Usage == nil || *r.Usage != wantUsage {
 		stored := "(NULL)"
@@ -165,12 +165,12 @@ func TestBuilderPageCreateM166AsAppRole(t *testing.T) {
 	w := newE2World(t, true)
 
 	// 1. A fresh install: every migration, then the boot stamp. The row has
-	// m166's copy and limits, with the usage m176 corrected after it (#890),
-	// its hash is the hash of its new bytes, the signed entry carries
+	// m166's limits, with the description and usage m177 wrote after it, its
+	// hash is the hash of its new bytes, the signed entry carries
 	// builders_enabled, and describe hands the AI the copy and every integer
 	// limit.
 	fresh := m162Row(t, w)
-	m166AssertCopyWithUsage(t, fresh, true, m176Usage)
+	m166AssertCopyWithText(t, fresh, true, m177Description, m177Usage)
 	m162AssertStamped(t, fresh)
 	m166AssertSignedEntryCarriesBuilders(t, fresh)
 	res := cpeCall(t, w.eng, w.bearer, mcp.ToolSiteAbilityDescribe, map[string]any{
@@ -180,7 +180,7 @@ func TestBuilderPageCreateM166AsAppRole(t *testing.T) {
 	if !ok {
 		t.Fatalf("describe has no wpmgr block: %v", res)
 	}
-	if wp["description"] != m166Description || wp["usage"] != m176Usage {
+	if wp["description"] != m177Description || wp["usage"] != m177Usage {
 		t.Fatalf("describe copy: description=%v usage=%v", wp["description"], wp["usage"])
 	}
 	described, ok := wp["limits"].(map[string]any)

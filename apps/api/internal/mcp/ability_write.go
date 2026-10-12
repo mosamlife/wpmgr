@@ -84,7 +84,11 @@ const (
 		agentcmd.MinAgentVersionForPageCreate + " or later. Nothing was asked."
 	msgAbilityLayoutOutdated = "Layout blocks need the WPMgr plugin " + agentcmd.MinAgentVersionForPageLayout +
 		" or later on this site. An outline of headings, paragraphs and lists works now."
-	msgAbilityLayoutInput = "the outline does not follow the page layout rules, so nothing was asked"
+	msgAbilityLayoutInput    = "the outline does not follow the page layout rules, so nothing was asked"
+	msgAbilityDesignNotReady = "the page design is incomplete, so nothing was asked"
+	msgAbilityDesignContrast = "the page design has colours too close to read together, so nothing was asked"
+	msgAbilityDesignValue    = "the page design has a value it may not hold, so nothing was asked"
+	msgAbilityOutlineValue   = "the outline has a member or a value the page grammar does not accept, so nothing was asked"
 )
 
 const reasonAbilityPrecheckRefused refusalReason = "ability_precheck_refused"
@@ -148,7 +152,10 @@ func (s *Service) EnableAbilityWrites(store AbilityRequestStore) error {
 // ownWriteAbilities are the write entries this control plane can run.
 var ownWriteAbilities = map[string]struct{}{AbilityPageCreate: {}, AbilityRestWrite: {}, AbilityPageEdit: {}}
 
-// writeAgentFloor is the first agent release that runs a write entry.
+// writeAgentFloor is the first agent release that runs a write entry. It is the
+// entry's own floor, the one discover and describe state; an input can need a
+// newer agent, which PageCreateAgentFloor and PageEditAgentFloor decide per
+// input, at run and again at dispatch.
 func writeAgentFloor(name string) string {
 	switch name {
 	case AbilityRestWrite:
@@ -207,18 +214,55 @@ func writeEntryRunnable(e *sqlc.AbilityCatalogue, inv *sqlc.SiteAbilityInventory
 
 // pageCreateInputRefusal refuses an input the grammar refused. A schema
 // mismatch carries the schema; a layout, link or editor problem carries the
-// agent's code and our fixed hint for it (never the site's words).
-func pageCreateInputRefusal(code string) *toolRefusal {
+// agent's code and our fixed hint for it (never the site's words). A refusal
+// that has failures (the design's, or the address of a node of the outline)
+// also names them: the message spells out the first three and failures[]
+// holds the rest.
+func pageCreateInputRefusal(r pageCreateRefusal) *toolRefusal {
+	code := r.Code
+	msg, failures := refusalEnvelope(pageCreateRefusalSummaryOf(r), r.Failures)
 	if code == pageCreateBadInput {
-		return argRefusal(reasonInvalidArguments, "input", "", msgAbilityArgInput, pageCreateInputSchema)
+		ref := argRefusal(reasonInvalidArguments, "input", "", msgAbilityArgInput, pageCreateInputSchema)
+		if len(failures) > 0 {
+			ref.err = domain.Validation(ErrCodeInvalidToolArguments, msg).WithDetails(map[string]any{
+				"argument": "input", "retryable": false, "schema": pageCreateInputSchema, "failures": failures,
+			})
+		}
+		return ref
+	}
+	details := map[string]any{"argument": "input", "code": code, "hint": precheckRefusalHint(code), "retryable": false}
+	if len(failures) > 0 {
+		details["failures"] = failures
 	}
 	return &toolRefusal{
 		reason: reasonInvalidArguments,
-		err: domain.Validation(ErrCodeInvalidToolArguments, msgAbilityLayoutInput).WithDetails(map[string]any{
-			"argument": "input", "code": code, "hint": precheckRefusalHint(code), "retryable": false,
-		}),
-		meta: map[string]any{"argument": "input", "code": code},
+		err:    domain.Validation(ErrCodeInvalidToolArguments, msg).WithDetails(details),
+		meta:   map[string]any{"argument": "input", "code": code},
 	}
+}
+
+// pageCreateRefusalSummary opens the message of a refusal of the input: what
+// was wrong, in a sentence.
+func pageCreateRefusalSummary(code string) string {
+	switch code {
+	case pageDesignNotReady:
+		return msgAbilityDesignNotReady
+	case pageDesignContrastLow:
+		return msgAbilityDesignContrast
+	case pageCreateBadInput:
+		return msgAbilityDesignValue
+	}
+	return msgAbilityLayoutInput
+}
+
+// pageCreateRefusalSummaryOf is the summary of a refusal that may be of the
+// outline: a value of the outline that the grammar does not accept is not a
+// value of the design.
+func pageCreateRefusalSummaryOf(r pageCreateRefusal) string {
+	if r.Outline && r.Code == pageCreateBadInput {
+		return msgAbilityOutlineValue
+	}
+	return pageCreateRefusalSummary(r.Code)
 }
 
 // ---------------------------------------------------------------------------
@@ -493,25 +537,17 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 	// Step 5: our grammar, including a layout the classic editor cannot
 	// hold. Then the per-input floor: a layout outline needs a newer agent
 	// than the entry's own floor, which text-only outlines keep.
-	facts, code := validatePageCreateInput(input)
-	if code != "" {
-		return "", pageCreateInputRefusal(code)
+	facts, refusal := checkPageCreateInput(input)
+	if refusal.Code != "" {
+		return "", pageCreateInputRefusal(refusal)
 	}
 	// A page builder the entry enables, and the builder's node rules.
 	if r := pageCreateBuilderRefusal(facts, e.Limits, input); r != nil {
 		return "", r
 	}
 	// (The entry's own floor was checked by classify: c.reason above.)
-	if floor := PageCreateAgentFloor(input); floor != agentcmd.MinAgentVersionForPageCreate &&
-		!abilityAgentMeetsFloor(site.row.AgentVersion, &floor) {
-		msg := msgAbilityLayoutOutdated
-		if floor == agentcmd.MinAgentVersionForBuilderAdapters {
-			msg = msgAbilityBuilderOutdated
-		}
-		return "", refuse(reasonAgentOutdated, domain.Conflict(ErrCodeSiteAgentOutdated,
-			msg).WithDetails(map[string]any{
-			"min_agent_version": floor, "retryable": false,
-		}))
+	if r := pageCreateFloorRefusal(site.row.AgentVersion, input); r != nil {
+		return "", r
 	}
 	// The precheck counts against the read limits (W2).
 	if d := eng.readLimit.allow(auth.GrantID, site.row.ID); !d.allowed {
@@ -561,12 +597,13 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 		checked, ok = verifyPageCreatePrecheck(resp, entrySum, input, facts)
 	}
 	if !ok {
-		return "", &toolRefusal{
-			reason: reasonAbilityPrecheckRefused,
-			err: domain.Unavailable(ErrCodeSiteUnreachable, msgAbilitySiteAnswer).
-				WithDetails(map[string]any{"retryable": false}),
-			meta: map[string]any{"code": "precheck_unverifiable"},
-		}
+		return "", precheckUnverifiableRefusal()
+	}
+	// A designed page is approved, stored and sent in the frame its precheck
+	// resolved; an input that names none is stored and sent naming it.
+	var frameRefusal *toolRefusal
+	if input, facts, checked, frameRefusal = bindPageFrame(resp, entrySum, input, facts, checked); frameRefusal != nil {
+		return "", frameRefusal
 	}
 	// Step 8: the creation transaction, which stores the request under the
 	// id its precheck was sent with.
@@ -581,6 +618,17 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 		return "", fmt.Errorf("encode ability request result: %w", err)
 	}
 	return string(b), nil
+}
+
+// precheckUnverifiableRefusal answers a page-create whose precheck answer
+// the control plane could not verify; nothing is stored.
+func precheckUnverifiableRefusal() *toolRefusal {
+	return &toolRefusal{
+		reason: reasonAbilityPrecheckRefused,
+		err: domain.Unavailable(ErrCodeSiteUnreachable, msgAbilitySiteAnswer).
+			WithDetails(map[string]any{"retryable": false}),
+		meta: map[string]any{"code": "precheck_unverifiable"},
+	}
 }
 
 // Fixed hints for a precheck refused over its input (GH #823). The site's
@@ -624,6 +672,33 @@ const (
 	hintLayoutNeedsBlockEditor = "The classic editor cannot hold groups, columns, buttons, spacers or image captions. " +
 		"With editor wordpress_classic, use only headings, paragraphs, lists, quotes, tables, separators and images " +
 		"without captions. Send editor wordpress_blocks only for a site that uses the block editor."
+	hintDesignNotReady = "A designed page needs its whole design in one object, and a field is missing. Send design with " +
+		"colors (ground, surface, ink, muted, accent and on_accent, each as #RRGGBB), fonts (heading and body), " +
+		"scale (base_px, a whole number from 15 to 20, and ratio, a name and never a number: major_second, " +
+		"minor_third, major_third or perfect_fourth), radius (none, sm, md or lg) and " +
+		"density (compact, normal or airy). The failures name each field to add."
+	hintDesignContrastLow = "Text must be readable on the colour it sits on. ink needs a contrast of at least 4.5 to 1 " +
+		"against both ground and surface, and on_accent at least 4.5 to 1 against accent. The failures name the pair and " +
+		"its measured contrast: change one colour of that pair, then send the whole design again."
+	hintFontUnknown = "A font family of the design is not one that Elementor on this site has. This refusal does not say " +
+		"which of the two fonts it is, or which families the site has. Send " + designFontSystem + " for the heading and " +
+		"for the body to use the theme's own fonts, or ask a person which fonts the site has and name only those, " +
+		"spelled exactly as Elementor spells them. Then send the whole design again."
+	hintContainersRequired = "This site's Elementor builds pages with sections and columns, and a designed page (a design, " +
+		"sections and patterns) is built with containers. Ask a person to turn on the Container feature in Elementor's " +
+		"Features settings, then send the same call again. Or leave out outline_version, design, page_frame, sections " +
+		"and patterns: a plain outline is built with sections and columns here."
+	hintBackgroundNotImage = "A section background must be an image: a JPEG, PNG, GIF, WebP or AVIF in this site's media " +
+		"library. One background names an attachment of another kind, a PDF or a video for example, and this refusal " +
+		"does not say which. Check each background's attachment_id with wpmgr/rest-read route wp-v2-media-list, " +
+		"which gives every item's mime_type, and send an image, or leave that background out."
+	hintPageTemplateUnavailable = "The site does not offer the page template that this page frame needs for the post type. " +
+		"Choose a page_frame whose template the site has: " + pageFrameTheme + " uses the theme's own template, and " +
+		pageFrameFullWidth + " and " + pageFrameCanvas + " use Elementor's page templates."
+	hintPageFrameUnavailable = "This site's theme cannot show a designed page in the page_frame sent. " +
+		"A block theme shows a designed page only as " + pageFrameCanvas + ": the page content alone, without the " +
+		"theme's header, footer or page title. Send page_frame " + pageFrameCanvas + ", or leave page_frame out " +
+		"and the page is built in the frame the site can show."
 )
 
 // precheckRefusalHints are the input-related refusal codes and their fixed
@@ -639,6 +714,21 @@ var precheckRefusalHints = map[string]string{
 	"image_not_available":           hintImageNotAvailable,
 	"image_url_unusable":            hintImageURLUnusable,
 	pageCreateNeedsBlockEditor:      hintLayoutNeedsBlockEditor,
+	pageDesignNotReady:              hintDesignNotReady,
+	pageDesignContrastLow:           hintDesignContrastLow,
+	pageDesignFontUnknown:           hintFontUnknown,
+	pageFrameTemplateUnavailable:    hintPageTemplateUnavailable,
+	pageFrameUnavailable:            hintPageFrameUnavailable,
+	pageContainersRequired:          hintContainersRequired,
+	pageBackgroundNotImage:          hintBackgroundNotImage,
+	pageCreateAnchorInvalid:         hintAnchorInvalid,
+	pageCreateAnchorDuplicate:       hintAnchorDuplicate,
+	pageCreateAnchorReserved:        hintAnchorReserved,
+	pageCreateLinkAnchorMissing:     hintLinkAnchorMissing,
+	pageCreateHeroMisplaced:         hintHeroMisplaced,
+	pageCreateH1OutsideHero:         hintH1OutsideHero,
+	pageCreateItemsOutOfRange:       hintItemsOutOfRange,
+	pageCreateIconUnknown:           hintIconUnknown,
 	pageBuilderNotEnabled:           hintBuilderNotEnabled,
 	pageBuilderNotAvailable:         hintBuilderNotAvailable,
 	pageNodeNotSupported:            hintNodeNotSupportedByBuilder,
@@ -648,12 +738,44 @@ var precheckRefusalHints = map[string]string{
 	pageEditNodeNotEditable:         hintPageEditNodeNotEditable,
 	pageEditOpNotSupported:          hintPageEditOpNotSupported,
 	pageEditPageTooLarge:            hintPageEditPageTooLarge,
+	pageEditAnchorInUse:             hintPageEditAnchorInUse,
+}
+
+// pageCreateFloorRefusal is the run path's per-input floor: nil when an
+// agent of this version runs the page-create input, else the update-required
+// refusal (site_agent_outdated) naming the floor PageCreateAgentFloor gives
+// it. The entry's own floor is classify's, so an input whose floor is
+// MinAgentVersionForPageCreate is never refused here.
+func pageCreateFloorRefusal(agentVersion string, input []byte) *toolRefusal {
+	floor := PageCreateAgentFloor(input)
+	if floor == agentcmd.MinAgentVersionForPageCreate || abilityAgentMeetsFloor(agentVersion, &floor) {
+		return nil
+	}
+	msg := msgAbilityLayoutOutdated
+	switch floor {
+	case agentcmd.MinAgentVersionForBuilderAdapters:
+		msg = msgAbilityBuilderOutdated
+	case agentcmd.MinAgentVersionForDesignedPages:
+		msg = msgAbilityDesignedOutdated
+	}
+	return refuse(reasonAgentOutdated, domain.Conflict(ErrCodeSiteAgentOutdated,
+		msg).WithDetails(map[string]any{
+		"min_agent_version": floor, "retryable": false,
+	}))
 }
 
 // precheckRefusalHint maps an input-related refusal code to a fixed hint,
 // or "" for a code that is not about the input.
 func precheckRefusalHint(code string) string {
 	return precheckRefusalHints[code]
+}
+
+// PrecheckRefusalHint is precheckRefusalHint for a caller outside the
+// package: the fixed hint the AI gets for an input-related refusal code the
+// agent answers, "" for a code that is not about the input. The contract gates
+// hold the agent's refusal codes to it.
+func PrecheckRefusalHint(code string) string {
+	return precheckRefusalHint(code)
 }
 
 // abilityRequestFacts are the stored facts a request's digest covers.
@@ -675,7 +797,8 @@ type abilityRequestFacts struct {
 
 // buildAbilityRequestFacts computes the card facts and presented_digest over
 // them, the nonce and the card copy version (engine v4 §4.1). A page with
-// images stores its images' facts as card_facts; an outline beyond heading,
+// images stores its images' facts as card_facts, and a designed page its
+// design and the page frame it is built in; an outline beyond heading,
 // paragraph and list is card copy version 2.
 func buildAbilityRequestFacts(auth AuthorizedRequest, row sqlc.Site, host string, e *sqlc.AbilityCatalogue, entrySum string, input []byte, facts pageCreateFacts, pc checkedPrecheck, now time.Time) (abilityRequestFacts, error) {
 	f := abilityRequestFacts{
@@ -691,7 +814,7 @@ func buildAbilityRequestFacts(auth AuthorizedRequest, row sqlc.Site, host string
 	if facts.usesLayout {
 		f.copyVersion = AbilityCardCopyVersionLayout
 	}
-	card, err := pageCardFactsJSON(pc.media, pc.builder)
+	card, err := pageCardFactsJSON(pc.media, pc.builder, facts.design, facts.pageFrame)
 	if err != nil {
 		return abilityRequestFacts{}, err
 	}

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { configure, fireEvent, screen, waitFor } from "@testing-library/react";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -16,6 +16,13 @@ import { Route as ContentRoute } from "./$siteId.content";
 // ContentInventoryRow (packages/openapi-client/src/generated/types.gen.ts). The
 // 429 comes from RefreshSiteContentInventoryErrors, its Retry-After header from
 // the operation's contract.
+
+// Under the load of the whole suite this route takes longer than the one second
+// a findBy waits by default to show its first rows. A wait ends the moment its
+// element is there, so the longer limit costs time only when the text never
+// appears. It stays inside the five seconds a test is given, so a missing text
+// still fails with its own message.
+configure({ asyncUtilTimeout: 4000 });
 
 const getInv = vi.fn();
 const refreshInv = vi.fn();

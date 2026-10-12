@@ -1,0 +1,3599 @@
+{
+  "note": "Render probes, run by harness.php on every pinned Elementor and on both layouts. A probe is a raw Elementor tree saved with Document::save as the agent's service user, rendered, and held to what Elementor's own post CSS file and HTML say about it, so a key Elementor ignores fails the build. Format: name (lower case words joined by hyphens, printed as probe-<name>); about (what the probe proves); trees (raw trees by layout, containers and sections; a probe runs only on the layouts it has a tree for; keys in the order the agent's compiler writes them: id, elType, settings, elements, then widgetType or isInner; ids are 7 lower case hex characters); css (a list, at least one: each {el: the id of a node of the tree, sel: optional part of the selector after the element's class, media: null for no media condition or the condition text such as max-width:767px, decl: {property: value} all of which must be declared, or any: [{property: value}, ...] of which one set must hold in full because a release may write the same fact in another property}); css_absent (optional list of {el, sel, decl}: declarations no rule of the element may carry in any media condition, a fact recorded as false; a probe needs its css list as the positive control); html_ids (optional ids that must each be on exactly one element); html_tags (optional {id: tag}). Values compare case-insensitively with spaces around commas, colons and parentheses ignored.",
+  "probes": [
+    {
+      "name": "smoke-heading-colour",
+      "about": "A heading's title_color is written into the post CSS as a colour declaration on the heading's title, and its _element_id is the id of the rendered wrapper: the smallest render fact the probe phase proves.",
+      "trees": {
+        "containers": [
+          {
+            "id": "c0a7001",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "4ead001",
+                "elType": "widget",
+                "settings": { "title": "Smoke heading", "header_size": "h2", "title_color": "#123456", "_element_id": "smoke-heading" },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ],
+        "sections": [
+          {
+            "id": "5ec7001",
+            "elType": "section",
+            "settings": { "structure": "10" },
+            "elements": [
+              {
+                "id": "c01a001",
+                "elType": "column",
+                "settings": { "_column_size": "100" },
+                "elements": [
+                  {
+                    "id": "4ead001",
+                    "elType": "widget",
+                    "settings": { "title": "Smoke heading", "header_size": "h2", "title_color": "#123456", "_element_id": "smoke-heading" },
+                    "elements": [],
+                    "widgetType": "heading"
+                  }
+                ],
+                "isInner": false
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        { "el": "4ead001", "sel": ".elementor-heading-title", "media": null, "decl": { "color": "#123456" } }
+      ],
+      "html_ids": ["smoke-heading"]
+    },
+    {
+      "name": "pattern-icon-box",
+      "about": "icon-box fields: selected_icon {value,library}, title_text, description_text, position, title_size; style keys primary_color, title_color, description_color and the title_typography group with its activator. Numeric members are written as numeric strings because a release stores integers as strings. The title and description are shown, the title tag is the chosen one, the position is a class of the widget (position top is the class elementor-position-top on 3.20.4 and elementor-position-block-start on 3.35.9 and 4.3.4), and every style key reaches the post CSS.",
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0001",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0001",
+                "elType": "widget",
+                "settings": {
+                  "selected_icon": {
+                    "value": "fas fa-mug-hot",
+                    "library": "fa-solid"
+                  },
+                  "title_text": "Single origin",
+                  "description_text": "Roasted weekly in small batches.",
+                  "position": "top",
+                  "title_size": "h3",
+                  "primary_color": "#A33B20",
+                  "title_color": "#2B1D16",
+                  "description_color": "#5A4A40",
+                  "title_typography_typography": "custom",
+                  "title_typography_font_size": {
+                    "unit": "px",
+                    "size": "22"
+                  },
+                  "title_typography_font_weight": "600"
+                },
+                "elements": [],
+                "widgetType": "icon-box"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0001",
+          "sel": ".elementor-icon",
+          "media": null,
+          "decl": {
+            "color": "#A33B20",
+            "fill": "#A33B20"
+          }
+        },
+        {
+          "el": "a1b0001",
+          "sel": ".elementor-icon-box-title",
+          "media": null,
+          "decl": {
+            "color": "#2B1D16",
+            "font-size": "22px",
+            "font-weight": "600"
+          }
+        },
+        {
+          "el": "a1b0001",
+          "sel": ".elementor-icon-box-description",
+          "media": null,
+          "decl": {
+            "color": "#5A4A40"
+          }
+        }
+      ],
+      "widgets": {
+        "icon-box": true
+      },
+      "plants": {
+        "misspell_key": {
+          "el": "a1b0001",
+          "key": "title_color"
+        },
+        "drop_activator": {
+          "el": "a1b0001",
+          "key": "title_typography_typography"
+        }
+      },
+      "html_text": [
+        "Single origin",
+        "Roasted weekly in small batches."
+      ],
+      "html_has": [
+        {
+          "sel": "h3.elementor-icon-box-title"
+        },
+        {
+          "sel": ".elementor-icon-box-description"
+        },
+        {
+          "sel": ".elementor-widget-icon-box.elementor-position-top, .elementor-widget-icon-box.elementor-position-block-start"
+        }
+      ]
+    },
+    {
+      "name": "pattern-testimonial",
+      "about": "testimonial fields: testimonial_content, testimonial_image {id,url,source}, testimonial_name, testimonial_job, testimonial_image_position, testimonial_alignment; style keys content_content_color, name_text_color, job_text_color. The three texts and the library image are shown, and every colour reaches the post CSS.",
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0002",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0002",
+                "elType": "widget",
+                "settings": {
+                  "testimonial_content": "Best flat white in town.",
+                  "testimonial_image": {
+                    "url": "https://example.com/wp-content/uploads/2026/10/van-1024x640.png",
+                    "id": "5",
+                    "source": "library"
+                  },
+                  "testimonial_name": "Asha Rao",
+                  "testimonial_job": "Regular",
+                  "testimonial_image_position": "aside",
+                  "testimonial_alignment": "left",
+                  "content_content_color": "#2B1D16",
+                  "name_text_color": "#A33B20",
+                  "job_text_color": "#5A4A40"
+                },
+                "elements": [],
+                "widgetType": "testimonial"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0002",
+          "sel": ".elementor-testimonial-content",
+          "media": null,
+          "decl": {
+            "color": "#2B1D16"
+          }
+        },
+        {
+          "el": "a1b0002",
+          "sel": ".elementor-testimonial-name",
+          "media": null,
+          "decl": {
+            "color": "#A33B20"
+          }
+        },
+        {
+          "el": "a1b0002",
+          "sel": ".elementor-testimonial-job",
+          "media": null,
+          "decl": {
+            "color": "#5A4A40"
+          }
+        }
+      ],
+      "widgets": {
+        "testimonial": true
+      },
+      "html_text": [
+        "Best flat white in town.",
+        "Asha Rao",
+        "Regular"
+      ],
+      "html_has": [
+        {
+          "sel": ".elementor-testimonial-name",
+          "text": "Asha Rao"
+        },
+        {
+          "sel": ".elementor-testimonial-image img.wp-image-5"
+        }
+      ]
+    },
+    {
+      "name": "pattern-counter",
+      "about": "counter fields: starting_number, ending_number (numeric strings, since a release stores integers as strings), suffix, title; style keys number_color and title_color. The target and start numbers are data attributes of the number, the suffix and title are shown, and both colours reach the post CSS.",
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0003",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0003",
+                "elType": "widget",
+                "settings": {
+                  "starting_number": "0",
+                  "ending_number": "1200",
+                  "suffix": "+",
+                  "title": "Cups served",
+                  "number_color": "#A33B20",
+                  "title_color": "#5A4A40"
+                },
+                "elements": [],
+                "widgetType": "counter"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0003",
+          "sel": ".elementor-counter-number-wrapper",
+          "media": null,
+          "decl": {
+            "color": "#A33B20"
+          }
+        },
+        {
+          "el": "a1b0003",
+          "sel": ".elementor-counter-title",
+          "media": null,
+          "decl": {
+            "color": "#5A4A40"
+          }
+        }
+      ],
+      "widgets": {
+        "counter": true
+      },
+      "html_text": [
+        "Cups served"
+      ],
+      "html_has": [
+        {
+          "sel": ".elementor-counter-number[data-to-value=1200][data-from-value=0]"
+        },
+        {
+          "sel": ".elementor-counter-number-suffix",
+          "text": "+"
+        },
+        {
+          "sel": ".elementor-counter-title",
+          "text": "Cups served"
+        }
+      ]
+    },
+    {
+      "name": "pattern-icon-list",
+      "about": "icon-list fields: icon_list items {text, selected_icon {value,library}, _id} with 7 hex ids, icon_color, text_color, icon_size. Both items are shown, and the icon colour, text colour and icon size reach the post CSS.",
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0004",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0004",
+                "elType": "widget",
+                "settings": {
+                  "icon_list": [
+                    {
+                      "text": "1 site",
+                      "selected_icon": {
+                        "value": "fas fa-check",
+                        "library": "fa-solid"
+                      },
+                      "_id": "1a2b3c4"
+                    },
+                    {
+                      "text": "Email support",
+                      "selected_icon": {
+                        "value": "fas fa-check",
+                        "library": "fa-solid"
+                      },
+                      "_id": "2b3c4d5"
+                    }
+                  ],
+                  "icon_color": "#A33B20",
+                  "text_color": "#2B1D16",
+                  "icon_size": {
+                    "unit": "px",
+                    "size": "18"
+                  }
+                },
+                "elements": [],
+                "widgetType": "icon-list"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0004",
+          "sel": ".elementor-icon-list-icon i",
+          "media": null,
+          "decl": {
+            "color": "#A33B20"
+          }
+        },
+        {
+          "el": "a1b0004",
+          "sel": ".elementor-icon-list-text",
+          "media": null,
+          "decl": {
+            "color": "#2B1D16"
+          }
+        },
+        {
+          "el": "a1b0004",
+          "sel": "",
+          "media": null,
+          "any": [
+            {
+              "--e-icon-list-icon-size": "18px"
+            },
+            {
+              "font-size": "18px"
+            }
+          ]
+        }
+      ],
+      "widgets": {
+        "icon-list": true
+      },
+      "html_text": [
+        "1 site",
+        "Email support"
+      ],
+      "html_has": [
+        {
+          "sel": ".elementor-icon-list-item",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "name": "pattern-image",
+      "about": "image fields: image {url,id,source}, image_size, align, width {unit,size}. The library image is shown with its attachment class, and the width and the alignment reach the post CSS.",
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0005",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0005",
+                "elType": "widget",
+                "settings": {
+                  "image": {
+                    "url": "https://example.com/wp-content/uploads/2026/10/van-1024x640.png",
+                    "id": "5",
+                    "source": "library"
+                  },
+                  "image_size": "medium",
+                  "align": "center",
+                  "width": {
+                    "unit": "px",
+                    "size": "140"
+                  }
+                },
+                "elements": [],
+                "widgetType": "image"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0005",
+          "sel": "img",
+          "media": null,
+          "decl": {
+            "width": "140px"
+          }
+        },
+        {
+          "el": "a1b0005",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "text-align": "center"
+          }
+        }
+      ],
+      "widgets": {
+        "image": true
+      },
+      "html_has": [
+        {
+          "sel": ".elementor-widget-image img.wp-image-5"
+        }
+      ]
+    },
+    {
+      "name": "pattern-accordion-faq",
+      "about": "classic accordion fields: tabs items {tab_title, tab_content, _id} with 7 hex ids, faq_schema yes, title_color, tab_active_color, content_color. The accordion widget type is registered whatever the nested elements experiment says, both items are shown, exactly one JSON-LD script of type FAQPage is printed with the questions, and the colours reach the post CSS.",
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0006",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0006",
+                "elType": "widget",
+                "settings": {
+                  "tabs": [
+                    {
+                      "tab_title": "Do you ship?",
+                      "tab_content": "<p>Yes, worldwide.</p>",
+                      "_id": "1a2b3c4"
+                    },
+                    {
+                      "tab_title": "Is it fresh?",
+                      "tab_content": "<p>Roasted weekly.</p>",
+                      "_id": "2b3c4d5"
+                    }
+                  ],
+                  "faq_schema": "yes",
+                  "title_color": "#2B1D16",
+                  "tab_active_color": "#A33B20",
+                  "content_color": "#5A4A40"
+                },
+                "elements": [],
+                "widgetType": "accordion"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0006",
+          "sel": ".elementor-accordion-title",
+          "media": null,
+          "decl": {
+            "color": "#2B1D16"
+          }
+        },
+        {
+          "el": "a1b0006",
+          "sel": ".elementor-active .elementor-accordion-title",
+          "media": null,
+          "decl": {
+            "color": "#A33B20"
+          }
+        },
+        {
+          "el": "a1b0006",
+          "sel": ".elementor-tab-content",
+          "media": null,
+          "decl": {
+            "color": "#5A4A40"
+          }
+        }
+      ],
+      "widgets": {
+        "accordion": true
+      },
+      "html_text": [
+        "Do you ship?",
+        "Is it fresh?"
+      ],
+      "html_has": [
+        {
+          "sel": ".elementor-accordion-item",
+          "count": 2
+        },
+        {
+          "sel": "script[type='application/ld+json']",
+          "count": 1,
+          "text": "FAQPage"
+        },
+        {
+          "sel": "script[type='application/ld+json']",
+          "count": 1,
+          "text": "Do you ship?"
+        }
+      ]
+    },
+    {
+      "name": "pattern-accordion-nested",
+      "about": "nested accordion, registered from Elementor 3.35.9 where the nested elements experiment is on by default (a widget that holds child elements is stored with widgetType right after elType): items {item_title, _id} with one inner container per item holding a text-editor, faq_schema yes, normal_title_color. Both titles and bodies are shown, one JSON-LD script of type FAQPage is printed, and the colour reaches the post CSS as the widget's variable.",
+      "since": "3.35.9",
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0007",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0007",
+                "elType": "widget",
+                "widgetType": "nested-accordion",
+                "settings": {
+                  "items": [
+                    {
+                      "item_title": "Do you ship?",
+                      "_id": "1a2b3c4"
+                    },
+                    {
+                      "item_title": "Is it fresh?",
+                      "_id": "2b3c4d5"
+                    }
+                  ],
+                  "faq_schema": "yes",
+                  "normal_title_color": "#2B1D16"
+                },
+                "elements": [
+                  {
+                    "id": "b0c1001",
+                    "elType": "container",
+                    "settings": {},
+                    "elements": [
+                      {
+                        "id": "a1b1001",
+                        "elType": "widget",
+                        "settings": {
+                          "editor": "<p>Yes, worldwide.</p>"
+                        },
+                        "elements": [],
+                        "widgetType": "text-editor"
+                      }
+                    ],
+                    "isInner": true
+                  },
+                  {
+                    "id": "b0c1002",
+                    "elType": "container",
+                    "settings": {},
+                    "elements": [
+                      {
+                        "id": "a1b1002",
+                        "elType": "widget",
+                        "settings": {
+                          "editor": "<p>Roasted weekly.</p>"
+                        },
+                        "elements": [],
+                        "widgetType": "text-editor"
+                      }
+                    ],
+                    "isInner": true
+                  }
+                ]
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0007",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--n-accordion-title-normal-color": "#2B1D16"
+          }
+        }
+      ],
+      "widgets": {
+        "nested-accordion": true
+      },
+      "html_text": [
+        "Do you ship?",
+        "Is it fresh?",
+        "Yes, worldwide.",
+        "Roasted weekly."
+      ],
+      "html_has": [
+        {
+          "sel": "script[type='application/ld+json']",
+          "count": 1,
+          "text": "FAQPage"
+        }
+      ]
+    },
+    {
+      "name": "pattern-link-nofollow",
+      "about": "A link {url, is_external, nofollow} on a button: the anchor carries the address, opens in a new tab and carries nofollow in its rel, and the button background reaches the post CSS. The nofollow key is the link member named nofollow.",
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0008",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0008",
+                "elType": "widget",
+                "settings": {
+                  "text": "Visit partner",
+                  "link": {
+                    "url": "https://example.com/partner",
+                    "is_external": "on",
+                    "nofollow": "on"
+                  },
+                  "background_color": "#A33B20"
+                },
+                "elements": [],
+                "widgetType": "button"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0008",
+          "sel": ".elementor-button",
+          "media": null,
+          "decl": {
+            "background-color": "#A33B20"
+          }
+        }
+      ],
+      "widgets": {
+        "button": true
+      },
+      "html_text": [
+        "Visit partner"
+      ],
+      "html_has": [
+        {
+          "sel": "a.elementor-button[href='https://example.com/partner'][rel~=nofollow]"
+        },
+        {
+          "sel": "a.elementor-button[href='https://example.com/partner'][target=_blank]"
+        }
+      ]
+    },
+    {
+      "name": "frame-header-footer",
+      "about": "Recorded as false: on a block theme (twentytwentyfive, no header.php or footer.php) a page on the elementor_header_footer template does not show the theme's header and footer template parts. It shows WordPress's generic fallback header (div#header, role banner) and footer (div#footer, role contentinfo). The page is held to that, so a release that starts showing the theme's parts turns this probe red and the fallback rule can be revisited.",
+      "theme": "twentytwentyfive",
+      "render": "page",
+      "page": {
+        "template": "elementor_header_footer"
+      },
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0011",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0011",
+                "elType": "widget",
+                "settings": {
+                  "title": "Frame probe heading",
+                  "header_size": "h2",
+                  "title_color": "#123456"
+                },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0011",
+          "sel": ".elementor-heading-title",
+          "media": null,
+          "decl": {
+            "color": "#123456"
+          }
+        }
+      ],
+      "html_text": [
+        "Frame probe heading"
+      ],
+      "html_has": [
+        {
+          "sel": "header.wp-block-template-part",
+          "count": 0
+        },
+        {
+          "sel": "footer.wp-block-template-part",
+          "count": 0
+        },
+        {
+          "sel": "div#header[role=banner]"
+        },
+        {
+          "sel": "div#footer[role=contentinfo]"
+        }
+      ]
+    },
+    {
+      "name": "frame-hide-title",
+      "about": "Recorded as false: on a block theme (twentytwentyfive) a page whose page settings carry hide_title yes still holds the theme's title, the heading h1.wp-block-post-title, and nothing carries the entry-title class that Elementor's default title selector (h1.entry-title) hides. The theme's header template part is shown on this template, which is the control that the selectors below can match. The page is held to that, so a release that changes the title markup or the selector turns this probe red.",
+      "theme": "twentytwentyfive",
+      "render": "page",
+      "page": {
+        "template": "",
+        "settings": {
+          "hide_title": "yes"
+        }
+      },
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0012",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0012",
+                "elType": "widget",
+                "settings": {
+                  "title": "Frame probe heading",
+                  "header_size": "h2",
+                  "title_color": "#123456"
+                },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0012",
+          "sel": ".elementor-heading-title",
+          "media": null,
+          "decl": {
+            "color": "#123456"
+          }
+        }
+      ],
+      "html_text": [
+        "Frame probe heading"
+      ],
+      "html_has": [
+        {
+          "sel": "header.wp-block-template-part"
+        },
+        {
+          "sel": "h1.wp-block-post-title"
+        },
+        {
+          "sel": "h1.entry-title",
+          "count": 0
+        },
+        {
+          "sel": ".entry-title",
+          "count": 0
+        }
+      ]
+    },
+    {
+      "name": "frame-google-font",
+      "about": "A Google family set only in a widget's typography (typography_typography custom, typography_font_family) and nowhere in the kit is queued for Google's font service when the post's stylesheet is enqueued as the front end enqueues it, and the heading's font-family declares it.",
+      "theme": "twentytwentyfive",
+      "fonts": [
+        "Poppins"
+      ],
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0013",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0013",
+                "elType": "widget",
+                "settings": {
+                  "title": "Frame probe heading",
+                  "header_size": "h2",
+                  "title_color": "#123456",
+                  "typography_typography": "custom",
+                  "typography_font_family": "Poppins"
+                },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0013",
+          "sel": ".elementor-heading-title",
+          "media": null,
+          "any": [
+            {
+              "font-family": "\"Poppins\", Sans-serif"
+            },
+            {
+              "font-family": "Poppins, Sans-serif"
+            }
+          ]
+        }
+      ],
+      "html_text": [
+        "Frame probe heading"
+      ]
+    },
+    {
+      "name": "layout-section-container",
+      "about": "A section container: content_width boxed, html_tag section, flex_direction column, the anchor in _element_id, padding as dimension strings with _tablet and _mobile overrides, a classic background colour and the navigator label in _title. The element is a section tag with the boxed class and the anchor as its id, the padding reaches the post CSS once per breakpoint, and the colour is painted on the container.",
+      "trees": {
+        "containers": [
+          {
+            "id": "1a70001",
+            "elType": "container",
+            "settings": {
+              "content_width": "boxed",
+              "html_tag": "section",
+              "flex_direction": "column",
+              "_element_id": "features",
+              "padding": {
+                "unit": "px",
+                "top": "96",
+                "right": "24",
+                "bottom": "96",
+                "left": "24",
+                "isLinked": false
+              },
+              "padding_tablet": {
+                "unit": "px",
+                "top": "72",
+                "right": "24",
+                "bottom": "72",
+                "left": "24",
+                "isLinked": false
+              },
+              "padding_mobile": {
+                "unit": "px",
+                "top": "56",
+                "right": "24",
+                "bottom": "56",
+                "left": "24",
+                "isLinked": false
+              },
+              "background_background": "classic",
+              "background_color": "#F6F5F2",
+              "_title": "WPMgr \u00b7 Section"
+            },
+            "elements": [
+              {
+                "id": "1a70002",
+                "elType": "widget",
+                "settings": {
+                  "title": "Why teams switch",
+                  "header_size": "h2"
+                },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "1a70001",
+          "sel": "",
+          "media": null,
+          "any": [
+            {
+              "--padding-top": "96px",
+              "--padding-bottom": "96px",
+              "--padding-left": "24px",
+              "--padding-right": "24px"
+            },
+            {
+              "--padding-block-start": "96px",
+              "--padding-block-end": "96px",
+              "--padding-inline-start": "24px",
+              "--padding-inline-end": "24px"
+            }
+          ]
+        },
+        {
+          "el": "1a70001",
+          "sel": "",
+          "media": "max-width:1024px",
+          "any": [
+            {
+              "--padding-top": "72px",
+              "--padding-bottom": "72px",
+              "--padding-left": "24px",
+              "--padding-right": "24px"
+            },
+            {
+              "--padding-block-start": "72px",
+              "--padding-block-end": "72px",
+              "--padding-inline-start": "24px",
+              "--padding-inline-end": "24px"
+            }
+          ]
+        },
+        {
+          "el": "1a70001",
+          "sel": "",
+          "media": "max-width:767px",
+          "any": [
+            {
+              "--padding-top": "56px",
+              "--padding-bottom": "56px",
+              "--padding-left": "24px",
+              "--padding-right": "24px"
+            },
+            {
+              "--padding-block-start": "56px",
+              "--padding-block-end": "56px",
+              "--padding-inline-start": "24px",
+              "--padding-inline-end": "24px"
+            }
+          ]
+        },
+        {
+          "el": "1a70001",
+          "sel": ":not(.elementor-motion-effects-element-type-background)",
+          "media": null,
+          "decl": {
+            "background-color": "#F6F5F2"
+          }
+        },
+        {
+          "el": "1a70001",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--flex-direction": "column"
+          }
+        }
+      ],
+      "html_ids": [
+        "features"
+      ],
+      "html_tags": {
+        "features": "section"
+      },
+      "html_text": [
+        "Why teams switch"
+      ],
+      "html_has": [
+        {
+          "sel": "section#features.e-con.e-con-boxed"
+        }
+      ],
+      "plants": {
+        "misspell_key": {
+          "el": "1a70001",
+          "key": "padding"
+        },
+        "drop_activator": {
+          "el": "1a70001",
+          "key": "background_background"
+        }
+      }
+    },
+    {
+      "name": "layout-hero-background",
+      "about": "A hero section container: content_width full, the anchor in _element_id, padding per breakpoint, a classic background colour with a library image (id and url) placed at center center, sized cover and not repeated, an ink overlay at 0.45 opacity, a min_height of 80vh reset to 0vh on mobile, and flex_justify_content center. The placement and colour of the background, the overlay colour and its opacity as a unitless fraction, and the min height per breakpoint reach the post CSS. The image is the harness site's attachment 5 and the post CSS names that attachment's own address, which the probe cannot spell, so the probe holds the placement and not the address.",
+      "trees": {
+        "containers": [
+          {
+            "id": "1a70011",
+            "elType": "container",
+            "settings": {
+              "content_width": "full",
+              "html_tag": "section",
+              "flex_direction": "column",
+              "_element_id": "hero",
+              "padding": {
+                "unit": "px",
+                "top": "128",
+                "right": "24",
+                "bottom": "128",
+                "left": "24",
+                "isLinked": false
+              },
+              "padding_tablet": {
+                "unit": "px",
+                "top": "96",
+                "right": "24",
+                "bottom": "96",
+                "left": "24",
+                "isLinked": false
+              },
+              "padding_mobile": {
+                "unit": "px",
+                "top": "72",
+                "right": "24",
+                "bottom": "72",
+                "left": "24",
+                "isLinked": false
+              },
+              "background_background": "classic",
+              "background_color": "#15171C",
+              "background_image": {
+                "id": "5",
+                "url": "https://example.com/wp-content/uploads/2026/10/hero-1600x900.jpg"
+              },
+              "background_position": "center center",
+              "background_size": "cover",
+              "background_repeat": "no-repeat",
+              "background_overlay_background": "classic",
+              "background_overlay_color": "#15171C",
+              "background_overlay_opacity": {
+                "unit": "px",
+                "size": "0.45"
+              },
+              "min_height": {
+                "unit": "vh",
+                "size": "80"
+              },
+              "min_height_mobile": {
+                "unit": "vh",
+                "size": "0"
+              },
+              "flex_justify_content": "center",
+              "_title": "WPMgr \u00b7 Section"
+            },
+            "elements": [
+              {
+                "id": "1a70012",
+                "elType": "widget",
+                "settings": {
+                  "title": "Launch week",
+                  "header_size": "h1"
+                },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "1a70011",
+          "sel": ":not(.elementor-motion-effects-element-type-background)",
+          "media": null,
+          "decl": {
+            "background-color": "#15171C",
+            "background-position": "center center",
+            "background-repeat": "no-repeat",
+            "background-size": "cover"
+          }
+        },
+        {
+          "el": "1a70011",
+          "sel": "::before",
+          "media": null,
+          "decl": {
+            "background-color": "#15171C"
+          }
+        },
+        {
+          "el": "1a70011",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--overlay-opacity": "0.45"
+          }
+        },
+        {
+          "el": "1a70011",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--min-height": "80vh",
+            "--justify-content": "center"
+          }
+        },
+        {
+          "el": "1a70011",
+          "sel": "",
+          "media": "max-width:767px",
+          "decl": {
+            "--min-height": "0vh"
+          }
+        },
+        {
+          "el": "1a70011",
+          "sel": "",
+          "media": null,
+          "any": [
+            {
+              "--padding-top": "128px",
+              "--padding-bottom": "128px",
+              "--padding-left": "24px",
+              "--padding-right": "24px"
+            },
+            {
+              "--padding-block-start": "128px",
+              "--padding-block-end": "128px",
+              "--padding-inline-start": "24px",
+              "--padding-inline-end": "24px"
+            }
+          ]
+        },
+        {
+          "el": "1a70011",
+          "sel": "",
+          "media": "max-width:1024px",
+          "any": [
+            {
+              "--padding-top": "96px",
+              "--padding-bottom": "96px",
+              "--padding-left": "24px",
+              "--padding-right": "24px"
+            },
+            {
+              "--padding-block-start": "96px",
+              "--padding-block-end": "96px",
+              "--padding-inline-start": "24px",
+              "--padding-inline-end": "24px"
+            }
+          ]
+        },
+        {
+          "el": "1a70011",
+          "sel": "",
+          "media": "max-width:767px",
+          "any": [
+            {
+              "--padding-top": "72px",
+              "--padding-bottom": "72px",
+              "--padding-left": "24px",
+              "--padding-right": "24px"
+            },
+            {
+              "--padding-block-start": "72px",
+              "--padding-block-end": "72px",
+              "--padding-inline-start": "24px",
+              "--padding-inline-end": "24px"
+            }
+          ]
+        }
+      ],
+      "html_ids": [
+        "hero"
+      ],
+      "html_tags": {
+        "hero": "section"
+      },
+      "html_text": [
+        "Launch week"
+      ],
+      "html_has": [
+        {
+          "sel": "section#hero.e-con.e-con-full"
+        },
+        {
+          "sel": "section#hero h1"
+        }
+      ],
+      "plants": {
+        "misspell_key": {
+          "el": "1a70011",
+          "key": "min_height"
+        },
+        "drop_activator": {
+          "el": "1a70011",
+          "key": "background_overlay_background"
+        }
+      }
+    },
+    {
+      "name": "layout-columns-row",
+      "about": "A columns row: an inner row container with flex_direction row, flex_direction_mobile column and flex_gap as a gaps value (column, row, isLinked, unit) per breakpoint, holding two inner child containers with content_width full, a percent width and a width_mobile of 100. The row direction and gap reach the post CSS per breakpoint, and each child's width is written from 768px up with 100% at mobile.",
+      "trees": {
+        "containers": [
+          {
+            "id": "1a70021",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "1a70022",
+                "elType": "container",
+                "settings": {
+                  "flex_direction": "row",
+                  "flex_direction_mobile": "column",
+                  "flex_gap": {
+                    "column": "32",
+                    "row": "32",
+                    "isLinked": true,
+                    "unit": "px"
+                  },
+                  "flex_gap_tablet": {
+                    "column": "24",
+                    "row": "24",
+                    "isLinked": true,
+                    "unit": "px"
+                  },
+                  "flex_gap_mobile": {
+                    "column": "20",
+                    "row": "20",
+                    "isLinked": true,
+                    "unit": "px"
+                  }
+                },
+                "elements": [
+                  {
+                    "id": "1a70023",
+                    "elType": "container",
+                    "settings": {
+                      "content_width": "full",
+                      "width": {
+                        "unit": "%",
+                        "size": "55"
+                      },
+                      "width_mobile": {
+                        "unit": "%",
+                        "size": "100"
+                      }
+                    },
+                    "elements": [
+                      {
+                        "id": "1a70025",
+                        "elType": "widget",
+                        "settings": {
+                          "title": "Copy column",
+                          "header_size": "h2"
+                        },
+                        "elements": [],
+                        "widgetType": "heading"
+                      }
+                    ],
+                    "isInner": true
+                  },
+                  {
+                    "id": "1a70024",
+                    "elType": "container",
+                    "settings": {
+                      "content_width": "full",
+                      "width": {
+                        "unit": "%",
+                        "size": "45"
+                      },
+                      "width_mobile": {
+                        "unit": "%",
+                        "size": "100"
+                      }
+                    },
+                    "elements": [
+                      {
+                        "id": "1a70026",
+                        "elType": "widget",
+                        "settings": {
+                          "title": "Image column",
+                          "header_size": "h2"
+                        },
+                        "elements": [],
+                        "widgetType": "heading"
+                      }
+                    ],
+                    "isInner": true
+                  }
+                ],
+                "isInner": true
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "1a70022",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--flex-direction": "row"
+          }
+        },
+        {
+          "el": "1a70022",
+          "sel": "",
+          "media": "max-width:767px",
+          "decl": {
+            "--flex-direction": "column"
+          }
+        },
+        {
+          "el": "1a70022",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--gap": "32px 32px"
+          }
+        },
+        {
+          "el": "1a70022",
+          "sel": "",
+          "media": "max-width:1024px",
+          "decl": {
+            "--gap": "24px 24px"
+          }
+        },
+        {
+          "el": "1a70022",
+          "sel": "",
+          "media": "max-width:767px",
+          "decl": {
+            "--gap": "20px 20px"
+          }
+        },
+        {
+          "el": "1a70023",
+          "sel": "",
+          "media": "min-width:768px",
+          "decl": {
+            "--width": "55%"
+          }
+        },
+        {
+          "el": "1a70024",
+          "sel": "",
+          "media": "min-width:768px",
+          "decl": {
+            "--width": "45%"
+          }
+        },
+        {
+          "el": "1a70023",
+          "sel": "",
+          "media": "max-width:767px",
+          "decl": {
+            "--width": "100%"
+          }
+        },
+        {
+          "el": "1a70024",
+          "sel": "",
+          "media": "max-width:767px",
+          "decl": {
+            "--width": "100%"
+          }
+        }
+      ],
+      "html_text": [
+        "Copy column",
+        "Image column"
+      ],
+      "html_has": [
+        {
+          "sel": ".e-con.e-con-full",
+          "min": 2
+        }
+      ],
+      "plants": {
+        "misspell_key": {
+          "el": "1a70023",
+          "key": "width"
+        }
+      }
+    },
+    {
+      "name": "layout-columns-row-boxed-children",
+      "about": "Recorded as false: a child container of a row that does not set content_width full is boxed, and its width and width_mobile are written to no rule, so a row of such children is not split by percent. The row's own direction and gap are written, which is the control that the absences below can be wrong about.",
+      "trees": {
+        "containers": [
+          {
+            "id": "1a70031",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "1a70032",
+                "elType": "container",
+                "settings": {
+                  "flex_direction": "row",
+                  "flex_direction_mobile": "column",
+                  "flex_gap": {
+                    "column": "32",
+                    "row": "32",
+                    "isLinked": true,
+                    "unit": "px"
+                  },
+                  "flex_gap_tablet": {
+                    "column": "24",
+                    "row": "24",
+                    "isLinked": true,
+                    "unit": "px"
+                  },
+                  "flex_gap_mobile": {
+                    "column": "20",
+                    "row": "20",
+                    "isLinked": true,
+                    "unit": "px"
+                  }
+                },
+                "elements": [
+                  {
+                    "id": "1a70033",
+                    "elType": "container",
+                    "settings": {
+                      "width": {
+                        "unit": "%",
+                        "size": "55"
+                      },
+                      "width_mobile": {
+                        "unit": "%",
+                        "size": "100"
+                      }
+                    },
+                    "elements": [
+                      {
+                        "id": "1a70035",
+                        "elType": "widget",
+                        "settings": {
+                          "title": "Copy column",
+                          "header_size": "h2"
+                        },
+                        "elements": [],
+                        "widgetType": "heading"
+                      }
+                    ],
+                    "isInner": true
+                  },
+                  {
+                    "id": "1a70034",
+                    "elType": "container",
+                    "settings": {
+                      "width": {
+                        "unit": "%",
+                        "size": "45"
+                      },
+                      "width_mobile": {
+                        "unit": "%",
+                        "size": "100"
+                      }
+                    },
+                    "elements": [
+                      {
+                        "id": "1a70036",
+                        "elType": "widget",
+                        "settings": {
+                          "title": "Image column",
+                          "header_size": "h2"
+                        },
+                        "elements": [],
+                        "widgetType": "heading"
+                      }
+                    ],
+                    "isInner": true
+                  }
+                ],
+                "isInner": true
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "1a70032",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--flex-direction": "row"
+          }
+        },
+        {
+          "el": "1a70032",
+          "sel": "",
+          "media": "max-width:767px",
+          "decl": {
+            "--flex-direction": "column"
+          }
+        },
+        {
+          "el": "1a70032",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--gap": "32px 32px"
+          }
+        },
+        {
+          "el": "1a70032",
+          "sel": "",
+          "media": "max-width:1024px",
+          "decl": {
+            "--gap": "24px 24px"
+          }
+        },
+        {
+          "el": "1a70032",
+          "sel": "",
+          "media": "max-width:767px",
+          "decl": {
+            "--gap": "20px 20px"
+          }
+        }
+      ],
+      "css_absent": [
+        {
+          "el": "1a70033",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--width": "55%"
+          }
+        },
+        {
+          "el": "1a70034",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--width": "45%"
+          }
+        },
+        {
+          "el": "1a70033",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--width": "100%"
+          }
+        },
+        {
+          "el": "1a70034",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--width": "100%"
+          }
+        }
+      ],
+      "html_text": [
+        "Copy column",
+        "Image column"
+      ]
+    },
+    {
+      "name": "layout-group",
+      "about": "A group: an inner container with content_width full and flex_direction column holding a heading.",
+      "trees": {
+        "containers": [
+          {
+            "id": "1a70041",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "1a70042",
+                "elType": "container",
+                "settings": {
+                  "content_width": "full",
+                  "flex_direction": "column"
+                },
+                "elements": [
+                  {
+                    "id": "1a70043",
+                    "elType": "widget",
+                    "settings": {
+                      "title": "Grouped heading",
+                      "header_size": "h2"
+                    },
+                    "elements": [],
+                    "widgetType": "heading"
+                  }
+                ],
+                "isInner": true
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "1a70042",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--flex-direction": "column"
+          }
+        }
+      ],
+      "html_text": [
+        "Grouped heading"
+      ],
+      "html_has": [
+        {
+          "sel": ".e-con.e-con-full"
+        }
+      ]
+    },
+    {
+      "name": "style-heading-typography",
+      "about": "A heading's whole text style. title_color is the colour of the title, align left is the text-align of the widget (start on a release that maps left to the logical value, left on one that does not), and the typography group is read only because typography_typography is custom: family, size in px, weight, line-height in em and letter-spacing in em each reach the post CSS on the title as the declaration of the same name.",
+      "trees": {
+        "containers": [
+          {
+            "id": "5e70001",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "5e70002",
+                "elType": "widget",
+                "settings": {
+                  "title": "Designed pages start with a type ramp",
+                  "header_size": "h1",
+                  "align": "left",
+                  "title_color": "#15171C",
+                  "typography_typography": "custom",
+                  "typography_font_family": "Fraunces",
+                  "typography_font_size": {
+                    "unit": "px",
+                    "size": "49"
+                  },
+                  "typography_font_weight": "700",
+                  "typography_line_height": {
+                    "unit": "em",
+                    "size": "1.05"
+                  },
+                  "typography_letter_spacing": {
+                    "unit": "em",
+                    "size": "-0.02"
+                  }
+                },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "5e70002",
+          "sel": ".elementor-heading-title",
+          "media": null,
+          "decl": {
+            "color": "#15171C",
+            "font-family": "\"Fraunces\", Sans-serif",
+            "font-size": "49px",
+            "font-weight": "700",
+            "line-height": "1.05em",
+            "letter-spacing": "-0.02em"
+          }
+        },
+        {
+          "el": "5e70002",
+          "sel": "",
+          "media": null,
+          "any": [
+            {
+              "text-align": "start"
+            },
+            {
+              "text-align": "left"
+            }
+          ]
+        }
+      ],
+      "html_text": [
+        "Designed pages start with a type ramp"
+      ],
+      "html_has": [
+        {
+          "sel": "h1.elementor-heading-title",
+          "text": "Designed pages start with a type ramp"
+        }
+      ],
+      "plants": {
+        "misspell_key": {
+          "el": "5e70002",
+          "key": "title_color"
+        },
+        "drop_activator": {
+          "el": "5e70002",
+          "key": "typography_typography"
+        }
+      }
+    },
+    {
+      "name": "style-heading-fluid-size",
+      "about": "A heading size in the custom unit: typography_font_size {unit custom, size a clamp() expression} is written as that expression in the font-size declaration of the title, next to the family and weight of the same group.",
+      "trees": {
+        "containers": [
+          {
+            "id": "5e70011",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "5e70012",
+                "elType": "widget",
+                "settings": {
+                  "title": "A size that follows the screen",
+                  "header_size": "h1",
+                  "title_color": "#15171C",
+                  "typography_typography": "custom",
+                  "typography_font_family": "Fraunces",
+                  "typography_font_size": {
+                    "unit": "custom",
+                    "size": "clamp(2.25rem, 1.25rem + 3.5vw, 3.05rem)"
+                  },
+                  "typography_font_weight": "700",
+                  "typography_line_height": {
+                    "unit": "em",
+                    "size": "1.05"
+                  },
+                  "typography_letter_spacing": {
+                    "unit": "em",
+                    "size": "-0.02"
+                  }
+                },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "5e70012",
+          "sel": ".elementor-heading-title",
+          "media": null,
+          "decl": {
+            "font-size": "clamp(2.25rem, 1.25rem + 3.5vw, 3.05rem)",
+            "font-family": "\"Fraunces\", Sans-serif",
+            "font-weight": "700",
+            "line-height": "1.05em"
+          }
+        }
+      ],
+      "html_text": [
+        "A size that follows the screen"
+      ]
+    },
+    {
+      "name": "style-heading-responsive-size",
+      "about": "A heading size given per screen: typography_font_size is the desktop size, and the sibling keys typography_font_size_tablet and typography_font_size_mobile are written as the font-size declaration of the title inside the tablet and the mobile media condition.",
+      "trees": {
+        "containers": [
+          {
+            "id": "5e70021",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "5e70022",
+                "elType": "widget",
+                "settings": {
+                  "title": "A size set for each screen",
+                  "header_size": "h1",
+                  "title_color": "#15171C",
+                  "typography_typography": "custom",
+                  "typography_font_family": "Fraunces",
+                  "typography_font_size": {
+                    "unit": "px",
+                    "size": "49"
+                  },
+                  "typography_font_size_tablet": {
+                    "unit": "px",
+                    "size": "40"
+                  },
+                  "typography_font_size_mobile": {
+                    "unit": "px",
+                    "size": "32"
+                  },
+                  "typography_font_weight": "700",
+                  "typography_line_height": {
+                    "unit": "em",
+                    "size": "1.05"
+                  },
+                  "typography_letter_spacing": {
+                    "unit": "em",
+                    "size": "-0.02"
+                  }
+                },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "5e70022",
+          "sel": ".elementor-heading-title",
+          "media": null,
+          "decl": {
+            "font-size": "49px",
+            "font-family": "\"Fraunces\", Sans-serif",
+            "font-weight": "700"
+          }
+        },
+        {
+          "el": "5e70022",
+          "sel": ".elementor-heading-title",
+          "media": "max-width:1024px",
+          "decl": {
+            "font-size": "40px"
+          }
+        },
+        {
+          "el": "5e70022",
+          "sel": ".elementor-heading-title",
+          "media": "max-width:767px",
+          "decl": {
+            "font-size": "32px"
+          }
+        }
+      ],
+      "html_text": [
+        "A size set for each screen"
+      ]
+    },
+    {
+      "name": "style-text-editor",
+      "about": "Text-editor styles: text_color is the colour of the widget text, including a colour at an alpha written as rgba(r,g,b,a); the typography group is read only because typography_typography is custom: family, size in px, weight, line-height in em, text-transform and letter-spacing in em each reach the post CSS. One widget each for the body, lead and eyebrow styles.",
+      "trees": {
+        "containers": [
+          {
+            "id": "5e70031",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "5e70032",
+                "elType": "widget",
+                "settings": {
+                  "editor": "<p>Every section reads the same way: one idea and one line of proof.</p>",
+                  "text_color": "#5B616B",
+                  "typography_typography": "custom",
+                  "typography_font_family": "Work Sans",
+                  "typography_font_size": {
+                    "unit": "px",
+                    "size": "16"
+                  },
+                  "typography_font_weight": "400",
+                  "typography_line_height": {
+                    "unit": "em",
+                    "size": "1.6"
+                  }
+                },
+                "elements": [],
+                "widgetType": "text-editor"
+              },
+              {
+                "id": "5e70033",
+                "elType": "widget",
+                "settings": {
+                  "editor": "<p>The lead paragraph sits in the inverse tone.</p>",
+                  "text_color": "rgba(246,245,242,0.8)",
+                  "typography_typography": "custom",
+                  "typography_font_family": "Work Sans",
+                  "typography_font_size": {
+                    "unit": "px",
+                    "size": "20"
+                  },
+                  "typography_font_weight": "400",
+                  "typography_line_height": {
+                    "unit": "em",
+                    "size": "1.5"
+                  }
+                },
+                "elements": [],
+                "widgetType": "text-editor"
+              },
+              {
+                "id": "5e70034",
+                "elType": "widget",
+                "settings": {
+                  "editor": "<p>Eyebrow label</p>",
+                  "text_color": "#0D7A63",
+                  "typography_typography": "custom",
+                  "typography_font_family": "Work Sans",
+                  "typography_font_size": {
+                    "unit": "px",
+                    "size": "13"
+                  },
+                  "typography_font_weight": "600",
+                  "typography_text_transform": "uppercase",
+                  "typography_letter_spacing": {
+                    "unit": "em",
+                    "size": "0.08"
+                  }
+                },
+                "elements": [],
+                "widgetType": "text-editor"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "5e70032",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "color": "#5B616B",
+            "font-family": "\"Work Sans\", Sans-serif",
+            "font-size": "16px",
+            "font-weight": "400",
+            "line-height": "1.6em"
+          }
+        },
+        {
+          "el": "5e70033",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "color": "rgba(246,245,242,0.8)",
+            "font-family": "\"Work Sans\", Sans-serif",
+            "font-size": "20px",
+            "font-weight": "400",
+            "line-height": "1.5em"
+          }
+        },
+        {
+          "el": "5e70034",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "color": "#0D7A63",
+            "font-family": "\"Work Sans\", Sans-serif",
+            "font-size": "13px",
+            "font-weight": "600",
+            "text-transform": "uppercase",
+            "letter-spacing": "0.08em"
+          }
+        }
+      ],
+      "html_text": [
+        "one idea and one line of proof",
+        "The lead paragraph sits in the inverse tone.",
+        "Eyebrow label"
+      ],
+      "plants": {
+        "misspell_key": {
+          "el": "5e70032",
+          "key": "text_color"
+        },
+        "drop_activator": {
+          "el": "5e70034",
+          "key": "typography_typography"
+        }
+      }
+    },
+    {
+      "name": "style-button-fill",
+      "about": "A fill button: background_color under its activator background_background, button_text_color, the hover pair button_background_hover_color (under button_background_hover_background) and hover_color, border_radius as a dimensions value, and the button typography group. The hover pair lands on the hover state of the button, the size is a class of the link and the link is its href.",
+      "trees": {
+        "containers": [
+          {
+            "id": "5e70041",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "5e70042",
+                "elType": "widget",
+                "settings": {
+                  "text": "Start free",
+                  "link": {
+                    "url": "#signup",
+                    "is_external": "",
+                    "nofollow": ""
+                  },
+                  "size": "md",
+                  "button_type": "",
+                  "background_background": "classic",
+                  "background_color": "#0D7A63",
+                  "button_text_color": "#FFFFFF",
+                  "button_background_hover_background": "classic",
+                  "button_background_hover_color": "#095545",
+                  "hover_color": "#FFFFFF",
+                  "border_radius": {
+                    "unit": "px",
+                    "top": "12",
+                    "right": "12",
+                    "bottom": "12",
+                    "left": "12",
+                    "isLinked": true
+                  },
+                  "typography_typography": "custom",
+                  "typography_font_family": "Work Sans",
+                  "typography_font_size": {
+                    "unit": "px",
+                    "size": "15"
+                  },
+                  "typography_font_weight": "600",
+                  "typography_line_height": {
+                    "unit": "em",
+                    "size": "1"
+                  }
+                },
+                "elements": [],
+                "widgetType": "button"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "5e70042",
+          "sel": ".elementor-button",
+          "media": null,
+          "decl": {
+            "background-color": "#0D7A63",
+            "color": "#FFFFFF",
+            "border-radius": "12px 12px 12px 12px",
+            "font-family": "\"Work Sans\", Sans-serif",
+            "font-size": "15px",
+            "font-weight": "600",
+            "line-height": "1em"
+          }
+        },
+        {
+          "el": "5e70042",
+          "sel": ".elementor-button:hover",
+          "media": null,
+          "decl": {
+            "background-color": "#095545",
+            "color": "#FFFFFF"
+          }
+        }
+      ],
+      "html_text": [
+        "Start free"
+      ],
+      "html_has": [
+        {
+          "sel": "a.elementor-button.elementor-size-md[href=\"#signup\"]",
+          "text": "Start free"
+        }
+      ],
+      "plants": {
+        "misspell_key": {
+          "el": "5e70042",
+          "key": "button_background_hover_color"
+        },
+        "drop_activator": {
+          "el": "5e70042",
+          "key": "typography_typography"
+        }
+      }
+    },
+    {
+      "name": "style-button-outline",
+      "about": "An outline button: a transparent background_color, button_text_color and border_color in the accent, a border that is drawn only because border_border is solid (border_width is a dimensions value, 1.5 px here), and a hover that fills with the accent and turns the text to the on-accent colour.",
+      "trees": {
+        "containers": [
+          {
+            "id": "5e70051",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "5e70052",
+                "elType": "widget",
+                "settings": {
+                  "text": "See pricing",
+                  "link": {
+                    "url": "#pricing",
+                    "is_external": "",
+                    "nofollow": ""
+                  },
+                  "size": "md",
+                  "button_type": "",
+                  "background_background": "classic",
+                  "background_color": "transparent",
+                  "button_text_color": "#0D7A63",
+                  "border_border": "solid",
+                  "border_width": {
+                    "unit": "px",
+                    "top": "1.5",
+                    "right": "1.5",
+                    "bottom": "1.5",
+                    "left": "1.5",
+                    "isLinked": true
+                  },
+                  "border_color": "#0D7A63",
+                  "button_background_hover_background": "classic",
+                  "button_background_hover_color": "#0D7A63",
+                  "hover_color": "#FFFFFF",
+                  "border_radius": {
+                    "unit": "px",
+                    "top": "12",
+                    "right": "12",
+                    "bottom": "12",
+                    "left": "12",
+                    "isLinked": true
+                  },
+                  "typography_typography": "custom",
+                  "typography_font_family": "Work Sans",
+                  "typography_font_size": {
+                    "unit": "px",
+                    "size": "15"
+                  },
+                  "typography_font_weight": "600",
+                  "typography_line_height": {
+                    "unit": "em",
+                    "size": "1"
+                  }
+                },
+                "elements": [],
+                "widgetType": "button"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "5e70052",
+          "sel": ".elementor-button",
+          "media": null,
+          "decl": {
+            "background-color": "transparent",
+            "color": "#0D7A63",
+            "border-style": "solid",
+            "border-width": "1.5px 1.5px 1.5px 1.5px",
+            "border-color": "#0D7A63",
+            "border-radius": "12px 12px 12px 12px"
+          }
+        },
+        {
+          "el": "5e70052",
+          "sel": ".elementor-button:hover",
+          "media": null,
+          "decl": {
+            "background-color": "#0D7A63",
+            "color": "#FFFFFF"
+          }
+        }
+      ],
+      "html_text": [
+        "See pricing"
+      ],
+      "html_has": [
+        {
+          "sel": "a.elementor-button.elementor-size-md[href=\"#pricing\"]",
+          "text": "See pricing"
+        }
+      ],
+      "plants": {
+        "misspell_key": {
+          "el": "5e70052",
+          "key": "border_color"
+        },
+        "drop_activator": {
+          "el": "5e70052",
+          "key": "border_border"
+        }
+      }
+    },
+    {
+      "name": "style-button-text",
+      "about": "A text button: a transparent background and a transparent hover background so the kit's button fill does not show, the accent as the text colour with the darker accent on hover, and an underline from the typography group (the button has no hover typography). No border is drawn because no border_border is set.",
+      "trees": {
+        "containers": [
+          {
+            "id": "5e70061",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "5e70062",
+                "elType": "widget",
+                "settings": {
+                  "text": "Learn more",
+                  "link": {
+                    "url": "#features",
+                    "is_external": "",
+                    "nofollow": ""
+                  },
+                  "size": "md",
+                  "button_type": "",
+                  "background_background": "classic",
+                  "background_color": "transparent",
+                  "button_text_color": "#0D7A63",
+                  "button_background_hover_background": "classic",
+                  "button_background_hover_color": "transparent",
+                  "hover_color": "#095545",
+                  "border_radius": {
+                    "unit": "px",
+                    "top": "12",
+                    "right": "12",
+                    "bottom": "12",
+                    "left": "12",
+                    "isLinked": true
+                  },
+                  "typography_typography": "custom",
+                  "typography_font_family": "Work Sans",
+                  "typography_font_size": {
+                    "unit": "px",
+                    "size": "15"
+                  },
+                  "typography_font_weight": "600",
+                  "typography_line_height": {
+                    "unit": "em",
+                    "size": "1"
+                  },
+                  "typography_text_decoration": "underline"
+                },
+                "elements": [],
+                "widgetType": "button"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "5e70062",
+          "sel": ".elementor-button",
+          "media": null,
+          "decl": {
+            "background-color": "transparent",
+            "color": "#0D7A63",
+            "text-decoration": "underline",
+            "font-size": "15px"
+          }
+        },
+        {
+          "el": "5e70062",
+          "sel": ".elementor-button:hover",
+          "media": null,
+          "decl": {
+            "background-color": "transparent",
+            "color": "#095545"
+          }
+        }
+      ],
+      "css_absent": [
+        {
+          "el": "5e70062",
+          "sel": ".elementor-button",
+          "decl": {
+            "border-style": "solid"
+          }
+        }
+      ],
+      "html_text": [
+        "Learn more"
+      ],
+      "html_has": [
+        {
+          "sel": "a.elementor-button.elementor-size-md[href=\"#features\"]",
+          "text": "Learn more"
+        }
+      ]
+    },
+    {
+      "name": "card-border-shadow",
+      "about": "Container cards as the designed sections write them: padding, a solid border (width, colour, radius) and one box shadow (box_shadow_box_shadow_type yes with a single-layer box_shadow_box_shadow). The plain card, and the highlighted card with a thicker border in the accent colour, carry the border and the shadow in the post CSS. A card that sets no shadow carries none, and a card that sets the shadow value without its switch carries none either.",
+      "trees": {
+        "containers": [
+          {
+            "id": "c4d0001",
+            "elType": "container",
+            "settings": {
+              "content_width": "boxed",
+              "flex_direction": "row",
+              "flex_gap": {
+                "column": "32",
+                "row": "32",
+                "isLinked": true,
+                "unit": "px"
+              },
+              "_title": "WPMgr · Cards",
+              "_element_id": "card-border-shadow"
+            },
+            "elements": [
+              {
+                "id": "c4d0002",
+                "elType": "container",
+                "settings": {
+                  "content_width": "full",
+                  "padding": {
+                    "unit": "px",
+                    "top": "32",
+                    "right": "32",
+                    "bottom": "32",
+                    "left": "32",
+                    "isLinked": true
+                  },
+                  "border_border": "solid",
+                  "border_width": {
+                    "unit": "px",
+                    "top": "1",
+                    "right": "1",
+                    "bottom": "1",
+                    "left": "1",
+                    "isLinked": true
+                  },
+                  "border_color": "rgba(90,96,108,0.2)",
+                  "border_radius": {
+                    "unit": "px",
+                    "top": "12",
+                    "right": "12",
+                    "bottom": "12",
+                    "left": "12",
+                    "isLinked": true
+                  },
+                  "box_shadow_box_shadow_type": "yes",
+                  "box_shadow_box_shadow": {
+                    "horizontal": "0",
+                    "vertical": "8",
+                    "blur": "24",
+                    "spread": "0",
+                    "color": "rgba(21,23,28,0.08)"
+                  }
+                },
+                "elements": [
+                  {
+                    "id": "c4d0012",
+                    "elType": "widget",
+                    "settings": {
+                      "title": "Plain card",
+                      "header_size": "h3",
+                      "title_color": "#15171C"
+                    },
+                    "elements": [],
+                    "widgetType": "heading"
+                  }
+                ],
+                "isInner": true
+              },
+              {
+                "id": "c4d0003",
+                "elType": "container",
+                "settings": {
+                  "content_width": "full",
+                  "padding": {
+                    "unit": "px",
+                    "top": "32",
+                    "right": "32",
+                    "bottom": "32",
+                    "left": "32",
+                    "isLinked": true
+                  },
+                  "border_border": "solid",
+                  "border_width": {
+                    "unit": "px",
+                    "top": "2",
+                    "right": "2",
+                    "bottom": "2",
+                    "left": "2",
+                    "isLinked": true
+                  },
+                  "border_color": "#0D7A63",
+                  "border_radius": {
+                    "unit": "px",
+                    "top": "12",
+                    "right": "12",
+                    "bottom": "12",
+                    "left": "12",
+                    "isLinked": true
+                  },
+                  "box_shadow_box_shadow_type": "yes",
+                  "box_shadow_box_shadow": {
+                    "horizontal": "0",
+                    "vertical": "8",
+                    "blur": "24",
+                    "spread": "0",
+                    "color": "rgba(21,23,28,0.08)"
+                  }
+                },
+                "elements": [
+                  {
+                    "id": "c4d0013",
+                    "elType": "widget",
+                    "settings": {
+                      "title": "Highlighted card",
+                      "header_size": "h3",
+                      "title_color": "#15171C"
+                    },
+                    "elements": [],
+                    "widgetType": "heading"
+                  }
+                ],
+                "isInner": true
+              },
+              {
+                "id": "c4d0004",
+                "elType": "container",
+                "settings": {
+                  "content_width": "full",
+                  "padding": {
+                    "unit": "px",
+                    "top": "32",
+                    "right": "32",
+                    "bottom": "32",
+                    "left": "32",
+                    "isLinked": true
+                  },
+                  "border_border": "solid",
+                  "border_width": {
+                    "unit": "px",
+                    "top": "1",
+                    "right": "1",
+                    "bottom": "1",
+                    "left": "1",
+                    "isLinked": true
+                  },
+                  "border_color": "rgba(90,96,108,0.2)",
+                  "border_radius": {
+                    "unit": "px",
+                    "top": "12",
+                    "right": "12",
+                    "bottom": "12",
+                    "left": "12",
+                    "isLinked": true
+                  }
+                },
+                "elements": [
+                  {
+                    "id": "c4d0014",
+                    "elType": "widget",
+                    "settings": {
+                      "title": "Card without a shadow",
+                      "header_size": "h3",
+                      "title_color": "#15171C"
+                    },
+                    "elements": [],
+                    "widgetType": "heading"
+                  }
+                ],
+                "isInner": true
+              },
+              {
+                "id": "c4d0005",
+                "elType": "container",
+                "settings": {
+                  "content_width": "full",
+                  "padding": {
+                    "unit": "px",
+                    "top": "32",
+                    "right": "32",
+                    "bottom": "32",
+                    "left": "32",
+                    "isLinked": true
+                  },
+                  "border_border": "solid",
+                  "border_width": {
+                    "unit": "px",
+                    "top": "1",
+                    "right": "1",
+                    "bottom": "1",
+                    "left": "1",
+                    "isLinked": true
+                  },
+                  "border_color": "rgba(90,96,108,0.2)",
+                  "border_radius": {
+                    "unit": "px",
+                    "top": "12",
+                    "right": "12",
+                    "bottom": "12",
+                    "left": "12",
+                    "isLinked": true
+                  },
+                  "box_shadow_box_shadow": {
+                    "horizontal": "0",
+                    "vertical": "8",
+                    "blur": "24",
+                    "spread": "0",
+                    "color": "rgba(21,23,28,0.08)"
+                  }
+                },
+                "elements": [
+                  {
+                    "id": "c4d0015",
+                    "elType": "widget",
+                    "settings": {
+                      "title": "Shadow without its switch",
+                      "header_size": "h3",
+                      "title_color": "#15171C"
+                    },
+                    "elements": [],
+                    "widgetType": "heading"
+                  }
+                ],
+                "isInner": true
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "c4d0002",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "border-style": "solid",
+            "border-width": "1px 1px 1px 1px",
+            "border-color": "rgba(90,96,108,0.2)",
+            "box-shadow": "0px 8px 24px 0px rgba(21,23,28,0.08)"
+          }
+        },
+        {
+          "el": "c4d0002",
+          "sel": "",
+          "media": null,
+          "any": [
+            {
+              "--border-radius": "12px 12px 12px 12px"
+            },
+            {
+              "border-radius": "12px 12px 12px 12px"
+            }
+          ]
+        },
+        {
+          "el": "c4d0002",
+          "sel": "",
+          "media": null,
+          "any": [
+            {
+              "--padding-top": "32px",
+              "--padding-bottom": "32px",
+              "--padding-left": "32px",
+              "--padding-right": "32px"
+            },
+            {
+              "--padding-block-start": "32px",
+              "--padding-block-end": "32px",
+              "--padding-inline-start": "32px",
+              "--padding-inline-end": "32px"
+            }
+          ]
+        },
+        {
+          "el": "c4d0003",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "border-style": "solid",
+            "border-width": "2px 2px 2px 2px",
+            "border-color": "#0D7A63",
+            "box-shadow": "0px 8px 24px 0px rgba(21,23,28,0.08)"
+          }
+        },
+        {
+          "el": "c4d0004",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "border-style": "solid",
+            "border-width": "1px 1px 1px 1px",
+            "border-color": "rgba(90,96,108,0.2)"
+          }
+        }
+      ],
+      "css_absent": [
+        {
+          "el": "c4d0004",
+          "sel": "",
+          "decl": {
+            "box-shadow": "0px 8px 24px 0px rgba(21,23,28,0.08)"
+          }
+        },
+        {
+          "el": "c4d0005",
+          "sel": "",
+          "decl": {
+            "box-shadow": "0px 8px 24px 0px rgba(21,23,28,0.08)"
+          }
+        }
+      ],
+      "html_ids": ["card-border-shadow"],
+      "html_text": ["Plain card", "Highlighted card", "Card without a shadow", "Shadow without its switch"],
+      "html_has": [
+        {
+          "sel": "h3.elementor-heading-title",
+          "count": 4
+        }
+      ],
+      "plants": {
+        "misspell_key": {
+          "el": "c4d0003",
+          "key": "border_color"
+        },
+        "drop_activator": {
+          "el": "c4d0002",
+          "key": "box_shadow_box_shadow_type"
+        }
+      }
+    },
+    {
+      "name": "logos-wrapping-row",
+      "about": "The logos row of the designed pages: a full-width container row that wraps (flex_wrap wrap), centred on both axes, with a gap per breakpoint, holding library images of a fixed width. flex_wrap, flex_justify_content, flex_align_items and flex_gap reach the post CSS as --flex-wrap, --justify-content, --align-items and --gap, and each image's width and alignment reach its own rules.",
+      "trees": {
+        "containers": [
+          {
+            "id": "10c0000",
+            "elType": "container",
+            "settings": {
+              "content_width": "full",
+              "flex_direction": "row",
+              "flex_wrap": "wrap",
+              "flex_gap": {
+                "column": "32",
+                "row": "32",
+                "isLinked": true,
+                "unit": "px"
+              },
+              "flex_gap_tablet": {
+                "column": "24",
+                "row": "24",
+                "isLinked": true,
+                "unit": "px"
+              },
+              "flex_gap_mobile": {
+                "column": "20",
+                "row": "20",
+                "isLinked": true,
+                "unit": "px"
+              },
+              "flex_justify_content": "center",
+              "flex_align_items": "center",
+              "_title": "WPMgr · Logos row",
+              "_element_id": "logos-wrapping-row"
+            },
+            "elements": [
+              {
+                "id": "10c0001",
+                "elType": "widget",
+                "settings": {
+                  "image": {
+                    "url": "https://example.com/wp-content/uploads/img-101.png",
+                    "id": "101",
+                    "source": "library"
+                  },
+                  "image_size": "medium",
+                  "align": "center",
+                  "width": {
+                    "unit": "px",
+                    "size": "140"
+                  }
+                },
+                "elements": [],
+                "widgetType": "image"
+              },
+              {
+                "id": "10c0002",
+                "elType": "widget",
+                "settings": {
+                  "image": {
+                    "url": "https://example.com/wp-content/uploads/img-102.png",
+                    "id": "102",
+                    "source": "library"
+                  },
+                  "image_size": "medium",
+                  "align": "center",
+                  "width": {
+                    "unit": "px",
+                    "size": "140"
+                  }
+                },
+                "elements": [],
+                "widgetType": "image"
+              },
+              {
+                "id": "10c0003",
+                "elType": "widget",
+                "settings": {
+                  "image": {
+                    "url": "https://example.com/wp-content/uploads/img-103.png",
+                    "id": "103",
+                    "source": "library"
+                  },
+                  "image_size": "medium",
+                  "align": "center",
+                  "width": {
+                    "unit": "px",
+                    "size": "140"
+                  }
+                },
+                "elements": [],
+                "widgetType": "image"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "10c0000",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--flex-wrap": "wrap",
+            "--justify-content": "center",
+            "--align-items": "center",
+            "--gap": "32px 32px"
+          }
+        },
+        {
+          "el": "10c0000",
+          "sel": "",
+          "media": "max-width:1024px",
+          "decl": {
+            "--gap": "24px 24px"
+          }
+        },
+        {
+          "el": "10c0000",
+          "sel": "",
+          "media": "max-width:767px",
+          "decl": {
+            "--gap": "20px 20px"
+          }
+        },
+        {
+          "el": "10c0001",
+          "sel": "img",
+          "media": null,
+          "decl": {
+            "width": "140px"
+          }
+        },
+        {
+          "el": "10c0001",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "text-align": "center"
+          }
+        },
+        {
+          "el": "10c0002",
+          "sel": "img",
+          "media": null,
+          "decl": {
+            "width": "140px"
+          }
+        },
+        {
+          "el": "10c0002",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "text-align": "center"
+          }
+        },
+        {
+          "el": "10c0003",
+          "sel": "img",
+          "media": null,
+          "decl": {
+            "width": "140px"
+          }
+        },
+        {
+          "el": "10c0003",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "text-align": "center"
+          }
+        }
+      ],
+      "html_has": [
+        {
+          "sel": ".elementor-widget-image img.wp-image-101"
+        },
+        {
+          "sel": ".elementor-widget-image img.wp-image-102"
+        },
+        {
+          "sel": ".elementor-widget-image img.wp-image-103"
+        }
+      ],
+      "html_ids": ["logos-wrapping-row"],
+      "plants": {
+        "misspell_key": {
+          "el": "10c0000",
+          "key": "flex_wrap"
+        }
+      }
+    },
+    {
+      "name": "background-focal-top-bottom",
+      "about": "Section backgrounds placed at the top and at the bottom of their picture: background_position top center and bottom center with the library image sized cover and not repeated, the first with an ink overlay at 0.65 and the second with none. The placement, size, repeat and colour reach the post CSS next to the image; the overlay colour reaches the ::before rule and its unitless fraction reaches --overlay-opacity, and the section without an overlay declares none. The post CSS names the attachment's own address, which the probe cannot spell, so it holds the placement and not the address.",
+      "trees": {
+        "containers": [
+          {
+            "id": "bf00001",
+            "elType": "container",
+            "settings": {
+              "content_width": "full",
+              "html_tag": "section",
+              "flex_direction": "column",
+              "padding": {
+                "unit": "px",
+                "top": "96",
+                "right": "24",
+                "bottom": "96",
+                "left": "24",
+                "isLinked": false
+              },
+              "background_background": "classic",
+              "background_color": "#15171C",
+              "background_image": {
+                "id": "5",
+                "url": "https://example.com/wp-content/uploads/img-5.png"
+              },
+              "background_position": "top center",
+              "background_size": "cover",
+              "background_repeat": "no-repeat",
+              "background_overlay_background": "classic",
+              "background_overlay_color": "#15171C",
+              "background_overlay_opacity": {
+                "unit": "px",
+                "size": "0.65"
+              },
+              "_element_id": "focal-top"
+            },
+            "elements": [
+              {
+                "id": "bf00009",
+                "elType": "widget",
+                "settings": {
+                  "title": "Focal top center",
+                  "header_size": "h2",
+                  "title_color": "#FFFFFF"
+                },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          },
+          {
+            "id": "bf00002",
+            "elType": "container",
+            "settings": {
+              "content_width": "boxed",
+              "html_tag": "section",
+              "flex_direction": "column",
+              "padding": {
+                "unit": "px",
+                "top": "96",
+                "right": "24",
+                "bottom": "96",
+                "left": "24",
+                "isLinked": false
+              },
+              "background_background": "classic",
+              "background_color": "#15171C",
+              "background_image": {
+                "id": "7",
+                "url": "https://example.com/wp-content/uploads/img-7.png"
+              },
+              "background_position": "bottom center",
+              "background_size": "cover",
+              "background_repeat": "no-repeat",
+              "_element_id": "focal-bottom"
+            },
+            "elements": [
+              {
+                "id": "bf0000a",
+                "elType": "widget",
+                "settings": {
+                  "title": "Focal bottom center",
+                  "header_size": "h2",
+                  "title_color": "#FFFFFF"
+                },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "bf00001",
+          "sel": ":not(.elementor-motion-effects-element-type-background)",
+          "media": null,
+          "decl": {
+            "background-color": "#15171C",
+            "background-position": "top center",
+            "background-repeat": "no-repeat",
+            "background-size": "cover"
+          }
+        },
+        {
+          "el": "bf00001",
+          "sel": "::before",
+          "media": null,
+          "decl": {
+            "background-color": "#15171C"
+          }
+        },
+        {
+          "el": "bf00001",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--overlay-opacity": "0.65"
+          }
+        },
+        {
+          "el": "bf00002",
+          "sel": ":not(.elementor-motion-effects-element-type-background)",
+          "media": null,
+          "decl": {
+            "background-color": "#15171C",
+            "background-position": "bottom center",
+            "background-repeat": "no-repeat",
+            "background-size": "cover"
+          }
+        },
+        {
+          "el": "bf00009",
+          "sel": ".elementor-heading-title",
+          "media": null,
+          "decl": {
+            "color": "#FFFFFF"
+          }
+        },
+        {
+          "el": "bf0000a",
+          "sel": ".elementor-heading-title",
+          "media": null,
+          "decl": {
+            "color": "#FFFFFF"
+          }
+        }
+      ],
+      "css_absent": [
+        {
+          "el": "bf00002",
+          "sel": "",
+          "decl": {
+            "--overlay-opacity": "0.65"
+          }
+        }
+      ],
+      "html_ids": ["focal-top", "focal-bottom"],
+      "html_tags": {
+        "focal-top": "section",
+        "focal-bottom": "section"
+      },
+      "html_text": ["Focal top center", "Focal bottom center"],
+      "plants": {
+        "misspell_key": {
+          "el": "bf00001",
+          "key": "background_position"
+        }
+      }
+    },
+    {
+      "name": "pattern-pricing-card",
+      "about": "A pricing card as the designed pricing section composes it: a full-width container child of a row, 33% wide from the tablet breakpoint up and 100% on mobile, with padding per breakpoint, a 2px accent border, a 12px radius and one box shadow, holding a plan-name heading, a price heading written as a div, a text-editor, an icon list and a button in a wrapping inner row. Each part reaches the post CSS, and the page shows the plan name, the price, the three list items and the button with its link.",
+      "trees": {
+        "containers": [
+          {
+            "id": "9c00001",
+            "elType": "container",
+            "settings": {
+              "content_width": "boxed",
+              "flex_direction": "row",
+              "flex_justify_content": "center",
+              "_element_id": "pattern-pricing-card"
+            },
+            "elements": [
+              {
+                "id": "04f8f94",
+                "elType": "container",
+                "settings": {
+                  "content_width": "full",
+                  "width": {
+                    "unit": "%",
+                    "size": "33"
+                  },
+                  "width_mobile": {
+                    "unit": "%",
+                    "size": "100"
+                  },
+                  "padding": {
+                    "unit": "px",
+                    "top": "32",
+                    "right": "32",
+                    "bottom": "32",
+                    "left": "32",
+                    "isLinked": true
+                  },
+                  "padding_tablet": {
+                    "unit": "px",
+                    "top": "28",
+                    "right": "28",
+                    "bottom": "28",
+                    "left": "28",
+                    "isLinked": true
+                  },
+                  "padding_mobile": {
+                    "unit": "px",
+                    "top": "24",
+                    "right": "24",
+                    "bottom": "24",
+                    "left": "24",
+                    "isLinked": true
+                  },
+                  "border_border": "solid",
+                  "border_width": {
+                    "unit": "px",
+                    "top": "2",
+                    "right": "2",
+                    "bottom": "2",
+                    "left": "2",
+                    "isLinked": true
+                  },
+                  "border_color": "#0D7A63",
+                  "border_radius": {
+                    "unit": "px",
+                    "top": "12",
+                    "right": "12",
+                    "bottom": "12",
+                    "left": "12",
+                    "isLinked": true
+                  },
+                  "box_shadow_box_shadow_type": "yes",
+                  "box_shadow_box_shadow": {
+                    "horizontal": "0",
+                    "vertical": "8",
+                    "blur": "24",
+                    "spread": "0",
+                    "color": "rgba(21,23,28,0.08)"
+                  }
+                },
+                "elements": [
+                  {
+                    "id": "43f8c6f",
+                    "elType": "widget",
+                    "settings": {
+                      "title": "Team",
+                      "header_size": "h3",
+                      "align": "left",
+                      "title_color": "#15171C",
+                      "typography_typography": "custom",
+                      "typography_font_family": "Manrope",
+                      "typography_font_size": {
+                        "unit": "px",
+                        "size": "27"
+                      },
+                      "typography_font_weight": "600",
+                      "typography_line_height": {
+                        "unit": "em",
+                        "size": "1.15"
+                      }
+                    },
+                    "elements": [],
+                    "widgetType": "heading"
+                  },
+                  {
+                    "id": "3e9b986",
+                    "elType": "widget",
+                    "settings": {
+                      "title": "49",
+                      "header_size": "div",
+                      "align": "left",
+                      "title_color": "#15171C",
+                      "typography_typography": "custom",
+                      "typography_font_family": "Manrope",
+                      "typography_font_size": {
+                        "unit": "px",
+                        "size": "33"
+                      },
+                      "typography_font_weight": "700",
+                      "typography_line_height": {
+                        "unit": "em",
+                        "size": "1.1"
+                      }
+                    },
+                    "elements": [],
+                    "widgetType": "heading"
+                  },
+                  {
+                    "id": "4743d78",
+                    "elType": "widget",
+                    "settings": {
+                      "editor": "<p>month</p>",
+                      "text_color": "#5A606C",
+                      "typography_typography": "custom",
+                      "typography_font_family": "Source Sans 3",
+                      "typography_font_size": {
+                        "unit": "px",
+                        "size": "17"
+                      },
+                      "typography_font_weight": "400",
+                      "typography_line_height": {
+                        "unit": "em",
+                        "size": "1.6"
+                      }
+                    },
+                    "elements": [],
+                    "widgetType": "text-editor"
+                  },
+                  {
+                    "id": "6250d8a",
+                    "elType": "widget",
+                    "settings": {
+                      "icon_list": [
+                        {
+                          "text": "Included thing 1",
+                          "selected_icon": {
+                            "value": "fas fa-check",
+                            "library": "fa-solid"
+                          },
+                          "_id": "0b3215e"
+                        },
+                        {
+                          "text": "Included thing 2",
+                          "selected_icon": {
+                            "value": "fas fa-check",
+                            "library": "fa-solid"
+                          },
+                          "_id": "57d2aed"
+                        },
+                        {
+                          "text": "Included thing 3",
+                          "selected_icon": {
+                            "value": "fas fa-check",
+                            "library": "fa-solid"
+                          },
+                          "_id": "f6020bf"
+                        }
+                      ],
+                      "icon_color": "#0D7A63",
+                      "text_color": "#5A606C",
+                      "icon_size": {
+                        "unit": "px",
+                        "size": "18"
+                      }
+                    },
+                    "elements": [],
+                    "widgetType": "icon-list"
+                  },
+                  {
+                    "id": "8f95516",
+                    "elType": "container",
+                    "settings": {
+                      "content_width": "full",
+                      "flex_direction": "row",
+                      "flex_wrap": "wrap",
+                      "flex_gap": {
+                        "column": "16",
+                        "row": "16",
+                        "isLinked": true,
+                        "unit": "px"
+                      }
+                    },
+                    "elements": [
+                      {
+                        "id": "fd2bc74",
+                        "elType": "widget",
+                        "settings": {
+                          "text": "Choose Team",
+                          "link": {
+                            "url": "/buy/team",
+                            "is_external": "",
+                            "nofollow": ""
+                          },
+                          "size": "md",
+                          "button_type": "",
+                          "background_background": "classic",
+                          "background_color": "#0D7A63",
+                          "button_text_color": "#FFFFFF",
+                          "button_background_hover_background": "classic",
+                          "button_background_hover_color": "#095545",
+                          "hover_color": "#FFFFFF",
+                          "border_radius": {
+                            "unit": "px",
+                            "top": "12",
+                            "right": "12",
+                            "bottom": "12",
+                            "left": "12",
+                            "isLinked": true
+                          },
+                          "typography_typography": "custom",
+                          "typography_font_family": "Source Sans 3",
+                          "typography_font_size": {
+                            "unit": "px",
+                            "size": "16"
+                          },
+                          "typography_font_weight": "600",
+                          "typography_line_height": {
+                            "unit": "em",
+                            "size": "1"
+                          }
+                        },
+                        "elements": [],
+                        "widgetType": "button"
+                      }
+                    ],
+                    "isInner": true
+                  }
+                ],
+                "isInner": true
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "04f8f94",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "border-style": "solid",
+            "border-width": "2px 2px 2px 2px",
+            "border-color": "#0D7A63",
+            "box-shadow": "0px 8px 24px 0px rgba(21,23,28,0.08)"
+          }
+        },
+        {
+          "el": "04f8f94",
+          "sel": "",
+          "media": null,
+          "any": [
+            {
+              "--border-radius": "12px 12px 12px 12px"
+            },
+            {
+              "border-radius": "12px 12px 12px 12px"
+            }
+          ]
+        },
+        {
+          "el": "04f8f94",
+          "sel": "",
+          "media": "min-width:768px",
+          "decl": {
+            "--width": "33%"
+          }
+        },
+        {
+          "el": "04f8f94",
+          "sel": "",
+          "media": "max-width:767px",
+          "decl": {
+            "--width": "100%"
+          }
+        },
+        {
+          "el": "04f8f94",
+          "sel": "",
+          "media": null,
+          "any": [
+            {
+              "--padding-top": "32px",
+              "--padding-bottom": "32px",
+              "--padding-left": "32px",
+              "--padding-right": "32px"
+            },
+            {
+              "--padding-block-start": "32px",
+              "--padding-block-end": "32px",
+              "--padding-inline-start": "32px",
+              "--padding-inline-end": "32px"
+            }
+          ]
+        },
+        {
+          "el": "04f8f94",
+          "sel": "",
+          "media": "max-width:1024px",
+          "any": [
+            {
+              "--padding-top": "28px",
+              "--padding-bottom": "28px",
+              "--padding-left": "28px",
+              "--padding-right": "28px"
+            },
+            {
+              "--padding-block-start": "28px",
+              "--padding-block-end": "28px",
+              "--padding-inline-start": "28px",
+              "--padding-inline-end": "28px"
+            }
+          ]
+        },
+        {
+          "el": "04f8f94",
+          "sel": "",
+          "media": "max-width:767px",
+          "any": [
+            {
+              "--padding-top": "24px",
+              "--padding-bottom": "24px",
+              "--padding-left": "24px",
+              "--padding-right": "24px"
+            },
+            {
+              "--padding-block-start": "24px",
+              "--padding-block-end": "24px",
+              "--padding-inline-start": "24px",
+              "--padding-inline-end": "24px"
+            }
+          ]
+        },
+        {
+          "el": "43f8c6f",
+          "sel": ".elementor-heading-title",
+          "media": null,
+          "decl": {
+            "color": "#15171C",
+            "font-family": "\"Manrope\", Sans-serif",
+            "font-size": "27px",
+            "font-weight": "600",
+            "line-height": "1.15em"
+          }
+        },
+        {
+          "el": "3e9b986",
+          "sel": ".elementor-heading-title",
+          "media": null,
+          "decl": {
+            "color": "#15171C",
+            "font-family": "\"Manrope\", Sans-serif",
+            "font-size": "33px",
+            "font-weight": "700",
+            "line-height": "1.1em"
+          }
+        },
+        {
+          "el": "4743d78",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "color": "#5A606C",
+            "font-family": "\"Source Sans 3\", Sans-serif",
+            "font-size": "17px",
+            "font-weight": "400",
+            "line-height": "1.6em"
+          }
+        },
+        {
+          "el": "6250d8a",
+          "sel": ".elementor-icon-list-icon i",
+          "media": null,
+          "decl": {
+            "color": "#0D7A63"
+          }
+        },
+        {
+          "el": "6250d8a",
+          "sel": ".elementor-icon-list-text",
+          "media": null,
+          "decl": {
+            "color": "#5A606C"
+          }
+        },
+        {
+          "el": "8f95516",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--flex-wrap": "wrap",
+            "--gap": "16px 16px"
+          }
+        },
+        {
+          "el": "fd2bc74",
+          "sel": ".elementor-button",
+          "media": null,
+          "decl": {
+            "background-color": "#0D7A63",
+            "color": "#FFFFFF",
+            "border-radius": "12px 12px 12px 12px",
+            "font-size": "16px",
+            "font-weight": "600",
+            "line-height": "1em"
+          }
+        },
+        {
+          "el": "fd2bc74",
+          "sel": ".elementor-button:hover",
+          "media": null,
+          "decl": {
+            "background-color": "#095545",
+            "color": "#FFFFFF"
+          }
+        }
+      ],
+      "html_ids": ["pattern-pricing-card"],
+      "html_text": ["Team", "49", "month", "Included thing 1", "Included thing 2", "Included thing 3", "Choose Team"],
+      "html_has": [
+        {
+          "sel": "h3.elementor-heading-title",
+          "text": "Team"
+        },
+        {
+          "sel": "div.elementor-heading-title",
+          "text": "49"
+        },
+        {
+          "sel": ".elementor-icon-list-item",
+          "count": 3
+        },
+        {
+          "sel": "a.elementor-button.elementor-size-md[href=\"/buy/team\"]",
+          "text": "Choose Team"
+        }
+      ]
+    },
+    {
+      "name": "testimonial-without-picture",
+      "about": "A testimonial with testimonial_image {url: \"\", id: \"\"} keeps that empty media value in the saved tree. Its content, name and job are shown and their colours reach the post CSS; the rendered widget has no testimonial image wrapper, img or picture element.",
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c001e",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b001e",
+                "elType": "widget",
+                "settings": {
+                  "testimonial_content": "A helpful team from start to finish.",
+                  "testimonial_image": {
+                    "url": "",
+                    "id": ""
+                  },
+                  "testimonial_name": "Asha Rao",
+                  "testimonial_job": "Customer",
+                  "testimonial_image_position": "aside",
+                  "testimonial_alignment": "left",
+                  "content_content_color": "#2B1D16",
+                  "name_text_color": "#A33B20",
+                  "job_text_color": "#5A4A40",
+                  "_element_id": "testimonial-without-picture"
+                },
+                "elements": [],
+                "widgetType": "testimonial"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b001e",
+          "sel": ".elementor-testimonial-content",
+          "media": null,
+          "decl": {
+            "color": "#2B1D16"
+          }
+        },
+        {
+          "el": "a1b001e",
+          "sel": ".elementor-testimonial-name",
+          "media": null,
+          "decl": {
+            "color": "#A33B20"
+          }
+        },
+        {
+          "el": "a1b001e",
+          "sel": ".elementor-testimonial-job",
+          "media": null,
+          "decl": {
+            "color": "#5A4A40"
+          }
+        }
+      ],
+      "html_ids": [
+        "testimonial-without-picture"
+      ],
+      "widgets": {
+        "testimonial": true
+      },
+      "html_text": [
+        "A helpful team from start to finish.",
+        "Asha Rao",
+        "Customer"
+      ],
+      "html_has": [
+        {
+          "sel": ".elementor-testimonial-content",
+          "text": "A helpful team from start to finish."
+        },
+        {
+          "sel": ".elementor-testimonial-name",
+          "text": "Asha Rao"
+        },
+        {
+          "sel": ".elementor-testimonial-job",
+          "text": "Customer"
+        },
+        {
+          "sel": ".elementor-testimonial-image",
+          "count": 0
+        },
+        {
+          "sel": "img",
+          "count": 0
+        },
+        {
+          "sel": "picture",
+          "count": 0
+        }
+      ]
+    }
+  ]
+}

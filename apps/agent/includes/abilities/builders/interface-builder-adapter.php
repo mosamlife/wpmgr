@@ -24,8 +24,20 @@ if (!defined('ABSPATH')) {
  */
 interface BuilderAdapter
 {
-    /** How a value at an allowed settings path is checked before it is stored. */
-    public const PINS = ['html', 'text', 'url', 'int', 'enum'];
+    /**
+     * How a value at an allowed settings path is checked before it is stored.
+     *
+     * html, text, url, int and a bare enum check one string or integer at the
+     * end of a dotted path. The shape pins (slider, dimensions, gaps, colour,
+     * switcher, image, link, shadow-offset, repeater-id, counter-number) and
+     * an enum with a list check the whole value at their path, which is never
+     * walked into: numbers are decimal strings,
+     * flags are booleans, and a missing, extra or misspelt member refuses it.
+     * A pin may carry an argument after a colon: "enum:a|b" takes only the
+     * listed values ("enum:" takes only ""), and "slider:px|em" narrows the
+     * units a slider takes. LeafPolicy holds the exact forms.
+     */
+    public const PINS = ['html', 'text', 'url', 'int', 'enum', 'slider', 'dimensions', 'gaps', 'colour', 'switcher', 'image', 'link', 'shadow-offset', 'repeater-id', 'counter-number'];
 
     /**
      * The adapter id, one of BuilderRegistry::IDS.
@@ -180,4 +192,15 @@ interface BuilderAdapter
      * @return void
      */
     public function afterRestore(int $postId): void;
+
+    /**
+     * Whether the builder would serve a cached render of the post in place of
+     * the stored document now, so that an edit may not show on the page until
+     * the cache is cleared. A pure read of the post's rows; false when the
+     * builder keeps no such cache or it cannot be told. Never throws.
+     *
+     * @param int $postId Post id.
+     * @return bool
+     */
+    public function servesCachedRender(int $postId): bool;
 }

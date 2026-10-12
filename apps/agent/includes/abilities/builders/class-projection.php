@@ -15,6 +15,7 @@ if (!defined('ABSPATH')) {
  * Nodes are added parent first, in page order. Each is one of:
  *
  *   {ref, parent, kind, level?, editable: [field…], from_the_site: {field: text…}}
+ *   {ref, parent, kind: "pattern", variant, editable: [path…], from_the_site: {path: text…}}
  *   {ref, parent, kind: "locked", label}
  *
  * - ref     the node's id on the page, matching BuilderContract::RE_REF and
@@ -26,6 +27,9 @@ if (!defined('ABSPATH')) {
  * - editable, from_the_site  fields from BuilderContract::FIELDS. Site text
  *           appears only under from_the_site, with any invalid UTF-8 replaced
  *           by U+FFFD.
+ * - variant, path  a pattern node names its variant and offers pattern paths
+ *           (OutlineV3Schema::EDIT_PATH_PATTERN, such as plans.1.price) in
+ *           place of the plain fields; it is added only through addPattern().
  *
  * toArray() answers at most BuilderContract::MAX_STRUCTURE_NODES nodes and at
  * most a byte cap (default BuilderContract::MAX_STRUCTURE_BYTES, measured as
@@ -45,6 +49,12 @@ final class Projection
     /** The kind of a node the adapter does not classify. */
     private const LOCKED = 'locked';
 
+    /** The kind of a WPMgr pattern, which is added with its variant by addPattern(). */
+    private const PATTERN = 'pattern';
+
+    /** A pattern's variant: lower-case words joined by hyphens, as OutlineV3Schema::VARIANTS spells them. */
+    private const RE_VARIANT = '/^[a-z][a-z-]{0,23}$/D';
+
     /**
      * The adapter's label map, key => WPMgr's words.
      *
@@ -57,6 +67,16 @@ final class Projection
 
     /** @var array<int|string, true> */
     private array $refs = [];
+
+    /**
+     * Facts about a node that only the agent's own checks read, by ref:
+     * anchor (a section), links (the sections of the page it links to, "#" and
+     * an anchor) and pattern (the pattern's name). nodes() carries them;
+     * toArray() leaves them out.
+     *
+     * @var array<string, array<string, mixed>>
+     */
+    private array $facts = [];
 
     /**
      * @param array<mixed> $lockedLabels The adapter's label map, key => WPMgr's words; carries FALLBACK_LABEL.
@@ -92,8 +112,8 @@ final class Projection
     public function add(string $ref, string $parent, string $kind, ?int $level, array $editable, array $fromTheSite): void
     {
         $this->checkPlace($ref, $parent);
-        if ($kind === self::LOCKED || !in_array($kind, BuilderContract::KINDS, true)) {
-            throw new \InvalidArgumentException('a node kind must be a projection kind other than locked');
+        if ($kind === self::LOCKED || $kind === self::PATTERN || !in_array($kind, BuilderContract::KINDS, true)) {
+            throw new \InvalidArgumentException('a node kind must be a projection kind other than locked and pattern');
         }
         if ($level !== null && ($level < 1 || $level > 6)) {
             throw new \InvalidArgumentException('a heading level must be 1 to 6');
@@ -125,6 +145,37 @@ final class Projection
     }
 
     /**
+     * Add a WPMgr pattern: a node that offers a path for each piece of text it
+     * holds, in document order, and names its variant.
+     *
+     * @param string               $ref     The node's id on the page.
+     * @param string               $parent  ROOT or the ref of a node added before.
+     * @param string               $variant The pattern's variant, such as three-plans.
+     * @param array<string,string> $fields  Pattern path => the node's current text there.
+     * @return void
+     * @throws \InvalidArgumentException When the node breaks a rule above, a path is not one set_text names, or its text is not a string.
+     */
+    public function addPattern(string $ref, string $parent, string $variant, array $fields): void
+    {
+        $this->checkPlace($ref, $parent);
+        if (preg_match(self::RE_VARIANT, $variant) !== 1) {
+            throw new \InvalidArgumentException('a pattern variant is lower-case words joined by hyphens');
+        }
+        $paths = [];
+        $text  = [];
+        foreach ($fields as $path => $value) {
+            if (!is_string($path) || preg_match('/' . OutlineV3Schema::EDIT_PATH_PATTERN . '/D', $path) !== 1 || !is_string($value)) {
+                throw new \InvalidArgumentException('a pattern field is a path set_text names, with site text');
+            }
+            $paths[]      = $path;
+            $text[$path] = self::validUtf8($value);
+        }
+
+        $this->nodes[]    = ['ref' => $ref, 'parent' => $parent, 'kind' => self::PATTERN, 'variant' => $variant, 'editable' => $paths, 'from_the_site' => (object) $text];
+        $this->refs[$ref] = true;
+    }
+
+    /**
      * Add a node the adapter does not classify. Its label is the adapter's
      * map text for $labelKey, or the fallback text when the map has no such
      * key; $labelKey itself never appears in the answer.
@@ -152,7 +203,32 @@ final class Projection
      */
     public function nodes(): array
     {
-        return $this->nodes;
+        if ($this->facts === []) {
+            return $this->nodes;
+        }
+        $out = [];
+        foreach ($this->nodes as $node) {
+            $out[] = isset($this->facts[$node['ref']]) ? $node + $this->facts[$node['ref']] : $node;
+        }
+
+        return $out;
+    }
+
+    /**
+     * Attach facts to a node already added: anchor, links or pattern. They
+     * appear in nodes() and never in toArray().
+     *
+     * @param string               $ref   The node's ref.
+     * @param array<string, mixed> $facts The facts.
+     * @return void
+     * @throws \InvalidArgumentException When no node has that ref.
+     */
+    public function note(string $ref, array $facts): void
+    {
+        if (!isset($this->refs[$ref])) {
+            throw new \InvalidArgumentException('only a node of the page carries facts');
+        }
+        $this->facts[$ref] = $facts + ($this->facts[$ref] ?? []);
     }
 
     /**

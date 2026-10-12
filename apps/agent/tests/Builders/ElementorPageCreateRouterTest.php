@@ -27,7 +27,9 @@ use ReflectionProperty;
 use WPMgr\Agent\Abilities\AbilityLedger;
 use WPMgr\Agent\Abilities\Builders\BuilderDocumentFingerprint;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
+use WPMgr\Agent\Abilities\Builders\ElementorClassicMapper;
 use WPMgr\Agent\Abilities\Builders\ElementorDocument;
+use WPMgr\Agent\Abilities\Builders\LeafPolicy;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
 use WPMgr\Agent\Commands\AbilityRunCommand;
 use WPMgr\Agent\Commands\ContentEditingEnableCommand;
@@ -96,6 +98,9 @@ final class ElementorPageCreateRouterTest extends TestCase
 
     /** @var array<int,list<object>> Revisions by parent id. */
     private array $revisions = [];
+
+    /** @var array<int,array{mime:string,image:bool}> Media library attachments by id. */
+    private array $attachments = [];
 
     /** @var array<int,true> Posts with an autosave. */
     private array $autosaves = [];
@@ -365,6 +370,14 @@ final class ElementorPageCreateRouterTest extends TestCase
             $pre['precheck_digest'],
             'the precheck digest binds the entry, the input bytes, the base and the preview'
         );
+        // The frame and the site fact it is resolved from sit beside the
+        // preview, never in it: the preview's members are a closed set.
+        $this->assertSame(['block_theme' => false, 'page_frame' => null], $pre['builder_facts'] ?? null, 'a version 2 outline has no frame');
+        Functions\when('wp_is_block_theme')->justReturn(true);
+        $block = $this->precheck(self::REQ_GOLDEN, $input);
+        $this->assertSame(['block_theme' => true, 'page_frame' => null], $block['builder_facts'] ?? null);
+        $this->assertSame($pre['preview'], $block['preview'], 'a version 2 page is built the same on a block theme');
+        Functions\when('wp_is_block_theme')->justReturn(false);
 
         // Sections when the site has the container layout off.
         $this->api->experiments['container'] = false;
@@ -646,7 +659,433 @@ final class ElementorPageCreateRouterTest extends TestCase
         $this->assertSame([], $this->inserted);
     }
 
+    // ---- outline version 3: a designed page through the command ----------------
+
+    public function testV3Create(): void
+    {
+        $this->enable();
+        $this->v3Site();
+        $input = $this->v3Input('v3-full-landing-page');
+        $pre   = $this->precheck(self::REQ_GOLDEN, $input);
+
+        $this->assertTrue($pre['ok'] ?? null, (string) json_encode($pre));
+        $this->assertSame('prechecked', $pre['outcome']);
+        $this->assertSame('containers', $pre['preview']['layout']);
+        $this->assertSame(['block_theme' => false, 'page_frame' => 'full_width', 'active_breakpoints' => ['mobile', 'tablet']], $pre['builder_facts'] ?? null);
+        $this->assertSame([42, 101, 102, 103, 104, 105, 106, 201, 202, 203], array_column($pre['preview']['media'] ?? [], 'id'), 'the backgrounds, logos and avatars are resolved too');
+
+        $tree = $pre['preview']['tree'];
+        $this->assertSame(
+            ['top', 'clients', 'features', 'numbers', 'stories', 'pricing', 'faq', 'signup'],
+            array_map(static fn (array $section): mixed => $section['settings']['_element_id'] ?? null, $tree),
+            'one container for each section, its anchor as the element id'
+        );
+        $labels = self::labelsOf($tree);
+        $this->assertSame(8, count(array_keys($labels, LeafPolicy::SECTION_LABEL, true)), 'every section carries its label');
+        foreach (["WPMgr \u{00B7} Hero background", "WPMgr \u{00B7} Logos row", "WPMgr \u{00B7} Features split", "WPMgr \u{00B7} Stats counters", "WPMgr \u{00B7} Testimonials featured", "WPMgr \u{00B7} Pricing three-plans", "WPMgr \u{00B7} FAQ accordion", "WPMgr \u{00B7} CTA band"] as $label) {
+            $this->assertCount(1, array_keys($labels, $label, true), $label . ' stands once in the tree');
+        }
+        $hero = $tree[0]['settings'];
+        $this->assertSame(['id' => '42', 'url' => 'https://example.com/wp-content/uploads/2026/10/img-42.jpg'], $hero['background_image'] ?? null);
+        $this->assertSame('#15171C', $hero['background_color'] ?? null, 'the section over a picture is in the inverse tone: the ink colour');
+        $this->assertSame(['unit' => 'px', 'size' => '0.65'], $hero['background_overlay_opacity'] ?? null, 'a strong overlay');
+        $this->assertNull(
+            LeafPolicy::checkTree($tree, LeafPolicy::forBreakpoints(ElementorClassicMapper::designedKeys(), ['mobile', 'tablet']), ElementorClassicMapper::LEAF_RULES),
+            'the whole tree is on the designed allowlist for this site\'s breakpoints'
+        );
+        $this->assertSame([], $this->inserted, 'a precheck creates nothing');
+
+        $r = $this->write(self::REQ_GOLDEN, $input, $pre['precheck_digest'], $pre['preview_digest']);
+        $this->assertTrue($r['ok'] ?? null, (string) json_encode($r));
+        $this->assertSame('created', $r['outcome']);
+        $this->assertSame(['tree_equal' => true, 'status' => 'draft'], $r['verify']);
+        $id = (int) $r['post_id'];
+        $this->assertSame([$id], $this->inserted);
+        $stored = BuilderDocumentFingerprint::read($id, array_merge(ElementorDocument::DESCRIPTOR_KEYS, [ElementorDocument::MARKER_KEY]));
+        $this->assertSame($tree, json_decode($stored['rows'][ElementorDocument::KEY_DATA][0], true), 'Elementor stored the approved tree');
+        $this->assertSame(ElementorDocument::pageTemplate('full_width'), $this->meta[$id][ElementorDocument::KEY_PAGE_TEMPLATE] ?? null, 'the frame is the page template, a plain row');
+        $this->assertSame(
+            [ElementorDocument::pageSettingsBytes(['hide_title' => 'yes'])],
+            BuilderDocumentFingerprint::read($id, [ElementorDocument::KEY_PAGE_SETTINGS])['rows'][ElementorDocument::KEY_PAGE_SETTINGS] ?? null,
+            'a full-width page that opens with a hero hides the theme\'s title: one row, written once'
+        );
+        $this->assertSame('completed', AbilityLedger::get(self::REQ_GOLDEN)['phase'] ?? null);
+        $this->assertSame([], $this->hooks, 'the write scope is disarmed');
+    }
+
+    public function testV3HeroPrecheckPath(): void
+    {
+        $this->enable();
+        $this->v3Site();
+        $heroOnly = $this->v3Decoded('v3-full-landing-page');
+        $heroOnly['outline'] = [$heroOnly['outline'][0]];
+        $heroOnly['page_frame'] = 'theme';
+        $heroOnly['outline'][0]['children'][0]['children'][2]['buttons'][0]['url'] = '/pricing';
+        $input = (string) json_encode($heroOnly, JSON_UNESCAPED_UNICODE);
+
+        $pre = $this->precheck(self::REQ_GOLDEN, $input);
+        $this->assertTrue($pre['ok'] ?? null, (string) json_encode($pre));
+        $this->assertSame(['block_theme' => false, 'page_frame' => 'theme', 'active_breakpoints' => ['mobile', 'tablet']], $pre['builder_facts']);
+        $this->assertSame([42], array_column($pre['preview']['media'], 'id'));
+        $this->assertCount(1, $pre['preview']['tree']);
+        $section = $pre['preview']['tree'][0];
+        $this->assertSame('top', $section['settings']['_element_id']);
+        $this->assertSame("WPMgr \u{00B7} Hero background", $section['elements'][0]['settings']['_title'] ?? null);
+        $heading = $section['elements'][0]['elements'][0] ?? [];
+        $this->assertSame(['heading', 'h1'], [$heading['widgetType'] ?? null, $heading['settings']['header_size'] ?? null], 'the page\'s one title is the hero\'s');
+
+        // The same hero with another request id has other node ids and the same design.
+        $again = $this->precheck(self::REQ_B, $input);
+        $this->assertNotSame($pre['preview_digest'], $again['preview_digest']);
+        $this->assertSame($section['settings'], $again['preview']['tree'][0]['settings'], 'the section is a function of the design and the outline');
+    }
+
+    public function testV3PrecheckAnswersTheBreakpointsItCompiledFor(): void
+    {
+        $this->enable();
+        $this->v3Site();
+        $input = $this->v3Input('v3-full-landing-page');
+        $keys  = static function (array $tree) use (&$keys): array {
+            $found = [];
+            foreach ($tree as $node) {
+                $found = array_merge($found, array_keys($node['settings'] ?? []), $keys($node['elements'] ?? []));
+            }
+
+            return $found;
+        };
+
+        foreach ([['tablet'], ['mobile'], [], null] as $active) {
+            $this->api->activeBreakpoints = $active;
+            $pre                          = $this->precheck(self::REQ_GOLDEN, $input);
+            $name                         = json_encode($active);
+
+            $this->assertTrue($pre['ok'] ?? null, $name . ' ' . json_encode($pre));
+            $this->assertArrayHasKey('active_breakpoints', $pre['builder_facts'], $name . ' the answer names the breakpoints');
+            $this->assertSame($active, $pre['builder_facts']['active_breakpoints'], $name . ': the breakpoints the answer names are the ones the tree was compiled for');
+            $used = array_unique($keys($pre['preview']['tree']));
+            $this->assertSame(in_array('tablet', $active ?? [], true), in_array('padding_tablet', $used, true), $name . ' tablet overrides');
+            $this->assertSame(in_array('mobile', $active ?? [], true), in_array('padding_mobile', $used, true), $name . ' mobile overrides');
+        }
+
+        // A plain outline is not compiled for the site's breakpoints, so its answer names none.
+        $this->api->activeBreakpoints = ['mobile', 'tablet'];
+        $plain = $this->precheck(self::REQ_GOLDEN, $this->input('columns'));
+        $this->assertSame(['block_theme' => false, 'page_frame' => null], $plain['builder_facts'] ?? null);
+    }
+
+    public function testPlantedMismatchRefuses(): void
+    {
+        $this->enable();
+        $this->v3Site();
+        $input = $this->v3Input('v3-full-landing-page');
+
+        // Honest: Elementor would store every container as built.
+        $honest = $this->precheck(self::REQ_GOLDEN, $input);
+        $this->assertTrue($honest['ok'] ?? null, (string) json_encode($honest));
+
+        // Planted: Elementor would store the features section differently.
+        $this->api->elementFactory = static function (array $node): object {
+            return new class ($node) {
+                /** @param array<string,mixed> $node */
+                public function __construct(private array $node)
+                {
+                }
+
+                /** @return array<string,mixed> */
+                public function get_data_for_save(): array
+                {
+                    if (($this->node['settings']['_element_id'] ?? null) === 'features') {
+                        $this->node['settings']['padding']['top'] = '0';
+                    }
+
+                    return $this->node;
+                }
+            };
+        };
+        $planted = $this->precheck(self::REQ_GOLDEN, $input);
+        $this->assertSame('builder_would_change_layout', $planted['code'] ?? null, (string) json_encode($planted));
+        $this->assertSame('elements[2]: Elementor would store the element differently', $planted['detail'] ?? null, 'it names the section');
+        $this->assertSame([], $this->inserted);
+        $this->assertNull(AbilityLedger::get(self::REQ_GOLDEN));
+
+        // A write after the approval is refused the same way and creates nothing.
+        $write = $this->write(self::REQ_GOLDEN, $input, $honest['precheck_digest'], $honest['preview_digest']);
+        $this->assertSame('builder_would_change_layout', $write['code'] ?? null, (string) json_encode($write));
+        $this->assertSame([], $this->inserted, 'nothing was created');
+        $this->assertNull(AbilityLedger::get(self::REQ_GOLDEN), 'no ledger row');
+
+        // Not planted again: the same input is built.
+        $this->api->elementFactory = null;
+        $this->assertTrue($this->precheck(self::REQ_GOLDEN, $input)['ok'] ?? null);
+    }
+
+    public function testV3BackgroundThatIsNotAnImageIsRefusedFirst(): void
+    {
+        $this->enable();
+        $this->v3Site();
+        $this->v3Attachment(43, 'application/pdf', false);
+        $page = $this->v3Decoded('v3-full-landing-page');
+        $page['outline'][0]['background']['attachment_id'] = 43;
+
+        $r = $this->precheck(self::REQ_GOLDEN, (string) json_encode($page));
+        $this->assertSame('background_not_image', $r['code'] ?? null, (string) json_encode($r));
+        $this->assertSame('outline[0].background', $r['failures'][0]['path'] ?? null);
+        $this->assertSame('attachment_id', $r['failures'][0]['key'] ?? null);
+
+        // An attachment that does not exist is the image resolution's, as before.
+        $page['outline'][0]['background']['attachment_id'] = 99;
+        $gone = $this->precheck(self::REQ_GOLDEN, (string) json_encode($page));
+        $this->assertSame('image_not_available', $gone['code'] ?? null, (string) json_encode($gone));
+        $this->assertSame([], $this->inserted);
+    }
+
+    public function testV3LogoAltIsTheLibrarys(): void
+    {
+        $this->enable();
+        $this->v3Site();
+        $page = $this->v3Decoded('v3-full-landing-page');
+        $page['outline'][1]['children'][0]['logos'][2]['alt'] = 'Cobalt Inc';
+
+        $r = $this->precheck(self::REQ_GOLDEN, (string) json_encode($page));
+        $this->assertSame('image_alt_from_library', $r['code'] ?? null, (string) json_encode($r));
+        $this->assertSame('outline[1].children[0].logos[2]', $r['failures'][0]['path'] ?? null);
+        $this->assertSame('alt', $r['failures'][0]['key'] ?? null);
+
+        // The library's own alt text is accepted.
+        $this->meta[103]['_wp_attachment_image_alt'] = 'Cobalt Inc';
+        $this->assertTrue($this->precheck(self::REQ_GOLDEN, (string) json_encode($page))['ok'] ?? null);
+    }
+
+    public function testV3InputThatBreaksTheGrammarIsRefusedWithItsFailures(): void
+    {
+        $this->enable();
+        $this->v3Site();
+        $page = $this->v3Decoded('v3-full-landing-page');
+        $page['outline'][3]['anchor'] = 'features';
+
+        $r = $this->precheck(self::REQ_GOLDEN, (string) json_encode($page));
+        $this->assertSame('anchor_duplicate', $r['code'] ?? null, (string) json_encode($r));
+        $this->assertSame('outline[3]', $r['failures'][0]['path'] ?? null, 'the refusal names the section');
+        $this->assertSame([], $this->inserted);
+        $this->assertSame([], $this->api->callsTo('createElementInstance'), 'nothing was built');
+
+        $page['design']['colors']['ink'] = '#F0F0F0';
+        $this->assertSame('design_contrast_low', $this->precheck(self::REQ_GOLDEN, (string) json_encode($page))['code'] ?? null);
+    }
+
+    public function testV3SaveScopeAdmitsItsOwnWritesAndTripsOnOthers(): void
+    {
+        $this->enable();
+        $this->v3Site();
+        $input = $this->v3Input('v3-full-landing-page');
+        $pre   = $this->precheck(self::REQ_GOLDEN, $input);
+
+        // Its own writes: the save of the designed tree, the revision, the style
+        // cache of the page, the page template and the page settings of the insert.
+        $r = $this->write(self::REQ_GOLDEN, $input, $pre['precheck_digest'], $pre['preview_digest']);
+        $this->assertSame('created', $r['outcome'] ?? null, (string) json_encode($r));
+        $this->assertSame('completed', AbilityLedger::get(self::REQ_GOLDEN)['phase'] ?? null);
+
+        // Any other write during the save trips the scope: the page is trashed.
+        $uid = $this->currentUser;
+        $this->hooks = [];
+        $this->api->regenerated = ['status' => 'empty', 'path' => ''];
+        $second = self::REQ_B;
+        $pre2   = $this->precheck($second, $input);
+        $this->assertTrue($pre2['ok'] ?? null, (string) json_encode($pre2));
+        $stray = function (): void {
+            $this->rows->addMeta(++$this->metaId, 1, 'wpmgr_stray', 'x');
+            $this->fire('added_post_meta', $this->metaId, 1, 'wpmgr_stray', 'x');
+        };
+        $this->api->onRegenerate = static function (int $postId) use ($stray): void {
+            $stray();
+        };
+        $bad = $this->write($second, $input, $pre2['precheck_digest'], $pre2['preview_digest']);
+        $this->assertNotSame('created', $bad['outcome'] ?? null, 'a write outside the scope is not a created page: ' . (string) json_encode($bad));
+        $this->assertSame('side_effect_detected', $bad['code'] ?? null, (string) json_encode($bad));
+        $this->assertSame($uid, $this->currentUser);
+    }
+
+    /** @dataProvider designedIconCacheWrites */
+    public function test_designed_icon_cache_save(string $pattern, string $version, string $write, bool $clean): void
+    {
+        $this->enable();
+        $this->v3Site();
+        $this->api->version = $version;
+        $page = $this->v3Decoded('v3-full-landing-page');
+        $page['outline'] = array_values(array_filter($page['outline'], static fn (array $section): bool => $section['anchor'] === $pattern));
+        $this->assertCount(1, $page['outline']);
+        $input = (string) json_encode($page);
+        $pre = $this->precheck(self::REQ_GOLDEN, $input);
+        $this->assertTrue($pre['ok'] ?? null, (string) json_encode($pre));
+        $this->assertStringContainsString('"widgetType":"' . ($pattern === 'features' ? 'icon-box' : 'accordion') . '"', (string) json_encode($pre['preview']['tree']));
+
+        $name = '_elementor_assets_data';
+        $old = ['svg' => ['font-icon' => ['fas fa-star' => ['content' => ['width' => 512, 'height' => 512, 'path' => '<path/>', 'key' => 'fas fa-star'], 'version' => '1']]], 'other' => ['keep' => true]];
+        $new = $old;
+        $new['svg']['font-icon']['fas fa-star']['version'] = '2';
+        $new['svg']['font-icon']['fas fa-plus'] = ['content' => ['width' => 448, 'height' => 512, 'path' => '<path d="M0 0"/>', 'key' => 'fas fa-plus'], 'version' => '2'];
+        $new['css']['widgets'][$pattern] = ['content' => '.elementor-widget-' . $pattern . ' {}', 'version' => $version];
+        $new['json']['widgets'][$pattern] = ['content' => ['mobile' => ['width' => 100, 'enabled' => true]], 'version' => $version];
+        if ($write === 'outside') {
+            $new['other']['keep'] = false;
+        } elseif ($write === 'delete') {
+            unset($new['svg']['font-icon']['fas fa-star']);
+        } elseif ($write === 'extra') {
+            $new['svg']['font-icon']['fas fa-plus']['extra'] = 'x';
+        } elseif ($write === 'object') {
+            $new['json']['widgets'][$pattern]['content']['mobile']['object'] = new \stdClass();
+        } elseif ($write === 'fourth section') {
+            $new['css']['other'] = ['extra' => ['content' => '.other {}', 'version' => '1']];
+        } elseif ($write === 'prefix') {
+            $name .= '_x';
+        } elseif ($write === 'other option') {
+            $name = 'unrelated_option';
+        }
+        $this->options[$name] = $old;
+        $this->alterOnSave = function (array $tree) use ($name, $old, $new): array {
+            $this->options[$name] = $new;
+            $this->fire('updated_option', $name, $old, $new);
+
+            return $tree;
+        };
+        $result = $this->write(self::REQ_GOLDEN, $input, $pre['precheck_digest'], $pre['preview_digest']);
+        if ($clean) {
+            $this->assertSame('created', $result['outcome'] ?? null, (string) json_encode($result));
+            $this->assertSame(['tree_equal' => true, 'status' => 'draft'], $result['verify']);
+            $this->assertSame('draft', $this->posts[(int) $result['post_id']]->post_status);
+            $this->assertSame('completed', AbilityLedger::get(self::REQ_GOLDEN)['phase'] ?? null);
+        } else {
+            $this->assertSame('side_effect_detected', $result['code'] ?? null, (string) json_encode($result));
+            $this->assertTrue($result['trashed'] ?? null, (string) json_encode($result));
+            $this->assertSame('trash', $this->posts[(int) $result['post_id']]->post_status);
+        }
+        $this->assertSame([], $this->hooks);
+    }
+
+    /** @return array<string, array{string, string, string, bool}> */
+    public static function designedIconCacheWrites(): array
+    {
+        $cases = [];
+        foreach (['features', 'faq'] as $pattern) {
+            foreach (['3.20.4', '3.35.9', '4.3.4'] as $version) {
+                foreach (['icons' => true, 'outside' => false, 'delete' => false, 'extra' => false, 'object' => false, 'fourth section' => false, 'prefix' => false, 'other option' => false] as $write => $clean) {
+                    $cases[$pattern . ' ' . $version . ' ' . $write] = [$pattern, $version, $write, $clean];
+                }
+            }
+        }
+
+        return $cases;
+    }
+
     // ---- helpers -----------------------------------------------------------
+
+    /** The accept/refuse table of an outline version 3 input. */
+    private const V3_CASES = __DIR__ . '/../fixtures/ability-run/page-create-v3-cases.json';
+
+    /**
+     * The exact input text of a row of the shared table.
+     */
+    private function v3Input(string $name): string
+    {
+        foreach ($this->v3Rows() as $case) {
+            if ($case['name'] === $name) {
+                return (string) $case['input'];
+            }
+        }
+        throw new \LogicException('no such row: ' . $name);
+    }
+
+    /**
+     * A row's input as an array, to change one member and send again.
+     *
+     * @return array<string,mixed>
+     */
+    private function v3Decoded(string $name): array
+    {
+        $page = json_decode($this->v3Input($name), true, 512, JSON_THROW_ON_ERROR);
+        self::assertIsArray($page);
+
+        return $page;
+    }
+
+    /**
+     * @return list<array<string,mixed>>
+     */
+    private function v3Rows(): array
+    {
+        $doc = json_decode((string) file_get_contents(self::V3_CASES), true, 512, JSON_THROW_ON_ERROR);
+
+        return $doc['cases'];
+    }
+
+    /**
+     * The site a designed page is built on: the images the landing page names, the
+     * widgets the patterns use, and a theme that offers Elementor's page templates.
+     */
+    private function v3Site(): void
+    {
+        // Posts created from here on take ids clear of the attachments' (up to 203).
+        $this->nextId = 5000;
+        $this->api->widgetTypes = ['heading', 'text-editor', 'button', 'image', 'divider', 'spacer', 'icon-box', 'counter', 'testimonial', 'accordion', 'icon-list', 'image-box', 'tabs'];
+        $theme                  = new class () {
+            /** @return array<string,string> */
+            public function get_page_templates($post = null, $post_type = 'page'): array
+            {
+                return ['elementor_header_footer' => 'Elementor Full Width', 'elementor_canvas' => 'Elementor Canvas'];
+            }
+        };
+        Functions\when('wp_get_theme')->justReturn($theme);
+        Functions\when('wp_attachment_is_image')->alias(fn ($id) => (bool) ($this->attachments[(int) $id]['image'] ?? false));
+        Functions\when('get_post_mime_type')->alias(fn ($id) => $this->attachments[(int) $id]['mime'] ?? false);
+        Functions\when('get_post_status')->alias(fn ($id) => isset($this->attachments[(int) $id]) ? 'publish' : false);
+        Functions\when('wp_get_attachment_image_src')->alias(fn ($id, $size = 'thumbnail') => [sprintf('https://example.com/wp-content/uploads/2026/10/img-%d.jpg', (int) $id), 1024, 576]);
+        Functions\when('get_attached_file')->alias(fn ($id) => sprintf('/srv/wp-content/uploads/2026/10/img-%d.jpg', (int) $id));
+        Functions\when('wp_get_attachment_metadata')->justReturn(['width' => 1600, 'height' => 900]);
+        Functions\when('wp_basename')->alias(static fn ($path, $suffix = '') => basename((string) $path, (string) $suffix));
+
+        $logos = [101 => 'Acme logo', 102 => 'Birchwood logo', 103 => 'Cobalt logo', 104 => 'Dunmore logo', 105 => 'Everly logo', 106 => 'Fernhill logo'];
+        foreach ([42, 101, 102, 103, 104, 105, 106, 201, 202, 203] as $id) {
+            $this->v3Attachment($id, 'image/jpeg', true, $logos[$id] ?? '');
+        }
+    }
+
+    /**
+     * An attachment of the media library.
+     */
+    private function v3Attachment(int $id, string $mime, bool $image, string $alt = ''): void
+    {
+        $this->attachments[$id] = ['mime' => $mime, 'image' => $image];
+        $this->posts[$id]       = (object) [
+            'ID'                => $id,
+            'post_type'         => 'attachment',
+            'post_status'       => 'inherit',
+            'post_password'     => '',
+            'post_parent'       => 0,
+            'post_modified_gmt' => '2026-10-01 09:00:00',
+        ];
+        $this->meta[$id]['_wp_attachment_image_alt'] = $alt;
+    }
+
+    /**
+     * Every Navigator label in a tree, in order.
+     *
+     * @param array<mixed> $nodes Elements.
+     * @return list<string>
+     */
+    private static function labelsOf(array $nodes): array
+    {
+        $labels = [];
+        foreach ($nodes as $node) {
+            $label = $node['settings'][LeafPolicy::LABEL_KEY] ?? null;
+            if (is_string($label)) {
+                $labels[] = $label;
+            }
+            array_push($labels, ...self::labelsOf($node['elements'] ?? []));
+        }
+
+        return $labels;
+    }
 
     /**
      * Create the golden columns page as REQ_GOLDEN and answer its post id.
@@ -689,9 +1128,18 @@ final class ElementorPageCreateRouterTest extends TestCase
             'post_modified_gmt' => '0000-00-00 00:00:00',
         ];
         $this->syncRow($id);
+        $unslash = static function ($value) use (&$unslash) {
+            if (is_array($value)) {
+                return array_map($unslash, $value);
+            }
+
+            return is_string($value) ? stripslashes($value) : $value;
+        };
         foreach ((array) ($data['meta_input'] ?? []) as $key => $value) {
-            $this->meta[$id][(string) $key] = stripslashes((string) $value);
-            $this->rows->addMeta(++$this->metaId, $id, (string) $key, stripslashes((string) $value));
+            // As core stores a meta value: an array is serialized, a string kept.
+            $value                          = $unslash($value);
+            $this->meta[$id][(string) $key] = is_array($value) ? $value : (string) $value;
+            $this->rows->addMeta(++$this->metaId, $id, (string) $key, is_array($value) ? ElementorDocument::pageSettingsBytes($value) : (string) $value);
         }
         $this->inserted[] = $id;
 

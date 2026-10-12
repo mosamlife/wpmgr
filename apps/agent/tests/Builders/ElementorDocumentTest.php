@@ -68,12 +68,19 @@ final class ElementorDocumentTest extends TestCase
     /** @var string|false */
     private $locale = false;
 
+    /** @var list<string> Directories made for stylesheets, removed after each test. */
+    private array $cssDirs = [];
+
+    /** @var list<array{0:int,1:string}> The delete_post_meta() calls: post id, meta key. */
+    private array $metaDeletes = [];
+
     protected function set_up(): void
     {
         parent::set_up();
         Monkey\setUp();
-        $this->hooks   = [];
-        $this->options = [];
+        $this->hooks       = [];
+        $this->options     = [];
+        $this->metaDeletes = [];
 
         $capture = function ($tag, $cb, $prio = 10, $args = 1) {
             $this->hooks[] = [(string) $tag, $cb, (int) $prio, (int) $args];
@@ -123,6 +130,13 @@ final class ElementorDocumentTest extends TestCase
 
     protected function tear_down(): void
     {
+        foreach ($this->cssDirs as $dir) {
+            foreach (glob($dir . '/*') ?: [] as $file) {
+                unlink($file);
+            }
+            rmdir($dir);
+        }
+        $this->cssDirs = [];
         if (is_string($this->locale)) {
             setlocale(LC_NUMERIC, $this->locale);
         }
@@ -361,24 +375,44 @@ final class ElementorDocumentTest extends TestCase
         $this->assertSame('the save wrote outside the page: option_written, other_post_meta_written, other_post_written', $dirty['detail'] ?? null);
     }
 
-    public function test_save_options_follow_the_version(): void
+    public function test_save_transients_are_target_bound_and_icon_cache_is_checked(): void
     {
         $document = $this->api->addDocument(self::TARGET);
+        $doc = new ElementorDocument($this->api);
         $document->onSave = function (): bool {
-            $this->fire('added_option', '_elementor_assets_data', []);
             $this->fire('deleted_option', '_transient__elementor_editor_unsaved_' . self::TARGET);
 
             return true;
         };
-        $doc = new ElementorDocument($this->api);
+        foreach (['3.20.4', '3.35.9', '4.3.4', null] as $version) {
+            $this->api->version = $version;
+            $this->assertTrue($doc->save(self::TARGET, self::tree(), self::KIT)['ok'], (string) $version);
+            $this->assertNotContains('_elementor_assets_data', $doc->saveOptionPatterns());
+        }
 
-        $this->api->version = '3.20.4';
-        $this->assertTrue($doc->save(self::TARGET, self::tree(), self::KIT)['ok'], '3.20.x writes its asset cache option');
+        $document->onSave = function (): bool {
+            $this->fire('added_option', '_elementor_assets_data', ['css' => ['x' => 1]]);
 
-        foreach (['3.35.9', '4.3.4', null] as $version) {
+            return true;
+        };
+        foreach (['3.20.4', '3.35.9', '4.3.4', null] as $version) {
             $this->api->version = $version;
             $result             = $doc->save(self::TARGET, self::tree(), self::KIT);
             $this->assertSame(['option_written'], $result['scope']['violations'] ?? null, (string) $version);
+        }
+
+        $document->onSave = function (): bool {
+            $this->fire('updated_option', '_elementor_assets_data', [], [
+                'svg' => ['font-icon' => ['fas-check' => ['content' => ['width' => 512, 'height' => 512, 'path' => '<path/>', 'key' => 'fas-check'], 'version' => '5.15.3']]],
+                'css' => ['widgets' => ['icon-box' => ['content' => '.icon-box {}', 'version' => '1']]],
+                'json' => ['widgets' => ['accordion' => ['content' => ['mobile' => ['enabled' => true]], 'version' => '1']]],
+            ]);
+
+            return true;
+        };
+        foreach (['3.20.4', '3.35.9', '4.3.4', null] as $version) {
+            $this->api->version = $version;
+            $this->assertTrue($doc->save(self::TARGET, self::tree(), self::KIT)['ok'], (string) $version);
         }
 
         // Another post's transient is never the target's.
@@ -639,6 +673,281 @@ final class ElementorDocumentTest extends TestCase
         $this->assertSame([], $this->hooks, 'nothing left installed after the save');
     }
 
+    public function testCssRegeneratedOnceElseWarns(): void
+    {
+        $document = $this->api->addDocument(self::TARGET);
+        $doc      = new ElementorDocument($this->api);
+        $path     = $this->cssDir() . '/post-' . self::TARGET . '.css';
+
+        // label => [what regenerate answers, the file before, what the regeneration does, whether it warns]
+        $cases = [
+            'a stylesheet written by the regeneration' => [['status' => 'file', 'path' => $path], null, fn () => self::writeCss($path, time()), false],
+            'a stylesheet written a moment ahead'      => [['status' => 'file', 'path' => $path], null, fn () => self::writeCss($path, time() + 5), false],
+            'a page with nothing to style'             => [['status' => 'empty', 'path' => $path], null, null, false],
+            'styles printed in the page'               => [['status' => 'inline', 'path' => $path], null, null, false],
+            'no file where one was asked for'          => [['status' => 'file', 'path' => $path], null, null, true],
+            'a file older than the write'              => [['status' => 'file', 'path' => $path], time() - 3600, null, true],
+            'a file ten seconds older'                 => [['status' => 'file', 'path' => $path], time() - 10, null, true],
+            'a file mode with no path to look at'      => [['status' => 'file', 'path' => ''], null, null, true],
+            'a path that is a directory'               => [['status' => 'file', 'path' => dirname($path)], null, null, true],
+            'a regeneration Elementor cannot give'     => [null, null, null, true],
+            'a regeneration that throws'               => [['status' => 'file', 'path' => $path], null, static function (): void {
+                throw new \RuntimeException('Elementor failed');
+            }, true],
+        ];
+        foreach ($cases as $why => [$answer, $before, $during, $warns]) {
+            @unlink($path);
+            clearstatcache();
+            if ($before !== null) {
+                self::writeCss($path, $before);
+            }
+            $this->api->calls        = [];
+            $this->api->regenerated  = $answer;
+            $this->api->onRegenerate = $during === null ? null : static function () use ($during): void {
+                $during();
+            };
+
+            $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+
+            $this->assertTrue($result['ok'], $why . ': the write still succeeds: ' . json_encode($result));
+            $this->assertSame([[self::TARGET]], $this->api->callsTo('regeneratePostCss'), $why . ': regenerated once, for the page');
+            if ($warns) {
+                $this->assertSame(['css_not_regenerated'], array_column($result['warnings'] ?? [], 'code'), $why);
+                $this->assertNotSame('', $result['warnings'][0]['detail'] ?? '', $why . ': the warning says why');
+            } else {
+                $this->assertArrayNotHasKey('warnings', $result, $why);
+            }
+        }
+
+        // The edge of "at or after the write", with the start of the write given: a clock
+        // that keeps the time to two seconds may trail it by two, and no more.
+        $since                   = 1800000000;
+        $this->api->regenerated  = ['status' => 'file', 'path' => $path];
+        $this->api->onRegenerate = null;
+        foreach ([$since + 1 => true, $since => true, $since - 2 => true, $since - 3 => false] as $modified => $kept) {
+            self::writeCss($path, $modified);
+            $warnings = $doc->refreshCaches(self::TARGET, $since);
+            $this->assertSame($kept ? [] : ['css_not_regenerated'], array_column($warnings, 'code'), 'a file modified at ' . ($modified - $since) . ' seconds from the start of the write');
+        }
+
+        // A save that did not store the page regenerates nothing.
+        $this->api->regenerated  = ['status' => 'file', 'path' => $path];
+        $this->api->onRegenerate = null;
+        $this->api->calls        = [];
+        $document->onSave        = static fn (): bool => false;
+        $this->assertSame('builder_save_refused', $doc->save(self::TARGET, self::tree(), self::KIT)['code'] ?? null);
+        $document->onSave = static function (): bool {
+            throw new \RuntimeException('Elementor failed');
+        };
+        $this->assertSame('builder_crashed', $doc->save(self::TARGET, self::tree(), self::KIT)['code'] ?? null);
+        $this->assertSame([], $this->api->callsTo('regeneratePostCss'), 'a refused or crashed save regenerates nothing');
+    }
+
+    public function testRegenerationWritesAreTheSavesOwnAndOtherWritesTrip(): void
+    {
+        $this->api->addDocument(self::TARGET);
+        $doc    = new ElementorDocument($this->api);
+        $name   = self::CACHE . 'local';
+        $other  = ['state' => true, 'meta' => '6ac9bb9c3d4e5'];
+        $before = ['state' => false, 'children' => [self::OTHER => $other]];
+        $own    = ['state' => false, 'children' => [self::OTHER => $other, self::TARGET => self::viewedEntry()]];
+        $theirs = ['state' => false, 'children' => [self::OTHER => ['state' => false], self::TARGET => self::viewedEntry()]];
+
+        $admitted = [
+            'the page\'s own CSS row, added'    => fn () => $this->fire('added_post_meta', 700, self::TARGET, '_elementor_css', ['status' => 'file']),
+            'the page\'s own CSS row, updated'  => fn () => $this->fire('updated_post_meta', 701, self::TARGET, '_elementor_css', ['status' => 'file']),
+            'the page\'s own style-cache entry' => fn () => $this->fire('updated_option', $name, $before, $own),
+        ];
+        foreach ($admitted as $why => $write) {
+            $this->api->onRegenerate = static function () use ($write): void {
+                $write();
+            };
+            $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+            $this->assertSame([true, []], [$result['ok'], $result['scope']['violations'] ?? null], $why . ': ' . json_encode($result));
+            $this->assertSame([], $this->hooks, $why . ': nothing left installed');
+        }
+
+        $tripped = [
+            'another post\'s CSS row'               => [fn () => $this->fire('updated_post_meta', 702, self::OTHER, '_elementor_css', ['status' => 'file']), 'other_post_meta_written'],
+            'another post\'s style-cache entry'     => [fn () => $this->fire('updated_option', $name, $before, $theirs), 'option_written'],
+            'an option the save has no pattern for' => [fn () => $this->fire('updated_option', 'elementor_unrelated_setting', 'a', 'b'), 'option_written'],
+            'a term change'                         => [fn () => $this->fire('set_object_terms', self::TARGET, [], [5], 'category', false, []), 'term_changed'],
+        ];
+        foreach ($tripped as $why => [$write, $violation]) {
+            $this->api->onRegenerate = static function () use ($write): void {
+                $write();
+            };
+            $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+            $this->assertSame(['side_effect_detected', [$violation]], [$result['code'] ?? null, $result['scope']['violations'] ?? null], $why . ': ' . json_encode($result));
+            $this->assertSame([], $this->hooks, $why . ': nothing left installed');
+        }
+
+        // The regeneration runs inside the scope, and the scope is gone after it.
+        $armed                   = [];
+        $this->api->onRegenerate = function () use (&$armed): void {
+            $armed = array_column($this->hooks, 0);
+        };
+        $doc->save(self::TARGET, self::tree(), self::KIT);
+        $this->assertContains('added_post_meta', $armed, 'armed while the stylesheet is regenerated');
+        $this->assertSame([], $this->hooks);
+    }
+
+    public function testElementCacheDeletedOnlyWithPro(): void
+    {
+        $document = $this->api->addDocument(self::TARGET);
+        $this->coreDeletePostMeta();
+        $doc   = new ElementorDocument($this->api);
+        $cache = ElementorDocument::KEY_ELEMENT_CACHE;
+        $newer = '_elementor_element_cache_v2';
+        $empty = ['status' => 'empty', 'path' => ''];
+
+        // label => [Pro active, the key Elementor names, what regenerating answers, the delete calls expected,
+        //           the cache keys the target still holds, the cache keys the other page still holds]
+        $cases = [
+            'Pro active, the default key'             => [true, $cache, $empty, [[self::TARGET, $cache]], [$newer], [$cache, $newer]],
+            'Pro not active'                          => [false, $cache, $empty, [], [$cache, $newer], [$cache, $newer]],
+            'Pro active, Elementor names another key' => [true, $newer, $empty, [[self::TARGET, $newer]], [$cache], [$cache, $newer]],
+            'Pro active, the stylesheet was not made' => [true, $cache, null, [[self::TARGET, $cache]], [$newer], [$cache, $newer]],
+        ];
+        foreach ($cases as $why => [$pro, $key, $regenerated, $deletes, $kept, $otherKept]) {
+            $this->resetRows();
+            $this->metaDeletes = [];
+            foreach ([self::TARGET, self::OTHER] as $post) {
+                foreach ([$cache, $newer] as $name) {
+                    $this->wpdb->addMeta(++$this->metaId, $post, $name, serialize(['timeout' => 1760086400, 'value' => '<div>old</div>']));
+                }
+            }
+            $this->api->pro             = $pro;
+            $this->api->elementCacheKey = $key;
+            $this->api->regenerated     = $regenerated;
+            $this->api->calls           = [];
+
+            $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+
+            $this->assertTrue($result['ok'], $why . ': the write still succeeds: ' . json_encode($result));
+            $this->assertSame($deletes, $this->metaDeletes, $why . ': the delete calls');
+            $this->assertSame($kept, self::keysOf($this->wpdb->metaRowsOf(self::TARGET), [$cache, $newer]), $why . ': the cache rows the page keeps');
+            $this->assertSame($otherKept, self::keysOf($this->wpdb->metaRowsOf(self::OTHER), [$cache, $newer]), $why . ': another page\'s cache rows are never touched');
+            $this->assertSame([[self::TARGET]], $this->api->callsTo('regeneratePostCss'), $why . ': the stylesheet is still regenerated once');
+            $this->assertSame($regenerated === null ? ['css_not_regenerated'] : [], array_column($result['warnings'] ?? [], 'code'), $why . ': the cache step adds no warning');
+        }
+
+        // A page with no cache row: nothing to remove, and nothing to report.
+        $this->resetRows();
+        $this->metaDeletes      = [];
+        $this->api->pro         = true;
+        $this->api->regenerated = $empty;
+        $result                 = $doc->save(self::TARGET, self::tree(), self::KIT);
+        $this->assertSame([true, []], [$result['ok'], $result['warnings'] ?? []], 'a page with no cache row');
+
+        // A key that is a row of the page itself is never deleted as a cache, and never read as one.
+        $this->resetRows();
+        $this->metaDeletes          = [];
+        $this->api->pro             = true;
+        $this->api->elementCacheKey = ElementorDocument::KEY_DATA;
+        $this->wpdb->addMeta(++$this->metaId, self::TARGET, ElementorDocument::KEY_DATA, '[]');
+        $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+        $this->assertSame([true, [], [ElementorDocument::KEY_DATA], false], [$result['ok'], $this->metaDeletes, self::keysOf($this->wpdb->metaRowsOf(self::TARGET), [ElementorDocument::KEY_DATA]), $doc->elementCacheActive(self::TARGET)], 'a key that is a page row');
+        $this->api->elementCacheKey = $cache;
+
+        // A save that did not store the page, or crashed, clears nothing.
+        $failures = [
+            'builder_save_refused' => static fn (): bool => false,
+            'builder_crashed'      => static function (): bool {
+                throw new \RuntimeException('Elementor failed');
+            },
+        ];
+        foreach ($failures as $code => $onSave) {
+            $this->resetRows();
+            $this->metaDeletes = [];
+            $this->wpdb->addMeta(++$this->metaId, self::TARGET, $cache, 'a:0:{}');
+            $document->onSave = $onSave;
+            $this->assertSame($code, $doc->save(self::TARGET, self::tree(), self::KIT)['code'] ?? null);
+            $this->assertSame([[], [$cache]], [$this->metaDeletes, self::keysOf($this->wpdb->metaRowsOf(self::TARGET), [$cache])], $code . ': the cache is left as it was');
+        }
+        $document->onSave = null;
+
+        // A delete that throws is not a failure of the save: the page is stored.
+        $this->resetRows();
+        $this->wpdb->addMeta(++$this->metaId, self::TARGET, $cache, 'a:0:{}');
+        Functions\when('delete_post_meta')->alias(static function (): bool {
+            throw new \RuntimeException('the database failed');
+        });
+        $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+        $this->assertTrue($result['ok'], 'a delete that throws: ' . json_encode($result));
+        $this->assertSame([], $this->hooks, 'a delete that throws: nothing left installed');
+    }
+
+    public function testElementCacheDeleteIsTheSavesOwnAndOtherWritesTrip(): void
+    {
+        $this->api->addDocument(self::TARGET);
+        $this->api->pro = true;
+        $this->coreDeletePostMeta();
+        $doc    = new ElementorDocument($this->api);
+        $cache  = ElementorDocument::KEY_ELEMENT_CACHE;
+        $name   = self::CACHE . 'local';
+        $other  = ['state' => true, 'meta' => '6ac9bb9c3d4e5'];
+        $before = ['state' => false, 'children' => [self::OTHER => $other]];
+        $own    = ['state' => false, 'children' => [self::OTHER => $other, self::TARGET => self::viewedEntry()]];
+        $theirs = ['state' => false, 'children' => [self::OTHER => ['state' => false], self::TARGET => self::viewedEntry()]];
+
+        $admitted = [
+            'the page\'s own cache row, deleted'          => null,
+            'beside the page\'s own CSS and style cache' => function () use ($name, $before, $own): void {
+                $this->fire('updated_post_meta', 701, self::TARGET, '_elementor_css', ['status' => 'file']);
+                $this->fire('updated_option', $name, $before, $own);
+            },
+        ];
+        foreach ($admitted as $why => $write) {
+            $this->resetRows();
+            $this->metaDeletes = [];
+            $this->wpdb->addMeta(++$this->metaId, self::TARGET, $cache, 'a:0:{}');
+            $this->api->onRegenerate = $write === null ? null : static function () use ($write): void {
+                $write();
+            };
+            $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+            $this->assertSame([true, []], [$result['ok'], $result['scope']['violations'] ?? null], $why . ': ' . json_encode($result));
+            $this->assertSame([[self::TARGET, $cache]], $this->metaDeletes, $why . ': the one delete');
+            $this->assertContains($cache, $result['scope']['target_meta_keys'] ?? [], $why . ': the delete is the page\'s own write, made inside the scope');
+            $this->assertSame([], self::keysOf($this->wpdb->metaRowsOf(self::TARGET), [$cache]), $why . ': the row is gone');
+            $this->assertSame([], $this->hooks, $why . ': nothing left installed');
+        }
+
+        $tripped = [
+            'another post\'s cache row, deleted'    => [fn () => $this->fire('deleted_post_meta', [703], self::OTHER, $cache, ''), 'other_post_meta_written'],
+            'another post\'s CSS row'               => [fn () => $this->fire('updated_post_meta', 702, self::OTHER, '_elementor_css', ['status' => 'file']), 'other_post_meta_written'],
+            'another post\'s style-cache entry'     => [fn () => $this->fire('updated_option', $name, $before, $theirs), 'option_written'],
+            'an option the save has no pattern for' => [fn () => $this->fire('updated_option', 'elementor_unrelated_setting', 'a', 'b'), 'option_written'],
+            'a term change'                         => [fn () => $this->fire('set_object_terms', self::TARGET, [], [5], 'category', false, []), 'term_changed'],
+        ];
+        foreach ($tripped as $why => [$write, $violation]) {
+            $this->resetRows();
+            $this->metaDeletes = [];
+            $this->wpdb->addMeta(++$this->metaId, self::TARGET, $cache, 'a:0:{}');
+            $this->api->onRegenerate = static function () use ($write): void {
+                $write();
+            };
+            $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+            $this->assertSame(['side_effect_detected', [$violation]], [$result['code'] ?? null, $result['scope']['violations'] ?? null], $why . ': ' . json_encode($result));
+            $this->assertSame([[self::TARGET, $cache]], $this->metaDeletes, $why . ': the page\'s own delete is not what trips');
+            $this->assertSame([], $this->hooks, $why . ': nothing left installed');
+        }
+
+        // The delete runs inside the scope, after the regeneration, and the scope is gone after it.
+        $armed = [];
+        $this->resetRows();
+        $this->wpdb->addMeta(++$this->metaId, self::TARGET, $cache, 'a:0:{}');
+        Functions\when('delete_post_meta')->alias(function () use (&$armed): bool {
+            $armed = array_column($this->hooks, 0);
+
+            return true;
+        });
+        $this->api->onRegenerate = null;
+        $doc->save(self::TARGET, self::tree(), self::KIT);
+        $this->assertContains('deleted_post_meta', $armed, 'armed while the cache row is deleted');
+        $this->assertSame([], $this->hooks);
+    }
+
     /**
      * The golden containers tree for two columns.
      *
@@ -677,6 +986,45 @@ final class ElementorDocumentTest extends TestCase
     }
 
     /**
+     * delete_post_meta() as core runs it against this table: every row of
+     * the post under the key goes, and deleted_post_meta fires once with the
+     * deleted ids, only when a row was deleted. Each call is recorded.
+     */
+    private function coreDeletePostMeta(): void
+    {
+        Functions\when('delete_post_meta')->alias(function ($postId, $key): bool {
+            $this->metaDeletes[] = [(int) $postId, (string) $key];
+            $ids                 = [];
+            foreach ($this->wpdb->metaRowsOf((int) $postId) as $row) {
+                if ($row['meta_key'] === $key) {
+                    $ids[] = $row['meta_id'];
+                }
+            }
+            if ($ids === []) {
+                return false;
+            }
+            $this->wpdb->delete($this->wpdb->postmeta, ['post_id' => (int) $postId, 'meta_key' => (string) $key]);
+            $this->fire('deleted_post_meta', $ids, (int) $postId, (string) $key, '');
+
+            return true;
+        });
+    }
+
+    /**
+     * Which of $keys the rows hold, in the order $keys lists them.
+     *
+     * @param list<array{meta_id:int,meta_key:string,meta_value:string|null}> $rows Rows of one post.
+     * @param list<string>                                                    $keys Keys to look for.
+     * @return list<string>
+     */
+    private static function keysOf(array $rows, array $keys): array
+    {
+        $held = array_column($rows, 'meta_key');
+
+        return array_values(array_filter($keys, static fn (string $k): bool => in_array($k, $held, true)));
+    }
+
+    /**
      * Start the rows again: the target a draft page, the kit, and the
      * target's edit mode row unless $editMode is false.
      */
@@ -691,6 +1039,38 @@ final class ElementorDocumentTest extends TestCase
         }
         $this->wpdb->addMeta(2, self::KIT, '_elementor_page_settings', 'a:1:{s:13:"system_colors";a:0:{}}');
         $this->wpdb->addMeta(3, self::KIT, '_elementor_data', '[]');
+    }
+
+    /**
+     * A directory for stylesheets, removed after the test.
+     */
+    private function cssDir(): string
+    {
+        $dir = sys_get_temp_dir() . '/wpmgr-css-' . bin2hex(random_bytes(6));
+        mkdir($dir, 0700);
+        $this->cssDirs[] = $dir;
+
+        return $dir;
+    }
+
+    /**
+     * A stylesheet that reads back with the given modification time. Where a
+     * runner reports a time other than the one touch() set, the time set is
+     * moved by the difference, so a test states what the check will read.
+     */
+    private static function writeCss(string $path, int $mtime): void
+    {
+        file_put_contents($path, '.elementor-41 .elementor-element{color:#123456}');
+        touch($path, $mtime);
+        clearstatcache();
+        $skew = (int) filemtime($path) - $mtime;
+        if ($skew !== 0) {
+            touch($path, $mtime - $skew);
+            clearstatcache();
+        }
+        if (filemtime($path) !== $mtime) {
+            throw new \LogicException('the stylesheet\'s modification time cannot be set on this runner');
+        }
     }
 
     /**

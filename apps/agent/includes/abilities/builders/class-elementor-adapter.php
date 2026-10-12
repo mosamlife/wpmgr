@@ -80,6 +80,34 @@ final class ElementorAdapter implements BuilderAdapter
     }
 
     /**
+     * The breakpoints the site has active, which a designed page's tree is
+     * compiled for: Elementor's names in its own order, or null when the
+     * site could not say, which the compile reads as none active. The
+     * precheck answers this same value, so a twin of the compile rebuilds
+     * the tree from what the answer carries.
+     *
+     * @return list<string>|null
+     */
+    public function activeBreakpoints(): ?array
+    {
+        $active = $this->facts()['active_breakpoints'] ?? null;
+
+        return is_array($active) ? array_values($active) : null;
+    }
+
+    /**
+     * The family names in Elementor's font registry on this site, read each
+     * time it is asked: only a page whose design names a family needs them,
+     * so the facts do not carry them.
+     *
+     * @return list<string>|null Null when the registry cannot be read.
+     */
+    public function fontFamilies(): ?array
+    {
+        return $this->api->fontFamilies();
+    }
+
+    /**
      * The document checks, save and read-back for this adapter's Elementor.
      *
      * @return ElementorDocument
@@ -125,7 +153,7 @@ final class ElementorAdapter implements BuilderAdapter
         return new DocumentDescriptor(
             ElementorDocument::DESCRIPTOR_KEYS,
             [],
-            ['_elementor_css', '_elementor_element_cache', '_elementor_page_assets'],
+            ['_elementor_css', ElementorDocument::KEY_ELEMENT_CACHE, '_elementor_page_assets'],
             [ElementorDocument::KEY_EDIT_MODE]
         );
     }
@@ -168,8 +196,19 @@ final class ElementorAdapter implements BuilderAdapter
         if (!is_string($postType) || !in_array($postType, self::POST_TYPES, true)) {
             return ['code' => 'bad_input', 'detail' => 'post_type: not a type an Elementor page is created as'];
         }
-        $containers = ($this->facts()['containers'] ?? null) === true;
-        $mapped     = ElementorClassicMapper::map($spec, $ids, $mediaById, $containers);
+        $facts      = $this->facts();
+        $containers = ($facts['containers'] ?? null) === true;
+        $design     = null;
+        if (($spec['outline_version'] ?? null) === OutlineV3Schema::VERSION) {
+            // A designed page: the design's tokens, and the breakpoints the site has active.
+            try {
+                $tokens = DesignTokens::fromDesign(is_array($spec['design'] ?? null) ? $spec['design'] : []);
+            } catch (\InvalidArgumentException $e) {
+                return ['code' => 'bad_input', 'detail' => 'design: the design could not be read'];
+            }
+            $design = new ElementorSectionCompiler($tokens, $this->activeBreakpoints(), $mediaById);
+        }
+        $mapped = ElementorClassicMapper::map($spec, $ids, $mediaById, $containers, $design);
         if (!isset($mapped['tree'])) {
             return ['code' => $mapped['code'] ?? 'bad_input', 'detail' => $mapped['detail'] ?? 'outline: could not be mapped'];
         }
@@ -217,7 +256,7 @@ final class ElementorAdapter implements BuilderAdapter
      * document carries no meta: an edit stores only the tree, through
      * Elementor's own save.
      */
-    public function planEdit(int $postId, array $ops, IdSeed $ids, array $mediaById): array
+    public function planEdit(int $postId, array $ops, IdSeed $ids, array $mediaById, ?array $design = null): array
     {
         if ($postId < 1) {
             return ['code' => LayoutOps::CODE_UNREADABLE, 'detail' => 'not a post', 'op_index' => null];
@@ -236,7 +275,18 @@ final class ElementorAdapter implements BuilderAdapter
             return ['code' => LayoutOps::CODE_UNREADABLE, 'detail' => 'the Elementor document is not a list of elements', 'op_index' => null];
         }
 
-        $planned = LayoutOps::apply($tree, $ops, $ids, $mediaById, ($this->facts()['containers'] ?? null) === true);
+        // The design the edit carries compiles its new sections, patterns and groups.
+        $compiler = null;
+        if ($design !== null) {
+            try {
+                $tokens = DesignTokens::fromDesign($design);
+            } catch (\InvalidArgumentException $e) {
+                return ['code' => 'bad_input', 'detail' => 'design: the design could not be read', 'op_index' => null];
+            }
+            $active   = $this->facts()['active_breakpoints'] ?? null;
+            $compiler = new ElementorSectionCompiler($tokens, is_array($active) ? array_values($active) : null, $mediaById);
+        }
+        $planned = LayoutOps::apply($tree, $ops, $ids, $mediaById, ($this->facts()['containers'] ?? null) === true, $compiler);
         if (!isset($planned['tree'], $planned['changes'], $planned['touched'], $planned['new_count'])) {
             return ['code' => $planned['code'] ?? 'bad_input', 'detail' => $planned['detail'] ?? 'the operations could not be applied', 'op_index' => $planned['op_index'] ?? null];
         }
@@ -262,7 +312,10 @@ final class ElementorAdapter implements BuilderAdapter
     /**
      * {@inheritDoc}
      *
-     * The post type is the one the document's type stands for.
+     * The post type is the one the document's type stands for, and the page
+     * template the one the document's meta carries, if any. Only a designed
+     * page carries one, and its tree is held to the designed allowlist for
+     * the breakpoints this site has active; a plain page's to ALLOWED_KEYS.
      */
     public function verifyCreated(int $postId, NativeDocument $doc, int $principal, string $requestId): ?string
     {
@@ -272,17 +325,77 @@ final class ElementorAdapter implements BuilderAdapter
             return 'template_type';
         }
 
-        return $this->document->verifyCreated($postId, $doc->tree, $principal, $requestId, $postType);
+        $pageTemplate = $doc->meta[ElementorDocument::KEY_PAGE_TEMPLATE] ?? null;
+        $pageSettings = $doc->meta[ElementorDocument::KEY_PAGE_SETTINGS] ?? null;
+
+        $active  = $this->facts()['active_breakpoints'] ?? null;
+        $allowed = is_string($pageTemplate) ? LeafPolicy::forBreakpoints(ElementorClassicMapper::designedKeys(), is_array($active) ? array_values($active) : []) : null;
+
+        return $this->document->verifyCreated($postId, $doc->tree, $principal, $requestId, $postType, is_string($pageTemplate) ? $pageTemplate : null, is_array($pageSettings) ? $pageSettings : null, $allowed);
     }
 
     /**
      * {@inheritDoc}
      *
-     * ElementorDocument::verifyEdited() over the planned tree.
+     * ElementorDocument::verifyEdited() over the planned tree, and over the
+     * page settings and page template the document's meta carries, when it
+     * carries them: only a change the edit planned is accepted. What the edit
+     * wrote into a designed page, one the edit leaves with a designed section
+     * at its top, is held to the designed allowlist for the breakpoints this
+     * site has active, as a designed page is when it is created; what it
+     * wrote into any other page, to ALLOWED_KEYS.
      */
     public function verifyEdited(int $postId, NativeDocument $doc, array $before): ?string
     {
-        return $this->document->verifyEdited($postId, $doc->tree, $before);
+        $pageSettings = $doc->meta[ElementorDocument::KEY_PAGE_SETTINGS] ?? null;
+        $template     = $doc->meta[ElementorDocument::KEY_PAGE_TEMPLATE] ?? null;
+
+        $allowed = null;
+        if (ElementorClassicMapper::holdsDesignedSection($doc->tree)) {
+            $active  = $this->facts()['active_breakpoints'] ?? null;
+            $allowed = LeafPolicy::forBreakpoints(ElementorClassicMapper::designedKeys(), is_array($active) ? array_values($active) : []);
+        }
+
+        return $this->document->verifyEdited($postId, $doc->tree, $before, is_array($pageSettings) ? $pageSettings : null, is_string($template) ? $template : null, $allowed);
+    }
+
+    /**
+     * The facts the precheck of an edit answers beside its preview, for a
+     * designed page: the breakpoints the site has active (activeBreakpoints()),
+     * which what an inserted section or pattern compiles to and the allowlist
+     * an edited designed page is held to are functions of, so a twin of the
+     * edit check rebuilds the tree from what the answer carries. A page is
+     * designed when it holds a designed section before the edit or after it
+     * (ElementorClassicMapper::holdsDesignedSection()); the answer for any
+     * other page carries no fact.
+     *
+     * @param array<mixed> $before The stored tree.
+     * @param array<mixed> $after  The tree the edit leaves.
+     * @return array{active_breakpoints: list<string>|null}|null Null for a plain page.
+     */
+    public function editFacts(array $before, array $after): ?array
+    {
+        if (!ElementorClassicMapper::holdsDesignedSection($before) && !ElementorClassicMapper::holdsDesignedSection($after)) {
+            return null;
+        }
+
+        return ['active_breakpoints' => $this->activeBreakpoints()];
+    }
+
+    /**
+     * Run $restore, which puts the page's own rows back, inside the page's
+     * write scope and under the active kit's tripwire
+     * (ElementorDocument::restoreScoped()).
+     *
+     * @param int      $postId  The page.
+     * @param callable $restore The restore.
+     * @return array<string, mixed>
+     */
+    public function restoreInScope(int $postId, callable $restore): array
+    {
+        $kitId = $this->facts()['active_kit_id'] ?? 0;
+
+        return $this->document->restoreScoped($postId, is_int($kitId) ? $kitId : 0, $restore);
     }
 
     /**
@@ -293,12 +406,17 @@ final class ElementorAdapter implements BuilderAdapter
      * local styles in every context through Elementor's style-clear action,
      * on the path Elementor clears when a post is published or deleted. The
      * derived meta rows are already gone. Never Elementor's site-wide clear.
+     * Last, the post's CSS is made again once from the rows that are back
+     * (ElementorDocument::refreshCaches()); a stylesheet that cannot be
+     * confirmed is not reported, since a restore returns no result to carry
+     * it, and Elementor makes it again when the page is next shown.
      */
     public function afterRestore(int $postId): void
     {
         if ($postId < 1) {
             return;
         }
+        $since = time();
         $this->api->deletePostCss($postId);
         try {
             do_action('elementor/atomic-widgets/styles/clear', [self::STYLES_KEY_LOCAL, $postId]); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- firing Elementor's documented per-post style invalidation; not a custom hook
@@ -306,5 +424,17 @@ final class ElementorAdapter implements BuilderAdapter
             // Elementor rebuilds the styles on the post's next save.
             unset($e);
         }
+        $this->document->refreshCaches($postId, $since);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * ElementorDocument::elementCacheActive(): Elementor Pro is active and
+     * the post has a cached element output row.
+     */
+    public function servesCachedRender(int $postId): bool
+    {
+        return $this->document->elementCacheActive($postId);
     }
 }

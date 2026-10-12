@@ -17,6 +17,7 @@ use Brain\Monkey;
 use Brain\Monkey\Functions;
 use WPMgr\Agent\Abilities\AbilitySideEffects;
 use WPMgr\Agent\Abilities\AbilityWriteScope;
+use WPMgr\Agent\Abilities\Builders\ElementorDocument;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -538,6 +539,160 @@ final class AbilityWriteScopeTest extends TestCase
                 $this->assertNotSame('', $e->getMessage());
             }
         }
+    }
+
+    /**
+     * @dataProvider iconCacheWrites
+     * @param mixed $before Old option value, already decoded by core.
+     * @param mixed $after New option value, already decoded by core.
+     */
+    public function test_icon_cache_write_is_checked(string $name, mixed $before, mixed $after, bool $clean): void
+    {
+        $scope = new AbilityWriteScope(self::TARGET, [], ElementorDocument::saveOptionChecks());
+        $scope->run(function () use ($name, $before, $after): void {
+            if ($before === AbilityWriteScope::ABSENT) {
+                $this->fire('added_option', $name, $after);
+            } else {
+                $this->fire('updated_option', $name, $before, $after);
+            }
+        });
+        $this->assertSame($clean, $scope->outcome()['clean']);
+        $this->assertSame($clean ? [] : ['option_written'], $scope->outcome()['violations']);
+        $this->assertSame([], $this->hooks);
+    }
+
+    /** @return array<string, array{string, mixed, mixed, bool}> */
+    public static function iconCacheWrites(): array
+    {
+        $name = '_elementor_assets_data';
+        $icon = ['content' => ['width' => 512, 'height' => 512, 'path' => '<path d="M0 0"/>', 'key' => 'fas-check'], 'version' => '5.15.3'];
+        $css = ['css' => ['widgets' => ['icon-box' => ['content' => '.elementor-widget-icon-box { display: block; }', 'version' => '1']]]];
+        $json = ['json' => ['widgets' => ['accordion' => ['content' => ['mobile' => ['width' => 100, 'ratio' => 0.5, 'enabled' => true, 'hidden' => false, 'fallback' => null, 'name' => 'accordion']], 'version' => '1']]]];
+        $all = ['svg' => ['font-icon' => ['fas-check' => $icon]]] + $css + $json;
+        $old = ['svg' => ['font-icon' => ['fas fa-star' => $icon], 'image' => ['keep' => 'svg']], 'other' => ['keep' => true]];
+        $added = $old;
+        $added['svg']['font-icon']['fas fa-plus'] = $icon;
+        $refreshed = $old;
+        $refreshed['svg']['font-icon']['fas fa-star']['version'] = '2';
+        $both = $refreshed;
+        $both['svg']['font-icon']['fas fa-plus'] = $icon;
+        $deleted = $old;
+        unset($deleted['svg']['font-icon']['fas fa-star']);
+        $outside = $added;
+        $outside['svg']['image']['keep'] = 'changed';
+        $root = $added;
+        $root['other']['keep'] = false;
+        $typed = $added;
+        $typed['other']['keep'] = 1;
+        $extra = $added;
+        $extra['svg']['font-icon']['fas fa-plus']['extra'] = 'x';
+        $content = $refreshed;
+        $content['svg']['font-icon']['fas fa-star']['content'] = 1;
+        $version = $added;
+        $version['svg']['font-icon']['fas fa-plus']['version'] = 2;
+        $missing = $refreshed;
+        unset($missing['svg']['font-icon']['fas fa-star']['version']);
+        $scalar = $added;
+        $scalar['svg']['font-icon']['fas fa-plus'] = 'svg';
+        $reversed = $old;
+        $reversed['svg']['font-icon']['fas fa-star'] = ['version' => '2', 'content' => $icon['content']];
+        $markup = $old;
+        $markup['svg']['font-icon']['fas fa-star']['content'] = '<svg/>';
+        $first = ['svg' => ['font-icon' => ['fas-check' => $icon]]];
+        $object = $added;
+        $object['svg']['font-icon']['fas fa-plus']['content']['nested'] = ['object' => new \stdClass()];
+        $outsideObject = $old;
+        $outsideObject['other']['object'] = new \stdClass();
+        $legacyObject = ['svg' => ['font-icon' => ['legacy' => ['content' => ['nested' => new \stdClass()], 'version' => '1']]]];
+        $fourth = $all;
+        $fourth['css']['other'] = ['extra' => ['content' => '.other {}', 'version' => '1']];
+        $cssDeleted = $css;
+        $cssDeleted['css']['widgets'] = [];
+        $jsonDeleted = $json;
+        $jsonDeleted['json']['widgets'] = [];
+        $cssExtra = $css;
+        $cssExtra['css']['widgets']['icon-box']['extra'] = true;
+        $jsonObject = $json;
+        $jsonObject['json']['widgets']['accordion']['content']['mobile']['object'] = new \stdClass();
+
+        return [
+            'entry added' => [$name, $old, $added, true],
+            'version refreshed' => [$name, $old, $refreshed, true],
+            'added and refreshed' => [$name, $old, $both, true],
+            'markup refreshed' => [$name, $old, $markup, true],
+            'entry keys in either order' => [$name, $old, $reversed, true],
+            'first font icon entry' => [$name, ['svg' => []], ['svg' => ['font-icon' => ['fas fa-star' => $icon]]], true],
+            'css widgets string content' => [$name, [], $css, true],
+            'json widgets array content' => [$name, [], $json, true],
+            'all admitted sections in one write' => [$name, [], $all, true],
+            'all admitted sections in new option' => [$name, AbilityWriteScope::ABSENT, $all, true],
+            'all admitted sections refresh' => [$name, ['svg' => ['font-icon' => ['fas-check' => $icon]], 'css' => ['widgets' => []], 'json' => ['widgets' => []]], $all, true],
+            'first icon in absent option' => [$name, AbilityWriteScope::ABSENT, $first, true],
+            'first icon in empty option' => [$name, [], $first, true],
+            'first icon preserves other data' => [$name, ['css' => ['x' => 1]], ['css' => ['x' => 1]] + $first, true],
+            'absent option cannot add other data' => [$name, AbilityWriteScope::ABSENT, ['css' => ['x' => 1]] + $first, false],
+            'entry deleted' => [$name, $old, $deleted, false],
+            'subtree deleted' => [$name, $old, ['svg' => ['image' => ['keep' => 'svg']], 'other' => ['keep' => true]], false],
+            'svg sibling changed' => [$name, $old, $outside, false],
+            'root sibling changed' => [$name, $old, $root, false],
+            'strict sibling types' => [$name, $old, $typed, false],
+            'extra entry key' => [$name, $old, $extra, false],
+            'scalar content' => [$name, $old, $content, false],
+            'non-string version' => [$name, $old, $version, false],
+            'missing entry key' => [$name, $old, $missing, false],
+            'scalar entry' => [$name, $old, $scalar, false],
+            'scalar before' => [$name, false, $added, false],
+            'scalar after' => [$name, $old, 'not an array', false],
+            'deleted option' => [$name, $old, AbilityWriteScope::ABSENT, false],
+            'serialized array is not a decoded array' => [$name, serialize($old), $added, false],
+            'option prefix only' => [$name . '_x', $old, $added, false],
+            'other option' => ['unrelated_option', $old, $added, false],
+            'non-array svg before' => [$name, ['svg' => null], ['svg' => ['font-icon' => ['star' => $icon]]], false],
+            'non-array svg after' => [$name, $old, ['svg' => false, 'other' => ['keep' => true]], false],
+            'non-array subtree before' => [$name, ['svg' => ['font-icon' => false]], ['svg' => ['font-icon' => ['star' => $icon]]], false],
+            'non-array subtree after' => [$name, $old, ['svg' => ['font-icon' => null, 'image' => ['keep' => 'svg']], 'other' => ['keep' => true]], false],
+            'unchanged legacy entry' => [$name, ['svg' => ['font-icon' => ['legacy' => null]]], ['svg' => ['font-icon' => ['legacy' => null, 'star' => $icon]]], true],
+            'legacy entry changed' => [$name, ['svg' => ['font-icon' => ['legacy' => false]]], ['svg' => ['font-icon' => ['legacy' => null]]], false],
+            'object nested inside content' => [$name, $old, $object, false],
+            'object in unchanged outside data' => [$name, $outsideObject, $outsideObject, false],
+            'object in unchanged content' => [$name, $legacyObject, $legacyObject, false],
+            'fourth section' => [$name, [], $fourth, false],
+            'css entry deleted' => [$name, $css, $cssDeleted, false],
+            'json entry deleted' => [$name, $json, $jsonDeleted, false],
+            'css entry extra key' => [$name, [], $cssExtra, false],
+            'json nested object' => [$name, [], $jsonObject, false],
+            'malformed css container' => [$name, ['css' => false], $css, false],
+            'malformed json section' => [$name, $json, ['json' => ['widgets' => null]], false],
+        ];
+    }
+
+    public function test_icon_cache_option_add_is_own_and_delete_is_refused(): void
+    {
+        $name = '_elementor_assets_data';
+        $value = ['svg' => ['font-icon' => ['star' => ['content' => '<svg/>', 'version' => '1']]]];
+        $this->options[$name] = $value;
+        foreach ([[['added_option', $name, $value], []], [['delete_option', $name], ['option_written']]] as [$event, $violations]) {
+            $scope = new AbilityWriteScope(self::TARGET, [], ElementorDocument::saveOptionChecks());
+            $scope->run(fn () => $this->fire(...$event));
+            $this->assertSame($violations, $scope->outcome()['violations']);
+            $this->assertSame([], $this->hooks);
+        }
+    }
+
+    public function test_icon_cache_bad_write_cannot_be_hidden_by_a_later_good_write(): void
+    {
+        $name = '_elementor_assets_data';
+        $old = ['svg' => ['font-icon' => []], 'other' => true];
+        $bad = $old;
+        $bad['other'] = false;
+        $good = $old;
+        $good['svg']['font-icon']['star'] = ['content' => '<svg/>', 'version' => '1'];
+        $scope = new AbilityWriteScope(self::TARGET, [], ElementorDocument::saveOptionChecks());
+        $scope->run(function () use ($name, $old, $bad, $good): void {
+            $this->fire('updated_option', $name, $old, $bad);
+            $this->fire('updated_option', $name, $old, $good);
+        });
+        $this->assertSame(['option_written'], $scope->outcome()['violations']);
     }
 
     // -------------------------------------------------------------------------
