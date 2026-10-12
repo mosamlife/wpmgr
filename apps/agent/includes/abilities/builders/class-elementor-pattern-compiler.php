@@ -282,6 +282,7 @@ final class ElementorPatternCompiler
             'stats'        => $this->stats($ids, $path, $pattern, $tone),
             'logos'        => $this->logos($ids, $path, $pattern),
             'features'     => $this->features($ids, $path, $pattern, $tone),
+            'pricing'      => $this->pricing($ids, $path, $pattern, $tone),
             'testimonials' => $this->testimonials($ids, $path, $pattern, $tone),
             'faq'          => $this->faq($ids, $path, $pattern, $tone),
             default        => throw new \InvalidArgumentException('this pattern is not one the compiler builds'),
@@ -305,6 +306,24 @@ final class ElementorPatternCompiler
         $label   = self::label('features', $variant);
 
         return self::labelled($this->cards->features($ids, $path, $variant, self::itemsOf($pattern, 'features'), $tone), $label);
+    }
+
+    /**
+     * Pricing: one composed card per plan, never the paid plugin's price table.
+     * See ElementorPatternCards.
+     *
+     * @param IdSeed              $ids     Node ids for this request.
+     * @param string              $path    The pattern's outline path.
+     * @param array<string,mixed> $pattern The pricing node.
+     * @param string              $tone    The tone of the section it stands in.
+     * @return array{id:string,elType:string,settings:array<string,mixed>,elements:list<array<string,mixed>>,isInner:bool}
+     * @throws \InvalidArgumentException When the node is not a pricing pattern the grammar accepts.
+     */
+    public function pricing(IdSeed $ids, string $path, array $pattern, string $tone): array
+    {
+        $label = self::label('pricing', self::variantOf($pattern, 'pricing'));
+
+        return self::labelled($this->cards->pricing($ids, $path, self::itemsOf($pattern, 'pricing'), $tone), $label);
     }
 
     /**

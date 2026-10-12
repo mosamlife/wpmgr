@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Abilities\Builders;
 
+use WPMgr\Agent\Support\ArrayShape;
+
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
     exit;
@@ -11,7 +13,8 @@ if (!defined('ABSPATH')) {
 
 /**
  * The patterns of a designed page that are built from icon boxes and cards:
- * features, as the icon-box widget over a closed list of icons.
+ * features, as the icon-box widget over a closed list of icons, and pricing,
+ * as one composed card per plan.
  *
  *   split   the list of icon boxes cut in two columns of equal width, the left
  *           column the longer by one when the count is odd; the icon stands to
@@ -21,6 +24,15 @@ if (!defined('ABSPATH')) {
  *           icon stands above its text
  *   bento   cards of mixed widths in rows of two, 60 and 40 percent and then
  *           40 and 60, a last card alone in its row at the full width
+ *
+ * Pricing is a row of one card per plan, centred, each card of equal width
+ * (the share of two cards when there is one plan). A plan card holds, top to
+ * bottom, the plan's name (an h3 heading), its price (a heading in the h2 style
+ * that is a div, so the price is not a heading of the page), its period (body
+ * text, when it has one), a checklist (the icon-list widget, a check before each
+ * feature) and its button. The highlighted plan has an accent border and a fill
+ * button; the others have a hairline border and an outline button. Every plan
+ * card casts the card shadow. The paid plugin's price table is never used.
  *
  * A card is a container with the design's card padding, a hairline border and
  * the design's radius (ElementorSectionCompiler::cardSettings()). An icon box
@@ -103,6 +115,15 @@ final class ElementorPatternCards
     /** The font weights the type ramp writes. */
     private const WEIGHTS = '400|600|700';
 
+    /** The icon in front of each feature of a plan, a name of ICONS. */
+    private const CHECK_ICON = 'check';
+
+    /** The size of the checklist's icons, in px as stored. */
+    private const CHECK_ICON_PX = '18';
+
+    /** The width of a highlighted plan's border, in px. */
+    private const HIGHLIGHT_EDGE_PX = 2;
+
     private DesignTokens $tokens;
 
     private ElementorSectionCompiler $sections;
@@ -146,6 +167,7 @@ final class ElementorPatternCards
                 'title_typography_font_weight' => 'enum:' . self::WEIGHTS,
                 'title_typography_line_height' => 'slider:em',
             ],
+            'icon-list' => self::checklistKeys(),
             'container' => [
                 'border_border'                      => 'enum:solid',
                 'border_width'                       => 'dimensions',
@@ -159,6 +181,26 @@ final class ElementorPatternCards
                 'box_shadow_box_shadow.color'        => 'colour',
             ],
         ];
+    }
+
+    /**
+     * The keys of the checklist: its colours and icon size, and, for each line a
+     * plan may hold, the line's text, its icon and its repeater id. A repeater
+     * item has no key of its own to list, so each position is listed by itself.
+     *
+     * @return array<string,string>
+     */
+    private static function checklistKeys(): array
+    {
+        $keys = ['icon_color' => 'colour', 'text_color' => 'colour', 'icon_size' => 'slider:px'];
+        for ($i = 0; $i < OutlineV3Schema::MAX_PLAN_FEATURES; ++$i) {
+            $keys['icon_list.' . $i . '.text']                  = 'html';
+            $keys['icon_list.' . $i . '.selected_icon.value']   = 'enum:' . self::ICONS[self::CHECK_ICON];
+            $keys['icon_list.' . $i . '.selected_icon.library'] = 'enum:' . self::ICON_LIBRARY;
+            $keys['icon_list.' . $i . '._id']                   = 'enum';
+        }
+
+        return $keys;
     }
 
     /**
@@ -201,6 +243,200 @@ final class ElementorPatternCards
         }
 
         return $variant === 'split' ? $this->halves($ids, $path, $boxes) : $this->grid($ids, $path, $variant, $boxes);
+    }
+
+    /**
+     * Pricing: a centred row with one card per plan.
+     *
+     * @param IdSeed      $ids   Node ids for this request.
+     * @param string      $path  The pattern's outline path.
+     * @param list<mixed> $plans The plans: name, price, optional period, features, cta, optional highlighted.
+     * @param string      $tone  The tone of the section it stands in.
+     * @return array{id:string,elType:string,settings:array<string,mixed>,elements:list<array<string,mixed>>,isInner:bool}
+     * @throws \InvalidArgumentException When a plan holds a value the grammar does not accept.
+     */
+    public function pricing(IdSeed $ids, string $path, array $plans, string $tone): array
+    {
+        $rowId = $ids->next($path);
+        // One plan takes the share of two, and the row centres it.
+        $share = intdiv(100, max(count($plans), 2));
+        $cards = [];
+        foreach ($plans as $i => $plan) {
+            $cards[] = $this->plan($ids, $path . '.plans[' . $i . ']', $plan, $share, $tone);
+        }
+        $row                                     = $this->sections->row($rowId, $cards);
+        $row['settings']['flex_justify_content'] = 'center';
+
+        return $row;
+    }
+
+    /**
+     * One plan as a card.
+     *
+     * @param IdSeed $ids   Node ids for this request.
+     * @param string $at    The plan's outline path.
+     * @param mixed  $plan  The plan.
+     * @param int    $share The card's share of the row in percent.
+     * @param string $tone  The tone of the section it stands in.
+     * @return array{id:string,elType:string,settings:array<string,mixed>,elements:list<array<string,mixed>>,isInner:bool}
+     * @throws \InvalidArgumentException When the plan holds a value the grammar does not accept.
+     */
+    private function plan(IdSeed $ids, string $at, mixed $plan, int $share, string $tone): array
+    {
+        $name        = self::text($plan, 'name');
+        $price       = self::text($plan, 'price');
+        $period      = is_array($plan) && array_key_exists('period', $plan) ? self::text($plan, 'period') : null;
+        $features    = self::lines($plan);
+        $cta         = is_array($plan) ? ($plan['cta'] ?? null) : null;
+        $highlighted = is_array($plan) ? ($plan['highlighted'] ?? false) : false;
+        if (!is_bool($highlighted)) {
+            throw new \InvalidArgumentException('a plan is highlighted or not');
+        }
+        $colours  = $this->tokens->tone($tone);
+        $elements = [
+            $this->heading($ids->next($at . '.name'), $name, 3, 'h3', $tone),
+            $this->heading($ids->next($at . '.price'), $price, 2, 'div', $tone),
+        ];
+        if ($period !== null) {
+            $elements[] = [
+                'id'         => $ids->next($at . '.period'),
+                'elType'     => 'widget',
+                'settings'   => ['editor' => '<p>' . LeafPolicy::htmlText($period) . '</p>'] + $this->look->textStyle('body', $tone, 'start'),
+                'elements'   => [],
+                'widgetType' => 'text-editor',
+            ];
+        }
+        $elements[] = $this->checklist($ids, $at . '.features', $features, $colours);
+        $elements[] = $this->look->buttonRow(
+            $ids->next($at . '.cta#row'),
+            [$this->button($ids->next($at . '.cta'), $cta, $highlighted ? 'fill' : 'outline', $tone)],
+            'left'
+        );
+        $edge = $highlighted ? ['color' => $colours['accent'], 'width' => self::HIGHLIGHT_EDGE_PX] : $this->tokens->hairline();
+
+        return $this->card($ids->next($at . '#card'), $share, $elements, $this->sections->cardSettings($edge['color'], $edge['width'], true));
+    }
+
+    /**
+     * A heading of the type ramp in the section's tone, aligned to the start.
+     *
+     * @param string $id    The widget's id.
+     * @param string $text  Its text.
+     * @param int    $level The ramp's level: 2 for the h2 style, 3 for the h3 style.
+     * @param string $tag   The HTML tag it is written as.
+     * @param string $tone  The tone of the section it stands in.
+     * @return array{id:string,elType:string,settings:array<string,mixed>,elements:list<array<string,mixed>>,widgetType:string}
+     */
+    private function heading(string $id, string $text, int $level, string $tag, string $tone): array
+    {
+        return [
+            'id'         => $id,
+            'elType'     => 'widget',
+            'settings'   => ['title' => LeafPolicy::htmlText($text), 'header_size' => $tag] + $this->look->headingStyle($level, $tone, 'start'),
+            'elements'   => [],
+            'widgetType' => 'heading',
+        ];
+    }
+
+    /**
+     * The icon-list widget of a plan's features, a check in front of each.
+     *
+     * @param IdSeed               $ids      Node ids for this request.
+     * @param string               $at       The checklist's outline path, which keys its repeater ids.
+     * @param list<string>         $features The feature lines.
+     * @param array<string,string> $colours  The tone's colours.
+     * @return array{id:string,elType:string,settings:array<string,mixed>,elements:list<array<string,mixed>>,widgetType:string}
+     */
+    private function checklist(IdSeed $ids, string $at, array $features, array $colours): array
+    {
+        $items = [];
+        foreach ($features as $k => $line) {
+            $items[] = [
+                'text'          => LeafPolicy::htmlText($line),
+                'selected_icon' => self::icon(self::CHECK_ICON),
+                '_id'           => $ids->item($at, 'icon_list', $k),
+            ];
+        }
+
+        return [
+            'id'         => $ids->next($at),
+            'elType'     => 'widget',
+            'settings'   => [
+                'icon_list'  => $items,
+                'icon_color' => $colours['accent'],
+                'text_color' => $colours['body'],
+                'icon_size'  => ['unit' => 'px', 'size' => self::CHECK_ICON_PX],
+            ],
+            'elements'   => [],
+            'widgetType' => 'icon-list',
+        ];
+    }
+
+    /**
+     * A plan's button, as the leaf compiler writes a button.
+     *
+     * @param string $id    The widget's id.
+     * @param mixed  $cta   The plan's button: text and url.
+     * @param string $style fill or outline.
+     * @param string $tone  The tone of the section it stands in.
+     * @return array{id:string,elType:string,settings:array<string,mixed>,elements:list<array<string,mixed>>,widgetType:string}
+     * @throws \InvalidArgumentException When the button holds a value the grammar does not accept, or a link with "&" that an Elementor page cannot keep.
+     */
+    private function button(string $id, mixed $cta, string $style, string $tone): array
+    {
+        $text = self::text($cta, 'text');
+        $url  = self::text($cta, 'url');
+        if (strpos($url, '&') !== false) {
+            throw new \InvalidArgumentException('a link on an Elementor page cannot hold "&"');
+        }
+
+        return [
+            'id'         => $id,
+            'elType'     => 'widget',
+            'settings'   => ['text' => LeafPolicy::htmlText($text), 'link' => ['url' => $url, 'is_external' => '', 'nofollow' => '']] + $this->look->buttonStyle($style, $tone),
+            'elements'   => [],
+            'widgetType' => 'button',
+        ];
+    }
+
+    /**
+     * A member of an item that is text.
+     *
+     * @param mixed  $item  The item.
+     * @param string $field The member.
+     * @return string
+     * @throws \InvalidArgumentException When the member is not text that is not empty.
+     */
+    private static function text(mixed $item, string $field): string
+    {
+        $value = is_array($item) ? ($item[$field] ?? null) : null;
+        if (!is_string($value) || $value === '') {
+            throw new \InvalidArgumentException('a plan has its ' . $field . ' as text that is not empty');
+        }
+
+        return $value;
+    }
+
+    /**
+     * The feature lines of a plan.
+     *
+     * @param mixed $plan The plan.
+     * @return list<string>
+     * @throws \InvalidArgumentException When they are not 1 to the grammar's most lines of text.
+     */
+    private static function lines(mixed $plan): array
+    {
+        $lines = is_array($plan) ? ($plan['features'] ?? null) : null;
+        if (!is_array($lines) || !ArrayShape::isList($lines) || $lines === [] || count($lines) > OutlineV3Schema::MAX_PLAN_FEATURES) {
+            throw new \InvalidArgumentException('a plan lists as many features as the grammar allows it');
+        }
+        foreach ($lines as $line) {
+            if (!is_string($line) || $line === '') {
+                throw new \InvalidArgumentException('a feature of a plan is text that is not empty');
+            }
+        }
+
+        return $lines;
     }
 
     /**
