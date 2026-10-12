@@ -211,6 +211,12 @@ final class PatternFeaturesCompileTest extends TestCase
             $this->assertMatchesRegularExpression('/^fas fa-[a-z]+(?:-[a-z]+)*\z/', $value, $name);
         }
         $this->assertCount(count(ElementorPatternCards::ICONS), array_unique(array_values(ElementorPatternCards::ICONS)), 'no two names share an icon');
+
+        // The names whose icon in the library is named otherwise; each of these is an icon in Elementor's solid library.
+        $this->assertSame('fas fa-chart-line', ElementorPatternCards::ICONS['chart']);
+        $this->assertSame('fas fa-layer-group', ElementorPatternCards::ICONS['layers']);
+        $this->assertSame('fas fa-map-marker-alt', ElementorPatternCards::ICONS['map-pin']);
+        $this->assertSame('fas fa-shield-alt', ElementorPatternCards::ICONS['shield']);
     }
 
     /**
