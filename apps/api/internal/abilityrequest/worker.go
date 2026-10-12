@@ -423,7 +423,9 @@ type dispatchPlan struct {
 // ability's floor, and for wpmgr/page-create the floor of the stored input
 // (a layout outline needs a newer agent than a text-only one, a page built
 // with a page builder the builder floor, and a designed page the
-// designed-pages floor). A site whose
+// designed-pages floor). The same holds for wpmgr/page-edit: an edit that
+// carries a design, a section, a pattern or a pattern path needs the
+// designed-pages floor. A site whose
 // plugin went below it after approval closes not_sent/agent_outdated and is
 // never sent a write it cannot build.
 func agentFloorFor(r sqlc.AssistantAbilityRequest) string {
@@ -433,7 +435,7 @@ func agentFloorFor(r sqlc.AssistantAbilityRequest) string {
 	case mcp.AbilityPageCreate:
 		return mcp.PageCreateAgentFloor([]byte(r.InputJson))
 	case mcp.AbilityPageEdit:
-		return agentcmd.MinAgentVersionForBuilderEdit
+		return mcp.PageEditAgentFloor([]byte(r.InputJson))
 	}
 	return agentcmd.MinAgentVersionForPageCreate
 }

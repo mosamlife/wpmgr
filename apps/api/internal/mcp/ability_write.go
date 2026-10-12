@@ -152,7 +152,10 @@ func (s *Service) EnableAbilityWrites(store AbilityRequestStore) error {
 // ownWriteAbilities are the write entries this control plane can run.
 var ownWriteAbilities = map[string]struct{}{AbilityPageCreate: {}, AbilityRestWrite: {}, AbilityPageEdit: {}}
 
-// writeAgentFloor is the first agent release that runs a write entry.
+// writeAgentFloor is the first agent release that runs a write entry. It is the
+// entry's own floor, the one discover and describe state; an input can need a
+// newer agent, which PageCreateAgentFloor and PageEditAgentFloor decide per
+// input, at run and again at dispatch.
 func writeAgentFloor(name string) string {
 	switch name {
 	case AbilityRestWrite:

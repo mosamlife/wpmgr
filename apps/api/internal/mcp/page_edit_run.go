@@ -143,6 +143,12 @@ func (s *Service) runPageEditChecked(ctx context.Context, auth AuthorizedRequest
 	if r != nil {
 		return "", r
 	}
+	// The per-input floor: a design, a section, a pattern or a pattern path
+	// needs a newer agent than the entry's own floor, which every other edit
+	// keeps. It is decided before the site is asked.
+	if fr := pageEditFloorRefusal(site.row.AgentVersion, input); fr != nil {
+		return "", fr
+	}
 	// An entry that enables no page builder WPMgr edits leaves no page
 	// eligible: the one answer for an ineligible page.
 	if !pageBuilderEnabled(e.Limits, pageBuilderElementor) {
@@ -179,6 +185,11 @@ func (s *Service) runPageEditChecked(ctx context.Context, auth AuthorizedRequest
 		}
 		if err != nil {
 			return "", fmt.Errorf("site_ability_run: %w", err)
+		}
+		// A design the draft gave is a member of the input now, and the floor
+		// follows the input the site would be asked about.
+		if fr := pageEditFloorRefusal(site.row.AgentVersion, input); fr != nil {
+			return "", fr
 		}
 	}
 	precheckID := uuid.New()
@@ -244,4 +255,73 @@ func precheckMismatchRefusal() *toolRefusal {
 			WithDetails(map[string]any{"code": pageEditCodePrecheckMismatch, "retryable": false}),
 		meta: map[string]any{"code": pageEditCodePrecheckMismatch},
 	}
+}
+
+// msgPageEditDesignedOutdated is the update-required message of an edit that
+// needs the agent that builds designed pages.
+const msgPageEditDesignedOutdated = "Editing a page with a design, a section or a pattern needs the WPMgr plugin " +
+	agentcmd.MinAgentVersionForDesignedPages + " or later on this site. Nothing was asked."
+
+// PageEditAgentFloor is the first agent release that runs this wpmgr/page-edit
+// input: MinAgentVersionForDesignedPages when it carries a design, when an
+// operation puts a section or a pattern on the page (at any depth of its
+// outline), or when set_text names a pattern path;
+// MinAgentVersionForBuilderEdit otherwise. It reads only those members, so the
+// floor does not wait on the other rules of the input. An input it cannot read
+// counts as designed, so a floor derived from it fails closed. The run path
+// and the dispatch worker both decide with it.
+func PageEditAgentFloor(input []byte) string {
+	top, ok := jsonObjectOf(input)
+	if !ok {
+		return agentcmd.MinAgentVersionForDesignedPages
+	}
+	if _, has := top["design"]; has {
+		return agentcmd.MinAgentVersionForDesignedPages
+	}
+	raw, has := top["operations"]
+	if !has {
+		return agentcmd.MinAgentVersionForBuilderEdit
+	}
+	ops, ok := jsonArrayOf(raw)
+	if !ok {
+		return agentcmd.MinAgentVersionForDesignedPages
+	}
+	for _, rawOp := range ops {
+		op, ok := jsonObjectOf(rawOp)
+		if !ok || pageEditOpIsDesigned(op) {
+			return agentcmd.MinAgentVersionForDesignedPages
+		}
+	}
+	return agentcmd.MinAgentVersionForBuilderEdit
+}
+
+// pageEditOpIsDesigned reports whether one operation uses what only a designed
+// page has: new nodes that hold a section or a pattern, or a set_text field
+// that is a pattern path. An outline that is not JSON counts as designed.
+func pageEditOpIsDesigned(op map[string]json.RawMessage) bool {
+	if field, ok := jsonStringOf(op["field"]); ok && pageEditPathPattern.MatchString(field) {
+		return true
+	}
+	outline, has := op["outline"]
+	if !has {
+		return false
+	}
+	var v any
+	return json.Unmarshal(outline, &v) != nil || jsonHasDesignedNode(v)
+}
+
+// pageEditFloorRefusal is the run path's per-input floor: nil when an agent of
+// this version runs the page-edit input, else the update-required refusal
+// (site_agent_outdated) naming the floor PageEditAgentFloor gives it. The
+// entry's own floor is classify's, so an input whose floor is
+// MinAgentVersionForBuilderEdit is never refused here.
+func pageEditFloorRefusal(agentVersion string, input []byte) *toolRefusal {
+	floor := PageEditAgentFloor(input)
+	if floor == agentcmd.MinAgentVersionForBuilderEdit || abilityAgentMeetsFloor(agentVersion, &floor) {
+		return nil
+	}
+	return refuse(reasonAgentOutdated, domain.Conflict(ErrCodeSiteAgentOutdated,
+		msgPageEditDesignedOutdated).WithDetails(map[string]any{
+		"min_agent_version": floor, "retryable": false,
+	}))
 }

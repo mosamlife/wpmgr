@@ -243,7 +243,9 @@ func TestPageEditDesignOnTheWire(t *testing.T) {
 		if store != nil {
 			eng.designs = store
 		}
-		site := abilitySite{row: sqlc.Site{ID: uuid.New(), Url: agent.srv.URL}}
+		// A site on the agent that builds designed pages: the floor of an input
+		// with a design is not what this test is about.
+		site := abilitySite{row: sqlc.Site{ID: uuid.New(), Url: agent.srv.URL, AgentVersion: agentcmd.MinAgentVersionForDesignedPages}}
 		_, err := (&Service{}).runPageEdit(context.Background(), AuthorizedRequest{GrantID: uuid.New()}, eng, site, &e, "example.com", input)
 		var r *toolRefusal
 		if !errors.As(err, &r) {
