@@ -290,7 +290,7 @@ The entries below summarize the notable changes since 0.55.0. This project ships
 = 0.61.164 =
 * Added: Reading the structure of a page built in Elementor now also says whether someone has the draft open in Elementor or has unsaved changes to it. The read changes nothing on the site.
 * Changed: An edit or an undo that is refused because someone has the page open in Elementor now tells WPMgr it can be tried again once the editor is closed. A refusal for unsaved changes, or for a page that changed since the AI read it, is not marked that way.
-* Fixed: An edit of an Elementor draft that someone has previewed now goes through. Before, on some Elementor versions the site counted Elementor's own update of the page's style record as a change outside the page, refused the edit and put the page back. A change to any other page's record, or to anything else outside the page, still refuses the edit.
+* Fixed: An edit of an Elementor draft that someone has previewed now goes through. Where Elementor keeps a style record for each page, the site used to count Elementor's own update of the page's entry as a change outside the page, refuse the edit and put the page back. A change to any other page's entry, or to anything else outside the page, still refuses the edit.
 
 = 0.61.163 =
 * Added: An AI connected through WPMgr can now read the structure of a page built in Elementor and edit a draft it created there, in one batch: set text, insert, replace, remove or move elements. Each edit waits for your approval in WPMgr and nothing is published. A published page or post built in Elementor can be read this way too, but never changed. WPMgr needs this version on the site for it.
