@@ -353,7 +353,7 @@ final class ElementorClassicMapper
      * @param bool                          $containers Whether the site has Elementor containers on.
      * @param ElementorSectionCompiler|null $design     The compiler of a designed page; null for a plain outline.
      */
-    private function __construct(IdSeed $ids, array $media, bool $containers, ?ElementorSectionCompiler $design)
+    private function __construct(IdSeed $ids, array $media, bool $containers, ?ElementorSectionCompiler $design = null)
     {
         $this->ids        = $ids;
         $this->media      = $media;
