@@ -151,7 +151,7 @@ final class LeafPolicy
     public const DECODE_ROUNDS = 3;
 
     /** Pins that check the whole value at their path; an enum with a list does too. */
-    public const SHAPE_PINS = ['slider', 'dimensions', 'gaps', 'colour', 'switcher', 'image', 'link'];
+    public const SHAPE_PINS = ['slider', 'dimensions', 'gaps', 'colour', 'switcher', 'image', 'link', 'shadow-offset', 'repeater-id', 'counter-number'];
 
     /** The units a slider takes; a "slider:" argument names a subset. */
     public const SLIDER_UNITS = ['px', 'em', 'vh', '%'];
@@ -178,6 +178,9 @@ final class LeafPolicy
         'image'      => 'not an image value: exactly id and url, or id, url and source "library", with id a whole number above 0 written as a string',
         'link'       => 'not a link value: exactly url, is_external and nofollow, with is_external and nofollow each "on" or ""',
         'enum'       => 'not one of the values this key takes',
+        'shadow-offset'  => 'not a whole number of one to three digits with an optional leading minus, written as a string',
+        'repeater-id'    => 'not exactly seven lower-case hex characters',
+        'counter-number' => 'not one to nine digits written as a string',
     ];
 
     /** Deepest element nesting walked. */
@@ -933,6 +936,12 @@ final class LeafPolicy
         switch ($name) {
             case 'enum':
                 return is_string($value) && in_array($value, $choices ?? [], true);
+            case 'shadow-offset':
+                return is_string($value) && preg_match('/^-?[0-9]{1,3}\z/', $value) === 1;
+            case 'repeater-id':
+                return is_string($value) && preg_match('/^[0-9a-f]{7}\z/', $value) === 1;
+            case 'counter-number':
+                return is_string($value) && preg_match('/^[0-9]{1,9}\z/', $value) === 1;
             case 'colour':
                 return is_string($value) && preg_match(self::COLOUR, $value) === 1;
             case 'switcher':

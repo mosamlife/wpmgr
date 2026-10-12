@@ -14,6 +14,7 @@ namespace WPMgr\Agent\Tests\Builders;
 
 use Brain\Monkey;
 use Brain\Monkey\Functions;
+use PHPUnit\Framework\Attributes\DataProvider;
 use WPMgr\Agent\Abilities\Builders\DesignTokens;
 use WPMgr\Agent\Abilities\Builders\ElementorClassicMapper;
 use WPMgr\Agent\Abilities\Builders\ElementorLeafStyle;
@@ -131,6 +132,13 @@ final class DesignedAllowlistTest extends TestCase
             'group'        => $sections->group($ids->next('group'), [self::heading($ids->next('group.h'), 'Grouped')]),
             'testimonials' => $patterns->testimonials($ids, 'outline[0].children[0]', ['type' => 'pattern', 'pattern' => 'testimonials', 'variant' => 'featured', 'testimonials' => $testimonials], 'ground'),
             'faq'          => $patterns->faq($ids, 'outline[1].children[0]', ['type' => 'pattern', 'pattern' => 'faq', 'variant' => 'accordion', 'faq' => $faq], 'surface'),
+            'pricing'      => $patterns->pricing($ids, 'outline[2].children[0]', ['type' => 'pattern', 'pattern' => 'pricing', 'variant' => 'three-plans', 'plans' => [
+                ['name' => 'Starter', 'price' => '$19', 'features' => ['Email support'], 'cta' => ['text' => 'Start', 'url' => 'https://example.com/start']],
+            ]], 'ground'),
+            'stats'        => $patterns->stats($ids, 'outline[3].children[0]', ['type' => 'pattern', 'pattern' => 'stats', 'variant' => 'counters', 'stats' => [
+                ['value' => 0, 'label' => 'Starting'],
+                ['value' => 999999999, 'label' => 'Maximum'],
+            ]], 'ground'),
         ];
     }
 
@@ -314,6 +322,75 @@ final class DesignedAllowlistTest extends TestCase
         $this->assertSame(LeafPolicy::CODE_UNSAFE, self::check($unit, self::STOCK_BREAKPOINTS)['code'] ?? null);
         $this->assertSame(LeafPolicy::CODE_UNSAFE, self::check($wrap, self::STOCK_BREAKPOINTS)['code'] ?? null);
         $this->assertSame(LeafPolicy::CODE_STYLE_KEY, self::check($stranger, self::STOCK_BREAKPOINTS)['code'] ?? null);
+    }
+
+    /** @return array<string,array{0:string,1:string,2:mixed,3:bool}> Settings leaves and whether their shapes are accepted. */
+    public static function numericAndIdLeaves(): array
+    {
+        $cases  = [];
+        $common = ['0;}body{display:none}.x{', '', ' 0', "0\n", 0, 0.0, true, null, [], ['value' => '0']];
+        $groups = [
+            'shadow' => [
+                'paths' => ['container' => array_map(static fn ($key) => 'box_shadow_box_shadow.' . $key, ['horizontal', 'vertical', 'blur', 'spread'])],
+                'valid' => ['0', '8', '24', '-8', '999', '-999', '000'],
+                'bad'   => ['1000', '-1000', '+8', '8.5', '8px', '1e2', '--8'],
+            ],
+            'id' => [
+                'paths' => [
+                    'accordion' => array_map(static fn ($i) => 'tabs.' . $i . '._id', range(0, 11)),
+                    'icon-list' => array_map(static fn ($i) => 'icon_list.' . $i . '._id', range(0, 7)),
+                ],
+                'valid' => [(new IdSeed(self::REQUEST))->item('outline[0]', 'tabs', 0), 'abcdef0', '0000000', '1234567'],
+                'bad'   => ['abcdef', 'abcdef01', 'ABCDEF0', 'abcdefg', "abcdef0\n", ' abcdef0'],
+            ],
+            'counter' => [
+                'paths' => ['counter' => ['ending_number']],
+                'valid' => ['0', '24', '999999999', '000000000'],
+                'bad'   => ['1000000000', '-1', '+1', '1.5', '1e2', '1px'],
+            ],
+        ];
+        foreach ($groups as $group) {
+            foreach ($group['paths'] as $type => $paths) {
+                foreach ($paths as $path) {
+                    foreach ([true => $group['valid'], false => array_merge($common, $group['bad'])] as $accepted => $values) {
+                        foreach ($values as $i => $value) {
+                            $cases[$type . ' ' . $path . ' ' . ($accepted ? 'valid' : 'invalid') . ' ' . $i] = [$type, $path, $value, (bool) $accepted];
+                        }
+                    }
+                }
+            }
+        }
+
+        return $cases;
+    }
+
+    /**
+     * @param string $type     Element type.
+     * @param string $path     Settings path.
+     * @param mixed  $value    Settings value.
+     * @param bool   $accepted Whether the shape is accepted.
+     */
+    #[DataProvider('numericAndIdLeaves')]
+    public function test_designed_numeric_and_id_pins(string $type, string $path, $value, bool $accepted): void
+    {
+        $tree = ['id' => 'abcdef0', 'elType' => $type === 'container' ? 'container' : 'widget', 'settings' => [], 'elements' => []];
+        if ($type !== 'container') {
+            $tree['widgetType'] = $type;
+        } else {
+            $tree['settings']['box_shadow_box_shadow_type'] = 'yes';
+        }
+        $leaf =& $tree['settings'];
+        foreach (explode('.', $path) as $key) {
+            $leaf =& $leaf[$key];
+        }
+        $leaf = $value;
+        unset($leaf);
+        $answer = self::check($tree, self::STOCK_BREAKPOINTS);
+        if ($accepted) {
+            $this->assertNull($answer, $answer['detail'] ?? '');
+        } else {
+            $this->assertSame(LeafPolicy::CODE_UNSAFE, $answer['code'] ?? null);
+        }
     }
 
     // -------------------------------------------------------------------------

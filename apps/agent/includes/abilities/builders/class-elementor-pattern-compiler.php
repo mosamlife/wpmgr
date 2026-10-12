@@ -127,7 +127,7 @@ final class ElementorPatternCompiler
         ],
         'counter'   => [
             'starting_number' => 'enum:0',
-            'ending_number'   => 'enum',
+            'ending_number'   => 'counter-number',
             'suffix'          => 'html',
             'title'           => 'html',
             'number_color'    => 'colour',
@@ -155,7 +155,7 @@ final class ElementorPatternCompiler
      */
     public const LISTS = [
         'accordion' => [
-            'tabs' => [['tab_title' => 'html', 'tab_content' => 'html', '_id' => 'enum'], OutlineV3Schema::ITEM_CAPS['faq'][1]],
+            'tabs' => [['tab_title' => 'html', 'tab_content' => 'html', '_id' => 'repeater-id'], OutlineV3Schema::ITEM_CAPS['faq'][1]],
         ],
     ];
 

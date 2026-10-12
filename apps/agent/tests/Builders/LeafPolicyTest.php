@@ -52,7 +52,7 @@ final class LeafPolicyTest extends TestCase
     ];
 
     /** Every pin, as the refusal of an unknown one lists them. */
-    private const PIN_OUTSIDE = 'a pin outside html, text, url, int, enum, slider, dimensions, gaps, colour, switcher, image, link';
+    private const PIN_OUTSIDE = 'a pin outside html, text, url, int, enum, slider, dimensions, gaps, colour, switcher, image, link, shadow-offset, repeater-id, counter-number';
 
     /** A pin carrying an argument its pin does not take. */
     private const PIN_ARGUMENT = 'a pin argument its pin does not take';

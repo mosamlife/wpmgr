@@ -174,10 +174,10 @@ final class ElementorPatternCards
                 'border_color'                       => 'colour',
                 'border_radius'                      => 'dimensions',
                 'box_shadow_box_shadow_type'         => 'enum:yes',
-                'box_shadow_box_shadow.horizontal'   => 'enum',
-                'box_shadow_box_shadow.vertical'     => 'enum',
-                'box_shadow_box_shadow.blur'         => 'enum',
-                'box_shadow_box_shadow.spread'       => 'enum',
+                'box_shadow_box_shadow.horizontal'   => 'shadow-offset',
+                'box_shadow_box_shadow.vertical'     => 'shadow-offset',
+                'box_shadow_box_shadow.blur'         => 'shadow-offset',
+                'box_shadow_box_shadow.spread'       => 'shadow-offset',
                 'box_shadow_box_shadow.color'        => 'colour',
             ],
         ];
@@ -197,7 +197,7 @@ final class ElementorPatternCards
             $keys['icon_list.' . $i . '.text']                  = 'html';
             $keys['icon_list.' . $i . '.selected_icon.value']   = 'enum:' . self::ICONS[self::CHECK_ICON];
             $keys['icon_list.' . $i . '.selected_icon.library'] = 'enum:' . self::ICON_LIBRARY;
-            $keys['icon_list.' . $i . '._id']                   = 'enum';
+            $keys['icon_list.' . $i . '._id']                   = 'repeater-id';
         }
 
         return $keys;

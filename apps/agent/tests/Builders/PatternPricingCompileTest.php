@@ -447,7 +447,7 @@ final class PatternPricingCompileTest extends TestCase
             $this->assertSame('html', $listed['icon_list.' . $i . '.text']);
             $this->assertSame('enum:' . ElementorPatternCards::ICONS['check'], $listed['icon_list.' . $i . '.selected_icon.value']);
             $this->assertSame('enum:' . ElementorPatternCards::ICON_LIBRARY, $listed['icon_list.' . $i . '.selected_icon.library']);
-            $this->assertSame('enum', $listed['icon_list.' . $i . '._id']);
+            $this->assertSame('repeater-id', $listed['icon_list.' . $i . '._id']);
         }
         $this->assertArrayNotHasKey('icon_list.' . OutlineV3Schema::MAX_PLAN_FEATURES . '.text', $listed);
         $this->assertSame($listed, ElementorPatternCompiler::allowedKeys(ElementorClassicMapper::ALLOWED_KEYS)['icon-list']);
