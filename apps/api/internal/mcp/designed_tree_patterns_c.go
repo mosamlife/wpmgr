@@ -14,9 +14,10 @@ package mcp
 //	                       on, a tab for each question with a repeater id of its
 //	                       own
 //
-// A pattern's container carries its Navigator label after its last key, and
-// draws its id before its children's. The pattern compilers register
-// themselves in designedPatternBuilders, one file per area.
+// A pattern's container carries its Navigator label after its last key and
+// draws its id before its children's. Node ids come from the page's
+// elementorIDs; a tab's repeater id is drawn from it with item, in the set of
+// taken ids the node ids share.
 
 import (
 	"encoding/json"
@@ -25,10 +26,6 @@ import (
 )
 
 const (
-	// designedLabelPrefix opens the Navigator label of every container the
-	// builder names.
-	designedLabelPrefix = "WPMgr · "
-
 	// designedTestimonialsPerRow is the testimonials, after the featured one,
 	// that stand in one row.
 	designedTestimonialsPerRow = 2
@@ -41,16 +38,13 @@ const (
 	elementorItemIDLength = 7
 )
 
-// designedPatternNames is the Navigator name of each pattern, as written after
-// the label prefix.
-var designedPatternNames = map[string]string{
-	"hero": "Hero", "cta": "CTA", "features": "Features", "testimonials": "Testimonials",
-	"pricing": "Pricing", "faq": "FAQ", "logos": "Logos", "stats": "Stats",
-}
-
 func init() {
-	designedPatternBuilders["testimonials"] = designedTestimonials
-	designedPatternBuilders["faq"] = designedFAQ
+	designedPatternBuilders["testimonials"] = func(b *designedBuild, n map[string]json.RawMessage, path, tone string) (phpObject, bool) {
+		return designedPatternsC{b: b}.testimonials(n, path, tone)
+	}
+	designedPatternBuilders["faq"] = func(b *designedBuild, n map[string]json.RawMessage, path, tone string) (phpObject, bool) {
+		return designedPatternsC{b: b}.faq(n, path, tone)
+	}
 }
 
 // item issues the _id of item index of the repeater control on the node at
@@ -75,34 +69,34 @@ func (s *elementorIDs) item(path, control string, index int) (string, bool) {
 	return "", false
 }
 
-// designedPatternLabel is the Navigator label of a pattern's container: the
-// label prefix, the pattern's name and its variant. ok is false for a pattern
-// or a variant the grammar does not have.
-func designedPatternLabel(pattern, variant string) (string, bool) {
-	name, known := designedPatternNames[pattern]
-	spec, hasSpec := patternSpecs[pattern]
-	if !known || !hasSpec || !slices.Contains(spec.variants, variant) {
-		return "", false
-	}
-	return designedLabelPrefix + name + " " + variant, true
+// designedPatternsC compiles the patterns of this file for one page build.
+type designedPatternsC struct {
+	b *designedBuild
 }
 
-// designedPatternVariant is the variant of a pattern node of the given name:
-// one of that pattern's variants of the grammar.
-func designedPatternVariant(n map[string]json.RawMessage, pattern string) (string, bool) {
-	spec, known := patternSpecs[pattern]
-	name, _ := jsonStringOf(n["pattern"])
+// variant is the variant of a pattern node of the given name: the node names
+// the pattern and one of that pattern's variants of the grammar.
+func (designedPatternsC) variant(n map[string]json.RawMessage, name string) (string, bool) {
+	spec, known := patternSpecs[name]
+	pattern, _ := jsonStringOf(n["pattern"])
 	variant, ok := jsonStringOf(n["variant"])
-	if !known || name != pattern || !ok || !slices.Contains(spec.variants, variant) {
+	if !known || pattern != name || !ok || !slices.Contains(spec.variants, variant) {
 		return "", false
 	}
 	return variant, true
 }
 
-// designedPatternItems is the items of an item pattern, counted by the
-// grammar's caps.
-func designedPatternItems(n map[string]json.RawMessage, pattern string) ([]json.RawMessage, bool) {
-	spec, known := patternSpecs[pattern]
+// label is the Navigator label of a pattern's container: the label prefix, the
+// pattern's name and its variant.
+func (designedPatternsC) label(name, variant string) string {
+	const prefix = "WPMgr · "
+	titles := map[string]string{"testimonials": "Testimonials", "faq": "FAQ"}
+	return prefix + titles[name] + " " + variant
+}
+
+// items is the items of an item pattern, counted by the grammar's caps.
+func (designedPatternsC) items(n map[string]json.RawMessage, name string) ([]json.RawMessage, bool) {
+	spec, known := patternSpecs[name]
 	if !known || spec.array == "" {
 		return nil, false
 	}
@@ -113,9 +107,18 @@ func designedPatternItems(n map[string]json.RawMessage, pattern string) ([]json.
 	return items, true
 }
 
-// designedWithSetting is the container with one settings member set: replaced
-// where the settings have it already, added after the last otherwise.
-func designedWithSetting(container phpObject, key string, value any) phpObject {
+// member is the value of a key of a built node, nil when it has none.
+func (designedPatternsC) member(o phpObject, key string) any {
+	if at := slices.IndexFunc(o, func(p phpPair) bool { return p.key == key }); at >= 0 {
+		return o[at].value
+	}
+	return nil
+}
+
+// withSetting is a container with one settings member set the way PHP assigns
+// an array key: replaced where the settings have it already, added after the
+// last otherwise.
+func (designedPatternsC) withSetting(container phpObject, key string, value any) phpObject {
 	out := slices.Clone(container)
 	for i, member := range out {
 		if member.key != "settings" {
@@ -133,46 +136,32 @@ func designedWithSetting(container phpObject, key string, value any) phpObject {
 	return out
 }
 
-// designedWithMissingSettings is the container with the members of more that
-// its settings do not have yet added after the last, as PHP's += does.
-func designedWithMissingSettings(container phpObject, more phpObject) phpObject {
+// withMissingSettings is a container with the members of more that its
+// settings do not have yet added after the last, as PHP's += does.
+func (p designedPatternsC) withMissingSettings(container phpObject, more phpObject) phpObject {
 	out := container
-	for _, p := range more {
-		if has := slices.ContainsFunc(designedSettingsOf(out), func(q phpPair) bool { return q.key == p.key }); !has {
-			out = designedWithSetting(out, p.key, p.value)
+	for _, add := range more {
+		settings, _ := p.member(out, "settings").(phpObject)
+		if !slices.ContainsFunc(settings, func(q phpPair) bool { return q.key == add.key }) {
+			out = p.withSetting(out, add.key, add.value)
 		}
 	}
 	return out
 }
 
-// designedSettingsOf is a container's settings.
-func designedSettingsOf(container phpObject) phpObject {
-	settings, _ := phpMemberOf(container, "settings").(phpObject)
-	return settings
-}
-
-// phpMemberOf is the value of a key of a PHP object, nil when it has none.
-func phpMemberOf(o phpObject, key string) any {
-	if at := slices.IndexFunc(o, func(p phpPair) bool { return p.key == key }); at >= 0 {
-		return o[at].value
-	}
-	return nil
-}
-
-// designedLabelled is the container with its Navigator label after its last
-// key.
-func designedLabelled(container phpObject, label string) phpObject {
-	return designedWithSetting(container, "_title", label)
+// labelled is a container with its Navigator label after the last key.
+func (p designedPatternsC) labelled(container phpObject, label string) phpObject {
+	return p.withSetting(container, "_title", label)
 }
 
 // libraryImage is an image of the media library as a media control stores it:
 // the address and mime type the site resolved for the attachment id.
-func (b *designedBuild) libraryImage(raw json.RawMessage) (phpObject, bool) {
+func (p designedPatternsC) libraryImage(raw json.RawMessage) (phpObject, bool) {
 	id, ok := jsonIntOf(raw)
 	if !ok || id < 1 || id > pageCreateMaxAttachmentID {
 		return nil, false
 	}
-	fact, known := b.media[id]
+	fact, known := p.b.media[id]
 	if !known || fact.ID != id || !pageImageURLUsable(fact.URL) {
 		return nil, false
 	}
@@ -186,7 +175,7 @@ func (b *designedBuild) libraryImage(raw json.RawMessage) (phpObject, bool) {
 // order Elementor returns: the picture and the role are written only when the
 // item has them. The quote is in the tone's heading colour, the name in its
 // accent colour and the role in its body colour.
-func (b *designedBuild) testimonialSettings(raw json.RawMessage, colours designTone) (phpObject, bool) {
+func (p designedPatternsC) testimonialSettings(raw json.RawMessage, colours designTone) (phpObject, bool) {
 	item, ok := jsonObjectOf(raw)
 	if !ok {
 		return nil, false
@@ -206,7 +195,7 @@ func (b *designedBuild) testimonialSettings(raw json.RawMessage, colours designT
 	}
 	settings := phpObject{{"testimonial_content", elementorHTMLText.Replace(quote)}}
 	if rawPicture, has := item["attachment_id"]; has {
-		picture, ok := b.libraryImage(rawPicture)
+		picture, ok := p.libraryImage(rawPicture)
 		if !ok {
 			return nil, false
 		}
@@ -226,12 +215,12 @@ func (b *designedBuild) testimonialSettings(raw json.RawMessage, colours designT
 }
 
 // testimonial is one testimonial widget with the id of its path.
-func (b *designedBuild) testimonial(path string, raw json.RawMessage, colours designTone) (phpObject, bool) {
-	settings, ok := b.testimonialSettings(raw, colours)
+func (p designedPatternsC) testimonial(path string, raw json.RawMessage, colours designTone) (phpObject, bool) {
+	settings, ok := p.testimonialSettings(raw, colours)
 	if !ok {
 		return nil, false
 	}
-	widget, ok := b.widget(path, "testimonial", settings)
+	widget, ok := p.b.widget(path, "testimonial", settings)
 	if !ok {
 		return nil, false
 	}
@@ -239,32 +228,28 @@ func (b *designedBuild) testimonial(path string, raw json.RawMessage, colours de
 	return built, true
 }
 
-// designedTestimonials compiles a testimonials pattern: the group's id, the
-// featured testimonial's, then for each row its columns' and widgets' and last
-// the row's own.
-func designedTestimonials(b *designedBuild, n map[string]json.RawMessage, path, tone string) (phpObject, bool) {
-	variant, ok := designedPatternVariant(n, "testimonials")
+// testimonials compiles a testimonials pattern: the group's id, the featured
+// testimonial's, then for each row its columns' and widgets' and last the row's
+// own.
+func (p designedPatternsC) testimonials(n map[string]json.RawMessage, path, tone string) (phpObject, bool) {
+	variant, ok := p.variant(n, "testimonials")
 	if !ok {
 		return nil, false
 	}
-	label, ok := designedPatternLabel("testimonials", variant)
+	items, ok := p.items(n, "testimonials")
 	if !ok {
 		return nil, false
 	}
-	items, ok := designedPatternItems(n, "testimonials")
-	if !ok {
-		return nil, false
-	}
-	colours, err := b.sections.tokens.tone(tone)
+	colours, err := p.b.sections.tokens.tone(tone)
 	if err != nil {
 		return nil, false
 	}
-	id, ok := b.ids.next(path)
+	id, ok := p.b.ids.next(path)
 	if !ok {
 		return nil, false
 	}
 	at := func(i int) string { return path + ".testimonials[" + strconv.Itoa(i) + "]" }
-	featured, ok := b.testimonial(at(0), items[0], colours)
+	featured, ok := p.testimonial(at(0), items[0], colours)
 	if !ok {
 		return nil, false
 	}
@@ -274,37 +259,37 @@ func designedTestimonials(b *designedBuild, n map[string]json.RawMessage, path, 
 		last := min(first+designedTestimonialsPerRow, len(items))
 		columns := phpList{}
 		for i := first; i < last; i++ {
-			columnID, ok := b.ids.next(at(i) + "#column")
+			columnID, ok := p.b.ids.next(at(i) + "#column")
 			if !ok {
 				return nil, false
 			}
-			widget, ok := b.testimonial(at(i), items[i], colours)
+			widget, ok := p.testimonial(at(i), items[i], colours)
 			if !ok {
 				return nil, false
 			}
-			column, ok := b.sections.column(columnID, width, phpList{widget})
+			column, ok := p.b.sections.column(columnID, width, phpList{widget})
 			if !ok {
 				return nil, false
 			}
 			columns = append(columns, column)
 		}
-		rowID, ok := b.ids.next(path + "#row" + strconv.Itoa(r))
+		rowID, ok := p.b.ids.next(path + "#row" + strconv.Itoa(r))
 		if !ok {
 			return nil, false
 		}
-		row := b.sections.row(rowID, columns)
+		row := p.b.sections.row(rowID, columns)
 		if len(columns) == 1 {
-			row = designedWithSetting(row, "flex_justify_content", "center")
+			row = p.withSetting(row, "flex_justify_content", "center")
 		}
 		parts = append(parts, row)
 	}
-	group := designedWithMissingSettings(b.sections.group(id, parts), b.sections.gapSettings())
-	return designedLabelled(group, label), true
+	group := p.withMissingSettings(p.b.sections.group(id, parts), p.b.sections.gapSettings())
+	return p.labelled(group, p.label("testimonials", variant)), true
 }
 
 // tab is one tab of an accordion, in the key order Elementor returns: the
 // question as its title, the answer as one paragraph and the repeater id.
-func designedTab(raw json.RawMessage, id string) (phpObject, bool) {
+func (designedPatternsC) tab(raw json.RawMessage, id string) (phpObject, bool) {
 	item, ok := jsonObjectOf(raw)
 	if !ok {
 		return nil, false
@@ -321,45 +306,40 @@ func designedTab(raw json.RawMessage, id string) (phpObject, bool) {
 	}, true
 }
 
-// designedFAQ compiles a faq pattern: the group's id, a repeater id for each
-// tab and last the accordion widget's. The titles are in the tone's heading
-// colour, the open one in its accent colour and the answers in its body
-// colour.
-func designedFAQ(b *designedBuild, n map[string]json.RawMessage, path, tone string) (phpObject, bool) {
-	variant, ok := designedPatternVariant(n, "faq")
+// faq compiles a faq pattern: the group's id, a repeater id for each tab and
+// last the accordion widget's. The titles are in the tone's heading colour, the
+// open one in its accent colour and the answers in its body colour.
+func (p designedPatternsC) faq(n map[string]json.RawMessage, path, tone string) (phpObject, bool) {
+	variant, ok := p.variant(n, "faq")
 	if !ok {
 		return nil, false
 	}
-	label, ok := designedPatternLabel("faq", variant)
+	items, ok := p.items(n, "faq")
 	if !ok {
 		return nil, false
 	}
-	items, ok := designedPatternItems(n, "faq")
-	if !ok {
-		return nil, false
-	}
-	colours, err := b.sections.tokens.tone(tone)
+	colours, err := p.b.sections.tokens.tone(tone)
 	if err != nil {
 		return nil, false
 	}
-	id, ok := b.ids.next(path)
+	id, ok := p.b.ids.next(path)
 	if !ok {
 		return nil, false
 	}
 	at := path + ".faq"
 	tabs := phpList{}
 	for i, item := range items {
-		tabID, ok := b.ids.item(at, "tabs", i)
+		tabID, ok := p.b.ids.item(at, "tabs", i)
 		if !ok {
 			return nil, false
 		}
-		tab, ok := designedTab(item, tabID)
+		tab, ok := p.tab(item, tabID)
 		if !ok {
 			return nil, false
 		}
 		tabs = append(tabs, tab)
 	}
-	accordion, ok := b.widget(at, "accordion", phpObject{
+	accordion, ok := p.b.widget(at, "accordion", phpObject{
 		{"tabs", tabs},
 		{"faq_schema", "yes"},
 		{"title_color", colours.Heading},
@@ -369,5 +349,5 @@ func designedFAQ(b *designedBuild, n map[string]json.RawMessage, path, tone stri
 	if !ok {
 		return nil, false
 	}
-	return designedLabelled(b.sections.group(id, accordion), label), true
+	return p.labelled(p.b.sections.group(id, accordion), p.label("faq", variant)), true
 }

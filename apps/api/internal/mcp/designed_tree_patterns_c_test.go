@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bytes"
+	"encoding/json"
 	"slices"
 	"strconv"
 	"strings"
@@ -74,24 +75,31 @@ func TestDesignedTestimonialsAndFAQAreBuiltByTheTwin(t *testing.T) {
 	}
 }
 
-// TestDesignedPatternLabels: the label names the pattern and the variant, and
-// there is none for a pattern or a variant the grammar does not have.
-func TestDesignedPatternLabels(t *testing.T) {
+// TestDesignedPatternsCLabelAndVariant: the label names the pattern and the
+// variant, and the variant is one the pattern has.
+func TestDesignedPatternsCLabelAndVariant(t *testing.T) {
+	var p designedPatternsC
 	for _, c := range []struct{ pattern, variant, want string }{
 		{"testimonials", "featured", "WPMgr · Testimonials featured"},
 		{"faq", "accordion", "WPMgr · FAQ accordion"},
-		{"features", "grid", "WPMgr · Features grid"},
-		{"cta", "band", "WPMgr · CTA band"},
 	} {
-		if got, ok := designedPatternLabel(c.pattern, c.variant); !ok || got != c.want {
-			t.Errorf("%s %s: label %q (%v), want %q", c.pattern, c.variant, got, ok, c.want)
+		if got := p.label(c.pattern, c.variant); got != c.want {
+			t.Errorf("%s %s: label %q, want %q", c.pattern, c.variant, got, c.want)
+		}
+		node := map[string]json.RawMessage{"pattern": json.RawMessage(strconv.Quote(c.pattern)), "variant": json.RawMessage(strconv.Quote(c.variant))}
+		if got, ok := p.variant(node, c.pattern); !ok || got != c.variant {
+			t.Errorf("%s %s: variant %q (%v)", c.pattern, c.variant, got, ok)
 		}
 	}
-	for _, c := range []struct{ pattern, variant string }{
-		{"testimonials", "grid"}, {"faq", ""}, {"carousel", "featured"}, {"", "accordion"},
+	for _, c := range []struct{ pattern, variant, name string }{
+		{"testimonials", "grid", "testimonials"},
+		{"faq", "", "faq"},
+		{"faq", "accordion", "testimonials"},
+		{"carousel", "featured", "carousel"},
 	} {
-		if got, ok := designedPatternLabel(c.pattern, c.variant); ok {
-			t.Errorf("%s %s: got the label %q for a pattern the grammar does not have", c.pattern, c.variant, got)
+		node := map[string]json.RawMessage{"pattern": json.RawMessage(strconv.Quote(c.pattern)), "variant": json.RawMessage(strconv.Quote(c.variant))}
+		if got, ok := p.variant(node, c.name); ok {
+			t.Errorf("node %s %s read as a %s with the variant %q", c.pattern, c.variant, c.name, got)
 		}
 	}
 }
