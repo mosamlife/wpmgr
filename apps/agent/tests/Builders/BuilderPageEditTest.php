@@ -83,7 +83,9 @@ final class BuilderPageEditTest extends TestCase
         . '{"name":"Growth","price":"$29","period":"per month","features":["Five sites","Chat support"],"cta":{"text":"Choose Growth","url":"https://example.com/grow"}},'
         . '{"name":"Scale","price":"$99","period":"per month","features":["Fifty sites","Phone support"],"cta":{"text":"Choose Scale","url":"https://example.com/scale"}}]}]}]';
 
-    private const NEW_SECTION = '[{"type":"section","anchor":"press","children":[{"type":"paragraph","text":"Where we were mentioned."}]}]';
+    /** A section a designed page is given: a paragraph and a testimonials pattern. */
+    private const NEW_SECTION = '[{"type":"section","anchor":"press","children":[{"type":"paragraph","text":"Where we were mentioned."},'
+        . '{"type":"pattern","pattern":"testimonials","variant":"featured","testimonials":[{"quote":"It just works.","name":"Ana","role":"Founder"},{"quote":"Saved us hours.","name":"Ben"}]}]}]';
 
     /** @var list<array{0:string,1:callable,2:int,3:int}> */
     private array $hooks = [];
