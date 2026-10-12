@@ -820,6 +820,16 @@ final class ElementorDocumentTest extends TestCase
         $result                 = $doc->save(self::TARGET, self::tree(), self::KIT);
         $this->assertSame([true, []], [$result['ok'], $result['warnings'] ?? []], 'a page with no cache row');
 
+        // A key that is a row of the page itself is never deleted as a cache, and never read as one.
+        $this->resetRows();
+        $this->metaDeletes          = [];
+        $this->api->pro             = true;
+        $this->api->elementCacheKey = ElementorDocument::KEY_DATA;
+        $this->wpdb->addMeta(++$this->metaId, self::TARGET, ElementorDocument::KEY_DATA, '[]');
+        $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+        $this->assertSame([true, [], [ElementorDocument::KEY_DATA], false], [$result['ok'], $this->metaDeletes, self::keysOf($this->wpdb->metaRowsOf(self::TARGET), [ElementorDocument::KEY_DATA]), $doc->elementCacheActive(self::TARGET)], 'a key that is a page row');
+        $this->api->elementCacheKey = $cache;
+
         // A save that did not store the page, or crashed, clears nothing.
         $failures = [
             'builder_save_refused' => static fn (): bool => false,
