@@ -3,8 +3,10 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -149,20 +151,21 @@ var (
 // the blocks of version 2 are read. handled is false for a node that the
 // version 2 rules judge as they always did.
 func (w *pageWalk) designedNode(n map[string]json.RawMessage, kind string, at pagePlace) (code string, handled bool) {
+	here := w.where
 	if at == pageAtTop {
 		if kind == "section" {
 			return w.section(n), true
 		}
 		if slices.Contains(pageNodeTypes, kind) {
-			return pageCreateLayoutInvalid, true
+			return w.refuse(pageCreateLayoutInvalid, here, "type", "every top-level item is a section; put other blocks inside a section", "section"), true
 		}
-		return pageCreateBadInput, true
+		return w.refuse(pageCreateBadInput, here, "type", "is not a block of the outline grammar", pageNodeTypes...), true
 	}
 	if kind == "section" {
-		return pageCreateLayoutInvalid, true
+		return w.refuse(pageCreateLayoutInvalid, here, "type", "a section is a top-level item; it cannot sit inside a section"), true
 	}
 	if blocks := patternBlocksAt(at); blocks != nil && slices.Contains(pageNodeTypes, kind) && !slices.Contains(blocks, kind) {
-		return pageCreateLayoutInvalid, true
+		return w.refuse(pageCreateLayoutInvalid, here, "type", "a "+patternNameAt(at)+" holds only "+strings.Join(blocks, ", "), blocks...), true
 	}
 	if kind == "pattern" {
 		return w.pattern(n, at), true
@@ -170,29 +173,29 @@ func (w *pageWalk) designedNode(n map[string]json.RawMessage, kind string, at pa
 	return "", false
 }
 
-// section is one section: at most pageCreateMaxSections on a page, a closed
-// set of members, an anchor that is its own on the page, and
-// 1..pageCreateMaxChildren children.
+// section is one section: a closed set of members, an anchor that is its own
+// on the page, and 1..pageCreateMaxChildren children. The page holds at most
+// pageCreateMaxSections of them, which is judged before any is read.
 func (w *pageWalk) section(n map[string]json.RawMessage) string {
-	if w.sections++; w.sections > pageCreateMaxSections {
-		return pageCreateLayoutInvalid
-	}
+	here := w.where
+	w.sections++
 	w.usesLayout = true
-	if !keysExactly(n, []string{"type", "anchor", "width", "tone", "background", "spacing", "align", "min_height", "children"},
-		"type", "anchor", "children") {
-		return pageCreateBadInput
+	if code := w.members(here, "a section", n,
+		[]string{"type", "anchor", "width", "tone", "background", "spacing", "align", "min_height", "children"},
+		"type", "anchor", "children"); code != "" {
+		return code
 	}
 	anchor, ok := jsonStringOf(n["anchor"])
 	if !ok {
-		return pageCreateBadInput
+		return w.refuse(pageCreateBadInput, here, "anchor", "must be a string")
 	}
-	if code := w.anchor(anchor); code != "" {
+	if code := w.anchor(anchor, here); code != "" {
 		return code
 	}
 	for _, c := range sectionChoices {
 		if raw, has := n[c.key]; has {
 			if v, ok := jsonStringOf(raw); !ok || !slices.Contains(c.values, v) {
-				return pageCreateBadInput
+				return w.refuse(pageCreateBadInput, here, c.key, "must be one of the allowed values", c.values...)
 			}
 		}
 	}
@@ -207,30 +210,36 @@ func (w *pageWalk) section(n map[string]json.RawMessage) string {
 // background is a section's image: an attachment, which counts toward the
 // images of the page, and the choices of its overlay and focal point.
 func (w *pageWalk) background(raw json.RawMessage) string {
+	section := w.where
+	where := section + ".background"
 	b, ok := jsonObjectOf(raw)
-	if !ok || !keysExactly(b, []string{"attachment_id", "overlay", "focal"}, "attachment_id") {
-		return pageCreateBadInput
+	if !ok {
+		return w.refuse(pageCreateBadInput, section, "background", "must be an object with an attachment_id, and an overlay and a focal point if wanted")
+	}
+	if code := w.members(where, "a background", b, []string{"attachment_id", "overlay", "focal"}, "attachment_id"); code != "" {
+		return code
 	}
 	id, ok := jsonIntOf(b["attachment_id"])
 	if !ok || id < 1 || id > pageCreateMaxAttachmentID {
-		return pageCreateBadInput
+		return w.refuse(pageCreateBadInput, where, "attachment_id", "must be a whole number from 1 to "+strconv.Itoa(pageCreateMaxAttachmentID))
 	}
 	for _, c := range backgroundChoices {
 		if raw, has := b[c.key]; has {
 			if v, ok := jsonStringOf(raw); !ok || !slices.Contains(c.values, v) {
-				return pageCreateBadInput
+				return w.refuse(pageCreateBadInput, where, c.key, "must be one of the allowed values", c.values...)
 			}
 		}
 	}
-	return w.media(id)
+	return w.media(id, where, "attachment_id")
 }
 
 // media counts one image of the page toward pageCreateMaxImages and lists its
 // attachment once, in document order. A section's background comes before its
-// children.
-func (w *pageWalk) media(id int64) string {
+// children. where and key are the object and the field that name the image.
+func (w *pageWalk) media(id int64, where, key string) string {
 	if w.images++; w.images > pageCreateMaxImages {
-		return pageCreateLayoutInvalid
+		return w.refuse(pageCreateLayoutInvalid, where, key,
+			fmt.Sprintf("a page shows at most %d images, section backgrounds and pattern pictures included", pageCreateMaxImages))
 	}
 	if _, dup := w.seen[id]; !dup {
 		w.seen[id] = struct{}{}
@@ -241,50 +250,65 @@ func (w *pageWalk) media(id int64) string {
 
 // anchor judges the anchor of a section and keeps it: it has the shape of an
 // anchor, is not an id the theme owns, and is not one an earlier section took.
-func (w *pageWalk) anchor(a string) string {
+// where is the address of the section.
+func (w *pageWalk) anchor(a, where string) string {
 	if !pageAnchorPattern.MatchString(a) {
-		return pageCreateAnchorInvalid
+		return w.refuse(pageCreateAnchorInvalid, where, "anchor",
+			"must be 2 to 40 characters: a lower-case letter, then lower-case letters, digits or hyphens")
 	}
 	if slices.Contains(pageReservedAnchors, a) {
-		return pageCreateAnchorReserved
+		return w.refuse(pageCreateAnchorReserved, where, "anchor", "is an id the theme or WordPress already uses; choose another", pageReservedAnchors...)
 	}
-	if _, taken := w.anchors[a]; taken {
-		return pageCreateAnchorDuplicate
+	if first, taken := w.anchors[a]; taken {
+		return w.refuse(pageCreateAnchorDuplicate, where, "anchor", "is the anchor of "+first+" already; give each section its own")
 	}
 	if w.anchors == nil {
-		w.anchors = map[string]struct{}{}
+		w.anchors = map[string]string{}
 	}
-	w.anchors[a] = struct{}{}
+	w.anchors[a] = where
+	w.anchorList = append(w.anchorList, a)
 	return ""
 }
 
 // linkCode is the refusal of a link target, "" when the grammar accepts it.
-// The buttons of a page and the calls to action of a plan share it. A designed
-// page may also point at one of its own sections, with "#" and the anchor; the
-// target is kept and judged by resolveLinks once the whole outline is read, so
-// a section further down resolves it.
-func (w *pageWalk) linkCode(url string) string {
+// The buttons of a page and the calls to action of a plan share it; where is
+// the address of the object that holds the link, whose field is url. A
+// designed page may also point at one of its own sections, with "#" and the
+// anchor; the target is kept and judged by resolveLinks once the whole outline
+// is read, so a section further down resolves it.
+func (w *pageWalk) linkCode(url, where string) string {
 	if w.designed && strings.HasPrefix(url, "#") {
 		slug := url[1:]
 		if !pageAnchorPattern.MatchString(slug) {
-			return pageCreateLinkInvalid
+			return w.refuse(pageCreateLinkInvalid, where, "url",
+				"must be # and a section anchor: a lower-case letter, then 1 to 39 lower-case letters, digits or hyphens")
 		}
-		w.links = append(w.links, slug)
+		w.links = append(w.links, pageLink{slug: slug, where: where})
 		return ""
 	}
 	if !pageLinkUsable(url) {
-		return pageCreateLinkInvalid
+		reason := "is not a link the page can carry: use an https:// address or a path on this site that starts with /"
+		if w.designed {
+			reason += ", or # and the anchor of a section"
+		}
+		return w.refuse(pageCreateLinkInvalid, where, "url", reason)
 	}
 	return ""
 }
 
-// resolveLinks is the refusal of a link to an anchor the page does not have,
-// judged after every section is read.
+// resolveLinks is the refusal of the links to an anchor the page does not
+// have, judged after every section is read. Every such link is listed, in the
+// order of the page, each with the anchors the page does have.
 func (w *pageWalk) resolveLinks() string {
-	for _, slug := range w.links {
-		if _, ok := w.anchors[slug]; !ok {
-			return pageCreateLinkAnchorMissing
+	missing := false
+	for _, l := range w.links {
+		if _, ok := w.anchors[l.slug]; !ok {
+			missing = true
+			w.fail(l.where, "url", "leads to a section anchor the page does not have; use # and one of the anchors listed, or add that section", w.anchorList...)
 		}
+	}
+	if missing {
+		return pageCreateLinkAnchorMissing
 	}
 	return ""
 }
@@ -292,14 +316,16 @@ func (w *pageWalk) resolveLinks() string {
 // h1 judges a level 1 heading, of which a designed page has one, inside its
 // hero. A version 2 outline has no level 1 heading.
 func (w *pageWalk) h1(at pagePlace) string {
+	here := w.where
 	if !w.designed {
-		return pageCreateBadInput
+		return w.refuse(pageCreateBadInput, here, "level", w.levelReason())
 	}
 	if at != pageAtHero {
-		return pageCreateH1OutsideHero
+		return w.refuse(pageCreateH1OutsideHero, here, "level",
+			"a level 1 heading is the title of the page and stands in the hero; use level 2 here")
 	}
 	if w.h1s++; w.h1s > pageCreateMaxH1 {
-		return pageCreateLayoutInvalid
+		return w.refuse(pageCreateLayoutInvalid, here, "level", "a page has one level 1 heading, in the hero; use level 2 here")
 	}
 	return ""
 }
@@ -398,48 +424,61 @@ func patternBlocksAt(at pagePlace) []string {
 	return nil
 }
 
+// patternNameAt is the pattern whose blocks stand at place at.
+func patternNameAt(at pagePlace) string {
+	if at == pageAtHero {
+		return "hero"
+	}
+	return "cta"
+}
+
 // pattern is a pattern node: a child of a section, closed, with a name and a
 // variant from the lists and either children or its array of items.
 func (w *pageWalk) pattern(n map[string]json.RawMessage, at pagePlace) string {
+	here := w.where
 	if at != pageAtSection {
-		return pageCreateLayoutInvalid
+		return w.refuse(pageCreateLayoutInvalid, here, "type", "a pattern is a child of a section; it cannot sit here")
 	}
 	name, ok := jsonStringOf(n["pattern"])
 	spec, known := patternSpecs[name]
 	if !ok || !known {
-		return pageCreateBadInput
+		return w.refuse(pageCreateBadInput, here, "pattern", "must be one of the patterns", slices.Sorted(maps.Keys(patternSpecs))...)
 	}
 	// The hero opens the page: the first child of the first section.
 	if name == "hero" && (w.sections != 1 || w.childAt != 0) {
-		return pageCreateHeroMisplaced
+		return w.refuse(pageCreateHeroMisplaced, here, "pattern",
+			"the hero is the first block of the first section; move it there, or leave the hero out")
 	}
 	body := spec.array
 	if body == "" {
 		body = "children"
 	}
-	if !keysExactly(n, []string{"type", "pattern", "variant", body}, "type", "pattern", "variant", body) {
-		return pageCreateBadInput
+	if code := w.members(here, "a "+name+" pattern", n, []string{"type", "pattern", "variant", body}, "type", "pattern", "variant", body); code != "" {
+		return code
 	}
 	if variant, ok := jsonStringOf(n["variant"]); !ok || !slices.Contains(spec.variants, variant) {
-		return pageCreateBadInput
+		return w.refuse(pageCreateBadInput, here, "variant", "must be one of the variants of the "+name+" pattern", spec.variants...)
 	}
 	if spec.array == "" {
-		return w.patternBlocks(n[body], spec)
+		return w.patternBlocks(n[body], spec, name)
 	}
 	return w.patternItems(n[body], spec)
 }
 
 // patternBlocks is the children of a hero or a cta: 1..maxChildren nodes of
-// the blocks the pattern names.
-func (w *pageWalk) patternBlocks(raw json.RawMessage, spec patternSpec) string {
+// the blocks the pattern names. w.where is the pattern's address.
+func (w *pageWalk) patternBlocks(raw json.RawMessage, spec patternSpec, name string) string {
+	here := w.where
 	list, ok := jsonArrayOf(raw)
 	if !ok {
-		return pageCreateBadInput
+		return w.refuse(pageCreateBadInput, here, "children", "must be a list of blocks")
 	}
 	if len(list) == 0 || len(list) > spec.maxChildren {
-		return pageCreateLayoutInvalid
+		return w.refuse(pageCreateLayoutInvalid, here, "children",
+			fmt.Sprintf("a %s holds 1 to %d blocks; this one has %d", name, spec.maxChildren, len(list)))
 	}
-	for _, child := range list {
+	for i, child := range list {
+		w.where = here + ".children[" + strconv.Itoa(i) + "]"
 		if code := w.node(child, spec.place); code != "" {
 			return code
 		}
@@ -449,41 +488,54 @@ func (w *pageWalk) patternBlocks(raw json.RawMessage, spec patternSpec) string {
 
 // patternItems is the array of an item pattern. Its count is judged before
 // its items, so a list of the wrong length is told so whatever the items hold.
+// The icons that are not in the list are told together once every item has
+// been read; any other problem of an item is told first. w.where is the
+// pattern's address.
 func (w *pageWalk) patternItems(raw json.RawMessage, spec patternSpec) string {
+	here := w.where
 	items, ok := jsonArrayOf(raw)
 	if !ok {
-		return pageCreateBadInput
+		return w.refuse(pageCreateBadInput, here, spec.array, "must be a list of items")
 	}
 	if len(items) < spec.min || len(items) > spec.max {
-		return pageCreateItemsOutOfRange
+		return w.refuse(pageCreateItemsOutOfRange, here, spec.array,
+			fmt.Sprintf("%s take %d to %d items; this one has %d", spec.array, spec.min, spec.max, len(items)))
 	}
-	for _, it := range items {
-		if code := w.patternItem(it, spec.fields); code != "" {
+	w.icons = nil
+	for i, it := range items {
+		if code := w.patternItem(it, spec, here, i); code != "" {
 			return code
 		}
+	}
+	if len(w.icons) > 0 {
+		w.fails = append(w.fails, w.icons...)
+		w.icons = nil
+		return pageCreateIconUnknown
 	}
 	return ""
 }
 
-func (w *pageWalk) patternItem(raw json.RawMessage, fields []patternField) string {
+func (w *pageWalk) patternItem(raw json.RawMessage, spec patternSpec, base string, i int) string {
+	at := strconv.Itoa(i)
 	item, ok := jsonObjectOf(raw)
 	if !ok {
-		return pageCreateBadInput
+		return w.refuse(pageCreateBadInput, base, spec.array+"["+at+"]", "must be an object")
 	}
-	allowed := make([]string, len(fields))
+	where := base + "." + spec.array + "[" + at + "]"
+	allowed := make([]string, len(spec.fields))
 	var required []string
-	for i, f := range fields {
+	for i, f := range spec.fields {
 		allowed[i] = f.key
 		if f.required {
 			required = append(required, f.key)
 		}
 	}
-	if !keysExactly(item, allowed, required...) {
-		return pageCreateBadInput
+	if code := w.members(where, "this item", item, allowed, required...); code != "" {
+		return code
 	}
-	for _, f := range fields {
+	for _, f := range spec.fields {
 		if v, has := item[f.key]; has {
-			if code := w.patternValue(f.kind, v); code != "" {
+			if code := w.patternValue(f, v, where); code != "" {
 				return code
 			}
 		}
@@ -491,57 +543,66 @@ func (w *pageWalk) patternItem(raw json.RawMessage, fields []patternField) strin
 	return ""
 }
 
-func (w *pageWalk) patternValue(kind patternFieldKind, raw json.RawMessage) string {
-	switch kind {
+// patternValue judges one field of an item; where is the address of the item.
+func (w *pageWalk) patternValue(f patternField, raw json.RawMessage, where string) string {
+	switch f.kind {
 	case fieldText:
 		if !isJSONString(raw) {
-			return pageCreateBadInput
+			return w.refuse(pageCreateBadInput, where, f.key, "must be a string")
 		}
 	case fieldIcon:
 		name, ok := jsonStringOf(raw)
 		if !ok {
-			return pageCreateBadInput
+			return w.refuse(pageCreateBadInput, where, f.key, "must be the name of an icon", pageIcons...)
 		}
 		if !slices.Contains(pageIcons, name) {
-			return pageCreateIconUnknown
+			w.icons = append(w.icons, refusalFailure{Path: where, Key: f.key, Reason: "is not the name of an icon in the list", Allowed: pageIcons})
 		}
 	case fieldImage:
 		id, ok := jsonIntOf(raw)
 		if !ok || id < 1 || id > pageCreateMaxAttachmentID {
-			return pageCreateBadInput
+			return w.refuse(pageCreateBadInput, where, f.key, "must be a whole number from 1 to "+strconv.Itoa(pageCreateMaxAttachmentID))
 		}
-		return w.media(id)
+		return w.media(id, where, f.key)
 	case fieldFlag:
 		if _, ok := jsonBoolOf(raw); !ok {
-			return pageCreateBadInput
+			return w.refuse(pageCreateBadInput, where, f.key, "must be true or false")
 		}
 	case fieldCount:
 		if n, ok := jsonIntOf(raw); !ok || n < 0 || n > pageCreateMaxStatValue {
-			return pageCreateBadInput
+			return w.refuse(pageCreateBadInput, where, f.key, "must be a whole number from 0 to "+strconv.Itoa(pageCreateMaxStatValue))
 		}
 	case fieldBullets:
 		list, ok := jsonArrayOf(raw)
 		if !ok {
-			return pageCreateBadInput
+			return w.refuse(pageCreateBadInput, where, f.key, "must be a list of short lines")
 		}
 		if len(list) == 0 || len(list) > pageCreateMaxPlanBullets {
-			return pageCreateItemsOutOfRange
+			return w.refuse(pageCreateItemsOutOfRange, where, f.key,
+				fmt.Sprintf("a plan lists 1 to %d features; this one has %d", pageCreateMaxPlanBullets, len(list)))
 		}
-		for _, b := range list {
+		for i, b := range list {
 			if !isJSONString(b) {
-				return pageCreateBadInput
+				return w.refuse(pageCreateBadInput, where, f.key+"["+strconv.Itoa(i)+"]", "must be a string")
 			}
 		}
 	case fieldLink:
 		link, ok := jsonObjectOf(raw)
-		if !ok || !keysExactly(link, []string{"text", "url"}, "text", "url") || !isJSONString(link["text"]) {
-			return pageCreateBadInput
+		if !ok {
+			return w.refuse(pageCreateBadInput, where, f.key, "must be an object with text and url")
+		}
+		at := where + "." + f.key
+		if code := w.members(at, "a plan button", link, []string{"text", "url"}, "text", "url"); code != "" {
+			return code
+		}
+		if !isJSONString(link["text"]) {
+			return w.refuse(pageCreateBadInput, at, "text", "must be a string")
 		}
 		url, ok := jsonStringOf(link["url"])
 		if !ok {
-			return pageCreateBadInput
+			return w.refuse(pageCreateBadInput, at, "url", "must be a string")
 		}
-		return w.linkCode(url)
+		return w.linkCode(url, at)
 	}
 	return ""
 }

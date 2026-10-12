@@ -88,6 +88,7 @@ const (
 	msgAbilityDesignNotReady = "the page design is incomplete, so nothing was asked"
 	msgAbilityDesignContrast = "the page design has colours too close to read together, so nothing was asked"
 	msgAbilityDesignValue    = "the page design has a value it may not hold, so nothing was asked"
+	msgAbilityOutlineValue   = "the outline has a member or a value the page grammar does not accept, so nothing was asked"
 )
 
 const reasonAbilityPrecheckRefused refusalReason = "ability_precheck_refused"
@@ -211,11 +212,12 @@ func writeEntryRunnable(e *sqlc.AbilityCatalogue, inv *sqlc.SiteAbilityInventory
 // pageCreateInputRefusal refuses an input the grammar refused. A schema
 // mismatch carries the schema; a layout, link or editor problem carries the
 // agent's code and our fixed hint for it (never the site's words). A refusal
-// that has failures (the design's) also names them: the message spells out
-// the first three and failures[] holds the rest.
+// that has failures (the design's, or the address of a node of the outline)
+// also names them: the message spells out the first three and failures[]
+// holds the rest.
 func pageCreateInputRefusal(r pageCreateRefusal) *toolRefusal {
 	code := r.Code
-	msg, failures := refusalEnvelope(pageCreateRefusalSummary(code), r.Failures)
+	msg, failures := refusalEnvelope(pageCreateRefusalSummaryOf(r), r.Failures)
 	if code == pageCreateBadInput {
 		ref := argRefusal(reasonInvalidArguments, "input", "", msgAbilityArgInput, pageCreateInputSchema)
 		if len(failures) > 0 {
@@ -248,6 +250,16 @@ func pageCreateRefusalSummary(code string) string {
 		return msgAbilityDesignValue
 	}
 	return msgAbilityLayoutInput
+}
+
+// pageCreateRefusalSummaryOf is the summary of a refusal that may be of the
+// outline: a value of the outline that the grammar does not accept is not a
+// value of the design.
+func pageCreateRefusalSummaryOf(r pageCreateRefusal) string {
+	if r.Outline && r.Code == pageCreateBadInput {
+		return msgAbilityOutlineValue
+	}
+	return pageCreateRefusalSummary(r.Code)
 }
 
 // ---------------------------------------------------------------------------

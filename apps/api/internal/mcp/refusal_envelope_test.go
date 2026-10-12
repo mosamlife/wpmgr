@@ -221,9 +221,10 @@ func TestPageCreateInputRefusalCarriesDesignFailures(t *testing.T) {
 		})
 	}
 
-	t.Run("a refusal of the outline names a code only", func(t *testing.T) {
+	t.Run("a refusal of the outline names where, and says it is the outline's", func(t *testing.T) {
 		_, refusal := checkPageCreateInput(v3Anchors("one", "one"))
-		if refusal.Code != pageCreateAnchorDuplicate || len(refusal.Failures) != 0 {
+		if refusal.Code != pageCreateAnchorDuplicate || !refusal.Outline || len(refusal.Failures) != 1 ||
+			refusal.Failures[0].Path != "outline[1]" || refusal.Failures[0].Key != "anchor" {
 			t.Errorf("refusal = %+v", refusal)
 		}
 		f, refusal := checkPageCreateInput(v3HeadInput(nil))

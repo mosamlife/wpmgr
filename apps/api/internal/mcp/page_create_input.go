@@ -150,21 +150,45 @@ type pageWalk struct {
 	usesLayout                     bool
 	ids                            []int64
 	seen                           map[int64]struct{}
-	// Of a designed outline: the anchors taken, the slugs that links point at,
-	// the level 1 headings read, and the index of the section child being read.
-	anchors map[string]struct{}
-	links   []string
-	h1s     int
-	childAt int
+	// Of a designed outline: the anchors taken (each with the address of its
+	// section) and their order, the links that point at them, the level 1
+	// headings read, and the index of the section child being read.
+	anchors    map[string]string
+	anchorList []string
+	links      []pageLink
+	h1s        int
+	childAt    int
+	// where is the address of the node being judged (outline[0].children[2]),
+	// and fails the failures recorded for the refusal. A node that is refused
+	// records its failure through refuse, so no refusal leaves the walk
+	// without saying where. blockWhere and blockKey are the first node that
+	// only the block editor can hold, and icons the unknown icons of the item
+	// pattern being read, which are told together.
+	where      string
+	fails      []refusalFailure
+	blockWhere string
+	blockKey   string
+	icons      []refusalFailure
+}
+
+// pageLink is a link to a section of the page, kept until every section has
+// been read: the slug it points at and the address of the object that holds it.
+type pageLink struct {
+	slug, where string
 }
 
 // pageCreateRefusal is why an input was refused: the refusal code of the
-// first problem and, when a check can name them, the failures behind it. Only
-// the design's checks do; a refusal of the outline names a code. The zero
-// value is an input that was accepted.
+// first problem and the failures behind it. A design that is refused names the
+// fields of the design; an outline that is refused names the address of the
+// node and the field that holds the problem (outline[0].children[2], key
+// "level"). Outline is set for the second, so the message speaks of the
+// outline and not of the design. A refusal of another member of the input
+// (the post type, the editor, the title) names a code only. The zero value is
+// an input that was accepted.
 type pageCreateRefusal struct {
 	Code     string
 	Failures []refusalFailure
+	Outline  bool
 }
 
 // validatePageCreateInput checks input against the outline grammar. It
@@ -246,30 +270,54 @@ func checkPageCreateInput(input []byte) (pageCreateFacts, pageCreateRefusal) {
 	// The top level of a designed page is bounded by its section and hero
 	// caps, which answer layout_invalid however long the list is.
 	if !ok || len(outline) == 0 || (!designed && len(outline) > pageCreateMaxTopLevelNodes) {
-		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
+		reason := "must be a list of 1 to " + strconv.Itoa(pageCreateMaxTopLevelNodes) + " blocks"
+		if designed {
+			reason = "must be a list of 1 to " + strconv.Itoa(pageCreateMaxSections) + " sections"
+		}
+		return pageCreateFacts{}, outlineRefusal(pageCreateBadInput, "input", "outline", reason)
 	}
 	if designed {
 		if f.pageFrame, ok = pageFrameOf(top, outline); !ok {
 			return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
 		}
-		if pageOutlineHeroes(outline) > pageCreateMaxHeroes {
-			return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateLayoutInvalid}
+		if len(outline) > pageCreateMaxSections {
+			return pageCreateFacts{}, outlineRefusal(pageCreateLayoutInvalid, "input", "outline",
+				fmt.Sprintf("a page holds 1 to %d sections; this one has %d", pageCreateMaxSections, len(outline)))
+		}
+		// Counted before any hero is placed, so a second hero is told what
+		// it is and not that it stands in the wrong place.
+		if heroes := pageOutlineHeroPlaces(outline); len(heroes) > pageCreateMaxHeroes {
+			return pageCreateFacts{}, outlineRefusal(pageCreateLayoutInvalid, heroes[pageCreateMaxHeroes], "pattern",
+				"a page has one hero, at the top of its first section; leave this one out")
 		}
 	}
 	w := pageWalk{seen: map[int64]struct{}{}, designed: designed}
-	for _, n := range outline {
+	for i, n := range outline {
+		w.where = "outline[" + strconv.Itoa(i) + "]"
 		if code := w.node(n, pageAtTop); code != "" {
-			return pageCreateFacts{}, pageCreateRefusal{Code: code}
+			return pageCreateFacts{}, w.refusal(code)
 		}
 	}
 	if code := w.resolveLinks(); code != "" {
-		return pageCreateFacts{}, pageCreateRefusal{Code: code}
+		return pageCreateFacts{}, w.refusal(code)
 	}
 	if f.editor == pageEditorClassic && w.blockOnly {
-		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateNeedsBlockEditor}
+		return pageCreateFacts{}, outlineRefusal(pageCreateNeedsBlockEditor, w.blockWhere, w.blockKey,
+			"needs the block editor: send editor wordpress_blocks, or leave this block out")
 	}
 	f.usesLayout, f.mediaIDs = w.usesLayout, w.ids
 	return f, pageCreateRefusal{}
+}
+
+// outlineRefusal is the refusal of the outline as a whole, with the one
+// failure that explains it.
+func outlineRefusal(code, where, key, reason string) pageCreateRefusal {
+	return pageCreateRefusal{Code: code, Failures: []refusalFailure{{Path: where, Key: key, Reason: reason}}, Outline: true}
+}
+
+// refusal is the refusal of the walk, with the failures it recorded.
+func (w *pageWalk) refusal(code string) pageCreateRefusal {
+	return pageCreateRefusal{Code: code, Failures: w.fails, Outline: true}
 }
 
 // pageCreateIsDesigned reports whether a page-create input sends a member of
@@ -327,14 +375,15 @@ func pageFrameOf(top map[string]json.RawMessage, outline []json.RawMessage) (str
 // hero pattern as one of its children. Only the shape is read: where a hero
 // may stand is the grammar's rule, and a node that is not an object is ignored.
 func pageOutlineHasHero(outline []json.RawMessage) bool {
-	return pageOutlineHeroes(outline) > 0
+	return len(pageOutlineHeroPlaces(outline)) > 0
 }
 
-// pageOutlineHeroes counts the hero patterns among the children of the
-// sections of a version 3 outline, read by shape alone.
-func pageOutlineHeroes(outline []json.RawMessage) int {
-	heroes := 0
-	for _, raw := range outline {
+// pageOutlineHeroPlaces are the addresses of the hero patterns among the
+// children of the sections of a version 3 outline, in page order, read by
+// shape alone.
+func pageOutlineHeroPlaces(outline []json.RawMessage) []string {
+	var places []string
+	for i, raw := range outline {
 		section, ok := jsonObjectOf(raw)
 		if !ok {
 			continue
@@ -343,7 +392,7 @@ func pageOutlineHeroes(outline []json.RawMessage) int {
 		if !ok {
 			continue
 		}
-		for _, child := range children {
+		for j, child := range children {
 			n, ok := jsonObjectOf(child)
 			if !ok {
 				continue
@@ -352,25 +401,99 @@ func pageOutlineHeroes(outline []json.RawMessage) int {
 				continue
 			}
 			if name, ok := jsonStringOf(n["pattern"]); ok && name == "hero" {
-				heroes++
+				places = append(places, "outline["+strconv.Itoa(i)+"].children["+strconv.Itoa(j)+"]")
 			}
 		}
 	}
-	return heroes
+	return places
 }
 
-// node is one outline node at a placement.
+// ---------------------------------------------------------------------------
+// Where a refusal is
+//
+// A node is judged with w.where set to its address, in the form the agent's
+// refusals use: outline[0] for a section, then .children[2] for a block of a
+// section, a hero, a call to action, a group or a column, .columns[1] for a
+// column, .buttons[0] for a button and .features[3] (or the pattern's own
+// array) for an item. A refusal records a failure at that address with the
+// field that holds the problem, so the AI is told where to look.
+// ---------------------------------------------------------------------------
+
+// fail records one failure of the refusal: where is the address of the node
+// that holds the problem, key the field of it, and allowed the values a closed
+// set takes.
+func (w *pageWalk) fail(where, key, reason string, allowed ...string) {
+	w.fails = append(w.fails, refusalFailure{Path: where, Key: key, Reason: reason, Allowed: allowed})
+}
+
+// refuse records a failure and answers the refusal code that goes with it.
+func (w *pageWalk) refuse(code, where, key, reason string, allowed ...string) string {
+	w.fail(where, key, reason, allowed...)
+	return code
+}
+
+// members is "" when n holds only the allowed members and every required one.
+// Otherwise it is the refusal: a member the grammar does not take is the
+// failure "fields", and a missing one is its own key. what names the object
+// for the sentence ("a section").
+func (w *pageWalk) members(where, what string, n map[string]json.RawMessage, allowed []string, required ...string) string {
+	if !keysWithin(n, allowed...) {
+		return w.refuse(pageCreateBadInput, where, "fields", "has a member "+what+" does not take", allowed...)
+	}
+	for _, r := range required {
+		if _, ok := n[r]; !ok {
+			return w.refuse(pageCreateBadInput, where, r, "is required")
+		}
+	}
+	return ""
+}
+
+// tooManyBlocks is the refusal of the block that is one too many.
+func (w *pageWalk) tooManyBlocks(where string) string {
+	return w.refuse(pageCreateLayoutInvalid, where, "type", "the page has more than "+strconv.Itoa(pageCreateMaxNodes)+" blocks")
+}
+
+// needBlocks notes the first node that only the block editor can hold, so that
+// a page sent to the classic editor is told which one it is.
+func (w *pageWalk) needBlocks(where, key string) {
+	if !w.blockOnly {
+		w.blockOnly, w.blockWhere, w.blockKey = true, where, key
+	}
+}
+
+// blockTypes are the types a node may have: the blocks of version 2, and the
+// pattern of a designed page.
+func (w *pageWalk) blockTypes() []string {
+	if w.designed {
+		return pageNodeTypes
+	}
+	return slices.DeleteFunc(slices.Clone(pageNodeTypes), func(s string) bool { return s == "pattern" })
+}
+
+// levelReason is what a heading level may be.
+func (w *pageWalk) levelReason() string {
+	if w.designed {
+		return "must be 1, 2, 3 or 4"
+	}
+	return "must be 2, 3 or 4"
+}
+
+// node is one outline node at a placement; w.where is its address.
 func (w *pageWalk) node(raw json.RawMessage, at pagePlace) string {
+	here := w.where
 	n, ok := jsonObjectOf(raw)
 	if !ok {
-		return pageCreateBadInput
+		if w.designed && at == pageAtTop {
+			return w.refuse(pageCreateBadInput, here, "type", "a top-level item is a section object")
+		}
+		return w.refuse(pageCreateBadInput, here, "node", "must be an object")
 	}
 	if w.nodes++; w.nodes > pageCreateMaxNodes {
-		return pageCreateLayoutInvalid
+		return w.tooManyBlocks(here)
 	}
 	kind, ok := jsonStringOf(n["type"])
 	if !ok {
-		return pageCreateBadInput
+		return w.refuse(pageCreateBadInput, here, "type", "must be the name of a block", w.blockTypes()...)
 	}
 	if w.designed {
 		if code, handled := w.designedNode(n, kind, at); handled {
@@ -379,33 +502,42 @@ func (w *pageWalk) node(raw json.RawMessage, at pagePlace) string {
 	}
 	switch kind {
 	case "heading":
+		if code := w.members(here, "a heading", n, []string{"type", "level", "text"}); code != "" {
+			return code
+		}
 		level, ok := jsonIntOf(n["level"])
-		if !keysWithin(n, "type", "level", "text") || !ok || level < 1 || level > 4 || !isJSONString(n["text"]) {
-			return pageCreateBadInput
+		if !ok || level < 1 || level > 4 {
+			return w.refuse(pageCreateBadInput, here, "level", w.levelReason())
+		}
+		if !isJSONString(n["text"]) {
+			return w.refuse(pageCreateBadInput, here, "text", "must be a string")
 		}
 		if level == 1 {
 			return w.h1(at)
 		}
 		return ""
 	case "paragraph":
-		if !keysWithin(n, "type", "text") || !isJSONString(n["text"]) {
-			return pageCreateBadInput
+		if code := w.members(here, "a paragraph", n, []string{"type", "text"}); code != "" {
+			return code
+		}
+		if !isJSONString(n["text"]) {
+			return w.refuse(pageCreateBadInput, here, "text", "must be a string")
 		}
 		return ""
 	case "list":
-		if !keysWithin(n, "type", "ordered", "items") {
-			return pageCreateBadInput
+		if code := w.members(here, "a list", n, []string{"type", "ordered", "items"}); code != "" {
+			return code
 		}
 		if _, ok := jsonBoolOf(n["ordered"]); !ok {
-			return pageCreateBadInput
+			return w.refuse(pageCreateBadInput, here, "ordered", "must be true or false")
 		}
 		items, ok := jsonArrayOf(n["items"])
 		if !ok || len(items) == 0 || len(items) > pageCreateMaxItems {
-			return pageCreateBadInput
+			return w.refuse(pageCreateBadInput, here, "items", "must be a list of 1 to "+strconv.Itoa(pageCreateMaxItems)+" strings")
 		}
-		for _, it := range items {
+		for i, it := range items {
 			if !isJSONString(it) {
-				return pageCreateBadInput
+				return w.refuse(pageCreateBadInput, here, "items["+strconv.Itoa(i)+"]", "must be a string")
 			}
 		}
 		return ""
@@ -418,156 +550,166 @@ func (w *pageWalk) node(raw json.RawMessage, at pagePlace) string {
 	case "buttons":
 		return w.buttonsNode(n)
 	case "quote":
-		return quoteNode(n)
+		return w.quote(n)
 	case "separator":
-		if !keysExactly(n, []string{"type"}, "type") {
-			return pageCreateBadInput
-		}
-		return ""
+		return w.members(here, "a separator", n, []string{"type"}, "type")
 	case "spacer":
-		if !keysExactly(n, []string{"type", "size"}, "type", "size") {
-			return pageCreateBadInput
+		if code := w.members(here, "a spacer", n, []string{"type", "size"}, "type", "size"); code != "" {
+			return code
 		}
 		switch size, _ := jsonStringOf(n["size"]); size {
 		case "small", "medium", "large":
 		default:
-			return pageCreateBadInput
+			return w.refuse(pageCreateBadInput, here, "size", "must be small, medium or large", "small", "medium", "large")
 		}
-		w.blockOnly = true
+		w.needBlocks(here, "type")
 		return ""
 	case "table":
 		return w.table(n)
 	case "group":
 		if at != pageAtTop && at != pageAtSection {
-			return pageCreateLayoutInvalid
+			return w.refuse(pageCreateLayoutInvalid, here, "type", "a group stands at the top of the outline or in a section, not inside another block")
 		}
-		if !keysExactly(n, []string{"type", "children"}, "type", "children") {
-			return pageCreateBadInput
+		if code := w.members(here, "a group", n, []string{"type", "children"}, "type", "children"); code != "" {
+			return code
 		}
 		if code := w.children(n["children"], pageAtGroup); code != "" {
 			return code
 		}
-		w.blockOnly = true
+		w.needBlocks(here, "type")
 		return ""
 	case "columns":
 		if at == pageAtColumn {
-			return pageCreateLayoutInvalid
+			return w.refuse(pageCreateLayoutInvalid, here, "type", "columns cannot sit inside a column")
 		}
 		return w.columns(n)
 	}
 	// Not a block of the grammar. The agent answers create_content_invalid
 	// here (as in v1); for the control plane it does not match the schema.
-	return pageCreateBadInput
+	if kind == "section" {
+		return w.refuse(pageCreateBadInput, here, "type", "a section belongs to a designed page: send outline_version 3 and a design, or use the blocks of version 2", w.blockTypes()...)
+	}
+	return w.refuse(pageCreateBadInput, here, "type", "is not a block of the outline grammar", w.blockTypes()...)
 }
 
 func (w *pageWalk) image(n map[string]json.RawMessage) string {
-	if !keysExactly(n, []string{"type", "attachment_id", "alt", "caption", "align"}, "type", "attachment_id", "alt") {
-		return pageCreateBadInput
+	here := w.where
+	if code := w.members(here, "an image", n, []string{"type", "attachment_id", "alt", "caption", "align"}, "type", "attachment_id", "alt"); code != "" {
+		return code
 	}
 	id, ok := jsonIntOf(n["attachment_id"])
 	if !ok || id < 1 || id > pageCreateMaxAttachmentID {
-		return pageCreateBadInput
+		return w.refuse(pageCreateBadInput, here, "attachment_id", "must be a whole number from 1 to "+strconv.Itoa(pageCreateMaxAttachmentID))
 	}
 	// Alt text's own rules (no square bracket, no character reference) are
 	// text rules: the agent refuses them as create_content_invalid, and the
 	// shared case table has this side pass them on.
 	if !isJSONString(n["alt"]) {
-		return pageCreateBadInput
+		return w.refuse(pageCreateBadInput, here, "alt", "must be a string")
 	}
 	if raw, has := n["caption"]; has {
 		if !isJSONString(raw) {
-			return pageCreateBadInput
+			return w.refuse(pageCreateBadInput, here, "caption", "must be a string")
 		}
-		w.blockOnly = true
+		w.needBlocks(here, "caption")
 	}
 	if raw, has := n["align"]; has {
 		switch align, _ := jsonStringOf(raw); align {
 		case "none", "center", "wide", "full":
 		default:
-			return pageCreateBadInput
+			return w.refuse(pageCreateBadInput, here, "align", "must be none, center, wide or full", "none", "center", "wide", "full")
 		}
 	}
-	return w.media(id)
+	return w.media(id, here, "attachment_id")
 }
 
 func (w *pageWalk) buttonsNode(n map[string]json.RawMessage) string {
-	if !keysExactly(n, []string{"type", "align", "buttons"}, "type", "buttons") {
-		return pageCreateBadInput
+	here := w.where
+	if code := w.members(here, "a buttons block", n, []string{"type", "align", "buttons"}, "type", "buttons"); code != "" {
+		return code
 	}
 	if raw, has := n["align"]; has {
 		switch align, _ := jsonStringOf(raw); align {
 		case "left", "center":
 		default:
-			return pageCreateBadInput
+			return w.refuse(pageCreateBadInput, here, "align", "must be left or center", "left", "center")
 		}
 	}
 	list, ok := jsonArrayOf(n["buttons"])
 	if !ok {
-		return pageCreateBadInput
+		return w.refuse(pageCreateBadInput, here, "buttons", "must be a list of buttons")
 	}
 	if len(list) == 0 || len(list) > pageCreateMaxButtonsPerBlock {
-		return pageCreateLayoutInvalid
+		return w.refuse(pageCreateLayoutInvalid, here, "buttons",
+			fmt.Sprintf("a buttons block holds 1 to %d buttons; this one has %d", pageCreateMaxButtonsPerBlock, len(list)))
 	}
-	for _, raw := range list {
+	for i, raw := range list {
+		where := here + ".buttons[" + strconv.Itoa(i) + "]"
 		b, ok := jsonObjectOf(raw)
 		if !ok {
-			return pageCreateBadInput
+			return w.refuse(pageCreateBadInput, here, "buttons["+strconv.Itoa(i)+"]", "must be an object")
 		}
 		if w.nodes++; w.nodes > pageCreateMaxNodes {
-			return pageCreateLayoutInvalid
+			return w.tooManyBlocks(where)
 		}
-		if !keysExactly(b, []string{"text", "url", "style"}, "text", "url") || !isJSONString(b["text"]) {
-			return pageCreateBadInput
+		if code := w.members(where, "a button", b, []string{"text", "url", "style"}, "text", "url"); code != "" {
+			return code
+		}
+		if !isJSONString(b["text"]) {
+			return w.refuse(pageCreateBadInput, where, "text", "must be a string")
 		}
 		url, ok := jsonStringOf(b["url"])
 		if !ok {
-			return pageCreateBadInput
+			return w.refuse(pageCreateBadInput, where, "url", "must be a string")
 		}
-		if code := w.linkCode(url); code != "" {
+		if code := w.linkCode(url, where); code != "" {
 			return code
 		}
 		if raw, has := b["style"]; has {
 			if style, _ := jsonStringOf(raw); !slices.Contains(w.buttonStyles(), style) {
-				return pageCreateBadInput
+				return w.refuse(pageCreateBadInput, where, "style", "must be one of the allowed values", w.buttonStyles()...)
 			}
 		}
 		if w.buttons++; w.buttons > pageCreateMaxButtons {
-			return pageCreateLayoutInvalid
+			return w.refuse(pageCreateLayoutInvalid, where, "text", fmt.Sprintf("a page holds at most %d buttons", pageCreateMaxButtons))
 		}
 	}
-	w.blockOnly = true
+	w.needBlocks(here, "type")
 	return ""
 }
 
-func quoteNode(n map[string]json.RawMessage) string {
-	if !keysExactly(n, []string{"type", "paragraphs", "citation"}, "type", "paragraphs") {
-		return pageCreateBadInput
+func (w *pageWalk) quote(n map[string]json.RawMessage) string {
+	here := w.where
+	if code := w.members(here, "a quote", n, []string{"type", "paragraphs", "citation"}, "type", "paragraphs"); code != "" {
+		return code
 	}
 	paras, ok := jsonArrayOf(n["paragraphs"])
 	if !ok {
-		return pageCreateBadInput
+		return w.refuse(pageCreateBadInput, here, "paragraphs", "must be a list of strings")
 	}
 	if len(paras) == 0 || len(paras) > pageCreateMaxQuoteParagraphs {
-		return pageCreateLayoutInvalid
+		return w.refuse(pageCreateLayoutInvalid, here, "paragraphs",
+			fmt.Sprintf("a quote holds 1 to %d paragraphs; this one has %d", pageCreateMaxQuoteParagraphs, len(paras)))
 	}
-	for _, p := range paras {
+	for i, p := range paras {
 		if !isJSONString(p) {
-			return pageCreateBadInput
+			return w.refuse(pageCreateBadInput, here, "paragraphs["+strconv.Itoa(i)+"]", "must be a string")
 		}
 	}
 	if raw, has := n["citation"]; has && !isJSONString(raw) {
-		return pageCreateBadInput
+		return w.refuse(pageCreateBadInput, here, "citation", "must be a string")
 	}
 	return ""
 }
 
 func (w *pageWalk) table(n map[string]json.RawMessage) string {
-	if !keysExactly(n, []string{"type", "header", "rows"}, "type", "rows") {
-		return pageCreateBadInput
+	here := w.where
+	if code := w.members(here, "a table", n, []string{"type", "header", "rows"}, "type", "rows"); code != "" {
+		return code
 	}
 	width := -1
 	if raw, has := n["header"]; has {
-		cells, code := tableCells(raw)
+		cells, code := w.tableCells(raw, here, "header")
 		if code != "" {
 			return code
 		}
@@ -575,114 +717,137 @@ func (w *pageWalk) table(n map[string]json.RawMessage) string {
 	}
 	rows, ok := jsonArrayOf(n["rows"])
 	if !ok {
-		return pageCreateBadInput
+		return w.refuse(pageCreateBadInput, here, "rows", "must be a list of rows")
 	}
 	if len(rows) == 0 || len(rows) > pageCreateMaxTableRows {
-		return pageCreateLayoutInvalid
+		return w.refuse(pageCreateLayoutInvalid, here, "rows",
+			fmt.Sprintf("a table holds 1 to %d rows; this one has %d", pageCreateMaxTableRows, len(rows)))
 	}
-	for _, row := range rows {
-		cells, code := tableCells(row)
+	for i, row := range rows {
+		key := "rows[" + strconv.Itoa(i) + "]"
+		cells, code := w.tableCells(row, here, key)
 		if code != "" {
 			return code
 		}
 		if width >= 0 && cells != width {
-			return pageCreateLayoutInvalid
+			return w.refuse(pageCreateLayoutInvalid, here, key,
+				fmt.Sprintf("has %d cells where the table has %d; every row has as many as the header or the first row", cells, width))
 		}
 		width = cells
 	}
 	if w.tables++; w.tables > pageCreateMaxTables {
-		return pageCreateLayoutInvalid
+		return w.refuse(pageCreateLayoutInvalid, here, "type", fmt.Sprintf("a page holds at most %d tables", pageCreateMaxTables))
 	}
 	return ""
 }
 
 // tableCells is one row or the header: 1..6 strings (empty allowed).
-func tableCells(raw json.RawMessage) (int, string) {
+func (w *pageWalk) tableCells(raw json.RawMessage, where, key string) (int, string) {
 	cells, ok := jsonArrayOf(raw)
 	if !ok {
-		return 0, pageCreateBadInput
+		return 0, w.refuse(pageCreateBadInput, where, key, "must be a list of cells")
 	}
 	if len(cells) == 0 || len(cells) > pageCreateMaxTableColumns {
-		return 0, pageCreateLayoutInvalid
+		return 0, w.refuse(pageCreateLayoutInvalid, where, key,
+			fmt.Sprintf("a table row holds 1 to %d cells; this one has %d", pageCreateMaxTableColumns, len(cells)))
 	}
-	for _, c := range cells {
+	for i, c := range cells {
 		if !isJSONString(c) {
-			return 0, pageCreateBadInput
+			return 0, w.refuse(pageCreateBadInput, where, key+"["+strconv.Itoa(i)+"]", "must be a string")
 		}
 	}
 	return len(cells), ""
 }
 
 func (w *pageWalk) columns(n map[string]json.RawMessage) string {
-	if !keysExactly(n, []string{"type", "widths", "columns"}, "type", "columns") {
-		return pageCreateBadInput
+	here := w.where
+	if code := w.members(here, "a columns block", n, []string{"type", "widths", "columns"}, "type", "columns"); code != "" {
+		return code
 	}
 	cols, ok := jsonArrayOf(n["columns"])
 	if !ok {
-		return pageCreateBadInput
+		return w.refuse(pageCreateBadInput, here, "columns", "must be a list of columns")
 	}
 	if len(cols) < pageCreateMinColumns || len(cols) > pageCreateMaxColumns {
-		return pageCreateLayoutInvalid
+		return w.refuse(pageCreateLayoutInvalid, here, "columns",
+			fmt.Sprintf("a columns block holds %d to %d columns; this one has %d", pageCreateMinColumns, pageCreateMaxColumns, len(cols)))
 	}
 	if raw, has := n["widths"]; has {
-		list, ok := jsonArrayOf(raw)
-		if !ok {
-			return pageCreateBadInput
-		}
-		widths := make([]int64, 0, len(list))
-		for _, r := range list {
-			v, ok := jsonIntOf(r)
-			if !ok {
-				return pageCreateBadInput
-			}
-			widths = append(widths, v)
-		}
-		if len(widths) != len(cols) {
-			return pageCreateLayoutInvalid
-		}
-		var sum int64
-		for _, v := range widths {
-			if v < pageCreateMinColumnWidth || v > pageCreateMaxColumnWidth {
-				return pageCreateLayoutInvalid
-			}
-			sum += v
-		}
-		if sum != 100 {
-			return pageCreateLayoutInvalid
+		if code := w.columnWidths(raw, here, len(cols)); code != "" {
+			return code
 		}
 	}
-	for _, raw := range cols {
+	for i, raw := range cols {
+		where := here + ".columns[" + strconv.Itoa(i) + "]"
 		c, ok := jsonObjectOf(raw)
 		if !ok {
-			return pageCreateBadInput
+			return w.refuse(pageCreateBadInput, here, "columns["+strconv.Itoa(i)+"]", "must be an object")
 		}
 		if w.nodes++; w.nodes > pageCreateMaxNodes {
-			return pageCreateLayoutInvalid
+			return w.tooManyBlocks(where)
 		}
-		if !keysExactly(c, []string{"children"}, "children") {
-			return pageCreateBadInput
+		if code := w.members(where, "a column", c, []string{"children"}, "children"); code != "" {
+			return code
 		}
+		w.where = where
 		if code := w.children(c["children"], pageAtColumn); code != "" {
 			return code
 		}
 	}
-	w.blockOnly = true
+	w.needBlocks(here, "type")
 	return ""
 }
 
-// children is a container's list: 1..50 nodes at one placement.
-func (w *pageWalk) children(raw json.RawMessage, at pagePlace) string {
+// columnWidths judges the widths of a columns block: a whole number for each
+// of its cols columns, each within the bounds, adding up to 100.
+func (w *pageWalk) columnWidths(raw json.RawMessage, here string, cols int) string {
 	list, ok := jsonArrayOf(raw)
 	if !ok {
-		return pageCreateBadInput
+		return w.refuse(pageCreateBadInput, here, "widths", "must be a list of whole numbers")
+	}
+	widths := make([]int64, 0, len(list))
+	for i, r := range list {
+		v, ok := jsonIntOf(r)
+		if !ok {
+			return w.refuse(pageCreateBadInput, here, "widths["+strconv.Itoa(i)+"]", "must be a whole number")
+		}
+		widths = append(widths, v)
+	}
+	if len(widths) != cols {
+		return w.refuse(pageCreateLayoutInvalid, here, "widths",
+			fmt.Sprintf("needs one width for each of the %d columns; this one has %d", cols, len(widths)))
+	}
+	var sum int64
+	for i, v := range widths {
+		if v < pageCreateMinColumnWidth || v > pageCreateMaxColumnWidth {
+			return w.refuse(pageCreateLayoutInvalid, here, "widths["+strconv.Itoa(i)+"]",
+				fmt.Sprintf("must be from %d to %d", pageCreateMinColumnWidth, pageCreateMaxColumnWidth))
+		}
+		sum += v
+	}
+	if sum != 100 {
+		return w.refuse(pageCreateLayoutInvalid, here, "widths", "must add up to 100")
+	}
+	return ""
+}
+
+// children is a container's list: 1..50 nodes at one placement. w.where is the
+// container's address; the address of each child is its place in .children.
+func (w *pageWalk) children(raw json.RawMessage, at pagePlace) string {
+	here := w.where
+	list, ok := jsonArrayOf(raw)
+	if !ok {
+		return w.refuse(pageCreateBadInput, here, "children", "must be a list of blocks")
 	}
 	if len(list) == 0 || len(list) > pageCreateMaxChildren {
-		return pageCreateLayoutInvalid
+		return w.refuse(pageCreateLayoutInvalid, here, "children",
+			fmt.Sprintf("needs 1 to %d blocks; this one has %d", pageCreateMaxChildren, len(list)))
 	}
 	for i, child := range list {
 		if at == pageAtSection {
 			w.childAt = i
 		}
+		w.where = here + ".children[" + strconv.Itoa(i) + "]"
 		if code := w.node(child, at); code != "" {
 			return code
 		}
