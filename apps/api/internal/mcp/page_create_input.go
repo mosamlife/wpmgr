@@ -158,48 +158,64 @@ type pageWalk struct {
 	childAt int
 }
 
+// pageCreateRefusal is why an input was refused: the refusal code of the
+// first problem and, when a check can name them, the failures behind it. Only
+// the design's checks do; a refusal of the outline names a code. The zero
+// value is an input that was accepted.
+type pageCreateRefusal struct {
+	Code     string
+	Failures []refusalFailure
+}
+
 // validatePageCreateInput checks input against the outline grammar. It
 // returns the facts, or the refusal code of the first problem.
 func validatePageCreateInput(input []byte) (pageCreateFacts, string) {
+	f, refusal := checkPageCreateInput(input)
+	return f, refusal.Code
+}
+
+// checkPageCreateInput is validatePageCreateInput with the failures behind a
+// refusal: a design that is refused says which of its fields.
+func checkPageCreateInput(input []byte) (pageCreateFacts, pageCreateRefusal) {
 	if len(input) > abilityRunDefaultInputBytes {
-		return pageCreateFacts{}, pageCreateBadInput
+		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
 	}
 	top, ok := jsonObjectOf(input)
 	if !ok {
-		return pageCreateFacts{}, pageCreateBadInput
+		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
 	}
 	for k := range top {
 		switch k {
 		case "post_type", "editor", "title", "outline", "elementor_format", "outline_version", "design", "page_frame":
 		default:
-			return pageCreateFacts{}, pageCreateBadInput
+			return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
 		}
 	}
 	var f pageCreateFacts
 	if f.postType, ok = jsonStringOf(top["post_type"]); !ok || (f.postType != "page" && f.postType != "post") {
-		return pageCreateFacts{}, pageCreateBadInput
+		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
 	}
 	if f.editor, ok = jsonStringOf(top["editor"]); !ok {
-		return pageCreateFacts{}, pageCreateBadInput
+		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
 	}
 	switch f.editor {
 	case pageEditorBlocks, pageEditorClassic:
 	case pageEditorBuilderElementor:
 		f.builder, f.elementorFormat = pageBuilderElementor, pageElementorFormatDefault
 	default:
-		return pageCreateFacts{}, pageCreateBadInput
+		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
 	}
 	// elementor_format belongs to builder:elementor alone and holds one of the
 	// published values; the facts of every other editor carry no format.
 	if raw, has := top["elementor_format"]; has {
 		format, ok := jsonStringOf(raw)
 		if !ok || f.builder != pageBuilderElementor || !pageElementorFormatKnown(format) {
-			return pageCreateFacts{}, pageCreateBadInput
+			return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
 		}
 		f.elementorFormat = format
 	}
 	if f.outlineVersion, ok = pageOutlineVersionOf(top); !ok {
-		return pageCreateFacts{}, pageCreateBadInput
+		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
 	}
 	designed := f.outlineVersion == pageOutlineVersionDesigned
 	if designed {
@@ -207,22 +223,22 @@ func validatePageCreateInput(input []byte) (pageCreateFacts, string) {
 		// input that does not state it has site_default, which only the site
 		// can resolve.
 		if f.builder != pageBuilderElementor || f.elementorFormat != elementorFormatClassic {
-			return pageCreateFacts{}, pageCreateBadInput
+			return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
 		}
 	} else if _, has := top["design"]; has {
-		return pageCreateFacts{}, pageCreateBadInput
+		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
 	} else if _, has := top["page_frame"]; has {
-		return pageCreateFacts{}, pageCreateBadInput
+		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
 	}
 	if f.title, ok = jsonStringOf(top["title"]); !ok || strings.TrimSpace(f.title) == "" {
-		return pageCreateFacts{}, pageCreateBadInput
+		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
 	}
 	// The design is judged before the outline, so a page without one is
 	// told that rather than anything about its nodes.
 	if designed {
 		design, problem := validatePageDesign(top["design"])
 		if problem != nil {
-			return pageCreateFacts{}, problem.Code
+			return pageCreateFacts{}, pageCreateRefusal{Code: problem.Code, Failures: refusalFailuresOfDesign(problem.Failures)}
 		}
 		f.design = &design
 	}
@@ -230,30 +246,30 @@ func validatePageCreateInput(input []byte) (pageCreateFacts, string) {
 	// The top level of a designed page is bounded by its section and hero
 	// caps, which answer layout_invalid however long the list is.
 	if !ok || len(outline) == 0 || (!designed && len(outline) > pageCreateMaxTopLevelNodes) {
-		return pageCreateFacts{}, pageCreateBadInput
+		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
 	}
 	if designed {
 		if f.pageFrame, ok = pageFrameOf(top, outline); !ok {
-			return pageCreateFacts{}, pageCreateBadInput
+			return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
 		}
 		if pageOutlineHeroes(outline) > pageCreateMaxHeroes {
-			return pageCreateFacts{}, pageCreateLayoutInvalid
+			return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateLayoutInvalid}
 		}
 	}
 	w := pageWalk{seen: map[int64]struct{}{}, designed: designed}
 	for _, n := range outline {
 		if code := w.node(n, pageAtTop); code != "" {
-			return pageCreateFacts{}, code
+			return pageCreateFacts{}, pageCreateRefusal{Code: code}
 		}
 	}
 	if code := w.resolveLinks(); code != "" {
-		return pageCreateFacts{}, code
+		return pageCreateFacts{}, pageCreateRefusal{Code: code}
 	}
 	if f.editor == pageEditorClassic && w.blockOnly {
-		return pageCreateFacts{}, pageCreateNeedsBlockEditor
+		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateNeedsBlockEditor}
 	}
 	f.usesLayout, f.mediaIDs = w.usesLayout, w.ids
-	return f, ""
+	return f, pageCreateRefusal{}
 }
 
 // pageOutlineVersionOf reads outline_version from the input's top level:

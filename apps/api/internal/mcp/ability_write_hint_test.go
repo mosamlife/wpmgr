@@ -24,6 +24,9 @@ func TestPrecheckRefusalHint(t *testing.T) {
 		"image_not_available":       {"media library", "wp-v2-media-list"},
 		"image_url_unusable":        {"wp-v2-media-list"},
 		"layout_needs_block_editor": {"classic editor", "wordpress_classic", "captions"},
+		// The design of a designed page (outline version 3).
+		"design_not_ready":    {"colors", "fonts", "scale", "radius", "density", "base_px", "ratio"},
+		"design_contrast_low": {"4.5", "ink", "ground", "surface", "on_accent", "accent"},
 	}
 	for code, wants := range cases {
 		hint := precheckRefusalHint(code)

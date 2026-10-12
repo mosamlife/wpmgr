@@ -84,7 +84,10 @@ const (
 		agentcmd.MinAgentVersionForPageCreate + " or later. Nothing was asked."
 	msgAbilityLayoutOutdated = "Layout blocks need the WPMgr plugin " + agentcmd.MinAgentVersionForPageLayout +
 		" or later on this site. An outline of headings, paragraphs and lists works now."
-	msgAbilityLayoutInput = "the outline does not follow the page layout rules, so nothing was asked"
+	msgAbilityLayoutInput    = "the outline does not follow the page layout rules, so nothing was asked"
+	msgAbilityDesignNotReady = "the page design is incomplete, so nothing was asked"
+	msgAbilityDesignContrast = "the page design has colours too close to read together, so nothing was asked"
+	msgAbilityDesignValue    = "the page design has a value it may not hold, so nothing was asked"
 )
 
 const reasonAbilityPrecheckRefused refusalReason = "ability_precheck_refused"
@@ -207,18 +210,44 @@ func writeEntryRunnable(e *sqlc.AbilityCatalogue, inv *sqlc.SiteAbilityInventory
 
 // pageCreateInputRefusal refuses an input the grammar refused. A schema
 // mismatch carries the schema; a layout, link or editor problem carries the
-// agent's code and our fixed hint for it (never the site's words).
-func pageCreateInputRefusal(code string) *toolRefusal {
+// agent's code and our fixed hint for it (never the site's words). A refusal
+// that has failures (the design's) also names them: the message spells out
+// the first three and failures[] holds the rest.
+func pageCreateInputRefusal(r pageCreateRefusal) *toolRefusal {
+	code := r.Code
+	msg, failures := refusalEnvelope(pageCreateRefusalSummary(code), r.Failures)
 	if code == pageCreateBadInput {
-		return argRefusal(reasonInvalidArguments, "input", "", msgAbilityArgInput, pageCreateInputSchema)
+		ref := argRefusal(reasonInvalidArguments, "input", "", msgAbilityArgInput, pageCreateInputSchema)
+		if len(failures) > 0 {
+			ref.err = domain.Validation(ErrCodeInvalidToolArguments, msg).WithDetails(map[string]any{
+				"argument": "input", "retryable": false, "schema": pageCreateInputSchema, "failures": failures,
+			})
+		}
+		return ref
+	}
+	details := map[string]any{"argument": "input", "code": code, "hint": precheckRefusalHint(code), "retryable": false}
+	if len(failures) > 0 {
+		details["failures"] = failures
 	}
 	return &toolRefusal{
 		reason: reasonInvalidArguments,
-		err: domain.Validation(ErrCodeInvalidToolArguments, msgAbilityLayoutInput).WithDetails(map[string]any{
-			"argument": "input", "code": code, "hint": precheckRefusalHint(code), "retryable": false,
-		}),
-		meta: map[string]any{"argument": "input", "code": code},
+		err:    domain.Validation(ErrCodeInvalidToolArguments, msg).WithDetails(details),
+		meta:   map[string]any{"argument": "input", "code": code},
 	}
+}
+
+// pageCreateRefusalSummary opens the message of a refusal of the input: what
+// was wrong, in a sentence.
+func pageCreateRefusalSummary(code string) string {
+	switch code {
+	case pageDesignNotReady:
+		return msgAbilityDesignNotReady
+	case pageDesignContrastLow:
+		return msgAbilityDesignContrast
+	case pageCreateBadInput:
+		return msgAbilityDesignValue
+	}
+	return msgAbilityLayoutInput
 }
 
 // ---------------------------------------------------------------------------
@@ -493,9 +522,9 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 	// Step 5: our grammar, including a layout the classic editor cannot
 	// hold. Then the per-input floor: a layout outline needs a newer agent
 	// than the entry's own floor, which text-only outlines keep.
-	facts, code := validatePageCreateInput(input)
-	if code != "" {
-		return "", pageCreateInputRefusal(code)
+	facts, refusal := checkPageCreateInput(input)
+	if refusal.Code != "" {
+		return "", pageCreateInputRefusal(refusal)
 	}
 	// A page builder the entry enables, and the builder's node rules.
 	if r := pageCreateBuilderRefusal(facts, e.Limits, input); r != nil {
@@ -624,6 +653,13 @@ const (
 	hintLayoutNeedsBlockEditor = "The classic editor cannot hold groups, columns, buttons, spacers or image captions. " +
 		"With editor wordpress_classic, use only headings, paragraphs, lists, quotes, tables, separators and images " +
 		"without captions. Send editor wordpress_blocks only for a site that uses the block editor."
+	hintDesignNotReady = "A designed page needs its whole design in one object, and a field is missing. Send design with " +
+		"colors (ground, surface, ink, muted, accent and on_accent, each as #RRGGBB), fonts (heading and body), " +
+		"scale (base_px from 15 to 20 and ratio from 1.125 to 1.333), radius (none, sm, md or lg) and " +
+		"density (compact, normal or airy). The failures name each field to add."
+	hintDesignContrastLow = "Text must be readable on the colour it sits on. ink needs a contrast of at least 4.5 to 1 " +
+		"against both ground and surface, and on_accent at least 4.5 to 1 against accent. The failures name the pair and " +
+		"its measured contrast: change one colour of that pair, then send the whole design again."
 )
 
 // precheckRefusalHints are the input-related refusal codes and their fixed
@@ -639,6 +675,8 @@ var precheckRefusalHints = map[string]string{
 	"image_not_available":           hintImageNotAvailable,
 	"image_url_unusable":            hintImageURLUnusable,
 	pageCreateNeedsBlockEditor:      hintLayoutNeedsBlockEditor,
+	pageDesignNotReady:              hintDesignNotReady,
+	pageDesignContrastLow:           hintDesignContrastLow,
 	pageBuilderNotEnabled:           hintBuilderNotEnabled,
 	pageBuilderNotAvailable:         hintBuilderNotAvailable,
 	pageNodeNotSupported:            hintNodeNotSupportedByBuilder,

@@ -619,6 +619,10 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"refused_published":   {},
 	"target_not_draft":    {},
 	"snapshot_unreadable": {},
+	// wpmgr/page-create with a designed page (outline version 3): the design
+	// object is incomplete, or two of its colours are too close to read.
+	"design_not_ready":    {},
+	"design_contrast_low": {},
 }
 
 var abilityRunCodeRe = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
