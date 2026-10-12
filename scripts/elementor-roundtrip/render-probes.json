@@ -1663,7 +1663,7 @@
     },
     {
       "name": "style-heading-typography",
-      "about": "A heading's whole text style. title_color is the colour of the title, align is the text alignment of the widget, and the typography group is read only because typography_typography is custom: family, size in px, weight, line-height in em and letter-spacing in em each reach the post CSS on the title as the declaration of the same name.",
+      "about": "A heading's whole text style. title_color is the colour of the title, align left is the text-align of the widget (start on a release that maps left to the logical value, left on one that does not), and the typography group is read only because typography_typography is custom: family, size in px, weight, line-height in em and letter-spacing in em each reach the post CSS on the title as the declaration of the same name.",
       "trees": {
         "containers": [
           {
@@ -1721,9 +1721,14 @@
           "el": "5e70002",
           "sel": "",
           "media": null,
-          "decl": {
-            "text-align": "left"
-          }
+          "any": [
+            {
+              "text-align": "start"
+            },
+            {
+              "text-align": "left"
+            }
+          ]
         }
       ],
       "html_text": [
