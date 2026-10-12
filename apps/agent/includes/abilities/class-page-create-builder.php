@@ -551,7 +551,9 @@ final class PageCreateBuilder
     /**
      * The JSON schema of the input. The block variants are written out in
      * full at each place they may appear (no $ref), with a group allowing
-     * columns and a column allowing blocks only.
+     * columns and a column allowing blocks only. An outline item may also be
+     * an outline version 3 section (see OutlineV3Schema), which holds the
+     * version 3 forms of those blocks.
      *
      * @return array<string,mixed>
      */

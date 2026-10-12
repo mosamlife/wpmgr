@@ -21,6 +21,7 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Tests\Builders;
 
+use WPMgr\Agent\Abilities\Builders\OutlineV3Schema;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -156,6 +157,23 @@ final class OutlineV3CasesFixtureTest extends TestCase
             }
             $this->assertIsObject(json_decode($text, false, 32), $name . ': input is a JSON object');
         }
+    }
+
+    public function test_the_probes_and_the_published_schema_state_the_same_numbers(): void
+    {
+        $this->assertSame(OutlineV3Schema::ITEM_CAPS, self::ITEM_CAPS);
+        $this->assertSame(OutlineV3Schema::PATTERN_ARRAY, self::PATTERN_ARRAY);
+        $this->assertSame(OutlineV3Schema::RESERVED_ANCHORS, self::RESERVED);
+        $this->assertSame(OutlineV3Schema::MAX_SECTIONS, self::MAX_SECTIONS);
+        $this->assertSame(OutlineV3Schema::MAX_SECTION_CHILDREN, self::MAX_CHILDREN);
+        $this->assertSame('/' . OutlineV3Schema::ANCHOR_PATTERN . '/D', self::RE_ANCHOR);
+        $this->assertSame(OutlineV3Schema::ICONS, self::doc()['icons']);
+        $patterns = self::PATTERNS;
+        $schema   = OutlineV3Schema::PATTERNS;
+        sort($patterns);
+        sort($schema);
+        $this->assertSame($schema, $patterns);
+        $this->assertSame(array_keys(OutlineV3Schema::VARIANTS), OutlineV3Schema::PATTERNS);
     }
 
     public function test_every_new_code_has_a_case(): void
