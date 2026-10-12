@@ -329,7 +329,7 @@ final class SectionRowCompileTest extends TestCase
 
     public function test_the_mapper_hands_a_designed_row_to_the_compiler(): void
     {
-        $outline = [['type' => 'group', 'children' => [self::columnsNode()]]];
+        $outline = [self::columnsNode()];
 
         $this->assertNotSame(self::bytes(self::map($outline, null)), self::bytes(self::map($outline, self::compiler())));
     }
