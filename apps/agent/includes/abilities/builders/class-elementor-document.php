@@ -342,6 +342,60 @@ final class ElementorDocument
     }
 
     /**
+     * Run $restore, which puts the page's own rows back, inside the page's
+     * write scope and under the active kit's tripwire, as save() runs the
+     * save. The restore's derived writes (the page's CSS made again, its
+     * style-cache entry, its element-cache delete) are the page's own; a
+     * write anywhere else, or a change to the kit, is side_effect_detected.
+     *
+     * "ran" is false when the kit could not be read first, and then nothing
+     * ran. Otherwise "value" is what $restore answered, "thrown" what it
+     * threw (answered, never thrown, once the scope is disarmed), "scope"
+     * the scope's outcome, and "side_effect" a detail of fixed labels when
+     * the scope saw a write outside the page or the kit changed, else null.
+     *
+     * @param int      $postId  The page.
+     * @param int      $kitId   The active kit's post id; 0 when there is none.
+     * @param callable $restore The restore.
+     * @return array{ran: bool, code?: string, detail?: string, value?: mixed, thrown?: \Throwable|null, scope?: array<string, mixed>, side_effect?: string|null}
+     */
+    public function restoreScoped(int $postId, int $kitId, callable $restore): array
+    {
+        if ($postId < 1) {
+            return ['ran' => false, 'code' => self::CODE_REFUSED, 'detail' => 'no page to restore'];
+        }
+        try {
+            $kitBefore = self::kitDigest($kitId);
+        } catch (\Throwable $e) {
+            return ['ran' => false, 'code' => 'data_unreadable', 'detail' => 'the active kit could not be read; nothing was changed'];
+        }
+
+        $scope  = new AbilityWriteScope($postId, $this->saveOptionPatterns(), self::saveOptionChecks());
+        $value  = null;
+        $thrown = null;
+        try {
+            $value = $scope->run($restore);
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+        $outcome = $scope->outcome();
+
+        try {
+            $kitChanged = self::kitDigest($kitId) !== $kitBefore;
+        } catch (\Throwable $e) {
+            $kitChanged = true;
+        }
+        $effect = null;
+        if ($kitChanged) {
+            $effect = 'the active kit changed during the restore';
+        } elseif ($outcome['clean'] !== true) {
+            $effect = 'the restore wrote outside the page: ' . implode(', ', $outcome['violations']);
+        }
+
+        return ['ran' => true, 'value' => $value, 'thrown' => $thrown, 'scope' => $outcome, 'side_effect' => $effect];
+    }
+
+    /**
      * The stored page settings of $postId as one plain array, read with
      * SQL: an empty array when the post has no row; null when the post is
      * gone, has more than one row, or its row is not a serialized array of
@@ -1033,9 +1087,12 @@ final class ElementorDocument
      * slug are the snapshot's (post_type, author, parent, post_name); the
      * edit mode is builder (edit_mode); the document type rows are the
      * snapshot's and name a page or a post (template_type); the page settings
-     * rows are the snapshot's, byte for byte (page_settings); the page
-     * template rows are the snapshot's, byte for byte, so the update of the
-     * post row the save makes kept the template (page_template); there is one
+     * rows are the snapshot's, byte for byte, or, when the edit planned page
+     * settings, exactly one row holding the planned array's bytes
+     * (page_settings); the page template rows are the snapshot's, byte for
+     * byte, so the update of the post row the save makes kept the template,
+     * or, when the edit planned a template, exactly that one row
+     * (page_template); there is one
      * _elementor_data row (data_missing) that decodes (data_not_json) to the
      * whole planned tree, untouched nodes included, by the rule verifyCreated()
      * uses (tree_differs). Last, what the edit wrote passes the key, pin and
@@ -1047,9 +1104,15 @@ final class ElementorDocument
      * @param int                  $postId  The edited post.
      * @param array<mixed>         $newTree The tree that was saved.
      * @param array<string, mixed> $before  The page's decoded snapshot.
+     * @param array<mixed>|null    $pageSettings The whole page-settings array the
+     *                                       edit planned to store; null when it
+     *                                       planned no page-settings change.
+     * @param string|null          $pageTemplate The page template the edit planned to
+     *                                       store; null when it planned no
+     *                                       template change.
      * @return string|null
      */
-    public function verifyEdited(int $postId, array $newTree, array $before): ?string
+    public function verifyEdited(int $postId, array $newTree, array $before, ?array $pageSettings = null, ?string $pageTemplate = null): ?string
     {
         if ($postId < 1) {
             return 'post_missing';
@@ -1091,10 +1154,12 @@ final class ElementorDocument
         if ($template !== $snapshot['rows'][self::KEY_TEMPLATE_TYPE] || !in_array($template, [[self::TEMPLATE_PAGE], [self::TEMPLATE_POST]], true)) {
             return 'template_type';
         }
-        if (($rows[self::KEY_PAGE_SETTINGS] ?? []) !== $snapshot['rows'][self::KEY_PAGE_SETTINGS]) {
+        $wantSettings = $pageSettings === null ? $snapshot['rows'][self::KEY_PAGE_SETTINGS] : [self::pageSettingsBytes($pageSettings)];
+        if (($rows[self::KEY_PAGE_SETTINGS] ?? []) !== $wantSettings) {
             return 'page_settings';
         }
-        if (($rows[self::KEY_PAGE_TEMPLATE] ?? []) !== $snapshot['rows'][self::KEY_PAGE_TEMPLATE]) {
+        $wantTemplate = $pageTemplate === null ? $snapshot['rows'][self::KEY_PAGE_TEMPLATE] : [$pageTemplate];
+        if (($rows[self::KEY_PAGE_TEMPLATE] ?? []) !== $wantTemplate) {
             return 'page_template';
         }
         $data = $rows[self::KEY_DATA] ?? [];

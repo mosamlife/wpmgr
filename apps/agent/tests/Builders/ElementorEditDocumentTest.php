@@ -22,10 +22,13 @@ namespace WPMgr\Agent\Tests\Builders;
 
 use Brain\Monkey;
 use Brain\Monkey\Functions;
+use WPMgr\Agent\Abilities\Builders\BuilderDocumentFingerprint;
 use WPMgr\Agent\Abilities\Builders\BuilderDocumentSnapshot;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
 use WPMgr\Agent\Abilities\Builders\ElementorDocument;
+use WPMgr\Agent\Abilities\Builders\ElementorStyleCache;
 use WPMgr\Agent\Abilities\Builders\IdSeed;
+use WPMgr\Agent\Abilities\Builders\NativeDocument;
 use WPMgr\Agent\Abilities\Builders\PageEditValidator;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -62,6 +65,12 @@ final class ElementorEditDocumentTest extends TestCase
 
     /** A colour a person set on the heading: a setting WPMgr never writes. */
     private const PERSON_COLOR = '#c0392b';
+
+    /** A post the edit must not touch. */
+    private const OTHER_POST = 77;
+
+    /** @var (\Closure(): void)|null Runs inside update_post_meta() after its write, as a listener on it would. */
+    private ?\Closure $afterMetaWrite = null;
 
     /** @var list<array{0:string,1:callable,2:int,3:int}> Captured add_filter calls: tag, callback, priority, accepted args. */
     private array $hooks = [];
@@ -498,6 +507,154 @@ final class ElementorEditDocumentTest extends TestCase
         $this->assertNull($doc->verifyEdited(self::TARGET, $plan['doc']->tree, $before), 'none before, none after');
         $this->replaceRows(ElementorDocument::KEY_PAGE_TEMPLATE, ['elementor_canvas']);
         $this->assertSame('page_template', $doc->verifyEdited(self::TARGET, $plan['doc']->tree, $before));
+    }
+
+    // The derived writes of an edit (page settings, page template, CSS
+    // regeneration, element-cache delete) against the viewed-draft guard.
+
+    public function testViewedDraftEditWithDerivedWrites(): void
+    {
+        $settings = ['template' => 'default'];
+        $merged   = $settings + [ElementorDocument::SETTING_HIDE_TITLE => ElementorDocument::HIDE_TITLE];
+        $cache    = ElementorDocument::KEY_ELEMENT_CACHE;
+        $this->storePage(self::page(), [
+            [ElementorDocument::KEY_PAGE_SETTINGS, serialize($settings)],
+            [ElementorDocument::KEY_PAGE_TEMPLATE, 'elementor_header_footer'],
+            [$cache, 'a:0:{}'],
+        ]);
+        $this->coreMetaApi();
+        $this->api->pro = true;
+        $plan   = $this->planned([self::setText(self::HEADING, 'Summer sale')]);
+        $before = $this->snapshot();
+        $this->api->storingDocument(self::TARGET, $this->wpdb);
+        $doc = new ElementorDocument($this->api);
+
+        // The draft was viewed: the style cache holds its entry, and the
+        // regeneration clears it as Elementor does. The planned template
+        // change is written inside the same scope.
+        $name    = ElementorStyleCache::PREFIX . 'local';
+        $other   = ['state' => true, 'meta' => '6ac9bb9c3d4e5'];
+        $viewed  = ['state' => false, 'children' => [self::OTHER_POST => $other, self::TARGET => ['state' => true, 'meta' => []]]];
+        $cleared = ['state' => false, 'children' => [self::OTHER_POST => $other]];
+        $this->api->onRegenerate = function () use ($name, $viewed, $cleared): void {
+            $this->fire('updated_option', $name, $viewed, $cleared);
+            update_post_meta(self::TARGET, '_elementor_css', ['status' => 'file']);
+            update_post_meta(self::TARGET, ElementorDocument::KEY_PAGE_TEMPLATE, 'elementor_canvas');
+        };
+
+        $set = $doc->setPageSetting(self::TARGET, ElementorDocument::SETTING_HIDE_TITLE, ElementorDocument::HIDE_TITLE, self::KIT);
+        $this->assertSame([true, true, []], [$set['ok'], $set['written'] ?? null, $set['scope']['violations'] ?? null], (string) json_encode($set));
+        $saved = $doc->save(self::TARGET, $plan['doc']->tree, self::KIT);
+        $this->assertSame([true, []], [$saved['ok'], $saved['scope']['violations'] ?? null], (string) json_encode($saved));
+        foreach (['_elementor_css', ElementorDocument::KEY_PAGE_TEMPLATE, $cache] as $key) {
+            $this->assertContains($key, $saved['scope']['target_meta_keys'] ?? [], $key . ' is written inside the scope');
+        }
+        $this->assertSame([], $this->hooks, 'nothing left installed');
+
+        // The planned page settings and template, and only those.
+        $stored = BuilderDocumentFingerprint::read(self::TARGET, [ElementorDocument::KEY_PAGE_SETTINGS, ElementorDocument::KEY_PAGE_TEMPLATE])['rows'] ?? null;
+        $this->assertSame([ElementorDocument::KEY_PAGE_SETTINGS => [serialize($merged)], ElementorDocument::KEY_PAGE_TEMPLATE => ['elementor_canvas']], $stored);
+        $this->assertNull($doc->verifyEdited(self::TARGET, $plan['doc']->tree, $before, $merged, 'elementor_canvas'));
+        $adapter = new ElementorAdapter($this->api, self::PRINCIPAL);
+        $meta    = [ElementorDocument::KEY_PAGE_SETTINGS => $merged, ElementorDocument::KEY_PAGE_TEMPLATE => 'elementor_canvas'];
+        $this->assertNull($adapter->verifyEdited(self::TARGET, new NativeDocument($plan['doc']->tree, $meta), $before), 'the adapter passes the planned rows');
+        $this->assertSame('page_settings', $doc->verifyEdited(self::TARGET, $plan['doc']->tree, $before), 'a settings change that was not planned');
+        $this->assertSame('page_settings', $doc->verifyEdited(self::TARGET, $plan['doc']->tree, $before, $settings + ['hide_title' => 'no'], 'elementor_canvas'), 'another settings change');
+        $this->assertSame('page_template', $doc->verifyEdited(self::TARGET, $plan['doc']->tree, $before, $merged), 'a template change that was not planned');
+        $this->assertSame('page_template', $doc->verifyEdited(self::TARGET, $plan['doc']->tree, $before, $merged, 'elementor_header_footer'), 'another template');
+        $this->assertSame('page_settings', $adapter->verifyEdited(self::TARGET, new NativeDocument($plan['doc']->tree, [ElementorDocument::KEY_PAGE_TEMPLATE => 'elementor_canvas']), $before), 'the adapter plans no settings change');
+        $this->assertSame('page_template', $adapter->verifyEdited(self::TARGET, new NativeDocument($plan['doc']->tree, [ElementorDocument::KEY_PAGE_SETTINGS => $merged]), $before), 'the adapter plans no template change');
+        $this->replaceRows(ElementorDocument::KEY_PAGE_SETTINGS, [serialize($merged), serialize($merged)]);
+        $this->assertSame('page_settings', $doc->verifyEdited(self::TARGET, $plan['doc']->tree, $before, $merged, 'elementor_canvas'), 'a second row');
+
+        // Neither key is ever a derived one: a restore puts both back.
+        $derived = $adapter->descriptor()->derivedKeys;
+        $this->assertSame([], array_values(array_intersect($derived, [ElementorDocument::KEY_PAGE_SETTINGS, ElementorDocument::KEY_PAGE_TEMPLATE])));
+        $this->assertContains($cache, $derived);
+    }
+
+    public function testOtherWriteStillSideEffect(): void
+    {
+        $name   = ElementorStyleCache::PREFIX . 'local';
+        $other  = ['state' => true, 'meta' => '6ac9bb9c3d4e5'];
+        $viewed = ['state' => false, 'children' => [self::OTHER_POST => $other, self::TARGET => ['state' => true, 'meta' => []]]];
+        $theirs = ['state' => false, 'children' => [self::OTHER_POST => ['state' => false], self::TARGET => ['state' => true, 'meta' => []]]];
+        $writes = [
+            'another post\'s style-cache entry' => [fn () => $this->fire('updated_option', $name, $viewed, $theirs), ['option_written']],
+            'another post\'s page settings'     => [fn () => $this->fire('updated_post_meta', 901, self::OTHER_POST, ElementorDocument::KEY_PAGE_SETTINGS, []), ['other_post_meta_written']],
+            'another post\'s page template'     => [fn () => $this->fire('updated_post_meta', 902, self::OTHER_POST, ElementorDocument::KEY_PAGE_TEMPLATE, 'elementor_canvas'), ['other_post_meta_written']],
+            'an option no pattern names'        => [fn () => $this->fire('updated_option', 'elementor_unrelated_setting', 'a', 'b'), ['option_written']],
+            'the active kit changed'            => [fn () => $this->wpdb->addMeta(++$this->metaId, self::KIT, ElementorDocument::KEY_DATA, '[{"id":"x"}]'), null],
+        ];
+        $doc = new ElementorDocument($this->api);
+        foreach ($writes as $why => [$write, $violations]) {
+            foreach (['the page-settings write', 'the save\'s regeneration'] as $during) {
+                $this->storePage(self::page(), [[ElementorDocument::KEY_PAGE_SETTINGS, serialize(['template' => 'default'])]]);
+                $this->coreMetaApi();
+                $plan = $this->planned([self::setText(self::HEADING, 'Summer sale')]);
+                $this->api->storingDocument(self::TARGET, $this->wpdb);
+                $this->afterMetaWrite    = $during === 'the page-settings write' ? $write : null;
+                $this->api->onRegenerate = $during === 'the page-settings write' ? null : $write;
+                $result = $during === 'the page-settings write'
+                    ? $doc->setPageSetting(self::TARGET, ElementorDocument::SETTING_HIDE_TITLE, ElementorDocument::HIDE_TITLE, self::KIT)
+                    : $doc->save(self::TARGET, $plan['doc']->tree, self::KIT);
+                $label = $why . ', during ' . $during . ': ' . json_encode($result);
+                $this->assertSame([false, 'side_effect_detected'], [$result['ok'], $result['code'] ?? null], $label);
+                if ($violations !== null) {
+                    $this->assertSame($violations, $result['scope']['violations'] ?? null, $label);
+                } else {
+                    $this->assertStringContainsString('kit', $result['detail'] ?? '', $label);
+                }
+                $this->assertSame([], $this->hooks, $label . ': nothing left installed');
+            }
+        }
+        $this->afterMetaWrite    = null;
+        $this->api->onRegenerate = null;
+    }
+
+    /**
+     * update_post_meta() and delete_post_meta() as core runs them against
+     * the rows: update_post_meta() serializes an array, replaces the key's
+     * rows by one and fires added_post_meta or updated_post_meta (false when
+     * the bytes would not change), then runs afterMetaWrite;
+     * delete_post_meta() deletes every row of the key and fires
+     * deleted_post_meta when one went. wp_slash() leaves plain values as
+     * they are.
+     */
+    private function coreMetaApi(): void
+    {
+        Functions\when('wp_slash')->returnArg();
+        Functions\when('update_post_meta')->alias(function ($postId, $key, $value) {
+            $bytes  = is_array($value) ? serialize($value) : (string) $value;
+            $read   = BuilderDocumentFingerprint::read((int) $postId, [(string) $key]);
+            $before = $read === null ? [] : ($read['rows'][(string) $key] ?? []);
+            if ($before === [$bytes]) {
+                return false;
+            }
+            $this->wpdb->delete($this->wpdb->postmeta, ['post_id' => (int) $postId, 'meta_key' => (string) $key]);
+            $this->wpdb->addMeta(++$this->metaId, (int) $postId, (string) $key, $bytes);
+            $this->fire($before === [] ? 'added_post_meta' : 'updated_post_meta', $this->metaId, (int) $postId, (string) $key, $value);
+            if ($this->afterMetaWrite !== null) {
+                ($this->afterMetaWrite)();
+            }
+
+            return true;
+        });
+        Functions\when('delete_post_meta')->alias(function ($postId, $key): bool {
+            $ids = [];
+            foreach ($this->wpdb->metaRowsOf((int) $postId) as $row) {
+                if ($row['meta_key'] === $key) {
+                    $ids[] = $row['meta_id'];
+                }
+            }
+            if ($ids === []) {
+                return false;
+            }
+            $this->wpdb->delete($this->wpdb->postmeta, ['post_id' => (int) $postId, 'meta_key' => (string) $key]);
+            $this->fire('deleted_post_meta', $ids, (int) $postId, (string) $key, '');
+
+            return true;
+        });
     }
 
     public function test_verify_accepts_string_scalars_only_before_3_35_9(): void

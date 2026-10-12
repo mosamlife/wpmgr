@@ -419,7 +419,12 @@ final class BuilderPageEdit
      * Then those keys and columns, and nothing else, go back to the snapshot
      * (BuilderDocumentRestore::scoped(); restore_mismatch when they do not
      * read back as they were), and the ledger row records the undo and the
-     * page's fingerprint after it.
+     * page's fingerprint after it. The restore runs inside the page's write
+     * scope and under the active kit's tripwire
+     * (ElementorAdapter::restoreInScope()), so its derived writes are the
+     * page's own and any other write, or a change to the kit, answers
+     * side_effect_detected; when the page was put back the undo is still
+     * recorded, and the answer says restored.
      *
      * Immediately before the restore the ledger row's undo_state becomes
      * UNDO_RESTORING; an undo that cannot record that is data_unreadable and
@@ -512,18 +517,29 @@ final class BuilderPageEdit
             if (!$resume && !AbilityLedger::update($requestId, ['undo_state' => self::UNDO_RESTORING])) {
                 return self::fail(LayoutOps::CODE_UNREADABLE, 'the undo could not be recorded; nothing was changed', ['post_id' => $postId]);
             }
-            try {
-                $problem = BuilderDocumentRestore::scoped($postId, $snapshot, $keys, $fields, $a->descriptor(), $a, $resume);
-            } catch (\InvalidArgumentException $e) {
+            $descriptor = $a->descriptor();
+            $run        = $a->restoreInScope($postId, static fn () => BuilderDocumentRestore::scoped($postId, $snapshot, $keys, $fields, $descriptor, $a, $resume));
+            $thrown     = $run['thrown'] ?? null;
+            if ($thrown instanceof \Throwable && !$thrown instanceof \InvalidArgumentException) {
+                throw $thrown;
+            }
+            $effect = $run['side_effect'] ?? null;
+            if (($run['ran'] ?? null) !== true) {
+                $problem = ['code' => (string) ($run['code'] ?? LayoutOps::CODE_UNREADABLE), 'detail' => (string) ($run['detail'] ?? 'the page could not be read; nothing was changed')];
+            } elseif ($thrown instanceof \InvalidArgumentException) {
                 $problem = ['code' => 'not_revertible', 'detail' => 'this request has no change that can be undone'];
+            } else {
+                $problem = is_array($run['value'] ?? null) ? $run['value'] : null;
             }
             if ($problem !== null) {
                 if (!$resume && $problem['detail'] !== BuilderDocumentRestore::DETAIL_READ_BACK) {
-                    // Nothing was written: the undo is open as it was.
+                    // Nothing of the page was written: the undo is open as it was.
                     AbilityLedger::update($requestId, ['undo_state' => 'available']);
                 }
 
-                return self::fail($problem['code'], $problem['detail'], ['post_id' => $postId]);
+                return is_string($effect)
+                    ? self::fail(ElementorDocument::CODE_SIDE_EFFECT, $effect, ['post_id' => $postId])
+                    : self::fail($problem['code'], $problem['detail'], ['post_id' => $postId]);
             }
 
             try {
@@ -534,6 +550,11 @@ final class BuilderPageEdit
             if (!AbilityLedger::update($requestId, ['undo_state' => 'restored', 'reverted_at' => time(), 'restored_fp' => $restoredFp])) {
                 // The row keeps UNDO_RESTORING: the next undo records it.
                 return self::fail(LayoutOps::CODE_UNREADABLE, 'the page was put back, but the undo could not be recorded; undo again to finish it', ['post_id' => $postId, 'restored' => true]);
+            }
+            if (is_string($effect)) {
+                // The page is back and the undo is recorded; what was written
+                // outside the page cannot be put back, so it is reported.
+                return self::fail(ElementorDocument::CODE_SIDE_EFFECT, $effect, ['post_id' => $postId, 'restored' => true]);
             }
 
             return ['ok' => true, 'outcome' => 'reverted', 'mode' => 'revert', 'request_id' => $requestId, 'post_id' => $postId, 'restored' => true];

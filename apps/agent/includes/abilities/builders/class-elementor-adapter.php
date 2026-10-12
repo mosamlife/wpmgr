@@ -137,7 +137,7 @@ final class ElementorAdapter implements BuilderAdapter
         return new DocumentDescriptor(
             ElementorDocument::DESCRIPTOR_KEYS,
             [],
-            ['_elementor_css', '_elementor_element_cache', '_elementor_page_assets'],
+            ['_elementor_css', ElementorDocument::KEY_ELEMENT_CACHE, '_elementor_page_assets'],
             [ElementorDocument::KEY_EDIT_MODE]
         );
     }
@@ -294,11 +294,32 @@ final class ElementorAdapter implements BuilderAdapter
     /**
      * {@inheritDoc}
      *
-     * ElementorDocument::verifyEdited() over the planned tree.
+     * ElementorDocument::verifyEdited() over the planned tree, and over the
+     * page settings and page template the document's meta carries, when it
+     * carries them: only a change the edit planned is accepted.
      */
     public function verifyEdited(int $postId, NativeDocument $doc, array $before): ?string
     {
-        return $this->document->verifyEdited($postId, $doc->tree, $before);
+        $pageSettings = $doc->meta[ElementorDocument::KEY_PAGE_SETTINGS] ?? null;
+        $template     = $doc->meta[ElementorDocument::KEY_PAGE_TEMPLATE] ?? null;
+
+        return $this->document->verifyEdited($postId, $doc->tree, $before, is_array($pageSettings) ? $pageSettings : null, is_string($template) ? $template : null);
+    }
+
+    /**
+     * Run $restore, which puts the page's own rows back, inside the page's
+     * write scope and under the active kit's tripwire
+     * (ElementorDocument::restoreScoped()).
+     *
+     * @param int      $postId  The page.
+     * @param callable $restore The restore.
+     * @return array<string, mixed>
+     */
+    public function restoreInScope(int $postId, callable $restore): array
+    {
+        $kitId = $this->facts()['active_kit_id'] ?? 0;
+
+        return $this->document->restoreScoped($postId, is_int($kitId) ? $kitId : 0, $restore);
     }
 
     /**
