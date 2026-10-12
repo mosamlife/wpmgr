@@ -209,9 +209,10 @@ final class LayoutOps
                 if (!in_array($field, (array) ($fact['editable'] ?? []), true)) {
                     return self::refuse('node_not_editable', 'field_not_offered', $i);
                 }
+                // The page as the call has left it so far decides whether a link may lead to a section of it.
                 $set = $fact['kind'] === 'pattern'
                     ? ElementorClassicMapper::setPatternText(self::nodeAt($tree, $path), $field, $text, $at)
-                    : ElementorClassicMapper::setText(self::nodeAt($tree, $path), (string) $fact['kind'], $field, $text, $at);
+                    : ElementorClassicMapper::setText(self::nodeAt($tree, $path), (string) $fact['kind'], $field, $text, $at, ElementorClassicMapper::holdsDesignedSection($tree));
                 if (!isset($set['node'])) {
                     return self::refuse($set['code'] ?? 'node_not_editable', $set['detail'] ?? $at, $i);
                 }

@@ -823,6 +823,19 @@ final class LeafPolicy
     }
 
     /**
+     * Whether the allowlist pins a settings path with a shape pin: the pin
+     * checks the whole value there, as checkTree() takes it, and no part of it.
+     *
+     * @param array<string, string> $paths One element type's settings paths and pins.
+     * @param string                $path  A dotted settings path.
+     * @return bool
+     */
+    public static function judgesWhole(array $paths, string $path): bool
+    {
+        return array_key_exists($path, $paths) && self::isShapePin((string) $paths[$path]);
+    }
+
+    /**
      * Whether a pin checks the whole value at its path: a shape pin, with or
      * without an argument, or an enum with a list of values.
      *

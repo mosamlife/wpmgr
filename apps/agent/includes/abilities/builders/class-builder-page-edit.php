@@ -161,7 +161,7 @@ final class BuilderPageEdit
      * @param string                                  $requestId    The request; new node ids derive from it.
      * @param callable(list<int>): array<string,mixed> $media        Resolves attachment ids to image facts: {facts} or {refusal}.
      * @param array<string, BuilderAdapter>|null      $compiledSeam Tests only: stands in for the compiled set. Production passes none.
-     * @return array<string, mixed> {refusal} or {post_id, adapter, base_fingerprint, builder_version, preview, preview_digest, doc, changes, touched}
+     * @return array<string, mixed> {refusal} or {post_id, adapter, base_fingerprint, builder_version, preview, preview_digest, doc, changes, touched, builder_facts}, builder_facts null for a plain page
      */
     public static function plan(string $inputText, object $entry, array $allowedIds, string $requestId, callable $media, ?array $compiledSeam = null): array
     {
@@ -301,7 +301,41 @@ final class BuilderPageEdit
             'doc'              => $doc,
             'changes'          => $planned['changes'],
             'touched'          => $planned['touched'],
+            'builder_facts'    => $a->editFacts($tree, $doc->tree),
         ];
+    }
+
+    /**
+     * The command's answer to a precheck of a plan: the preview and the
+     * digests under the envelope the control plane reads. For a designed page
+     * "builder_facts" ({active_breakpoints}, see ElementorAdapter::editFacts())
+     * stands beside the preview, outside the digests; the answer for a plain
+     * page has no such member.
+     *
+     * @param array<string, mixed> $plan           plan()'s answer, not a refusal.
+     * @param string               $requestId      The request.
+     * @param string               $precheckDigest The command's precheck digest for the plan's base fingerprint and preview digest.
+     * @return array<string, mixed>
+     */
+    public static function precheckAnswer(array $plan, string $requestId, string $precheckDigest): array
+    {
+        $answer = [
+            'ok'               => true,
+            'outcome'          => 'prechecked',
+            'mode'             => 'precheck',
+            'ability'          => OwnAbilities::NAME_PAGE_EDIT,
+            'request_id'       => $requestId,
+            'valid'            => true,
+            'base_fingerprint' => $plan['base_fingerprint'],
+            'preview_digest'   => $plan['preview_digest'],
+            'precheck_digest'  => $precheckDigest,
+            'preview'          => $plan['preview'],
+        ];
+        if (is_array($plan['builder_facts'] ?? null)) {
+            $answer['builder_facts'] = $plan['builder_facts'];
+        }
+
+        return $answer;
     }
 
     /**

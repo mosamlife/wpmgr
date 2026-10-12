@@ -1430,7 +1430,7 @@ final class ElementorDocument
             unset($own['elements']);
             $versions = is_string($own['id'] ?? null) ? ($earlier[$own['id']] ?? []) : [];
             if (!in_array($own, $versions, true)) {
-                $problem = LeafPolicy::checkTree([self::writtenPart($own, $versions)], $allowed, ElementorClassicMapper::LEAF_RULES);
+                $problem = LeafPolicy::checkTree([self::writtenPart($own, $versions, $allowed)], $allowed, ElementorClassicMapper::LEAF_RULES);
                 if ($problem !== null) {
                     return $problem;
                 }
@@ -1451,11 +1451,12 @@ final class ElementorDocument
      * differs from it in its settings only: its id and types with the
      * settings that differ. Any other node is new: all of it.
      *
-     * @param array<mixed>       $own      The node without its children.
-     * @param list<array<mixed>> $versions The earlier versions of its id.
+     * @param array<mixed>                         $own      The node without its children.
+     * @param list<array<mixed>>                   $versions The earlier versions of its id.
+     * @param array<string, array<string, string>> $allowed  Element type, then settings path, then pin.
      * @return array<mixed>
      */
-    private static function writtenPart(array $own, array $versions): array
+    private static function writtenPart(array $own, array $versions, array $allowed): array
     {
         $whole = $own + ['elements' => []];
         if (count($versions) !== 1) {
@@ -1468,21 +1469,28 @@ final class ElementorDocument
         if ($own !== $was || !is_array($now) || !is_array($then)) {
             return $whole;
         }
+        $type  = ($own['elType'] ?? null) === 'widget' ? ($own['widgetType'] ?? null) : ($own['elType'] ?? null);
+        $paths = is_string($type) && is_array($allowed[$type] ?? null) ? $allowed[$type] : [];
 
         return array_intersect_key($own, ['id' => true, 'elType' => true, 'widgetType' => true])
-            + ['settings' => self::settingsWritten($then, $now), 'elements' => []];
+            + ['settings' => self::settingsWritten($then, $now, $paths, ''), 'elements' => []];
     }
 
     /**
      * The settings of $now that differ from $then: a key that is new or
      * holds another value, walked into where both hold an array. A key
-     * $now no longer has, or members only reordered, write nothing.
+     * $now no longer has, or members only reordered, write nothing. A value
+     * that a shape pin of the allowlist judges whole (a link, an image) is
+     * written whole when any member of it changed, since that pin takes no
+     * part of it.
      *
-     * @param array<mixed> $then Settings before.
-     * @param array<mixed> $now  Settings after.
+     * @param array<mixed>          $then   Settings before.
+     * @param array<mixed>          $now    Settings after.
+     * @param array<string, string> $paths  The element type's settings paths and pins.
+     * @param string                $prefix Dotted path of this level ('' at the top).
      * @return array<mixed>
      */
-    private static function settingsWritten(array $then, array $now): array
+    private static function settingsWritten(array $then, array $now, array $paths, string $prefix): array
     {
         $written = [];
         foreach ($now as $key => $value) {
@@ -1490,8 +1498,9 @@ final class ElementorDocument
             if ($had && $then[$key] === $value) {
                 continue;
             }
-            if ($had && is_array($value) && $value !== [] && is_array($then[$key])) {
-                $inner = self::settingsWritten($then[$key], $value);
+            $path = $prefix === '' ? (string) $key : $prefix . '.' . $key;
+            if ($had && is_array($value) && $value !== [] && is_array($then[$key]) && !LeafPolicy::judgesWhole($paths, $path)) {
+                $inner = self::settingsWritten($then[$key], $value, $paths, $path);
                 if ($inner !== []) {
                     $written[$key] = $inner;
                 }

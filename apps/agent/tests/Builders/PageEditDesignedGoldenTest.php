@@ -331,6 +331,27 @@ final class PageEditDesignedGoldenTest extends TestCase
         }
     }
 
+    /**
+     * An answer for a designed page names the breakpoints the site had active,
+     * beside the preview and outside the digests; a refusal names nothing.
+     */
+    public function test_every_success_names_the_breakpoints_its_compile_read(): void
+    {
+        $n = 0;
+        foreach ($this->fixture()['cases'] as $case) {
+            if (($case['answer']['ok'] ?? null) !== true) {
+                $this->assertArrayNotHasKey('builder_facts', $case['answer'], $case['name']);
+                continue;
+            }
+            ++$n;
+            $this->assertSame(['active_breakpoints' => $case['facts']['active_breakpoints']], $case['answer']['builder_facts'] ?? null, $case['name']);
+        }
+        $this->assertGreaterThan(20, $n, 'the golden holds the successes it exists for');
+        $sets = array_column(array_filter($this->fixture()['cases'], static fn (array $c): bool => in_array($c['name'], ['landing-insert-section-on-a-mobile-only-site', 'landing-insert-section-on-a-site-with-no-breakpoint'], true)), 'answer', 'name');
+        $this->assertSame(['active_breakpoints' => ['mobile']], $sets['landing-insert-section-on-a-mobile-only-site']['builder_facts'] ?? null);
+        $this->assertSame(['active_breakpoints' => []], $sets['landing-insert-section-on-a-site-with-no-breakpoint']['builder_facts'] ?? null, 'none active is a list, not a missing fact');
+    }
+
     // -------------------------------------------------------------------------
     // The pages, and the projection the AI reads
     // -------------------------------------------------------------------------
@@ -663,6 +684,9 @@ final class PageEditDesignedGoldenTest extends TestCase
             ['op' => 'set_text', 'ref' => $L(['kind' => 'heading', 'parent' => $sec('landing', 'features')]), 'field' => 'text', 'text' => 'Everything you get'],
             ['op' => 'set_text', 'ref' => $L(['kind' => 'heading', 'parent' => $pat('landing', 'cta')]), 'field' => 'text', 'text' => 'Ready, when you are'],
         ], 'prechecked');
+        $add('landing-set-text-a-button-to-a-section', 'A plain button of the hero is given the address of a section the page has.', 'landing', [
+            ['op' => 'set_text', 'ref' => $this->buttonRef('landing', 'Talk to us'), 'field' => 'url', 'text' => '#signup'],
+        ], 'prechecked');
         $add('landing-insert-section-after-pricing', 'A designed section with a features pattern is compiled with the page design and placed after a section.', 'landing', [
             ['op' => 'insert', 'after' => $sec('landing', 'pricing'), 'outline' => self::GUARANTEE],
         ], 'prechecked', true);
@@ -880,6 +904,22 @@ final class PageEditDesignedGoldenTest extends TestCase
     }
 
     /**
+     * The ref of the button of a page that says this text.
+     *
+     * @param string $page The page.
+     * @param string $text The button's text on the page.
+     */
+    private function buttonRef(string $page, string $text): string
+    {
+        foreach (ElementorClassicMapper::project($this->pageTree($page))->nodes() as $node) {
+            if ($node['kind'] === 'buttons' && ($node['from_the_site']->text ?? null) === $text) {
+                return (string) $node['ref'];
+            }
+        }
+        $this->fail('no button "' . $text . '" on ' . $page);
+    }
+
+    /**
      * A page's tree: the compiled one, or the one a person restructured.
      *
      * @return list<array<string,mixed>>
@@ -1007,18 +1047,7 @@ final class PageEditDesignedGoldenTest extends TestCase
             return $plan['refusal'];
         }
 
-        return [
-            'ok'               => true,
-            'outcome'          => 'prechecked',
-            'mode'             => 'precheck',
-            'ability'          => OwnAbilities::NAME_PAGE_EDIT,
-            'request_id'       => self::EDIT,
-            'valid'            => true,
-            'base_fingerprint' => $plan['base_fingerprint'],
-            'preview_digest'   => $plan['preview_digest'],
-            'precheck_digest'  => self::precheckDigest(hash('sha256', $entry), hash('sha256', $input), $plan['base_fingerprint'], $plan['preview_digest']),
-            'preview'          => $plan['preview'],
-        ];
+        return BuilderPageEdit::precheckAnswer($plan, self::EDIT, self::precheckDigest(hash('sha256', $entry), hash('sha256', $input), $plan['base_fingerprint'], $plan['preview_digest']));
     }
 
     /** The code of a refusal, with its detail when that is one of WPMgr's fixed words. */
@@ -1132,7 +1161,8 @@ final class PageEditDesignedGoldenTest extends TestCase
                 . '"pages" holds each page the cases edit: the tree page-create\'s precheck built for "create_input" on a site with "create_facts" (the "restructured" page is "derived_from" another with one pricing card\'s parts moved, so no pattern reads from it), '
                 . 'the fingerprint of its stored rows and "structure", the answer wpmgr/page-structure gives for it, which is the projection the AI reads, and "checks", what the agent\'s own checks read from the projection and the AI is not told: a section\'s anchor, the anchors a node links to ("links") and a pattern\'s name. '
                 . 'Each case holds "input", the exact JSON text of the page-edit input with the page\'s design as its last member when the case carries one; "facts", what the site gave the compile of any new section: the Elementor release and the breakpoints Elementor has active; '
-                . '"media", the images the precheck asked the site for, in the order asked; and "answer", exactly what the command answers: for a precheck {ok, outcome, mode, ability, request_id, valid, base_fingerprint, preview_digest, precheck_digest, preview} where preview is {post_id, builder, builder_version, format, title, changes, after_outline, tree_sha256, tree}, '
+                . '"media", the images the precheck asked the site for, in the order asked; and "answer", exactly what the command answers: for a precheck {ok, outcome, mode, ability, request_id, valid, base_fingerprint, preview_digest, precheck_digest, preview, builder_facts} where preview is {post_id, builder, builder_version, format, title, changes, after_outline, tree_sha256, tree} '
+                . 'and builder_facts is {active_breakpoints}, the breakpoints the site had active (the case\'s "facts"), which beside the preview and outside both digests is what a new section compiles with and an edited page is held to, '
                 . 'and for a refusal {ok, outcome, code, detail, retryable} with op_index, refs or failures where the refusal names them. '
                 . '"expect" is the answer the case was written for: prechecked, or the refusal\'s code and detail. '
                 . 'The precheck digest binds "entry_sha256", the sha256 of "entry", the sha256 of the input, the base fingerprint and the preview digest; the preview digest binds the tree\'s bytes (json_encode with default flags). '

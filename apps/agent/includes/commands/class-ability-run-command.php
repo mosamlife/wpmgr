@@ -379,18 +379,7 @@ final class AbilityRunCommand implements CommandInterface
                     return $plan['refusal'];
                 }
 
-                return [
-                    'ok'               => true,
-                    'outcome'          => 'prechecked',
-                    'mode'             => 'precheck',
-                    'ability'          => OwnAbilities::NAME_PAGE_EDIT,
-                    'request_id'       => $requestId,
-                    'valid'            => true,
-                    'base_fingerprint' => $plan['base_fingerprint'],
-                    'preview_digest'   => $plan['preview_digest'],
-                    'precheck_digest'  => $this->precheckDigest($entrySha, $inputSha, $plan['base_fingerprint'], $plan['preview_digest']),
-                    'preview'          => $plan['preview'],
-                ];
+                return BuilderPageEdit::precheckAnswer($plan, $requestId, $this->precheckDigest($entrySha, $inputSha, $plan['base_fingerprint'], $plan['preview_digest']));
             });
         }
 

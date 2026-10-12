@@ -716,6 +716,92 @@ final class BuilderPageEditTest extends TestCase
         $this->assertSame([true, 'applied', 1], [$r['ok'] ?? null, $r['outcome'] ?? null, $r['changes_applied'] ?? null], (string) json_encode($r));
     }
 
+    /**
+     * A plain button of a designed page takes the address of a section of the
+     * page, as the grammar lets it; the written link keeps its other members,
+     * and the edited page is held to the designed allowlist for the site.
+     */
+    public function test_set_text_of_a_button_url_to_an_anchor_is_planned_and_written_on_a_designed_page(): void
+    {
+        $this->storeDesigned();
+        $button = $this->nodeOf('buttons');
+        $input  = $this->designedInput([['op' => 'set_text', 'ref' => $button['ref'], 'field' => 'url', 'text' => '#top']], false);
+        $plan   = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, (string) json_encode($plan['refusal'] ?? null));
+        $this->assertSame(str_replace('"url":"#plans"', '"url":"#top"', (string) json_encode(self::designedPage())), json_encode($plan['preview']['tree']), 'only the button\'s link differs');
+        $this->assertSame([['url' => '#plans'], ['url' => '#top']], [$plan['preview']['changes'][0]['before'], $plan['preview']['changes'][0]['after']]);
+
+        $r = $this->approvedWrite($input);
+        $this->assertSame([true, 'applied', 1], [$r['ok'] ?? null, $r['outcome'] ?? null, $r['changes_applied'] ?? null], (string) json_encode($r));
+
+        // A link to a section the page does not have is still the validator's to refuse, and a bad shape is still bad_input.
+        $this->assertSame(['link_anchor_missing', 'link_leads_nowhere'], self::codeOf($this->plan($this->designedInput([['op' => 'set_text', 'ref' => $button['ref'], 'field' => 'url', 'text' => '#nowhere']], false))));
+        $this->assertSame('bad_input', $this->plan($this->designedInput([['op' => 'set_text', 'ref' => $button['ref'], 'field' => 'url', 'text' => '#Not_An_Anchor']], false))['refusal']['code'] ?? null);
+    }
+
+    /**
+     * A link is one value of the designed allowlist: what an edit wrote into a
+     * link is checked as the whole link, however many of its members changed.
+     * So a plain button's address and a plan's button address are written on a
+     * designed page, a path on the site and a section of the page alike.
+     */
+    public function test_set_text_of_a_path_on_the_site_is_written_to_a_button_of_a_designed_page(): void
+    {
+        $this->storeDesigned();
+        $input = $this->designedInput([['op' => 'set_text', 'ref' => $this->nodeOf('buttons')['ref'], 'field' => 'url', 'text' => '/start']], false);
+        $r     = $this->approvedWrite($input);
+        $this->assertSame([true, 'applied', 1], [$r['ok'] ?? null, $r['outcome'] ?? null, $r['changes_applied'] ?? null], (string) json_encode($r));
+        $this->assertStringContainsString('"url":"\/start","is_external":"","nofollow":""', (string) ($this->rowsOf(ElementorDocument::KEY_DATA)[0] ?? ''));
+    }
+
+    public function test_set_text_of_a_plans_button_address_is_written_on_a_designed_page(): void
+    {
+        $this->storeDesigned();
+        $input = $this->designedInput([['op' => 'set_text', 'ref' => $this->nodeOf('pattern')['ref'], 'field' => 'plans.0.cta.url', 'text' => '#top']], false);
+        $r     = $this->approvedWrite($input);
+        $this->assertSame([true, 'applied', 1], [$r['ok'] ?? null, $r['outcome'] ?? null, $r['changes_applied'] ?? null], (string) json_encode($r));
+        $this->assertStringContainsString('"url":"#top","is_external":"","nofollow":""', (string) ($this->rowsOf(ElementorDocument::KEY_DATA)[0] ?? ''));
+    }
+
+    /**
+     * The precheck of a designed page names the breakpoints its tree is a
+     * function of, as page-create's does; the answer of a plain page names
+     * nothing, and the digests do not hold the facts.
+     */
+    public function test_the_precheck_names_the_active_breakpoints_for_a_designed_page_and_nothing_for_a_plain_one(): void
+    {
+        $plain = $this->plan($this->input(self::ops()));
+        $this->assertArrayNotHasKey('refusal', $plain, (string) json_encode($plain['refusal'] ?? null));
+        $this->assertNull($plain['builder_facts'] ?? null, 'a plain page has no fact');
+        $this->assertArrayNotHasKey('builder_facts', BuilderPageEdit::precheckAnswer($plain, self::EDIT, str_repeat('0', 64)), 'a plain page\'s answer is as it was');
+
+        $this->api->activeBreakpoints = ['mobile'];
+        $this->storeDesigned();
+        $input = $this->designedInput([['op' => 'set_text', 'ref' => $this->nodeOf('pattern')['ref'], 'field' => 'plans.1.price', 'text' => '$59']], false);
+        $plan  = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, (string) json_encode($plan['refusal'] ?? null));
+        $this->assertSame(['active_breakpoints' => ['mobile']], $plan['builder_facts'] ?? null, 'the breakpoints the site has active');
+        $this->assertSame(['active_breakpoints' => ['mobile']], BuilderPageEdit::precheckAnswer($plan, self::EDIT, str_repeat('0', 64))['builder_facts'] ?? null, 'the answer carries them beside the preview');
+
+        $this->api->activeBreakpoints = [];
+        $none = $this->plan($input);
+        $this->assertSame(['active_breakpoints' => []], $none['builder_facts'] ?? null, 'none active is a list, not a missing fact');
+        $this->assertSame($plan['preview_digest'], $none['preview_digest'], 'the facts are beside the preview, not in its digest');
+    }
+
+    /** A page is designed when it holds a designed section before the edit or after it. */
+    public function test_a_page_is_designed_when_the_edit_finds_or_leaves_a_designed_section(): void
+    {
+        $plain    = self::page();
+        $designed = self::designedPage();
+        $adapter  = $this->adapter();
+        $this->assertNull($adapter->editFacts($plain, $plain));
+        $want = ['active_breakpoints' => ['mobile', 'tablet']];
+        $this->assertSame($want, $adapter->editFacts($designed, $designed));
+        $this->assertSame($want, $adapter->editFacts($designed, $plain), 'an edit that takes the last section away still found a designed page');
+        $this->assertSame($want, $adapter->editFacts($plain, $designed), 'an edit that leaves a designed section is a designed page');
+    }
+
     public function test_a_hero_inserted_below_a_section_is_refused_and_one_above_it_is_planned(): void
     {
         $this->storeDesigned();

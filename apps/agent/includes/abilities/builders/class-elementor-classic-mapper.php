@@ -385,6 +385,27 @@ final class ElementorClassicMapper
     }
 
     /**
+     * Whether a stored tree holds a designed section: a top-level container
+     * labelled LeafPolicy::SECTION_LABEL, as the projection reads one. A page
+     * that does is a designed page (outline version 3); any other is a plain
+     * one.
+     *
+     * @param array<mixed> $tree Top-level elements.
+     * @return bool
+     */
+    public static function holdsDesignedSection(array $tree): bool
+    {
+        foreach ($tree as $node) {
+            if (is_array($node) && ($node['elType'] ?? null) === 'container' && is_array($node['settings'] ?? null)
+                && ($node['settings'][LeafPolicy::LABEL_KEY] ?? null) === LeafPolicy::SECTION_LABEL) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * The allowlist of a designed page: ALLOWED_KEYS, the keys the leaf styles
      * write (ElementorLeafStyle::KEYS) and the keys the patterns write
      * (ElementorPatternCompiler::allowedKeys()), as one list.
@@ -669,14 +690,21 @@ final class ElementorClassicMapper
      * settings path alone. The rest of the node is not held to ALLOWED_KEYS,
      * because it carries what a person set.
      *
-     * @param array<mixed> $node  The stored node.
-     * @param string       $kind  Its projection kind.
-     * @param string       $field The field, one the node offers.
-     * @param string       $text  The new text, or the new link for "url".
-     * @param string       $at    The operation's position, for refusal details.
+     * On a designed page ($designed, see holdsDesignedSection()) a link may
+     * also be "#" and a section anchor, as the grammar of a designed page lets
+     * a button's address be. The designed allowlist's link pin then judges the
+     * whole link, so the link is checked with the members the node keeps; on
+     * any other page the link rule and the allowlist are what they always were.
+     *
+     * @param array<mixed> $node     The stored node.
+     * @param string       $kind     Its projection kind.
+     * @param string       $field    The field, one the node offers.
+     * @param string       $text     The new text, or the new link for "url".
+     * @param string       $at       The operation's position, for refusal details.
+     * @param bool         $designed Whether the page the node is on is a designed page.
      * @return array{node?: array<mixed>, code?: string, detail?: string}
      */
-    public static function setText(array $node, string $kind, string $field, string $text, string $at): array
+    public static function setText(array $node, string $kind, string $field, string $text, string $at, bool $designed = false): array
     {
         $target   = self::TEXT_TARGETS[$kind][$field] ?? null;
         $type     = ($node['elType'] ?? null) === 'widget' ? ($node['widgetType'] ?? null) : null;
@@ -691,7 +719,7 @@ final class ElementorClassicMapper
         }
 
         if ($field === 'url') {
-            $why = PageCreateBuilder::linkProblem($text);
+            $why = PageCreateBuilder::linkProblem($text, $designed);
             if ($why !== null) {
                 return ['code' => 'bad_input', 'detail' => $at . '.text: ' . $why];
             }
@@ -711,8 +739,16 @@ final class ElementorClassicMapper
         }
 
         // L4 and L2 on the value at its own path: a node holding only that value.
-        $only  = $member === null ? [$key => $value] : [$key => [$member => $value]];
-        $check = LeafPolicy::checkTree([['id' => 'set', 'elType' => 'widget', 'settings' => $only, 'elements' => [], 'widgetType' => $type]], self::ALLOWED_KEYS, self::LEAF_RULES);
+        $allowed = self::ALLOWED_KEYS;
+        $only    = $member === null ? [$key => $value] : [$key => [$member => $value]];
+        if ($designed && $field === 'url') {
+            // A designed page's link, whole: the designed allowlist's link pin takes a section anchor and judges the members the node keeps.
+            $link          = $holder;
+            $link[$member] = $value;
+            $allowed       = self::designedKeys();
+            $only          = [$key => $link];
+        }
+        $check = LeafPolicy::checkTree([['id' => 'set', 'elType' => 'widget', 'settings' => $only, 'elements' => [], 'widgetType' => $type]], $allowed, self::LEAF_RULES);
         if ($check !== null) {
             $reason = strpos($check['detail'], ': ');
 

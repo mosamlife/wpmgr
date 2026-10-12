@@ -351,7 +351,7 @@ final class ElementorAdapter implements BuilderAdapter
         $template     = $doc->meta[ElementorDocument::KEY_PAGE_TEMPLATE] ?? null;
 
         $allowed = null;
-        if (self::holdsDesignedSection($doc->tree)) {
+        if (ElementorClassicMapper::holdsDesignedSection($doc->tree)) {
             $active  = $this->facts()['active_breakpoints'] ?? null;
             $allowed = LeafPolicy::forBreakpoints(ElementorClassicMapper::designedKeys(), is_array($active) ? array_values($active) : []);
         }
@@ -360,22 +360,26 @@ final class ElementorAdapter implements BuilderAdapter
     }
 
     /**
-     * Whether a top-level element of $tree is a designed section: a container
-     * labelled LeafPolicy::SECTION_LABEL, as the projection reads one.
+     * The facts the precheck of an edit answers beside its preview, for a
+     * designed page: the breakpoints the site has active (activeBreakpoints()),
+     * which what an inserted section or pattern compiles to and the allowlist
+     * an edited designed page is held to are functions of, so a twin of the
+     * edit check rebuilds the tree from what the answer carries. A page is
+     * designed when it holds a designed section before the edit or after it
+     * (ElementorClassicMapper::holdsDesignedSection()); the answer for any
+     * other page carries no fact.
      *
-     * @param array<mixed> $tree Top-level elements.
-     * @return bool
+     * @param array<mixed> $before The stored tree.
+     * @param array<mixed> $after  The tree the edit leaves.
+     * @return array{active_breakpoints: list<string>|null}|null Null for a plain page.
      */
-    private static function holdsDesignedSection(array $tree): bool
+    public function editFacts(array $before, array $after): ?array
     {
-        foreach ($tree as $node) {
-            if (is_array($node) && ($node['elType'] ?? null) === 'container' && is_array($node['settings'] ?? null)
-                && ($node['settings'][LeafPolicy::LABEL_KEY] ?? null) === LeafPolicy::SECTION_LABEL) {
-                return true;
-            }
+        if (!ElementorClassicMapper::holdsDesignedSection($before) && !ElementorClassicMapper::holdsDesignedSection($after)) {
+            return null;
         }
 
-        return false;
+        return ['active_breakpoints' => $this->activeBreakpoints()];
     }
 
     /**

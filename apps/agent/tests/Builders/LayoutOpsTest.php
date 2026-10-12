@@ -158,6 +158,35 @@ final class LayoutOpsTest extends TestCase
         $this->assertSame('bad_input', $direct['code']);
     }
 
+    /**
+     * A link to a section of the page ("#" and its anchor) is a designed
+     * page's: a page before outline version 3 answers it as it always did,
+     * and a designed page writes it with the link's other members kept.
+     */
+    public function test_set_text_takes_a_link_to_a_section_only_on_a_designed_page(): void
+    {
+        $tree   = self::page(true);
+        $ref    = self::refs($tree, true);
+        $button = self::byId($tree)[$ref['btn']];
+
+        $plain = ElementorClassicMapper::setText($button, 'buttons', 'url', '#pricing', 'operations[0]');
+        $this->assertSame(['bad_input', 'operations[0].text: must be an https:// address or a path on this site that starts with /'], [$plain['code'] ?? null, $plain['detail'] ?? null]);
+        $this->assertRefused('bad_input', 0, $tree, [self::setText($ref['btn'], 'url', '#pricing')], true);
+
+        $designed = ElementorClassicMapper::setText($button, 'buttons', 'url', '#pricing', 'operations[0]', true);
+        $this->assertArrayHasKey('node', $designed, (string) json_encode($designed));
+        $this->assertSame(['url' => '#pricing', 'is_external' => '', 'nofollow' => ''], $designed['node']['settings']['link'] ?? null, 'only link.url changes');
+        $this->assertSame($button['settings']['text'], $designed['node']['settings']['text']);
+
+        // A designed page keeps every other rule of the link.
+        foreach (['#Not_An_Anchor' => 'bad_input', 'javascript:alert(1)' => 'bad_input', '/shop?a=1&b=2' => 'link_invalid', '#' => 'bad_input'] as $text => $code) {
+            $r = ElementorClassicMapper::setText($button, 'buttons', 'url', (string) $text, 'operations[0]', true);
+            $this->assertSame($code, $r['code'] ?? null, (string) $text);
+        }
+        $kept = ElementorClassicMapper::setText($button, 'buttons', 'url', '/shop', 'operations[0]', true);
+        $this->assertSame('/shop', $kept['node']['settings']['link']['url'] ?? null, 'a path on the site is written on a designed page as on any');
+    }
+
     // -------------------------------------------------------------------------
     // insert, replace, remove, move
     // -------------------------------------------------------------------------
