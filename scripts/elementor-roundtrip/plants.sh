@@ -9,20 +9,22 @@
 #     no verdict: neither passes.
 #   - every boot is red. A plant that one release renders as if nothing had been planted is a probe that cannot
 #     fail there.
-#   - every red boot counts a red probe (probes_failed above zero) and prints a failing check of the planted
-#     probe.
+#   - every red boot counts a red probe (probes_failed above zero) and prints a failing check of the kind the
+#     list names for the planted probe. A plant the harness could not apply (a probe or a setting it cannot find)
+#     is red too, but it is not the probe noticing the plant, so it does not pass.
 #   - every failing check of the run names the planted probe. A run that is red for another reason, or that the
 #     plant also broke elsewhere, proves nothing about the plant.
 #
-# plants.txt holds one plant per line, '<plant token> <layouts>': the token is plant=<kind>@<probe> as run.sh
-# hands it to the harness, and the layouts are those the probe has a tree for (containers, sections, or
-# containers,sections). A probe is skipped on a layout it has no tree for, so a plant listed there changes
-# nothing and the run stays green, which is reported as a plant that went undetected.
+# plants.txt holds one plant per line, '<plant token> <layouts> <check>': the token is plant=<kind>@<probe> as
+# run.sh hands it to the harness; the layouts are those the probe has a tree for (containers, sections, or
+# containers,sections), and a probe is skipped on a layout it has no tree for, so a plant listed there changes
+# nothing and the run stays green, which is reported as a plant that went undetected; the check is the kind of
+# failing check the plant must turn red on the probe, the word before the colon in 'rt: FAIL [..] css: ..'.
 #
 # Fails, never skips, when: run.sh cannot be run; awk, grep, sed, mktemp or tr cannot be found; the list is
-# missing, lists no plant or holds a line that is not '<plant token> <layouts>'; a run prints nothing, no boot
-# count or fewer boot verdicts than boots; or a plant is not turned red as above. Every plant is run, and every
-# one that fails is named, before the script exits.
+# missing, lists no plant or holds a line that is not '<plant token> <layouts> <check>'; a run prints nothing,
+# no boot count or fewer boot verdicts than boots; or a plant is not turned red as above. Every plant is run,
+# and every one that fails is named, before the script exits.
 #
 # Exit status: 0 every plant turned the run red; 1 a plant did not (the probes cannot fail, or they fail for some
 # other reason); 2 no verdict (a missing tool or list, a run that gave no verdict).
@@ -52,16 +54,19 @@ done
 
 # --- the list --------------------------------------------------------------------------
 token_re='^plant=[a-z_]+@[A-Za-z0-9][A-Za-z0-9._-]*$'
+check_re='^[a-z][a-z-]*$'
 tokens=()
 lays=()
+checks=()
 n=0
 while IFS= read -r line || [ -n "$line" ]; do
   n=$((n + 1))
   trimmed="${line#"${line%%[![:space:]]*}"}"
   case "$trimmed" in '' | '#'*) continue ;; esac
   read -r -a f <<<"$trimmed"
-  [ "${#f[@]}" -eq 2 ] || die "$list line $n: want '<plant token> <layouts>': '$trimmed'"
+  [ "${#f[@]}" -eq 3 ] || die "$list line $n: want '<plant token> <layouts> <check>': '$trimmed'"
   [[ ${f[0]} =~ $token_re ]] || die "$list line $n: '${f[0]}' is not plant=<kind>@<probe>"
+  [[ ${f[2]} =~ $check_re ]] || die "$list line $n: check '${f[2]}' is not a check name such as css"
   rest="${f[1]},"
   while [ -n "$rest" ]; do
     l="${rest%%,*}"
@@ -73,6 +78,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   done
   tokens+=("${f[0]}")
   lays+=("${f[1]}")
+  checks+=("${f[2]}")
 done <"$list"
 [ "${#tokens[@]}" -gt 0 ] || die "$list lists no plant"
 
@@ -91,13 +97,13 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # --- the verdict on one plant ----------------------------------------------------------------
-# judge <token> <run.sh exit status> <the run's output file>
+# judge <token> <check> <run.sh exit status> <the run's output file>
 # Sets verdict (ok, defect or none: no verdict), boots, and problems, one entry for each thing wrong.
 verdict=ok
 boots=0
 problems=()
 judge() {
-  local token="$1" rc="$2" out="$3" probe tag verdicts nv line v l pf named stats other first
+  local token="$1" check="$2" rc="$3" out="$4" probe tag verdicts nv line v l pf named unapplied stats other first
   probe="${token#*@}"
   tag="probe-$probe"
   verdict=ok
@@ -155,10 +161,15 @@ judge() {
           verdict=defect
           problems+=("Elementor $v ($l) is red but counts no red probe (probes_failed='$pf')")
         fi
-        named="$(awk -v want="rt: FAIL [$v $l $tag] " 'index($0, want) == 1 { n++ } END { print n + 0 }' "$out")"
+        named="$(awk -v want="rt: FAIL [$v $l $tag] $check: " 'index($0, want) == 1 { n++ } END { print n + 0 }' "$out")"
         if [ "$named" -eq 0 ]; then
           verdict=defect
-          problems+=("Elementor $v ($l) is red but no failing check names $tag")
+          problems+=("Elementor $v ($l) is red but the $check check of $tag did not fail")
+        fi
+        unapplied="$(awk -v want="rt: FAIL [$v $l $tag] plant: " 'index($0, want) == 1 { print; exit }' "$out")"
+        if [ -n "$unapplied" ]; then
+          verdict=defect
+          problems+=("the harness could not apply the plant to $tag on Elementor $v ($l): $unapplied")
         fi
         ;;
     esac
@@ -191,14 +202,15 @@ nones=0
 while [ "$idx" -lt "${#tokens[@]}" ]; do
   token="${tokens[$idx]}"
   lay="${lays[$idx]}"
+  want_check="${checks[$idx]}"
   out="$work/out.$idx"
   echo "plants: running $token on $lay"
   RT_PLANT="$token" RT_LAYOUTS="${lay//,/ }" "$run" >"$out" 2>&1
   rc=$?
-  judge "$token" "$rc" "$out"
+  judge "$token" "$want_check" "$rc" "$out"
   if [ "$verdict" = ok ]; then
     total_boots=$((total_boots + boots))
-    echo "plants: ok   $token ($lay): red on all $boots boot(s), as it must"
+    echo "plants: ok   $token ($lay): red on all $boots boot(s) by its $want_check check, as it must"
     grep '^rt: FAIL ' "$out" | head -n 12 | sed 's/^/plants:   /'
   else
     if [ "$verdict" = none ]; then

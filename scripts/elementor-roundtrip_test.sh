@@ -185,7 +185,7 @@ case "${FAKE_MODE:-ok}" in
   # harness does with it. FAKE_PLANT_LAYOUTS names the layouts the probe has a tree for (default containers): on
   # another layout the probe is skipped and the plant changes nothing. FAKE_PLANT_IGNORED_VERSION names a release
   # that renders the planted tree as if nothing had been planted.
-  plantred | plantwrong | plantcollateral | plantnofail | plantnotally | plantfailothercase)
+  plantred | plantwrong | plantcollateral | plantnofail | plantnotally | plantfailothercase | plantnotapplied | plantotherkind)
     probe="${plant#*@}"
     probe="${probe%% *}"
     applies=0
@@ -204,6 +204,10 @@ case "${FAKE_MODE:-ok}" in
       plantnofail) echo "rt: SUMMARY elementor=$ver layout=$layout $red_one failed=1" ;;
       plantnotally) echo "$own"; echo "rt: SUMMARY elementor=$ver layout=$layout $tail_ok failed=1" ;;
       plantfailothercase) echo "rt: FAIL [$ver $layout $probe] stored: tree: want 1, got 2"; echo "rt: SUMMARY elementor=$ver layout=$layout $red_one failed=1" ;;
+      # The harness cannot find the probe or the setting to plant on: it is red, on the probe's own tag, and no declaration failed.
+      plantnotapplied) echo "rt: FAIL [$ver $layout probe-$probe] plant: no probe is named $probe"; echo "rt: SUMMARY elementor=$ver layout=$layout $red_one failed=1" ;;
+      # The probe is red on a check other than the one the list names.
+      plantotherkind) echo "rt: FAIL [$ver $layout probe-$probe] html-id: the rendered page carries id=\"x\" on 0 element(s), not one"; echo "rt: SUMMARY elementor=$ver layout=$layout $red_one failed=1" ;;
     esac
     echo "rt: RESULT FAIL"; exit 1 ;;
   ok)
@@ -455,9 +459,9 @@ plants_node="$(command -v node || true)"
 [ -n "$plants_node" ] || { echo "FAIL setup: node not found (the committed plant list is read with it)"; exit 1; }
 cat >"$tmp/plants-good.txt" <<'LIST'
 # a stand-in list
-plant=misspell_key@pattern-icon-box containers
+plant=misspell_key@pattern-icon-box containers css
 
-plant=drop_activator@pattern-icon-box containers
+plant=drop_activator@pattern-icon-box containers css
 LIST
 plants_env=("${offline[@]}" "RT_CACHE=$tmp/c7" "RT_PLANTS_FILE=$tmp/plants-good.txt")
 # plants_expect <name> <want: 0|1|2> <env...>   expect(), through plants.sh instead of run.sh.
@@ -488,7 +492,7 @@ fi
 plants_expect "plants_one_pin: RT_VERSIONS narrows a plant run to one pin" 0 "${plants_env[@]}" FAKE_MODE=plantred RT_VERSIONS=4.3.4 "FAKE_CALLS_FILE=$tmp/plant-calls2"
 said "  and it counts the narrower run" "2 plant(s), 2 boot(s): every plant turned the run red"
 if [ "$(LC_ALL=C sort "$tmp/plant-calls2" | tr '\n' ';')" = "4.3.4 containers plant=drop_activator@pattern-icon-box;4.3.4 containers plant=misspell_key@pattern-icon-box;" ]; then ok "  and only that pin booted"; else bad "  other pins booted: $(tr '\n' ';' <"$tmp/plant-calls2")"; fi
-printf 'plant=misspell_key@pattern-icon-box containers,sections\n' >"$tmp/plants-both.txt"
+printf 'plant=misspell_key@pattern-icon-box containers,sections css\n' >"$tmp/plants-both.txt"
 plants_expect "plants_both_layouts: a probe with a tree in both layouts is planted in both" 0 "${plants_env[@]}" "RT_PLANTS_FILE=$tmp/plants-both.txt" FAKE_MODE=plantred "FAKE_PLANT_LAYOUTS=containers sections"
 said "  and it counts a boot per layout and pin" "1 plant(s), 4 boot(s): every plant turned the run red"
 plants_expect "plants_committed_list: the committed list runs and every plant in it turns the stand-in red" 0 "${offline[@]}" "RT_CACHE=$tmp/c7" FAKE_MODE=plantred
@@ -502,12 +506,14 @@ if listed="$("$plants_node" -e '
   const lines = fs.readFileSync(listFile, "utf8").split("\n").map((l) => l.trim()).filter((l) => l !== "" && !l.startsWith("#"));
   const bad = [];
   for (const line of lines) {
-    const [token, layouts = ""] = line.split(/\s+/);
+    const [token, layouts = "", check = ""] = line.split(/\s+/);
     const m = /^plant=([a-z_]+)@(.+)$/.exec(token);
     if (!m) { bad.push(line + ": not a plant token"); continue; }
     const p = probes.find((x) => x.name === m[2]);
     if (!p) { bad.push(line + ": no probe is named " + m[2]); continue; }
     if (!p.plants || !p.plants[m[1]]) { bad.push(line + ": the probe declares no target for " + m[1]); }
+    if (check === "") { bad.push(line + ": no check is named"); }
+    if (check === "css" && !(Array.isArray(p.css) && p.css.length > 0)) { bad.push(line + ": the probe expects no declaration, so its css check cannot fail"); }
     if (p.since) { bad.push(line + ": the probe applies from Elementor " + p.since + ", older pins skip it"); }
     for (const l of layouts.split(",")) {
       if (!p.trees || !Array.isArray(p.trees[l])) { bad.push(line + ": the probe has no " + l + " tree"); }
@@ -536,18 +542,28 @@ plants_expect "plants_skipped_layout_fails: a plant listed on a layout its probe
 said "  and it names the layout" "went undetected on Elementor 4.3.4 (sections)"
 # Red is not enough: it has to be the plant that turned the run red.
 plants_expect "plants_wrong_probe_fails: a run that is red on another probe is not the plant noticed" 1 "${plants_env[@]}" FAKE_MODE=plantwrong
-said "  and it says the plant's probe never failed" "no failing check names probe-pattern-icon-box"
+said "  and it says the plant's probe never failed" "the css check of probe-pattern-icon-box did not fail"
 said "  and it says what else was red" "failing check(s) that do not name probe-pattern-icon-box"
 plants_expect "plants_collateral_fails: a plant that also breaks another probe proves nothing" 1 "${plants_env[@]}" FAKE_MODE=plantcollateral
 said "  and it says what else was red" "failing check(s) that do not name probe-pattern-icon-box"
-not_said "  and the plant's own probe did fail" "no failing check names probe-pattern-icon-box"
+not_said "  and the plant's own probe did fail" "check of probe-pattern-icon-box did not fail"
 plants_expect "plants_nofail_fails: a red verdict with no failing check on the probe is not trusted" 1 "${plants_env[@]}" FAKE_MODE=plantnofail
-said "  and it says the probe never failed" "no failing check names probe-pattern-icon-box"
+said "  and it says the probe never failed" "the css check of probe-pattern-icon-box did not fail"
 plants_expect "plants_notally_fails: a red probe the summary does not count is not trusted" 1 "${plants_env[@]}" FAKE_MODE=plantnotally
 said "  and it says what the tally was" "counts no red probe (probes_failed='0')"
 plants_expect "plants_other_case_fails: a failing case that only shares the probe's name is not the probe" 1 "${plants_env[@]}" FAKE_MODE=plantfailothercase
-said "  and it says the probe never failed" "no failing check names probe-pattern-icon-box"
+said "  and it says the probe never failed" "the css check of probe-pattern-icon-box did not fail"
 said "  and it says what else was red" "failing check(s) that do not name probe-pattern-icon-box"
+# A plant the harness cannot apply makes the probe red on its own tag, and that is the harness failing, not the probe noticing.
+plants_expect "plants_not_applied_fails: a plant the harness could not apply is not a plant noticed" 1 "${plants_env[@]}" FAKE_MODE=plantnotapplied
+said "  and it says the plant could not be applied" "the harness could not apply the plant to probe-pattern-icon-box on Elementor 3.20.4 (containers)"
+said "  and it says the declaration check never failed" "the css check of probe-pattern-icon-box did not fail"
+# The probe has to fail the check the list names: a red probe on some other check is not the declarations being held.
+plants_expect "plants_other_check_fails: a probe that is red on another check than the one listed is not the plant noticed" 1 "${plants_env[@]}" FAKE_MODE=plantotherkind
+said "  and it says the listed check never failed" "the css check of probe-pattern-icon-box did not fail"
+printf 'plant=misspell_key@pattern-icon-box containers html-id\n' >"$tmp/plants-htmlid.txt"
+plants_expect "plants_listed_check: the check the list names is the one the probe is held to" 0 "${plants_env[@]}" "RT_PLANTS_FILE=$tmp/plants-htmlid.txt" FAKE_MODE=plantotherkind
+said "  and it names the check that turned red" "by its html-id check"
 
 # --- must go red: a run that gives no verdict ------------------------------------------------------
 for mode in silent crash; do
@@ -570,12 +586,14 @@ plants_list_bad() {
   plants_expect "plants_list_bad: $1" 2 "${plants_env[@]}" "RT_PLANTS_FILE=$tmp/plants-bad.txt"
   said "  and it says what is wrong" "$3"
 }
-plants_list_bad "a line without layouts is red" "plant=misspell_key@pattern-icon-box" "want '<plant token> <layouts>'"
-plants_list_bad "a line with a third column is red" "plant=misspell_key@pattern-icon-box containers extra" "want '<plant token> <layouts>'"
-plants_list_bad "a token that is not plant=<kind>@<probe> is red" "misspell_key@pattern-icon-box containers" "is not plant=<kind>@<probe>"
-plants_list_bad "a plant with no probe is red" "plant=misspell_key@ containers" "is not plant=<kind>@<probe>"
-plants_list_bad "a layout the check does not know is red" "plant=misspell_key@pattern-icon-box diagonal" "'diagonal' is not containers or sections"
-plants_list_bad "an empty layout is red" "plant=misspell_key@pattern-icon-box containers,,sections" "'' is not containers or sections"
+plants_list_bad "a line without layouts and a check is red" "plant=misspell_key@pattern-icon-box" "want '<plant token> <layouts> <check>'"
+plants_list_bad "a line without a check is red" "plant=misspell_key@pattern-icon-box containers" "want '<plant token> <layouts> <check>'"
+plants_list_bad "a line with a fourth column is red" "plant=misspell_key@pattern-icon-box containers css extra" "want '<plant token> <layouts> <check>'"
+plants_list_bad "a token that is not plant=<kind>@<probe> is red" "misspell_key@pattern-icon-box containers css" "is not plant=<kind>@<probe>"
+plants_list_bad "a plant with no probe is red" "plant=misspell_key@ containers css" "is not plant=<kind>@<probe>"
+plants_list_bad "a layout the check does not know is red" "plant=misspell_key@pattern-icon-box diagonal css" "'diagonal' is not containers or sections"
+plants_list_bad "an empty layout is red" "plant=misspell_key@pattern-icon-box containers,,sections css" "'' is not containers or sections"
+plants_list_bad "a check that is not a check name is red" "plant=misspell_key@pattern-icon-box containers CSS:" "is not a check name"
 
 # --- must go red, and must not over-fire: the verdict plants.sh reads is the run's own -----------------
 # A copy of plants.sh beside a stand-in for run.sh, so the script is held to what it is handed and not to what the real
@@ -584,7 +602,7 @@ plants_dir="$tmp/plants-dir"
 mkdir -p "$plants_dir"
 cp "$plants_script" "$plants_dir/plants.sh"
 chmod +x "$plants_dir/plants.sh"
-printf 'plant=misspell_key@pattern-icon-box containers\n' >"$tmp/plants-one.txt"
+printf 'plant=misspell_key@pattern-icon-box containers css\n' >"$tmp/plants-one.txt"
 # plants_standin <name> <want> <body>   plants.sh beside a run.sh that is <body>; an empty body means no run.sh at all.
 plants_standin() {
   local name="$1" want="$2" body="$3" saved="$check"
