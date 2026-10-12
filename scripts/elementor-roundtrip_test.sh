@@ -642,6 +642,94 @@ said "  and it says so" "not executable"
 check="$here/elementor-roundtrip/run.sh"
 
 # ---------------------------------------------------------------------------------
+# Group 1b: the planted defects in the agent's own source still apply to it
+# ---------------------------------------------------------------------------------
+# Group 2 plants each defect below in a copy of the agent's source and requires the real round trip to turn
+# red. A defect whose anchor does not occur exactly once in that source plants nothing, so every anchor is
+# held to the source here as well, with no WordPress: a change to the source that moves one turns this suite
+# red at once, on any machine, whether or not the real round trip runs. Group 2 runs the same table.
+node_bin="$(command -v node || true)"
+[ -n "$node_bin" ] || { echo "FAIL setup: node not found (the agent mutations are applied with it)"; exit 1; }
+# mutate <name> <file under includes> <old> <new> [<old> <new> ...]: each <old> must occur exactly once, and
+# each <new> must differ from it.
+mutate() {
+  local name="$1" rel="$2"
+  shift 2
+  local dir="$tmp/mut-$name"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  cp -R "$here/../apps/agent/includes/." "$dir/" || return 1
+  "$node_bin" -e '
+    const fs = require("fs");
+    const [file, ...pairs] = process.argv.slice(1);
+    if (pairs.length === 0 || pairs.length % 2 !== 0) { console.error("want pairs of <old> <new>"); process.exit(1); }
+    let s = fs.readFileSync(file, "utf8");
+    for (let i = 0; i < pairs.length; i += 2) {
+      const n = s.split(pairs[i]).length - 1;
+      if (n !== 1) { console.error("occurs " + n + " time(s), not once: " + pairs[i]); process.exit(1); }
+      if (pairs[i] === pairs[i + 1]) { console.error("the replacement is the anchor itself: " + pairs[i]); process.exit(1); }
+      s = s.replace(pairs[i], () => pairs[i + 1]);
+    }
+    fs.writeFileSync(file, s);
+  ' "$dir/$rel" "$@"
+}
+# mutant <name> <what is broken> <expected red line> <file under includes> <old> <new> ...
+# mutant_mode=apply: the defect must apply to the source. mutant_mode=run: it must, and the real round trip
+# must then be red on the line that is meant to see it.
+mutant_mode=apply
+mutants_seen=0
+mutant() {
+  local name="$1" what="$2" red="$3"
+  shift 3
+  mutants_seen=$((mutants_seen + 1))
+  if ! mutate "$name" "$@" 2>"$tmp/mut-$name.err"; then
+    bad "mutant $name does not apply to the agent source: $(cat "$tmp/mut-$name.err")"
+    rm -rf "$tmp/mut-$name"
+    return
+  fi
+  if [ "$mutant_mode" = apply ]; then
+    ok "mutant $name ($what) applies to the agent source"
+    rm -rf "$tmp/mut-$name"
+    return
+  fi
+  expect "the agent path with $what turns the real round trip red" 1 "${real_c[@]}" "RT_AGENT_INCLUDES=$tmp/mut-$name"
+  said "  and the check meant to see it is the one that is red" "$red"
+  rm -rf "$tmp/mut-$name"
+}
+agent_mutants() {
+  mutant verify "its verify skipped" "rt: FAIL [4.3.4 agent-containers tamper] refused:" \
+    abilities/builders/class-builder-page-create.php \
+    '$problem = $a->verifyCreated($postId, $doc, $principal, $requestId);' \
+    '$problem = null;'
+  mutant undo "an undo that says reverted and leaves the post" "rt: FAIL [4.3.4 agent-containers heading] trashed:" \
+    commands/class-ability-run-command.php \
+    'wp_trash_post($postId);' \
+    '$postId = $postId;' \
+    "return !is_object(\$after) || (string) \$after->post_status === 'trash';" \
+    'return true;'
+  mutant digests "its digest re-check skipped" "rt: FAIL [4.3.4 agent-containers digest] refused-preview_digest:" \
+    commands/class-ability-run-command.php \
+    $'$built = $this->builderBuild($spec, $adapter, $requestId);\n        if (isset($built[\'refusal\'])) {\n            return $built[\'refusal\'];\n        }\n        $precheck = $this->precheckDigest($entrySha, $inputSha, $built[\'base_fingerprint\'], $built[\'preview_digest\']);\n        if (!hash_equals($expPrev, $built[\'preview_digest\']) || !hash_equals($expPre, $precheck)) {' \
+    $'$built = $this->builderBuild($spec, $adapter, $requestId);\n        if (isset($built[\'refusal\'])) {\n            return $built[\'refusal\'];\n        }\n        $precheck = $this->precheckDigest($entrySha, $inputSha, $built[\'base_fingerprint\'], $built[\'preview_digest\']);\n        if (false) {'
+  # The anchor starts at the arrow: the key and the padding that aligns the array's arrows are not part of it,
+  # so adding a longer key to the array does not move it.
+  mutant layout "the container layout read as off" "rt: FAIL [4.3.4 agent-containers facts] layout:" \
+    abilities/builders/class-elementor-facts.php \
+    '=> $api->experimentActive(self::EXPERIMENT_CONTAINER),' \
+    '=> false,'
+  mutant guard "its undo guard skipped" "rt: FAIL [4.3.4 agent-containers person-edit] refused:" \
+    commands/class-ability-run-command.php \
+    '$problem = BuilderPageCreate::revertProblem($postId, $builderRow, $chain);' \
+    '$problem = null;'
+}
+agent_mutants
+if [ "$mutants_seen" -eq 0 ]; then
+  bad "no agent mutant was checked against the agent source"
+else
+  ok "every agent mutant was checked against the agent source ($mutants_seen)"
+fi
+
+# ---------------------------------------------------------------------------------
 # Group 2: a real WordPress under the Playground CLI, Elementor 4.3.4
 # ---------------------------------------------------------------------------------
 if [ "${RT_TEST_ONLINE:-1}" = 0 ]; then
@@ -775,66 +863,11 @@ set-text-every-field render-link"
   said "  and it says the agent path ran no case" "the agent path ran no case"
   said "  and it says which refusal scenario never ran" "did not run the refusal scenario tamper"
 
-  # Defects in the AGENT's own create path, planted in a copy of its source that the
-  # harness loads instead (RT_AGENT_INCLUDES). Each must turn the real round trip red,
-  # on the check that is meant to see it. A mutation that no longer applies to the
-  # source is a failure of this suite, not a pass: update it with the source.
-  node_bin="$(command -v node || true)"
-  [ -n "$node_bin" ] || { echo "FAIL setup: node not found (the agent mutations are applied with it)"; exit 1; }
-  # mutate <name> <file under includes> <old> <new> [<old> <new> ...]: each <old> must occur exactly once.
-  mutate() {
-    local name="$1" rel="$2"
-    shift 2
-    local dir="$tmp/mut-$name"
-    rm -rf "$dir"
-    mkdir -p "$dir"
-    cp -R "$here/../apps/agent/includes/." "$dir/" || return 1
-    "$node_bin" -e '
-      const fs = require("fs");
-      const [file, ...pairs] = process.argv.slice(1);
-      let s = fs.readFileSync(file, "utf8");
-      for (let i = 0; i < pairs.length; i += 2) {
-        const n = s.split(pairs[i]).length - 1;
-        if (n !== 1) { console.error("occurs " + n + " time(s), not once: " + pairs[i]); process.exit(1); }
-        s = s.replace(pairs[i], () => pairs[i + 1]);
-      }
-      fs.writeFileSync(file, s);
-    ' "$dir/$rel" "$@"
-  }
-  # mutant <name> <what is broken> <expected red line> <file under includes> <old> <new> ...
-  mutant() {
-    local name="$1" what="$2" red="$3"
-    shift 3
-    if ! mutate "$name" "$@" 2>"$tmp/mut-$name.err"; then
-      bad "mutant $name does not apply to the agent source: $(cat "$tmp/mut-$name.err")"
-      return
-    fi
-    expect "the agent path with $what turns the real round trip red" 1 "${real_c[@]}" "RT_AGENT_INCLUDES=$tmp/mut-$name"
-    said "  and the check meant to see it is the one that is red" "$red"
-    rm -rf "$tmp/mut-$name"
-  }
-  mutant verify "its verify skipped" "rt: FAIL [4.3.4 agent-containers tamper] refused:" \
-    abilities/builders/class-builder-page-create.php \
-    '$problem = $a->verifyCreated($postId, $doc, $principal, $requestId);' \
-    '$problem = null;'
-  mutant undo "an undo that says reverted and leaves the post" "rt: FAIL [4.3.4 agent-containers heading] trashed:" \
-    commands/class-ability-run-command.php \
-    'wp_trash_post($postId);' \
-    '$postId = $postId;' \
-    "return !is_object(\$after) || (string) \$after->post_status === 'trash';" \
-    'return true;'
-  mutant digests "its digest re-check skipped" "rt: FAIL [4.3.4 agent-containers digest] refused-preview_digest:" \
-    commands/class-ability-run-command.php \
-    $'$built = $this->builderBuild($spec, $adapter, $requestId);\n        if (isset($built[\'refusal\'])) {\n            return $built[\'refusal\'];\n        }\n        $precheck = $this->precheckDigest($entrySha, $inputSha, $built[\'base_fingerprint\'], $built[\'preview_digest\']);\n        if (!hash_equals($expPrev, $built[\'preview_digest\']) || !hash_equals($expPre, $precheck)) {' \
-    $'$built = $this->builderBuild($spec, $adapter, $requestId);\n        if (isset($built[\'refusal\'])) {\n            return $built[\'refusal\'];\n        }\n        $precheck = $this->precheckDigest($entrySha, $inputSha, $built[\'base_fingerprint\'], $built[\'preview_digest\']);\n        if (false) {'
-  mutant layout "the container layout read as off" "rt: FAIL [4.3.4 agent-containers facts] layout:" \
-    abilities/builders/class-elementor-facts.php \
-    "'containers'       => \$api->experimentActive(self::EXPERIMENT_CONTAINER)," \
-    "'containers'       => false,"
-  mutant guard "its undo guard skipped" "rt: FAIL [4.3.4 agent-containers person-edit] refused:" \
-    commands/class-ability-run-command.php \
-    '$problem = BuilderPageCreate::revertProblem($postId, $builderRow, $chain);' \
-    '$problem = null;'
+  # The defects in the AGENT's own create path (the table in Group 1b), planted in a copy of its source that the
+  # harness loads instead (RT_AGENT_INCLUDES). Each must turn the real round trip red, on the check that is meant
+  # to see it.
+  mutant_mode=run
+  agent_mutants
 
   # The render probes. A probe that is edited is edited in a copy of the harness directory, whose run.sh then
   # mounts the copy: the probe the check runs is the edited one, and the committed file is not touched. An edit
