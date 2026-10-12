@@ -671,7 +671,7 @@ final class ElementorPageCreateRouterTest extends TestCase
         $this->assertTrue($pre['ok'] ?? null, (string) json_encode($pre));
         $this->assertSame('prechecked', $pre['outcome']);
         $this->assertSame('containers', $pre['preview']['layout']);
-        $this->assertSame(['block_theme' => false, 'page_frame' => 'full_width'], $pre['builder_facts'] ?? null);
+        $this->assertSame(['block_theme' => false, 'page_frame' => 'full_width', 'active_breakpoints' => ['mobile', 'tablet']], $pre['builder_facts'] ?? null);
         $this->assertSame([42, 101, 102, 103, 104, 105, 106, 201, 202, 203], array_column($pre['preview']['media'] ?? [], 'id'), 'the backgrounds, logos and avatars are resolved too');
 
         $tree = $pre['preview']['tree'];
@@ -725,7 +725,7 @@ final class ElementorPageCreateRouterTest extends TestCase
 
         $pre = $this->precheck(self::REQ_GOLDEN, $input);
         $this->assertTrue($pre['ok'] ?? null, (string) json_encode($pre));
-        $this->assertSame(['block_theme' => false, 'page_frame' => 'theme'], $pre['builder_facts']);
+        $this->assertSame(['block_theme' => false, 'page_frame' => 'theme', 'active_breakpoints' => ['mobile', 'tablet']], $pre['builder_facts']);
         $this->assertSame([42], array_column($pre['preview']['media'], 'id'));
         $this->assertCount(1, $pre['preview']['tree']);
         $section = $pre['preview']['tree'][0];
@@ -738,6 +738,39 @@ final class ElementorPageCreateRouterTest extends TestCase
         $again = $this->precheck(self::REQ_B, $input);
         $this->assertNotSame($pre['preview_digest'], $again['preview_digest']);
         $this->assertSame($section['settings'], $again['preview']['tree'][0]['settings'], 'the section is a function of the design and the outline');
+    }
+
+    public function testV3PrecheckAnswersTheBreakpointsItCompiledFor(): void
+    {
+        $this->enable();
+        $this->v3Site();
+        $input = $this->v3Input('v3-full-landing-page');
+        $keys  = static function (array $tree) use (&$keys): array {
+            $found = [];
+            foreach ($tree as $node) {
+                $found = array_merge($found, array_keys($node['settings'] ?? []), $keys($node['elements'] ?? []));
+            }
+
+            return $found;
+        };
+
+        foreach ([['tablet'], ['mobile'], [], null] as $active) {
+            $this->api->activeBreakpoints = $active;
+            $pre                          = $this->precheck(self::REQ_GOLDEN, $input);
+            $name                         = json_encode($active);
+
+            $this->assertTrue($pre['ok'] ?? null, $name . ' ' . json_encode($pre));
+            $this->assertArrayHasKey('active_breakpoints', $pre['builder_facts'], $name . ' the answer names the breakpoints');
+            $this->assertSame($active, $pre['builder_facts']['active_breakpoints'], $name . ': the breakpoints the answer names are the ones the tree was compiled for');
+            $used = array_unique($keys($pre['preview']['tree']));
+            $this->assertSame(in_array('tablet', $active ?? [], true), in_array('padding_tablet', $used, true), $name . ' tablet overrides');
+            $this->assertSame(in_array('mobile', $active ?? [], true), in_array('padding_mobile', $used, true), $name . ' mobile overrides');
+        }
+
+        // A plain outline is not compiled for the site's breakpoints, so its answer names none.
+        $this->api->activeBreakpoints = ['mobile', 'tablet'];
+        $plain = $this->precheck(self::REQ_GOLDEN, $this->input('columns'));
+        $this->assertSame(['block_theme' => false, 'page_frame' => null], $plain['builder_facts'] ?? null);
     }
 
     public function testPlantedMismatchRefuses(): void

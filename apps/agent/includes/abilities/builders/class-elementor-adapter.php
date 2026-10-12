@@ -80,6 +80,22 @@ final class ElementorAdapter implements BuilderAdapter
     }
 
     /**
+     * The breakpoints the site has active, which a designed page's tree is
+     * compiled for: Elementor's names in its own order, or null when the
+     * site could not say, which the compile reads as none active. The
+     * precheck answers this same value, so a twin of the compile rebuilds
+     * the tree from what the answer carries.
+     *
+     * @return list<string>|null
+     */
+    public function activeBreakpoints(): ?array
+    {
+        $active = $this->facts()['active_breakpoints'] ?? null;
+
+        return is_array($active) ? array_values($active) : null;
+    }
+
+    /**
      * The family names in Elementor's font registry on this site, read each
      * time it is asked: only a page whose design names a family needs them,
      * so the facts do not carry them.
@@ -190,8 +206,7 @@ final class ElementorAdapter implements BuilderAdapter
             } catch (\InvalidArgumentException $e) {
                 return ['code' => 'bad_input', 'detail' => 'design: the design could not be read'];
             }
-            $active = $facts['active_breakpoints'] ?? null;
-            $design = new ElementorSectionCompiler($tokens, is_array($active) ? array_values($active) : null, $mediaById);
+            $design = new ElementorSectionCompiler($tokens, $this->activeBreakpoints(), $mediaById);
         }
         $mapped = ElementorClassicMapper::map($spec, $ids, $mediaById, $containers, $design);
         if (!isset($mapped['tree'])) {

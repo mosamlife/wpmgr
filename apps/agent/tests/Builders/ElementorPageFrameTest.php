@@ -432,7 +432,7 @@ final class ElementorPageFrameTest extends TestCase
             $built = $this->precheck($spec);
             $this->assertArrayNotHasKey('refusal', $built, $name . ': ' . (string) json_encode($built['refusal'] ?? null));
             $this->assertSame('elementor_canvas', $built['doc']->meta[self::TEMPLATE] ?? null, $name);
-            $this->assertSame(['block_theme' => true, 'page_frame' => 'canvas'], $built['builder_facts'] ?? null, $name);
+            $this->assertSame(['block_theme' => true, 'page_frame' => 'canvas', 'active_breakpoints' => ['mobile', 'tablet']], $built['builder_facts'] ?? null, $name);
         }
 
         // theme or full_width sent: refused before any template list is read.
@@ -466,10 +466,10 @@ final class ElementorPageFrameTest extends TestCase
         foreach (OutlineV3Schema::PAGE_FRAMES as $frame) {
             $built = $this->precheck($this->v3Spec($frame));
             $this->assertArrayNotHasKey('refusal', $built, $frame . ': ' . (string) json_encode($built['refusal'] ?? null));
-            $this->assertSame(['block_theme' => false, 'page_frame' => $frame], $built['builder_facts'] ?? null, $frame);
+            $this->assertSame(['block_theme' => false, 'page_frame' => $frame, 'active_breakpoints' => ['mobile', 'tablet']], $built['builder_facts'] ?? null, $frame);
         }
         $built = $this->precheck(array_diff_key($this->v3Spec('canvas'), ['page_frame' => 1]));
-        $this->assertSame(['block_theme' => false, 'page_frame' => 'theme'], $built['builder_facts'] ?? null, 'no hero, no frame: theme');
+        $this->assertSame(['block_theme' => false, 'page_frame' => 'theme', 'active_breakpoints' => ['mobile', 'tablet']], $built['builder_facts'] ?? null, 'no hero, no frame: theme');
         $built = $this->precheck(['post_type' => 'page', 'editor' => 'builder:elementor', 'title' => self::TITLE, 'outline' => self::outline()]);
         $this->assertSame(['block_theme' => false, 'page_frame' => null], $built['builder_facts'] ?? null, 'version 2');
     }
@@ -479,7 +479,7 @@ final class ElementorPageFrameTest extends TestCase
         $this->offered = ['page' => self::WITH_ELEMENTOR];
         $spec          = $this->v3Spec('full_width');
         $built         = $this->precheck($spec);
-        $this->assertSame(['block_theme' => false, 'page_frame' => 'full_width'], $built['builder_facts'] ?? null);
+        $this->assertSame(['block_theme' => false, 'page_frame' => 'full_width', 'active_breakpoints' => ['mobile', 'tablet']], $built['builder_facts'] ?? null);
 
         // The site moves to a block theme before the write. The write's
         // pipeline builds again from the same input before any insert.

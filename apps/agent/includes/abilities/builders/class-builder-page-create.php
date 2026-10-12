@@ -53,7 +53,10 @@ if (!defined('ABSPATH')) {
  * frame the site stopped admitting since the approval is refused, never
  * replaced. The precheck answers the frame it resolved and the theme fact
  * in "builder_facts": {block_theme, page_frame}, page_frame null for an
- * outline before version 3. precheck()
+ * outline before version 3. For an outline version 3 it also answers
+ * "active_breakpoints", the breakpoints the site has active as the tree was
+ * compiled for them: a list in Elementor's own order, [] for none, null when
+ * the site could not say (the compile then writes no override). precheck()
  * refuses page_template_unavailable when the site does not offer that
  * template for the post type, since core's post save would put it back to
  * the default on the next update of the post row. The template is a plain
@@ -163,7 +166,7 @@ final class BuilderPageCreate
      * @param array<string, mixed>             $facts      The adapter's site facts (ElementorFacts::collect()).
      * @param list<array<string, mixed>>       $mediaFacts Resolved image facts, in outline order.
      * @param string                           $requestId  The request; node ids derive from it.
-     * @return array{refusal?: array<string, mixed>, preview: array<string, mixed>, preview_digest: string, base_fingerprint: string, tree: array<mixed>, doc: NativeDocument|null, title: string, builder_facts?: array{block_theme: bool, page_frame: string|null}}
+     * @return array{refusal?: array<string, mixed>, preview: array<string, mixed>, preview_digest: string, base_fingerprint: string, tree: array<mixed>, doc: NativeDocument|null, title: string, builder_facts?: array{block_theme: bool, page_frame: string|null, active_breakpoints?: list<string>|null}}
      */
     public static function precheck(array $spec, BuilderAdapter $a, array $facts, array $mediaFacts, string $requestId): array
     {
@@ -305,8 +308,31 @@ final class BuilderPageCreate
             'tree'             => $doc->tree,
             'doc'              => $doc,
             'title'            => $storedTitle,
-            'builder_facts'    => ['block_theme' => $blockTheme, 'page_frame' => $frame],
+            'builder_facts'    => self::builderFacts($spec, $a, $blockTheme, $frame),
         ];
+    }
+
+    /**
+     * The facts the precheck answers beside the preview: the theme fact and
+     * the page frame it resolved, and for an outline version 3 the active
+     * breakpoints its tree was compiled for (ElementorAdapter::activeBreakpoints(),
+     * the value the compile read), which with the input, the resolved images
+     * and the request id are everything that tree is a function of.
+     *
+     * @param array<string, mixed> $spec       The page-create spec.
+     * @param ElementorAdapter     $a          The adapter that built the tree.
+     * @param bool                 $blockTheme Whether the site's theme is a block theme.
+     * @param string|null          $frame      The resolved page frame, null before outline version 3.
+     * @return array{block_theme: bool, page_frame: string|null, active_breakpoints?: list<string>|null}
+     */
+    private static function builderFacts(array $spec, ElementorAdapter $a, bool $blockTheme, ?string $frame): array
+    {
+        $facts = ['block_theme' => $blockTheme, 'page_frame' => $frame];
+        if (($spec['outline_version'] ?? null) === OutlineV3Schema::VERSION) {
+            $facts['active_breakpoints'] = $a->activeBreakpoints();
+        }
+
+        return $facts;
     }
 
     /**

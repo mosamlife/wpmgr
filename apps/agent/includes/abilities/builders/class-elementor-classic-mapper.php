@@ -111,7 +111,7 @@ final class ElementorClassicMapper
             'background_background'         => 'enum:classic',
             'background_color'              => 'colour',
             'background_image'              => 'image',
-            'background_position'           => 'enum:center center',
+            'background_position'           => 'enum:center center|top center|bottom center',
             'background_size'               => 'enum:cover',
             'background_repeat'             => 'enum:no-repeat',
             'background_overlay_background' => 'enum:classic',
