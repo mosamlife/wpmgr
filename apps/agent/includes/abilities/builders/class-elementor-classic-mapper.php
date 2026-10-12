@@ -507,6 +507,12 @@ final class ElementorClassicMapper
      * fields' current text appears under from_the_site, with character
      * references decoded.
      *
+     * A container whose Navigator label names a WPMgr pattern is a pattern
+     * node while its subtree is the shape the compiler builds
+     * (ElementorPatternReader): it carries its variant and offers its items'
+     * text by path, and an item pattern's children are not walked. When the
+     * subtree is any other shape the node is locked (LABEL_PATTERN_EDITED).
+     *
      * @param array<mixed> $tree Decoded stored tree.
      * @return Projection
      * @throws \InvalidArgumentException When an element is not an object or has no usable, unique id.
