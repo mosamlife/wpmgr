@@ -685,6 +685,21 @@ set-text-every-field render-link"
     said "  and it names the syntax" "uses syntax the harness does not read"
     not_said "  and nothing ran before the file was refused" "rt: ok   ["
   fi
+  # The page-frame probes: each fact the probes record is a fact the check holds the page to, so the opposite claim
+  # is red, and a theme or a font family the site does not have is red.
+  if pattern_case "$tmp/probes-frame-theme" "name another block theme" frame-header-footer 'p.theme = "twentytwentyfour";'; then
+    probe_expect "frame_theme_red: a probe that needs another block theme than the active one turns the real round trip red" 1 "$tmp/probes-frame-theme"
+    said "  and it names both themes" "the active theme is twentytwentyfive (a block theme), the probe needs the block theme twentytwentyfour"
+  fi
+  if pattern_case "$tmp/probes-frame-parts" "claim the theme's header is shown on the header and footer template" frame-header-footer 'p.html_has[0] = { sel: "header.wp-block-template-part" };'; then
+    probe_expect "frame_header_footer_recorded_false: the opposite of the recorded fact turns the real round trip red" 1 "$tmp/probes-frame-parts"
+    said "  and the red check is the theme's header part, on its own probe" "rt: FAIL [4.3.4 containers probe-frame-header-footer] html-has: html_has[0] header.wp-block-template-part matches 0 element(s), wanted 1"
+  fi
+  if pattern_case "$tmp/probes-frame-font" "name a font family the page never asks for" frame-google-font 'p.fonts = ["Lobster"];'; then
+    probe_expect "frame_font_red: a Google family the page does not use is not found queued" 1 "$tmp/probes-frame-font"
+    said "  and it names the family and what is queued" "font: no stylesheet for the family Lobster is queued for Google's font service (queued: "
+    said "  and the family the page does use was queued all the same" "Poppins"
+  fi
   # What it must NOT block: a probe that applies from a later release is skipped, out loud, and is not counted as run.
   if pattern_case "$tmp/probes-since" "make the nested accordion apply from a later release" pattern-accordion-nested 'p.since = "9.9.9";'; then
     probe_expect "pattern_since_skip: a probe that applies from a later release is skipped, not red" 0 "$tmp/probes-since"

@@ -682,6 +682,182 @@
           "sel": "a.elementor-button[href='https://example.com/partner'][target=_blank]"
         }
       ]
+    },
+    {
+      "name": "frame-header-footer",
+      "about": "Recorded as false: on a block theme (twentytwentyfive, no header.php or footer.php) a page on the elementor_header_footer template does not show the theme's header and footer template parts. It shows WordPress's generic fallback header (div#header, role banner) and footer (div#footer, role contentinfo). The page is held to that, so a release that starts showing the theme's parts turns this probe red and the fallback rule can be revisited.",
+      "theme": "twentytwentyfive",
+      "render": "page",
+      "page": {
+        "template": "elementor_header_footer"
+      },
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0011",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0011",
+                "elType": "widget",
+                "settings": {
+                  "title": "Frame probe heading",
+                  "header_size": "h2",
+                  "title_color": "#123456"
+                },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0011",
+          "sel": ".elementor-heading-title",
+          "media": null,
+          "decl": {
+            "color": "#123456"
+          }
+        }
+      ],
+      "html_text": [
+        "Frame probe heading"
+      ],
+      "html_has": [
+        {
+          "sel": "header.wp-block-template-part",
+          "count": 0
+        },
+        {
+          "sel": "footer.wp-block-template-part",
+          "count": 0
+        },
+        {
+          "sel": "div#header[role=banner]"
+        },
+        {
+          "sel": "div#footer[role=contentinfo]"
+        }
+      ]
+    },
+    {
+      "name": "frame-hide-title",
+      "about": "Recorded as false: on a block theme (twentytwentyfive) a page whose page settings carry hide_title yes still holds the theme's title, the heading h1.wp-block-post-title, and nothing carries the entry-title class that Elementor's default title selector (h1.entry-title) hides. The theme's header template part is shown on this template, which is the control that the selectors below can match. The page is held to that, so a release that changes the title markup or the selector turns this probe red.",
+      "theme": "twentytwentyfive",
+      "render": "page",
+      "page": {
+        "template": "",
+        "settings": {
+          "hide_title": "yes"
+        }
+      },
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0012",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0012",
+                "elType": "widget",
+                "settings": {
+                  "title": "Frame probe heading",
+                  "header_size": "h2",
+                  "title_color": "#123456"
+                },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0012",
+          "sel": ".elementor-heading-title",
+          "media": null,
+          "decl": {
+            "color": "#123456"
+          }
+        }
+      ],
+      "html_text": [
+        "Frame probe heading"
+      ],
+      "html_has": [
+        {
+          "sel": "header.wp-block-template-part"
+        },
+        {
+          "sel": "h1.wp-block-post-title"
+        },
+        {
+          "sel": "h1.entry-title",
+          "count": 0
+        },
+        {
+          "sel": ".entry-title",
+          "count": 0
+        }
+      ]
+    },
+    {
+      "name": "frame-google-font",
+      "about": "A Google family set only in a widget's typography (typography_typography custom, typography_font_family) and nowhere in the kit is queued for Google's font service when the post's stylesheet is enqueued as the front end enqueues it, and the heading's font-family declares it.",
+      "theme": "twentytwentyfive",
+      "fonts": [
+        "Poppins"
+      ],
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0013",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0013",
+                "elType": "widget",
+                "settings": {
+                  "title": "Frame probe heading",
+                  "header_size": "h2",
+                  "title_color": "#123456",
+                  "typography_typography": "custom",
+                  "typography_font_family": "Poppins"
+                },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0013",
+          "sel": ".elementor-heading-title",
+          "media": null,
+          "any": [
+            {
+              "font-family": "\"Poppins\", Sans-serif"
+            },
+            {
+              "font-family": "Poppins, Sans-serif"
+            }
+          ]
+        }
+      ],
+      "html_text": [
+        "Frame probe heading"
+      ]
     }
   ]
 }

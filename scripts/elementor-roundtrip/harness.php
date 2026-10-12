@@ -2538,7 +2538,9 @@ function rt_probe_phase(array $probes, string $layout, string $stored, int $prin
             // Authoring aid, not a check: dump=<probe> prints the stored tree and the page a probe rendered.
             if (($GLOBALS['rtArgs']['dump'] ?? '') === $probe['name']) {
                 rt_out('dump-stored ' . (string) json_encode($decoded, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
-                foreach (explode("\n", substr((string) $html, 0, 20000)) as $dumped) {
+                // A whole page is dumped from its body, since the head holds the scripts and styles of the site.
+                $from = strpos((string) $html, '<body');
+                foreach (explode("\n", substr($from === false ? (string) $html : substr((string) $html, $from), 0, 20000)) as $dumped) {
                     rt_out('dump ' . $dumped);
                 }
             }
