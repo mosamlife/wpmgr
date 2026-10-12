@@ -137,12 +137,12 @@ export function OutlineNodeView({ node, media, siteHost, siteUrl }: OutlineNodeV
 }
 
 /** The AI's or the site's words, isolated so odd text direction cannot reorder what is around it. */
-function Txt({ children, className }: { children: ReactNode; className?: string }) {
+export function Txt({ children, className }: { children: ReactNode; className?: string }) {
   return <bdi className={className}>{children}</bdi>;
 }
 
 /** One of our words: small and muted. */
-function Label({ children }: { children: ReactNode }) {
+export function Label({ children }: { children: ReactNode }) {
   return <span className="text-xs font-medium text-muted-foreground">{children}</span>;
 }
 

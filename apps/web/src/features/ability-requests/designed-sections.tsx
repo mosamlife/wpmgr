@@ -9,11 +9,13 @@ import {
 } from "./design-model";
 import { OutlineNodeView } from "./layout-preview";
 import { imageSizeLabel, type DesignedPagePreview, type PageMediaFact, type SectionNode } from "./outline-model";
+import { PatternBody } from "./pattern-body";
 
 // The sections of a designed page (outline version 3), in page order: the swatch
 // of the tone each one is written in, its #anchor, its settings in words, a
 // miniature of its background image, what it holds, and its patterns by name
-// and variant. Everything is a React text node. The only values that reach a
+// and variant, each with the words and pictures it holds (PatternBody).
+// Everything is a React text node. The only values that reach a
 // style are the tone's colour (a closed "#" and six hex digits, checked again
 // by toneSwatch) and numbers the card works out. The miniature is drawn from
 // the image's size, the overlay and the focal point; it never loads the site's
@@ -91,12 +93,15 @@ function SectionView({ section, preview, siteHost, siteUrl }: SectionViewProps) 
       <div className="space-y-2">
         {section.children.map((child, i) =>
           child.type === "pattern" ? (
-            <p key={i}>
-              <span className="text-xs font-medium text-muted-foreground">Pattern</span>{" "}
-              <span data-testid="section-pattern" className="font-medium">
-                {patternWords(child)}
-              </span>
-            </p>
+            <div key={i}>
+              <p>
+                <span className="text-xs font-medium text-muted-foreground">Pattern</span>{" "}
+                <span data-testid="section-pattern" className="font-medium">
+                  {patternWords(child)}
+                </span>
+              </p>
+              <PatternBody pattern={child} media={preview.media} siteHost={siteHost} siteUrl={siteUrl} />
+            </div>
           ) : (
             <OutlineNodeView key={i} node={child} media={preview.media} siteHost={siteHost} siteUrl={siteUrl} />
           ),

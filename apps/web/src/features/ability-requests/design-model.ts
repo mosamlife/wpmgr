@@ -2,6 +2,7 @@ import {
   DESIGN_COLOUR_ROLES,
   type PageDesign,
   type PageFrame,
+  type PATTERN_ICONS,
   type PatternNode,
   type SectionNode,
 } from "./outline-model";
@@ -285,6 +286,22 @@ const PATTERN_NAMES: Record<PatternNode["pattern"], string> = {
 /** A pattern by our name for it and its variant: "Pricing · three plans". Both come from closed lists. */
 export function patternWords(pattern: Pick<PatternNode, "pattern" | "variant">): string {
   return `${PATTERN_NAMES[pattern.pattern]} · ${pattern.variant.replace(/-/g, " ")}`;
+}
+
+// --- What a pattern holds
+
+/** A features item's icon in words: a name of the closed icon list with its hyphen read as a space ("credit-card" reads "credit card"). */
+export function iconWords(icon: (typeof PATTERN_ICONS)[number]): string {
+  return icon.replace(/-/g, " ");
+}
+
+/**
+ * The style of a plan's button: the highlighted plan's is filled and every
+ * other plan's is an outline (ElementorPatternCards, the plan card), whatever
+ * the AI wrote, since the plan's button names no style.
+ */
+export function planButtonStyle(plan: { readonly highlighted?: boolean }): "fill" | "outline" {
+  return plan.highlighted === true ? "fill" : "outline";
 }
 
 /** The miniature of a background is this high, in pixels, and as wide as the image's proportions allow. */

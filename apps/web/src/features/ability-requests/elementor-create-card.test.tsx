@@ -15,6 +15,7 @@ import {
 } from "@/test/ability-request-rows";
 
 import { AiEditingSection } from "./ai-editing-section";
+import { PATTERN_ITEM_CAPS } from "./outline-model";
 
 // The approval card for a page Elementor builds (the create card), on the
 // site's Content tab: rendered through the real router, the real QueryClient
@@ -923,6 +924,340 @@ describe("the sections of a designed page", () => {
     expect(card).toHaveTextContent("Links to #pricing");
     expect(card.querySelector("[data-chip='section']")).toHaveTextContent("A section of this page");
     expect(card.querySelector("a[href='#pricing']")).toBeNull();
+  });
+});
+
+// --- the bodies of the patterns of a designed page --------------------------------
+//
+// A pattern is shown by its name and variant and by what it holds, so the person
+// approving reads every word the page will carry: a hero's and a call to action's
+// heading, text and buttons (a hero's picture by its file name), each feature's
+// icon in words with its title and text, each counter's value, suffix and label,
+// each logo's file name, each testimonial's quote, name and role, each plan's
+// name, price, period, features and button, and each question with its answer.
+// The AI's words are in a bidi isolate and are never markup; the small labels
+// are ours.
+
+type Items = Array<Record<string, unknown>>;
+
+/** A pending designed page built from one shared case, each image as the site described it. */
+function patternRow(name: string, change?: (doc: Doc) => void, files: Record<number, MediaOver> = {}): AbilityRequest {
+  const input = designedInput(name, change);
+  const media = imageIdsOf(input).map((id) => mediaFact(id, files[id] ?? {}));
+  return designedRow(input, { page_media: media });
+}
+
+describe("the bodies of the patterns of a designed page", () => {
+  const sectionOf = (card: HTMLElement, anchor: string): HTMLElement => {
+    const found = within(card)
+      .getAllByTestId("design-section")
+      .find((li) => within(li).getByTestId("section-anchor").textContent === `#${anchor}`);
+    if (found === undefined) throw new Error(`the card shows no section #${anchor}`);
+    return found;
+  };
+  const bodyOf = (card: HTMLElement, anchor: string) => within(sectionOf(card, anchor)).getByTestId("pattern-body");
+  const textOf = (parent: HTMLElement, id: string) => within(parent).getByTestId(id).textContent;
+  const textsOf = (parent: HTMLElement, id: string) => within(parent).getAllByTestId(id).map((el) => el.textContent);
+  /** True when every element that holds exactly `text` sits in a bidi isolate (and there is one). */
+  const fenced = (parent: HTMLElement, text: string) => {
+    const found = within(parent).getAllByText(text);
+    return found.length > 0 && found.every((el) => el.closest("bdi") !== null);
+  };
+  const patternOf = (doc: Doc, name: string) => {
+    const found = sectionDocs(doc)
+      .flatMap((s) => s.children)
+      .find((c) => c.pattern === name);
+    if (found === undefined) throw new Error(`the page has no ${name} pattern`);
+    return found;
+  };
+  const itemsOf = (doc: Doc, name: string, key: string) => patternOf(doc, name)[key] as Items;
+
+  it("shows a pattern's body beside its name, in the section that holds it", async () => {
+    renderTab([patternRow("v3-full-landing-page")]);
+    const card = await openCard();
+    for (const li of within(card).getAllByTestId("design-section")) {
+      const line = within(li).getByTestId("section-pattern");
+      const body = within(li).getByTestId("pattern-body");
+      expect(body.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    }
+    expect(within(card).getAllByTestId("pattern-body").map((el) => el.getAttribute("data-pattern"))).toEqual([
+      "hero",
+      "logos",
+      "features",
+      "stats",
+      "testimonials",
+      "pricing",
+      "faq",
+      "cta",
+    ]);
+  });
+
+  it("shows a hero's heading, text, buttons and the file name of its picture, in that order", async () => {
+    renderTab([patternRow("patterns-at-their-smallest-counts", undefined, { 42: { filename: "team-at-work.png", mime: "image/png" } })]);
+    const card = await openCard();
+    const hero = bodyOf(card, "top");
+    expect(hero.textContent).toMatch(
+      /Heading 1.*Websites that earn their keep.*Paragraph.*Lead\..*Button · Filled.*"Start".*Links to \/start.*Image.*team-at-work\.png/s,
+    );
+    expect(fenced(hero, "Websites that earn their keep")).toBe(true);
+    expect(fenced(hero, "Lead.")).toBe(true);
+    expect(fenced(hero, '"Start"')).toBe(true);
+    expect(fenced(hero, "team-at-work.png")).toBe(true);
+    expect(fenced(hero, '"The team at work"')).toBe(true);
+  });
+
+  it("shows a call to action's heading, text and buttons, each button in its own style", async () => {
+    renderTab([patternRow("v3-full-landing-page")]);
+    const card = await openCard();
+    const cta = bodyOf(card, "signup");
+    expect(within(cta).getByText("Heading 2")).toBeInTheDocument();
+    expect(fenced(cta, "Ready when you are")).toBe(true);
+    expect(fenced(cta, "Start a trial today and keep everything if you stay.")).toBe(true);
+    expect(within(cta).getAllByText(/^Button · /).map((el) => el.textContent)).toEqual(["Button · Filled", "Button · Text"]);
+    expect(fenced(cta, '"Start free"')).toBe(true);
+    expect(fenced(cta, '"Book a call"')).toBe(true);
+    expect(cta).toHaveTextContent("Links to /signup");
+    expect(cta).toHaveTextContent("Links to https://example.com/call");
+  });
+
+  it("shows each feature's icon in words, its title and its text", async () => {
+    renderTab([
+      patternRow("v3-full-landing-page", (d) => {
+        itemsOf(d, "features", "features")[0]!.icon = "credit-card";
+        itemsOf(d, "features", "features")[1]!.icon = "map-pin";
+      }),
+    ]);
+    const card = await openCard();
+    const features = bodyOf(card, "features");
+    expect(within(features).getByRole("list", { name: "Features" })).toBeInTheDocument();
+    expect(textsOf(features, "feature-icon")).toEqual(["credit card", "map pin", "chart", "users", "rocket", "globe"]);
+    const titles = ["Fast setup", "Safe by default", "Clear numbers", "Built for teams", "Quick launches", "Many languages"];
+    const texts = [
+      "Go live in an afternoon, not a quarter.",
+      "Every change is reviewed before it goes out.",
+      "See what each page earns, week by week.",
+      "Share access without sharing passwords.",
+      "Ship a new page the day the idea lands.",
+      "Reach customers in the language they read.",
+    ];
+    expect(textsOf(features, "feature-title")).toEqual(titles);
+    expect(textsOf(features, "feature-text")).toEqual(texts);
+    for (const t of [...titles, ...texts]) expect(fenced(features, t)).toBe(true);
+  });
+
+  it("shows each counter's value, suffix and label, and a value of zero with no suffix", async () => {
+    renderTab([
+      patternRow("v3-full-landing-page", (d) => {
+        itemsOf(d, "stats", "stats")[2] = { value: 0, label: "open issues" };
+      }),
+    ]);
+    const card = await openCard();
+    const stats = bodyOf(card, "numbers");
+    expect(within(stats).getByRole("list", { name: "Stats" })).toBeInTheDocument();
+    expect(textsOf(stats, "stat-value")).toEqual(["1200+", "98%", "0"]);
+    expect(textsOf(stats, "stat-label")).toEqual(["sites launched", "would recommend us", "open issues"]);
+    const suffixes = within(stats).getAllByTestId("stat-value").map((el) => el.querySelector("bdi")?.textContent ?? null);
+    expect(suffixes).toEqual(["+", "%", null]);
+    expect(fenced(stats, "sites launched")).toBe(true);
+  });
+
+  it("shows each logo by the file name the site reported, with the alt text saved with it", async () => {
+    const names = ["acme.png", "birchwood.png", "cobalt.png", "dunmore.png", "everly.png", "fernhill.png"];
+    const files = Object.fromEntries(names.map((filename, i) => [101 + i, { filename, mime: "image/png" } as const]));
+    renderTab([patternRow("v3-full-landing-page", undefined, files)]);
+    const card = await openCard();
+    const logos = bodyOf(card, "clients");
+    expect(within(logos).getByRole("list", { name: "Logos" })).toBeInTheDocument();
+    expect(textsOf(logos, "logo-file")).toEqual(names);
+    expect(within(logos).getAllByText("Alt text (from the media library):")).toHaveLength(names.length);
+    for (const n of names) expect(fenced(logos, n)).toBe(true);
+    expect(fenced(logos, '"Acme logo"')).toBe(true);
+    expect(fenced(logos, '"Fernhill logo"')).toBe(true);
+  });
+
+  it("shows each testimonial's quote, name, role and picture", async () => {
+    renderTab([
+      patternRow("v3-full-landing-page", undefined, { 201: { filename: "dana.jpg" }, 202: { filename: "marcus.jpg" }, 203: { filename: "priya.jpg" } }),
+    ]);
+    const card = await openCard();
+    const body = bodyOf(card, "stories");
+    expect(within(body).getByRole("list", { name: "Testimonials" })).toBeInTheDocument();
+    expect(textsOf(body, "testimonial-quote")).toEqual([
+      '"The new site paid for itself in a month."',
+      '"Updates that used to take a week now take an hour."',
+      '"Our bookings doubled after the relaunch."',
+    ]);
+    expect(textsOf(body, "testimonial-name")).toEqual(["Dana Whitfield", "Marcus Lee", "Priya Nair"]);
+    expect(textsOf(body, "testimonial-role")).toEqual(["Owner, Whitfield Bakery", "Operations lead", "Director, Nair Dental"]);
+    expect(textsOf(body, "testimonial-picture")).toEqual(["dana.jpg", "marcus.jpg", "priya.jpg"]);
+    expect(fenced(body, '"Our bookings doubled after the relaunch."')).toBe(true);
+    expect(fenced(body, "Director, Nair Dental")).toBe(true);
+  });
+
+  it("leaves out the role and the picture a testimonial does not have", async () => {
+    renderTab([
+      patternRow("v3-full-landing-page", (d) => {
+        const second = itemsOf(d, "testimonials", "testimonials")[1]!;
+        delete second.role;
+        delete second.attachment_id;
+      }),
+    ]);
+    const card = await openCard();
+    const items = within(bodyOf(card, "stories")).getAllByTestId("testimonial-item");
+    expect(items).toHaveLength(3);
+    expect(items[1]).toHaveTextContent("Marcus Lee");
+    expect(items[1]).not.toHaveTextContent("undefined");
+    expect(within(items[1]!).queryByTestId("testimonial-role")).toBeNull();
+    expect(within(items[1]!).queryByTestId("testimonial-picture")).toBeNull();
+    expect(textOf(items[0]!, "testimonial-role")).toBe("Owner, Whitfield Bakery");
+    expect(textOf(items[2]!, "testimonial-picture")).toBe("photo-203.jpg");
+  });
+
+  it("shows each plan's name, price, period, features and button, the highlighted plan's button filled", async () => {
+    renderTab([patternRow("v3-full-landing-page")]);
+    const card = await openCard();
+    const pricing = bodyOf(card, "pricing");
+    expect(within(pricing).getByRole("list", { name: "Plans" })).toBeInTheDocument();
+    const plans = within(pricing).getAllByTestId("plan-item");
+    expect(plans.map((li) => textOf(li, "plan-name"))).toEqual(["Starter", "Team", "Business"]);
+    expect(plans.map((li) => textOf(li, "plan-price"))).toEqual(["19", "49", "99"]);
+    expect(plans.map((li) => textOf(li, "plan-period"))).toEqual(["month", "month", "month"]);
+    expect(plans.map((li) => textsOf(li, "plan-feature"))).toEqual([
+      ["1 site", "Email support"],
+      ["5 sites", "Priority support", "Weekly reports"],
+      ["25 sites", "Phone support", "Daily reports"],
+    ]);
+    expect(plans.map((li) => within(li).queryByTestId("plan-highlighted") !== null)).toEqual([false, true, false]);
+    expect(plans.map((li) => within(li).getByText(/^Button · /).textContent)).toEqual([
+      "Button · Outline",
+      "Button · Filled",
+      "Button · Outline",
+    ]);
+    expect(plans.map((li) => within(li).getByText(/^"Choose /).textContent)).toEqual([
+      '"Choose Starter"',
+      '"Choose Team"',
+      '"Choose Business"',
+    ]);
+    for (const li of plans) {
+      expect(li).toHaveTextContent("Links to #signup");
+      expect(li.querySelector("[data-chip='section']")).toHaveTextContent("A section of this page");
+    }
+    expect(fenced(pricing, "Priority support")).toBe(true);
+    expect(fenced(pricing, "Business")).toBe(true);
+  });
+
+  it("leaves out the period a plan does not have", async () => {
+    renderTab([
+      patternRow("v3-full-landing-page", (d) => {
+        delete itemsOf(d, "pricing", "plans")[1]!.period;
+      }),
+    ]);
+    const card = await openCard();
+    const plans = within(bodyOf(card, "pricing")).getAllByTestId("plan-item");
+    expect(within(plans[1]!).queryByTestId("plan-period")).toBeNull();
+    expect(plans[1]).not.toHaveTextContent("undefined");
+    expect(textOf(plans[0]!, "plan-period")).toBe("month");
+    expect(textOf(plans[2]!, "plan-period")).toBe("month");
+  });
+
+  it("shows each question with its answer", async () => {
+    renderTab([patternRow("v3-full-landing-page")]);
+    const card = await openCard();
+    const faq = bodyOf(card, "faq");
+    expect(within(faq).getByRole("list", { name: "Questions" })).toBeInTheDocument();
+    const questions = [
+      "How long does a launch take?",
+      "Can I edit the page myself?",
+      "Do you move my old content?",
+      "What does support cover?",
+      "Can I cancel?",
+      "Is there a contract?",
+    ];
+    const answers = [
+      "Most pages are live within a week of approval.",
+      "Yes. Every page opens in the visual editor.",
+      "We copy the text and images you choose.",
+      "Fixes, updates and questions, by email or phone.",
+      "At any time, from the billing page.",
+      "No. Plans renew monthly.",
+    ];
+    expect(textsOf(faq, "faq-question")).toEqual(questions);
+    expect(textsOf(faq, "faq-answer")).toEqual(answers);
+    for (const t of [...questions, ...answers]) expect(fenced(faq, t)).toBe(true);
+  });
+
+  it.each([
+    ["features", "features", "feature-item"],
+    ["testimonials", "testimonials", "testimonial-item"],
+    ["pricing", "plans", "plan-item"],
+    ["faq", "faq", "faq-item"],
+    ["logos", "logos", "logo-item"],
+    ["stats", "stats", "stat-item"],
+  ] as const)("shows every item of the %s pattern at its largest count", async (name, key, id) => {
+    const doc = JSON.parse(designedInput("patterns-at-their-largest-counts")) as Doc;
+    const largest = PATTERN_ITEM_CAPS[key][1];
+    expect(itemsOf(doc, name, key)).toHaveLength(largest);
+    renderTab([patternRow("patterns-at-their-largest-counts")]);
+    const card = await openCard();
+    expect(within(card).getAllByTestId(id)).toHaveLength(largest);
+  });
+
+  it("keeps every word of the AI in a pattern in a bidi isolate, never as markup", async () => {
+    const asWritten: string[] = [];
+    const betweenOurQuotes: string[] = [];
+    let n = 0;
+    /** A fresh hostile text, noted as the card is to show it. */
+    const fresh = (quotedByUs = false): string => {
+      n += 1;
+      const text = `<img src=x onerror=alert(${n})>`;
+      (quotedByUs ? betweenOurQuotes : asWritten).push(quotedByUs ? `"${text}"` : text);
+      return text;
+    };
+    renderTab([
+      patternRow("v3-full-landing-page", (d) => {
+        const hero = patternOf(d, "hero").children as Items;
+        hero[0]!.text = fresh();
+        hero[1]!.text = fresh();
+        (hero[2]!.buttons as Items)[0]!.text = fresh(true);
+        for (const l of itemsOf(d, "logos", "logos")) l.alt = fresh(true);
+        for (const f of itemsOf(d, "features", "features")) {
+          f.title = fresh();
+          f.text = fresh();
+        }
+        for (const s of itemsOf(d, "stats", "stats")) {
+          s.suffix = fresh();
+          s.label = fresh();
+        }
+        for (const t of itemsOf(d, "testimonials", "testimonials")) {
+          t.quote = fresh(true);
+          t.name = fresh();
+          t.role = fresh();
+        }
+        for (const p of itemsOf(d, "pricing", "plans")) {
+          p.name = fresh();
+          p.price = fresh();
+          p.period = fresh();
+          const features = p.features as string[];
+          features.forEach((_, j) => (features[j] = fresh()));
+          (p.cta as Record<string, unknown>).text = fresh(true);
+        }
+        for (const q of itemsOf(d, "faq", "faq")) {
+          q.question = fresh();
+          q.answer = fresh();
+        }
+        const cta = patternOf(d, "cta").children as Items;
+        cta[0]!.text = fresh();
+        cta[1]!.text = fresh();
+        (cta[2]!.buttons as Items)[0]!.text = fresh(true);
+      }),
+    ]);
+    const card = await openCard();
+    expect(asWritten.length).toBeGreaterThan(0);
+    expect(betweenOurQuotes.length).toBeGreaterThan(0);
+    for (const text of [...asWritten, ...betweenOurQuotes]) {
+      expect(fenced(card, text), text).toBe(true);
+    }
+    expect(card.querySelector("img")).toBeNull();
   });
 });
 

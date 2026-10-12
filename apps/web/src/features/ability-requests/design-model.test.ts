@@ -5,7 +5,9 @@ import {
   cornersWords,
   fontWords,
   frameWords,
+  iconWords,
   patternWords,
+  planButtonStyle,
   sectionFacts,
   sectionTone,
   spacingWords,
@@ -14,7 +16,14 @@ import {
   toneSwatch,
   typeRamp,
 } from "./design-model";
-import { DESIGN_COLOUR_ROLES, PAGE_FRAMES, SCALE_RATIOS, type PageDesign, type SectionNode } from "./outline-model";
+import {
+  DESIGN_COLOUR_ROLES,
+  PAGE_FRAMES,
+  PATTERN_ICONS,
+  SCALE_RATIOS,
+  type PageDesign,
+  type SectionNode,
+} from "./outline-model";
 
 // The card draws the sizes the agent writes. This table is the agent's own
 // output: DesignTokens::typography() (apps/agent/includes/abilities/builders/
@@ -260,6 +269,29 @@ describe("the miniature of a background", () => {
   });
 });
 
+describe("the words for the bodies of the patterns", () => {
+  it.each([
+    ["bolt", "bolt"],
+    ["arrow-right", "arrow right"],
+    ["credit-card", "credit card"],
+    ["map-pin", "map pin"],
+  ] as const)("the icon %s reads %s", (icon, words) => {
+    expect(iconWords(icon)).toBe(words);
+  });
+
+  it("writes every icon of the closed list as its own plain lower case words", () => {
+    const words = PATTERN_ICONS.map(iconWords);
+    expect(new Set(words).size).toBe(PATTERN_ICONS.length);
+    for (const w of words) expect(w).toMatch(/^[a-z]+( [a-z]+)*$/);
+  });
+
+  it("gives the highlighted plan a filled button and every other plan an outline one", () => {
+    expect(planButtonStyle({ highlighted: true })).toBe("fill");
+    expect(planButtonStyle({ highlighted: false })).toBe("outline");
+    expect(planButtonStyle({})).toBe("outline");
+  });
+});
+
 describe("the words for sections", () => {
   it("hold no en dash and no em dash", () => {
     const words = [
@@ -274,6 +306,7 @@ describe("the words for sections", () => {
       patternWords({ pattern: "pricing", variant: "three-plans" }),
       patternWords({ pattern: "cta", variant: "band" }),
       patternWords({ pattern: "faq", variant: "accordion" }),
+      ...PATTERN_ICONS.map(iconWords),
     ];
     const dashes = new RegExp(`[${String.fromCharCode(0x2013)}${String.fromCharCode(0x2014)}]`);
     for (const w of words) expect(w).not.toMatch(dashes);
