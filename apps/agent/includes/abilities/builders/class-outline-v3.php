@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Abilities\Builders;
 
 use WPMgr\Agent\Abilities\PageCreateBuilder;
+use WPMgr\Agent\Support\ArrayShape;
 
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
@@ -130,7 +131,7 @@ final class OutlineV3
      */
     public static function validate($outline, int $titleChars = 0): array
     {
-        if (!is_array($outline) || $outline === [] || !array_is_list($outline)) {
+        if (!is_array($outline) || $outline === [] || !ArrayShape::isList($outline)) {
             return self::refuse('bad_input', 'input', 'outline', 'must be a list of 1 to ' . OutlineV3Schema::MAX_SECTIONS . ' sections');
         }
         if (count($outline) > OutlineV3Schema::MAX_SECTIONS) {
@@ -204,7 +205,7 @@ final class OutlineV3
         }
 
         $children = $n['children'];
-        if (!is_array($children) || !array_is_list($children)) {
+        if (!is_array($children) || !ArrayShape::isList($children)) {
             return self::refuse('bad_input', $at, 'children', 'must be a list of blocks');
         }
         if ($children === [] || count($children) > OutlineV3Schema::MAX_SECTION_CHILDREN) {
@@ -349,7 +350,7 @@ final class OutlineV3
      */
     private static function composed(string $name, string $variant, $kids, string $at, array &$ctx, int &$heroes): array
     {
-        if (!is_array($kids) || !array_is_list($kids)) {
+        if (!is_array($kids) || !ArrayShape::isList($kids)) {
             return self::refuse('bad_input', $at, 'children', 'must be a list of blocks', [], $name);
         }
         $max = $name === 'hero' ? OutlineV3Schema::MAX_HERO_CHILDREN : OutlineV3Schema::MAX_CTA_CHILDREN;
@@ -390,7 +391,7 @@ final class OutlineV3
      */
     private static function itemsOf(string $name, string $array, string $variant, $items, string $at, array &$ctx): array
     {
-        if (!is_array($items) || !array_is_list($items)) {
+        if (!is_array($items) || !ArrayShape::isList($items)) {
             return self::refuse('bad_input', $at, $array, 'must be a list of items', [], $name);
         }
         [$min, $max] = OutlineV3Schema::ITEM_CAPS[$array];
@@ -559,7 +560,7 @@ final class OutlineV3
      */
     private static function lines($v, string $at, string $field, string $pattern, array &$ctx): array
     {
-        if (!is_array($v) || !array_is_list($v)) {
+        if (!is_array($v) || !ArrayShape::isList($v)) {
             return self::refuse('bad_input', $at, $field, 'must be a list of short lines', [], $pattern);
         }
         if ($v === [] || count($v) > OutlineV3Schema::MAX_PLAN_FEATURES) {
