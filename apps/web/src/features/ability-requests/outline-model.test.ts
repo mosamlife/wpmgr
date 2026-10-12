@@ -6,6 +6,7 @@ import {
   DESIGNED_LIMITS,
   OUTLINE_LIMITS,
   PATTERN_ICONS,
+  SCALE_RATIOS,
   buttonLabel,
   buttonsLabel,
   classifyLink,
@@ -20,6 +21,7 @@ import {
   parseDesignedPagePreview,
   parseLink,
   parsePagePreview,
+  readInput,
   spacerLabel,
   tableLabel,
   usesLayout,
@@ -605,6 +607,7 @@ describe("a page Elementor builds", () => {
 // control plane read is read here from the agent's fixture path, never copied.
 
 const V3_CASES_FILE = join(process.cwd(), "..", "agent", "tests", "fixtures", "ability-run", "page-create-v3-cases.json");
+const CREATE_SCHEMA_FILE = join(process.cwd(), "..", "agent", "tests", "fixtures", "ability-run", "page-create-schema.json");
 
 interface V3Case extends SharedCase {
   rule: string;
@@ -682,6 +685,10 @@ describe("a designed page: the card accepts exactly what the control plane accep
       "icon-not-in-the-list",
       "images-21-counting-backgrounds",
       "landing-page-over-the-input-limit",
+      "two-heroes",
+      "two-heroes-the-first-out-of-place",
+      "design-ratio-as-a-number",
+      "design-ratio-unknown-name",
     ]) {
       expect(names.has(probe), probe).toBe(true);
     }
@@ -694,6 +701,25 @@ describe("a designed page: the card accepts exactly what the control plane accep
   it("the card's icon list is the table's icon list", () => {
     expect([...PATTERN_ICONS]).toEqual(icons);
   });
+
+  it("the card's ratio names are the agent's page-create schema's", () => {
+    const schema = JSON.parse(readFileSync(CREATE_SCHEMA_FILE, "utf8")) as {
+      properties: { design: { properties: { scale: { properties: { ratio: { type: string; enum: string[] } } } } } };
+    };
+    const ratio = schema.properties.design.properties.scale.properties.ratio;
+    expect(ratio.type).toBe("string");
+    expect([...SCALE_RATIOS]).toEqual(ratio.enum);
+  });
+
+  it.each(["design-ratio-as-a-number", "design-ratio-unknown-name"])(
+    "%s is refused for its ratio alone: with a ratio name in its place the card shows it",
+    (name) => {
+      const doc = v3Doc(name);
+      expect(showDoc(doc)).toBeNull();
+      asDoc(asDoc(doc.design).scale).ratio = "major_third";
+      expect(showDoc(doc)).not.toBeNull();
+    },
+  );
 
   it("the version 2 reader shows none of them, so a designed page is never shown in part by it", () => {
     const shown = cases
@@ -721,7 +747,7 @@ describe("a designed page as data", () => {
     expect(shown?.title).toBe(doc.title);
     expect(shown?.pageFrame).toBe("full_width");
     expect(shown?.design.colors).toEqual(asDoc(doc.design).colors);
-    expect(shown?.design.scale).toEqual({ base_px: 17, ratio: 1.25 });
+    expect(shown?.design.scale).toEqual({ base_px: 17, ratio: "major_third" });
     expect(shown?.sections.map((s) => s.anchor)).toEqual(sectionsOf(doc).map((s) => s.anchor));
     expect((shown?.sections.length ?? 0) > 5).toBe(true);
     expect(shown?.builder.layout).toBe("containers");
@@ -802,11 +828,20 @@ describe("a designed page as data", () => {
       ["a base size of 20", (d) => { asDoc(design(d).scale).base_px = 20; }, true],
       ["a base size of 21", (d) => { asDoc(design(d).scale).base_px = 21; }, false],
       ["a base size sent as text", (d) => { asDoc(design(d).scale).base_px = "17"; }, false],
-      ["a ratio of 1.124", (d) => { asDoc(design(d).scale).ratio = 1.124; }, false],
-      ["a ratio of 1.125", (d) => { asDoc(design(d).scale).ratio = 1.125; }, true],
-      ["a ratio of 1.333", (d) => { asDoc(design(d).scale).ratio = 1.333; }, true],
-      ["a ratio of 1.334", (d) => { asDoc(design(d).scale).ratio = 1.334; }, false],
-      ["a ratio sent as text", (d) => { asDoc(design(d).scale).ratio = "1.25"; }, false],
+      ["the ratio major_second", (d) => { asDoc(design(d).scale).ratio = "major_second"; }, true],
+      ["the ratio minor_third", (d) => { asDoc(design(d).scale).ratio = "minor_third"; }, true],
+      ["the ratio major_third", (d) => { asDoc(design(d).scale).ratio = "major_third"; }, true],
+      ["the ratio perfect_fourth", (d) => { asDoc(design(d).scale).ratio = "perfect_fourth"; }, true],
+      ["a ratio name the list does not hold", (d) => { asDoc(design(d).scale).ratio = "golden"; }, false],
+      ["a ratio name in capitals", (d) => { asDoc(design(d).scale).ratio = "MAJOR_THIRD"; }, false],
+      ["a ratio name with a line feed at the end", (d) => { asDoc(design(d).scale).ratio = "major_third\n"; }, false],
+      ["a ratio name with a space before it", (d) => { asDoc(design(d).scale).ratio = " major_third"; }, false],
+      ["an empty ratio", (d) => { asDoc(design(d).scale).ratio = ""; }, false],
+      ["a ratio that is a fraction", (d) => { asDoc(design(d).scale).ratio = 1.25; }, false],
+      ["a ratio that is the whole number 1", (d) => { asDoc(design(d).scale).ratio = 1; }, false],
+      ["a ratio sent as the text of its number", (d) => { asDoc(design(d).scale).ratio = "1.25"; }, false],
+      ["a ratio that is null", (d) => { asDoc(design(d).scale).ratio = null; }, false],
+      ["a ratio left out", (d) => { delete asDoc(design(d).scale).ratio; }, false],
       ["radius none", (d) => { design(d).radius = "none"; }, true],
       ["radius lg", (d) => { design(d).radius = "lg"; }, true],
       ["radius xl", (d) => { design(d).radius = "xl"; }, false],
@@ -832,8 +867,9 @@ describe("a designed page as data", () => {
   describe("whole numbers", () => {
     const base = () => v3InputOf(v3Case("v3-full-landing-page"));
 
-    it("lets the type ratio be fractional, as it is", () => {
-      expect(base()).toContain('"ratio":1.25');
+    it("holds the type ratio as a name, so the whole input has no number with a fraction", () => {
+      expect(base()).toContain('"ratio":"major_third"');
+      expect(readInput(base())).not.toBeUndefined();
       expect(designed(base())).not.toBeNull();
     });
     it.each([
@@ -843,10 +879,39 @@ describe("a designed page as data", () => {
       ['"attachment_id":42', '"attachment_id":42.0'],
       ['"attachment_id":42', '"attachment_id":4.2e1'],
       ['"value":1200', '"value":1200.0'],
-      ['"ratio":1.25', '"ratio":1.25,"base_px":17.0'],
+      ['"ratio":"major_third"', '"ratio":1.25'],
+      ['"ratio":"major_third"', '"ratio":1.0'],
+      ['"ratio":"major_third"', '"ratio":1'],
     ])("refuses %s written as %s", (from, to) => {
       expect(base()).toContain(from);
       expect(designed(base().replace(from, to))).toBeNull();
+    });
+
+    it("reads no number with a fraction or an exponent at any key, the ratio's included", () => {
+      for (const text of [
+        '{"design":{"scale":{"ratio":1.25}}}',
+        '{"ratio":1.0}',
+        '{"ratio":1e0}',
+        '{ "ratio" : 1.25 }',
+        '{"a":{"b":[0,1.5]}}',
+        "[-0.5]",
+      ]) {
+        expect(readInput(text), text).toBeUndefined();
+      }
+    });
+
+    it("gives no key an exemption, whatever a caller passes after the text", () => {
+      const withKeys = readInput as (text: string, keys: string[]) => unknown;
+      expect(withKeys('{"ratio":1.25}', ["ratio"])).toBeUndefined();
+    });
+
+    it("reads whole numbers, names, and text that only looks like a number", () => {
+      const text = '{"ratio":"major_third","n":[0,-3,42],"text":"1.25 and 2e3 and \\"ratio\\":1.5"}';
+      expect(readInput(text)).toEqual({
+        ratio: "major_third",
+        n: [0, -3, 42],
+        text: '1.25 and 2e3 and "ratio":1.5',
+      });
     });
   });
 

@@ -391,32 +391,11 @@ function elementorRefuses(n: OutlineNode): boolean {
 // --- Reading the input text -------------------------------------------------
 
 /**
- * True when `at`, the start of a number in the JSON text, is the value of one
- * of `keys`: the text before it is that key as a plain string, after a "{" or
- * a ",", then ":". A key spelled with escapes does not match.
- */
-function isValueOfKey(json: string, at: number, keys: readonly string[]): boolean {
-  let i = at - 1;
-  while (i >= 0 && /\s/.test(json.charAt(i))) i -= 1;
-  if (json.charAt(i) !== ":") return false;
-  i -= 1;
-  while (i >= 0 && /\s/.test(json.charAt(i))) i -= 1;
-  return keys.some((key) => {
-    const open = i - key.length - 1;
-    if (open < 0 || json.slice(open, i + 1) !== `"${key}"`) return false;
-    let before = open - 1;
-    while (before >= 0 && /\s/.test(json.charAt(before))) before -= 1;
-    return json.charAt(before) === "{" || json.charAt(before) === ",";
-  });
-}
-
-/**
  * True when the JSON text holds a number written with a fraction or an
  * exponent. Every number in the grammar is a whole number, and the control
  * plane refuses 42.0 as it refuses 42.5, but JSON.parse reads both as 42.
- * `fractionalKeys` names the keys whose value is allowed to be a fraction.
  */
-function hasFractionalNumber(json: string, fractionalKeys: readonly string[]): boolean {
+function hasFractionalNumber(json: string): boolean {
   let inString = false;
   for (let i = 0; i < json.length; i += 1) {
     const ch = json.charAt(i);
@@ -428,7 +407,7 @@ function hasFractionalNumber(json: string, fractionalKeys: readonly string[]): b
     } else if (ch === "-" || (ch >= "0" && ch <= "9")) {
       let end = i + 1;
       while (end < json.length && /[0-9.eE+-]/.test(json.charAt(end))) end += 1;
-      if (!/^-?(0|[1-9][0-9]*)$/.test(json.slice(i, end)) && !isValueOfKey(json, i, fractionalKeys)) return true;
+      if (!/^-?(0|[1-9][0-9]*)$/.test(json.slice(i, end))) return true;
       i = end - 1;
     }
   }
@@ -438,10 +417,10 @@ function hasFractionalNumber(json: string, fractionalKeys: readonly string[]): b
 /**
  * The input as data, or undefined for text that is not JSON the card can read
  * in full. A "__proto__" key anywhere is refused because the schema parser
- * skips that key by design, which would drop it from the screen. Numbers are
- * whole numbers, except the value of a key named in `fractionalKeys`.
+ * skips that key by design, which would drop it from the screen. Every number
+ * is a whole number: there is no key whose value may have a fraction.
  */
-export function readInput(inputJson: string, fractionalKeys: readonly string[] = []): unknown {
+export function readInput(inputJson: string): unknown {
   let hidden = false;
   let value: unknown;
   try {
@@ -452,7 +431,7 @@ export function readInput(inputJson: string, fractionalKeys: readonly string[] =
   } catch {
     return undefined;
   }
-  return hidden || hasFractionalNumber(inputJson, fractionalKeys) ? undefined : value;
+  return hidden || hasFractionalNumber(inputJson) ? undefined : value;
 }
 
 // --- The parsed preview -----------------------------------------------------
@@ -628,12 +607,18 @@ const designColours = z
 // "system" is a family name like any other here: it means "set no family".
 const fontFamily = z.string().regex(FONT_FAMILY);
 
+/**
+ * The type scale's ratio is a name, so the input holds no number with a
+ * fraction. The names are the ones the agent's page-create schema lists.
+ */
+export const SCALE_RATIOS = ["major_second", "minor_third", "major_third", "perfect_fourth"] as const;
+
 const designSchema = z.strictObject({
   colors: designColours,
   fonts: z.strictObject({ heading: fontFamily, body: fontFamily }),
   scale: z.strictObject({
     base_px: z.number().int().min(15).max(20),
-    ratio: z.number().min(1.125).max(1.333),
+    ratio: z.enum(SCALE_RATIOS),
   }),
   radius: z.enum(["none", "sm", "md", "lg"]),
   density: z.enum(["compact", "normal", "airy"]),
@@ -1018,8 +1003,7 @@ export function parseDesignedPagePreview(
   pageBuilder?: unknown,
 ): DesignedPagePreview | null {
   if (utf8Length(inputJson) > DESIGNED_LIMITS.inputBytes) return null;
-  // The type ratio is the one number of the grammar that is not a whole number.
-  const raw = readInput(inputJson, ["ratio"]);
+  const raw = readInput(inputJson);
   if (raw === undefined) return null;
   const parsed = designedInputSchema.safeParse(raw);
   if (!parsed.success) return null;
