@@ -1120,10 +1120,16 @@ describe("a designed page as data", () => {
       expect(designed(text, DESIGNED_BUILDER, [])).toBeNull();
     });
 
-    it("names a logo or an avatar by its library number, so those need no fact", () => {
+    it.each([
+      ["a section background", 42],
+      ["a logo", 101],
+      ["a testimonial avatar", 201],
+    ])("needs a fact for %s (attachment %i)", (_name, id) => {
       const text = input();
-      const onlyTheBackground = [{ id: 42, filename: "f42.jpg", mime: "image/jpeg", width: 10, height: 10 }];
-      expect(designed(text, DESIGNED_BUILDER, onlyTheBackground)).not.toBeNull();
+      const facts = factsFor(text) as Array<{ id: number }>;
+      expect(facts.some((f) => f.id === id)).toBe(true);
+      expect(designed(text, DESIGNED_BUILDER, facts)).not.toBeNull();
+      expect(designed(text, DESIGNED_BUILDER, facts.filter((f) => f.id !== id))).toBeNull();
     });
 
     it("refuses facts that are not a clean list, as a whole", () => {
@@ -1167,6 +1173,18 @@ describe("a designed page as data", () => {
       expect(showDoc(page(10, 11))).toBeNull();
       expect(showDoc(page(11, 10))).toBeNull();
       expect(showDoc(page(0, 21))).toBeNull();
+    });
+
+    it("counts a logo and a testimonial avatar among the 20 images, as a background is", () => {
+      const withBlocks = (n: number) => {
+        const doc = v3Doc("v3-full-landing-page");
+        // The page already names 1 background, 6 logos and 3 avatars: 10 images.
+        const blocks = Array.from({ length: n }, (_v, i) => ({ type: "image", attachment_id: 300 + i, alt: "a" }));
+        asList(sectionAt(doc, 2).children).push(...blocks);
+        return doc;
+      };
+      expect(showDoc(withBlocks(10))).not.toBeNull();
+      expect(showDoc(withBlocks(11))).toBeNull();
     });
 
     it("holds the buttons of a page to 12 and the tables to 10, as a version 2 page is", () => {

@@ -828,7 +828,7 @@ export type SectionNode = z.infer<typeof sectionNode>;
 interface DesignedFacts {
   anchors: string[];
   links: string[];
-  /** Attachments the card names by file: image blocks and section backgrounds. */
+  /** Every attachment the page names: image blocks, section backgrounds, logos and avatars. */
   mediaIds: number[];
   nodes: number;
   images: number;
@@ -856,6 +856,11 @@ function inspectSections(sections: readonly SectionNode[]): DesignedFacts {
     headingOnesInHero: 0,
     elementorRefuses: false,
   };
+  // An attachment counts toward the images of the page each time it is named.
+  const media = (id: number): void => {
+    f.images += 1;
+    f.mediaIds.push(id);
+  };
   const leaf = (n: DesignedLeaf, inHero: boolean): void => {
     f.nodes += 1;
     switch (n.type) {
@@ -872,8 +877,7 @@ function inspectSections(sections: readonly SectionNode[]): DesignedFacts {
         if (n.paragraphs.some((p) => ADDRESS_ONLY.test(p))) f.elementorRefuses = true;
         break;
       case "image":
-        f.images += 1;
-        f.mediaIds.push(n.attachment_id);
+        media(n.attachment_id);
         if (n.align !== undefined && n.align !== "none" && n.align !== "center") f.elementorRefuses = true;
         break;
       case "buttons":
@@ -898,10 +902,7 @@ function inspectSections(sections: readonly SectionNode[]): DesignedFacts {
   sections.forEach((section, si) => {
     f.nodes += 1;
     f.anchors.push(section.anchor);
-    if (section.background !== undefined) {
-      f.images += 1;
-      f.mediaIds.push(section.background.attachment_id);
-    }
+    if (section.background !== undefined) media(section.background.attachment_id);
     section.children.forEach((child, ci) => {
       switch (child.type) {
         case "pattern":
@@ -915,6 +916,10 @@ function inspectSections(sections: readonly SectionNode[]): DesignedFacts {
             for (const c of child.children) leaf(c, false);
           } else if (child.pattern === "pricing") {
             for (const plan of child.plans) f.links.push(plan.cta.url);
+          } else if (child.pattern === "logos") {
+            for (const logo of child.logos) media(logo.attachment_id);
+          } else if (child.pattern === "testimonials") {
+            for (const t of child.testimonials) if (t.attachment_id !== undefined) media(t.attachment_id);
           }
           break;
         case "group":
@@ -990,7 +995,7 @@ export interface DesignedPagePreview {
   /** The page_frame sent, else full width when the page opens with a hero, else the theme's. */
   readonly pageFrame: PageFrame;
   readonly sections: readonly SectionNode[];
-  /** The image facts, keyed by attachment id. Every image block and section background has one. */
+  /** The image facts, keyed by attachment id. Every attachment the page names has one. */
   readonly media: ReadonlyMap<number, PageMediaFact>;
   /** The site's facts: Elementor, classic format, containers. */
   readonly builder: PageBuilderFacts;
