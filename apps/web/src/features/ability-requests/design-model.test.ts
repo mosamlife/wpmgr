@@ -172,16 +172,16 @@ const COLOURS: PageDesign["colors"] = {
 type SectionLook = Partial<Pick<SectionNode, "tone" | "background" | "width" | "spacing" | "align" | "min_height">>;
 
 describe("the tone a section is written in", () => {
-  it.each<[string, SectionLook, string]>([
-    ["names none", {}, "ground"],
-    ["is ground", { tone: "ground" }, "ground"],
-    ["is surface", { tone: "surface" }, "surface"],
-    ["is inverse", { tone: "inverse" }, "inverse"],
-    ["is accent", { tone: "accent" }, "accent"],
-    ["names none, with a background", { background: { attachment_id: 5 } }, "inverse"],
-    ["is surface, with a background", { tone: "surface", background: { attachment_id: 5 } }, "inverse"],
-    ["is accent, with a background", { tone: "accent", background: { attachment_id: 5 } }, "inverse"],
-  ])("a section whose tone %s is written in %s", (_name, section, expected) => {
+  it.each<[string, string, SectionLook]>([
+    ["names none", "ground", {}],
+    ["is ground", "ground", { tone: "ground" }],
+    ["is surface", "surface", { tone: "surface" }],
+    ["is inverse", "inverse", { tone: "inverse" }],
+    ["is accent", "accent", { tone: "accent" }],
+    ["names none, with a background", "inverse", { background: { attachment_id: 5 } }],
+    ["is surface, with a background", "inverse", { tone: "surface", background: { attachment_id: 5 } }],
+    ["is accent, with a background", "inverse", { tone: "accent", background: { attachment_id: 5 } }],
+  ])("a section whose tone %s is written in the %s tone", (_name, expected, section) => {
     expect(sectionTone(section)).toBe(expected);
   });
 });
