@@ -21,6 +21,10 @@ var designedGoldenGate = []string{
 	"section-",
 	"leaves-of-every-kind",
 	"responsive-probe-",
+	"hero-",
+	"cta-band",
+	"stats-",
+	"logos-",
 }
 
 type designedGoldenMedia struct {
