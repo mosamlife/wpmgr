@@ -1,0 +1,57 @@
+{
+  "note": "Render probes, run by harness.php on every pinned Elementor and on both layouts. A probe is a raw Elementor tree saved with Document::save as the agent's service user, rendered, and held to what Elementor's own post CSS file and HTML say about it, so a key Elementor ignores fails the build. Format: name (lower case words joined by hyphens, printed as probe-<name>); about (what the probe proves); trees (raw trees by layout, containers and sections; a probe runs only on the layouts it has a tree for; keys in the order the agent's compiler writes them: id, elType, settings, elements, then widgetType or isInner; ids are 7 lower case hex characters); css (a list, at least one: each {el: the id of a node of the tree, sel: optional part of the selector after the element's class, media: null for no media condition or the condition text such as max-width:767px, decl: {property: value} all of which must be declared, or any: [{property: value}, ...] of which one set must hold in full because a release may write the same fact in another property}); css_absent (optional list of {el, sel, decl}: declarations no rule of the element may carry in any media condition, a fact recorded as false; a probe needs its css list as the positive control); html_ids (optional ids that must each be on exactly one element); html_tags (optional {id: tag}). Values compare case-insensitively with spaces around commas, colons and parentheses ignored.",
+  "probes": [
+    {
+      "name": "smoke-heading-colour",
+      "about": "A heading's title_color is written into the post CSS as a colour declaration on the heading's title, and its _element_id is the id of the rendered wrapper: the smallest render fact the probe phase proves.",
+      "trees": {
+        "containers": [
+          {
+            "id": "c0a7001",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "4ead001",
+                "elType": "widget",
+                "settings": { "title": "Smoke heading", "header_size": "h2", "title_color": "#123456", "_element_id": "smoke-heading" },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ],
+        "sections": [
+          {
+            "id": "5ec7001",
+            "elType": "section",
+            "settings": { "structure": "10" },
+            "elements": [
+              {
+                "id": "c01a001",
+                "elType": "column",
+                "settings": { "_column_size": "100" },
+                "elements": [
+                  {
+                    "id": "4ead001",
+                    "elType": "widget",
+                    "settings": { "title": "Smoke heading", "header_size": "h2", "title_color": "#123456", "_element_id": "smoke-heading" },
+                    "elements": [],
+                    "widgetType": "heading"
+                  }
+                ],
+                "isInner": false
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        { "el": "4ead001", "sel": ".elementor-heading-title", "media": null, "decl": { "color": "#123456" } }
+      ],
+      "html_ids": ["smoke-heading"]
+    }
+  ]
+}

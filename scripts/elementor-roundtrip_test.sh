@@ -23,8 +23,12 @@
 # path it proves the render checks hold the page to the texts and links still on
 # it after the call: a text or a link that stays and goes missing is red, a case
 # with no after tree is still held to everything its operations wrote, and an
-# after tree that leaves none of the written texts on the page is red. It also
-# proves what it must NOT block: an honest run, a cached download, a run of one
+# after tree that leaves none of the written texts on the page is red. For the
+# render probes it proves the check goes red on a probe whose expected declaration
+# is edited, whose absent declaration is there, or whose id or tag is not on the
+# page, on a probe file that cannot be used and on a phase handed no probe. It also
+# proves what it must NOT block: an honest run, a probe whose second alternative
+# holds, a cached download, a run of one
 # version or one layout out of several, a blueprint that sets some other site
 # option, and, in the planted run, every case that carries no plant and the
 # whole agent path. Run it BEFORE the real check so a guard that fails open
@@ -419,6 +423,10 @@ else
   said "  and the saving user is the restricted principal" "unfiltered_html=no"
   said "  and the agent built the containers layout on the containers site" "rt: ok   [4.3.4 agent-containers heading]"
   said "  and the agent built the sections layout on the sections site" "rt: ok   [4.3.4 agent-sections heading]"
+  said "  and the smoke probe held on a containers site" "rt: ok   [4.3.4 containers probe-smoke-heading-colour]"
+  said "  and on a sections site" "rt: ok   [4.3.4 sections probe-smoke-heading-colour]"
+  probes_n="$(printf '%s\n' "$LAST_OUT" | sed -n -E 's/^rt: SUMMARY .* probes=([0-9]+) .*/\1/p' | tail -n 1)"
+  if [ -n "$probes_n" ] && [ "$probes_n" -gt 0 ]; then ok "  and the probe count is above zero (probes=$probes_n)"; else bad "  the probe count is not above zero (saw '$probes_n')"; fi
   said "  and the agent refused a site that rewrites the saved tree" "rt: ok   [4.3.4 agent-containers tamper]"
   said "  and the agent refused digests that are not the precheck's" "rt: ok   [4.3.4 agent-sections digest]"
   said "  and the agent refused to undo a draft a person had edited" "rt: ok   [4.3.4 agent-containers person-edit]"
@@ -458,8 +466,9 @@ sections text golden"
   # All five plants are in the round trip. The agent path runs on the same site and has no plant of its own here.
   not_said "  and no agent-path check is red in a run that planted nothing in the agent path" "rt: FAIL [4.3.4 agent-"
   # Only the round trip's own cases: the agent path prints "ok" lines of its own (tagged agent-<layout>),
-  # and the verdict's cases= counts the round trip's cases alone.
-  ok_n="$(printf '%s\n' "$LAST_OUT" | grep -c -E '^rt: ok +\[[0-9.]+ (containers|sections) ' || true)"
+  # the render probes print theirs under the layout with a probe- name, and the verdict's cases= counts
+  # the round trip's cases alone.
+  ok_n="$(printf '%s\n' "$LAST_OUT" | grep -E '^rt: ok +\[[0-9.]+ (containers|sections) ' | grep -v -c ' probe-' || true)"
   failing_cases="$(printf '%s\n' "$got" | awk '{print $1 " " $2}' | sort -u | wc -l | tr -d ' ')"
   total_n="$(printf '%s\n' "$LAST_OUT" | sed -n -E 's/^rt: SUMMARY .* cases=([0-9]+) .*/\1/p' | tail -n 1)"
   if [ -n "$total_n" ] && [ "$ok_n" -gt 0 ] && [ $((ok_n + failing_cases)) -eq "$total_n" ]; then
@@ -582,6 +591,74 @@ set-text-every-field render-link"
     commands/class-ability-run-command.php \
     '$problem = BuilderPageCreate::revertProblem($postId, $builderRow, $chain);' \
     '$problem = null;'
+
+  # The render probes. A probe that is edited is edited in a copy of the harness directory, whose run.sh then
+  # mounts the copy: the probe the check runs is the edited one, and the committed file is not touched. An edit
+  # that no longer applies to the probe file is a failure of this suite, not a pass.
+  # probe_copy <dir> <js>   a copy of the harness directory; <js> edits d, the parsed render-probes.json.
+  probe_copy() {
+    local dir="$1" js="$2"
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    cp "$here"/elementor-roundtrip/* "$dir/" || return 1
+    "$node_bin" -e '
+      const fs = require("fs");
+      const file = process.argv[1];
+      const d = JSON.parse(fs.readFileSync(file, "utf8"));
+      new Function("d", process.argv[2])(d);
+      fs.writeFileSync(file, JSON.stringify(d, null, 2) + "\n");
+    ' "$dir/render-probes.json" "$js"
+  }
+  # probe_expect <name> <want> <dir>   expect(), run through the run.sh of that copy, on one containers boot.
+  probe_expect() {
+    local name="$1" want="$2" dir="$3" saved="$check"
+    check="$dir/run.sh"
+    expect "$name" "$want" "${real_c[@]}" "RT_FIXTURES_DIR=$here/../apps/agent/tests/fixtures/ability-run" "RT_AGENT_INCLUDES=$here/../apps/agent/includes"
+    check="$saved"
+  }
+  # probe_case <dir> <what> <js>   makes the copy, or fails the suite.
+  probe_case() {
+    if probe_copy "$1" "$3" 2>"$1.err"; then return 0; fi
+    bad "the probe file cannot be edited to $2: $(cat "$1.err" 2>/dev/null)"
+    return 1
+  }
+
+  expect "a probe phase handed no probe is red" 1 "${real_c[@]}" "RT_PLANT=plant=probes_no_cases@all"
+  said "  and it says the probe phase ran no probe" "FAIL the probe phase ran no probe"
+  said "  and the summary counts no probe" "probes=0 probes_failed=0"
+
+  if probe_case "$tmp/probes-edited" "expect another colour" 'd.probes[0].css[0].decl.color = "#654321";'; then
+    probe_expect "a probe whose expected declaration is edited turns the real round trip red" 1 "$tmp/probes-edited"
+    said "  and the red check is that probe's declaration, with what the element does carry" "rt: FAIL [4.3.4 containers probe-smoke-heading-colour] css: css[0] element 4ead001 .elementor-heading-title: want color:#654321 (has #123456)"
+    said "  and the summary counts the red probe" "probes=1 probes_failed=1"
+    fail_n="$(printf '%s\n' "$LAST_OUT" | grep -c '^rt: FAIL ' || true)"
+    if [ "$fail_n" = 1 ]; then ok "  and nothing else is red"; else bad "  $fail_n failure line(s), wanted exactly the probe's"; fi
+  fi
+
+  if probe_case "$tmp/probes-absent" "list a declaration that is there as absent" 'd.probes[0].css_absent = [{ el: "4ead001", sel: ".elementor-heading-title", decl: { color: "#123456" } }];'; then
+    probe_expect "a probe whose absent declaration is there turns the real round trip red" 1 "$tmp/probes-absent"
+    said "  and it names the declaration" "css-absent: css_absent[0] element 4ead001 .elementor-heading-title is styled after all: color:#123456"
+  fi
+
+  if probe_case "$tmp/probes-html" "expect an id and a tag the page does not carry" 'd.probes[0].html_ids = ["no-such-anchor"]; d.probes[0].html_tags = { "smoke-heading": "section" };'; then
+    probe_expect "a probe whose id or tag is not on the page turns the real round trip red" 1 "$tmp/probes-html"
+    said "  and it names the missing id" 'html-id: the rendered page carries id="no-such-anchor" on 0 element(s), not one'
+    said "  and it names the wrong tag" 'html-tag: the element with id="smoke-heading" is div, not section'
+  fi
+
+  if probe_case "$tmp/probes-nocss" "expect nothing" 'delete d.probes[0].css;'; then
+    probe_expect "a probe that expects no declaration cannot be used and is red" 2 "$tmp/probes-nocss"
+    said "  and it says what is wrong" "expects no declaration"
+    not_said "  and nothing ran before the file was refused" "rt: ok   ["
+  fi
+
+  # What the probe phase must NOT block: a declaration Elementor writes in another property for another release
+  # (the first alternative does not hold, the second does), and an absent declaration that is absent.
+  if probe_case "$tmp/probes-any" "give the colour two alternatives" 'd.probes[0].css[0] = { el: "4ead001", sel: ".elementor-heading-title", media: null, any: [{ color: "#654321" }, { color: "#123456" }] }; d.probes[0].css_absent = [{ el: "4ead001", sel: ".elementor-heading-title", decl: { "text-decoration": "underline" } }];'; then
+    probe_expect "a probe whose second alternative holds and whose absent declaration is absent is not blocked" 0 "$tmp/probes-any"
+    said "  and it says which alternative held" "css[0] 4ead001 holds by alternative 2 of 2"
+    said "  and the probe passed" "rt: ok   [4.3.4 containers probe-smoke-heading-colour]"
+  fi
 
   mkdir -p "$tmp/fx-empty"
   empty='{"note":"none","elementor_versions":["4.3.4"],"request_id":"11111111-2222-4333-8444-777777777777","media":{"5":{"url":"https://example.com/a.png","alt":"Library alt text"}},"cases":[]}'
