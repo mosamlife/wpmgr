@@ -6863,7 +6863,10 @@ export const declineAbilityRequest = <ThrowOnError extends boolean = false>(
  * refused_published or failed. When the site did not settle the undo
  * (unreachable, busy with this request, or unable to read its own
  * copy of the page) the answer is 503 `ability_request_undo_retry`
- * and the undo is offered again.
+ * and the undo is offered again. When the site refused a page edit's
+ * undo because the page is open in an editor there, the answer is 409
+ * `ability_request_undo_editor_open`: nothing was changed, and the
+ * undo is offered again to run once the editor is closed.
  *
  */
 export const undoAbilityRequest = <ThrowOnError extends boolean = false>(

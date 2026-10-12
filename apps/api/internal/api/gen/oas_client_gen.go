@@ -3832,7 +3832,10 @@ type Invoker interface {
 	// page from its own record of this request; nothing in the call names it. `undo_state` in the answer
 	// is the result: undone, refused_conflict, refused_published or failed. When the site did not settle
 	// the undo (unreachable, busy with this request, or unable to read its own copy of the page) the
-	// answer is 503 `ability_request_undo_retry` and the undo is offered again.
+	// answer is 503 `ability_request_undo_retry` and the undo is offered again. When the site refused a
+	// page edit's undo because the page is open in an editor there, the answer is 409
+	// `ability_request_undo_editor_open`: nothing was changed, and the undo is offered again to run once
+	// the editor is closed.
 	//
 	// POST /api/v1/sites/{siteId}/ai/ability-requests/{requestId}/undo
 	UndoAbilityRequest(ctx context.Context, request *UndoAbilityRequestReq, params UndoAbilityRequestParams) (UndoAbilityRequestRes, error)
@@ -47300,7 +47303,10 @@ func (c *Client) sendUnblockSiteIP(ctx context.Context, request *UnblockIPReques
 // page from its own record of this request; nothing in the call names it. `undo_state` in the answer
 // is the result: undone, refused_conflict, refused_published or failed. When the site did not settle
 // the undo (unreachable, busy with this request, or unable to read its own copy of the page) the
-// answer is 503 `ability_request_undo_retry` and the undo is offered again.
+// answer is 503 `ability_request_undo_retry` and the undo is offered again. When the site refused a
+// page edit's undo because the page is open in an editor there, the answer is 409
+// `ability_request_undo_editor_open`: nothing was changed, and the undo is offered again to run once
+// the editor is closed.
 //
 // POST /api/v1/sites/{siteId}/ai/ability-requests/{requestId}/undo
 func (c *Client) UndoAbilityRequest(ctx context.Context, request *UndoAbilityRequestReq, params UndoAbilityRequestParams) (UndoAbilityRequestRes, error) {
