@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.164
+Stable tag: 0.61.165
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -285,7 +285,12 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 == Changelog ==
 
-The entries below summarize the notable changes since 0.55.0. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+The entries below summarize the notable changes since 0.61.25. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+
+= 0.61.165 =
+* Added: A connected AI can create a designed Elementor page with sections and ready-made parts: a hero, features, stats, logos, testimonials, pricing, FAQ and a call to action. It uses the colours, fonts, spacing and corner style the AI chooses for it and is saved as a draft. On a block theme, the page fills the screen without the theme's header and footer.
+* Added: The AI can edit a designed page: change any part's text, add or replace sections in the same design, and undo the change.
+* Changed: Saving a designed page refreshes its stylesheet once and keeps its template and page settings. Undo restores the template and page settings exactly.
 
 = 0.61.164 =
 * Added: Reading the structure of an Elementor draft the AI can edit now also says whether someone has it open in an editor (Elementor or the WordPress editor) or has unsaved changes to it. A published page is not checked, so its status is not reported. The read changes nothing on the site.
@@ -456,13 +461,10 @@ The entries below summarize the notable changes since 0.55.0. This project ships
 = 0.61.25 =
 * Fixed: restore no longer silently drops plugin or theme files whose path happens to contain a reserved WordPress drop-in name (for example a plugin's own class-db.php), which could leave a restored site broken while the restore reported success. Restore now matches its protected-file exclusions by exact path instead of substring, so only genuine root drop-ins (db.php, object-cache.php, advanced-cache.php) and config files are held back.
 
-= 0.57.0 / 0.56.0 =
-* New: vulnerability scanning. Installed plugins, themes, and the WordPress core version are checked against the free Wordfence Intelligence vulnerability feed; findings (severity, affected version range, fixed version, CVE references) surface in the dashboard, with one-click remediation using the existing update flow. Requires a free Wordfence Intelligence API key configured on the control plane; the agent reports inventory only, and the feed lookup itself runs on the control plane.
-
-= 0.55.0 =
-* New: guided two-factor enrollment for WordPress site users. Once an operator requires 2FA for a role, an affected user is walked through scanning a QR code, confirming a code, and saving backup codes on their next login, or can start enrollment proactively from their profile.
-
 == Upgrade Notice ==
+
+= 0.61.165 =
+Lets a connected AI create and edit designed Elementor draft pages in the colours, fonts, spacing and corner style the AI chooses for them, with ready-made sections and undo. On a block theme, the page fills the screen without the theme's header and footer. Saving refreshes the stylesheet once and keeps the template and page settings; undo restores them exactly.
 
 = 0.61.164 =
 Edits of an Elementor draft that someone has previewed now go through, and an edit or undo refused because the page is open in an editor can be tried again once it is closed. Reading the structure of an Elementor draft the AI can edit also says whether it is open in an editor or has unsaved changes.
