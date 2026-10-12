@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/abilityrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
+	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
@@ -37,6 +39,12 @@ type g2cSite struct {
 	// mismatch names the page edits whose put-back does not read back as
 	// their copy.
 	mismatch map[uuid.UUID]bool
+	// conflict is the detail a page edit's undo is refused with as a
+	// conflict while the page is open in an editor (editor_open) or has
+	// unsaved changes (autosave_pending), by request id. The refusal leaves
+	// the agent's retryable flag unset: the control plane decides from the
+	// detail alone.
+	conflict map[uuid.UUID]string
 }
 
 // answer is the agent's revert: a page edit's undo runs only when the hash
@@ -52,6 +60,9 @@ func (s *g2cSite) answer(call agentcmd.AbilityRunCall) (agentcmd.AbilityRunRespo
 		}
 		if call.Revert.SnapshotSHA256 != kept {
 			return agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{Code: "snapshot_tampered"}, true
+		}
+		if detail := s.conflict[call.RequestID]; detail != "" {
+			return agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{Code: "conflict", Detail: detail}, true
 		}
 		if s.mismatch[call.RequestID] {
 			return agentcmd.AbilityRunResponse{}, &agentcmd.AbilityRunRefusal{Code: "restore_mismatch", Detail: "read_back_differs"}, true
@@ -200,6 +211,109 @@ func g2cRefusal(t *testing.T, err error, code, message string) {
 	de, ok := domain.AsDomain(err)
 	if !ok || de.Code != code || de.Message != message {
 		t.Fatalf("got %v, want %s %q", err, code, message)
+	}
+}
+
+// g2cUndoHTTP is POST .../undo of id through the real handler as w's owner:
+// the status and the decoded answer.
+func g2cUndoHTTP(t *testing.T, w *e2World, id uuid.UUID) (int, map[string]any) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/sites/"+w.site.String()+"/ai/ability-requests/"+id.String()+"/undo", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	bfeQueueEngine(w).ServeHTTP(rec, req)
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode the undo answer: %v (%d %s)", err, rec.Code, rec.Body.String())
+	}
+	return rec.Code, body
+}
+
+// g2cReleasedAudits is the metadata of every undo audit row of id that
+// released the undo, read by the superuser connection.
+func g2cReleasedAudits(t *testing.T, w *e2World, id uuid.UUID) []map[string]any {
+	t.Helper()
+	rows, err := w.admin.Query(context.Background(),
+		`SELECT metadata FROM audit_log WHERE tenant_id = $1 AND action = $2 AND target_id = $3
+		   AND metadata->>'phase' = 'released' ORDER BY created_at, id`,
+		w.tenant, audit.ActionAssistantRequestUndone, id.String())
+	if err != nil {
+		t.Fatalf("read undo audit rows: %v", err)
+	}
+	defer rows.Close()
+	var out []map[string]any
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatalf("scan undo audit row: %v", err)
+		}
+		var md map[string]any
+		if err := json.Unmarshal(raw, &md); err != nil {
+			t.Fatalf("undo audit metadata: %s", raw)
+		}
+		out = append(out, md)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read undo audit rows: %v", err)
+	}
+	return out
+}
+
+// TestPageEditUndoWhileThePageIsOpenInAnEditorAsAppRole: the site refuses a
+// page edit's undo because the page is open in an editor (conflict,
+// editor_open). POST .../undo answers 409 ability_request_undo_editor_open
+// with fixed text, the undo stays available and offered, and its audit row
+// says it was released for that reason. Once the editor is closed the same
+// undo runs. Unsaved changes on the page (autosave_pending) are final: that
+// undo is recorded as refused_conflict and is no longer offered.
+func TestPageEditUndoWhileThePageIsOpenInAnEditorAsAppRole(t *testing.T) {
+	w := newE2World(t, true)
+	g2cCreated(t, w, 42, "g2c-open-create")
+	h1, h2 := acprHex("g2c-open-1"), acprHex("g2c-open-2")
+	e1 := g2cApplied(t, w, 42, "g2c-open-1", h1)
+	site := &g2cSite{copies: map[uuid.UUID]string{e1.ID: h1}, conflict: map[uuid.UUID]string{e1.ID: "editor_open"}}
+	w.agent.setOverride(site.answer)
+
+	status, body := g2cUndoHTTP(t, w, e1.ID)
+	if status != http.StatusConflict || body["code"] != "ability_request_undo_editor_open" ||
+		body["message"] != "This page is open in an editor. Try Undo again in a few minutes." {
+		t.Fatalf("undo while the page is open: %d %v, want 409 ability_request_undo_editor_open with the fixed text", status, body)
+	}
+	if n := w.agent.sent(agentcmd.AbilityRunModeRevert); n != 1 {
+		t.Fatalf("%d reverts sent, want 1", n)
+	}
+	if s := g2cUndoState(t, w, e1.ID); s != "available" {
+		t.Fatalf("undo_state = %q after the site said the page is open, want available", s)
+	}
+	if r := g2cListed(t, w)[e1.ID]; r["undo_state"] != "available" || r["undo_offered"] != true {
+		t.Fatalf("listed after the refusal: undo_state %v undo_offered %v, want available and offered", r["undo_state"], r["undo_offered"])
+	}
+	released := g2cReleasedAudits(t, w, e1.ID)
+	if len(released) != 1 || released[0]["code"] != "conflict" || released[0]["reason"] != "editor_open" {
+		t.Fatalf("released audit rows: %v, want one for conflict editor_open", released)
+	}
+
+	// The editor is closed: the same undo runs, with the recorded hash.
+	delete(site.conflict, e1.ID)
+	status, body = g2cUndoHTTP(t, w, e1.ID)
+	if status != http.StatusOK || body["undo_state"] != abilityrequest.UndoDone {
+		t.Fatalf("undo after the editor closed: %d %v, want 200 undone", status, body)
+	}
+	if r := w.agent.last.Revert; r == nil || r.SnapshotSHA256 != h1 {
+		t.Fatalf("retry sent %+v, want the hash the outcome recorded", r)
+	}
+
+	// Unsaved changes on the page end the undo.
+	e2 := g2cApplied(t, w, 42, "g2c-open-2", h2)
+	site.copies[e2.ID] = h2
+	site.conflict[e2.ID] = "autosave_pending"
+	status, body = g2cUndoHTTP(t, w, e2.ID)
+	if status != http.StatusOK || body["undo_state"] != abilityrequest.UndoRefusedConflict || body["undo_offered"] != false {
+		t.Fatalf("undo with unsaved changes: %d %v, want 200 refused_conflict and not offered", status, body)
+	}
+	if released := g2cReleasedAudits(t, w, e2.ID); len(released) != 0 {
+		t.Fatalf("an autosave conflict released the undo: %v", released)
 	}
 }
 
