@@ -532,7 +532,7 @@ final class ElementorClassicMapper
         }
         $keys = self::ALLOWED_KEYS;
         foreach (ElementorLeafStyle::KEYS as $type => $paths) {
-            $keys[$type] = array_merge($keys[$type] ?? [], $paths);
+            $keys[$type] = array_merge($keys[$type], $paths);
         }
         $check = LeafPolicy::checkTree($tree, $keys, self::LEAF_RULES);
         if ($check !== null) {
