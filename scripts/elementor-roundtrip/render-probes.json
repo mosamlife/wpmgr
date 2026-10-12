@@ -55,7 +55,7 @@
     },
     {
       "name": "pattern-icon-box",
-      "about": "icon-box fields: selected_icon {value,library}, title_text, description_text, position, title_size; style keys primary_color, title_color, description_color and the title_typography group with its activator. Numeric members are written as numeric strings because a release stores integers as strings. The title and description are shown, the title tag is the chosen one, the position is a class of the widget (position top is the class elementor-position-top on 3.x and elementor-position-block-start on 4.x), and every style key reaches the post CSS.",
+      "about": "icon-box fields: selected_icon {value,library}, title_text, description_text, position, title_size; style keys primary_color, title_color, description_color and the title_typography group with its activator. Numeric members are written as numeric strings because a release stores integers as strings. The title and description are shown, the title tag is the chosen one, the position is a class of the widget (position top is the class elementor-position-top on 3.20.4 and elementor-position-block-start on 3.35.9 and 4.3.4), and every style key reaches the post CSS.",
       "trees": {
         "containers": [
           {
