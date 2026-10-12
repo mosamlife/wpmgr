@@ -405,9 +405,10 @@ final class ElementorPatternCompiler
      *
      * @param mixed        $outline The validated outline: a list of sections.
      * @param array<mixed> $media   Resolved image facts by attachment id.
+     * @param string       $at      The outline's path in the input.
      * @return array{code:string,detail:string,failures:list<array<string,mixed>>}|null
      */
-    public static function logoAltRefusal(mixed $outline, array $media): ?array
+    public static function logoAltRefusal(mixed $outline, array $media, string $at = 'outline'): ?array
     {
         if (!is_array($outline) || !ArrayShape::isList($outline)) {
             return null;
@@ -426,7 +427,7 @@ final class ElementorPatternCompiler
                     $fact    = is_int($id) ? ($media[$id] ?? null) : null;
                     $library = is_array($fact) ? ($fact['alt'] ?? null) : null;
                     if (is_string($alt) && is_string($library) && $alt !== $library) {
-                        $failures[] = ['path' => 'outline[' . $i . '].children[' . $j . '].logos[' . $k . ']', 'key' => 'alt', 'reason' => self::REASON_ALT];
+                        $failures[] = ['path' => $at . '[' . $i . '].children[' . $j . '].logos[' . $k . ']', 'key' => 'alt', 'reason' => self::REASON_ALT];
                     }
                 }
             }

@@ -1114,9 +1114,15 @@ final class ElementorDocument
      * @param string|null          $pageTemplate The page template the edit planned to
      *                                       store; null when it planned no
      *                                       template change.
+     * @param array<string, array<string, string>>|null $allowed The allowlist what the
+     *                                       edit wrote is held to; null for a
+     *                                       plain page's
+     *                                       (ElementorClassicMapper::ALLOWED_KEYS),
+     *                                       the designed one for a designed
+     *                                       page's.
      * @return string|null
      */
-    public function verifyEdited(int $postId, array $newTree, array $before, ?array $pageSettings = null, ?string $pageTemplate = null): ?string
+    public function verifyEdited(int $postId, array $newTree, array $before, ?array $pageSettings = null, ?string $pageTemplate = null, ?array $allowed = null): ?string
     {
         if ($postId < 1) {
             return 'post_missing';
@@ -1181,7 +1187,7 @@ final class ElementorDocument
         if (!self::indexOwn($snapshot['tree'], 1, $earlier)) {
             return 'snapshot_unreadable';
         }
-        if (self::writtenProblem($newTree, $earlier, 1) !== null) {
+        if (self::writtenProblem($newTree, $earlier, 1, $allowed ?? ElementorClassicMapper::ALLOWED_KEYS) !== null) {
             return 'leaf_policy';
         }
 
@@ -1405,12 +1411,13 @@ final class ElementorDocument
      * out) equals a node of the same id before the edit was not written; any
      * other node was, and is checked through writtenPart().
      *
-     * @param array<mixed>                       $nodes   Elements of the planned tree.
-     * @param array<string, list<array<mixed>>> $earlier The nodes before the edit, by id.
-     * @param int                                $depth   Nesting depth of $nodes.
+     * @param array<mixed>                         $nodes   Elements of the planned tree.
+     * @param array<string, list<array<mixed>>>   $earlier The nodes before the edit, by id.
+     * @param int                                  $depth   Nesting depth of $nodes.
+     * @param array<string, array<string, string>> $allowed Element type, then settings path, then pin.
      * @return array{code: string, detail: string}|null
      */
-    private static function writtenProblem(array $nodes, array $earlier, int $depth): ?array
+    private static function writtenProblem(array $nodes, array $earlier, int $depth, array $allowed): ?array
     {
         if ($depth > self::MAX_DEPTH) {
             return ['code' => LeafPolicy::CODE_KEY, 'detail' => 'elements nested too deep'];
@@ -1423,13 +1430,13 @@ final class ElementorDocument
             unset($own['elements']);
             $versions = is_string($own['id'] ?? null) ? ($earlier[$own['id']] ?? []) : [];
             if (!in_array($own, $versions, true)) {
-                $problem = LeafPolicy::checkTree([self::writtenPart($own, $versions)], ElementorClassicMapper::ALLOWED_KEYS, ElementorClassicMapper::LEAF_RULES);
+                $problem = LeafPolicy::checkTree([self::writtenPart($own, $versions)], $allowed, ElementorClassicMapper::LEAF_RULES);
                 if ($problem !== null) {
                     return $problem;
                 }
             }
             $children = $node['elements'] ?? [];
-            $inner    = is_array($children) ? self::writtenProblem($children, $earlier, $depth + 1) : null;
+            $inner    = is_array($children) ? self::writtenProblem($children, $earlier, $depth + 1, $allowed) : null;
             if ($inner !== null) {
                 return $inner;
             }

@@ -397,9 +397,10 @@ final class ElementorSectionCompiler
      *
      * @param mixed                  $outline The validated outline: a list of sections.
      * @param \Closure(int): ?string $mimeOf  The type of a readable attachment, or null.
+     * @param string                 $at      The outline's path in the input.
      * @return array{code:string,detail:string,failures:list<array<string,mixed>>}|null
      */
-    public static function backgroundRefusal(mixed $outline, \Closure $mimeOf): ?array
+    public static function backgroundRefusal(mixed $outline, \Closure $mimeOf, string $at = 'outline'): ?array
     {
         if (!is_array($outline) || !ArrayShape::isList($outline)) {
             return null;
@@ -415,7 +416,7 @@ final class ElementorSectionCompiler
             if (!is_string($mime) || $mime === '' || in_array($mime, PageCreateBuilder::IMAGE_MIMES, true)) {
                 continue;
             }
-            $failures[] = ['path' => 'outline[' . $i . '].background', 'key' => 'attachment_id', 'reason' => self::REASON_NOT_IMAGE];
+            $failures[] = ['path' => $at . '[' . $i . '].background', 'key' => 'attachment_id', 'reason' => self::REASON_NOT_IMAGE];
         }
 
         return $failures === [] ? null : Refusal::make(self::CODE_BACKGROUND_NOT_IMAGE, 'A section background is not an image.', $failures);

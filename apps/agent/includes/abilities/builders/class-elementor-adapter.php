@@ -339,14 +339,43 @@ final class ElementorAdapter implements BuilderAdapter
      *
      * ElementorDocument::verifyEdited() over the planned tree, and over the
      * page settings and page template the document's meta carries, when it
-     * carries them: only a change the edit planned is accepted.
+     * carries them: only a change the edit planned is accepted. What the edit
+     * wrote into a designed page, one the edit leaves with a designed section
+     * at its top, is held to the designed allowlist for the breakpoints this
+     * site has active, as a designed page is when it is created; what it
+     * wrote into any other page, to ALLOWED_KEYS.
      */
     public function verifyEdited(int $postId, NativeDocument $doc, array $before): ?string
     {
         $pageSettings = $doc->meta[ElementorDocument::KEY_PAGE_SETTINGS] ?? null;
         $template     = $doc->meta[ElementorDocument::KEY_PAGE_TEMPLATE] ?? null;
 
-        return $this->document->verifyEdited($postId, $doc->tree, $before, is_array($pageSettings) ? $pageSettings : null, is_string($template) ? $template : null);
+        $allowed = null;
+        if (self::holdsDesignedSection($doc->tree)) {
+            $active  = $this->facts()['active_breakpoints'] ?? null;
+            $allowed = LeafPolicy::forBreakpoints(ElementorClassicMapper::designedKeys(), is_array($active) ? array_values($active) : []);
+        }
+
+        return $this->document->verifyEdited($postId, $doc->tree, $before, is_array($pageSettings) ? $pageSettings : null, is_string($template) ? $template : null, $allowed);
+    }
+
+    /**
+     * Whether a top-level element of $tree is a designed section: a container
+     * labelled LeafPolicy::SECTION_LABEL, as the projection reads one.
+     *
+     * @param array<mixed> $tree Top-level elements.
+     * @return bool
+     */
+    private static function holdsDesignedSection(array $tree): bool
+    {
+        foreach ($tree as $node) {
+            if (is_array($node) && ($node['elType'] ?? null) === 'container' && is_array($node['settings'] ?? null)
+                && ($node['settings'][LeafPolicy::LABEL_KEY] ?? null) === LeafPolicy::SECTION_LABEL) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
