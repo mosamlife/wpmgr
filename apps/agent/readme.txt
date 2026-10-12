@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.163
+Stable tag: 0.61.164
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -285,7 +285,12 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 == Changelog ==
 
-The entries below summarize the notable changes since 0.53.0. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+The entries below summarize the notable changes since 0.55.0. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+
+= 0.61.164 =
+* Added: Reading the structure of a page built in Elementor now also says whether someone has the draft open in Elementor or has unsaved changes to it. The read changes nothing on the site.
+* Changed: An edit or an undo that is refused because someone has the page open in Elementor now tells WPMgr it can be tried again once the editor is closed. A refusal for unsaved changes, or for a page that changed since the AI read it, is not marked that way.
+* Fixed: An edit of an Elementor draft that someone has previewed now goes through. Before, on some Elementor versions the site counted Elementor's own update of the page's style record as a change outside the page, refused the edit and put the page back. A change to any other page's record, or to anything else outside the page, still refuses the edit.
 
 = 0.61.163 =
 * Added: An AI connected through WPMgr can now read the structure of a page built in Elementor and edit a draft it created there, in one batch: set text, insert, replace, remove or move elements. Each edit waits for your approval in WPMgr and nothing is published. A published page or post built in Elementor can be read this way too, but never changed. WPMgr needs this version on the site for it.
@@ -457,15 +462,10 @@ The entries below summarize the notable changes since 0.53.0. This project ships
 = 0.55.0 =
 * New: guided two-factor enrollment for WordPress site users. Once an operator requires 2FA for a role, an affected user is walked through scanning a QR code, confirming a code, and saving backup codes on their next login, or can start enrollment proactively from their profile.
 
-= 0.54.0 =
-* New: optional, per-site, off-by-default two-factor authentication for WordPress site users (authenticator app, email one-time code, or single-use backup codes), with configurable grace logins and a remember-this-device window. The control plane and wp-config recovery constants can always bypass enforcement so an operator can never be locked out.
-* New: optional password policy (minimum strength, known-compromised-password check via a privacy-preserving prefix query, reuse blocking, optional expiry with a forced-change screen).
-* New: optional hide-login, which moves the login page to a secret per-site address.
-
-= 0.53.0 =
-* New: file integrity monitoring. A scan (core files, wp-content, or the full install) compares file hashes against WordPress.org checksums for core and wp.org-hosted plugins and themes, and against a learned per-site baseline for everything else, flagging changed, added, or removed files.
-
 == Upgrade Notice ==
+
+= 0.61.164 =
+Edits of an Elementor draft that someone has previewed now go through, and an edit or undo refused because the page is open in an editor can be tried again once it is closed. Reading a page's structure also says whether it is open.
 
 = 0.61.163 =
 Lets a connected AI read an Elementor page and edit a draft it created, with your approval for each edit and an undo for each change. WPMgr needs this version on the site for it. Nothing is published.
