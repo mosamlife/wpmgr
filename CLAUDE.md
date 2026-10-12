@@ -35,7 +35,10 @@ heredoc or `git apply` reaches them unchallenged.
 ## Routing: who writes the code
 
 The session you are in is a **router**. Reading, searching, planning, deciding,
-replying: yours. Writing code: a specialist's, in its own worktree.
+replying: yours. Writing code: a builder's, in its own worktree. The builder is
+Codex working from a job brief (see **Codex builds**, below), or a specialist
+agent from the table. If you are that builder, read **Building from a job
+brief** first.
 
 | Path | Agent |
 |---|---|
@@ -126,6 +129,51 @@ true` against a build, a CI run or a log file is the single shape that produced
 most of this project's killed agents. Nothing denies that shape any more, so
 write the bounded form yourself: a fixed number of polls, or a command run under
 an explicit timeout, and report where it had got to when the count runs out.
+
+## Codex builds
+
+Owner ruling, 2026-10-12: builder jobs go to Codex CLI, so Claude's budget is
+spent on planning and review. The router writes the brief, starts the job,
+reviews the result and pushes it. Review is unchanged: `security-reviewer`
+reviews every change on a path in the routing table's last row, whoever wrote
+it.
+
+- **One job per run**, briefed by the five rules above with one change: Codex
+  commits in its worktree and never pushes. The router pushes after review. The
+  brief also names the failing test to start from, the exact commands, and the
+  report to return.
+- **Its own worktree, in the background:** `codex exec -C <worktree> -s
+  workspace-write --add-dir <repo>/.git -o <file> - < <brief>`. Add
+  `--add-dir` for any build cache the job writes, such as `go env GOCACHE`. The
+  sandbox has no network, so installs and pushes happen outside it.
+- **The sandbox blocks some tests**, such as an `httptest` listener on `[::1]`
+  or anything needing Docker. Re-run the touched packages' full tests outside it
+  before pushing. Codex reporting green is not the check.
+- **Review every diff before it is pushed:** only the files the brief names, the
+  commit message rules below, and no generated-tree or migration edit the brief
+  did not ask for.
+- **Which model and effort Codex runs at lives in `~/.codex/config.toml`**, not
+  in this file. Raise the effort for a job in one of the irreversible categories
+  the routing section lists.
+
+## Building from a job brief
+
+If you are Codex, or a specialist agent, working from a brief: you are the
+builder, not the router. The routing table and the two sections above say how
+your brief was made. Do the one job it names, in the worktree you were started
+in.
+
+- **The map, Isolation, Claims, What shipped code may say, Guards and tests,
+  Commit messages and Long sessions bind you** exactly as they bind the router.
+- **Failing test first.** Show it fail, make the change, show it pass. Run the
+  tests the brief names, never a whole-repository run.
+- **Commit** with a message that starts with the job id. Codex does not push,
+  open a pull request or create a branch unless the brief says so.
+- **Change only what the brief names.** Never delete or move anything outside
+  your worktree, and never open a folder outside this repository unless the
+  brief names it.
+- **Report what the brief asks for:** the commit, the files, the failing and
+  passing test lines, and anything you were unsure about.
 
 ## Isolation
 
