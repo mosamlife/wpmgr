@@ -1,12 +1,12 @@
 package mcp
 
-// The structure of an Elementor classic tree, as the agent's
+// The structure of an Elementor classic or designed tree, as the agent's
 // ElementorClassicMapper::project() and Projection answer it, recomputed by
 // the control plane from a tree whose bytes it verified (R2).
 //
 // A node the mapper classifies is
 //
-//	{ref, parent, kind, level?, editable: [field...], from_the_site: {field: text}}
+//	{ref, parent, kind, level?, variant?, editable: [field...], from_the_site: {field: text}}
 //
 // and every other node {ref, parent, kind: "locked", label}, its children not
 // walked. Text under from_the_site is the stored text with its character
@@ -35,58 +35,60 @@ const projectionRoot = "root"
 var projectionKinds = map[string]bool{
 	"heading": true, "paragraph": true, "list": true, "quote": true, "table": true, "image": true,
 	"buttons": true, "separator": true, "spacer": true, "group": true, "columns": true, "column": true,
-	"section": true,
+	"section": true, "pattern": true,
 }
 
 // Label keys and words of ElementorClassicMapper::LOCKED_LABELS.
 const (
-	elementorLabelFallback   = "*"
-	elementorLabelDynamic    = "wpmgr:dynamic"
-	elementorLabelCustomText = "wpmgr:custom-text"
-	elementorLabelAtomic     = "wpmgr:atomic"
-	elementorLabelWPWidget   = "wpmgr:wp-widget"
+	elementorLabelFallback      = "*"
+	elementorLabelDynamic       = "wpmgr:dynamic"
+	elementorLabelCustomText    = "wpmgr:custom-text"
+	elementorLabelAtomic        = "wpmgr:atomic"
+	elementorLabelWPWidget      = "wpmgr:wp-widget"
+	elementorLabelPatternEdited = "wpmgr:pattern-edited"
 )
 
 var elementorLockedLabels = map[string]string{
-	elementorLabelFallback:   "Elementor element WPMgr does not edit",
-	elementorLabelDynamic:    "Elementor element with dynamic content or custom code",
-	elementorLabelCustomText: "Elementor text with formatting WPMgr does not edit",
-	elementorLabelAtomic:     "Elementor v4 element",
-	elementorLabelWPWidget:   "WordPress widget",
-	"html":                   "Elementor HTML code",
-	"shortcode":              "Elementor shortcode",
-	"template":               "Elementor saved template",
-	"text-path":              "Elementor text path",
-	"menu-anchor":            "Elementor menu anchor",
-	"sidebar":                "Elementor sidebar",
-	"video":                  "Elementor video",
-	"audio":                  "Elementor audio",
-	"icon":                   "Elementor icon",
-	"icon-box":               "Elementor icon box",
-	"icon-list":              "Elementor icon list",
-	"image-box":              "Elementor image box",
-	"image-gallery":          "Elementor image gallery",
-	"image-carousel":         "Elementor image carousel",
-	"counter":                "Elementor counter",
-	"progress":               "Elementor progress bar",
-	"testimonial":            "Elementor testimonial",
-	"tabs":                   "Elementor tabs",
-	"nested-tabs":            "Elementor tabs",
-	"accordion":              "Elementor accordion",
-	"nested-accordion":       "Elementor accordion",
-	"toggle":                 "Elementor toggle",
-	"social-icons":           "Elementor social icons",
-	"alert":                  "Elementor alert",
-	"google_maps":            "Elementor map",
-	"star-rating":            "Elementor star rating",
-	"rating":                 "Elementor rating",
-	"form":                   "Elementor form",
-	"posts":                  "Elementor posts",
-	"nav-menu":               "Elementor menu",
-	"slides":                 "Elementor slides",
-	"price-table":            "Elementor price table",
-	"call-to-action":         "Elementor call to action",
-	"countdown":              "Elementor countdown",
+	elementorLabelFallback:      "Elementor element WPMgr does not edit",
+	elementorLabelDynamic:       "Elementor element with dynamic content or custom code",
+	elementorLabelCustomText:    "Elementor text with formatting WPMgr does not edit",
+	elementorLabelAtomic:        "Elementor v4 element",
+	elementorLabelWPWidget:      "WordPress widget",
+	elementorLabelPatternEdited: "WPMgr pattern changed in Elementor",
+	"html":                      "Elementor HTML code",
+	"shortcode":                 "Elementor shortcode",
+	"template":                  "Elementor saved template",
+	"text-path":                 "Elementor text path",
+	"menu-anchor":               "Elementor menu anchor",
+	"sidebar":                   "Elementor sidebar",
+	"video":                     "Elementor video",
+	"audio":                     "Elementor audio",
+	"icon":                      "Elementor icon",
+	"icon-box":                  "Elementor icon box",
+	"icon-list":                 "Elementor icon list",
+	"image-box":                 "Elementor image box",
+	"image-gallery":             "Elementor image gallery",
+	"image-carousel":            "Elementor image carousel",
+	"counter":                   "Elementor counter",
+	"progress":                  "Elementor progress bar",
+	"testimonial":               "Elementor testimonial",
+	"tabs":                      "Elementor tabs",
+	"nested-tabs":               "Elementor tabs",
+	"accordion":                 "Elementor accordion",
+	"nested-accordion":          "Elementor accordion",
+	"toggle":                    "Elementor toggle",
+	"social-icons":              "Elementor social icons",
+	"alert":                     "Elementor alert",
+	"google_maps":               "Elementor map",
+	"star-rating":               "Elementor star rating",
+	"rating":                    "Elementor rating",
+	"form":                      "Elementor form",
+	"posts":                     "Elementor posts",
+	"nav-menu":                  "Elementor menu",
+	"slides":                    "Elementor slides",
+	"price-table":               "Elementor price table",
+	"call-to-action":            "Elementor call to action",
+	"countdown":                 "Elementor countdown",
 }
 
 // elementorLockedLabelWords reports whether s is one of WPMgr's label texts.
@@ -139,7 +141,11 @@ type projNode struct {
 	level    int64 // 0: none
 	editable []string
 	text     []projField
-	label    string // locked only
+	label    string   // locked only
+	variant  string   // pattern only
+	anchor   string   // internal section fact
+	pattern  string   // internal pattern fact
+	links    []string // internal anchor-link facts
 }
 
 func (n projNode) locked() bool { return n.kind == "locked" }
@@ -164,6 +170,13 @@ func (n projNode) encodePHP() (string, bool) {
 	}
 	if n.level > 0 {
 		b.WriteString(`,"level":` + strconv.FormatInt(n.level, 10))
+	}
+	if n.kind == "pattern" {
+		variant, ok := phpJSONString(n.variant)
+		if !ok {
+			return "", false
+		}
+		b.WriteString(`,"variant":` + variant)
 	}
 	b.WriteString(`,"editable":[`)
 	for i, f := range n.editable {
@@ -198,6 +211,9 @@ func (n projNode) wire() map[string]any {
 	}
 	if n.level > 0 {
 		out["level"] = n.level
+	}
+	if n.kind == "pattern" {
+		out["variant"] = n.variant
 	}
 	editable := make([]string, 0, len(n.editable))
 	editable = append(editable, n.editable...)
@@ -358,6 +374,27 @@ func elementorProjectNodes(nodes []any, parent, parentKind string, p *projection
 			}
 			continue
 		}
+		if typ == "container" {
+			if name, variant := elementorPatternOf(settings); name != "" {
+				if err := elementorProjectPattern(node, id, parent, name, variant, p); err != nil {
+					return err
+				}
+				continue
+			}
+			if label, _ := phpStringAt(settings, "_title"); parentKind == "" && label == designedSectionLabel {
+				anchor, _ := phpStringAt(settings, "_element_id")
+				if pageAnchorPattern.MatchString(anchor) && !stringIn(anchor, pageReservedAnchors) {
+					if err := p.add(projNode{ref: id, parent: parent, kind: "section", anchor: anchor}); err != nil {
+						return err
+					}
+					children, _ := phpGet(node, "elements")
+					if err := elementorProjectNodes(phpValues(children), id, "section", p); err != nil {
+						return err
+					}
+					continue
+				}
+			}
+		}
 		n, classified := elementorClassify(typ, settings, parentKind)
 		if !classified {
 			key := elementorLabelKey(typ)
@@ -370,6 +407,13 @@ func elementorProjectNodes(nodes []any, parent, parentKind string, p *projection
 			continue
 		}
 		n.ref, n.parent = id, parent
+		if n.kind == "buttons" {
+			for _, field := range n.text {
+				if field.field == "url" && strings.HasPrefix(field.text, "#") {
+					n.links = []string{field.text}
+				}
+			}
+		}
 		if err := p.add(n); err != nil {
 			return err
 		}
