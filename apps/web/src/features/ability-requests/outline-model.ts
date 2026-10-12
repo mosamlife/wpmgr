@@ -200,19 +200,23 @@ const leafNode = z.discriminatedUnion("type", leafOptions);
 const columnNode = z.strictObject({
   children: z.array(leafNode).min(1).max(OUTLINE_LIMITS.children),
 });
+/** Widths name every column, each from 10 to 90, and add up to 100. */
+function columnWidthsValid(n: { widths?: number[] | undefined; columns: readonly unknown[] }): boolean {
+  return (
+    n.widths === undefined ||
+    (n.widths.length === n.columns.length &&
+      n.widths.every((w) => w >= OUTLINE_LIMITS.columnWidthMin && w <= OUTLINE_LIMITS.columnWidthMax) &&
+      n.widths.reduce((a, b) => a + b, 0) === 100)
+  );
+}
+
 const columnsNode = z
   .strictObject({
     type: z.literal("columns"),
     widths: z.array(z.number().int()).optional(),
     columns: z.array(columnNode).min(OUTLINE_LIMITS.columnsMin).max(OUTLINE_LIMITS.columnsMax),
   })
-  .refine(
-    (n) =>
-      n.widths === undefined ||
-      (n.widths.length === n.columns.length &&
-        n.widths.every((w) => w >= OUTLINE_LIMITS.columnWidthMin && w <= OUTLINE_LIMITS.columnWidthMax) &&
-        n.widths.reduce((a, b) => a + b, 0) === 100),
-  );
+  .refine(columnWidthsValid);
 const groupNode = z.strictObject({
   type: z.literal("group"),
   children: z.array(z.discriminatedUnion("type", [...leafOptions, columnsNode])).min(1).max(OUTLINE_LIMITS.children),
@@ -387,11 +391,32 @@ function elementorRefuses(n: OutlineNode): boolean {
 // --- Reading the input text -------------------------------------------------
 
 /**
+ * True when `at`, the start of a number in the JSON text, is the value of one
+ * of `keys`: the text before it is that key as a plain string, after a "{" or
+ * a ",", then ":". A key spelled with escapes does not match.
+ */
+function isValueOfKey(json: string, at: number, keys: readonly string[]): boolean {
+  let i = at - 1;
+  while (i >= 0 && /\s/.test(json.charAt(i))) i -= 1;
+  if (json.charAt(i) !== ":") return false;
+  i -= 1;
+  while (i >= 0 && /\s/.test(json.charAt(i))) i -= 1;
+  return keys.some((key) => {
+    const open = i - key.length - 1;
+    if (open < 0 || json.slice(open, i + 1) !== `"${key}"`) return false;
+    let before = open - 1;
+    while (before >= 0 && /\s/.test(json.charAt(before))) before -= 1;
+    return json.charAt(before) === "{" || json.charAt(before) === ",";
+  });
+}
+
+/**
  * True when the JSON text holds a number written with a fraction or an
  * exponent. Every number in the grammar is a whole number, and the control
  * plane refuses 42.0 as it refuses 42.5, but JSON.parse reads both as 42.
+ * `fractionalKeys` names the keys whose value is allowed to be a fraction.
  */
-function hasFractionalNumber(json: string): boolean {
+function hasFractionalNumber(json: string, fractionalKeys: readonly string[]): boolean {
   let inString = false;
   for (let i = 0; i < json.length; i += 1) {
     const ch = json.charAt(i);
@@ -403,7 +428,7 @@ function hasFractionalNumber(json: string): boolean {
     } else if (ch === "-" || (ch >= "0" && ch <= "9")) {
       let end = i + 1;
       while (end < json.length && /[0-9.eE+-]/.test(json.charAt(end))) end += 1;
-      if (!/^-?(0|[1-9][0-9]*)$/.test(json.slice(i, end))) return true;
+      if (!/^-?(0|[1-9][0-9]*)$/.test(json.slice(i, end)) && !isValueOfKey(json, i, fractionalKeys)) return true;
       i = end - 1;
     }
   }
@@ -413,9 +438,10 @@ function hasFractionalNumber(json: string): boolean {
 /**
  * The input as data, or undefined for text that is not JSON the card can read
  * in full. A "__proto__" key anywhere is refused because the schema parser
- * skips that key by design, which would drop it from the screen.
+ * skips that key by design, which would drop it from the screen. Numbers are
+ * whole numbers, except the value of a key named in `fractionalKeys`.
  */
-export function readInput(inputJson: string): unknown {
+export function readInput(inputJson: string, fractionalKeys: readonly string[] = []): unknown {
   let hidden = false;
   let value: unknown;
   try {
@@ -426,7 +452,7 @@ export function readInput(inputJson: string): unknown {
   } catch {
     return undefined;
   }
-  return hidden || hasFractionalNumber(inputJson) ? undefined : value;
+  return hidden || hasFractionalNumber(inputJson, fractionalKeys) ? undefined : value;
 }
 
 // --- The parsed preview -----------------------------------------------------
@@ -475,6 +501,530 @@ export function parsePagePreview(inputJson: string, pageMedia?: unknown, pageBui
   if (editor === "wordpress_classic" && blockOnly) return null;
   if (builderRefuses || imageWithoutFact) return null;
   return { title, outline, media, builder };
+}
+
+// --- Designed pages (outline version 3) --------------------------------------
+
+// A designed page is an input with outline_version 3: a design (six colours,
+// two fonts, a type scale, a radius and a density), an optional page frame and
+// an outline made of sections. A section holds the version 2 leaves, columns
+// and groups, and patterns (hero, features, testimonials, pricing, faq, cta,
+// logos, stats). It is built with Elementor's classic format alone.
+//
+// The grammar is the control plane's, and apps/agent/tests/fixtures/ability-run/
+// page-create-v3-cases.json pins it for the control plane, the agent and this
+// file. It is held as strictly as version 2: every object is closed, so a key
+// the card has no line for makes the whole request not showable instead of
+// being dropped from the screen while the owner approves.
+//
+// The card draws colours and font names, so only closed shapes get through: a
+// colour is "#" and six hex digits, a font family is 1 to 60 letters, digits
+// and spaces. Nothing here builds markup, and no value here is ever made into
+// an href. Text values are the AI's words, carried as data. The text rules
+// (blank, controls, markup, lengths) stay the agent's alone.
+
+/** The limits of a designed page (OutlineV3Schema in the agent, the control plane's twin). */
+export const DESIGNED_LIMITS = {
+  /** Bytes of the input text: the least the agent reads. */
+  inputBytes: 65_536,
+  sections: 20,
+  sectionChildren: 50,
+  heroChildren: 6,
+  ctaChildren: 4,
+  planFeatures: 8,
+  statValueMax: 999_999_999,
+} as const;
+
+/** Items per item pattern: [minimum, maximum]. */
+export const PATTERN_ITEM_CAPS = {
+  features: [3, 8],
+  testimonials: [1, 6],
+  plans: [1, 4],
+  faq: [1, 12],
+  logos: [3, 10],
+  stats: [2, 4],
+} as const;
+
+/** The closed list of icon names a features item may show. */
+export const PATTERN_ICONS = [
+  "arrow-right", "award", "bell", "bolt", "book", "briefcase", "calendar", "chart", "check", "clock",
+  "cloud", "code", "cog", "comment", "compass", "credit-card", "cube", "database", "envelope", "eye",
+  "flag", "gift", "globe", "heart", "home", "image", "key", "laptop", "layers", "leaf",
+  "lightbulb", "lock", "map-pin", "phone", "rocket", "search", "shield", "star", "tag", "users",
+] as const;
+
+/** Ids a theme already owns: never a section anchor. */
+export const RESERVED_ANCHORS = [
+  "content", "main", "primary", "page", "masthead", "colophon", "site-header", "site-footer", "wpadminbar",
+] as const;
+
+/** The six colour roles of a design, in the order the card shows them. */
+export const DESIGN_COLOUR_ROLES = ["ground", "surface", "ink", "muted", "accent", "on_accent"] as const;
+
+/** How a page sits in the theme (page_frame). */
+export const PAGE_FRAMES = ["theme", "full_width", "canvas"] as const;
+export type PageFrame = (typeof PAGE_FRAMES)[number];
+
+const ANCHOR = /^[a-z][a-z0-9-]{1,39}$/;
+const ANCHOR_LINK = /^#([a-z][a-z0-9-]{1,39})$/;
+const RESERVED_ANCHOR_SET: ReadonlySet<string> = new Set<string>(RESERVED_ANCHORS);
+
+/** The anchor a "#anchor" link names, or null for any other link or a malformed anchor. */
+export function anchorOfLink(url: string): string | null {
+  return ANCHOR_LINK.exec(url)?.[1] ?? null;
+}
+
+// --- The design
+
+const HEX_COLOUR = /^#[0-9A-Fa-f]{6}$/;
+const PURE_BLACK = "#000000";
+const FONT_FAMILY = /^[A-Za-z0-9 ]{1,60}$/;
+/** The least contrast of text on its background (WCAG AA for body text). */
+const MIN_CONTRAST = 4.5;
+const CONTRAST_PAIRS = [
+  ["ink", "ground"],
+  ["ink", "surface"],
+  ["on_accent", "accent"],
+] as const;
+
+/** The relative luminance of a "#RRGGBB" colour. */
+function luminance(hex: string): number {
+  const channel = (from: number): number => {
+    const c = Number.parseInt(hex.slice(from, from + 2), 16) / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+}
+
+/** The contrast ratio of two "#RRGGBB" colours, from 1 to 21, the same whichever comes first. */
+export function contrastRatio(a: string, b: string): number {
+  const la = luminance(a);
+  const lb = luminance(b);
+  const [light, dark] = la < lb ? [lb, la] : [la, lb];
+  return (light + 0.05) / (dark + 0.05);
+}
+
+// A colour is read in either letter case and kept in upper case; pure black is
+// refused because a page built from it reads as a template.
+const designColour = z
+  .string()
+  .regex(HEX_COLOUR)
+  .refine((c) => c.toUpperCase() !== PURE_BLACK)
+  .transform((c) => c.toUpperCase());
+
+const designColours = z
+  .strictObject({
+    ground: designColour,
+    surface: designColour,
+    ink: designColour,
+    muted: designColour,
+    accent: designColour,
+    on_accent: designColour,
+  })
+  .refine((c) => CONTRAST_PAIRS.every(([text, on]) => contrastRatio(c[text], c[on]) >= MIN_CONTRAST));
+
+// "system" is a family name like any other here: it means "set no family".
+const fontFamily = z.string().regex(FONT_FAMILY);
+
+const designSchema = z.strictObject({
+  colors: designColours,
+  fonts: z.strictObject({ heading: fontFamily, body: fontFamily }),
+  scale: z.strictObject({
+    base_px: z.number().int().min(15).max(20),
+    ratio: z.number().min(1.125).max(1.333),
+  }),
+  radius: z.enum(["none", "sm", "md", "lg"]),
+  density: z.enum(["compact", "normal", "airy"]),
+});
+
+/** A design that passed every check. Its colours are upper case. */
+export type PageDesign = z.infer<typeof designSchema>;
+
+// --- The nodes of a section
+
+const attachmentId = z.number().int().min(1).max(OUTLINE_LIMITS.attachmentIdMax);
+
+// A heading may be level 1 here (the rule that it stands once, in the hero, is
+// judged over the page), and a button may be styled as text.
+const designedHeadingNode = z.strictObject({
+  type: z.literal("heading"),
+  level: z.number().int().min(1).max(4),
+  text,
+});
+const designedButtonItem = z.strictObject({
+  text,
+  // Judged over the page: a "#anchor" link has to name a section of it.
+  url: z.string(),
+  style: z.enum(["fill", "outline", "text"]).optional(),
+});
+const designedButtonsNode = z.strictObject({
+  type: z.literal("buttons"),
+  align: z.enum(["left", "center"]).optional(),
+  buttons: z.array(designedButtonItem).min(1).max(OUTLINE_LIMITS.buttonsPerBlock),
+});
+
+const designedLeafOptions = [
+  designedHeadingNode,
+  paragraphNode,
+  listNode,
+  imageNode,
+  designedButtonsNode,
+  quoteNode,
+  separatorNode,
+  spacerNode,
+  tableNode,
+] as const;
+const designedLeafNode = z.discriminatedUnion("type", designedLeafOptions);
+
+const designedColumnsNode = z
+  .strictObject({
+    type: z.literal("columns"),
+    widths: z.array(z.number().int()).optional(),
+    columns: z
+      .array(z.strictObject({ children: z.array(designedLeafNode).min(1).max(OUTLINE_LIMITS.children) }))
+      .min(OUTLINE_LIMITS.columnsMin)
+      .max(OUTLINE_LIMITS.columnsMax),
+  })
+  .refine(columnWidthsValid);
+const designedGroupNode = z.strictObject({
+  type: z.literal("group"),
+  children: z
+    .array(z.discriminatedUnion("type", [...designedLeafOptions, designedColumnsNode]))
+    .min(1)
+    .max(OUTLINE_LIMITS.children),
+});
+
+// --- The patterns
+
+const patternHead = <const P extends string, const V extends readonly [string, ...string[]]>(pattern: P, variants: V) => ({
+  type: z.literal("pattern"),
+  pattern: z.literal(pattern),
+  variant: z.enum(variants),
+});
+
+const heroPattern = z.strictObject({
+  ...patternHead("hero", ["background", "split", "centered"]),
+  children: z
+    .array(z.discriminatedUnion("type", [designedHeadingNode, paragraphNode, designedButtonsNode, imageNode]))
+    .min(1)
+    .max(DESIGNED_LIMITS.heroChildren),
+});
+const ctaPattern = z.strictObject({
+  ...patternHead("cta", ["band"]),
+  children: z
+    .array(z.discriminatedUnion("type", [designedHeadingNode, paragraphNode, designedButtonsNode]))
+    .min(1)
+    .max(DESIGNED_LIMITS.ctaChildren),
+});
+const featuresPattern = z.strictObject({
+  ...patternHead("features", ["split", "bento", "grid"]),
+  features: z
+    .array(z.strictObject({ icon: z.enum(PATTERN_ICONS), title: text, text }))
+    .min(PATTERN_ITEM_CAPS.features[0])
+    .max(PATTERN_ITEM_CAPS.features[1]),
+});
+const testimonialsPattern = z.strictObject({
+  ...patternHead("testimonials", ["featured"]),
+  testimonials: z
+    .array(z.strictObject({ quote: text, name: text, role: text.optional(), attachment_id: attachmentId.optional() }))
+    .min(PATTERN_ITEM_CAPS.testimonials[0])
+    .max(PATTERN_ITEM_CAPS.testimonials[1]),
+});
+const pricingPattern = z.strictObject({
+  ...patternHead("pricing", ["three-plans"]),
+  plans: z
+    .array(
+      z.strictObject({
+        name: text,
+        price: text,
+        period: text.optional(),
+        features: z.array(text).min(1).max(DESIGNED_LIMITS.planFeatures),
+        // Judged over the page, like a button link.
+        cta: z.strictObject({ text, url: z.string() }),
+        highlighted: z.boolean().optional(),
+      }),
+    )
+    .min(PATTERN_ITEM_CAPS.plans[0])
+    .max(PATTERN_ITEM_CAPS.plans[1]),
+});
+const faqPattern = z.strictObject({
+  ...patternHead("faq", ["accordion"]),
+  faq: z
+    .array(z.strictObject({ question: text, answer: text }))
+    .min(PATTERN_ITEM_CAPS.faq[0])
+    .max(PATTERN_ITEM_CAPS.faq[1]),
+});
+const logosPattern = z.strictObject({
+  ...patternHead("logos", ["row"]),
+  logos: z
+    .array(z.strictObject({ attachment_id: attachmentId, alt: text }))
+    .min(PATTERN_ITEM_CAPS.logos[0])
+    .max(PATTERN_ITEM_CAPS.logos[1]),
+});
+const statsPattern = z.strictObject({
+  ...patternHead("stats", ["counters"]),
+  stats: z
+    .array(
+      z.strictObject({
+        value: z.number().int().min(0).max(DESIGNED_LIMITS.statValueMax),
+        suffix: text.optional(),
+        label: text,
+      }),
+    )
+    .min(PATTERN_ITEM_CAPS.stats[0])
+    .max(PATTERN_ITEM_CAPS.stats[1]),
+});
+const patternNode = z.discriminatedUnion("pattern", [
+  heroPattern,
+  ctaPattern,
+  featuresPattern,
+  testimonialsPattern,
+  pricingPattern,
+  faqPattern,
+  logosPattern,
+  statsPattern,
+]);
+
+// --- The page
+
+const sectionNode = z.strictObject({
+  type: z.literal("section"),
+  anchor: z.string().regex(ANCHOR),
+  width: z.enum(["boxed", "full"]).optional(),
+  tone: z.enum(["ground", "surface", "inverse", "accent"]).optional(),
+  background: z
+    .strictObject({
+      attachment_id: attachmentId,
+      overlay: z.enum(["none", "soft", "strong"]).optional(),
+      focal: z.enum(["center", "top", "bottom"]).optional(),
+    })
+    .optional(),
+  spacing: z.enum(["md", "lg", "xl"]).optional(),
+  align: z.enum(["start", "center"]).optional(),
+  min_height: z.enum(["auto", "screen"]).optional(),
+  children: z
+    .array(z.discriminatedUnion("type", [...designedLeafOptions, designedColumnsNode, designedGroupNode, patternNode]))
+    .min(1)
+    .max(DESIGNED_LIMITS.sectionChildren),
+});
+
+const designedInputSchema = z.strictObject({
+  post_type: z.enum(["page", "post"]),
+  editor: z.literal(ELEMENTOR_EDITOR),
+  // A designed page names its format: the default is resolved by the site.
+  elementor_format: z.literal("classic"),
+  outline_version: z.literal(3),
+  title: z.string().refine((t) => t.trim() !== ""),
+  design: designSchema,
+  page_frame: z.enum(PAGE_FRAMES).optional(),
+  outline: z.array(sectionNode).min(1).max(DESIGNED_LIMITS.sections),
+});
+
+export type DesignedLeaf = z.infer<typeof designedLeafNode>;
+export type PatternNode = z.infer<typeof patternNode>;
+export type SectionNode = z.infer<typeof sectionNode>;
+
+/** What the page holds beyond its shape, found in one walk. */
+interface DesignedFacts {
+  anchors: string[];
+  links: string[];
+  /** Attachments the card names by file: image blocks and section backgrounds. */
+  mediaIds: number[];
+  nodes: number;
+  images: number;
+  buttons: number;
+  tables: number;
+  heroes: number;
+  heroMisplaced: boolean;
+  headingOneOutsideHero: boolean;
+  headingOnesInHero: number;
+  elementorRefuses: boolean;
+}
+
+function inspectSections(sections: readonly SectionNode[]): DesignedFacts {
+  const f: DesignedFacts = {
+    anchors: [],
+    links: [],
+    mediaIds: [],
+    nodes: 0,
+    images: 0,
+    buttons: 0,
+    tables: 0,
+    heroes: 0,
+    heroMisplaced: false,
+    headingOneOutsideHero: false,
+    headingOnesInHero: 0,
+    elementorRefuses: false,
+  };
+  const leaf = (n: DesignedLeaf, inHero: boolean): void => {
+    f.nodes += 1;
+    switch (n.type) {
+      case "heading":
+        if (n.level === 1) {
+          if (inHero) f.headingOnesInHero += 1;
+          else f.headingOneOutsideHero = true;
+        }
+        break;
+      case "paragraph":
+        if (ADDRESS_ONLY.test(n.text)) f.elementorRefuses = true;
+        break;
+      case "quote":
+        if (n.paragraphs.some((p) => ADDRESS_ONLY.test(p))) f.elementorRefuses = true;
+        break;
+      case "image":
+        f.images += 1;
+        f.mediaIds.push(n.attachment_id);
+        if (n.align !== undefined && n.align !== "none" && n.align !== "center") f.elementorRefuses = true;
+        break;
+      case "buttons":
+        f.nodes += n.buttons.length;
+        f.buttons += n.buttons.length;
+        for (const b of n.buttons) {
+          f.links.push(b.url);
+          if (b.url.includes("&")) f.elementorRefuses = true;
+        }
+        break;
+      case "table":
+        f.tables += 1;
+        break;
+      default:
+        break;
+    }
+  };
+  const columns = (n: z.infer<typeof designedColumnsNode>): void => {
+    f.nodes += 1 + n.columns.length;
+    for (const column of n.columns) for (const c of column.children) leaf(c, false);
+  };
+  sections.forEach((section, si) => {
+    f.nodes += 1;
+    f.anchors.push(section.anchor);
+    if (section.background !== undefined) {
+      f.images += 1;
+      f.mediaIds.push(section.background.attachment_id);
+    }
+    section.children.forEach((child, ci) => {
+      switch (child.type) {
+        case "pattern":
+          f.nodes += 1;
+          if (child.pattern === "hero") {
+            f.heroes += 1;
+            // The hero is the first child of the first section, and only there.
+            if (si !== 0 || ci !== 0) f.heroMisplaced = true;
+            for (const c of child.children) leaf(c, true);
+          } else if (child.pattern === "cta") {
+            for (const c of child.children) leaf(c, false);
+          } else if (child.pattern === "pricing") {
+            for (const plan of child.plans) f.links.push(plan.cta.url);
+          }
+          break;
+        case "group":
+          f.nodes += 1;
+          for (const c of child.children) {
+            if (c.type === "columns") columns(c);
+            else leaf(c, false);
+          }
+          break;
+        case "columns":
+          columns(child);
+          break;
+        default:
+          leaf(child, false);
+      }
+    });
+  });
+  return f;
+}
+
+/** True when a link is one the grammar accepts: a "#anchor" of the page, a site path, or an https address. */
+function designedLinkResolves(url: string, anchors: readonly string[]): boolean {
+  if (url.startsWith("#")) {
+    const anchor = anchorOfLink(url);
+    return anchor !== null && anchors.includes(anchor);
+  }
+  return parseLink(url) !== null;
+}
+
+/**
+ * The rules that need the whole page: one anchor for one section and none of
+ * a theme's; every "#anchor" link names a section; the hero is the first child
+ * of the first section and there is one; the page's one level 1 heading is in
+ * it; the page-wide counters of version 2; and what Elementor does not build
+ * as asked.
+ */
+function designedPageHolds(f: DesignedFacts): boolean {
+  return (
+    new Set(f.anchors).size === f.anchors.length &&
+    f.anchors.every((a) => !RESERVED_ANCHOR_SET.has(a)) &&
+    f.links.every((url) => designedLinkResolves(url, f.anchors)) &&
+    f.heroes <= 1 &&
+    !f.heroMisplaced &&
+    !f.headingOneOutsideHero &&
+    f.headingOnesInHero <= 1 &&
+    f.nodes <= OUTLINE_LIMITS.nodes &&
+    f.images <= OUTLINE_LIMITS.images &&
+    f.buttons <= OUTLINE_LIMITS.buttons &&
+    f.tables <= OUTLINE_LIMITS.tables &&
+    !f.elementorRefuses
+  );
+}
+
+/** The bytes of a text in UTF-8, as the input limit counts them. */
+function utf8Length(value: string): number {
+  let bytes = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && (value.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      bytes += 4;
+      i += 1;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
+/** A designed page the card can show in full. */
+export interface DesignedPagePreview {
+  readonly title: string;
+  readonly design: PageDesign;
+  /** The page_frame sent, else full width when the page opens with a hero, else the theme's. */
+  readonly pageFrame: PageFrame;
+  readonly sections: readonly SectionNode[];
+  /** The image facts, keyed by attachment id. Every image block and section background has one. */
+  readonly media: ReadonlyMap<number, PageMediaFact>;
+  /** The site's facts: Elementor, classic format, containers. */
+  readonly builder: PageBuilderFacts;
+}
+
+/**
+ * Parses the exact AI input of a designed page (outline_version 3). Null when
+ * it is not a shape the card can show in full: an unknown key or value, a
+ * design that is not fully set or whose text and background colours are too
+ * close, a rule over the page the control plane refuses, a section background
+ * or image block with no fact from the site, or a site that cannot build it
+ * (it needs Elementor in the classic format, with containers). A version 2
+ * input is read by parsePagePreview, which refuses this one.
+ */
+export function parseDesignedPagePreview(
+  inputJson: string,
+  pageMedia?: unknown,
+  pageBuilder?: unknown,
+): DesignedPagePreview | null {
+  if (utf8Length(inputJson) > DESIGNED_LIMITS.inputBytes) return null;
+  // The type ratio is the one number of the grammar that is not a whole number.
+  const raw = readInput(inputJson, ["ratio"]);
+  if (raw === undefined) return null;
+  const parsed = designedInputSchema.safeParse(raw);
+  if (!parsed.success) return null;
+  const builder = parsePageBuilder(pageBuilder);
+  if (builder === null || builder.format !== "classic" || builder.layout !== "containers") return null;
+  const { title, design, outline: sections, page_frame: frame } = parsed.data;
+  const facts = inspectSections(sections);
+  if (!designedPageHolds(facts)) return null;
+  const media = indexPageMedia(pageMedia);
+  if (facts.mediaIds.some((id) => !media.has(id))) return null;
+  const pageFrame = frame ?? (facts.heroes > 0 ? "full_width" : "theme");
+  return { title, design, pageFrame, sections, media, builder };
 }
 
 // --- Words for the card -----------------------------------------------------

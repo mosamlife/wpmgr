@@ -3,17 +3,21 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  DESIGNED_LIMITS,
   OUTLINE_LIMITS,
+  PATTERN_ICONS,
   buttonLabel,
   buttonsLabel,
   classifyLink,
   columnsLabel,
+  contrastRatio,
   imageAlignLabel,
   imageAltLabel,
   imageSizeLabel,
   indexPageMedia,
   isSameSiteHost,
   layoutSummary,
+  parseDesignedPagePreview,
   parseLink,
   parsePagePreview,
   spacerLabel,
@@ -592,5 +596,605 @@ describe("a page Elementor builds", () => {
     ];
     const input = JSON.stringify({ post_type: "page", editor: "wordpress_blocks", title: "T", outline });
     expect(parsePagePreview(input, factsFor(input))).not.toBeNull();
+  });
+});
+
+// --- A designed page (outline version 3) -------------------------------------
+//
+// The same hold, for the designed-page input: the table the agent and the
+// control plane read is read here from the agent's fixture path, never copied.
+
+const V3_CASES_FILE = join(process.cwd(), "..", "agent", "tests", "fixtures", "ability-run", "page-create-v3-cases.json");
+
+interface V3Case extends SharedCase {
+  rule: string;
+  generate?: { append: string; to_bytes: number };
+  site?: { elementor_containers?: boolean; attachment_mimes?: Record<string, string> };
+}
+
+const v3Table = JSON.parse(readFileSync(V3_CASES_FILE, "utf8")) as { icons: string[]; cases: V3Case[] };
+
+/** The exact input text of a case: a "generate" case is padded to its stated byte length. */
+function v3InputOf(c: V3Case): string {
+  if (c.generate === undefined) return c.input;
+  const have = Buffer.byteLength(c.input, "utf8");
+  const unit = Buffer.byteLength(c.generate.append, "utf8");
+  return c.input + c.generate.append.repeat(Math.max(0, Math.floor((c.generate.to_bytes - have) / unit)));
+}
+
+/** The facts of a site that can build a designed page. */
+const DESIGNED_BUILDER = { builder: "elementor", format: "classic", version: "3.35.9", layout: "containers" };
+
+function designed(input: string, builder: unknown = DESIGNED_BUILDER, media: unknown = factsFor(input)) {
+  return parseDesignedPagePreview(input, media, builder);
+}
+
+type Doc = Record<string, unknown>;
+const asDoc = (v: unknown): Doc => v as Doc;
+const asList = (v: unknown): Doc[] => v as Doc[];
+
+function v3Case(name: string): V3Case {
+  const found = v3Table.cases.find((c) => c.name === name);
+  if (found === undefined) throw new Error(`the shared table has no case ${name}`);
+  return found;
+}
+
+/** A fresh copy of a case's page, ready to be changed and shown again. */
+function v3Doc(name: string): Doc {
+  return JSON.parse(v3InputOf(v3Case(name))) as Doc;
+}
+
+const sectionsOf = (d: Doc): Doc[] => asList(d.outline);
+
+function sectionAt(d: Doc, index: number): Doc {
+  const section = sectionsOf(d)[index];
+  if (section === undefined) throw new Error(`the page has no section ${index}`);
+  return section;
+}
+
+function patternIn(d: Doc, name: string): Doc {
+  for (const s of sectionsOf(d)) {
+    for (const c of asList(s.children)) if (c.type === "pattern" && c.pattern === name) return c;
+  }
+  throw new Error(`the page has no ${name} pattern`);
+}
+
+const showDoc = (d: Doc, builder: unknown = DESIGNED_BUILDER) => designed(JSON.stringify(d), builder);
+
+describe("a designed page: the card accepts exactly what the control plane accepts", () => {
+  const { cases, icons } = v3Table;
+
+  it("reads a real table (a missing or emptied file must not pass quietly)", () => {
+    expect(cases.length).toBeGreaterThanOrEqual(50);
+    expect(cases.filter((c) => c.go === "accept").length).toBeGreaterThan(10);
+    expect(cases.filter((c) => c.go === "refuse").length).toBeGreaterThan(30);
+    expect(icons).toHaveLength(40);
+    const names = new Set(cases.map((c) => c.name));
+    for (const probe of [
+      "v3-full-landing-page",
+      "anchor-duplicate",
+      "anchor-reserved",
+      "design-ink-on-ground-contrast-low",
+      "design-colour-pure-black",
+      "hero-not-the-first-child",
+      "h1-twice-in-the-hero",
+      "link-anchor-missing",
+      "icon-not-in-the-list",
+      "images-21-counting-backgrounds",
+      "landing-page-over-the-input-limit",
+    ]) {
+      expect(names.has(probe), probe).toBe(true);
+    }
+  });
+
+  it.each(cases.map((c) => [c.name, c] as const))("%s", (_name, c) => {
+    expect(designed(v3InputOf(c)) !== null).toBe(c.go === "accept");
+  });
+
+  it("the card's icon list is the table's icon list", () => {
+    expect([...PATTERN_ICONS]).toEqual(icons);
+  });
+
+  it("the version 2 reader shows none of them, so a designed page is never shown in part by it", () => {
+    const shown = cases
+      .filter((c) => {
+        const input = v3InputOf(c);
+        return parsePagePreview(input, factsFor(input), DESIGNED_BUILDER) !== null;
+      })
+      .map((c) => c.name);
+    expect(shown).toEqual([]);
+  });
+
+  it("the designed reader shows no version 2 input", () => {
+    const v2 = sharedCases();
+    expect(v2.length).toBeGreaterThan(100);
+    const shown = v2.filter((c) => designed(c.input) !== null).map((c) => c.name);
+    expect(shown).toEqual([]);
+  });
+});
+
+describe("a designed page as data", () => {
+  it("returns the page as the AI wrote it, with its design and frame", () => {
+    const doc = v3Doc("v3-full-landing-page");
+    const shown = showDoc(doc);
+    expect(shown).not.toBeNull();
+    expect(shown?.title).toBe(doc.title);
+    expect(shown?.pageFrame).toBe("full_width");
+    expect(shown?.design.colors).toEqual(asDoc(doc.design).colors);
+    expect(shown?.design.scale).toEqual({ base_px: 17, ratio: 1.25 });
+    expect(shown?.sections.map((s) => s.anchor)).toEqual(sectionsOf(doc).map((s) => s.anchor));
+    expect((shown?.sections.length ?? 0) > 5).toBe(true);
+    expect(shown?.builder.layout).toBe("containers");
+    expect(shown?.media.get(42)?.id).toBe(42);
+  });
+
+  it("keeps the AI's words exactly, markup and all (the agent judges text)", () => {
+    const shown = showDoc(v3Doc("pattern-text-with-markup"));
+    const faq = asList(asDoc(shown?.sections[0]?.children[0]).faq);
+    expect(faq[0]?.answer).toBe("Visit <b>our</b> page.");
+  });
+
+  describe("the page frame", () => {
+    it("is full width when the page opens with a hero and says nothing", () => {
+      const doc = v3Doc("v3-full-landing-page");
+      delete doc.page_frame;
+      expect(showDoc(doc)?.pageFrame).toBe("full_width");
+    });
+    it("is the theme's when the page has no hero and says nothing", () => {
+      const doc = v3Doc("v3-minimal-page");
+      delete doc.page_frame;
+      expect(showDoc(doc)?.pageFrame).toBe("theme");
+    });
+    it.each([
+      ["v3-minimal-page", "canvas"],
+      ["v3-minimal-page", "full_width"],
+      ["v3-full-landing-page", "theme"],
+      ["v3-full-landing-page", "canvas"],
+    ])("keeps what %s asks for (%s)", (name, frame) => {
+      const doc = v3Doc(name);
+      doc.page_frame = frame;
+      expect(showDoc(doc)?.pageFrame).toBe(frame);
+    });
+    it("refuses a frame it does not know", () => {
+      const doc = v3Doc("v3-minimal-page");
+      doc.page_frame = "popup";
+      expect(showDoc(doc)).toBeNull();
+    });
+  });
+
+  describe("the design", () => {
+    const colours = (d: Doc) => asDoc(asDoc(d.design).colors);
+    const design = (d: Doc) => asDoc(d.design);
+
+    it("returns colours in upper case, whatever case they were sent in", () => {
+      const doc = v3Doc("v3-minimal-page");
+      colours(doc).accent = "#0d7a63";
+      colours(doc).muted = "#5a606c";
+      const shown = showDoc(doc);
+      expect(shown?.design.colors.accent).toBe("#0D7A63");
+      expect(shown?.design.colors.muted).toBe("#5A606C");
+    });
+
+    it.each<[string, (d: Doc) => void, boolean]>([
+      ["a colour without the hash", (d) => { colours(d).accent = "0D7A63"; }, false],
+      ["a three digit colour", (d) => { colours(d).accent = "#0D7"; }, false],
+      ["an eight digit colour", (d) => { colours(d).accent = "#0D7A63FF"; }, false],
+      ["a colour with a letter past F", (d) => { colours(d).accent = "#0D7A6G"; }, false],
+      ["a colour that ends with a line feed", (d) => { colours(d).accent = "#0D7A63\n"; }, false],
+      ["a colour name", (d) => { colours(d).accent = "teal"; }, false],
+      ["a colour that is a number", (d) => { colours(d).accent = 123456; }, false],
+      ["pure black", (d) => { colours(d).muted = "#000000"; }, false],
+      ["ink that just passes on white (4.54 to 1)", (d) => { colours(d).ground = "#FFFFFF"; colours(d).ink = "#767676"; }, true],
+      ["ink that just misses on white (4.48 to 1)", (d) => { colours(d).ground = "#FFFFFF"; colours(d).ink = "#777777"; }, false],
+      ["ink that misses on the surface only", (d) => { colours(d).surface = "#4A4F5A"; }, false],
+      ["text on the accent that misses", (d) => { colours(d).on_accent = "#9AD9CB"; }, false],
+      ["a colour role left out", (d) => { delete colours(d).muted; }, false],
+      ["a seventh colour role", (d) => { colours(d).highlight = "#FFFF00"; }, false],
+      ["system as a font family", (d) => { asDoc(design(d).fonts).heading = "system"; }, true],
+      ["a font family of 60 characters", (d) => { asDoc(design(d).fonts).heading = "A".repeat(60); }, true],
+      ["a font family of 61 characters", (d) => { asDoc(design(d).fonts).heading = "A".repeat(61); }, false],
+      ["an empty font family", (d) => { asDoc(design(d).fonts).body = ""; }, false],
+      ["a font family that can reach a style rule", (d) => { asDoc(design(d).fonts).body = "Inter; color: red"; }, false],
+      ["a font family with a quote", (d) => { asDoc(design(d).fonts).body = "Inter'"; }, false],
+      ["a font family with a line feed at the end", (d) => { asDoc(design(d).fonts).body = "Inter\n"; }, false],
+      ["a base size of 14", (d) => { asDoc(design(d).scale).base_px = 14; }, false],
+      ["a base size of 15", (d) => { asDoc(design(d).scale).base_px = 15; }, true],
+      ["a base size of 20", (d) => { asDoc(design(d).scale).base_px = 20; }, true],
+      ["a base size of 21", (d) => { asDoc(design(d).scale).base_px = 21; }, false],
+      ["a base size sent as text", (d) => { asDoc(design(d).scale).base_px = "17"; }, false],
+      ["a ratio of 1.124", (d) => { asDoc(design(d).scale).ratio = 1.124; }, false],
+      ["a ratio of 1.125", (d) => { asDoc(design(d).scale).ratio = 1.125; }, true],
+      ["a ratio of 1.333", (d) => { asDoc(design(d).scale).ratio = 1.333; }, true],
+      ["a ratio of 1.334", (d) => { asDoc(design(d).scale).ratio = 1.334; }, false],
+      ["a ratio sent as text", (d) => { asDoc(design(d).scale).ratio = "1.25"; }, false],
+      ["radius none", (d) => { design(d).radius = "none"; }, true],
+      ["radius lg", (d) => { design(d).radius = "lg"; }, true],
+      ["radius xl", (d) => { design(d).radius = "xl"; }, false],
+      ["density airy", (d) => { design(d).density = "airy"; }, true],
+      ["density dense", (d) => { design(d).density = "dense"; }, false],
+      ["a design that is not an object", (d) => { d.design = "dark"; }, false],
+      ["a design with no fonts", (d) => { delete design(d).fonts; }, false],
+    ])("%s", (_name, edit, shown) => {
+      const doc = v3Doc("v3-minimal-page");
+      edit(doc);
+      expect(showDoc(doc) !== null).toBe(shown);
+    });
+
+    it("measures contrast the way the accessibility guidelines do", () => {
+      expect(contrastRatio("#000000", "#FFFFFF")).toBeCloseTo(21, 5);
+      expect(contrastRatio("#FFFFFF", "#000000")).toBeCloseTo(21, 5);
+      expect(contrastRatio("#767676", "#FFFFFF")).toBeCloseTo(4.54, 2);
+      expect(contrastRatio("#777777", "#FFFFFF")).toBeCloseTo(4.48, 2);
+      expect(contrastRatio("#15171C", "#15171C")).toBe(1);
+    });
+  });
+
+  describe("whole numbers", () => {
+    const base = () => v3InputOf(v3Case("v3-full-landing-page"));
+
+    it("lets the type ratio be fractional, as it is", () => {
+      expect(base()).toContain('"ratio":1.25');
+      expect(designed(base())).not.toBeNull();
+    });
+    it.each([
+      ['"outline_version":3', '"outline_version":3.0'],
+      ['"base_px":17', '"base_px":17.0'],
+      ['"base_px":17', '"base_px":17.5'],
+      ['"attachment_id":42', '"attachment_id":42.0'],
+      ['"attachment_id":42', '"attachment_id":4.2e1'],
+      ['"value":1200', '"value":1200.0'],
+      ['"ratio":1.25', '"ratio":1.25,"base_px":17.0'],
+    ])("refuses %s written as %s", (from, to) => {
+      expect(base()).toContain(from);
+      expect(designed(base().replace(from, to))).toBeNull();
+    });
+  });
+
+  describe("a request the card cannot show in full is not shown in part", () => {
+    it("shows the page these edits start from", () => {
+      expect(showDoc(v3Doc("v3-full-landing-page"))).not.toBeNull();
+    });
+
+    const extraKeys: Array<[string, (d: Doc) => void]> = [
+      ["the page", (d) => { d.status = "publish"; }],
+      ["the design", (d) => { asDoc(d.design).shadow = "none"; }],
+      ["the colours", (d) => { asDoc(asDoc(d.design).colors).highlight = "#FFFF00"; }],
+      ["the fonts", (d) => { asDoc(asDoc(d.design).fonts).mono = "Courier"; }],
+      ["the scale", (d) => { asDoc(asDoc(d.design).scale).step = 3; }],
+      ["a section", (d) => { sectionAt(d, 0).padding = 48; }],
+      ["a section background", (d) => { asDoc(sectionAt(d, 0).background).blur = 8; }],
+      ["the hero", (d) => { patternIn(d, "hero").columns = 2; }],
+      ["a hero heading", (d) => { asDoc(asList(patternIn(d, "hero").children)[0]).style = "color:red"; }],
+      ["a feature", (d) => { asDoc(asList(patternIn(d, "features").features)[0]).colour = "red"; }],
+      ["a testimonial", (d) => { asDoc(asList(patternIn(d, "testimonials").testimonials)[0]).link = "/x"; }],
+      ["a plan", (d) => { asDoc(asList(patternIn(d, "pricing").plans)[0]).badge = "new"; }],
+      ["a plan button", (d) => { asDoc(asDoc(asList(patternIn(d, "pricing").plans)[0]).cta).target = "_blank"; }],
+      ["a stat", (d) => { asDoc(asList(patternIn(d, "stats").stats)[0]).unit = "x"; }],
+      ["a logo", (d) => { asDoc(asList(patternIn(d, "logos").logos)[0]).href = "/x"; }],
+      ["a question", (d) => { asDoc(asList(patternIn(d, "faq").faq)[0]).open = true; }],
+      ["the call to action", (d) => { patternIn(d, "cta").items = []; }],
+    ];
+    it.each(extraKeys)("an unknown key on %s makes the request not showable", (_name, edit) => {
+      const doc = v3Doc("v3-full-landing-page");
+      edit(doc);
+      expect(showDoc(doc)).toBeNull();
+    });
+
+    const badValues: Array<[string, (d: Doc) => void]> = [
+      ["a section tone", (d) => { sectionAt(d, 1).tone = "dark"; }],
+      ["a section width", (d) => { sectionAt(d, 0).width = "wide"; }],
+      ["a section spacing", (d) => { sectionAt(d, 1).spacing = "sm"; }],
+      ["a section alignment", (d) => { sectionAt(d, 0).align = "left"; }],
+      ["a section height", (d) => { sectionAt(d, 0).min_height = "half"; }],
+      ["a background overlay", (d) => { asDoc(sectionAt(d, 0).background).overlay = "heavy"; }],
+      ["a background focal point", (d) => { asDoc(sectionAt(d, 0).background).focal = "left"; }],
+      ["a background that is not an attachment number", (d) => { asDoc(sectionAt(d, 0).background).attachment_id = "42"; }],
+      ["a hero variant", (d) => { patternIn(d, "hero").variant = "wide"; }],
+      ["a features variant", (d) => { patternIn(d, "features").variant = "carousel"; }],
+      ["a pattern name", (d) => { patternIn(d, "logos").pattern = "carousel"; }],
+      ["a heading level of 0", (d) => { asDoc(asList(patternIn(d, "hero").children)[0]).level = 0; }],
+      ["a heading level of 5", (d) => { asDoc(asList(patternIn(d, "hero").children)[0]).level = 5; }],
+      ["a button style", (d) => { asDoc(asList(asDoc(asList(patternIn(d, "hero").children)[2]).buttons)[0]).style = "ghost"; }],
+      ["a stat value below zero", (d) => { asDoc(asList(patternIn(d, "stats").stats)[0]).value = -1; }],
+      ["a stat value past the cap", (d) => { asDoc(asList(patternIn(d, "stats").stats)[0]).value = 1_000_000_000; }],
+      ["a stat value sent as text", (d) => { asDoc(asList(patternIn(d, "stats").stats)[0]).value = "12"; }],
+      ["a plan without a button", (d) => { delete asDoc(asList(patternIn(d, "pricing").plans)[0]).cta; }],
+      ["a plan with no features", (d) => { asDoc(asList(patternIn(d, "pricing").plans)[0]).features = []; }],
+      ["a plan with nine features", (d) => { asDoc(asList(patternIn(d, "pricing").plans)[0]).features = Array.from({ length: 9 }, () => "x"); }],
+      ["a highlighted flag sent as text", (d) => { asDoc(asList(patternIn(d, "pricing").plans)[0]).highlighted = "yes"; }],
+      ["a logo without its attachment", (d) => { delete asDoc(asList(patternIn(d, "logos").logos)[0]).attachment_id; }],
+      ["a feature without its icon", (d) => { delete asDoc(asList(patternIn(d, "features").features)[0]).icon; }],
+      ["a hero with seven children", (d) => { patternIn(d, "hero").children = Array.from({ length: 7 }, () => ({ type: "paragraph", text: "x" })); }],
+      ["a call to action with five children", (d) => { patternIn(d, "cta").children = Array.from({ length: 5 }, () => ({ type: "paragraph", text: "x" })); }],
+      ["a hero that holds a list", (d) => { patternIn(d, "hero").children = [{ type: "list", ordered: false, items: ["a"] }]; }],
+      ["a call to action that holds an image", (d) => { patternIn(d, "cta").children = [{ type: "image", attachment_id: 42, alt: "a" }]; }],
+      ["a section that is not an object", (d) => { sectionsOf(d)[1] = "section" as unknown as Doc; }],
+      ["an editor that is not Elementor", (d) => { d.editor = "wordpress_blocks"; }],
+      ["a post type of media", (d) => { d.post_type = "attachment"; }],
+      ["a blank title", (d) => { d.title = "   "; }],
+    ];
+    it.each(badValues)("%s makes the request not showable", (_name, edit) => {
+      const doc = v3Doc("v3-full-landing-page");
+      edit(doc);
+      expect(showDoc(doc)).toBeNull();
+    });
+  });
+
+  describe("what a section may hold", () => {
+    const withChildren = (children: unknown[]): Doc => {
+      const doc = v3Doc("v3-minimal-page");
+      sectionAt(doc, 0).children = children;
+      return doc;
+    };
+    const para = { type: "paragraph", text: "x" };
+    const columns = {
+      type: "columns",
+      columns: [{ children: [{ type: "paragraph", text: "a" }] }, { children: [{ type: "paragraph", text: "b" }] }],
+    };
+    const features = (n: number) => ({
+      type: "pattern",
+      pattern: "features",
+      variant: "split",
+      features: Array.from({ length: n }, () => ({ icon: "bolt", title: "t", text: "x" })),
+    });
+
+    it.each<[string, unknown[], boolean]>([
+      ["a column block", [columns], true],
+      ["a group of leaves and a column block", [{ type: "group", children: [para, columns] }], true],
+      ["a pattern between leaves", [para, features(3), para], true],
+      ["every leaf a version 2 page has", [
+        { type: "heading", level: 3, text: "h" }, para, { type: "list", ordered: true, items: ["a"] },
+        { type: "image", attachment_id: 5, alt: "a", align: "center" }, { type: "quote", paragraphs: ["q"] },
+        { type: "separator" }, { type: "spacer", size: "large" }, { type: "table", rows: [["a"]] },
+      ], true],
+      ["a section inside a section", [{ type: "section", anchor: "inner", children: [para] }], false],
+      ["a pattern inside a group", [{ type: "group", children: [features(3)] }], false],
+      ["a pattern inside a column", [{ type: "columns", columns: [{ children: [features(3)] }, { children: [para] }] }], false],
+      ["a group inside a group", [{ type: "group", children: [{ type: "group", children: [para] }] }], false],
+      ["a heading of level one in a group", [{ type: "group", children: [{ type: "heading", level: 1, text: "h" }] }], false],
+      ["a heading of level one in a column", [{ type: "columns", columns: [{ children: [{ type: "heading", level: 1, text: "h" }] }, { children: [para] }] }], false],
+      ["a heading of level one in a call to action", [{ type: "pattern", pattern: "cta", variant: "band", children: [{ type: "heading", level: 1, text: "h" }] }], false],
+      ["50 children", Array.from({ length: 50 }, () => para), true],
+      ["51 children", Array.from({ length: 51 }, () => para), false],
+      ["a pattern with an unlisted item array", [{ type: "pattern", pattern: "faq", variant: "accordion", items: [] }], false],
+      ["a features pattern holding a faq array too", [{ ...features(3), faq: [{ question: "q", answer: "a" }] }], false],
+    ])("%s", (_name, children, shown) => {
+      expect(showDoc(withChildren(children)) !== null).toBe(shown);
+    });
+
+    it("refuses a page of 450 nodes and accepts one of 250", () => {
+      const sections = (paragraphs: number) => {
+        const doc = v3Doc("v3-minimal-page");
+        const out: Doc[] = [];
+        let left = paragraphs;
+        for (let i = 0; left > 0; i += 1) {
+          const n = Math.min(left, 50);
+          out.push({ type: "section", anchor: `part-${String.fromCharCode(97 + i)}`, children: Array.from({ length: n }, () => para) });
+          left -= n;
+        }
+        doc.outline = out;
+        return doc;
+      };
+      // 450 paragraphs are past the cap of 400 nodes whatever else is counted; 250 are under it.
+      expect(showDoc(sections(450))).toBeNull();
+      expect(showDoc(sections(250))).not.toBeNull();
+    });
+  });
+
+  describe("links", () => {
+    const heroButtonUrl = (d: Doc, url: string) => {
+      asDoc(asList(asDoc(asList(patternIn(d, "hero").children)[2]).buttons)[0]).url = url;
+    };
+    const planUrl = (d: Doc, url: string) => {
+      asDoc(asDoc(asList(patternIn(d, "pricing").plans)[0]).cta).url = url;
+    };
+
+    it.each<[string, boolean]>([
+      ["#pricing", true],
+      ["#top", true],
+      ["#nope", false],
+      ["#Pricing", false],
+      ["#a", false],
+      ["#", false],
+      ["#pri cing", false],
+      ["/pricing#plans", true],
+      ["/contact", true],
+      ["https://example.com/call", true],
+      ["http://example.com/call", false],
+      ["javascript:alert(1)", false],
+      ["//evil.example/x", false],
+      ["mailto:a@example.com", false],
+      ["", false],
+    ])("a button link of %j", (url, shown) => {
+      const doc = v3Doc("v3-full-landing-page");
+      heroButtonUrl(doc, url);
+      expect(showDoc(doc) !== null).toBe(shown);
+    });
+
+    it.each<[string, boolean]>([
+      ["#signup", true],
+      ["#missing", false],
+      ["javascript:alert(1)", false],
+      ["https://example.com/buy", true],
+    ])("a plan button link of %j", (url, shown) => {
+      const doc = v3Doc("v3-full-landing-page");
+      planUrl(doc, url);
+      expect(showDoc(doc) !== null).toBe(shown);
+    });
+
+    it("judges a link to an anchor after the whole page, not at the place it stands", () => {
+      expect(showDoc(v3Doc("link-to-a-later-anchor"))).not.toBeNull();
+    });
+
+    it("loses its target when the section it points at is dropped", () => {
+      const doc = v3Doc("v3-full-landing-page");
+      doc.outline = sectionsOf(doc).filter((s) => s.anchor !== "pricing");
+      expect(showDoc(doc)).toBeNull();
+    });
+  });
+
+  describe("anchors", () => {
+    it.each<[string, boolean]>([
+      ["ab", true],
+      ["a", false],
+      ["a1", true],
+      ["1a", false],
+      ["a_b", false],
+      ["a b", false],
+      ["Ab", false],
+      ["a-b-c", true],
+      ["site-header", false],
+      ["wpadminbar", false],
+      ["masthead", false],
+      ["content", false],
+      ["contents", true],
+    ])("an anchor of %j", (anchor, shown) => {
+      const doc = v3Doc("v3-minimal-page");
+      sectionAt(doc, 0).anchor = anchor;
+      expect(showDoc(doc) !== null).toBe(shown);
+    });
+  });
+
+  describe("what Elementor builds as asked", () => {
+    const into = (d: Doc, node: unknown) => {
+      asList(sectionAt(d, 2).children).push(node as Doc);
+    };
+    it.each<[string, unknown, boolean]>([
+      ["an address-only paragraph", { type: "paragraph", text: "https://example.com/watch" }, false],
+      ["an address with words around it", { type: "paragraph", text: "See https://example.com today" }, true],
+      ["an address-only quote", { type: "quote", paragraphs: ["http://example.com"] }, false],
+      ["an image aligned wide", { type: "image", attachment_id: 5, alt: "a", align: "wide" }, false],
+      ["an image aligned full", { type: "image", attachment_id: 5, alt: "a", align: "full" }, false],
+      ["an image aligned centre", { type: "image", attachment_id: 5, alt: "a", align: "center" }, true],
+      ["an outline button", { type: "buttons", buttons: [{ text: "Go", url: "/go", style: "outline" }] }, true],
+      ["a text button", { type: "buttons", buttons: [{ text: "Go", url: "/go", style: "text" }] }, true],
+      ["a button link with an ampersand", { type: "buttons", buttons: [{ text: "Go", url: "/go?a=1&b=2" }] }, false],
+    ])("%s", (_name, node, shown) => {
+      const doc = v3Doc("v3-full-landing-page");
+      into(doc, node);
+      expect(showDoc(doc) !== null).toBe(shown);
+    });
+
+    it("refuses an address-only paragraph inside the hero too", () => {
+      const doc = v3Doc("v3-full-landing-page");
+      asList(patternIn(doc, "hero").children).push({ type: "paragraph", text: "https://example.com/watch" });
+      expect(showDoc(doc)).toBeNull();
+    });
+  });
+
+  describe("the site's facts", () => {
+    const input = () => v3InputOf(v3Case("v3-full-landing-page"));
+
+    it("needs Elementor's classic format with containers, as stated by the site", () => {
+      expect(designed(input())).not.toBeNull();
+      expect(designed(input(), { ...DESIGNED_BUILDER, format: "atomic" })).toBeNull();
+      expect(designed(input(), { ...DESIGNED_BUILDER, layout: "sections" })).toBeNull();
+      // No facts at all (an argument left out is not the helper's default).
+      expect(parseDesignedPagePreview(input(), factsFor(input()))).toBeNull();
+      expect(designed(input(), null)).toBeNull();
+      expect(designed(input(), { ...DESIGNED_BUILDER, version: "x" })).toBeNull();
+    });
+
+    it("keeps a designed page on a section and column site off the card, as the control plane's site check does", () => {
+      const c = v3Case("sections-on-a-section-and-column-site");
+      expect(c.site?.elementor_containers).toBe(false);
+      expect(c.go).toBe("accept");
+      expect(designed(v3InputOf(c))).not.toBeNull();
+      expect(designed(v3InputOf(c), { ...DESIGNED_BUILDER, layout: "sections" })).toBeNull();
+    });
+
+    it("needs a fact for the section background, and the site's fact must be an image", () => {
+      const c = v3Case("background-not-an-image");
+      expect(c.site?.attachment_mimes?.["43"]).toBe("application/pdf");
+      const text = v3InputOf(c);
+      expect(designed(text)).not.toBeNull();
+      expect(designed(text, DESIGNED_BUILDER, [])).toBeNull();
+      expect(designed(text, DESIGNED_BUILDER, [{ id: 43, filename: "a.pdf", mime: "application/pdf", width: 0, height: 0 }])).toBeNull();
+    });
+
+    it("needs a fact for every image block", () => {
+      const doc = v3Doc("v3-minimal-page");
+      asList(sectionAt(doc, 0).children).push({ type: "image", attachment_id: 77, alt: "a" });
+      const text = JSON.stringify(doc);
+      expect(designed(text)).not.toBeNull();
+      expect(designed(text, DESIGNED_BUILDER, [])).toBeNull();
+    });
+
+    it("names a logo or an avatar by its library number, so those need no fact", () => {
+      const text = input();
+      const onlyTheBackground = [{ id: 42, filename: "f42.jpg", mime: "image/jpeg", width: 10, height: 10 }];
+      expect(designed(text, DESIGNED_BUILDER, onlyTheBackground)).not.toBeNull();
+    });
+
+    it("refuses facts that are not a clean list, as a whole", () => {
+      const text = input();
+      const fact = { id: 42, filename: "f42.jpg", mime: "image/jpeg", width: 10, height: 10 };
+      expect(designed(text, DESIGNED_BUILDER, [fact, fact])).toBeNull();
+      expect(designed(text, DESIGNED_BUILDER, [{ ...fact, mime: "text/html" }])).toBeNull();
+    });
+  });
+
+  describe("sizes", () => {
+    it("counts the input in bytes, not characters", () => {
+      const withText = (n: number) => {
+        const doc = v3Doc("v3-minimal-page");
+        const first = asList(sectionAt(doc, 0).children)[0];
+        if (first === undefined) throw new Error("the page has no first block");
+        // Two bytes in UTF-8, one character in the string.
+        first.text = "é".repeat(n);
+        return JSON.stringify(doc);
+      };
+      const room = Math.floor((DESIGNED_LIMITS.inputBytes - Buffer.byteLength(withText(0), "utf8")) / 2);
+      expect(Buffer.byteLength(withText(room), "utf8")).toBeLessThanOrEqual(DESIGNED_LIMITS.inputBytes);
+      expect(Buffer.byteLength(withText(room + 1), "utf8")).toBeGreaterThan(DESIGNED_LIMITS.inputBytes);
+      expect(withText(room + 1).length).toBeLessThan(DESIGNED_LIMITS.inputBytes);
+      expect(designed(withText(room))).not.toBeNull();
+      expect(designed(withText(room + 1))).toBeNull();
+    });
+
+    it("holds the images of a page, backgrounds included, to 20", () => {
+      const page = (backgrounds: number, blocks: number) => {
+        const doc = v3Doc("v3-minimal-page");
+        doc.outline = Array.from({ length: Math.max(backgrounds, 1) }, (_v, i) => ({
+          type: "section",
+          anchor: `part-${String.fromCharCode(97 + i)}`,
+          ...(i < backgrounds ? { background: { attachment_id: 40 + i } } : {}),
+          children: i === 0 ? [{ type: "paragraph", text: "x" }, ...Array.from({ length: blocks }, (_w, j) => ({ type: "image", attachment_id: 100 + j, alt: "a" }))] : [{ type: "paragraph", text: "x" }],
+        }));
+        return doc;
+      };
+      expect(showDoc(page(10, 10))).not.toBeNull();
+      expect(showDoc(page(10, 11))).toBeNull();
+      expect(showDoc(page(11, 10))).toBeNull();
+      expect(showDoc(page(0, 21))).toBeNull();
+    });
+
+    it("holds the buttons of a page to 12 and the tables to 10, as a version 2 page is", () => {
+      const buttons = (n: number) => {
+        const doc = v3Doc("v3-minimal-page");
+        sectionAt(doc, 0).children = Array.from({ length: n }, () => ({ type: "buttons", buttons: [{ text: "Go", url: "/go" }] }));
+        return doc;
+      };
+      expect(showDoc(buttons(12))).not.toBeNull();
+      expect(showDoc(buttons(13))).toBeNull();
+      const tables = (n: number) => {
+        const doc = v3Doc("v3-minimal-page");
+        sectionAt(doc, 0).children = Array.from({ length: n }, () => ({ type: "table", rows: [["a"]] }));
+        return doc;
+      };
+      expect(showDoc(tables(10))).not.toBeNull();
+      expect(showDoc(tables(11))).toBeNull();
+    });
+  });
+
+  describe("reading the text", () => {
+    it("refuses text that is not JSON, and a key that hides from a parse", () => {
+      expect(designed("not json")).toBeNull();
+      expect(designed("")).toBeNull();
+      expect(designed("[]")).toBeNull();
+      expect(designed("null")).toBeNull();
+      const doc = JSON.stringify(v3Doc("v3-minimal-page")).replace('"post_type"', '"__proto__":{"x":1},"post_type"');
+      expect(designed(doc)).toBeNull();
+    });
   });
 });
