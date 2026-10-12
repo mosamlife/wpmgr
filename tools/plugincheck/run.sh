@@ -23,6 +23,14 @@ SLUG="${_ZIP_LISTING%%/*}"
 [ -n "$SLUG" ] || { echo "run.sh: could not derive slug from $PLUGIN_ZIP" >&2; exit 2; }
 export PLUGIN_ZIP
 
+# One compose project per checkout: `docker compose down -v` removes everything in its project, so two runs
+# from two checkouts (several worktrees at once) must not share a name. COMPOSE_PROJECT_NAME overrides it.
+# scripts/plugincheck-project-name.sh derives it and refuses a name compose would; its test is
+# scripts/plugincheck-project-name_test.sh.
+COMPOSE_PROJECT_NAME="$(../../scripts/plugincheck-project-name.sh)" || exit 2
+export COMPOSE_PROJECT_NAME
+echo "plugincheck: compose project $COMPOSE_PROJECT_NAME"
+
 cleanup() { docker compose down -v >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 

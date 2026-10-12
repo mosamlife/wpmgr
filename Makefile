@@ -728,6 +728,10 @@ agent-plugincheck: agent-zip-wporg ## AUTHORITATIVE: `wp plugin check` on real W
 	# trademark/updater/readme checks key off the right slug. Exits non-zero on any ERROR row.
 	cd tools/plugincheck && PLUGIN_ZIP="$(PWD)/$(AGENT_WPORG_ZIP)" ./run.sh
 
+.PHONY: agent-plugincheck-name-test
+agent-plugincheck-name-test: ## Run the regression suite for the plugin check's per-checkout compose project name (no Docker)
+	scripts/plugincheck-project-name_test.sh
+
 .PHONY: agent-e2e-objectcache
 agent-e2e-objectcache: agent-zip-wporg ## Run the object-cache E2E harness (Docker; Redis + WordPress + phpredis)
 	# Spins a full Docker environment: WordPress 6.8 + MariaDB 11 + Redis 7 + phpredis.
