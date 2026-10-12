@@ -20,7 +20,9 @@ namespace WPMgr\Agent\Tests\Builders;
 use Brain\Monkey;
 use Brain\Monkey\Functions;
 use WPMgr\Agent\Abilities\Builders\BuilderContract;
+use WPMgr\Agent\Abilities\Builders\DesignTokens;
 use WPMgr\Agent\Abilities\Builders\ElementorClassicMapper;
+use WPMgr\Agent\Abilities\Builders\ElementorSectionCompiler;
 use WPMgr\Agent\Abilities\Builders\IdSeed;
 use WPMgr\Agent\Abilities\Builders\LeafPolicy;
 use WPMgr\Agent\Abilities\Builders\Projection;
@@ -110,7 +112,22 @@ final class ElementorClassicMapperTest extends TestCase
             }
         }
 
-        // The allowlist is exactly what the goldens write: no type or path is listed that no case emits.
+        // A designed section's tag, anchor and label are written by the section compiler, not by these goldens.
+        $design  = [
+            'colors'  => ['ground' => '#FFFFFF', 'surface' => '#F6F5F2', 'ink' => '#15171C', 'muted' => '#5A606C', 'accent' => '#0D7A63', 'on_accent' => '#FAFAF7'],
+            'fonts'   => ['heading' => 'system', 'body' => 'system'],
+            'scale'   => ['base_px' => 17, 'ratio' => 'major_third'],
+            'radius'  => 'md',
+            'density' => 'normal',
+        ];
+        $section = (new ElementorSectionCompiler(DesignTokens::fromDesign($design), ['mobile', 'tablet']))->settings(['anchor' => 'story']);
+        foreach (array_keys(self::leaves($section, '')) as $path) {
+            if (isset(ElementorClassicMapper::ALLOWED_KEYS['container'][$path])) {
+                $emitted['container'][$path] = true;
+            }
+        }
+
+        // The allowlist is exactly what the goldens and the section compiler write: no type or path is listed that no case emits.
         $this->assertSame(array_keys(ElementorClassicMapper::ALLOWED_KEYS), array_values(array_intersect(array_keys(ElementorClassicMapper::ALLOWED_KEYS), array_keys($emitted))));
         foreach (ElementorClassicMapper::ALLOWED_KEYS as $type => $paths) {
             $this->assertSame(array_keys($paths), array_keys(array_intersect_key($paths, $emitted[$type])), $type . ': an allowlisted path no golden writes');
