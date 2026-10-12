@@ -265,6 +265,18 @@ final class ElementorClassicMapper
     /** @var array{code: string, detail: string}|null */
     private ?array $refusal = null;
 
+    /** The designed look of the leaves; null builds the plain look of an outline without a design. */
+    private ?ElementorLeafStyle $look = null;
+
+    /** The tone of the section whose leaves are being built. */
+    private string $tone = ElementorSectionCompiler::DEFAULT_TONE;
+
+    /** The alignment of that section. */
+    private string $align = 'start';
+
+    /** Whether the next paragraph is the lead: no paragraph has followed the level 1 heading yet. */
+    private bool $leadNext = false;
+
     /**
      * @param IdSeed       $ids        Node ids for this request.
      * @param array<mixed> $media      Media facts by attachment id.
@@ -391,6 +403,61 @@ final class ElementorClassicMapper
             return $mapper->refusal ?? ['code' => 'bad_input', 'detail' => $listPath . ': could not be mapped'];
         }
         $check = LeafPolicy::checkTree($tree, self::ALLOWED_KEYS, self::LEAF_RULES);
+        if ($check !== null) {
+            return $check;
+        }
+
+        return ['tree' => $tree];
+    }
+
+    /**
+     * The leaves of one designed section, each as its widgets, in the design's
+     * look.
+     *
+     * A heading, paragraph, list, quote and table take the section's tone and
+     * alignment from $look; a level 1 heading is allowed, and the first
+     * paragraph after it is the lead. Everything else about a leaf is as in
+     * map(): the same text rules, the same refusals, the same ids from $ids
+     * keyed by the leaf's path ($listPath, then "[i]"). Leaves only: a group
+     * or columns is layout_invalid.
+     *
+     * The widgets pass LeafPolicy::checkTree() with ALLOWED_KEYS and the keys
+     * ElementorLeafStyle writes (ElementorLeafStyle::KEYS).
+     *
+     * @param array<mixed>      $leaves    The section's leaves, in page-create's normalised form.
+     * @param IdSeed            $ids       Node ids for this request.
+     * @param array<mixed>      $mediaById Media facts by attachment id.
+     * @param ElementorLeafStyle $look     The design's look.
+     * @param string            $tone      One of OutlineV3Schema::TONES.
+     * @param string            $align     One of OutlineV3Schema::ALIGNS.
+     * @param string            $listPath  Path of the list of leaves, e.g. "outline[2].children".
+     * @return array{tree?: list<array<string, mixed>>, code?: string, detail?: string}
+     */
+    public static function mapDesignedLeaves(array $leaves, IdSeed $ids, array $mediaById, ElementorLeafStyle $look, string $tone, string $align, string $listPath): array
+    {
+        if ($leaves === [] || !ArrayShape::isList($leaves)) {
+            return ['code' => 'bad_input', 'detail' => $listPath . ': not a list of nodes'];
+        }
+        if (!in_array($tone, OutlineV3Schema::TONES, true) || !in_array($align, OutlineV3Schema::ALIGNS, true)) {
+            return ['code' => 'bad_input', 'detail' => $listPath . ': a section tone is ground, surface, inverse or accent, and its alignment start or center'];
+        }
+        $mapper        = new self($ids, $mediaById, true);
+        $mapper->look  = $look;
+        $mapper->tone  = $tone;
+        $mapper->align = $align;
+        $run           = [];
+        foreach ($leaves as $i => $node) {
+            $run[] = [$listPath . '[' . $i . ']', $node];
+        }
+        $tree = $mapper->leafList($run);
+        if ($tree === null) {
+            return $mapper->refusal ?? ['code' => 'bad_input', 'detail' => $listPath . ': could not be mapped'];
+        }
+        $keys = self::ALLOWED_KEYS;
+        foreach (ElementorLeafStyle::KEYS as $type => $paths) {
+            $keys[$type] = array_merge($keys[$type] ?? [], $paths);
+        }
+        $check = LeafPolicy::checkTree($tree, $keys, self::LEAF_RULES);
         if ($check !== null) {
             return $check;
         }
@@ -737,14 +804,18 @@ final class ElementorClassicMapper
             case 'heading':
                 $level = $node['level'] ?? null;
                 $text  = $node['text'] ?? null;
-                if (!is_int($level) || !isset(self::HEADER_SIZES[$level]) || !is_string($text)) {
-                    return $this->fail('bad_input', $path . ': a heading needs a level of 2, 3 or 4 and a text');
+                // A designed page has one level 1 heading, in its hero.
+                $sizes = $this->look === null ? self::HEADER_SIZES : [1 => 'h1'] + self::HEADER_SIZES;
+                if (!is_int($level) || !isset($sizes[$level]) || !is_string($text)) {
+                    return $this->fail('bad_input', $path . ($this->look === null ? ': a heading needs a level of 2, 3 or 4 and a text' : ': a heading needs a level of 1, 2, 3 or 4 and a text'));
+                }
+                $settings = ['title' => LeafPolicy::htmlText($text), 'header_size' => $sizes[$level]];
+                if ($this->look !== null) {
+                    $settings       = array_merge($settings, $this->look->headingStyle($level, $this->tone, $this->align));
+                    $this->leadNext = $this->leadNext || $level === 1;
                 }
 
-                return [$this->widget($path, 'heading', [
-                    'title'       => LeafPolicy::htmlText($text),
-                    'header_size' => self::HEADER_SIZES[$level],
-                ])];
+                return [$this->widget($path, 'heading', $settings)];
             case 'paragraph':
                 $text = $node['text'] ?? null;
                 if (!is_string($text)) {
@@ -753,8 +824,11 @@ final class ElementorClassicMapper
                 if (preg_match(self::OWN_PARAGRAPH_ADDRESS, $text) === 1) {
                     return $this->fail('create_content_invalid', $path . '.text: a paragraph that is only a web address becomes an embedded player on an Elementor page; add words around the address or use a button');
                 }
+                // The first paragraph after the title is the lead; every other is body text.
+                $style          = $this->leadNext ? 'lead' : 'body';
+                $this->leadNext = false;
 
-                return [$this->textEditor($path, '<p>' . LeafPolicy::htmlText($text) . '</p>')];
+                return [$this->textEditor($path, '<p>' . LeafPolicy::htmlText($text) . '</p>', $style)];
             case 'list':
                 $items   = $node['items'] ?? null;
                 $ordered = $node['ordered'] ?? null;
@@ -955,13 +1029,19 @@ final class ElementorClassicMapper
     }
 
     /**
-     * @param string $path Outline path.
-     * @param string $html Template HTML.
+     * @param string $path  Outline path.
+     * @param string $html  Template HTML.
+     * @param string $style Text style of a designed page: body, lead or eyebrow.
      * @return array<string, mixed>
      */
-    private function textEditor(string $path, string $html): array
+    private function textEditor(string $path, string $html, string $style = 'body'): array
     {
-        return $this->widget($path, 'text-editor', ['editor' => $html]);
+        $settings = ['editor' => $html];
+        if ($this->look !== null) {
+            $settings = array_merge($settings, $this->look->textStyle($style, $this->tone, $this->align));
+        }
+
+        return $this->widget($path, 'text-editor', $settings);
     }
 
     /**
