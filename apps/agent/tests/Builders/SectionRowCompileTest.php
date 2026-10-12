@@ -327,6 +327,14 @@ final class SectionRowCompileTest extends TestCase
         $this->assertSame(self::bytes($this->shape([$probe])), self::bytes($this->shape($r['tree'])));
     }
 
+    public function test_the_mapper_builds_a_designed_row_as_the_columns_row_probe(): void
+    {
+        $r = self::map([self::columnsNode()], self::compiler());
+
+        $this->assertArrayHasKey('tree', $r, (string) ($r['detail'] ?? ''));
+        $this->assertSame(self::bytes($this->shape([self::probeRow()])), self::bytes($this->shape($r['tree'])));
+    }
+
     public function test_the_mapper_hands_a_designed_row_to_the_compiler(): void
     {
         $outline = [self::columnsNode()];

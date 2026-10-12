@@ -144,6 +144,17 @@ final class ElementorSectionCompiler
     }
 
     /**
+     * The site's active breakpoints this compiler writes overrides for: the
+     * list it was built with, empty when it was built with null.
+     *
+     * @return list<string>
+     */
+    public function breakpoints(): array
+    {
+        return $this->active;
+    }
+
+    /**
      * A section as a container around its children.
      *
      * @param string                     $id       The container's id, from IdSeed.

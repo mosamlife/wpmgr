@@ -52,8 +52,9 @@ if (!defined('ABSPATH')) {
  * whose whole text is one http(s) address (create_content_invalid), alt text
  * that differs from the attachment's library alt (image_alt_from_library),
  * and a button link holding "&" (link_invalid). The finished tree then passes
- * LeafPolicy::checkTree() with ALLOWED_KEYS and LEAF_RULES, or the call is
- * refused with that check's answer.
+ * LeafPolicy::checkTree() with ALLOWED_KEYS (designedKeys() for a designed
+ * page), without the overrides of a breakpoint the site does not have
+ * active, and LEAF_RULES, or the call is refused with that check's answer.
  *
  * A page edit builds its new nodes with mapFragment(), under the same rules,
  * and changes one text with setText(), which writes the same bytes create
@@ -202,6 +203,15 @@ final class ElementorClassicMapper
         'forbidden'     => ['[elementor-tag'],
     ];
 
+    /**
+     * The breakpoints Elementor has active out of the box. A plain outline
+     * mapped without the site's own breakpoints is built for these.
+     */
+    public const STOCK_BREAKPOINTS = ['mobile', 'tablet'];
+
+    /** The widget types whose pins a leaf style widens in designedKeys(). */
+    private const STYLE_WIDENS = ['heading', 'text-editor', 'button'];
+
     /** The refusal of a design-carrying node on a site that builds sections and columns. */
     public const CODE_CONTAINERS_REQUIRED = 'containers_required';
 
@@ -332,6 +342,14 @@ final class ElementorClassicMapper
     /** The compiler of a designed page's containers; null for a plain outline. */
     private ?ElementorSectionCompiler $design;
 
+    /**
+     * The site's active breakpoints: the design compiler's on a designed
+     * page, else the ones the caller named.
+     *
+     * @var list<string>
+     */
+    private array $active;
+
     /** @var array{code: string, detail: string}|null */
     private ?array $refusal = null;
 
@@ -353,12 +371,82 @@ final class ElementorClassicMapper
      * @param bool                          $containers Whether the site has Elementor containers on.
      * @param ElementorSectionCompiler|null $design     The compiler of a designed page; null for a plain outline.
      */
-    private function __construct(IdSeed $ids, array $media, bool $containers, ?ElementorSectionCompiler $design = null)
+    private function __construct(IdSeed $ids, array $media, bool $containers, ?ElementorSectionCompiler $design = null, ?array $breakpoints = self::STOCK_BREAKPOINTS)
     {
         $this->ids        = $ids;
         $this->media      = $media;
         $this->containers = $containers;
         $this->design     = $design;
+        $this->active     = $design !== null ? $design->breakpoints() : ($breakpoints ?? []);
+    }
+
+    /**
+     * The allowlist of a designed page: ALLOWED_KEYS, the keys the leaf styles
+     * write (ElementorLeafStyle::KEYS) and the keys the patterns write
+     * (ElementorPatternCompiler::allowedKeys()), as one list.
+     *
+     * A leaf style widens the pins of a heading, a text editor and a button:
+     * a path both list takes every value either pin takes, so a heading is
+     * aligned center as well as left. A container keeps every pin
+     * ALLOWED_KEYS gives it, so a section's content width and direction are
+     * never narrowed to a button row's. A pattern adds the paths it writes
+     * and changes no pin already listed. A tree compiled for a site is
+     * checked against LeafPolicy::forBreakpoints() of this list, so an
+     * override of a breakpoint the site does not have active is refused.
+     *
+     * @return array<string, array<string, string>> Element type, then settings path, then pin.
+     */
+    public static function designedKeys(): array
+    {
+        $keys = self::ALLOWED_KEYS;
+        foreach (ElementorLeafStyle::KEYS as $type => $paths) {
+            $listed = $keys[$type] ?? [];
+            if (!in_array($type, self::STYLE_WIDENS, true)) {
+                $keys[$type] = $listed + $paths;
+                continue;
+            }
+            foreach ($paths as $path => $pin) {
+                $listed[$path] = isset($listed[$path]) ? self::widen($listed[$path], $pin) : $pin;
+            }
+            $keys[$type] = $listed;
+        }
+
+        return ElementorPatternCompiler::allowedKeys($keys);
+    }
+
+    /**
+     * One pin for a path two lists pin: the values of two lists of the same
+     * pin joined, the pin without a list when one of the two has none (it
+     * takes every value), and the leaf style's pin when the names differ.
+     *
+     * @param string $listed The pin ALLOWED_KEYS gives the path.
+     * @param string $style  The pin ElementorLeafStyle::KEYS gives it.
+     * @return string
+     */
+    private static function widen(string $listed, string $style): string
+    {
+        $a = explode(':', $listed, 2);
+        $b = explode(':', $style, 2);
+        if ($a[0] !== $b[0]) {
+            return $style;
+        }
+        if (!isset($a[1], $b[1])) {
+            return $a[0];
+        }
+
+        return $a[0] . ':' . implode('|', array_values(array_unique(array_merge(explode('|', $a[1]), explode('|', $b[1])))));
+    }
+
+    /**
+     * The allowlist this mapper's tree is checked against: designedKeys() for
+     * a designed page, ALLOWED_KEYS for a plain one, each without the
+     * overrides of a breakpoint the site does not have active.
+     *
+     * @return array<string, array<string, string>>
+     */
+    private function allowlist(): array
+    {
+        return LeafPolicy::forBreakpoints($this->design !== null ? self::designedKeys() : self::ALLOWED_KEYS, $this->active);
     }
 
     /**
@@ -372,25 +460,31 @@ final class ElementorClassicMapper
      * containers are the design's (ElementorSectionCompiler::group(), row()
      * and column()); without it, a plain outline is built as it always was.
      *
-     * @param array<string, mixed>          $spec       Validated page-create spec (its outline).
-     * @param IdSeed                        $ids        Node ids for this request.
-     * @param array<mixed>                  $mediaById  Media facts by attachment id.
-     * @param bool                          $containers Whether the site has Elementor containers on.
-     * @param ElementorSectionCompiler|null $design     The compiler of a designed page (outline version 3); null for a plain outline.
+     * The tree of a designed page passes LeafPolicy::checkTree() with
+     * designedKeys() for the design compiler's breakpoints, and a plain
+     * outline's with ALLOWED_KEYS for $breakpoints; a plain row stacks on a
+     * phone only when the mobile breakpoint is among them.
+     *
+     * @param array<string, mixed>          $spec        Validated page-create spec (its outline).
+     * @param IdSeed                        $ids         Node ids for this request.
+     * @param array<mixed>                  $mediaById   Media facts by attachment id.
+     * @param bool                          $containers  Whether the site has Elementor containers on.
+     * @param ElementorSectionCompiler|null $design      The compiler of a designed page (outline version 3); null for a plain outline.
+     * @param list<string>|null             $breakpoints A plain outline's site's active breakpoints (ElementorFacts active_breakpoints), null when none is; a designed page takes its compiler's.
      * @return array{tree?: list<array<string, mixed>>, code?: string, detail?: string}
      */
-    public static function map(array $spec, IdSeed $ids, array $mediaById, bool $containers, ?ElementorSectionCompiler $design = null): array
+    public static function map(array $spec, IdSeed $ids, array $mediaById, bool $containers, ?ElementorSectionCompiler $design = null, ?array $breakpoints = self::STOCK_BREAKPOINTS): array
     {
         $outline = $spec['outline'] ?? null;
         if (!is_array($outline) || $outline === [] || !ArrayShape::isList($outline)) {
             return ['code' => 'bad_input', 'detail' => 'outline: not a list of nodes'];
         }
-        $mapper = new self($ids, $mediaById, $containers, $design);
+        $mapper = new self($ids, $mediaById, $containers, $design, $breakpoints);
         $tree   = $mapper->outline($outline);
         if ($tree === null) {
             return $mapper->refusal ?? ['code' => 'bad_input', 'detail' => 'outline: could not be mapped'];
         }
-        $check = LeafPolicy::checkTree($tree, self::ALLOWED_KEYS, self::LEAF_RULES);
+        $check = LeafPolicy::checkTree($tree, $mapper->allowlist(), self::LEAF_RULES);
         if ($check !== null) {
             return $check;
         }
@@ -442,23 +536,25 @@ final class ElementorClassicMapper
      * node's id and names it in a refusal, is $pathPrefix followed by
      * "outline[i]…", so the operations of one request never share a path.
      * Every rule of map() holds, and the new nodes pass
-     * LeafPolicy::checkTree() with ALLOWED_KEYS and LEAF_RULES.
+     * LeafPolicy::checkTree() with ALLOWED_KEYS for $breakpoints and
+     * LEAF_RULES.
      *
-     * @param array<mixed> $outline    Validated outline nodes, in page-create's normalised form.
-     * @param IdSeed       $ids        Node ids for this request.
-     * @param array<mixed> $mediaById  Media facts by attachment id.
-     * @param bool         $containers Whether the new nodes are containers.
-     * @param string       $context    One of the CONTEXT_ values.
-     * @param string       $pathPrefix Prefix of every node path, e.g. "operations[2].".
+     * @param array<mixed>      $outline     Validated outline nodes, in page-create's normalised form.
+     * @param IdSeed            $ids         Node ids for this request.
+     * @param array<mixed>      $mediaById   Media facts by attachment id.
+     * @param bool              $containers  Whether the new nodes are containers.
+     * @param string            $context     One of the CONTEXT_ values.
+     * @param string            $pathPrefix  Prefix of every node path, e.g. "operations[2].".
+     * @param list<string>|null $breakpoints The site's active breakpoints (ElementorFacts active_breakpoints), null when none is.
      * @return array{tree?: list<array<string, mixed>>, code?: string, detail?: string}
      */
-    public static function mapFragment(array $outline, IdSeed $ids, array $mediaById, bool $containers, string $context, string $pathPrefix): array
+    public static function mapFragment(array $outline, IdSeed $ids, array $mediaById, bool $containers, string $context, string $pathPrefix, ?array $breakpoints = self::STOCK_BREAKPOINTS): array
     {
         $listPath = $pathPrefix . 'outline';
         if ($outline === [] || !ArrayShape::isList($outline)) {
             return ['code' => 'bad_input', 'detail' => $listPath . ': not a list of nodes'];
         }
-        $mapper = new self($ids, $mediaById, $containers, null);
+        $mapper = new self($ids, $mediaById, $containers, null, $breakpoints);
         switch ($context) {
             case self::CONTEXT_TOP:
                 $tree = $mapper->outline($outline, $listPath);
@@ -479,7 +575,7 @@ final class ElementorClassicMapper
         if ($tree === null) {
             return $mapper->refusal ?? ['code' => 'bad_input', 'detail' => $listPath . ': could not be mapped'];
         }
-        $check = LeafPolicy::checkTree($tree, self::ALLOWED_KEYS, self::LEAF_RULES);
+        $check = LeafPolicy::checkTree($tree, $mapper->allowlist(), self::LEAF_RULES);
         if ($check !== null) {
             return $check;
         }
@@ -498,8 +594,8 @@ final class ElementorClassicMapper
      * keyed by the leaf's path ($listPath, then "[i]"). Leaves only: a group
      * or columns is layout_invalid.
      *
-     * The widgets pass LeafPolicy::checkTree() with ALLOWED_KEYS and the keys
-     * ElementorLeafStyle writes (ElementorLeafStyle::KEYS).
+     * The widgets pass LeafPolicy::checkTree() with designedKeys(), the one
+     * allowlist of a designed page.
      *
      * @param array<mixed>      $leaves    The section's leaves, in page-create's normalised form.
      * @param IdSeed            $ids       Node ids for this request.
@@ -530,11 +626,7 @@ final class ElementorClassicMapper
         if ($tree === null) {
             return $mapper->refusal ?? ['code' => 'bad_input', 'detail' => $listPath . ': could not be mapped'];
         }
-        $keys = self::ALLOWED_KEYS;
-        foreach (ElementorLeafStyle::KEYS as $type => $paths) {
-            $keys[$type] = array_merge($keys[$type], $paths);
-        }
-        $check = LeafPolicy::checkTree($tree, $keys, self::LEAF_RULES);
+        $check = LeafPolicy::checkTree($tree, self::designedKeys(), self::LEAF_RULES);
         if ($check !== null) {
             return $check;
         }
@@ -839,12 +931,14 @@ final class ElementorClassicMapper
             return $this->design->row($id, $built);
         }
         if ($this->containers) {
-            return self::layout($id, 'container', [
-                'content_width'         => $nested ? 'full' : 'boxed',
-                'flex_direction'        => 'row',
-                'flex_direction_mobile' => 'column',
-                'flex_gap'              => ['unit' => 'px', 'size' => self::GAP_PX, 'column' => self::GAP_PX, 'row' => self::GAP_PX],
-            ], $built, $nested);
+            $settings = ['content_width' => $nested ? 'full' : 'boxed', 'flex_direction' => 'row'];
+            // The row stacks on a phone only where the site has the mobile breakpoint active.
+            if (in_array('mobile', $this->active, true)) {
+                $settings['flex_direction_mobile'] = 'column';
+            }
+            $settings['flex_gap'] = ['unit' => 'px', 'size' => self::GAP_PX, 'column' => self::GAP_PX, 'row' => self::GAP_PX];
+
+            return self::layout($id, 'container', $settings, $built, $nested);
         }
 
         return self::layout($id, 'section', ['structure' => self::STRUCTURES[$count]], $built, $nested);
