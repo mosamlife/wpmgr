@@ -138,13 +138,13 @@ reviews the result and pushes it. Review is unchanged: `security-reviewer`
 reviews every change on a path in the routing table's last row, whoever wrote
 it.
 
-- **One job per run**, briefed by the five rules above, except rule 5's push
-  and draft PR: Codex leaves its changes uncommitted in its own clone, because
-  the sandbox keeps `.git` read-only even there, and never pushes or opens a
-  pull request. The router reviews the diff, commits it with the job id,
-  fetches the branch, pushes it and opens any PR. The brief also names the
-  failing test to start from, the exact commands, and the report to return,
-  including the commit message to use.
+- **One job per run**, briefed by the five rules above, except rule 5: Codex
+  cannot commit, push or open a pull request, because its sandbox keeps `.git`
+  read-only even in its own clone. Its brief replaces rule 5 with: *Leave your
+  changes uncommitted in this clone and end your report with the commit message
+  to use; the router reviews, commits, pushes and opens any PR.* The brief also
+  names the failing test to start from, the exact commands, and the report to
+  return.
 - **Its own clone, never this repository's `.git`.** Make it with `git clone
   --shared`, so objects are read through this repository and never written to
   it. Install dependencies there, then run `codex exec -C <clone> -s
@@ -176,7 +176,8 @@ in.
 - **Failing test first, then commit early.** Show the failing test, the one
   check allowed before the change. Make the change, commit at the first
   increment that compiles, then run the other checks the brief names and commit
-  their fixes. Never a whole-repository run.
+  their fixes. Codex skips every commit step and leaves the work uncommitted.
+  Never a whole-repository run.
 - **Commit** on the branch you were started on, with a message that starts with
   the job id. Codex cannot commit inside its sandbox: it leaves the changes in
   the working tree and gives the message in its report, and the router commits.
