@@ -815,6 +815,37 @@
             "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"insert\",\"into\":\"e2b0001\",\"position\":\"last\",\"outline\":[{\"type\":\"pattern\",\"pattern\":\"features\",\"variant\":\"grid\",\"features\":[{\"icon\":\"unicorn\",\"title\":\"One\",\"text\":\"First.\"},{\"icon\":\"bolt\",\"title\":\"Two\",\"text\":\"Second.\"},{\"icon\":\"shield\",\"title\":\"Three\",\"text\":\"Third.\"}]}]}]}",
             "agent": "bad_input",
             "go": "refuse"
+        },
+        {
+            "name": "insert-a-hero-section-after-the-last-section",
+            "rule": "hero_first_on_the_page",
+            "note": "The hero is the first block of the first section of the page, so a section that holds one goes before every other.",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"insert\",\"after\":\"e5e0001\",\"outline\":[{\"type\":\"section\",\"anchor\":\"welcome\",\"children\":[{\"type\":\"pattern\",\"pattern\":\"hero\",\"variant\":\"centered\",\"children\":[{\"type\":\"heading\",\"level\":2,\"text\":\"Welcome\"},{\"type\":\"paragraph\",\"text\":\"A short line about the page.\"}]}]}]}]}",
+            "agent": "hero_misplaced",
+            "go": "accept"
+        },
+        {
+            "name": "insert-a-hero-section-before-the-first-section",
+            "rule": "hero_first_on_the_page",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"insert\",\"before\":\"e1a0001\",\"outline\":[{\"type\":\"section\",\"anchor\":\"welcome\",\"children\":[{\"type\":\"pattern\",\"pattern\":\"hero\",\"variant\":\"centered\",\"children\":[{\"type\":\"heading\",\"level\":2,\"text\":\"Welcome\"},{\"type\":\"paragraph\",\"text\":\"A short line about the page.\"}]}]}]}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "insert-a-hero-with-a-title-when-the-page-has-one",
+            "rule": "h1_once_on_the_page",
+            "note": "The page has a level 1 heading already, in its hero section, which this call leaves.",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"insert\",\"before\":\"e1a0001\",\"outline\":[{\"type\":\"section\",\"anchor\":\"welcome\",\"children\":[{\"type\":\"pattern\",\"pattern\":\"hero\",\"variant\":\"centered\",\"children\":[{\"type\":\"heading\",\"level\":1,\"text\":\"Welcome\"},{\"type\":\"paragraph\",\"text\":\"A short line about the page.\"}]}]}]}]}",
+            "agent": "layout_invalid",
+            "go": "accept"
+        },
+        {
+            "name": "replace-the-hero-section-with-another-that-has-a-title",
+            "rule": "h1_once_on_the_page",
+            "note": "The level 1 heading of the page goes with the section the call replaces.",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"replace\",\"ref\":\"e1a0001\",\"outline\":[{\"type\":\"section\",\"anchor\":\"top\",\"children\":[{\"type\":\"pattern\",\"pattern\":\"hero\",\"variant\":\"centered\",\"children\":[{\"type\":\"heading\",\"level\":1,\"text\":\"Welcome\"},{\"type\":\"paragraph\",\"text\":\"A short line about the page.\"}]}]}]}]}",
+            "agent": "ok",
+            "go": "accept"
         }
     ]
 }

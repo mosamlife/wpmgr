@@ -10,7 +10,6 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Tests\Builders;
 
-use PHPUnit\Framework\Attributes\Group;
 use WPMgr\Agent\Abilities\Builders\BuilderContract;
 use WPMgr\Agent\Abilities\Builders\OutlineV3Schema;
 use WPMgr\Agent\Abilities\Builders\PageEditValidator;
@@ -24,13 +23,6 @@ final class PageEditValidatorTest extends TestCase
     private const FIXTURE = __DIR__ . '/../fixtures/ability-run/page-edit-ops-cases.json';
 
     private const FP = '7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7';
-
-    /**
-     * The group of the tests that replay the version 3 rows. The validator
-     * answers them from the release that edits designed pages; until then they
-     * are red, and `--exclude-group` leaves every other test of this class.
-     */
-    private const V3_GROUP = 'red-until-w4-03';
 
     /**
      * Every rule the version 3 rows exercise, with the [agent, go] verdicts
@@ -50,6 +42,8 @@ final class PageEditValidatorTest extends TestCase
         'anchor_unique_after_call'        => [['ok', 'accept'], ['anchor_duplicate', 'accept']],
         'v3_insert_valid'                 => [['ok', 'accept']],
         'section_at_top_only'             => [['node_not_editable', 'accept']],
+        'hero_first_on_the_page'          => [['hero_misplaced', 'accept'], ['ok', 'accept']],
+        'h1_once_on_the_page'             => [['layout_invalid', 'accept'], ['ok', 'accept']],
         'v3_grammar_in_outline'           => [['bad_input', 'refuse']],
     ];
 
@@ -58,7 +52,7 @@ final class PageEditValidatorTest extends TestCase
 
     private const V3_AGENT_VERDICTS = [
         'ok', 'bad_input', 'ops_invalid', 'node_not_found', 'node_not_editable', 'op_not_supported_by_builder',
-        'page_too_large', 'anchor_in_use', 'link_anchor_missing', 'anchor_duplicate',
+        'page_too_large', 'anchor_in_use', 'link_anchor_missing', 'anchor_duplicate', 'layout_invalid', 'hero_misplaced',
     ];
 
     private const V3_CASE_KEYS = ['name', 'rule', 'note', 'input', 'agent', 'go'];
@@ -71,15 +65,16 @@ final class PageEditValidatorTest extends TestCase
     {
         $doc = self::opsCases();
         $this->assertNotEmpty($doc['cases']);
-        foreach ($doc['cases'] as $case) {
-            $builder = $case['builder'] ?? $doc['page']['builder'];
-            $this->assertSame($case['agent'], self::agentAnswer(self::inputText($case), $doc['page']['nodes'], $builder), $case['name']);
+        $this->assertNotEmpty($doc['v3_cases']);
+        foreach (self::allCases() as [$page, $case]) {
+            $builder = $case['builder'] ?? $page['builder'];
+            $this->assertSame($case['agent'], self::agentAnswer(self::inputText($case), $page['nodes'], $builder), $case['name']);
         }
     }
 
     public function test_parse_refuses_exactly_the_cases_the_control_plane_refuses(): void
     {
-        foreach (self::opsCases()['cases'] as $case) {
+        foreach (self::allCases() as [, $case]) {
             $r = PageEditValidator::parse(self::inputText($case));
             if ($case['go'] === 'refuse') {
                 $this->assertArrayHasKey('code', $r, $case['name'] . ': a rule that needs no page belongs to parse()');
@@ -570,10 +565,9 @@ final class PageEditValidatorTest extends TestCase
     }
 
     /**
-     * Red until the validator takes pattern paths, version 3 nodes and the
-     * anchor rules (W4-03): every row of v3_cases, with what the agent answers.
+     * Every row of v3_cases, with what the agent answers: pattern paths,
+     * version 3 nodes and the anchor rules, all together.
      */
-    #[Group(self::V3_GROUP)]
     public function test_replays_every_v3_case(): void
     {
         $v3    = self::v3Cases();
@@ -588,11 +582,9 @@ final class PageEditValidatorTest extends TestCase
     }
 
     /**
-     * Red until parse() holds the version 3 input rules (W4-03): the rows the
-     * control plane refuses are refused by parse() with the agent's code, and
-     * every other row passes parse().
+     * The rows the control plane refuses are refused by parse() with the
+     * agent's code, and every other row of v3_cases passes parse().
      */
-    #[Group(self::V3_GROUP)]
     public function test_parse_refuses_exactly_the_v3_cases_the_control_plane_refuses(): void
     {
         $wrong = [];
@@ -610,10 +602,9 @@ final class PageEditValidatorTest extends TestCase
     }
 
     /**
-     * Red until the anchor rules are judged on the page the whole call leaves
-     * (W4-03): the order of the operations never changes the answer.
+     * The anchor rules are judged on the page the whole call leaves: the order
+     * of the operations never changes the answer.
      */
-    #[Group(self::V3_GROUP)]
     public function test_anchor_and_link_rules_do_not_depend_on_operation_order(): void
     {
         $v3    = self::v3Cases();
@@ -776,6 +767,25 @@ final class PageEditValidatorTest extends TestCase
         self::assertArrayHasKey('v3_cases', $doc, 'the version 3 rows are missing');
 
         return ['page' => $doc['v3_page'], 'cases' => $doc['v3_cases']];
+    }
+
+    /**
+     * Every row of both tables with the page it runs against.
+     *
+     * @return list<array{0: array<string,mixed>, 1: array<string,mixed>}>
+     */
+    private static function allCases(): array
+    {
+        $doc  = self::opsCases();
+        $rows = [];
+        foreach ($doc['cases'] as $case) {
+            $rows[] = [$doc['page'], $case];
+        }
+        foreach ($doc['v3_cases'] as $case) {
+            $rows[] = [$doc['v3_page'], $case];
+        }
+
+        return $rows;
     }
 
     /**

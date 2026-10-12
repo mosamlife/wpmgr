@@ -190,6 +190,144 @@ final class OutlineV3
     }
 
     /**
+     * Judge the outline of one page-edit insert or replace: the nodes that go
+     * into a page that exists. A section is read where a section stands, at
+     * the top; every other node as a child of a section, so a pattern, a
+     * block, a group and columns are read as the grammar reads them there. The
+     * rules of validate() hold for what is here, except that a link to an
+     * anchor is not resolved (the page's other sections may hold it) and a
+     * hero stands only as the first block of the first node when that node is
+     * a section. What the page already has, and where the nodes will stand,
+     * is the page's to judge: see facts().
+     *
+     * @param mixed $nodes      The decoded outline: a list of objects.
+     * @param int   $titleChars Characters of the page title, which count toward the text cap.
+     * @return array{outline?:list<array<string,mixed>>,code?:string,detail?:string,failures?:list<array<string,mixed>>,pattern?:string,item_schema?:array<string,mixed>}
+     *         The nodes in the grammar's normalised form, or a refusal.
+     */
+    public static function fragment($nodes, int $titleChars = 0): array
+    {
+        if (!is_array($nodes) || $nodes === [] || !ArrayShape::isList($nodes)) {
+            return self::refuse('bad_input', 'input', 'outline', 'must be a list of nodes');
+        }
+        $ctx  = PageCreateBuilder::v3Counters($titleChars);
+        $page = ['anchors' => [], 'links' => [], 'titles' => 0];
+        $out  = [];
+        foreach ($nodes as $i => $node) {
+            $at   = 'outline[' . $i . ']';
+            $type = is_object($node) ? ($node->type ?? null) : null;
+            if ($type === 'section') {
+                $r = self::section($node, $at, $i === 0, $ctx, $page);
+            } elseif ($type === 'pattern') {
+                $r = self::pattern($node, $at, false, $ctx, $page);
+            } else {
+                $r = PageCreateBuilder::v3Block($node, $at, true, $ctx);
+                if (!isset($r['node'])) {
+                    return self::fromBlock($r, $at, null);
+                }
+                $bad = self::read($r['node'], $at, false, null, $page);
+                if ($bad !== null) {
+                    return $bad;
+                }
+            }
+            if (!isset($r['node'])) {
+                return $r;
+            }
+            $out[] = $r['node'];
+        }
+        if ($ctx['total'] > PageCreateBuilder::MAX_TOTAL_CHARS) {
+            return self::refuse('create_content_invalid', 'input', 'outline', 'the text of the page is longer than ' . PageCreateBuilder::MAX_TOTAL_CHARS . ' characters');
+        }
+
+        return ['outline' => $out];
+    }
+
+    /**
+     * What an outline in the grammar's normalised form says about the page it
+     * goes into, for the checks that need the page: the anchors of its
+     * sections, the sections' links to an anchor ("#" and the anchor), the
+     * heroes it holds and the level 1 headings it holds.
+     *
+     * @param list<array<string,mixed>> $outline Nodes from validate() or fragment().
+     * @return array{anchors:list<string>,links:list<string>,heroes:int,h1s:int,sections:int}
+     */
+    public static function facts(array $outline): array
+    {
+        $facts = ['anchors' => [], 'links' => [], 'heroes' => 0, 'h1s' => 0, 'sections' => 0];
+        self::collect($outline, $facts);
+
+        return $facts;
+    }
+
+    /**
+     * @param array<mixed>        $nodes Normalised nodes.
+     * @param array<string,mixed> $facts The facts so far.
+     */
+    private static function collect(array $nodes, array &$facts): void
+    {
+        foreach ($nodes as $node) {
+            if (!is_array($node)) {
+                continue;
+            }
+            switch ($node['type'] ?? null) {
+                case 'section':
+                    ++$facts['sections'];
+                    if (is_string($node['anchor'] ?? null)) {
+                        $facts['anchors'][] = $node['anchor'];
+                    }
+                    break;
+                case 'pattern':
+                    if (($node['pattern'] ?? null) === 'hero') {
+                        ++$facts['heroes'];
+                    }
+                    break;
+                case 'heading':
+                    if (($node['level'] ?? null) === 1) {
+                        ++$facts['h1s'];
+                    }
+                    break;
+                case 'buttons':
+                    foreach (is_array($node['buttons'] ?? null) ? $node['buttons'] : [] as $button) {
+                        self::linkOf($button, $facts);
+                    }
+                    break;
+            }
+            foreach (['children', 'cta'] as $key) {
+                if (is_array($node[$key] ?? null)) {
+                    $below = isset($node[$key]['url']) ? [['type' => 'buttons', 'buttons' => [$node[$key]]]] : $node[$key];
+                    self::collect($below, $facts);
+                }
+            }
+            foreach (['plans', 'features', 'testimonials', 'faq', 'logos', 'stats'] as $items) {
+                if (is_array($node[$items] ?? null)) {
+                    foreach ($node[$items] as $item) {
+                        if (is_array($item) && is_array($item['cta'] ?? null)) {
+                            self::linkOf($item['cta'], $facts);
+                        }
+                    }
+                }
+            }
+            foreach (is_array($node['columns'] ?? null) ? $node['columns'] : [] as $column) {
+                if (is_array($column)) {
+                    self::collect($column, $facts);
+                }
+            }
+        }
+    }
+
+    /**
+     * @param mixed               $button A normalised button or call to action.
+     * @param array<string,mixed> $facts  The facts so far.
+     */
+    private static function linkOf($button, array &$facts): void
+    {
+        $url = is_array($button) ? ($button['url'] ?? null) : null;
+        if (is_string($url) && strncmp($url, '#', 1) === 0) {
+            $facts['links'][] = substr($url, 1);
+        }
+    }
+
+    /**
      * The path of the first hero over the cap, or null when the page has no
      * more than OutlineV3Schema::MAX_HEROES. A hero is a pattern node named
      * hero that is a direct child of a section; the count reads shape alone
