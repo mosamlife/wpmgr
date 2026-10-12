@@ -262,6 +262,9 @@ final class ElementorClassicMapper
 
     private bool $containers;
 
+    /** The compiler of a designed page's containers; null for a plain outline. */
+    private ?ElementorSectionCompiler $design;
+
     /** @var array{code: string, detail: string}|null */
     private ?array $refusal = null;
 
@@ -278,15 +281,17 @@ final class ElementorClassicMapper
     private bool $leadNext = false;
 
     /**
-     * @param IdSeed       $ids        Node ids for this request.
-     * @param array<mixed> $media      Media facts by attachment id.
-     * @param bool         $containers Whether the site has Elementor containers on.
+     * @param IdSeed                        $ids        Node ids for this request.
+     * @param array<mixed>                  $media      Media facts by attachment id.
+     * @param bool                          $containers Whether the site has Elementor containers on.
+     * @param ElementorSectionCompiler|null $design     The compiler of a designed page; null for a plain outline.
      */
-    private function __construct(IdSeed $ids, array $media, bool $containers)
+    private function __construct(IdSeed $ids, array $media, bool $containers, ?ElementorSectionCompiler $design)
     {
         $this->ids        = $ids;
         $this->media      = $media;
         $this->containers = $containers;
+        $this->design     = $design;
     }
 
     /**
@@ -296,19 +301,24 @@ final class ElementorClassicMapper
      * uses "url" (the large-size address, checked as an image address) and
      * "alt" (the attachment's library alt text, "" when it has none).
      *
-     * @param array<string, mixed> $spec       Validated page-create spec (its outline).
-     * @param IdSeed               $ids        Node ids for this request.
-     * @param array<mixed>         $mediaById  Media facts by attachment id.
-     * @param bool                 $containers Whether the site has Elementor containers on.
+     * With $design, a designed page's groups and columns rows on a site with
+     * containers are the design's (ElementorSectionCompiler::group(), row()
+     * and column()); without it, a plain outline is built as it always was.
+     *
+     * @param array<string, mixed>          $spec       Validated page-create spec (its outline).
+     * @param IdSeed                        $ids        Node ids for this request.
+     * @param array<mixed>                  $mediaById  Media facts by attachment id.
+     * @param bool                          $containers Whether the site has Elementor containers on.
+     * @param ElementorSectionCompiler|null $design     The compiler of a designed page (outline version 3); null for a plain outline.
      * @return array{tree?: list<array<string, mixed>>, code?: string, detail?: string}
      */
-    public static function map(array $spec, IdSeed $ids, array $mediaById, bool $containers): array
+    public static function map(array $spec, IdSeed $ids, array $mediaById, bool $containers, ?ElementorSectionCompiler $design = null): array
     {
         $outline = $spec['outline'] ?? null;
         if (!is_array($outline) || $outline === [] || !ArrayShape::isList($outline)) {
             return ['code' => 'bad_input', 'detail' => 'outline: not a list of nodes'];
         }
-        $mapper = new self($ids, $mediaById, $containers);
+        $mapper = new self($ids, $mediaById, $containers, $design);
         $tree   = $mapper->outline($outline);
         if ($tree === null) {
             return $mapper->refusal ?? ['code' => 'bad_input', 'detail' => 'outline: could not be mapped'];
@@ -649,7 +659,9 @@ final class ElementorClassicMapper
             return null;
         }
         if ($columnId === null) {
-            return self::layout($id, 'container', ['content_width' => 'boxed', 'flex_direction' => 'column'], $elements, false);
+            return $this->design !== null
+                ? $this->design->group($id, $elements)
+                : self::layout($id, 'container', ['content_width' => 'boxed', 'flex_direction' => 'column'], $elements, false);
         }
 
         return self::layout($id, 'section', ['structure' => self::STRUCTURES[1]], [
@@ -736,6 +748,10 @@ final class ElementorClassicMapper
             if ($elements === null) {
                 return null;
             }
+            if ($this->containers && $this->design !== null) {
+                $built[] = $this->design->column($columnId, $widths === null ? intdiv(100, $count) : (int) $widths[$k], $elements);
+                continue;
+            }
             if ($this->containers) {
                 $size    = $widths === null ? intdiv(100, $count) : (int) $widths[$k];
                 $built[] = self::layout($columnId, 'container', [
@@ -752,6 +768,9 @@ final class ElementorClassicMapper
             $built[] = self::layout($columnId, 'column', $settings, $elements, $nested);
         }
 
+        if ($this->containers && $this->design !== null) {
+            return $this->design->row($id, $built);
+        }
         if ($this->containers) {
             return self::layout($id, 'container', [
                 'content_width'         => $nested ? 'full' : 'boxed',

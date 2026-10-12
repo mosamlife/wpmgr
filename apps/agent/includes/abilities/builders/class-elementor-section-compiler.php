@@ -40,6 +40,10 @@ if (!defined('ABSPATH')) {
  *   background_overlay_opacity     0.45 (soft) or 0.65 (strong; strong when
  *                                  absent), a fraction as a numeric string;
  *                                  an overlay of none writes none of the three
+ *   min_height            a section of screen height: SCREEN_HEIGHT_VH vh
+ *   min_height_mobile     0 vh, its own height on a phone, written only when
+ *                         the site has the mobile breakpoint active
+ *   flex_justify_content  "center", the content centred in that height
  *   _title                LeafPolicy::SECTION_LABEL
  *
  * A section with a background image is written in the inverse tone whatever
@@ -47,6 +51,12 @@ if (!defined('ABSPATH')) {
  * over it (tone()). The image must be one the site resolved as an image of an
  * allowed type; backgroundRefusal() answers background_not_image, before the
  * page is compiled, for an attachment the site holds that is not an image.
+ *
+ * Inside a section, group() and row() build the inner containers: a group is
+ * a full-width column; a row puts its columns (column()) side by side from
+ * the tablet up with the design's row gap, and stacks them at full width on a
+ * phone. Every override of a breakpoint is written only when the site has
+ * that breakpoint active.
  *
  * Keys are written in this order, which is the order Elementor returns them
  * in. Every number is a numeric string and a flag is a JSON boolean, so the
@@ -84,6 +94,19 @@ final class ElementorSectionCompiler
 
     /** The refusal of a section background whose attachment is not an image. */
     public const CODE_BACKGROUND_NOT_IMAGE = 'background_not_image';
+
+    /** The height of a section that names none. */
+    public const DEFAULT_MIN_HEIGHT = 'auto';
+
+    /** The height of a section of screen height, in vh, from the tablet up. */
+    public const SCREEN_HEIGHT_VH = 80;
+
+    /** The narrowest and the widest column of a row, in percent of the row. */
+    public const MIN_COLUMN_PERCENT = 10;
+    public const MAX_COLUMN_PERCENT = 90;
+
+    /** The width of every column of a row on a phone, in percent: the row stacks. */
+    private const PHONE_COLUMN_PERCENT = 100;
 
     /** The padding key of each breakpoint a section overrides, in the order they are written. */
     private const PADDING_OVERRIDES = ['tablet' => 'padding_tablet', 'mobile' => 'padding_mobile'];
@@ -164,8 +187,76 @@ final class ElementorSectionCompiler
             $this->padding($spacing),
             $this->background($image === null ? $tone : self::BACKGROUND_TONE),
             $image === null ? [] : $this->image($image),
+            $this->minHeight($section),
             [LeafPolicy::LABEL_KEY => LeafPolicy::SECTION_LABEL]
         );
+    }
+
+    /**
+     * A group inside a section: a full-width column of its elements.
+     *
+     * @param string                    $id       The group's id, from IdSeed.
+     * @param list<array<string,mixed>> $elements Its compiled children.
+     * @return array{id:string,elType:string,settings:array<string,mixed>,elements:list<array<string,mixed>>,isInner:bool}
+     */
+    public function group(string $id, array $elements): array
+    {
+        return self::inner($id, ['content_width' => 'full', 'flex_direction' => 'column'], $elements);
+    }
+
+    /**
+     * A columns row: its columns side by side, stacked on a phone, with the
+     * design's row gap at each breakpoint.
+     *
+     *   flex_direction         "row"
+     *   flex_direction_mobile  "column", when the site has the mobile breakpoint active
+     *   flex_gap               the row gap at the desktop step, the same across and down
+     *   flex_gap_tablet        the row gap at the tablet and mobile steps, each
+     *   flex_gap_mobile        written only when the site has that breakpoint active
+     *
+     * @param string                    $id      The row's id, from IdSeed.
+     * @param list<array<string,mixed>> $columns Its columns, from column().
+     * @return array{id:string,elType:string,settings:array<string,mixed>,elements:list<array<string,mixed>>,isInner:bool}
+     */
+    public function row(string $id, array $columns): array
+    {
+        $gap      = $this->tokens->rowGap();
+        $settings = ['flex_direction' => 'row'];
+        if ($this->isActive('mobile')) {
+            $settings['flex_direction_mobile'] = 'column';
+        }
+        $settings['flex_gap'] = self::gaps($gap['desktop']);
+        foreach (['tablet', 'mobile'] as $breakpoint) {
+            if ($this->isActive($breakpoint)) {
+                $settings['flex_gap_' . $breakpoint] = self::gaps($gap[$breakpoint]);
+            }
+        }
+
+        return self::inner($id, $settings, $columns);
+    }
+
+    /**
+     * One column of a row: full content width, so that Elementor writes its
+     * widths, at its share of the row, and the whole row's width on a phone
+     * when the site has the mobile breakpoint active.
+     *
+     * @param string                    $id       The column's id, from IdSeed.
+     * @param int                       $width    Its share of the row, MIN_COLUMN_PERCENT to MAX_COLUMN_PERCENT.
+     * @param list<array<string,mixed>> $elements Its compiled children.
+     * @return array{id:string,elType:string,settings:array<string,mixed>,elements:list<array<string,mixed>>,isInner:bool}
+     * @throws \InvalidArgumentException When the width is outside what the grammar accepts.
+     */
+    public function column(string $id, int $width, array $elements): array
+    {
+        if ($width < self::MIN_COLUMN_PERCENT || $width > self::MAX_COLUMN_PERCENT) {
+            throw new \InvalidArgumentException('a column is 10 to 90 percent of its row');
+        }
+        $settings = ['content_width' => 'full', 'width' => self::percent($width)];
+        if ($this->isActive('mobile')) {
+            $settings['width_mobile'] = self::percent(self::PHONE_COLUMN_PERCENT);
+        }
+
+        return self::inner($id, $settings, $elements);
     }
 
     /**
@@ -336,6 +427,82 @@ final class ElementorSectionCompiler
             'overlay'       => self::option($background, 'overlay', OutlineV3Schema::OVERLAYS, self::DEFAULT_OVERLAY) ?? throw new \InvalidArgumentException('a background overlay is none, soft or strong'),
             'focal'         => self::option($background, 'focal', OutlineV3Schema::FOCALS, self::DEFAULT_FOCAL) ?? throw new \InvalidArgumentException('a background focal point is center, top or bottom'),
         ];
+    }
+
+    /**
+     * The height of a section of screen height: SCREEN_HEIGHT_VH from the
+     * tablet up, its own height on a phone, its content centred. A section of
+     * auto height writes nothing.
+     *
+     * @param array<string,mixed> $section The section node.
+     * @return array<string,mixed>
+     * @throws \InvalidArgumentException When the height is not one the grammar accepts.
+     */
+    private function minHeight(array $section): array
+    {
+        $height = self::option($section, 'min_height', OutlineV3Schema::MIN_HEIGHTS, self::DEFAULT_MIN_HEIGHT) ?? throw new \InvalidArgumentException('a section min_height is auto or screen');
+        if ($height !== 'screen') {
+            return [];
+        }
+        $settings = ['min_height' => ['unit' => 'vh', 'size' => (string) self::SCREEN_HEIGHT_VH]];
+        if ($this->isActive('mobile')) {
+            $settings['min_height_mobile'] = ['unit' => 'vh', 'size' => '0'];
+        }
+        $settings['flex_justify_content'] = 'center';
+
+        return $settings;
+    }
+
+    /**
+     * Whether the site has a breakpoint active.
+     *
+     * @param string $breakpoint tablet or mobile.
+     * @return bool
+     */
+    private function isActive(string $breakpoint): bool
+    {
+        return in_array($breakpoint, $this->active, true);
+    }
+
+    /**
+     * An inner container: a group, a row or a column, inside a section.
+     *
+     * @param string                    $id       Its id.
+     * @param array<string,mixed>       $settings Its settings.
+     * @param list<array<string,mixed>> $elements Its children.
+     * @return array{id:string,elType:string,settings:array<string,mixed>,elements:list<array<string,mixed>>,isInner:bool}
+     */
+    private static function inner(string $id, array $settings, array $elements): array
+    {
+        return [
+            'id'       => $id,
+            'elType'   => 'container',
+            'settings' => $settings,
+            'elements' => $elements,
+            'isInner'  => true,
+        ];
+    }
+
+    /**
+     * A gaps value, the same across and down.
+     *
+     * @param int $px The gap in px.
+     * @return array{column:string,row:string,isLinked:bool,unit:string}
+     */
+    private static function gaps(int $px): array
+    {
+        return ['column' => (string) $px, 'row' => (string) $px, 'isLinked' => true, 'unit' => 'px'];
+    }
+
+    /**
+     * A width in percent.
+     *
+     * @param int $size The percentage.
+     * @return array{unit:string,size:string}
+     */
+    private static function percent(int $size): array
+    {
+        return ['unit' => '%', 'size' => (string) $size];
     }
 
     /**
