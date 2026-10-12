@@ -18,7 +18,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -92,14 +94,33 @@ func isBuilderEditAbility(name string) bool {
 var (
 	pageStructureBuilderToken = regexp.MustCompile(`^[a-z0-9]{1,32}$`)
 	pageStructureWordToken    = regexp.MustCompile(`^[a-z_]{1,32}$`)
-	pageStructureFieldToken   = regexp.MustCompile(`^(?:text|url|alt|caption|` + strings.TrimSuffix(strings.TrimPrefix(pageEditPathPattern.String(), "^"), "$") + `)$`)
-	pageStructureVariantToken = regexp.MustCompile(`^[a-z][a-z-]{0,23}$`)
+	pageStructureFieldToken   = pageStructureClosedToken(slices.Collect(maps.Keys(pageStructureTextShape().fields)))
+	pageStructureVariantToken = pageStructureVariantsToken()
 	pageStructurePatternToken = regexp.MustCompile(`^(?:hero|features|stats|logos|testimonials|pricing|faq|cta)$`)
 	// pageStructureOpenStateToken is open_state's closed set: the draft is
 	// open in the editor, or has unsaved builder changes (null is neither).
 	pageStructureOpenStateToken = regexp.MustCompile(`^(?:` + PageEditConflictEditorOpen + `|` +
 		PageEditConflictAutosavePending + `)$`)
 )
+
+// pageStructureClosedToken matches only whole, literal members of the set.
+func pageStructureClosedToken(values []string) *regexp.Regexp {
+	slices.Sort(values)
+	for i, value := range values {
+		values[i] = regexp.QuoteMeta(value)
+	}
+	return regexp.MustCompile(`^(?:` + strings.Join(values, "|") + `)$`)
+}
+
+// pageStructureVariantsToken is the union of the pattern specs' variants:
+// output leaves are checked independently of their sibling fields.
+func pageStructureVariantsToken() *regexp.Regexp {
+	var variants []string
+	for _, spec := range patternSpecs {
+		variants = append(variants, spec.variants...)
+	}
+	return pageStructureClosedToken(variants)
+}
 
 // tokenLeaf is a string leaf the AI uses as given: a value matching re passes
 // unchanged, any other value is dropped.
