@@ -559,19 +559,55 @@ final class OutlineV3GrammarTest extends TestCase
         $this->assertSame('bad_input', $string['code']);
     }
 
-    public function testAPageHoldsOneHero(): void
+    /**
+     * Each row: the outline, and the path of the hero that is out of place.
+     *
+     * @return array<string,array{0:list<array<string,mixed>>,1:string}>
+     */
+    public static function misplacedHeroes(): array
     {
         $hero = self::pattern('hero', 'centered', ['children' => [['type' => 'paragraph', 'text' => 'Lead.']]]);
-        $r    = self::check(self::page([$hero, $hero]));
+        $cta  = self::pattern('cta', 'band', ['children' => [['type' => 'paragraph', 'text' => 'Join.']]]);
 
-        $this->assertSame('layout_invalid', $r['code']);
-        $this->assertSame('outline[0].children[1]', $r['failures'][0]['path']);
+        return [
+            'second block of the first section' => [[self::section('top', [['type' => 'paragraph', 'text' => 'Before.'], $hero])], 'outline[0].children[1]'],
+            'first block of the second section' => [[self::section('top'), self::section('more', [$hero])], 'outline[1].children[0]'],
+            'a second hero beside the first'    => [[self::section('top', [$hero, $hero])], 'outline[0].children[1]'],
+            'a second hero in a later section'  => [[self::section('top', [$hero]), self::section('more', [$hero])], 'outline[1].children[0]'],
+            'after a call to action'            => [[self::section('top', [$cta, $hero])], 'outline[0].children[1]'],
+            'the last of fifty blocks'          => [[self::section('top', array_merge(array_fill(0, 49, ['type' => 'separator']), [$hero]))], 'outline[0].children[49]'],
+        ];
+    }
 
-        $across = self::check([
-            ['type' => 'section', 'anchor' => 'one', 'children' => [$hero]],
-            ['type' => 'section', 'anchor' => 'two', 'children' => [$hero]],
+    /**
+     * @dataProvider misplacedHeroes
+     * @param list<array<string,mixed>> $outline Outline.
+     * @param string                    $path    Path of the hero that is out of place.
+     */
+    public function testAHeroIsTheFirstBlockOfTheFirstSection(array $outline, string $path): void
+    {
+        $r = self::check($outline);
+
+        $this->assertSame('hero_misplaced', $r['code'] ?? 'accepted');
+        $this->assertSame($path, $r['failures'][0]['path']);
+        $this->assertSame('pattern', $r['failures'][0]['key']);
+        $this->assertStringContainsString('first block of the first section', $r['failures'][0]['reason'], 'the refusal says where the hero goes');
+    }
+
+    public function testTheHeroMayHaveBlocksAfterItAndSectionsAfterItsSection(): void
+    {
+        $hero = self::pattern('hero', 'centered', ['children' => [['type' => 'paragraph', 'text' => 'Lead.']]]);
+        $r    = self::check([
+            self::section('top', [$hero, ['type' => 'paragraph', 'text' => 'After.'], self::pattern('cta', 'band', ['children' => [['type' => 'paragraph', 'text' => 'Join.']]])]),
+            self::section('more'),
         ]);
-        $this->assertSame('layout_invalid', $across['code']);
+
+        $this->assertArrayHasKey('outline', $r, (string) ($r['detail'] ?? ''));
+    }
+
+    public function testAPageWithoutAHeroIsAccepted(): void
+    {
+        $this->assertArrayHasKey('outline', self::check([self::section('top'), self::section('more')]));
     }
 
     // -------------------------------------------------------------------------
@@ -624,7 +660,12 @@ final class OutlineV3GrammarTest extends TestCase
      */
     public function testAnInPageLinkIsAHashAndAnAnchor(string $url, string $verdict): void
     {
-        $r = self::check(self::page([['type' => 'buttons', 'buttons' => [['text' => 'Go', 'url' => $url]]]]));
+        $outline = [self::section('start', [['type' => 'buttons', 'buttons' => [['text' => 'Go', 'url' => $url]]]])];
+        if ($verdict === 'ok') {
+            // The link resolves: a section further down holds the anchor it names.
+            $outline[] = self::section(substr($url, 1));
+        }
+        $r = self::check($outline);
 
         $this->assertSame($verdict, isset($r['outline']) ? 'ok' : $r['code'], $url);
     }
@@ -634,6 +675,313 @@ final class OutlineV3GrammarTest extends TestCase
         $r = OutlineV3::validate(json_decode((string) json_encode(self::page([['type' => 'buttons', 'buttons' => [['text' => 'Go', 'url' => "#intro\n"]]]])), false));
 
         $this->assertSame('link_invalid', $r['code'] ?? 'accepted');
+    }
+
+    /**
+     * @return array<string,array{0:mixed}>
+     */
+    public static function badButtonStyles(): array
+    {
+        return [
+            'ghost'      => ['ghost'],
+            'upper case' => ['Fill'],
+            'empty'      => [''],
+            'a number'   => [1],
+            'null'       => [null],
+            'a list'     => [['fill']],
+        ];
+    }
+
+    /**
+     * @dataProvider badButtonStyles
+     * @param mixed $style Style as given.
+     */
+    public function testAButtonStyleIsFillOutlineOrText($style): void
+    {
+        $r = self::check(self::page([['type' => 'paragraph', 'text' => 'Hi.'], ['type' => 'buttons', 'buttons' => [['text' => 'Go', 'url' => '/go', 'style' => $style]]]]));
+
+        $this->assertSame('bad_input', $r['code'] ?? 'accepted');
+        $this->assertSame('outline[0].children[1]', $r['failures'][0]['path']);
+        $this->assertSame('buttons[0].style', $r['failures'][0]['key']);
+        $this->assertStringContainsString('fill, outline or text', $r['failures'][0]['reason']);
+    }
+
+    public function testAButtonWithoutAStyleIsAFillButton(): void
+    {
+        $r = self::check(self::page([['type' => 'buttons', 'buttons' => [['text' => 'Go', 'url' => '/go']]]]));
+
+        $this->assertSame('fill', $r['outline'][0]['children'][0]['buttons'][0]['style']);
+    }
+
+    // -------------------------------------------------------------------------
+    // Anchors
+    // -------------------------------------------------------------------------
+
+    /**
+     * Each row: the anchor as given, and the verdict.
+     *
+     * @return array<string,array{0:string,1:string}>
+     */
+    public static function anchors(): array
+    {
+        return [
+            'two characters'          => ['ab', 'ok'],
+            'forty characters'        => ['a' . str_repeat('b', 39), 'ok'],
+            'digits and hyphens'      => ['plan-2-b', 'ok'],
+            'a hyphen at the end'     => ['plans-', 'ok'],
+            'a near miss of a reserved id' => ['main-menu', 'ok'],
+            'one character'           => ['a', 'anchor_invalid'],
+            'forty-one characters'    => ['a' . str_repeat('b', 40), 'anchor_invalid'],
+            'capitals'                => ['Pricing', 'anchor_invalid'],
+            'a leading digit'         => ['1abc', 'anchor_invalid'],
+            'a leading hyphen'        => ['-abc', 'anchor_invalid'],
+            'an underscore'           => ['my_plans', 'anchor_invalid'],
+            'a space'                 => ['my plans', 'anchor_invalid'],
+            'a dot'                   => ['my.plans', 'anchor_invalid'],
+            'a hash'                  => ['#plans', 'anchor_invalid'],
+            'empty'                   => ['', 'anchor_invalid'],
+            'a trailing newline'      => ["plans\n", 'anchor_invalid'],
+            'a letter with an accent' => ["pl\u{00E4}n", 'anchor_invalid'],
+        ];
+    }
+
+    /**
+     * @dataProvider anchors
+     */
+    public function testAnAnchorIsTwoToFortyOfLowerCaseLettersDigitsAndHyphens(string $anchor, string $verdict): void
+    {
+        $r = self::check([self::section($anchor)]);
+
+        $this->assertSame($verdict, isset($r['outline']) ? 'ok' : $r['code'], (string) json_encode($anchor));
+        if ($verdict !== 'ok') {
+            $this->assertSame('outline[0]', $r['failures'][0]['path']);
+            $this->assertSame('anchor', $r['failures'][0]['key']);
+        }
+    }
+
+    public function testAnAnchorTheThemeOwnsIsRefusedAndTheRefusalListsThem(): void
+    {
+        $this->assertSame(['content', 'main', 'primary', 'page', 'masthead', 'colophon', 'site-header', 'site-footer', 'wpadminbar'], OutlineV3Schema::RESERVED_ANCHORS);
+
+        foreach (OutlineV3Schema::RESERVED_ANCHORS as $id) {
+            $r = self::check([self::section('top'), self::section($id)]);
+
+            $this->assertSame('anchor_reserved', $r['code'] ?? 'accepted', $id);
+            $this->assertSame('outline[1]', $r['failures'][0]['path'], $id);
+            $this->assertSame('anchor', $r['failures'][0]['key'], $id);
+            $this->assertStringContainsString('wpadminbar', $r['failures'][0]['reason'], 'the reason names the ids the theme owns');
+        }
+    }
+
+    public function testAnAnchorBelongsToOneSection(): void
+    {
+        $r = self::check([self::section('intro'), self::section('pricing'), self::section('faq'), self::section('pricing')]);
+
+        $this->assertSame('anchor_duplicate', $r['code'] ?? 'accepted');
+        $this->assertSame('outline[3]', $r['failures'][0]['path']);
+        $this->assertSame('anchor', $r['failures'][0]['key']);
+        $this->assertStringContainsString('outline[1]', $r['failures'][0]['reason'], 'the reason names the section that has the anchor');
+    }
+
+    public function testTwentySectionsWithTwentyAnchorsAreAccepted(): void
+    {
+        $sections = [];
+        for ($i = 0; $i < OutlineV3Schema::MAX_SECTIONS; ++$i) {
+            $sections[] = self::section('part-' . $i);
+        }
+
+        $this->assertArrayHasKey('outline', self::check($sections));
+    }
+
+    public function testARefusalAboutAnAnchorDoesNotEchoTheAnchor(): void
+    {
+        $invalid = self::check([self::section('ZQXANCHOR')]);
+        $this->assertSame('anchor_invalid', $invalid['code'] ?? 'accepted');
+        $this->assertStringNotContainsString('ZQXANCHOR', (string) json_encode($invalid));
+
+        $duplicate = self::check([self::section('zqxdup'), self::section('zqxdup')]);
+        $this->assertSame('anchor_duplicate', $duplicate['code'] ?? 'accepted');
+        $this->assertStringNotContainsString('zqxdup', (string) json_encode($duplicate));
+    }
+
+    // -------------------------------------------------------------------------
+    // Links to a section of the page
+    // -------------------------------------------------------------------------
+
+    /**
+     * Each row: the blocks of the first section that make a link to the url they
+     * are given, and the path of the object that holds the url.
+     *
+     * @return array<string,array{0:callable,1:string}>
+     */
+    public static function linkPlaces(): array
+    {
+        $text   = ['type' => 'paragraph', 'text' => 'Words.'];
+        $button = static fn (string $url): array => ['type' => 'buttons', 'buttons' => [['text' => 'Go', 'url' => $url]]];
+
+        return [
+            'a button of a section' => [
+                static fn (string $url): array => [$text, $button($url)],
+                'outline[0].children[1].buttons[0]',
+            ],
+            'a button in a group' => [
+                static fn (string $url): array => [['type' => 'group', 'children' => [$text, $button($url)]]],
+                'outline[0].children[0].children[1].buttons[0]',
+            ],
+            'a button in a column' => [
+                static fn (string $url): array => [['type' => 'columns', 'columns' => [['children' => [$text]], ['children' => [$button($url)]]]]],
+                'outline[0].children[0].columns[1].children[0].buttons[0]',
+            ],
+            'a button in the hero' => [
+                static fn (string $url): array => [self::pattern('hero', 'centered', ['children' => [$text, $button($url)]])],
+                'outline[0].children[0].children[1].buttons[0]',
+            ],
+            'a button in a call to action' => [
+                static fn (string $url): array => [self::pattern('cta', 'band', ['children' => [$button($url)]])],
+                'outline[0].children[0].children[0].buttons[0]',
+            ],
+            'the button of a plan' => [
+                static fn (string $url): array => [self::pattern('pricing', 'three-plans', ['plans' => [array_merge(self::ITEM['plans'], ['cta' => ['text' => 'Choose', 'url' => $url]])]])],
+                'outline[0].children[0].plans[0].cta',
+            ],
+        ];
+    }
+
+    /**
+     * @dataProvider linkPlaces
+     * @param callable $make Makes the blocks of the first section from a url.
+     * @param string   $path Path of the object that holds the url.
+     */
+    public function testALinkToASectionFurtherDownOrToItsOwnSectionResolves(callable $make, string $path): void
+    {
+        $forward = self::check([self::section('top', $make('#plans')), self::section('plans')]);
+        $this->assertArrayHasKey('outline', $forward, $path . ': ' . (string) ($forward['detail'] ?? ''));
+
+        $own = self::check([self::section('top', $make('#top'))]);
+        $this->assertArrayHasKey('outline', $own, $path . ': ' . (string) ($own['detail'] ?? ''));
+    }
+
+    /**
+     * @dataProvider linkPlaces
+     * @param callable $make Makes the blocks of the first section from a url.
+     * @param string   $path Path of the object that holds the url.
+     */
+    public function testALinkToAnAnchorNoSectionHasIsRefusedWithThePageAnchors(callable $make, string $path): void
+    {
+        $r = self::check([self::section('top', $make('#zqxsection')), self::section('faq')]);
+
+        $this->assertSame('link_anchor_missing', $r['code'] ?? 'accepted', $path);
+        $this->assertCount(1, $r['failures']);
+        $this->assertSame($path, $r['failures'][0]['path']);
+        $this->assertSame('url', $r['failures'][0]['key']);
+        $this->assertSame(['top', 'faq'], $r['failures'][0]['allowed'], 'the refusal lists the anchors the page has');
+        $this->assertStringNotContainsString('zqxsection', (string) json_encode($r), 'and does not repeat the one it was given');
+    }
+
+    public function testEveryLinkToAMissingAnchorIsListedInTheOrderOfThePage(): void
+    {
+        $r = self::check([
+            self::section('top', [['type' => 'buttons', 'buttons' => [
+                ['text' => 'A', 'url' => '#nowhere'],
+                ['text' => 'B', 'url' => '#top'],
+                ['text' => 'C', 'url' => '#elsewhere'],
+            ]]]),
+            self::section('more', [['type' => 'buttons', 'buttons' => [['text' => 'D', 'url' => '#nowhere']]]]),
+        ]);
+
+        $this->assertSame('link_anchor_missing', $r['code'] ?? 'accepted');
+        $this->assertSame(
+            ['outline[0].children[0].buttons[0]', 'outline[0].children[0].buttons[2]', 'outline[1].children[0].buttons[0]'],
+            array_column($r['failures'], 'path')
+        );
+    }
+
+    public function testLinksAreJudgedAfterTheWholeOutline(): void
+    {
+        $r = self::check([
+            self::section('top', [['type' => 'buttons', 'buttons' => [['text' => 'A', 'url' => '#nowhere']]]]),
+            self::section('more', [['type' => 'paragraph', 'text' => 'Has <b>markup</b>.']]),
+        ]);
+
+        $this->assertSame('create_content_invalid', $r['code'] ?? 'accepted', 'a fault that is read on the way is told before a link that could not resolve');
+    }
+
+    public function testAnExternalLinkAndASitePathNeedNoSection(): void
+    {
+        $r = self::check([self::section('top', [['type' => 'buttons', 'buttons' => [
+            ['text' => 'A', 'url' => 'https://example.com/#nowhere'],
+            ['text' => 'B', 'url' => '/pricing/#nowhere'],
+        ]]])]);
+
+        $this->assertArrayHasKey('outline', $r, (string) ($r['detail'] ?? ''));
+    }
+
+    // -------------------------------------------------------------------------
+    // The level 1 heading
+    // -------------------------------------------------------------------------
+
+    /**
+     * Each row: the outline, and the path of the level 1 heading outside the hero.
+     *
+     * @return array<string,array{0:list<array<string,mixed>>,1:string}>
+     */
+    public static function titlesOutsideTheHero(): array
+    {
+        $h1   = ['type' => 'heading', 'level' => 1, 'text' => 'Title'];
+        $text = ['type' => 'paragraph', 'text' => 'Words.'];
+        $hero = self::pattern('hero', 'centered', ['children' => [['type' => 'heading', 'level' => 1, 'text' => 'Websites that earn their keep']]]);
+
+        return [
+            'a section'                => [[self::section('top', [$h1])], 'outline[0].children[0]'],
+            'a group'                  => [[self::section('top', [['type' => 'group', 'children' => [$text, $h1]]])], 'outline[0].children[0].children[1]'],
+            'a column'                 => [[self::section('top', [['type' => 'columns', 'columns' => [['children' => [$text]], ['children' => [$h1]]]]])], 'outline[0].children[0].columns[1].children[0]'],
+            'a call to action'         => [[self::section('top', [self::pattern('cta', 'band', ['children' => [$h1]])])], 'outline[0].children[0].children[0]'],
+            'a section after the hero' => [[self::section('top', [$hero]), self::section('more', [$h1])], 'outline[1].children[0]'],
+            'a group beside the hero'  => [[self::section('top', [$hero, ['type' => 'group', 'children' => [$h1]]])], 'outline[0].children[1].children[0]'],
+        ];
+    }
+
+    /**
+     * @dataProvider titlesOutsideTheHero
+     * @param list<array<string,mixed>> $outline Outline.
+     * @param string                    $path    Path of the heading outside the hero.
+     */
+    public function testALevelOneHeadingLivesInTheHero(array $outline, string $path): void
+    {
+        $r = self::check($outline);
+
+        $this->assertSame('h1_outside_hero', $r['code'] ?? 'accepted');
+        $this->assertSame($path, $r['failures'][0]['path']);
+        $this->assertSame('level', $r['failures'][0]['key']);
+    }
+
+    public function testTheHeroMayHoldTheOneLevelOneHeadingOfThePage(): void
+    {
+        $r = self::check([
+            self::section('top', [self::pattern('hero', 'centered', ['children' => [
+                ['type' => 'heading', 'level' => 1, 'text' => 'Websites that earn their keep'],
+                ['type' => 'paragraph', 'text' => 'Lead.'],
+            ]])]),
+            self::section('more', [['type' => 'heading', 'level' => 2, 'text' => 'More'], ['type' => 'heading', 'level' => 3, 'text' => 'And more']]),
+        ]);
+
+        $this->assertArrayHasKey('outline', $r, (string) ($r['detail'] ?? ''));
+    }
+
+    public function testASecondLevelOneHeadingIsALayoutFault(): void
+    {
+        $h1 = ['type' => 'heading', 'level' => 1, 'text' => 'Title'];
+        $r  = self::check([self::section('top', [self::pattern('hero', 'centered', ['children' => [$h1, ['type' => 'paragraph', 'text' => 'Lead.'], $h1]])])]);
+
+        $this->assertSame('layout_invalid', $r['code'] ?? 'accepted');
+        $this->assertSame('outline[0].children[0].children[2]', $r['failures'][0]['path']);
+        $this->assertSame('level', $r['failures'][0]['key']);
+
+        $elsewhere = self::check([
+            self::section('top', [self::pattern('hero', 'centered', ['children' => [$h1]])]),
+            self::section('more', [$h1]),
+        ]);
+        $this->assertSame('h1_outside_hero', $elsewhere['code'] ?? 'accepted', 'where the heading stands is told before how many there are');
     }
 
     public function testVersionTwoIsUnchanged(): void
@@ -797,6 +1145,18 @@ final class OutlineV3GrammarTest extends TestCase
     private static function page(array $children, array $extra = []): array
     {
         return [array_merge(['type' => 'section', 'anchor' => 'intro', 'children' => $children], $extra)];
+    }
+
+    /**
+     * A section with the given anchor, holding one paragraph unless it is given blocks.
+     *
+     * @param string                         $anchor   Anchor.
+     * @param list<array<string,mixed>>|null $children Blocks of the section.
+     * @return array<string,mixed>
+     */
+    private static function section(string $anchor, ?array $children = null): array
+    {
+        return ['type' => 'section', 'anchor' => $anchor, 'children' => $children ?? [['type' => 'paragraph', 'text' => 'Words.']]];
     }
 
     /**

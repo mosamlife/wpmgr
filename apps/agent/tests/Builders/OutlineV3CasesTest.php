@@ -58,8 +58,7 @@ final class OutlineV3CasesTest extends TestCase
 
     /**
      * Rules that look across the page: anchors, the links that point at them,
-     * the hero's place and heading level 1. An accepted row of these is run
-     * with the rest; a refused row is judged with those checks.
+     * the hero's place and heading level 1. Every row of them is run.
      */
     private const PAGE_RULES = [
         'anchor_regex',
@@ -88,8 +87,8 @@ final class OutlineV3CasesTest extends TestCase
     ];
 
     /** Floors that keep the run from passing by judging next to nothing. */
-    private const MIN_ROWS_RUN         = 25;
-    private const MIN_REFUSED_ROWS_RUN = 14;
+    private const MIN_ROWS_RUN         = 37;
+    private const MIN_REFUSED_ROWS_RUN = 26;
 
     // -------------------------------------------------------------------------
     // The rows
@@ -171,7 +170,10 @@ final class OutlineV3CasesTest extends TestCase
         foreach (['v3-minimal-page', 'v3-full-landing-page', 'sections-21', 'features-2-items', 'icon-not-in-the-list', 'pattern-text-with-markup', 'link-anchor-malformed', 'buttons-in-three-styles', 'hero-first-with-the-h1'] as $name) {
             $this->assertArrayHasKey($name, $rows, $name . ' is run');
         }
-        foreach (['anchor-duplicate', 'hero-in-the-second-section', 'h1-without-a-hero', 'design-missing', 'font-not-in-the-registry'] as $name) {
+        foreach (['anchor-uppercase', 'anchor-41-characters', 'anchor-duplicate', 'anchor-reserved', 'link-anchor-missing', 'hero-in-the-second-section', 'hero-not-the-first-child', 'h1-without-a-hero', 'h1-in-a-later-section', 'h1-twice-in-the-hero'] as $name) {
+            $this->assertArrayHasKey($name, $rows, $name . ' is run: the page-wide rules are judged here');
+        }
+        foreach (['design-missing', 'font-not-in-the-registry', 'outline-version-4', 'landing-page-over-the-input-limit'] as $name) {
             $this->assertArrayNotHasKey($name, $rows, $name . ' is judged elsewhere');
         }
     }
@@ -225,19 +227,19 @@ final class OutlineV3CasesTest extends TestCase
     // -------------------------------------------------------------------------
 
     /**
-     * Whether the grammar answers this row. A refused row of a page-wide rule
-     * is judged with that rule; every other row of the outline rules is run.
+     * Whether the grammar answers this row: every row of the outline rules is
+     * run, refused or accepted. The rules of the whole input are not.
      *
      * @param array<string,mixed> $case Case.
      */
     private static function judged(array $case): bool
     {
         $rule = (string) $case['rule'];
-        if (in_array($rule, self::SECTION_RULES, true) || in_array($rule, self::PATTERN_RULES, true) || in_array($rule, self::BLOCK_RULES, true)) {
-            return true;
-        }
 
-        return in_array($rule, self::PAGE_RULES, true) && $case['agent'] === 'ok';
+        return in_array($rule, self::SECTION_RULES, true)
+            || in_array($rule, self::PATTERN_RULES, true)
+            || in_array($rule, self::BLOCK_RULES, true)
+            || in_array($rule, self::PAGE_RULES, true);
     }
 
     /**

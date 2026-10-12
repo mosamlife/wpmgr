@@ -23,9 +23,9 @@ if (!defined('ABSPATH')) {
  *             min_height?, children}: 1 to MAX_SECTION_CHILDREN blocks, groups,
  *             columns and patterns, closed fields, closed option sets
  *   pattern  {type, pattern, variant, ...}: a hero or a cta holds blocks
- *            (a hero at most MAX_HERO_CHILDREN, a cta MAX_CTA_CHILDREN, a page
- *            at most MAX_HEROES hero); every other pattern holds one array of
- *            typed items, counted by ITEM_CAPS, each field judged by its kind
+ *            (a hero at most MAX_HERO_CHILDREN, a cta MAX_CTA_CHILDREN);
+ *            every other pattern holds one array of typed items, counted by
+ *            ITEM_CAPS, each field judged by its kind
  *
  * The blocks of a section are the blocks of version 2 in the forms version 3
  * gives them (see PageCreateBuilder::v3Counters()), judged by the same code
@@ -33,13 +33,26 @@ if (!defined('ABSPATH')) {
  * images (section backgrounds and pattern pictures included), buttons, tables
  * and characters of text.
  *
+ * The page as a whole has four more rules:
+ *   anchors  a section anchor has the shape of ANCHOR_PATTERN, is not one of
+ *            RESERVED_ANCHORS and is the anchor of one section only
+ *   hero     the hero is the first block of the first section, so a page has
+ *            at most one
+ *   title    the page has at most one level 1 heading, and it is in the hero
+ *   links    a link of the form #anchor leads to a section of the page; it is
+ *            judged after the whole outline, so a section further down
+ *            resolves it
+ *
  * Codes: bad_input (an unknown field, a wrong type, a value outside a closed
  * set), layout_invalid (placement and counts), create_content_invalid (a text
  * rule), link_invalid (a link), pattern_items_out_of_range (too few or too
- * many items of a pattern) and icon_unknown. A refusal stops at the first
- * fault, except that every unknown icon of one pattern is listed. A refusal
- * holds WPMgr's own words and the offending keys' names, never text from the
- * input.
+ * many items of a pattern), icon_unknown, anchor_invalid, anchor_reserved,
+ * anchor_duplicate, hero_misplaced, h1_outside_hero and link_anchor_missing.
+ * A refusal stops at the first fault, except that every unknown icon of one
+ * pattern is listed and so is every link to an anchor the page does not have.
+ * A refusal holds WPMgr's own words and the offending keys' names, never text
+ * from the input; the one exception is the list of anchors in a refusal of a
+ * link, which passed the anchor pattern and so holds only a-z, 0-9 and -.
  *
  * Pure: no WordPress call.
  */
@@ -119,6 +132,12 @@ final class OutlineV3
         'link_invalid'               => 'The outline holds a link the page cannot carry.',
         'pattern_items_out_of_range' => 'A pattern holds too few or too many items.',
         'icon_unknown'               => 'An icon is not in the list of icons.',
+        'anchor_invalid'             => 'A section anchor is not one the page can carry.',
+        'anchor_reserved'            => 'A section anchor is an id the theme or WordPress already uses.',
+        'anchor_duplicate'           => 'Two sections have the same anchor.',
+        'hero_misplaced'             => 'The hero is not at the top of the page.',
+        'h1_outside_hero'            => 'A level 1 heading is outside the hero.',
+        'link_anchor_missing'        => 'A link leads to an anchor that no section of the page has.',
     ];
 
     /**
@@ -144,10 +163,10 @@ final class OutlineV3
         }
 
         $ctx      = PageCreateBuilder::v3Counters($titleChars);
-        $heroes   = 0;
+        $page     = ['anchors' => [], 'links' => [], 'titles' => 0];
         $sections = [];
         foreach ($outline as $i => $node) {
-            $r = self::section($node, 'outline[' . $i . ']', $ctx, $heroes);
+            $r = self::section($node, 'outline[' . $i . ']', $i === 0, $ctx, $page);
             if (!isset($r['node'])) {
                 return $r;
             }
@@ -155,6 +174,10 @@ final class OutlineV3
         }
         if ($ctx['total'] > PageCreateBuilder::MAX_TOTAL_CHARS) {
             return self::refuse('create_content_invalid', 'input', 'outline', 'the text of the page is longer than ' . PageCreateBuilder::MAX_TOTAL_CHARS . ' characters');
+        }
+        $missing = self::missingAnchors($page);
+        if ($missing !== null) {
+            return $missing;
         }
 
         return ['outline' => $sections];
@@ -165,13 +188,14 @@ final class OutlineV3
     // ---------------------------------------------------------------------
 
     /**
-     * @param mixed               $node   Decoded top-level item.
-     * @param string              $at     Its path.
-     * @param array<string,mixed> $ctx    Page-wide counters.
-     * @param int                 $heroes Heroes seen so far.
+     * @param mixed               $node  Decoded top-level item.
+     * @param string              $at    Its path.
+     * @param bool                $first Whether it is the first section of the page.
+     * @param array<string,mixed> $ctx   Page-wide counters.
+     * @param array<string,mixed> $page  What the page has shown so far: its anchors, its links, its title.
      * @return array<string,mixed> {node} or a refusal.
      */
-    private static function section($node, string $at, array &$ctx, int &$heroes): array
+    private static function section($node, string $at, bool $first, array &$ctx, array &$page): array
     {
         if (!is_object($node)) {
             return self::refuse('bad_input', $at, 'type', 'a top-level item is a section object');
@@ -189,6 +213,10 @@ final class OutlineV3
         }
         if (!is_string($n['anchor'])) {
             return self::refuse('bad_input', $at, 'anchor', 'must be a string');
+        }
+        $bad = self::anchor($n['anchor'], $at, $page);
+        if ($bad !== null) {
+            return $bad;
         }
         foreach (self::SECTION_SETS as $key => $set) {
             if (array_key_exists($key, $n) && (!is_string($n[$key]) || !in_array($n[$key], $set, true))) {
@@ -221,13 +249,17 @@ final class OutlineV3
             $childAt = $at . '.children[' . $j . ']';
             $type    = is_object($child) ? ($child->type ?? null) : null;
             if ($type === 'pattern') {
-                $r = self::pattern($child, $childAt, $ctx, $heroes);
+                $r = self::pattern($child, $childAt, $first && $j === 0, $ctx, $page);
             } elseif ($type === 'section') {
                 return self::refuse('layout_invalid', $childAt, 'type', 'a section is a top-level item; it cannot sit inside a section');
             } else {
                 $r = PageCreateBuilder::v3Block($child, $childAt, true, $ctx);
                 if (!isset($r['node'])) {
                     return self::fromBlock($r, $childAt, null);
+                }
+                $bad = self::read($r['node'], $childAt, false, null, $page);
+                if ($bad !== null) {
+                    return $bad;
                 }
             }
             if (!isset($r['node'])) {
@@ -304,13 +336,14 @@ final class OutlineV3
     /**
      * One pattern node. It is an object whose type is "pattern".
      *
-     * @param object              $node   Decoded node.
-     * @param string              $at     Its path.
-     * @param array<string,mixed> $ctx    Page-wide counters.
-     * @param int                 $heroes Heroes seen so far.
+     * @param object              $node  Decoded node.
+     * @param string              $at    Its path.
+     * @param bool                $opens Whether it stands where the hero goes: the first block of the first section.
+     * @param array<string,mixed> $ctx   Page-wide counters.
+     * @param array<string,mixed> $page  What the page has shown so far.
      * @return array<string,mixed> {node} or a refusal.
      */
-    private static function pattern(object $node, string $at, array &$ctx, int &$heroes): array
+    private static function pattern(object $node, string $at, bool $opens, array &$ctx, array &$page): array
     {
         if (++$ctx['nodes'] > PageCreateBuilder::MAX_NODES) {
             return self::tooMany($at);
@@ -319,6 +352,9 @@ final class OutlineV3
         $name = $n['pattern'] ?? null;
         if (!is_string($name) || !in_array($name, OutlineV3Schema::PATTERNS, true)) {
             return self::refuse('bad_input', $at, 'pattern', 'must be one of the patterns', OutlineV3Schema::PATTERNS);
+        }
+        if ($name === 'hero' && !$opens) {
+            return self::refuse('hero_misplaced', $at, 'pattern', 'the hero is the first block of the first section; move it there, or leave the hero out', [], $name);
         }
         $array = OutlineV3Schema::PATTERN_ARRAY[$name] ?? 'children';
         $bad   = self::fields($n, ['type', 'pattern', 'variant', $array], ['type', 'pattern', 'variant', $array], $at, 'a ' . $name . ' pattern', $name);
@@ -331,10 +367,10 @@ final class OutlineV3
         }
 
         if (!isset(OutlineV3Schema::PATTERN_ARRAY[$name])) {
-            return self::composed($name, $n['variant'], $n['children'], $at, $ctx, $heroes);
+            return self::composed($name, $n['variant'], $n['children'], $at, $ctx, $page);
         }
 
-        return self::itemsOf($name, $array, $n['variant'], $n[$array], $at, $ctx);
+        return self::itemsOf($name, $array, $n['variant'], $n[$array], $at, $ctx, $page);
     }
 
     /**
@@ -345,10 +381,10 @@ final class OutlineV3
      * @param mixed               $kids    Decoded children.
      * @param string              $at      Path of the pattern.
      * @param array<string,mixed> $ctx     Page-wide counters.
-     * @param int                 $heroes  Heroes seen so far.
+     * @param array<string,mixed> $page    What the page has shown so far.
      * @return array<string,mixed> {node} or a refusal.
      */
-    private static function composed(string $name, string $variant, $kids, string $at, array &$ctx, int &$heroes): array
+    private static function composed(string $name, string $variant, $kids, string $at, array &$ctx, array &$page): array
     {
         if (!is_array($kids) || !ArrayShape::isList($kids)) {
             return self::refuse('bad_input', $at, 'children', 'must be a list of blocks', [], $name);
@@ -356,9 +392,6 @@ final class OutlineV3
         $max = $name === 'hero' ? OutlineV3Schema::MAX_HERO_CHILDREN : OutlineV3Schema::MAX_CTA_CHILDREN;
         if ($kids === [] || count($kids) > $max) {
             return self::refuse('layout_invalid', $at, 'children', sprintf('a %s holds 1 to %d blocks; this one has %d', $name, $max, count($kids)), [], $name);
-        }
-        if ($name === 'hero' && ++$heroes > OutlineV3Schema::MAX_HEROES) {
-            return self::refuse('layout_invalid', $at, 'pattern', 'a page holds at most ' . OutlineV3Schema::MAX_HEROES . ' hero', [], $name);
         }
         $allowed = self::BLOCKS_OF[$name];
         $out     = [];
@@ -371,6 +404,10 @@ final class OutlineV3
             $r = PageCreateBuilder::v3Block($kid, $kidAt, false, $ctx);
             if (!isset($r['node'])) {
                 return self::fromBlock($r, $kidAt, $name);
+            }
+            $bad = self::read($r['node'], $kidAt, $name === 'hero', $name, $page);
+            if ($bad !== null) {
+                return $bad;
             }
             $out[] = $r['node'];
         }
@@ -387,9 +424,10 @@ final class OutlineV3
      * @param mixed               $items   Decoded items.
      * @param string              $at      Path of the pattern.
      * @param array<string,mixed> $ctx     Page-wide counters.
+     * @param array<string,mixed> $page    What the page has shown so far.
      * @return array<string,mixed> {node} or a refusal.
      */
-    private static function itemsOf(string $name, string $array, string $variant, $items, string $at, array &$ctx): array
+    private static function itemsOf(string $name, string $array, string $variant, $items, string $at, array &$ctx, array &$page): array
     {
         if (!is_array($items) || !ArrayShape::isList($items)) {
             return self::refuse('bad_input', $at, $array, 'must be a list of items', [], $name);
@@ -416,6 +454,11 @@ final class OutlineV3
         }
         if ($icons !== []) {
             return self::envelope('icon_unknown', $icons, $name);
+        }
+        if ($array === 'plans') {
+            foreach ($out as $k => $plan) {
+                self::note($plan['cta']['url'], $at . '.plans[' . $k . '].cta', $page);
+            }
         }
 
         return ['node' => ['type' => 'pattern', 'pattern' => $name, 'variant' => $variant, $array => $out]];
@@ -621,6 +664,156 @@ final class OutlineV3
         $ctx['total'] += strlen($b['url']);
 
         return ['value' => ['text' => $text['value'], 'url' => $b['url']]];
+    }
+
+    // ---------------------------------------------------------------------
+    // The page as a whole: anchors, the title, links
+    // ---------------------------------------------------------------------
+
+    /**
+     * The anchor of a section: it has the shape of an anchor, is not an id the
+     * theme owns and is not the anchor of an earlier section. It is kept for the
+     * links that lead to it.
+     *
+     * @param string              $anchor The anchor as given.
+     * @param string              $at     Path of the section.
+     * @param array<string,mixed> $page   What the page has shown so far.
+     * @return array<string,mixed>|null A refusal, or null.
+     */
+    private static function anchor(string $anchor, string $at, array &$page): ?array
+    {
+        if (preg_match('/' . OutlineV3Schema::ANCHOR_PATTERN . '/D', $anchor) !== 1) {
+            return self::refuse('anchor_invalid', $at, 'anchor', 'must be 2 to 40 characters: a lower-case letter, then lower-case letters, digits or hyphens');
+        }
+        if (in_array($anchor, OutlineV3Schema::RESERVED_ANCHORS, true)) {
+            return self::refuse('anchor_reserved', $at, 'anchor', 'is an id the theme or WordPress already uses (' . implode(', ', OutlineV3Schema::RESERVED_ANCHORS) . '); choose another');
+        }
+        if (isset($page['anchors'][$anchor])) {
+            return self::refuse('anchor_duplicate', $at, 'anchor', 'is the anchor of ' . $page['anchors'][$anchor] . ' already; give each section its own');
+        }
+        $page['anchors'][$anchor] = $at;
+
+        return null;
+    }
+
+    /**
+     * What a judged block says about the page as a whole: where its level 1
+     * headings stand and where its links lead. A group and columns are read
+     * down to their blocks.
+     *
+     * @param array<string,mixed> $node    The block, as the block grammar returned it.
+     * @param string              $at      Its path.
+     * @param bool                $inHero  Whether it stands in the hero.
+     * @param string|null         $pattern Pattern name, when the block is inside a pattern.
+     * @param array<string,mixed> $page    What the page has shown so far.
+     * @return array<string,mixed>|null A refusal, or null.
+     */
+    private static function read(array $node, string $at, bool $inHero, ?string $pattern, array &$page): ?array
+    {
+        switch ($node['type'] ?? null) {
+            case 'heading':
+                return $node['level'] === 1 ? self::title($at, $inHero, $pattern, $page) : null;
+            case 'buttons':
+                foreach ($node['buttons'] as $k => $button) {
+                    self::note($button['url'], $at . '.buttons[' . $k . ']', $page);
+                }
+
+                return null;
+            case 'group':
+                return self::readAll($node['children'], $at . '.children', $inHero, $pattern, $page);
+            case 'columns':
+                foreach ($node['columns'] as $c => $blocks) {
+                    $bad = self::readAll($blocks, $at . '.columns[' . $c . '].children', $inHero, $pattern, $page);
+                    if ($bad !== null) {
+                        return $bad;
+                    }
+                }
+
+                return null;
+            default:
+                return null;
+        }
+    }
+
+    /**
+     * @param list<array<string,mixed>> $nodes   The blocks, as the block grammar returned them.
+     * @param string                    $at      Path of the list.
+     * @param bool                      $inHero  Whether they stand in the hero.
+     * @param string|null               $pattern Pattern name, when the blocks are inside a pattern.
+     * @param array<string,mixed>       $page    What the page has shown so far.
+     * @return array<string,mixed>|null A refusal, or null.
+     */
+    private static function readAll(array $nodes, string $at, bool $inHero, ?string $pattern, array &$page): ?array
+    {
+        foreach ($nodes as $k => $node) {
+            $bad = self::read($node, $at . '[' . $k . ']', $inHero, $pattern, $page);
+            if ($bad !== null) {
+                return $bad;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * A level 1 heading: the one title of the page, which stands in the hero.
+     *
+     * @param string              $at      Path of the heading.
+     * @param bool                $inHero  Whether it stands in the hero.
+     * @param string|null         $pattern Pattern name, when the heading is inside a pattern.
+     * @param array<string,mixed> $page    What the page has shown so far.
+     * @return array<string,mixed>|null A refusal, or null.
+     */
+    private static function title(string $at, bool $inHero, ?string $pattern, array &$page): ?array
+    {
+        if (!$inHero) {
+            return self::refuse('h1_outside_hero', $at, 'level', 'a level 1 heading is the title of the page and stands in the hero; use level 2 here', [], $pattern);
+        }
+        if (++$page['titles'] > 1) {
+            return self::refuse('layout_invalid', $at, 'level', 'a page has one level 1 heading, in the hero; use level 2 here', [], $pattern);
+        }
+
+        return null;
+    }
+
+    /**
+     * Keep a link to a section of the page until every section is read. Any
+     * other link is not the page's to judge here.
+     *
+     * @param string              $url  The link, which already passed the link rules.
+     * @param string              $at   Path of the object that holds it.
+     * @param array<string,mixed> $page What the page has shown so far.
+     */
+    private static function note(string $url, string $at, array &$page): void
+    {
+        if (strncmp($url, '#', 1) === 0) {
+            $page['links'][] = ['slug' => substr($url, 1), 'path' => $at];
+        }
+    }
+
+    /**
+     * Every link of the page that leads to an anchor no section has, in the
+     * order of the page. Each one names the anchors the page does have.
+     *
+     * @param array<string,mixed> $page What the page has shown.
+     * @return array<string,mixed>|null A refusal, or null.
+     */
+    private static function missingAnchors(array $page): ?array
+    {
+        $have     = array_map('strval', array_keys($page['anchors']));
+        $failures = [];
+        foreach ($page['links'] as $link) {
+            if (!isset($page['anchors'][$link['slug']])) {
+                $failures[] = [
+                    'path'    => $link['path'],
+                    'key'     => 'url',
+                    'reason'  => 'leads to a section anchor the page does not have; use # and one of the anchors listed, or add that section',
+                    'allowed' => $have,
+                ];
+            }
+        }
+
+        return $failures === [] ? null : self::envelope('link_anchor_missing', $failures, null);
     }
 
     // ---------------------------------------------------------------------
