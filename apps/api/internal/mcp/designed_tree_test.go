@@ -28,6 +28,8 @@ var designedGoldenGate = []string{
 	"testimonials-",
 	"faq-",
 	"escapes-in-every-pattern",
+	"features-",
+	"pricing-",
 }
 
 type designedGoldenMedia struct {
