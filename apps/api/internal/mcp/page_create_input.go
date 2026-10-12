@@ -272,6 +272,23 @@ func checkPageCreateInput(input []byte) (pageCreateFacts, pageCreateRefusal) {
 	return f, pageCreateRefusal{}
 }
 
+// pageCreateIsDesigned reports whether a page-create input sends a member of
+// a designed page at its top level: outline_version, design or page_frame,
+// whatever its value. The grammar admits those members only together with
+// outline_version 3, so the floor holds every input that carries one.
+func pageCreateIsDesigned(input []byte) bool {
+	top, ok := jsonObjectOf(input)
+	if !ok {
+		return false
+	}
+	for _, k := range []string{"outline_version", "design", "page_frame"} {
+		if _, has := top[k]; has {
+			return true
+		}
+	}
+	return false
+}
+
 // pageOutlineVersionOf reads outline_version from the input's top level:
 // absent is 0 (outline grammar v2), and a member that is sent must be the
 // whole number pageOutlineVersionDesigned, so 3.0, "3" and every other number
@@ -925,12 +942,16 @@ func pageCreateUsesLayout(input []byte) bool {
 }
 
 // PageCreateAgentFloor is the first agent release that runs this
-// wpmgr/page-create input: MinAgentVersionForBuilderAdapters when it asks
-// for a page builder, MinAgentVersionForPageLayout when the outline holds a
-// block beyond heading, paragraph and list (or the input cannot be read),
+// wpmgr/page-create input: MinAgentVersionForDesignedPages for a designed
+// page, MinAgentVersionForBuilderAdapters when it asks for a page builder,
+// MinAgentVersionForPageLayout when the outline holds a block beyond heading,
+// paragraph and list (or the input cannot be read),
 // MinAgentVersionForPageCreate otherwise. The run path and the dispatch
 // worker both decide with it.
 func PageCreateAgentFloor(input []byte) string {
+	if pageCreateIsDesigned(input) {
+		return agentcmd.MinAgentVersionForDesignedPages
+	}
 	if pageCreateUsesBuilder(input) {
 		return agentcmd.MinAgentVersionForBuilderAdapters
 	}

@@ -421,8 +421,9 @@ type dispatchPlan struct {
 
 // agentFloorFor is the first agent release that runs a request: its
 // ability's floor, and for wpmgr/page-create the floor of the stored input
-// (a layout outline needs a newer agent than a text-only one, and a page
-// built with a page builder the builder floor). A site whose
+// (a layout outline needs a newer agent than a text-only one, a page built
+// with a page builder the builder floor, and a designed page the
+// designed-pages floor). A site whose
 // plugin went below it after approval closes not_sent/agent_outdated and is
 // never sent a write it cannot build.
 func agentFloorFor(r sqlc.AssistantAbilityRequest) string {

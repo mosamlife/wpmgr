@@ -18,7 +18,8 @@ package mcp
 // What depends on the site (whether Elementor is active, its version, the
 // format the site uses, an image's library alt text) is the agent's to
 // decide at precheck. A builder input then needs
-// agentcmd.MinAgentVersionForBuilderAdapters on the site (PageCreateAgentFloor).
+// agentcmd.MinAgentVersionForBuilderAdapters on the site, and a designed page
+// agentcmd.MinAgentVersionForDesignedPages (PageCreateAgentFloor).
 
 import (
 	"bytes"
@@ -250,6 +251,8 @@ const (
 	msgAbilityBuilderInput      = "the outline uses something this page builder cannot build, so nothing was asked"
 	msgAbilityBuilderOutdated   = "Pages built with a page builder need the WPMgr plugin " +
 		agentcmd.MinAgentVersionForBuilderAdapters + " or later on this site. Nothing was asked."
+	msgAbilityDesignedOutdated = "Designed pages (outline_version 3, design and page_frame) need the WPMgr plugin " +
+		agentcmd.MinAgentVersionForDesignedPages + " or later on this site. Nothing was asked."
 )
 
 // Fixed hints for the builder refusals (GH #823 pattern: our words, never

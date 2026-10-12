@@ -531,16 +531,8 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 		return "", r
 	}
 	// (The entry's own floor was checked by classify: c.reason above.)
-	if floor := PageCreateAgentFloor(input); floor != agentcmd.MinAgentVersionForPageCreate &&
-		!abilityAgentMeetsFloor(site.row.AgentVersion, &floor) {
-		msg := msgAbilityLayoutOutdated
-		if floor == agentcmd.MinAgentVersionForBuilderAdapters {
-			msg = msgAbilityBuilderOutdated
-		}
-		return "", refuse(reasonAgentOutdated, domain.Conflict(ErrCodeSiteAgentOutdated,
-			msg).WithDetails(map[string]any{
-			"min_agent_version": floor, "retryable": false,
-		}))
+	if r := pageCreateFloorRefusal(site.row.AgentVersion, input); r != nil {
+		return "", r
 	}
 	// The precheck counts against the read limits (W2).
 	if d := eng.readLimit.allow(auth.GrantID, site.row.ID); !d.allowed {
@@ -686,6 +678,29 @@ var precheckRefusalHints = map[string]string{
 	pageEditNodeNotEditable:         hintPageEditNodeNotEditable,
 	pageEditOpNotSupported:          hintPageEditOpNotSupported,
 	pageEditPageTooLarge:            hintPageEditPageTooLarge,
+}
+
+// pageCreateFloorRefusal is the run path's per-input floor: nil when an
+// agent of this version runs the page-create input, else the update-required
+// refusal (site_agent_outdated) naming the floor PageCreateAgentFloor gives
+// it. The entry's own floor is classify's, so an input whose floor is
+// MinAgentVersionForPageCreate is never refused here.
+func pageCreateFloorRefusal(agentVersion string, input []byte) *toolRefusal {
+	floor := PageCreateAgentFloor(input)
+	if floor == agentcmd.MinAgentVersionForPageCreate || abilityAgentMeetsFloor(agentVersion, &floor) {
+		return nil
+	}
+	msg := msgAbilityLayoutOutdated
+	switch floor {
+	case agentcmd.MinAgentVersionForBuilderAdapters:
+		msg = msgAbilityBuilderOutdated
+	case agentcmd.MinAgentVersionForDesignedPages:
+		msg = msgAbilityDesignedOutdated
+	}
+	return refuse(reasonAgentOutdated, domain.Conflict(ErrCodeSiteAgentOutdated,
+		msg).WithDetails(map[string]any{
+		"min_agent_version": floor, "retryable": false,
+	}))
 }
 
 // precheckRefusalHint maps an input-related refusal code to a fixed hint,
