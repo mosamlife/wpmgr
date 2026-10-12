@@ -659,7 +659,8 @@ const (
 		"without captions. Send editor wordpress_blocks only for a site that uses the block editor."
 	hintDesignNotReady = "A designed page needs its whole design in one object, and a field is missing. Send design with " +
 		"colors (ground, surface, ink, muted, accent and on_accent, each as #RRGGBB), fonts (heading and body), " +
-		"scale (base_px from 15 to 20 and ratio from 1.125 to 1.333), radius (none, sm, md or lg) and " +
+		"scale (base_px, a whole number from 15 to 20, and ratio, a name and never a number: major_second, " +
+		"minor_third, major_third or perfect_fourth), radius (none, sm, md or lg) and " +
 		"density (compact, normal or airy). The failures name each field to add."
 	hintDesignContrastLow = "Text must be readable on the colour it sits on. ink needs a contrast of at least 4.5 to 1 " +
 		"against both ground and surface, and on_accent at least 4.5 to 1 against accent. The failures name the pair and " +

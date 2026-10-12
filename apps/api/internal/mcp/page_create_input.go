@@ -954,19 +954,6 @@ func jsonIntOf(raw []byte) (int64, bool) {
 	return n, true
 }
 
-// jsonNumberOf reads a JSON number of any shape (a fraction and an exponent
-// are allowed) that fits a float64.
-func jsonNumberOf(raw []byte) (float64, bool) {
-	if c := jsonLeadByte(raw); c != '-' && (c < '0' || c > '9') {
-		return 0, false
-	}
-	var n float64
-	if json.Unmarshal(raw, &n) != nil {
-		return 0, false
-	}
-	return n, true
-}
-
 func jsonBoolOf(raw []byte) (bool, bool) {
 	switch strings.TrimSpace(string(raw)) {
 	case "true":
@@ -1717,10 +1704,11 @@ type designFonts struct {
 	Body    string `json:"body"`
 }
 
-// designScale is the type scale of a design.
+// designScale is the type scale of a design. Ratio is the name the input
+// holds, one of designRatios.
 type designScale struct {
-	BasePx int64   `json:"base_px"`
-	Ratio  float64 `json:"ratio"`
+	BasePx int64  `json:"base_px"`
+	Ratio  string `json:"ratio"`
 }
 
 // pageDesign is a design object that passed every check, its colours upper
@@ -1747,6 +1735,10 @@ var (
 	designScaleKeys = []string{"base_px", "ratio"}
 	designRadii     = []string{"none", "sm", "md", "lg"}
 	designDensities = []string{"compact", "normal", "airy"}
+	// designRatios are the names of the type-scale ratio, smallest first. The
+	// input holds a name and never the number it stands for: the run entry
+	// takes whole numbers only, and the site maps each name to its number.
+	designRatios = []string{"major_second", "minor_third", "major_third", "perfect_fourth"}
 )
 
 const (
@@ -1754,8 +1746,6 @@ const (
 	designFontSystem = "system"
 	designBasePxMin  = 15
 	designBasePxMax  = 20
-	designRatioMin   = 1.125
-	designRatioMax   = 1.333
 )
 
 // designFontPattern is the closed set a font family name comes from: it is
@@ -1797,9 +1787,9 @@ func validatePageDesign(raw json.RawMessage) (pageDesign, *designProblem) {
 	fails = append(fails, more...)
 	d.Scale, more = parseDesignScale(obj["scale"])
 	fails = append(fails, more...)
-	d.Radius, more = designChoice(obj, "radius", designRadii)
+	d.Radius, more = designChoice(obj, "design", "radius", designRadii)
 	fails = append(fails, more...)
-	d.Density, more = designChoice(obj, "density", designDensities)
+	d.Density, more = designChoice(obj, "design", "density", designDensities)
 	fails = append(fails, more...)
 	fails = append(fails, designUnknownKeys("design", obj, designTopKeys)...)
 	if len(fails) > 0 {
@@ -1870,7 +1860,8 @@ func parseDesignFonts(raw json.RawMessage) (designFonts, []designFailure) {
 }
 
 // parseDesignScale reads the type scale: base_px a whole number from 15 to
-// 20 and ratio a number from 1.125 to 1.333.
+// 20 and ratio one of the names in designRatios. A number is not a ratio,
+// whichever name it stands for.
 func parseDesignScale(raw json.RawMessage) (designScale, []designFailure) {
 	var out designScale
 	obj, fails := designGroupObject(raw, "scale", designScaleKeys, "a base size and a ratio")
@@ -1890,29 +1881,20 @@ func parseDesignScale(raw json.RawMessage) (designScale, []designFailure) {
 	} else {
 		out.BasePx = n
 	}
-	if v, has := obj["ratio"]; !has {
-		fails = append(fails, designFailure{
-			Path: "design.scale", Key: "ratio", code: pageDesignNotReady,
-			Reason: fmt.Sprintf("missing; set it to a number from %g to %g", designRatioMin, designRatioMax),
-		})
-	} else if r, ok := jsonNumberOf(v); !ok || r < designRatioMin || r > designRatioMax {
-		fails = append(fails, designFailure{
-			Path: "design.scale", Key: "ratio", code: pageCreateBadInput,
-			Reason: fmt.Sprintf("must be a number from %g to %g", designRatioMin, designRatioMax),
-		})
-	} else {
-		out.Ratio = r
-	}
+	ratio, more := designChoice(obj, "design.scale", "ratio", designRatios)
+	out.Ratio = ratio
+	fails = append(fails, more...)
 	return out, append(fails, designUnknownKeys("design.scale", obj, designScaleKeys)...)
 }
 
 // designChoice reads a field of the design that holds one of a closed set of
-// strings (radius, density).
-func designChoice(obj map[string]json.RawMessage, key string, allowed []string) (string, []designFailure) {
+// strings (radius, density, and the scale's ratio). path is the object the
+// field sits in.
+func designChoice(obj map[string]json.RawMessage, path, key string, allowed []string) (string, []designFailure) {
 	raw, has := obj[key]
 	if !has {
 		return "", []designFailure{{
-			Path: "design", Key: key, code: pageDesignNotReady, Allowed: slices.Clone(allowed),
+			Path: path, Key: key, code: pageDesignNotReady, Allowed: slices.Clone(allowed),
 			Reason: "missing; set it to one of the listed values",
 		}}
 	}
@@ -1920,7 +1902,7 @@ func designChoice(obj map[string]json.RawMessage, key string, allowed []string) 
 		return s, nil
 	}
 	return "", []designFailure{{
-		Path: "design", Key: key, code: pageCreateBadInput, Allowed: slices.Clone(allowed),
+		Path: path, Key: key, code: pageCreateBadInput, Allowed: slices.Clone(allowed),
 		Reason: "must be one of the listed values",
 	}}
 }

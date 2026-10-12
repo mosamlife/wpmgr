@@ -17,7 +17,7 @@ import (
 
 // v3HeadDesign is a design with every field explicit.
 const v3HeadDesign = `{"colors":{"ground":"#F6F5F2","surface":"#FFFFFF","ink":"#15171C","muted":"#5A606C","accent":"#0D7A63","on_accent":"#FFFFFF"},` +
-	`"fonts":{"heading":"Manrope","body":"Source Sans 3"},"scale":{"base_px":17,"ratio":1.25},"radius":"md","density":"normal"}`
+	`"fonts":{"heading":"Manrope","body":"Source Sans 3"},"scale":{"base_px":17,"ratio":"major_third"},"radius":"md","density":"normal"}`
 
 // v3HeadOutlineV2 is an outline of version 2 the grammar accepts, and
 // v3HeadOutline the outline of a designed page that holds the same blocks in a

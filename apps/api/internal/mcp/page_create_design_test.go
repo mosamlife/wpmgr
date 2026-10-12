@@ -17,6 +17,63 @@ import (
 // so a change to the validator's list is a visible diff in this file.
 var designColourRolesWant = []string{"ground", "surface", "ink", "muted", "accent", "on_accent"}
 
+// designRatiosWant is the spec's list of type-scale ratio names, smallest
+// first, written out here for the same reason. The input holds a name, never
+// the number it stands for.
+var designRatiosWant = []string{"major_second", "minor_third", "major_third", "perfect_fourth"}
+
+// ratioEnumsIn collects the enum of every member named ratio that has one,
+// at any depth of a decoded JSON schema.
+func ratioEnumsIn(v any, found *[][]string) {
+	switch x := v.(type) {
+	case map[string]any:
+		for key, child := range x {
+			if member, ok := child.(map[string]any); ok && key == "ratio" {
+				if enum, ok := member["enum"].([]any); ok {
+					var names []string
+					for _, e := range enum {
+						s, _ := e.(string)
+						names = append(names, s)
+					}
+					*found = append(*found, names)
+				}
+			}
+			ratioEnumsIn(child, found)
+		}
+	case []any:
+		for _, child := range x {
+			ratioEnumsIn(child, found)
+		}
+	}
+}
+
+// TestDesignRatioNamesAreTheSchemasEnum: the names the validator takes are
+// the names both input schemas, which describe serves, give for the ratio. A
+// schema that lists another set would send the AI to a value the control
+// plane refuses, or the reverse.
+func TestDesignRatioNamesAreTheSchemasEnum(t *testing.T) {
+	want := strings.Join(designRatiosWant, ",")
+	if got := strings.Join(designRatios, ","); got != want {
+		t.Errorf("the validator takes %s, the spec lists %s", got, want)
+	}
+	for name, schema := range map[string][]byte{"page-create": pageCreateInputSchema, "page-edit": pageEditInputSchema} {
+		var doc any
+		if err := json.Unmarshal(schema, &doc); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var found [][]string
+		ratioEnumsIn(doc, &found)
+		if len(found) == 0 {
+			t.Errorf("%s: the schema gives no enum for a ratio, so this test compared nothing", name)
+		}
+		for _, enum := range found {
+			if got := strings.Join(enum, ","); got != want {
+				t.Errorf("%s: the schema lists the ratios %s, want %s", name, got, want)
+			}
+		}
+	}
+}
+
 // specDesignColours are the colours of the design example in the spec.
 var specDesignColours = map[string]string{
 	"ground": `"#F6F5F2"`, "surface": `"#FFFFFF"`, "ink": `"#15171C"`,
@@ -327,14 +384,14 @@ func TestDesignContrastLowNamesPair(t *testing.T) {
 
 // specDesignJSON is the design example of the spec (elementor.md 2.3).
 const specDesignJSON = `{"colors": {"ground": "#F6F5F2", "surface": "#FFFFFF", "ink": "#15171C", "muted": "#5A606C", "accent": "#0D7A63", "on_accent": "#FFFFFF"},
- "fonts": {"heading": "Manrope", "body": "Source Sans 3"}, "scale": {"base_px": 17, "ratio": 1.25},
+ "fonts": {"heading": "Manrope", "body": "Source Sans 3"}, "scale": {"base_px": 17, "ratio": "major_third"},
  "radius": "md", "density": "normal"}`
 
 // specDesign is what the validator makes of it.
 var specDesign = pageDesign{
 	Colors:  designColours{Ground: "#F6F5F2", Surface: "#FFFFFF", Ink: "#15171C", Muted: "#5A606C", Accent: "#0D7A63", OnAccent: "#FFFFFF"},
 	Fonts:   designFonts{Heading: "Manrope", Body: "Source Sans 3"},
-	Scale:   designScale{BasePx: 17, Ratio: 1.25},
+	Scale:   designScale{BasePx: 17, Ratio: "major_third"},
 	Radius:  "md",
 	Density: "normal",
 }
@@ -392,7 +449,7 @@ func TestDesignNotReady(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := `{"colors":{"ground":"#F6F5F2","surface":"#FFFFFF","ink":"#15171C","muted":"#5A606C","accent":"#0D7A63","on_accent":"#FFFFFF"},` +
-			`"fonts":{"heading":"Manrope","body":"Source Sans 3"},"scale":{"base_px":17,"ratio":1.25},"radius":"md","density":"normal"}`
+			`"fonts":{"heading":"Manrope","body":"Source Sans 3"},"scale":{"base_px":17,"ratio":"major_third"},"radius":"md","density":"normal"}`
 		if string(b) != want {
 			t.Errorf("marshalled %s, want %s", b, want)
 		}
@@ -573,16 +630,37 @@ func TestDesignFontsScaleRadiusDensity(t *testing.T) {
 		}
 	})
 
-	t.Run("ratio is a number from 1.125 to 1.333", func(t *testing.T) {
-		for _, n := range []string{"1.125", "1.15", "1.2", "1.25", "1.3", "1.333"} {
-			got := accepted(t, "design.scale", "ratio", n)
-			want, _ := strconv.ParseFloat(n, 64)
-			if got.Scale.Ratio != want {
-				t.Errorf("ratio %s came back as %v", n, got.Scale.Ratio)
+	t.Run("ratio is major_second, minor_third, major_third or perfect_fourth", func(t *testing.T) {
+		for _, name := range designRatiosWant {
+			if got := accepted(t, "design.scale", "ratio", `"`+name+`"`); got.Scale.Ratio != name {
+				t.Errorf("ratio %s came back as %q", name, got.Scale.Ratio)
 			}
 		}
-		for _, raw := range []string{"1.124", "1.1249999", "1.334", "1.3331", "1", "0", "-1.25", "2", "1e0", `"1.25"`, "null", "true", "[1.25]", "1e999"} {
+		for _, raw := range []string{
+			// A number is refused, one a name stands for as much as any other.
+			"1.125", "1.2", "1.25", "1.333", "1", "0", "-1.25", "2", "1e0", "1.25e0", "1e999",
+			// A name written another way, or outside the set.
+			`"Major_Third"`, `"MAJOR_THIRD"`, `"major third"`, `"major-third"`, `"majorthird"`, `"major_third "`, `" major_third"`,
+			`"major_third\n"`, `"major_third\u0000"`, `"major_thir"`, `""`,
+			`"minor_second"`, `"major_second;"`, `"golden"`, `"perfect_fifth"`, `"augmented_fourth"`, `"x"`,
+			// A number written as text, and every other JSON type.
+			`"1.25"`, `"1"`, "null", "true", "false", "[]", `["major_third"]`, "{}", `{"name":"major_third"}`,
+		} {
 			refused(t, "design.scale", "ratio", raw)
+		}
+	})
+
+	t.Run("a ratio left out or refused lists the four names, smallest first", func(t *testing.T) {
+		want := strings.Join(designRatiosWant, ",")
+		for name, change := range map[string]designChange{
+			"left out":   {path: "design.scale", key: "ratio"},
+			"a number":   {path: "design.scale", key: "ratio", raw: "1.25"},
+			"not a name": {path: "design.scale", key: "ratio", raw: `"golden"`},
+		} {
+			_, problem := validatePageDesign(designEdit(t, change))
+			if problem == nil || len(problem.Failures) != 1 || strings.Join(problem.Failures[0].Allowed, ",") != want {
+				t.Errorf("ratio %s: %+v, want one failure that lists %s", name, problem, want)
+			}
 		}
 	})
 

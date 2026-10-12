@@ -113,18 +113,20 @@ var v3RuleGroups = map[string]string{
 	"hero_first":           v3GroupLater,
 	"h1_inside_hero_only":  v3GroupLater,
 	"h1_at_most_once":      v3GroupLater,
+	"hero_at_most_once":    v3GroupLater,
 	"input_at_most_64_kib": v3GroupInput,
 }
 
 // v3GroupMustHold names rows a group has to find in the table, so a group that
 // lost its rows (a rename, a re-cut table) fails instead of passing empty.
 var v3GroupMustHold = map[string][]string{
-	v3GroupHead:     {"outline-version-4", "design-missing", "design-ink-on-ground-contrast-low", "page-frame-unknown"},
+	v3GroupHead:     {"outline-version-4", "design-missing", "design-ink-on-ground-contrast-low", "page-frame-unknown", "design-ratio-as-a-number", "design-ratio-unknown-name"},
 	v3GroupSections: {"v3-minimal-page", "sections-20", "sections-21", "section-inside-a-section", "paragraph-at-the-top-level", "section-without-children", "section-raw-padding", "section-with-every-option", "images-21-counting-backgrounds", "anchor-missing"},
 	v3GroupPatterns: {"patterns-at-their-smallest-counts", "patterns-at-their-largest-counts", "features-2-items", "testimonials-7-items", "pricing-5-plans", "faq-0-items", "logos-11-items", "stats-5-items", "icon-not-in-the-list", "pattern-text-with-markup"},
 	v3GroupLater: {"v3-full-landing-page", "anchor-uppercase", "anchor-41-characters", "anchors-at-2-and-40-characters", "anchor-duplicate", "anchor-reserved",
 		"link-to-a-later-anchor", "link-anchor-missing", "link-anchor-malformed", "buttons-in-three-styles",
-		"hero-first-with-the-h1", "hero-in-the-second-section", "hero-not-the-first-child", "h1-without-a-hero", "h1-in-a-later-section", "h1-twice-in-the-hero"},
+		"hero-first-with-the-h1", "hero-in-the-second-section", "hero-not-the-first-child", "h1-without-a-hero", "h1-in-a-later-section", "h1-twice-in-the-hero",
+		"two-heroes", "two-heroes-the-first-out-of-place"},
 	v3GroupInput: {"landing-page-at-the-input-limit", "landing-page-over-the-input-limit"},
 }
 
@@ -171,6 +173,29 @@ func TestOutlineV3RulesAreGrouped(t *testing.T) {
 		if !inTable[rule] {
 			t.Errorf("group entry %q is no rule of the table", rule)
 		}
+	}
+}
+
+// TestOutlineV3AcceptedCasesPassTheRunEntry: a page the table accepts is one
+// the run entry lets through. Its integer check refuses a number with a
+// fraction, so a designed page holds none, the design's ratio being a name.
+func TestOutlineV3AcceptedCasesPassTheRunEntry(t *testing.T) {
+	var accepted int
+	for _, c := range readV3Cases(t) {
+		if c.Go != "accept" {
+			continue
+		}
+		accepted++
+		if !checkIntegersOnly(c.body()) {
+			t.Errorf("%s: the run entry's integer check refuses a case the table accepts", c.Name)
+		}
+	}
+	if accepted == 0 {
+		t.Fatal("the table has no accepted row, so nothing was judged")
+	}
+	// The check is not blind: the number a ratio name stands for is refused.
+	if checkIntegersOnly([]byte(`{"design":{"scale":{"base_px":17,"ratio":1.25}}}`)) {
+		t.Error("the run entry's integer check lets a fraction through")
 	}
 }
 

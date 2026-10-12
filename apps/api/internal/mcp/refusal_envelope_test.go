@@ -182,11 +182,11 @@ func TestRefusalMessageInlinesFirstThree(t *testing.T) {
 func TestPageCreateInputRefusalCarriesDesignFailures(t *testing.T) {
 	designWith := func(set string) []byte { return v3HeadInput(map[string]string{"design": set}) }
 	incomplete := designWith(`{"colors":{"ground":"#F6F5F2","surface":"#FFFFFF","ink":"#15171C","muted":"#5A606C","accent":"#0D7A63","on_accent":"#FFFFFF"},` +
-		`"fonts":{"heading":"Manrope"},"scale":{"base_px":17,"ratio":1.25},"radius":"md"}`)
+		`"fonts":{"heading":"Manrope"},"scale":{"base_px":17,"ratio":"major_third"},"radius":"md"}`)
 	closeInk := designWith(`{"colors":{"ground":"#F6F5F2","surface":"#FFFFFF","ink":"#F0EFEA","muted":"#5A606C","accent":"#0D7A63","on_accent":"#FFFFFF"},` +
-		`"fonts":{"heading":"Manrope","body":"Source Sans 3"},"scale":{"base_px":17,"ratio":1.25},"radius":"md","density":"normal"}`)
+		`"fonts":{"heading":"Manrope","body":"Source Sans 3"},"scale":{"base_px":17,"ratio":"major_third"},"radius":"md","density":"normal"}`)
 	pureBlack := designWith(`{"colors":{"ground":"#F6F5F2","surface":"#FFFFFF","ink":"#000000","muted":"#5A606C","accent":"#0D7A63","on_accent":"#FFFFFF"},` +
-		`"fonts":{"heading":"Manrope","body":"Source Sans 3"},"scale":{"base_px":17,"ratio":1.25},"radius":"md","density":"normal"}`)
+		`"fonts":{"heading":"Manrope","body":"Source Sans 3"},"scale":{"base_px":17,"ratio":"major_third"},"radius":"md","density":"normal"}`)
 
 	for _, c := range []struct {
 		name  string
@@ -237,13 +237,12 @@ func TestPageCreateInputRefusalCarriesDesignFailures(t *testing.T) {
 // Through the run path: nothing reaches the site, and the AI is told the
 // failing field in the message and in failures[].
 func TestPageCreateRun_DesignRefusalNamesTheFailingPair(t *testing.T) {
-	// The run path takes integers only, so the scale's ratio is written as 1
-	// here: the design refuses it after the failure each case is about, which
-	// stays the first.
+	// The run path takes integers only. The scale's ratio is a name, so the
+	// design holds no number with a fraction and reaches the validator as sent.
 	closeInk := string(v3HeadInput(map[string]string{"design": `{"colors":{"ground":"#F6F5F2","surface":"#FFFFFF","ink":"#F0EFEA","muted":"#5A606C","accent":"#0D7A63","on_accent":"#FFFFFF"},` +
-		`"fonts":{"heading":"Manrope","body":"Source Sans 3"},"scale":{"base_px":17,"ratio":1},"radius":"md","density":"normal"}`}))
+		`"fonts":{"heading":"Manrope","body":"Source Sans 3"},"scale":{"base_px":17,"ratio":"major_third"},"radius":"md","density":"normal"}`}))
 	incomplete := string(v3HeadInput(map[string]string{"design": `{"colors":{"ground":"#F6F5F2","surface":"#FFFFFF","ink":"#15171C","muted":"#5A606C","accent":"#0D7A63","on_accent":"#FFFFFF"},` +
-		`"fonts":{"heading":"Manrope"},"scale":{"base_px":17,"ratio":1},"radius":"md"}`}))
+		`"fonts":{"heading":"Manrope"},"scale":{"base_px":17,"ratio":"major_third"},"radius":"md"}`}))
 
 	for _, c := range []struct{ name, input, code, inline string }{
 		{"contrast", closeInk, pageDesignContrastLow, "1. design.colors.ink: ink on ground has a contrast of "},
@@ -274,6 +273,13 @@ func TestPageCreateRun_DesignRefusalNamesTheFailingPair(t *testing.T) {
 			first, _ := failures[0].(map[string]any)
 			if first["path"] == nil || first["key"] == nil || first["reason"] == nil {
 				t.Errorf("first failure = %v", first)
+			}
+			// The ratio is a name, so the run path takes it as sent and the
+			// failures are the ones the case is about.
+			for _, raw := range failures {
+				if f, _ := raw.(map[string]any); f["key"] == "ratio" || f["path"] == "design.scale" {
+					t.Errorf("the design's ratio name is refused on the run path: %v", f)
+				}
 			}
 			if _, known := agentcmd.AbilityRunRefusalCodes[c.code]; !known {
 				t.Errorf("%s is not in agentcmd.AbilityRunRefusalCodes", c.code)
