@@ -23,15 +23,20 @@ type designedGoldenMedia struct {
 // designedGoldenFacts is what the site and the request gave the compile.
 type designedGoldenFacts struct {
 	ElementorVersion  string                `json:"elementor_version"`
+	Layout            string                `json:"layout"`
 	ActiveBreakpoints []string              `json:"active_breakpoints"`
 	Media             []designedGoldenMedia `json:"media"`
 	RequestID         string                `json:"request_id"`
 }
 
+// designedGoldenCase is one golden page. BuilderFacts is the JSON text of the
+// block the precheck answers beside its preview: the theme fact, the page
+// frame and the breakpoints the tree was compiled for.
 type designedGoldenCase struct {
 	Name          string              `json:"name"`
 	Input         string              `json:"input"`
 	Facts         designedGoldenFacts `json:"facts"`
+	BuilderFacts  json.RawMessage     `json:"builder_facts"`
 	PreviewDigest string              `json:"preview_digest"`
 	Tree          json.RawMessage     `json:"tree"`
 }

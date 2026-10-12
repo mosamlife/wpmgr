@@ -341,6 +341,12 @@ type builderPreview struct {
 // digest is recomputed over that tree's bytes, so a precheck whose tree
 // differs in any node, setting, id or order is refused before anything is
 // stored.
+//
+// A designed page (outline version 3) is built from containers, so any other
+// layout is refused, and its tree is the one designedClassicTree builds from
+// the input, the request id, the images and the breakpoints the answer's
+// builder_facts name (precheckActiveBreakpoints). An answer that names none
+// of them is never read as naming no breakpoint.
 func verifyBuilderPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum string, input []byte, f pageCreateFacts, requestID string) (checkedPrecheck, bool) {
 	if f.builder != pageBuilderElementor || !precheckDigestsWellFormed(resp) {
 		return checkedPrecheck{}, false
@@ -365,6 +371,10 @@ func verifyBuilderPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum 
 	if pv.Layout != elementorLayoutBoxes && pv.Layout != elementorLayoutRows {
 		return checkedPrecheck{}, false
 	}
+	designed := f.outlineVersion == pageOutlineVersionDesigned
+	if designed && pv.Layout != elementorLayoutBoxes {
+		return checkedPrecheck{}, false
+	}
 	media, ok := verifyPreviewMedia(pv.Media, f)
 	if !ok {
 		return checkedPrecheck{}, false
@@ -372,7 +382,16 @@ func verifyBuilderPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum 
 	if base, ok := pageCreateBaseFingerprint(f.postType, media); !ok || base != resp.BaseFingerprint {
 		return checkedPrecheck{}, false
 	}
-	tree, ok := elementorClassicTree(input, requestID, pv.Layout == elementorLayoutBoxes, media)
+	var tree phpList
+	if designed {
+		breakpoints, known := precheckActiveBreakpoints(resp.Raw)
+		if !known {
+			return checkedPrecheck{}, false
+		}
+		tree, ok = designedClassicTree(input, requestID, breakpoints, media)
+	} else {
+		tree, ok = elementorClassicTree(input, requestID, pv.Layout == elementorLayoutBoxes, media)
+	}
 	if !ok {
 		return checkedPrecheck{}, false
 	}
@@ -398,6 +417,44 @@ func verifyBuilderPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum 
 			Builder: pageBuilderElementor, Format: pv.Format, Version: pv.ElementorVersion, Layout: pv.Layout,
 		},
 	}, true
+}
+
+// precheckActiveBreakpoints are the breakpoints a designed page's precheck
+// answer says its tree was compiled for: the answer's top-level builder_facts
+// member active_breakpoints, a list of names in Elementor's own order, [] for
+// none, and null when the site could not say, which the compile reads as none
+// (a nil list). ok is false when builder_facts or the member is missing or
+// is anything but null or a list of text: a designed page's answer always
+// carries it, and no other value is read as a default.
+func precheckActiveBreakpoints(answer []byte) ([]string, bool) {
+	top, ok := jsonObjectOf(answer)
+	if !ok {
+		return nil, false
+	}
+	facts, ok := jsonObjectOf(top["builder_facts"])
+	if !ok {
+		return nil, false
+	}
+	raw, has := facts["active_breakpoints"]
+	if !has {
+		return nil, false
+	}
+	if strings.TrimSpace(string(raw)) == "null" {
+		return nil, true
+	}
+	list, ok := jsonArrayOf(raw)
+	if !ok {
+		return nil, false
+	}
+	names := make([]string, 0, len(list))
+	for _, item := range list {
+		name, ok := jsonStringOf(item)
+		if !ok {
+			return nil, false
+		}
+		names = append(names, name)
+	}
+	return names, true
 }
 
 // msgPageFrameOverLimit is the reason an input cannot carry the frame its
