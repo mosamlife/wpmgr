@@ -283,6 +283,61 @@ final class PageCreateBuilder
     }
 
     /**
+     * The page-wide counters an outline version 3 is judged with. Its
+     * grammar (OutlineV3) walks the sections and patterns and hands each block
+     * to v3Block(), so the caps on nodes, images, buttons, tables and text
+     * count the whole page. In this form a heading may be level 1, a button
+     * may be styled text, and a button link may be an in-page "#anchor".
+     *
+     * @param int $titleChars Characters of the page title, which count toward the text cap.
+     * @return array<string,mixed>
+     */
+    public static function v3Counters(int $titleChars = 0): array
+    {
+        return [
+            'total'      => $titleChars,
+            'nodes'      => 0,
+            'images'     => 0,
+            'buttons'    => 0,
+            'tables'     => 0,
+            'block_only' => '',
+            'v3'         => true,
+        ];
+    }
+
+    /**
+     * One block of an outline version 3 container (a leaf, a group or
+     * columns) under the grammar of version 2 with the version 3 forms.
+     *
+     * @param mixed               $node Decoded node.
+     * @param string              $at   Path, for the detail text.
+     * @param bool                $top  Whether the block is a direct child of a section (a group may stand there).
+     * @param array<string,mixed> $ctx  Counters from v3Counters().
+     * @return array{node?:array<string,mixed>,code?:string,detail?:string}
+     */
+    public static function v3Block($node, string $at, bool $top, array &$ctx): array
+    {
+        return self::node($node, $at, $top ? self::AT_TOP : self::AT_GROUP, $ctx);
+    }
+
+    /**
+     * A text value of an outline version 3 pattern under the text rules of
+     * the blocks: 'text' (not empty) or 'alt' (may be empty, no square
+     * bracket). It counts toward the text cap.
+     *
+     * @param mixed               $value Decoded value.
+     * @param string              $where Path, for the detail text.
+     * @param int                 $max   Character limit.
+     * @param string              $rule  'text' or 'alt'.
+     * @param array<string,mixed> $ctx   Counters from v3Counters().
+     * @return string|array{code:string,detail:string} The text, or a refusal.
+     */
+    public static function v3Text($value, string $where, int $max, string $rule, array &$ctx)
+    {
+        return self::plain($value, $where, $max, $rule, $ctx);
+    }
+
+    /**
      * Distinct attachment ids, in first-appearance (document) order.
      *
      * @param array{outline:list<array<string,mixed>>} $spec Spec.
@@ -481,16 +536,26 @@ final class PageCreateBuilder
      * optional port 1..65535, no user name or password) or a path on this
      * site (starts with one /, and holds no colon and no "&#"). ASCII from the
      * link character set only, every % followed by two hex digits, no "&"
-     * that starts a character reference, at most 2048 bytes.
+     * that starts a character reference, at most 2048 bytes. In outline
+     * version 3 ($anchors) a link may also be "#" and a section anchor.
      *
-     * @param string $url Link.
+     * @param string $url     Link.
+     * @param bool   $anchors Whether an in-page "#anchor" link is allowed.
      * @return string|null
      */
-    public static function linkProblem(string $url): ?string
+    public static function linkProblem(string $url, bool $anchors = false): ?string
     {
         $shape = self::urlShapeProblem($url);
         if ($shape !== null) {
             return $shape;
+        }
+        if ($anchors && $url[0] === '#') {
+            // An in-page link of outline version 3: "#" and a section anchor.
+            if (preg_match('/^#' . substr(OutlineV3Schema::ANCHOR_PATTERN, 1) . '/D', $url) !== 1) {
+                return 'must be # and a section anchor: a lower-case letter, then 1 to 39 lower-case letters, digits or hyphens';
+            }
+
+            return null;
         }
         if ($url[0] === '/') {
             if (strlen($url) > 1 && ($url[1] === '/' || $url[1] === '\\')) {
@@ -685,8 +750,9 @@ final class PageCreateBuilder
                     return self::bad('bad_input', $at . ' has an unknown field');
                 }
                 $level = $n['level'] ?? null;
-                if (!is_int($level) || $level < 2 || $level > 4) {
-                    return self::bad('bad_input', $at . '.level must be 2, 3 or 4');
+                $v3    = ($ctx['v3'] ?? false) === true;
+                if (!is_int($level) || $level < ($v3 ? 1 : 2) || $level > 4) {
+                    return self::bad('bad_input', $at . '.level must be ' . ($v3 ? '1, 2, 3 or 4' : '2, 3 or 4'));
                 }
                 $text = $n['text'] ?? null;
                 $why  = is_string($text) ? self::textProblem($text, self::MAX_TEXT_CHARS) : 'must be a string';
@@ -770,6 +836,14 @@ final class PageCreateBuilder
                 }
 
                 return self::columns($n, $at, $ctx);
+            case 'section':
+            case 'pattern':
+                // Outline version 3 nodes: each has one place, which its own grammar reads.
+                if (($ctx['v3'] ?? false) === true) {
+                    return self::bad('layout_invalid', $at . ($kind === 'section' ? ': a section is a top-level item' : ': a pattern is a child of a section'));
+                }
+
+                return self::bad('create_content_invalid', $at . ' is not a known block type');
             default:
                 return self::bad('create_content_invalid', $at . ' is not a known block type');
         }
@@ -865,15 +939,17 @@ final class PageCreateBuilder
             if (!is_string($url)) {
                 return self::bad('bad_input', $where . '.url must be a string');
             }
-            $why = self::linkProblem($url);
+            $v3  = ($ctx['v3'] ?? false) === true;
+            $why = self::linkProblem($url, $v3);
             if ($why !== null) {
                 return self::bad('link_invalid', $where . '.url ' . $why);
             }
             $ctx['total'] += strlen($url);
             $style         = 'fill';
             if (array_key_exists('style', $b)) {
-                if (!is_string($b['style']) || !in_array($b['style'], ['fill', 'outline'], true)) {
-                    return self::bad('bad_input', $where . '.style must be fill or outline');
+                $styles = $v3 ? ['fill', 'outline', 'text'] : ['fill', 'outline'];
+                if (!is_string($b['style']) || !in_array($b['style'], $styles, true)) {
+                    return self::bad('bad_input', $where . '.style must be ' . ($v3 ? 'fill, outline or text' : 'fill or outline'));
                 }
                 $style = $b['style'];
             }
