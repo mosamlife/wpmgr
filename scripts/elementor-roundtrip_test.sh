@@ -56,6 +56,7 @@ trap 'rm -rf "$tmp"' EXIT
 # A developer's own seams must not leak into the cases below.
 unset RT_NPX RT_NODE RT_PINS_FILE RT_BLUEPRINT RT_VERSIONS RT_FIXTURES_DIR RT_AGENT_INCLUDES
 unset RT_PLANT RT_HARNESS_ARGS RT_TIMEOUT RT_TEST_KILL_SETTLE RT_ALLOW_FILE_URLS RT_LAYOUTS FAKE_MODE FAKE_ARGS_FILE FAKE_FAIL_VERSION FAKE_FAIL_LAYOUT
+unset RT_PLANTS_FILE FAKE_CALLS_FILE FAKE_PLANT_LAYOUTS FAKE_PLANT_IGNORED_VERSION
 real_cache="${RT_CACHE:-}"
 unset RT_CACHE
 
@@ -144,10 +145,12 @@ ver=""
 layout=""
 bp=""
 zipsdir=""
+plant=""
 for a in "$@"; do
   case "$a" in
     elementor=*) ver="${a#elementor=}" ;;
     layout=*) layout="${a#layout=}" ;;
+    plant=*) plant="${plant:+$plant }$a" ;;
     --blueprint=*) bp="${a#--blueprint=}" ;;
     --mount=*:/rt/zips) zipsdir="${a#--mount=}"; zipsdir="${zipsdir%:/rt/zips}" ;;
   esac
@@ -165,7 +168,36 @@ for l in "$HOME"/.wordpress-playground/*; do
 done
 tail_ok="cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 probes=4 probes_failed=0"
 good="rt: SUMMARY elementor=$ver layout=$layout $tail_ok failed=0"
+# One line per boot: the release, the layout and the plant it was handed.
+if [ -n "${FAKE_CALLS_FILE:-}" ]; then
+  printf '%s %s%s\n' "$ver" "$layout" "${plant:+ $plant}" >>"$FAKE_CALLS_FILE"
+fi
 case "${FAKE_MODE:-ok}" in
+  # The planted defects. A plant reaches the harness as plant=<kind>@<probe>, and the modes below say what the
+  # harness does with it. FAKE_PLANT_LAYOUTS names the layouts the probe has a tree for (default containers): on
+  # another layout the probe is skipped and the plant changes nothing. FAKE_PLANT_IGNORED_VERSION names a release
+  # that renders the planted tree as if nothing had been planted.
+  plantred | plantwrong | plantcollateral | plantnofail | plantnotally | plantfailothercase)
+    probe="${plant#*@}"
+    probe="${probe%% *}"
+    applies=0
+    if [ -n "$plant" ]; then
+      case " ${FAKE_PLANT_LAYOUTS:-containers} " in *" $layout "*) applies=1 ;; esac
+      [ "${FAKE_PLANT_IGNORED_VERSION:-}" != "$ver" ] || applies=0
+    fi
+    if [ "$applies" -eq 0 ]; then echo "$good"; echo "rt: RESULT OK"; exit 0; fi
+    own="rt: FAIL [$ver $layout probe-$probe] css: css[1] element a1b0001 .elementor-icon-box-title: want color:#2B1D16 (has no color)"
+    other="rt: FAIL [$ver $layout probe-smoke-heading-colour] css: css[0] element 4ead001 .elementor-heading-title: want color:#123456 (has no color)"
+    red_one="cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 probes=4 probes_failed=1"
+    case "$FAKE_MODE" in
+      plantred) echo "$own"; echo "rt: note [$ver $layout probe-$probe] about: a stand-in"; echo "rt: SUMMARY elementor=$ver layout=$layout $red_one failed=1" ;;
+      plantwrong) echo "$other"; echo "rt: SUMMARY elementor=$ver layout=$layout $red_one failed=1" ;;
+      plantcollateral) echo "$own"; echo "$other"; echo "rt: SUMMARY elementor=$ver layout=$layout ${red_one%probes_failed=1}probes_failed=2 failed=2" ;;
+      plantnofail) echo "rt: SUMMARY elementor=$ver layout=$layout $red_one failed=1" ;;
+      plantnotally) echo "$own"; echo "rt: SUMMARY elementor=$ver layout=$layout $tail_ok failed=1" ;;
+      plantfailothercase) echo "rt: FAIL [$ver $layout $probe] stored: tree: want 1, got 2"; echo "rt: SUMMARY elementor=$ver layout=$layout $red_one failed=1" ;;
+    esac
+    echo "rt: RESULT FAIL"; exit 1 ;;
   ok)
     if [ "${FAKE_FAIL_VERSION:-}" = "$ver" ] && { [ -z "${FAKE_FAIL_LAYOUT:-}" ] || [ "$FAKE_FAIL_LAYOUT" = "$layout" ]; }; then
       echo "rt: FAIL [$ver containers y] stored: tree: want 1, got 2"
@@ -405,6 +437,185 @@ expect "a CLI that downloads its own WordPress is red" 2 "${offline[@]}" "RT_CAC
 said "  and it says so" "downloaded a WordPress of its own"
 
 # ---------------------------------------------------------------------------------
+# The planted defects: scripts/elementor-roundtrip/plants.sh
+# ---------------------------------------------------------------------------------
+# plants.sh runs run.sh once per planted defect and requires that run to come back red because of that plant. Here
+# run.sh runs against the stand-in for npx: its plantred mode is a harness whose probe notices the plant, and the
+# other plant modes are the harnesses the script must not trust.
+plants_script="$here/elementor-roundtrip/plants.sh"
+plants_node="$(command -v node || true)"
+[ -n "$plants_node" ] || { echo "FAIL setup: node not found (the committed plant list is read with it)"; exit 1; }
+cat >"$tmp/plants-good.txt" <<'LIST'
+# a stand-in list
+plant=misspell_key@pattern-icon-box containers
+
+plant=drop_activator@pattern-icon-box containers
+LIST
+plants_env=("${offline[@]}" "RT_CACHE=$tmp/c7" "RT_PLANTS_FILE=$tmp/plants-good.txt")
+# plants_expect <name> <want: 0|1|2> <env...>   expect(), through plants.sh instead of run.sh.
+plants_expect() {
+  local name="$1" want="$2" saved="$check"
+  shift 2
+  check="$plants_script"
+  expect "$name" "$want" "$@"
+  check="$saved"
+}
+
+# --- must not over-fire: plants the probes notice --------------------------------------------
+: >"$tmp/plant-calls"
+plants_expect "plants_red_passes: plants that turn the run red on every pin pass" 0 "${plants_env[@]}" FAKE_MODE=plantred "FAKE_CALLS_FILE=$tmp/plant-calls" RT_PLANT=plant=render_script@list RT_LAYOUTS=sections
+said "  and it names the first plant" "plant=misspell_key@pattern-icon-box"
+said "  and it names the second plant" "plant=drop_activator@pattern-icon-box"
+said "  and it counts what it ran" "2 plant(s), 4 boot(s): every plant turned the run red"
+want_calls="3.20.4 containers plant=drop_activator@pattern-icon-box
+3.20.4 containers plant=misspell_key@pattern-icon-box
+4.3.4 containers plant=drop_activator@pattern-icon-box
+4.3.4 containers plant=misspell_key@pattern-icon-box"
+if [ "$(LC_ALL=C sort "$tmp/plant-calls")" = "$want_calls" ]; then
+  ok "  and each plant ran alone, on every pinned version and only on the layout the list names, whatever RT_PLANT and RT_LAYOUTS held"
+else
+  bad "  the boots were not one per plant, version and listed layout: $(tr '\n' ';' <"$tmp/plant-calls")"
+fi
+: >"$tmp/plant-calls2"
+plants_expect "plants_one_pin: RT_VERSIONS narrows a plant run to one pin" 0 "${plants_env[@]}" FAKE_MODE=plantred RT_VERSIONS=4.3.4 "FAKE_CALLS_FILE=$tmp/plant-calls2"
+said "  and it counts the narrower run" "2 plant(s), 2 boot(s): every plant turned the run red"
+if [ "$(LC_ALL=C sort "$tmp/plant-calls2" | tr '\n' ';')" = "4.3.4 containers plant=drop_activator@pattern-icon-box;4.3.4 containers plant=misspell_key@pattern-icon-box;" ]; then ok "  and only that pin booted"; else bad "  other pins booted: $(tr '\n' ';' <"$tmp/plant-calls2")"; fi
+printf 'plant=misspell_key@pattern-icon-box containers,sections\n' >"$tmp/plants-both.txt"
+plants_expect "plants_both_layouts: a probe with a tree in both layouts is planted in both" 0 "${plants_env[@]}" "RT_PLANTS_FILE=$tmp/plants-both.txt" FAKE_MODE=plantred "FAKE_PLANT_LAYOUTS=containers sections"
+said "  and it counts a boot per layout and pin" "1 plant(s), 4 boot(s): every plant turned the run red"
+plants_expect "plants_committed_list: the committed list runs and every plant in it turns the stand-in red" 0 "${offline[@]}" "RT_CACHE=$tmp/c7" FAKE_MODE=plantred
+said "  and it says every plant turned the run red" "every plant turned the run red"
+# The committed list is held to the committed probes, without booting anything: each plant names a probe that exists,
+# that declares the plant's target, that has a tree in every layout the list names, and that runs on every pin.
+if listed="$("$plants_node" -e '
+  const fs = require("fs");
+  const [listFile, probesFile] = process.argv.slice(1);
+  const probes = JSON.parse(fs.readFileSync(probesFile, "utf8")).probes;
+  const lines = fs.readFileSync(listFile, "utf8").split("\n").map((l) => l.trim()).filter((l) => l !== "" && !l.startsWith("#"));
+  const bad = [];
+  for (const line of lines) {
+    const [token, layouts = ""] = line.split(/\s+/);
+    const m = /^plant=([a-z_]+)@(.+)$/.exec(token);
+    if (!m) { bad.push(line + ": not a plant token"); continue; }
+    const p = probes.find((x) => x.name === m[2]);
+    if (!p) { bad.push(line + ": no probe is named " + m[2]); continue; }
+    if (!p.plants || !p.plants[m[1]]) { bad.push(line + ": the probe declares no target for " + m[1]); }
+    if (p.since) { bad.push(line + ": the probe applies from Elementor " + p.since + ", older pins skip it"); }
+    for (const l of layouts.split(",")) {
+      if (!p.trees || !Array.isArray(p.trees[l])) { bad.push(line + ": the probe has no " + l + " tree"); }
+    }
+  }
+  if (lines.length === 0) { bad.push("the list holds no plant"); }
+  if (bad.length > 0) { console.error(bad.join("\n")); process.exit(1); }
+  console.log(lines.length);
+' "$here/elementor-roundtrip/plants.txt" "$here/elementor-roundtrip/render-probes.json" 2>"$tmp/plants-list.err")"; then
+  ok "plants_list_matches_probes: the committed list names $listed plant(s), each on a probe that declares it, in layouts the probe has a tree for"
+else
+  bad "plants_list_matches_probes: the committed list does not match render-probes.json: $(cat "$tmp/plants-list.err")"
+fi
+
+# --- must go red: a plant the run does not turn red ----------------------------------------------
+plants_expect "plants_green_fails: a plant the run does not notice fails the step" 1 "${plants_env[@]}" FAKE_MODE=ok
+said "  and it says the run passed with the plant in place" "the run passed with the plant in place"
+said "  and it names the plant" "plant=misspell_key@pattern-icon-box"
+said "  and it still ran the second plant after the first one failed" "FAIL plant=drop_activator@pattern-icon-box"
+said "  and it counts the plants that did not turn the run red" "2 of 2 plant(s) did not turn the run red"
+not_said "  and it is not called a missing verdict" "no verdict"
+plants_expect "plants_one_pin_green_fails: a plant one pinned version renders as if nothing happened fails the step" 1 "${plants_env[@]}" FAKE_MODE=plantred FAKE_PLANT_IGNORED_VERSION=3.20.4
+said "  and it names the pin and the layout" "went undetected on Elementor 3.20.4 (containers)"
+not_said "  and the pin that noticed is not blamed" "undetected on Elementor 4.3.4"
+plants_expect "plants_skipped_layout_fails: a plant listed on a layout its probe has no tree for stays green there and fails the step" 1 "${plants_env[@]}" "RT_PLANTS_FILE=$tmp/plants-both.txt" FAKE_MODE=plantred
+said "  and it names the layout" "went undetected on Elementor 4.3.4 (sections)"
+# Red is not enough: it has to be the plant that turned the run red.
+plants_expect "plants_wrong_probe_fails: a run that is red on another probe is not the plant noticed" 1 "${plants_env[@]}" FAKE_MODE=plantwrong
+said "  and it says the plant's probe never failed" "no failing check names probe-pattern-icon-box"
+said "  and it says what else was red" "failing check(s) that do not name probe-pattern-icon-box"
+plants_expect "plants_collateral_fails: a plant that also breaks another probe proves nothing" 1 "${plants_env[@]}" FAKE_MODE=plantcollateral
+said "  and it says what else was red" "failing check(s) that do not name probe-pattern-icon-box"
+not_said "  and the plant's own probe did fail" "no failing check names probe-pattern-icon-box"
+plants_expect "plants_nofail_fails: a red verdict with no failing check on the probe is not trusted" 1 "${plants_env[@]}" FAKE_MODE=plantnofail
+said "  and it says the probe never failed" "no failing check names probe-pattern-icon-box"
+plants_expect "plants_notally_fails: a red probe the summary does not count is not trusted" 1 "${plants_env[@]}" FAKE_MODE=plantnotally
+said "  and it says what the tally was" "counts no red probe (probes_failed='0')"
+plants_expect "plants_other_case_fails: a failing case that only shares the probe's name is not the probe" 1 "${plants_env[@]}" FAKE_MODE=plantfailothercase
+said "  and it says the probe never failed" "no failing check names probe-pattern-icon-box"
+said "  and it says what else was red" "failing check(s) that do not name probe-pattern-icon-box"
+
+# --- must go red: a run that gives no verdict ------------------------------------------------------
+for mode in silent crash; do
+  plants_expect "plants_no_verdict_fails: stand-in mode '$mode' gives run.sh no verdict, so the step is red and not green" 2 "${plants_env[@]}" RT_VERSIONS=4.3.4 "FAKE_MODE=$mode"
+  said "  and it says there was no verdict ($mode)" "no verdict"
+  not_said "  and it does not say every plant turned the run red ($mode)" "every plant turned the run red"
+done
+plants_expect "plants_hang_fails: a boot that never answers is no verdict, not a plant noticed" 2 "${plants_env[@]}" RT_VERSIONS=4.3.4 FAKE_MODE=hang RT_TIMEOUT=2
+said "  and it says there was no verdict" "no verdict"
+
+# --- must go red: a list that cannot be used ---------------------------------------------------------
+printf '# nothing\n\n' >"$tmp/plants-empty.txt"
+plants_expect "plants_list_empty_fails: a list with no plant is red, not green" 2 "${plants_env[@]}" "RT_PLANTS_FILE=$tmp/plants-empty.txt"
+said "  and it says so" "lists no plant"
+plants_expect "plants_list_missing_fails: a missing list is red" 2 "${plants_env[@]}" "RT_PLANTS_FILE=$tmp/no-such-plants.txt"
+said "  and it says so" "plants list missing"
+# plants_list_bad <name> <line> <message>   a list holding that one line is red and says why.
+plants_list_bad() {
+  printf '%s\n' "$2" >"$tmp/plants-bad.txt"
+  plants_expect "plants_list_bad: $1" 2 "${plants_env[@]}" "RT_PLANTS_FILE=$tmp/plants-bad.txt"
+  said "  and it says what is wrong" "$3"
+}
+plants_list_bad "a line without layouts is red" "plant=misspell_key@pattern-icon-box" "want '<plant token> <layouts>'"
+plants_list_bad "a line with a third column is red" "plant=misspell_key@pattern-icon-box containers extra" "want '<plant token> <layouts>'"
+plants_list_bad "a token that is not plant=<kind>@<probe> is red" "misspell_key@pattern-icon-box containers" "is not plant=<kind>@<probe>"
+plants_list_bad "a plant with no probe is red" "plant=misspell_key@ containers" "is not plant=<kind>@<probe>"
+plants_list_bad "a layout the check does not know is red" "plant=misspell_key@pattern-icon-box diagonal" "'diagonal' is not containers or sections"
+plants_list_bad "an empty layout is red" "plant=misspell_key@pattern-icon-box containers,,sections" "'' is not containers or sections"
+
+# --- must go red, and must not over-fire: the verdict plants.sh reads is the run's own -----------------
+# A copy of plants.sh beside a stand-in for run.sh, so the script is held to what it is handed and not to what the real
+# run.sh happens to print.
+plants_dir="$tmp/plants-dir"
+mkdir -p "$plants_dir"
+cp "$plants_script" "$plants_dir/plants.sh"
+chmod +x "$plants_dir/plants.sh"
+printf 'plant=misspell_key@pattern-icon-box containers\n' >"$tmp/plants-one.txt"
+# plants_standin <name> <want> <body>   plants.sh beside a run.sh that is <body>; an empty body means no run.sh at all.
+plants_standin() {
+  local name="$1" want="$2" body="$3" saved="$check"
+  rm -f "$plants_dir/run.sh"
+  if [ -n "$body" ]; then
+    printf '#!/usr/bin/env bash\n%s\n' "$body" >"$plants_dir/run.sh"
+    chmod +x "$plants_dir/run.sh"
+  fi
+  check="$plants_dir/plants.sh"
+  expect "$name" "$want" "RT_PLANTS_FILE=$tmp/plants-one.txt"
+  check="$saved"
+}
+red_line='echo "rt: FAIL [4.3.4 containers probe-pattern-icon-box] css: css[1] element a1b0001 .elementor-icon-box-title: want color:#2B1D16 (has no color)"'
+note_line='echo "rt: note [4.3.4 containers probe-pattern-icon-box] about: a stand-in"'
+boot_red="echo \"elementor-roundtrip: Elementor 4.3.4 (containers) FAILED in 3s (probes='4', probes_failed='1')\" >&2"
+boots_one='echo "elementor-roundtrip: 1 boot(s), 1 version(s) x 1 layout(s), in 3s"'
+plants_standin "plants_standin_honest: a run.sh that prints a red boot on the planted probe and exits 1 passes" 0 "$red_line; $note_line; $boot_red; $boots_one; exit 1"
+said "  and it names the plant" "plant=misspell_key@pattern-icon-box"
+plants_standin "plants_standin_exit_contradicts: the same lines with exit 0 do not pass" 1 "$red_line; $note_line; $boot_red; $boots_one; exit 0"
+said "  and it says the run passed with the plant in place" "the run passed with the plant in place"
+plants_standin "plants_standin_no_run: no run.sh is red" 2 ""
+said "  and it says so" "run.sh not found"
+plants_standin "plants_standin_silent_red: a run that prints nothing and exits 1 is no verdict" 2 "exit 1"
+said "  and it says nothing was printed" "printed nothing"
+plants_standin "plants_standin_silent_green: a run that prints nothing and exits 0 is no verdict, not a pass" 2 "exit 0"
+said "  and it says nothing was printed" "printed nothing"
+plants_standin "plants_standin_no_count: a red boot line without the boot count is no verdict" 2 "$red_line; $boot_red; exit 1"
+said "  and it says the count is missing" "no boot count"
+plants_standin "plants_standin_no_boots: a boot count without a verdict for the boots is no verdict" 2 "$red_line; $boots_one; exit 1"
+said "  and it says the boots do not add up" "boot verdict(s) for 1 boot(s)"
+plants_standin "plants_standin_exit_2: a run that gave no verdict is red" 2 "$red_line; $boot_red; $boots_one; exit 2"
+said "  and it says no verdict" "no verdict"
+chmod -x "$plants_dir/run.sh"
+check="$plants_dir/plants.sh"
+expect "plants_standin_not_executable: a run.sh that cannot be run is red" 2 "RT_PLANTS_FILE=$tmp/plants-one.txt"
+said "  and it says so" "not executable"
+check="$here/elementor-roundtrip/run.sh"
+
+# ---------------------------------------------------------------------------------
 # Group 2: a real WordPress under the Playground CLI, Elementor 4.3.4
 # ---------------------------------------------------------------------------------
 if [ "${RT_TEST_ONLINE:-1}" = 0 ]; then
@@ -637,7 +848,7 @@ set-text-every-field render-link"
   if probe_case "$tmp/probes-edited" "expect another colour" 'd.probes[0].css[0].decl.color = "#654321";'; then
     probe_expect "a probe whose expected declaration is edited turns the real round trip red" 1 "$tmp/probes-edited"
     said "  and the red check is that probe's declaration, with what the element does carry" "rt: FAIL [4.3.4 containers probe-smoke-heading-colour] css: css[0] element 4ead001 .elementor-heading-title: want color:#654321 (has #123456)"
-    said "  and the summary counts the red probe" "probes=1 probes_failed=1"
+    said "  and the summary counts the one red probe, however many probes ran" "probes_failed=1 failed="
     fail_n="$(printf '%s\n' "$LAST_OUT" | grep -c '^rt: FAIL ' || true)"
     if [ "$fail_n" = 1 ]; then ok "  and nothing else is red"; else bad "  $fail_n failure line(s), wanted exactly the probe's"; fi
   fi

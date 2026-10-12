@@ -1,0 +1,13 @@
+# The defects planted in the render probes. scripts/elementor-roundtrip/plants.sh runs each one on its
+# own, on every pinned Elementor, and requires the run to come back red because of it.
+#
+# One line per plant:  <plant token> <layouts>
+#   plant token  plant=<kind>@<probe>, as run.sh hands it to the harness (RT_PLANT). The probe is one of
+#                render-probes.json and declares, in its "plants", the element and setting the kind acts on.
+#   layouts      containers, sections or containers,sections: the layouts the probe has a tree for. A probe
+#                is skipped on a layout it has no tree for, so a plant listed there changes nothing and the
+#                run stays green, which plants.sh reports.
+#
+# scripts/elementor-roundtrip_test.sh holds this list to render-probes.json.
+plant=misspell_key@pattern-icon-box containers
+plant=drop_activator@pattern-icon-box containers
