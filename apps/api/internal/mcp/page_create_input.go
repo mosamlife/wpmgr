@@ -1145,8 +1145,9 @@ var designColourPattern = regexp.MustCompile(`^#[0-9A-F]{6}$`)
 // parseDesignColours reads the colours of a design. raw is the value of the
 // design's "colors" key, empty when the key is absent. Each role must be a
 // six-digit hex colour in either letter case, which is returned upper case,
-// and never pure black. The failures are every problem found, in role order
-// and then unknown keys; a role that failed is left empty in the result.
+// and never pure black; the pairs that carry text need designMinContrast.
+// The failures are every problem found: the roles in order, then unknown
+// keys, then low contrast. A role that failed is left empty in the result.
 func parseDesignColours(raw json.RawMessage) (designColours, []designFailure) {
 	var out designColours
 	obj, fails := designGroupObject(raw, "colors", designColourRoles, "the six colours")
