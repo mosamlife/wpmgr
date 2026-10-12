@@ -177,13 +177,13 @@ func TestBuilderPageCreateM176AsAppRole(t *testing.T) {
 	w := newE2World(t, true)
 
 	// 1. A fresh install: every migration, then the boot stamp. The row has
-	// m176's usage over m166's description and limits, its hash is the hash
-	// of its bytes, and describe hands the AI the new usage.
+	// the usage and description m177 wrote after m176 over m166's limits, its
+	// hash is the hash of its bytes, and describe hands the AI the usage.
 	fresh := m162Row(t, w)
-	m176AssertUsage(t, fresh, m176Usage)
-	if fresh.Description != m166Description ||
+	m176AssertUsage(t, fresh, m177Usage)
+	if fresh.Description != m177Description ||
 		!reflect.DeepEqual(m166LimitsOf(t, fresh.Limits), m166LimitsOf(t, []byte(m166Limits))) {
-		t.Fatalf("a fresh install's description or limits are not m166's: %+v", fresh)
+		t.Fatalf("a fresh install's description is not m177's or its limits are not m166's: %+v", fresh)
 	}
 	m162AssertStamped(t, fresh)
 	res := cpeCall(t, w.eng, w.bearer, mcp.ToolSiteAbilityDescribe, map[string]any{
@@ -193,8 +193,8 @@ func TestBuilderPageCreateM176AsAppRole(t *testing.T) {
 	if !ok {
 		t.Fatalf("describe has no wpmgr block: %v", res)
 	}
-	if wp["usage"] != m176Usage {
-		t.Fatalf("describe usage = %v, want m176's", wp["usage"])
+	if wp["usage"] != m177Usage {
+		t.Fatalf("describe usage = %v, want m177's", wp["usage"])
 	}
 
 	// 2. An install on m166: m176 writes the usage, clears the hash and
