@@ -367,3 +367,39 @@ describe("an undo of an applied page edit that did not go through", () => {
     expect(within(card).queryByRole("button", { name: /Undo/ })).toBeNull();
   });
 });
+
+// --- the link to the page ---------------------------------------------------------
+//
+// "Open in Elementor" and "Preview" are offered for a page the change left
+// behind, built from the site's address and the post id alone. A change that
+// never reached the page, and a request nobody carried out, offer none.
+
+describe("the link to the page in Elementor after a page edit", () => {
+  const linksOf = (card: HTMLElement) =>
+    within(card)
+      .queryAllByRole("link")
+      .map((a) => [a.textContent, a.getAttribute("href")]);
+
+  it.each<[string, AbilityRequest]>([
+    ["the page changed after the AI read it", failed("conflict", { outcome_detail: "changed_since_read" })],
+    ["someone has the page open in Elementor", failed("conflict", { outcome_detail: "editor_open" })],
+    ["the page changed between the card and the dispatch", failed("preview_changed")],
+    ["the agent refused with a code this page does not know", failed("a_code_from_a_newer_agent")],
+    ["the person declined", pageEditRow({ state: "declined", decided_at: DECIDED })],
+  ])("offers none when %s, because nothing reached the page", async (_name, row) => {
+    const { card } = await statusOf(row);
+    expect(linksOf(card)).toEqual([]);
+  });
+
+  it.each<[string, AbilityRequest]>([
+    ["the change is undone", undoResult("undone")],
+    ["Elementor did not save it and WPMgr put the page back", failed("builder_save_refused", { restored: true })],
+    ["WPMgr could not confirm the result", pageEditRow({ state: "outcome_unknown", decided_at: DECIDED })],
+  ])("offers Open in Elementor and Preview for the page when %s", async (_name, row) => {
+    const { card } = await statusOf(row);
+    expect(linksOf(card)).toEqual([
+      ["Open in Elementor", "https://example.com/wp-admin/post.php?post=418&action=elementor"],
+      ["Preview", "https://example.com/?page_id=418&preview=true"],
+    ]);
+  });
+});
