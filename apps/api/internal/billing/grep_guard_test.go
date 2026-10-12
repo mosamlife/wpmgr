@@ -141,6 +141,7 @@ func TestNamesPlanTier(t *testing.T) {
 		{"design call beside a starter literal", `designFor("starter", "scale")`},
 		{"design index beside a comparison", `ok := design["scale"] != nil && plan == "free"`},
 		{"design word in a comment", `Plan: "scale", // design review`},
+		{"lookup by a helper that is not named for the design", `typeScale := memberOf(t, "scale")`},
 	}
 
 	quiet := []row{
@@ -158,6 +159,8 @@ func TestNamesPlanTier(t *testing.T) {
 		{"member with the ratio first", `"scale":{"ratio":1.25,"base_px":17}`},
 		{"index of a design value", `scaleObj := design["scale"]`},
 		{"list with scale first", `want := []string{"scale", "radius", "density"}`},
+		{"member lookup in a test helper", `typeScale := designMember(t, "scale")`},
+		{"member lookup inside another call", `rfail("design", designMember(t, "scale"), "missing"),`},
 		// Text that only contains the word.
 		{"unquoted word in a comment", `// the type scale of a design`},
 		{"longer literal", `kind := "autoscale"`},

@@ -290,6 +290,7 @@ func TestPageEditDesignOverrideValidated(t *testing.T) {
 		t.Fatalf("the honest design was refused: %v", r.err)
 	}
 
+	typeScale := designMember(t, "scale")
 	cases := []struct {
 		name     string
 		design   json.RawMessage
@@ -299,7 +300,7 @@ func TestPageEditDesignOverrideValidated(t *testing.T) {
 		contains string
 	}{
 		{"a font left out", designEdit(t, designChange{"design.fonts", "body", ""}), pageDesignNotReady, "design.fonts", "body", ""},
-		{"the whole scale left out", designEdit(t, designChange{"design", "scale", ""}), pageDesignNotReady, "design", "scale", ""},
+		{"the whole scale left out", designEdit(t, designChange{"design", typeScale, ""}), pageDesignNotReady, "design", typeScale, ""},
 		{"ink on ground too close", designEdit(t, designChange{"design.colors", "ink", `"#F6F5F2"`}), pageDesignContrastLow, "design.colors", "ink", ""},
 		{"a radius outside the set", designEdit(t, designChange{"design", "radius", `"huge"`}), pageCreateBadInput, "design", "radius", ""},
 		{"a colour without its hash", designEdit(t, designChange{"design.colors", "accent", `"0D7A63"`}), pageCreateBadInput, "design.colors", "accent", ""},

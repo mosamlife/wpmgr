@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -394,6 +395,19 @@ var specDesign = pageDesign{
 	Scale:   designScale{BasePx: 17, Ratio: "major_third"},
 	Radius:  "md",
 	Density: "normal",
+}
+
+// designMember is the name of a top-level member of the design object, read
+// from the list the validator walks (designTopKeys). A test that names a
+// member through it fails here, with the list in view, when the validator no
+// longer has that member.
+func designMember(t *testing.T, name string) string {
+	t.Helper()
+	i := slices.Index(designTopKeys, name)
+	if i < 0 {
+		t.Fatalf("the design object has no member %q; the validator lists %v", name, designTopKeys)
+	}
+	return designTopKeys[i]
 }
 
 // designChange replaces one field of the spec design with raw JSON, or

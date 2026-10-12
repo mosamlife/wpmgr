@@ -33,7 +33,7 @@ func TestRefusalMessageInlinesFirstThree(t *testing.T) {
 		rfail("design.fonts", "heading", "not a font family", "Manrope", "Inter"),
 		rfail("design", "density", "missing", "compact", "normal", "airy"),
 		rfail("design", "radius", "missing"),
-		rfail("design", "scale", "missing"),
+		rfail("design", designMember(t, "scale"), "missing"),
 	}
 
 	t.Run("the summary, then the first three failures, then the count of the rest", func(t *testing.T) {
