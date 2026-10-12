@@ -121,7 +121,7 @@ var v3RuleGroups = map[string]string{
 // v3GroupMustHold names rows a group has to find in the table, so a group that
 // lost its rows (a rename, a re-cut table) fails instead of passing empty.
 var v3GroupMustHold = map[string][]string{
-	v3GroupHead:     {"outline-version-4", "design-missing", "design-ink-on-ground-contrast-low", "page-frame-unknown", "design-ratio-as-a-number", "design-ratio-unknown-name",
+	v3GroupHead: {"outline-version-4", "design-missing", "design-ink-on-ground-contrast-low", "page-frame-unknown", "design-ratio-as-a-number", "design-ratio-unknown-name",
 		"block-theme-without-a-frame", "block-theme-theme-frame"},
 	v3GroupSections: {"v3-minimal-page", "sections-20", "sections-21", "section-inside-a-section", "paragraph-at-the-top-level", "section-without-children", "section-raw-padding", "section-with-every-option", "images-21-counting-backgrounds", "anchor-missing"},
 	v3GroupPatterns: {"patterns-at-their-smallest-counts", "patterns-at-their-largest-counts", "features-2-items", "testimonials-7-items", "pricing-5-plans", "faq-0-items", "logos-11-items", "stats-5-items", "icon-not-in-the-list", "pattern-text-with-markup"},
