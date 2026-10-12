@@ -476,6 +476,30 @@ final class ElementorEditDocumentTest extends TestCase
         $this->assertSame('page_settings', $doc->verifyEdited(self::TARGET, $plan['doc']->tree, $before));
     }
 
+    public function test_verify_page_template_kept_by_the_save(): void
+    {
+        $ops = [self::setText(self::HEADING, 'Summer sale')];
+        $doc = new ElementorDocument($this->api);
+
+        [$plan, $before] = $this->savedEdit($ops, null, [[ElementorDocument::KEY_PAGE_TEMPLATE, 'elementor_header_footer']]);
+        $this->assertNull($doc->verifyEdited(self::TARGET, $plan['doc']->tree, $before), 'the row the snapshot holds');
+
+        foreach ([
+            'put back to the default' => ['default'],
+            'removed'                 => [],
+            'a second row'            => ['elementor_header_footer', 'elementor_header_footer'],
+        ] as $name => $rows) {
+            $this->replaceRows(ElementorDocument::KEY_PAGE_TEMPLATE, $rows);
+            $this->assertSame('page_template', $doc->verifyEdited(self::TARGET, $plan['doc']->tree, $before), $name);
+        }
+
+        // A page that had none keeps none.
+        [$plan, $before] = $this->savedEdit($ops);
+        $this->assertNull($doc->verifyEdited(self::TARGET, $plan['doc']->tree, $before), 'none before, none after');
+        $this->replaceRows(ElementorDocument::KEY_PAGE_TEMPLATE, ['elementor_canvas']);
+        $this->assertSame('page_template', $doc->verifyEdited(self::TARGET, $plan['doc']->tree, $before));
+    }
+
     public function test_verify_accepts_string_scalars_only_before_3_35_9(): void
     {
         [$plan, $before] = $this->savedEdit([self::setText(self::HEADING, 'Summer sale')]);
