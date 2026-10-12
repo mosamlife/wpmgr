@@ -150,11 +150,20 @@ type pageWalk struct {
 	usesLayout                     bool
 	ids                            []int64
 	seen                           map[int64]struct{}
+	// Of a designed outline: the anchors taken, the slugs that links point at,
+	// the level 1 headings read, and the index of the section child being read.
+	anchors map[string]struct{}
+	links   []string
+	h1s     int
+	childAt int
 }
 
 // validatePageCreateInput checks input against the outline grammar. It
 // returns the facts, or the refusal code of the first problem.
 func validatePageCreateInput(input []byte) (pageCreateFacts, string) {
+	if len(input) > abilityRunDefaultInputBytes {
+		return pageCreateFacts{}, pageCreateBadInput
+	}
 	top, ok := jsonObjectOf(input)
 	if !ok {
 		return pageCreateFacts{}, pageCreateBadInput
@@ -236,6 +245,9 @@ func validatePageCreateInput(input []byte) (pageCreateFacts, string) {
 		if code := w.node(n, pageAtTop); code != "" {
 			return pageCreateFacts{}, code
 		}
+	}
+	if code := w.resolveLinks(); code != "" {
+		return pageCreateFacts{}, code
 	}
 	if f.editor == pageEditorClassic && w.blockOnly {
 		return pageCreateFacts{}, pageCreateNeedsBlockEditor
@@ -335,12 +347,11 @@ func (w *pageWalk) node(raw json.RawMessage, at pagePlace) string {
 	switch kind {
 	case "heading":
 		level, ok := jsonIntOf(n["level"])
-		lowest := int64(2)
-		if at == pageAtHero {
-			lowest = 1
-		}
-		if !keysWithin(n, "type", "level", "text") || !ok || level < lowest || level > 4 || !isJSONString(n["text"]) {
+		if !keysWithin(n, "type", "level", "text") || !ok || level < 1 || level > 4 || !isJSONString(n["text"]) {
 			return pageCreateBadInput
+		}
+		if level == 1 {
+			return w.h1(at)
 		}
 		return ""
 	case "paragraph":
@@ -483,9 +494,7 @@ func (w *pageWalk) buttonsNode(n map[string]json.RawMessage) string {
 			return code
 		}
 		if raw, has := b["style"]; has {
-			switch style, _ := jsonStringOf(raw); style {
-			case "fill", "outline":
-			default:
+			if style, _ := jsonStringOf(raw); !slices.Contains(w.buttonStyles(), style) {
 				return pageCreateBadInput
 			}
 		}
@@ -637,7 +646,10 @@ func (w *pageWalk) children(raw json.RawMessage, at pagePlace) string {
 	if len(list) == 0 || len(list) > pageCreateMaxChildren {
 		return pageCreateLayoutInvalid
 	}
-	for _, child := range list {
+	for i, child := range list {
+		if at == pageAtSection {
+			w.childAt = i
+		}
 		if code := w.node(child, at); code != "" {
 			return code
 		}

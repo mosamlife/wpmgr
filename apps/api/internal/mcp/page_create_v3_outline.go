@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"encoding/json"
+	"regexp"
 	"slices"
+	"strings"
 )
 
 // The outline grammar of a designed page (outline_version 3). It is the
@@ -20,12 +22,40 @@ import (
 const (
 	pageCreateMaxSections = 20
 	pageCreateMaxHeroes   = 1
+	pageCreateMaxH1       = 1
 )
 
 // Refusal codes of the version 3 grammar that no version 2 input meets.
 const (
 	pageCreateItemsOutOfRange = "pattern_items_out_of_range"
 	pageCreateIconUnknown     = "icon_unknown"
+)
+
+// Refusal codes of the anchors, links and places of a designed page.
+const (
+	pageCreateAnchorInvalid     = "anchor_invalid"
+	pageCreateAnchorDuplicate   = "anchor_duplicate"
+	pageCreateAnchorReserved    = "anchor_reserved"
+	pageCreateLinkAnchorMissing = "link_anchor_missing"
+	pageCreateHeroMisplaced     = "hero_misplaced"
+	pageCreateH1OutsideHero     = "h1_outside_hero"
+)
+
+// pageAnchorPattern is the shape of a section anchor, and of the slug of a
+// link to one: the agent's OutlineV3Schema::ANCHOR_PATTERN. Go's $ matches at
+// the end of the text only.
+var pageAnchorPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{1,39}$`)
+
+// pageReservedAnchors are ids a theme already owns: the agent's
+// OutlineV3Schema::RESERVED_ANCHORS.
+var pageReservedAnchors = []string{
+	"content", "main", "primary", "page", "masthead", "colophon", "site-header", "site-footer", "wpadminbar",
+}
+
+// The styles a button may take: version 2 has two, a designed page adds text.
+var (
+	pageButtonStyles         = []string{"fill", "outline"}
+	pageButtonStylesDesigned = []string{"fill", "outline", "text"}
 )
 
 // Limits of the pattern nodes: the agent's OutlineV3Schema constants.
@@ -101,7 +131,8 @@ func (w *pageWalk) designedNode(n map[string]json.RawMessage, kind string, at pa
 }
 
 // section is one section: at most pageCreateMaxSections on a page, a closed
-// set of members, and 1..pageCreateMaxChildren children.
+// set of members, an anchor that is its own on the page, and
+// 1..pageCreateMaxChildren children.
 func (w *pageWalk) section(n map[string]json.RawMessage) string {
 	if w.sections++; w.sections > pageCreateMaxSections {
 		return pageCreateLayoutInvalid
@@ -111,8 +142,12 @@ func (w *pageWalk) section(n map[string]json.RawMessage) string {
 		"type", "anchor", "children") {
 		return pageCreateBadInput
 	}
-	if !isJSONString(n["anchor"]) {
+	anchor, ok := jsonStringOf(n["anchor"])
+	if !ok {
 		return pageCreateBadInput
+	}
+	if code := w.anchor(anchor); code != "" {
+		return code
 	}
 	for _, c := range sectionChoices {
 		if raw, has := n[c.key]; has {
@@ -164,13 +199,77 @@ func (w *pageWalk) media(id int64) string {
 	return ""
 }
 
+// anchor judges the anchor of a section and keeps it: it has the shape of an
+// anchor, is not an id the theme owns, and is not one an earlier section took.
+func (w *pageWalk) anchor(a string) string {
+	if !pageAnchorPattern.MatchString(a) {
+		return pageCreateAnchorInvalid
+	}
+	if slices.Contains(pageReservedAnchors, a) {
+		return pageCreateAnchorReserved
+	}
+	if _, taken := w.anchors[a]; taken {
+		return pageCreateAnchorDuplicate
+	}
+	if w.anchors == nil {
+		w.anchors = map[string]struct{}{}
+	}
+	w.anchors[a] = struct{}{}
+	return ""
+}
+
 // linkCode is the refusal of a link target, "" when the grammar accepts it.
-// The buttons of a page and the calls to action of a plan share it.
+// The buttons of a page and the calls to action of a plan share it. A designed
+// page may also point at one of its own sections, with "#" and the anchor; the
+// target is kept and judged by resolveLinks once the whole outline is read, so
+// a section further down resolves it.
 func (w *pageWalk) linkCode(url string) string {
+	if w.designed && strings.HasPrefix(url, "#") {
+		slug := url[1:]
+		if !pageAnchorPattern.MatchString(slug) {
+			return pageCreateLinkInvalid
+		}
+		w.links = append(w.links, slug)
+		return ""
+	}
 	if !pageLinkUsable(url) {
 		return pageCreateLinkInvalid
 	}
 	return ""
+}
+
+// resolveLinks is the refusal of a link to an anchor the page does not have,
+// judged after every section is read.
+func (w *pageWalk) resolveLinks() string {
+	for _, slug := range w.links {
+		if _, ok := w.anchors[slug]; !ok {
+			return pageCreateLinkAnchorMissing
+		}
+	}
+	return ""
+}
+
+// h1 judges a level 1 heading, of which a designed page has one, inside its
+// hero. A version 2 outline has no level 1 heading.
+func (w *pageWalk) h1(at pagePlace) string {
+	if !w.designed {
+		return pageCreateBadInput
+	}
+	if at != pageAtHero {
+		return pageCreateH1OutsideHero
+	}
+	if w.h1s++; w.h1s > pageCreateMaxH1 {
+		return pageCreateLayoutInvalid
+	}
+	return ""
+}
+
+// buttonStyles are the styles a button of this outline may take.
+func (w *pageWalk) buttonStyles() []string {
+	if w.designed {
+		return pageButtonStylesDesigned
+	}
+	return pageButtonStyles
 }
 
 // ---------------------------------------------------------------------------
@@ -269,6 +368,10 @@ func (w *pageWalk) pattern(n map[string]json.RawMessage, at pagePlace) string {
 	spec, known := patternSpecs[name]
 	if !ok || !known {
 		return pageCreateBadInput
+	}
+	// The hero opens the page: the first child of the first section.
+	if name == "hero" && (w.sections != 1 || w.childAt != 0) {
+		return pageCreateHeroMisplaced
 	}
 	body := spec.array
 	if body == "" {

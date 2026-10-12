@@ -71,10 +71,10 @@ const (
 	v3GroupSections = "sections" // section nodes, their fields and caps
 	v3GroupPatterns = "patterns" // pattern variants, item caps, icons
 	v3GroupLater    = "later"    // anchors, links, button style, hero and h1 placement
-	v3GroupRunLayer = "run"      // judged by the layer that reads the raw input
+	v3GroupInput    = "input"    // the size of the input text
 )
 
-var v3GroupsRun = []string{v3GroupHead, v3GroupSections, v3GroupPatterns}
+var v3GroupsRun = []string{v3GroupHead, v3GroupSections, v3GroupPatterns, v3GroupLater, v3GroupInput}
 
 var v3RuleGroups = map[string]string{
 	"outline_version_3":          v3GroupHead,
@@ -113,7 +113,7 @@ var v3RuleGroups = map[string]string{
 	"hero_first":           v3GroupLater,
 	"h1_inside_hero_only":  v3GroupLater,
 	"h1_at_most_once":      v3GroupLater,
-	"input_at_most_64_kib": v3GroupRunLayer,
+	"input_at_most_64_kib": v3GroupInput,
 }
 
 // v3GroupMustHold names rows a group has to find in the table, so a group that
@@ -122,6 +122,10 @@ var v3GroupMustHold = map[string][]string{
 	v3GroupHead:     {"outline-version-4", "design-missing", "design-ink-on-ground-contrast-low", "page-frame-unknown"},
 	v3GroupSections: {"v3-minimal-page", "sections-20", "sections-21", "section-inside-a-section", "paragraph-at-the-top-level", "section-without-children", "section-raw-padding", "section-with-every-option", "images-21-counting-backgrounds", "anchor-missing"},
 	v3GroupPatterns: {"patterns-at-their-smallest-counts", "patterns-at-their-largest-counts", "features-2-items", "testimonials-7-items", "pricing-5-plans", "faq-0-items", "logos-11-items", "stats-5-items", "icon-not-in-the-list", "pattern-text-with-markup"},
+	v3GroupLater: {"v3-full-landing-page", "anchor-uppercase", "anchor-41-characters", "anchors-at-2-and-40-characters", "anchor-duplicate", "anchor-reserved",
+		"link-to-a-later-anchor", "link-anchor-missing", "link-anchor-malformed", "buttons-in-three-styles",
+		"hero-first-with-the-h1", "hero-in-the-second-section", "hero-not-the-first-child", "h1-without-a-hero", "h1-in-a-later-section", "h1-twice-in-the-hero"},
+	v3GroupInput: {"landing-page-at-the-input-limit", "landing-page-over-the-input-limit"},
 }
 
 func TestOutlineV3SharedCases(t *testing.T) {
