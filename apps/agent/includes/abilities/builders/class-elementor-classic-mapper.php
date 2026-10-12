@@ -1003,6 +1003,8 @@ final class ElementorClassicMapper
         if (!is_string($align) || !isset(self::BUTTON_ALIGN[$align]) || !is_array($buttons) || $buttons === [] || !ArrayShape::isList($buttons)) {
             return $this->fail('bad_input', $path . ': buttons need an align of left or center and a list of buttons');
         }
+        // A designed section draws a button as a fill, an outline or text; the buttons stand in one row.
+        $rowId   = $this->look === null ? null : $this->ids->next($path);
         $widgets = [];
         foreach ($buttons as $j => $button) {
             $at    = $path . '.buttons[' . $j . ']';
@@ -1012,17 +1014,23 @@ final class ElementorClassicMapper
             if (!is_string($text) || !is_string($url) || !is_string($style)) {
                 return $this->fail('bad_input', $at . ': a button needs a text, a link and an optional style');
             }
-            if ($style !== 'fill') {
+            if ($this->look === null && $style !== 'fill') {
                 return $this->fail('node_not_supported_by_builder', $at . '.style: an outline button is not available in Elementor; the button styles it builds are: fill');
+            }
+            if ($this->look !== null && !in_array($style, ElementorLeafStyle::BUTTON_STYLES, true)) {
+                return $this->fail('bad_input', $at . '.style: a button style is fill, outline or text');
             }
             if (strpos($url, '&') !== false) {
                 return $this->fail('link_invalid', $at . '.url: a link on an Elementor page cannot hold "&"; use a link without one');
             }
-            $widgets[] = $this->widget($at, 'button', [
-                'text'  => LeafPolicy::htmlText($text),
-                'link'  => ['url' => $url, 'is_external' => '', 'nofollow' => ''],
-                'align' => self::BUTTON_ALIGN[$align],
-            ]);
+            $settings = ['text' => LeafPolicy::htmlText($text), 'link' => ['url' => $url, 'is_external' => '', 'nofollow' => '']];
+            $settings = $this->look === null
+                ? array_merge($settings, ['align' => self::BUTTON_ALIGN[$align]])
+                : array_merge($settings, $this->look->buttonStyle($style, $this->tone));
+            $widgets[] = $this->widget($at, 'button', $settings);
+        }
+        if ($this->look !== null && $rowId !== null) {
+            return [$this->look->buttonRow($rowId, $widgets, self::BUTTON_ALIGN[$align])];
         }
 
         return $widgets;

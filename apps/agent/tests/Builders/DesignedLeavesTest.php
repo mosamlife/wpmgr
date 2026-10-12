@@ -203,4 +203,101 @@ final class DesignedLeavesTest extends TestCase
 
         $this->assertSame('layout_invalid', $built['code'] ?? null);
     }
+
+    // -------------------------------------------------------------------------
+    // Buttons
+    // -------------------------------------------------------------------------
+
+    /**
+     * @param string $align Alignment of the buttons node.
+     * @return array<string,mixed>
+     */
+    private static function threeButtons(string $align = 'left'): array
+    {
+        return ['type' => 'buttons', 'align' => $align, 'buttons' => [
+            ['text' => 'Start free', 'url' => '#signup', 'style' => 'fill'],
+            ['text' => 'See pricing', 'url' => '#pricing', 'style' => 'outline'],
+            ['text' => 'Learn more', 'url' => '#features', 'style' => 'text'],
+        ]];
+    }
+
+    public function test_buttons_of_every_style_are_built_in_one_row(): void
+    {
+        $built = self::widgets(self::build([self::threeButtons()]));
+
+        $this->assertCount(1, $built);
+        $row = $built[0];
+        $this->assertSame('container', $row['elType']);
+        $this->assertTrue($row['isInner']);
+        $this->assertSame('row', $row['settings']['flex_direction']);
+        $this->assertArrayNotHasKey('flex_justify_content', $row['settings']);
+        $this->assertSame(['button', 'button', 'button'], array_column($row['elements'], 'widgetType'));
+        $this->assertSame(['Start free', 'See pricing', 'Learn more'], array_column(array_column($row['elements'], 'settings'), 'text'));
+        $this->assertSame('classic', $row['elements'][0]['settings']['background_background']);
+        $this->assertSame('solid', $row['elements'][1]['settings']['border_border']);
+        $this->assertSame('underline', $row['elements'][2]['settings']['typography_text_decoration']);
+        $this->assertArrayNotHasKey('align', $row['elements'][0]['settings']);
+        $this->assertSame(['#signup', '#pricing', '#features'], array_column(array_column(array_column($row['elements'], 'settings'), 'link'), 'url'));
+    }
+
+    public function test_centred_buttons_are_centred_in_their_row_and_the_row_comes_first_in_the_ids(): void
+    {
+        $built = self::widgets(self::build([self::threeButtons('center')]));
+        $ids   = array_merge([$built[0]['id']], array_column($built[0]['elements'], 'id'));
+
+        $this->assertSame('center', $built[0]['settings']['flex_justify_content']);
+        $this->assertCount(4, array_unique($ids));
+        foreach ($ids as $id) {
+            $this->assertMatchesRegularExpression('/^[0-9a-f]{7}$/D', $id);
+        }
+        $again = self::widgets(self::build([self::threeButtons('center')]));
+        $this->assertSame($ids, array_merge([$again[0]['id']], array_column($again[0]['elements'], 'id')));
+    }
+
+    public function test_a_button_takes_the_tone_of_its_section(): void
+    {
+        $built = self::widgets(self::build([self::threeButtons()], 'accent'));
+
+        $this->assertSame('#FFFFFF', $built[0]['elements'][0]['settings']['background_color']);
+        $this->assertSame('#0D7A63', $built[0]['elements'][0]['settings']['button_text_color']);
+    }
+
+    public function test_the_outline_refusal_is_lifted_for_a_designed_section_and_kept_for_a_plain_outline(): void
+    {
+        $designed = self::build([self::threeButtons()]);
+        $this->assertArrayHasKey('tree', $designed, (string) ($designed['detail'] ?? ''));
+
+        $plain = ElementorClassicMapper::map(['outline' => [self::threeButtons()]], new IdSeed(self::REQUEST), [], true);
+
+        $this->assertSame('node_not_supported_by_builder', $plain['code'] ?? null);
+        $this->assertSame(
+            'outline[0].buttons[1].style: an outline button is not available in Elementor; the button styles it builds are: fill',
+            $plain['detail'] ?? null
+        );
+    }
+
+    public function test_a_plain_outline_button_keeps_its_bytes(): void
+    {
+        $plain = ElementorClassicMapper::map(['outline' => [
+            ['type' => 'buttons', 'align' => 'center', 'buttons' => [['text' => 'Go', 'url' => 'https://example.com/go', 'style' => 'fill']]],
+        ]], new IdSeed(self::REQUEST), [], true);
+
+        $this->assertArrayHasKey('tree', $plain);
+        $button = $plain['tree'][0]['elements'][0];
+        $this->assertSame('button', $button['widgetType']);
+        $this->assertSame(['text', 'link', 'align'], array_keys($button['settings']));
+    }
+
+    public function test_a_designed_button_keeps_the_link_rules_and_knows_only_three_styles(): void
+    {
+        $andLink = self::build([['type' => 'buttons', 'align' => 'left', 'buttons' => [['text' => 'Go', 'url' => 'https://example.com/?a=1&b=2', 'style' => 'fill']]]]);
+        $ghost   = self::build([['type' => 'buttons', 'align' => 'left', 'buttons' => [['text' => 'Go', 'url' => '#go', 'style' => 'ghost']]]]);
+        $noStyle = self::widgets(self::build([['type' => 'buttons', 'align' => 'left', 'buttons' => [['text' => 'Go', 'url' => '#go']]]]));
+
+        $this->assertSame('link_invalid', $andLink['code'] ?? null);
+        $this->assertSame('bad_input', $ghost['code'] ?? null);
+        $this->assertSame('outline[0].children[0].buttons[0].style: a button style is fill, outline or text', $ghost['detail'] ?? null);
+        $this->assertSame('classic', $noStyle[0]['elements'][0]['settings']['background_background'], 'a button with no style is a fill');
+        $this->assertArrayNotHasKey('border_border', $noStyle[0]['elements'][0]['settings']);
+    }
 }

@@ -48,6 +48,18 @@ final class ElementorLeafStyle
     /** The text styles a paragraph or an eyebrow can take. */
     public const TEXT_STYLES = ['body', 'lead', 'eyebrow'];
 
+    /** The styles of a button. */
+    public const BUTTON_STYLES = ['fill', 'outline', 'text'];
+
+    /** How a row of buttons is aligned, as the outline names it. */
+    public const ROW_ALIGNS = ['left', 'center'];
+
+    /** The gap between the buttons of a row, in px. */
+    private const BUTTON_GAP_PX = 16;
+
+    /** The width of an outline button's border, in px as stored. */
+    private const BORDER_WIDTH = '1.5';
+
     /** The alignments of a section's content, as the outline names them, and the value Elementor stores for each. */
     private const ALIGN = ['start' => 'left', 'center' => 'center'];
 
@@ -83,6 +95,35 @@ final class ElementorLeafStyle
             'typography_line_height'    => 'slider:em',
             'typography_text_transform' => 'enum:uppercase',
             'typography_letter_spacing' => 'slider:em',
+        ],
+        'button'      => [
+            // The whole link, which may be a section anchor such as #pricing.
+            'link'                               => 'link',
+            'size'                               => 'enum:md',
+            'button_type'                        => 'enum:',
+            'background_background'              => 'enum:classic',
+            'background_color'                   => 'colour',
+            'button_text_color'                  => 'colour',
+            'border_border'                      => 'enum:solid',
+            'border_width'                       => 'dimensions',
+            'border_color'                       => 'colour',
+            'button_background_hover_background' => 'enum:classic',
+            'button_background_hover_color'      => 'colour',
+            'hover_color'                        => 'colour',
+            'border_radius'                      => 'dimensions',
+            'typography_typography'              => 'enum:custom',
+            'typography_font_family'             => 'enum',
+            'typography_font_size'               => 'slider:px',
+            'typography_font_weight'             => 'enum:' . self::WEIGHTS,
+            'typography_line_height'             => 'slider:em',
+            'typography_text_decoration'         => 'enum:underline',
+        ],
+        'container'   => [
+            'content_width'        => 'enum:full',
+            'flex_direction'       => 'enum:row',
+            'flex_wrap'            => 'enum:wrap',
+            'flex_gap'             => 'gaps',
+            'flex_justify_content' => 'enum:center',
         ],
     ];
 
@@ -138,6 +179,115 @@ final class ElementorLeafStyle
         $keys['text_color'] = $style === 'eyebrow' ? $colours['accent'] : $colours['body'];
 
         return array_merge($keys, $this->typography($style));
+    }
+
+    /**
+     * The style keys of a button, to follow its `text` and `link`.
+     *
+     *   fill     the accent as background, on_accent text; hover is the accent
+     *            8 points darker, a literal
+     *   outline  transparent background, the accent as text and as a 1.5 px
+     *            border; hover fills with the accent under on_accent text
+     *   text     no background and no border, the accent as text, underlined
+     *            at rest (the button has no hover typography); hover darkens
+     *            the text
+     *
+     * Every button has size md, the design's radius and the Button
+     * typography. On the accent tone the section is the accent, so a button is
+     * drawn in on_accent and the text on a fill is the accent.
+     *
+     * @param string $style One of BUTTON_STYLES.
+     * @param string $tone  One of OutlineV3Schema::TONES: the tone of the section the button stands in.
+     * @return array<string,mixed>
+     * @throws \InvalidArgumentException When an argument is outside what the grammar accepts.
+     */
+    public function buttonStyle(string $style, string $tone): array
+    {
+        if (!in_array($style, self::BUTTON_STYLES, true)) {
+            throw new \InvalidArgumentException('a button style is fill, outline or text');
+        }
+        $onAccent = $this->tokens->tone('accent');
+        $accent   = $this->tokens->tone($tone)['accent'];
+        // The colour of the button, and the colour that sits on it.
+        $main = $accent;
+        $on   = $tone === 'accent' ? $onAccent['background'] : $onAccent['heading'];
+
+        $keys = ['size' => 'md', 'button_type' => '', 'background_background' => 'classic'];
+        if ($style === 'fill') {
+            $keys['background_color']                   = $main;
+            $keys['button_text_color']                  = $on;
+            $keys['button_background_hover_background'] = 'classic';
+            $keys['button_background_hover_color']      = DesignTokens::hover($main);
+            $keys['hover_color']                        = $on;
+        } elseif ($style === 'outline') {
+            $keys['background_color']                   = 'transparent';
+            $keys['button_text_color']                  = $main;
+            $keys['border_border']                      = 'solid';
+            $keys['border_width']                       = self::sides(self::BORDER_WIDTH);
+            $keys['border_color']                       = $main;
+            $keys['button_background_hover_background'] = 'classic';
+            $keys['button_background_hover_color']      = $main;
+            $keys['hover_color']                        = $on;
+        } else {
+            $keys['background_color']                   = 'transparent';
+            $keys['button_text_color']                  = $main;
+            $keys['button_background_hover_background'] = 'classic';
+            $keys['button_background_hover_color']      = 'transparent';
+            $keys['hover_color']                        = DesignTokens::hover($main);
+        }
+        $keys['border_radius'] = self::sides((string) $this->tokens->radius());
+        $keys                  = array_merge($keys, $this->typography('button'));
+        if ($style === 'text') {
+            $keys['typography_text_decoration'] = 'underline';
+        }
+
+        return $keys;
+    }
+
+    /**
+     * A row of buttons: an inner container that holds them side by side and
+     * wraps them on a narrow screen.
+     *
+     * @param string                     $id      The row's id, from IdSeed.
+     * @param list<array<string,mixed>>  $buttons The button widgets, in order.
+     * @param string                     $align   One of ROW_ALIGNS.
+     * @return array{id:string,elType:string,settings:array<string,mixed>,elements:list<array<string,mixed>>,isInner:bool}
+     * @throws \InvalidArgumentException When the alignment is not one of ROW_ALIGNS.
+     */
+    public function buttonRow(string $id, array $buttons, string $align): array
+    {
+        if (!in_array($align, self::ROW_ALIGNS, true)) {
+            throw new \InvalidArgumentException('a row of buttons is aligned left or center');
+        }
+        $gap      = (string) self::BUTTON_GAP_PX;
+        $settings = [
+            'content_width'  => 'full',
+            'flex_direction' => 'row',
+            'flex_wrap'      => 'wrap',
+            'flex_gap'       => ['column' => $gap, 'row' => $gap, 'isLinked' => true, 'unit' => 'px'],
+        ];
+        if ($align === 'center') {
+            $settings['flex_justify_content'] = 'center';
+        }
+
+        return [
+            'id'       => $id,
+            'elType'   => 'container',
+            'settings' => $settings,
+            'elements' => $buttons,
+            'isInner'  => true,
+        ];
+    }
+
+    /**
+     * A dimensions value with the same length on every side.
+     *
+     * @param string $length Length in px, as stored.
+     * @return array<string,mixed>
+     */
+    private static function sides(string $length): array
+    {
+        return ['unit' => 'px', 'top' => $length, 'right' => $length, 'bottom' => $length, 'left' => $length, 'isLinked' => true];
     }
 
     /**
