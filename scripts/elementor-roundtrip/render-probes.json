@@ -52,6 +52,636 @@
         { "el": "4ead001", "sel": ".elementor-heading-title", "media": null, "decl": { "color": "#123456" } }
       ],
       "html_ids": ["smoke-heading"]
+    },
+    {
+      "name": "pattern-icon-box",
+      "about": "icon-box fields: selected_icon {value,library}, title_text, description_text, position, title_size; style keys primary_color, title_color, description_color and the title_typography group with its activator. Numeric members are written as numeric strings because a release stores integers as strings. The title and description are shown, the title tag is the chosen one, the position is a class of the widget (position top is the class elementor-position-top on 3.x and elementor-position-block-start on 4.x), and every style key reaches the post CSS.",
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0001",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0001",
+                "elType": "widget",
+                "settings": {
+                  "selected_icon": {
+                    "value": "fas fa-mug-hot",
+                    "library": "fa-solid"
+                  },
+                  "title_text": "Single origin",
+                  "description_text": "Roasted weekly in small batches.",
+                  "position": "top",
+                  "title_size": "h3",
+                  "primary_color": "#A33B20",
+                  "title_color": "#2B1D16",
+                  "description_color": "#5A4A40",
+                  "title_typography_typography": "custom",
+                  "title_typography_font_size": {
+                    "unit": "px",
+                    "size": "22"
+                  },
+                  "title_typography_font_weight": "600"
+                },
+                "elements": [],
+                "widgetType": "icon-box"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0001",
+          "sel": ".elementor-icon",
+          "media": null,
+          "decl": {
+            "color": "#A33B20",
+            "fill": "#A33B20"
+          }
+        },
+        {
+          "el": "a1b0001",
+          "sel": ".elementor-icon-box-title",
+          "media": null,
+          "decl": {
+            "color": "#2B1D16",
+            "font-size": "22px",
+            "font-weight": "600"
+          }
+        },
+        {
+          "el": "a1b0001",
+          "sel": ".elementor-icon-box-description",
+          "media": null,
+          "decl": {
+            "color": "#5A4A40"
+          }
+        }
+      ],
+      "widgets": {
+        "icon-box": true
+      },
+      "html_text": [
+        "Single origin",
+        "Roasted weekly in small batches."
+      ],
+      "html_has": [
+        {
+          "sel": "h3.elementor-icon-box-title"
+        },
+        {
+          "sel": ".elementor-icon-box-description"
+        },
+        {
+          "sel": ".elementor-widget-icon-box.elementor-position-top, .elementor-widget-icon-box.elementor-position-block-start"
+        }
+      ]
+    },
+    {
+      "name": "pattern-testimonial",
+      "about": "testimonial fields: testimonial_content, testimonial_image {id,url,source}, testimonial_name, testimonial_job, testimonial_image_position, testimonial_alignment; style keys content_content_color, name_text_color, job_text_color. The three texts and the library image are shown, and every colour reaches the post CSS.",
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0002",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0002",
+                "elType": "widget",
+                "settings": {
+                  "testimonial_content": "Best flat white in town.",
+                  "testimonial_image": {
+                    "url": "https://example.com/wp-content/uploads/2026/10/van-1024x640.png",
+                    "id": "5",
+                    "source": "library"
+                  },
+                  "testimonial_name": "Asha Rao",
+                  "testimonial_job": "Regular",
+                  "testimonial_image_position": "aside",
+                  "testimonial_alignment": "left",
+                  "content_content_color": "#2B1D16",
+                  "name_text_color": "#A33B20",
+                  "job_text_color": "#5A4A40"
+                },
+                "elements": [],
+                "widgetType": "testimonial"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0002",
+          "sel": ".elementor-testimonial-content",
+          "media": null,
+          "decl": {
+            "color": "#2B1D16"
+          }
+        },
+        {
+          "el": "a1b0002",
+          "sel": ".elementor-testimonial-name",
+          "media": null,
+          "decl": {
+            "color": "#A33B20"
+          }
+        },
+        {
+          "el": "a1b0002",
+          "sel": ".elementor-testimonial-job",
+          "media": null,
+          "decl": {
+            "color": "#5A4A40"
+          }
+        }
+      ],
+      "widgets": {
+        "testimonial": true
+      },
+      "html_text": [
+        "Best flat white in town.",
+        "Asha Rao",
+        "Regular"
+      ],
+      "html_has": [
+        {
+          "sel": ".elementor-testimonial-name",
+          "text": "Asha Rao"
+        },
+        {
+          "sel": ".elementor-testimonial-image img.wp-image-5"
+        }
+      ]
+    },
+    {
+      "name": "pattern-counter",
+      "about": "counter fields: starting_number, ending_number (numeric strings, since a release stores integers as strings), suffix, title; style keys number_color and title_color. The target and start numbers are data attributes of the number, the suffix and title are shown, and both colours reach the post CSS.",
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0003",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0003",
+                "elType": "widget",
+                "settings": {
+                  "starting_number": "0",
+                  "ending_number": "1200",
+                  "suffix": "+",
+                  "title": "Cups served",
+                  "number_color": "#A33B20",
+                  "title_color": "#5A4A40"
+                },
+                "elements": [],
+                "widgetType": "counter"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0003",
+          "sel": ".elementor-counter-number-wrapper",
+          "media": null,
+          "decl": {
+            "color": "#A33B20"
+          }
+        },
+        {
+          "el": "a1b0003",
+          "sel": ".elementor-counter-title",
+          "media": null,
+          "decl": {
+            "color": "#5A4A40"
+          }
+        }
+      ],
+      "widgets": {
+        "counter": true
+      },
+      "html_text": [
+        "Cups served"
+      ],
+      "html_has": [
+        {
+          "sel": ".elementor-counter-number[data-to-value=1200][data-from-value=0]"
+        },
+        {
+          "sel": ".elementor-counter-number-suffix",
+          "text": "+"
+        },
+        {
+          "sel": ".elementor-counter-title",
+          "text": "Cups served"
+        }
+      ]
+    },
+    {
+      "name": "pattern-icon-list",
+      "about": "icon-list fields: icon_list items {text, selected_icon {value,library}, _id} with 7 hex ids, icon_color, text_color, icon_size. Both items are shown, and the icon colour, text colour and icon size reach the post CSS.",
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0004",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0004",
+                "elType": "widget",
+                "settings": {
+                  "icon_list": [
+                    {
+                      "text": "1 site",
+                      "selected_icon": {
+                        "value": "fas fa-check",
+                        "library": "fa-solid"
+                      },
+                      "_id": "1a2b3c4"
+                    },
+                    {
+                      "text": "Email support",
+                      "selected_icon": {
+                        "value": "fas fa-check",
+                        "library": "fa-solid"
+                      },
+                      "_id": "2b3c4d5"
+                    }
+                  ],
+                  "icon_color": "#A33B20",
+                  "text_color": "#2B1D16",
+                  "icon_size": {
+                    "unit": "px",
+                    "size": "18"
+                  }
+                },
+                "elements": [],
+                "widgetType": "icon-list"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0004",
+          "sel": ".elementor-icon-list-icon i",
+          "media": null,
+          "decl": {
+            "color": "#A33B20"
+          }
+        },
+        {
+          "el": "a1b0004",
+          "sel": ".elementor-icon-list-text",
+          "media": null,
+          "decl": {
+            "color": "#2B1D16"
+          }
+        },
+        {
+          "el": "a1b0004",
+          "sel": "",
+          "media": null,
+          "any": [
+            {
+              "--e-icon-list-icon-size": "18px"
+            },
+            {
+              "font-size": "18px"
+            }
+          ]
+        }
+      ],
+      "widgets": {
+        "icon-list": true
+      },
+      "html_text": [
+        "1 site",
+        "Email support"
+      ],
+      "html_has": [
+        {
+          "sel": ".elementor-icon-list-item",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "name": "pattern-image",
+      "about": "image fields: image {url,id,source}, image_size, align, width {unit,size}. The library image is shown with its attachment class, and the width and the alignment reach the post CSS.",
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0005",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0005",
+                "elType": "widget",
+                "settings": {
+                  "image": {
+                    "url": "https://example.com/wp-content/uploads/2026/10/van-1024x640.png",
+                    "id": "5",
+                    "source": "library"
+                  },
+                  "image_size": "medium",
+                  "align": "center",
+                  "width": {
+                    "unit": "px",
+                    "size": "140"
+                  }
+                },
+                "elements": [],
+                "widgetType": "image"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0005",
+          "sel": "img",
+          "media": null,
+          "decl": {
+            "width": "140px"
+          }
+        },
+        {
+          "el": "a1b0005",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "text-align": "center"
+          }
+        }
+      ],
+      "widgets": {
+        "image": true
+      },
+      "html_has": [
+        {
+          "sel": ".elementor-widget-image img.wp-image-5"
+        }
+      ]
+    },
+    {
+      "name": "pattern-accordion-faq",
+      "about": "classic accordion fields: tabs items {tab_title, tab_content, _id} with 7 hex ids, faq_schema yes, title_color, tab_active_color, content_color. The accordion widget type is registered whatever the nested elements experiment says, both items are shown, exactly one JSON-LD script of type FAQPage is printed with the questions, and the colours reach the post CSS.",
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0006",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0006",
+                "elType": "widget",
+                "settings": {
+                  "tabs": [
+                    {
+                      "tab_title": "Do you ship?",
+                      "tab_content": "<p>Yes, worldwide.</p>",
+                      "_id": "1a2b3c4"
+                    },
+                    {
+                      "tab_title": "Is it fresh?",
+                      "tab_content": "<p>Roasted weekly.</p>",
+                      "_id": "2b3c4d5"
+                    }
+                  ],
+                  "faq_schema": "yes",
+                  "title_color": "#2B1D16",
+                  "tab_active_color": "#A33B20",
+                  "content_color": "#5A4A40"
+                },
+                "elements": [],
+                "widgetType": "accordion"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0006",
+          "sel": ".elementor-accordion-title",
+          "media": null,
+          "decl": {
+            "color": "#2B1D16"
+          }
+        },
+        {
+          "el": "a1b0006",
+          "sel": ".elementor-active .elementor-accordion-title",
+          "media": null,
+          "decl": {
+            "color": "#A33B20"
+          }
+        },
+        {
+          "el": "a1b0006",
+          "sel": ".elementor-tab-content",
+          "media": null,
+          "decl": {
+            "color": "#5A4A40"
+          }
+        }
+      ],
+      "widgets": {
+        "accordion": true
+      },
+      "html_text": [
+        "Do you ship?",
+        "Is it fresh?"
+      ],
+      "html_has": [
+        {
+          "sel": ".elementor-accordion-item",
+          "count": 2
+        },
+        {
+          "sel": "script[type='application/ld+json']",
+          "count": 1,
+          "text": "FAQPage"
+        },
+        {
+          "sel": "script[type='application/ld+json']",
+          "count": 1,
+          "text": "Do you ship?"
+        }
+      ]
+    },
+    {
+      "name": "pattern-accordion-nested",
+      "about": "nested accordion, registered from Elementor 3.35.9 where the nested elements experiment is on by default (a widget that holds child elements is stored with widgetType right after elType): items {item_title, _id} with one inner container per item holding a text-editor, faq_schema yes, normal_title_color. Both titles and bodies are shown, one JSON-LD script of type FAQPage is printed, and the colour reaches the post CSS as the widget's variable.",
+      "since": "3.35.9",
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0007",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0007",
+                "elType": "widget",
+                "widgetType": "nested-accordion",
+                "settings": {
+                  "items": [
+                    {
+                      "item_title": "Do you ship?",
+                      "_id": "1a2b3c4"
+                    },
+                    {
+                      "item_title": "Is it fresh?",
+                      "_id": "2b3c4d5"
+                    }
+                  ],
+                  "faq_schema": "yes",
+                  "normal_title_color": "#2B1D16"
+                },
+                "elements": [
+                  {
+                    "id": "b0c1001",
+                    "elType": "container",
+                    "settings": {},
+                    "elements": [
+                      {
+                        "id": "a1b1001",
+                        "elType": "widget",
+                        "settings": {
+                          "editor": "<p>Yes, worldwide.</p>"
+                        },
+                        "elements": [],
+                        "widgetType": "text-editor"
+                      }
+                    ],
+                    "isInner": true
+                  },
+                  {
+                    "id": "b0c1002",
+                    "elType": "container",
+                    "settings": {},
+                    "elements": [
+                      {
+                        "id": "a1b1002",
+                        "elType": "widget",
+                        "settings": {
+                          "editor": "<p>Roasted weekly.</p>"
+                        },
+                        "elements": [],
+                        "widgetType": "text-editor"
+                      }
+                    ],
+                    "isInner": true
+                  }
+                ]
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0007",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "--n-accordion-title-normal-color": "#2B1D16"
+          }
+        }
+      ],
+      "widgets": {
+        "nested-accordion": true
+      },
+      "html_text": [
+        "Do you ship?",
+        "Is it fresh?",
+        "Yes, worldwide.",
+        "Roasted weekly."
+      ],
+      "html_has": [
+        {
+          "sel": "script[type='application/ld+json']",
+          "count": 1,
+          "text": "FAQPage"
+        }
+      ]
+    },
+    {
+      "name": "pattern-link-nofollow",
+      "about": "A link {url, is_external, nofollow} on a button: the anchor carries the address, opens in a new tab and carries nofollow in its rel, and the button background reaches the post CSS. The nofollow key is the link member named nofollow.",
+      "trees": {
+        "containers": [
+          {
+            "id": "b0c0008",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "a1b0008",
+                "elType": "widget",
+                "settings": {
+                  "text": "Visit partner",
+                  "link": {
+                    "url": "https://example.com/partner",
+                    "is_external": "on",
+                    "nofollow": "on"
+                  },
+                  "background_color": "#A33B20"
+                },
+                "elements": [],
+                "widgetType": "button"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "a1b0008",
+          "sel": ".elementor-button",
+          "media": null,
+          "decl": {
+            "background-color": "#A33B20"
+          }
+        }
+      ],
+      "widgets": {
+        "button": true
+      },
+      "html_text": [
+        "Visit partner"
+      ],
+      "html_has": [
+        {
+          "sel": "a.elementor-button[href='https://example.com/partner'][rel~=nofollow]"
+        },
+        {
+          "sel": "a.elementor-button[href='https://example.com/partner'][target=_blank]"
+        }
+      ]
     }
   ]
 }

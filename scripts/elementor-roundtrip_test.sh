@@ -660,6 +660,38 @@ set-text-every-field render-link"
     said "  and the probe passed" "rt: ok   [4.3.4 containers probe-smoke-heading-colour]"
   fi
 
+  # The pattern probes: what each looks at is the element, the text or the registry, and each goes red when the
+  # thing it looks at is taken away. A mutation names its probe, so the suite does not depend on their order.
+  # pattern_case <dir> <what> <probe> <js>   probe_case, with p bound to the probe of that name.
+  pattern_case() {
+    probe_case "$1" "$2" "const p = d.probes.find((x) => x.name === '$3'); if (!p) { throw new Error('no probe $3'); } $4"
+  }
+  if pattern_case "$tmp/probes-nofollow" "drop the nofollow member of the link" pattern-link-nofollow 'p.trees.containers[0].elements[0].settings.link.nofollow = "";'; then
+    probe_expect "pattern_nofollow_red: a link that loses its nofollow turns the real round trip red" 1 "$tmp/probes-nofollow"
+    said "  and the red check is the anchor with the nofollow rel, on its own probe" "rt: FAIL [4.3.4 containers probe-pattern-link-nofollow] html-has: html_has[0] a.elementor-button[href='https://example.com/partner'][rel~=nofollow] matches 0 element(s), wanted 1"
+    fail_n="$(printf '%s\n' "$LAST_OUT" | grep -c '^rt: FAIL ' || true)"
+    if [ "$fail_n" = 1 ]; then ok "  and nothing else is red"; else bad "  $fail_n failure line(s), wanted exactly the probe's"; fi
+  fi
+  if pattern_case "$tmp/probes-faq" "drop faq_schema from the accordion" pattern-accordion-faq 'delete p.trees.containers[0].elements[0].settings.faq_schema;'; then
+    probe_expect "pattern_faq_schema_red: an accordion without faq_schema turns the real round trip red" 1 "$tmp/probes-faq"
+    said "  and the red check is the missing JSON-LD script" "rt: FAIL [4.3.4 containers probe-pattern-accordion-faq] html-has: html_has[1] script[type='application/ld+json'] matches 0 element(s), wanted 1"
+  fi
+  if pattern_case "$tmp/probes-widget" "say the accordion is not registered" pattern-accordion-faq 'p.widgets = { accordion: false };'; then
+    probe_expect "pattern_widget_red: a registered widget the probe says is absent turns the real round trip red" 1 "$tmp/probes-widget"
+    said "  and it names the widget" "widget: the widget type accordion is registered on this site, the probe says it is not registered"
+  fi
+  if pattern_case "$tmp/probes-selector" "use a selector the harness does not read" pattern-icon-box 'p.html_has[0].sel = "h3:hover";'; then
+    probe_expect "pattern_selector_unreadable: a selector the harness cannot read is no verdict, never a pass" 2 "$tmp/probes-selector"
+    said "  and it names the syntax" "uses syntax the harness does not read"
+    not_said "  and nothing ran before the file was refused" "rt: ok   ["
+  fi
+  # What it must NOT block: a probe that applies from a later release is skipped, out loud, and is not counted as run.
+  if pattern_case "$tmp/probes-since" "make the nested accordion apply from a later release" pattern-accordion-nested 'p.since = "9.9.9";'; then
+    probe_expect "pattern_since_skip: a probe that applies from a later release is skipped, not red" 0 "$tmp/probes-since"
+    said "  and it says it was skipped, and why" "rt: note [4.3.4 containers probe-pattern-accordion-nested] skipped: the probe applies from Elementor 9.9.9"
+    not_said "  and it is not reported as run" "rt: ok   [4.3.4 containers probe-pattern-accordion-nested]"
+  fi
+
   mkdir -p "$tmp/fx-empty"
   empty='{"note":"none","elementor_versions":["4.3.4"],"request_id":"11111111-2222-4333-8444-777777777777","media":{"5":{"url":"https://example.com/a.png","alt":"Library alt text"}},"cases":[]}'
   printf '%s\n' "$empty" >"$tmp/fx-empty/elementor-classic-containers.json"

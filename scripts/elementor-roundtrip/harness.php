@@ -2095,6 +2095,319 @@ function rt_probe_check_expectation($exp, string $where, bool $absent): void
     }
 }
 
+// ---------------------------------------------------------------------------
+// Render probes: the elements, texts, widgets and fonts of the page
+// ---------------------------------------------------------------------------
+
+/**
+ * XPath for a probe selector: tag names or "*", ".class", "#id" and "[attr]", "[attr=v]",
+ * "[attr~=v]", "[attr^=v]", "[attr$=v]", "[attr*=v]" (v bare, or quoted without a quote inside),
+ * joined by whitespace (descendant) or ">" (child), and alternatives joined by ",". Any other
+ * syntax is a probe file that cannot be used, never a selector that quietly matches nothing.
+ */
+function rt_sel_xpath(string $selector): string
+{
+    $paths = [];
+    foreach (rt_css_split($selector, ',') as $alt) {
+        $alt = trim($alt);
+        $len = strlen($alt);
+        $xp  = '';
+        $op  = '//';
+        $pos = 0;
+        if ($len === 0) {
+            rt_broken('a probe selector has an empty alternative: ' . rt_brief($selector));
+        }
+        while ($pos < $len) {
+            if ($xp !== '' && preg_match('/\G\s*>\s*/', $alt, $m, 0, $pos) === 1 && $m[0] !== '') {
+                $op   = '/';
+                $pos += strlen($m[0]);
+                continue;
+            }
+            if ($xp !== '' && preg_match('/\G\s+/', $alt, $m, 0, $pos) === 1) {
+                $op   = '//';
+                $pos += strlen($m[0]);
+                continue;
+            }
+            $compound = '/\G(\*|[A-Za-z][A-Za-z0-9-]*)?((?:[.#][A-Za-z0-9_-]+|\[[A-Za-z_][A-Za-z0-9_:.-]*(?:[~^$*]?=(?:"[^"\']*"|\'[^"\']*\'|[^\]\s"\']+))?\])*)/';
+            if (preg_match($compound, $alt, $m, 0, $pos) !== 1 || $m[0] === '') {
+                rt_broken('a probe selector uses syntax the harness does not read, at ' . rt_brief(substr($alt, $pos)) . ' of ' . rt_brief($selector));
+            }
+            $pos += strlen($m[0]);
+            $pred = '';
+            preg_match_all('/([.#])([A-Za-z0-9_-]+)|\[([A-Za-z_][A-Za-z0-9_:.-]*)(?:([~^$*]?)=("[^"\']*"|\'[^"\']*\'|[^\]\s"\']+))?\]/', $m[2], $parts, PREG_SET_ORDER);
+            foreach ($parts as $p) {
+                if (($p[1] ?? '') === '.') {
+                    $pred .= "[contains(concat(' ',normalize-space(@class),' '),' " . $p[2] . " ')]";
+                } elseif (($p[1] ?? '') === '#') {
+                    $pred .= "[@id='" . $p[2] . "']";
+                } else {
+                    $name = $p[3];
+                    if (!isset($p[5])) {
+                        $pred .= '[@' . $name . ']';
+                        continue;
+                    }
+                    $v = trim($p[5], '"\'');
+                    switch ($p[4] ?? '') {
+                        case '~':
+                            $pred .= "[contains(concat(' ',normalize-space(@" . $name . "),' '),' " . $v . " ')]";
+                            break;
+                        case '^':
+                            $pred .= '[starts-with(@' . $name . ",'" . $v . "')]";
+                            break;
+                        case '$':
+                            $pred .= '[substring(@' . $name . ',string-length(@' . $name . ")-string-length('" . $v . "')+1)='" . $v . "']";
+                            break;
+                        case '*':
+                            $pred .= '[contains(@' . $name . ",'" . $v . "')]";
+                            break;
+                        default:
+                            $pred .= '[@' . $name . "='" . $v . "']";
+                    }
+                }
+            }
+            $xp .= $op . (($m[1] ?? '') === '' ? '*' : $m[1]) . $pred;
+        }
+        $paths[] = $xp;
+    }
+
+    return implode(' | ', $paths);
+}
+
+/** A whole HTML document as a DOM, as it is: no wrapper, unlike rt_dom() which holds a fragment. */
+function rt_dom_page(string $html): DOMDocument
+{
+    $dom  = new DOMDocument();
+    $prev = libxml_use_internal_errors(true);
+    $dom->loadHTML('<?xml encoding="UTF-8">' . $html, LIBXML_NONET);
+    libxml_clear_errors();
+    libxml_use_internal_errors($prev);
+
+    return $dom;
+}
+
+/**
+ * Check the page-level members of one probe, or say the probe file cannot be used:
+ * html_text, html_has, widgets, fonts, since, theme, render and page.
+ *
+ * @param array<string,mixed> $probe
+ */
+function rt_probe_check_page(array $probe, string $at): void
+{
+    foreach ($probe['html_text'] ?? [] as $t) {
+        if (!is_string($t) || trim($t) === '') {
+            rt_broken($at . ' has an html text that is not a non-empty string');
+        }
+    }
+    foreach ($probe['html_has'] ?? [] as $n => $want) {
+        $w = $at . ' html_has[' . $n . ']';
+        if (!is_array($want) || array_is_list($want) || !is_string($want['sel'] ?? null) || trim($want['sel']) === '') {
+            rt_broken($w . ' names no selector ("sel")');
+        }
+        rt_sel_xpath($want['sel']);
+        foreach (['count', 'min'] as $k) {
+            if (isset($want[$k]) && (!is_int($want[$k]) || $want[$k] < 0)) {
+                rt_broken($w . ' has a "' . $k . '" that is not a whole number of 0 or more');
+            }
+        }
+        if (isset($want['count'], $want['min'])) {
+            rt_broken($w . ' has both "count" and "min"');
+        }
+        if (isset($want['text']) && (!is_string($want['text']) || trim($want['text']) === '')) {
+            rt_broken($w . ' has a "text" that is not a non-empty string');
+        }
+    }
+    foreach ($probe['widgets'] ?? [] as $type => $want) {
+        if (!is_string($type) || $type === '' || !is_bool($want)) {
+            rt_broken($at . ' has a widgets entry that is not a widget type with true or false');
+        }
+    }
+    foreach ($probe['fonts'] ?? [] as $family) {
+        if (!is_string($family) || preg_match('/^[A-Za-z0-9 ]{1,60}$/D', $family) !== 1) {
+            rt_broken($at . ' has a font family that is not letters, digits and spaces');
+        }
+    }
+    if (isset($probe['since']) && (!is_string($probe['since']) || preg_match('/^[0-9]+\.[0-9]+(\.[0-9]+)?$/D', $probe['since']) !== 1)) {
+        rt_broken($at . ' has a "since" that is not an Elementor version');
+    }
+    if (isset($probe['theme']) && (!is_string($probe['theme']) || preg_match('/^[a-z0-9-]{1,60}$/D', $probe['theme']) !== 1)) {
+        rt_broken($at . ' has a "theme" that is not a theme folder name');
+    }
+    if (isset($probe['render']) && !in_array($probe['render'], ['content', 'page'], true)) {
+        rt_broken($at . ' has a "render" that is neither content nor page');
+    }
+    if (isset($probe['page'])) {
+        $pg = $probe['page'];
+        if (!is_array($pg) || array_is_list($pg) || array_diff(array_keys($pg), ['template', 'settings']) !== []) {
+            rt_broken($at . ' has a "page" that is not an object of template and settings');
+        }
+        if (isset($pg['template']) && !in_array($pg['template'], ['', 'elementor_header_footer', 'elementor_canvas'], true)) {
+            rt_broken($at . ' has a page template that is not one of "", elementor_header_footer, elementor_canvas');
+        }
+        if (isset($pg['settings']) && (!is_array($pg['settings']) || array_is_list($pg['settings']))) {
+            rt_broken($at . ' has page settings that are not an object');
+        }
+    }
+}
+
+/**
+ * Hold the registry of widget types to a probe's "widgets": a type that must be registered, or one that must not be.
+ *
+ * @param array<string,mixed> $probe
+ */
+function rt_probe_widgets(RtChecks $c, array $probe): void
+{
+    foreach ($probe['widgets'] ?? [] as $type => $want) {
+        $have = Plugin::$instance->widgets_manager->get_widget_types((string) $type) !== null;
+        $c->ck('widget', $have === $want, 'the widget type ' . $type . ' is ' . ($have ? 'registered' : 'not registered') . ' on this site, the probe says it is ' . ($want ? '' : 'not ') . 'registered');
+    }
+}
+
+/**
+ * Hold the rendered page to a probe's "html_text" (each text shown on the page) and "html_has"
+ * (the elements a selector finds: exactly "count" of them, default one, or at least "min", and
+ * when "text" is given, one of them shows it).
+ *
+ * @param array<string,mixed> $probe
+ */
+function rt_probe_page_checks(RtChecks $c, string $html, array $probe): void
+{
+    if (($probe['html_text'] ?? []) === [] && ($probe['html_has'] ?? []) === []) {
+        return;
+    }
+    $dom  = (($probe['render'] ?? 'content') === 'page') ? rt_dom_page($html) : rt_dom($html);
+    $page = rt_norm((string) $dom->textContent);
+    foreach ($probe['html_text'] ?? [] as $t) {
+        $c->ck('html-text', strpos($page, rt_norm($t)) !== false, 'the rendered page does not show the text ' . rt_brief($t));
+    }
+    $xpath = new DOMXPath($dom);
+    foreach ($probe['html_has'] ?? [] as $n => $want) {
+        $nodes = $xpath->query(rt_sel_xpath($want['sel']));
+        $found = $nodes === false ? 0 : $nodes->length;
+        $label = 'html_has[' . $n . '] ' . $want['sel'];
+        if (isset($want['min'])) {
+            $held = $found >= $want['min'];
+            $why  = $label . ' matches ' . $found . ' element(s), wanted at least ' . $want['min'];
+        } else {
+            $count = $want['count'] ?? 1;
+            $held  = $found === $count;
+            $why   = $label . ' matches ' . $found . ' element(s), wanted ' . $count;
+        }
+        if (!$c->ck('html-has', $held, $why) || !isset($want['text'])) {
+            continue;
+        }
+        $shown = false;
+        foreach ($nodes ?: [] as $node) {
+            if (strpos(rt_norm((string) $node->textContent), rt_norm($want['text'])) !== false) {
+                $shown = true;
+                break;
+            }
+        }
+        $c->ck('html-has', $shown, $label . ' shows no element with the text ' . rt_brief($want['text']));
+    }
+}
+
+/**
+ * The font families Elementor puts on the page for a post: the post's stylesheet is enqueued the way
+ * the front end enqueues it, then the fonts it asked for are printed, and the styles queued for
+ * Google's font service are read back from the style registry.
+ *
+ * @return list<string> The sources of the queued font stylesheets.
+ */
+function rt_font_sources(int $postId): array
+{
+    RtPostCss::create($postId)->enqueue();
+    ob_start();
+    try {
+        Plugin::$instance->frontend->print_fonts_links();
+    } finally {
+        ob_end_clean();
+    }
+    $out = [];
+    $reg = wp_styles();
+    foreach ($reg->queue as $handle) {
+        $src = $reg->registered[$handle]->src ?? '';
+        if (is_string($src) && stripos($src, 'fonts.googleapis.com') !== false) {
+            $out[] = $src;
+        }
+    }
+
+    return $out;
+}
+
+/**
+ * Make a probe's page what the probe says before it is rendered as a visitor sees it: published,
+ * with its template and its page settings written as plain post meta (never through the
+ * document's own settings save, which replaces the settings wholesale).
+ *
+ * @param array<string,mixed> $probe
+ */
+function rt_probe_page_setup(int $postId, array $probe, int $principal): void
+{
+    $page = $probe['page'] ?? [];
+    if (isset($page['template'])) {
+        update_post_meta($postId, '_wp_page_template', $page['template']);
+    }
+    if (isset($page['settings'])) {
+        update_post_meta($postId, '_elementor_page_settings', $page['settings']);
+    }
+    wp_set_current_user(1);
+    wp_update_post(['ID' => $postId, 'post_status' => 'publish']);
+    wp_set_current_user($principal);
+}
+
+/**
+ * The page a visitor gets for a published page: the main query for it, then the theme's template
+ * as WordPress loads it, in an output buffer. What the request sets up is put back afterwards.
+ */
+function rt_front_page(int $postId): string
+{
+    $get   = $_GET;
+    $query = $_SERVER['QUERY_STRING'] ?? null;
+    $uri   = $_SERVER['REQUEST_URI'] ?? null;
+    $level = ob_get_level();
+    $html  = '';
+    $seen  = 0;
+    wp_set_current_user(0);
+    $_GET['page_id']         = (string) $postId;
+    $_SERVER['QUERY_STRING'] = 'page_id=' . $postId;
+    $_SERVER['REQUEST_URI']  = '/?page_id=' . $postId;
+    add_filter('wp_using_themes', '__return_true');
+    remove_action('template_redirect', 'redirect_canonical');
+    remove_action('template_redirect', 'wp_old_slug_redirect');
+    ob_start();
+    try {
+        wp();
+        $seen = (int) get_queried_object_id();
+        if ($seen === $postId) {
+            require ABSPATH . WPINC . '/template-loader.php';
+        }
+    } finally {
+        while (ob_get_level() > $level) {
+            $html = (string) ob_get_clean() . $html;
+        }
+        remove_filter('wp_using_themes', '__return_true');
+        add_action('template_redirect', 'redirect_canonical');
+        add_action('template_redirect', 'wp_old_slug_redirect');
+        $_GET = $get;
+        foreach (['QUERY_STRING' => $query, 'REQUEST_URI' => $uri] as $key => $was) {
+            if ($was === null) {
+                unset($_SERVER[$key]);
+            } else {
+                $_SERVER[$key] = $was;
+            }
+        }
+        $GLOBALS['wp_query']     = new WP_Query();
+        $GLOBALS['wp_the_query'] = $GLOBALS['wp_query'];
+        $GLOBALS['post']         = null;
+        setlocale(LC_NUMERIC, 'C');
+    }
+    if ($seen !== $postId) {
+        throw new RuntimeException('the main query holds ' . $seen . ', not page ' . $postId);
+    }
+
+    return $html;
+}
+
 /**
  * The probe file, checked: a file that cannot be used is a run that cannot give a verdict.
  *
@@ -2156,6 +2469,7 @@ function rt_probe_load(): array
                 rt_broken($at . ' has an html tag that is not a string');
             }
         }
+        rt_probe_check_page($probe, $at);
     }
 
     return $data['probes'];
@@ -2182,8 +2496,13 @@ function rt_probe_phase(array $probes, string $layout, string $stored, int $prin
         if (!is_array($tree)) {
             continue;
         }
-        ++$out['probes'];
         $tag = ELEMENTOR_VERSION . ' ' . $layout . ' probe-' . $probe['name'];
+        // A probe about a release's behaviour is skipped, out loud, on the older releases it does not apply to.
+        if (isset($probe['since']) && version_compare(ELEMENTOR_VERSION, $probe['since'], '<')) {
+            rt_out(sprintf('note [%s] skipped: the probe applies from Elementor %s', $tag, $probe['since']));
+            continue;
+        }
+        ++$out['probes'];
         $c   = new RtChecks();
         $pid = wp_insert_post([
             'post_type'    => 'page',
@@ -2199,15 +2518,30 @@ function rt_probe_phase(array $probes, string $layout, string $stored, int $prin
             $expect           = $stored === 'strings' ? rt_scalars_as_strings($tree) : $tree;
             $d                = $decoded !== null ? rt_diff($expect, $decoded, 'tree') : 'expected one _elementor_data row holding a tree, found ' . $rows;
             $c->ck('stored', $d === null, (string) $d);
+            rt_probe_widgets($c, $probe);
+            $onPage = ($probe['render'] ?? 'content') === 'page';
+            if (isset($probe['theme'])) {
+                $c->ck('theme', get_stylesheet() === $probe['theme'] && wp_is_block_theme(), 'the active theme is ' . get_stylesheet() . (wp_is_block_theme() ? ' (a block theme)' : ' (not a block theme)') . ', the probe needs the block theme ' . $probe['theme']);
+            }
+            if ($onPage) {
+                rt_probe_page_setup($pid, $probe, $principal);
+            }
 
             // Render, which is what makes Elementor write the post's CSS file.
             try {
-                $html = Plugin::$instance->frontend->get_builder_content($pid, false);
+                $html = $onPage ? rt_front_page($pid) : Plugin::$instance->frontend->get_builder_content($pid, false);
             } catch (Throwable $e) {
                 $html = '';
-                $c->ck('render', false, 'render threw ' . get_class($e));
+                $c->ck('render', false, 'render threw ' . get_class($e) . ': ' . $e->getMessage());
             }
             setlocale(LC_NUMERIC, 'C');
+            // Authoring aid, not a check: dump=<probe> prints the stored tree and the page a probe rendered.
+            if (($GLOBALS['rtArgs']['dump'] ?? '') === $probe['name']) {
+                rt_out('dump-stored ' . (string) json_encode($decoded, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+                foreach (explode("\n", substr((string) $html, 0, 20000)) as $dumped) {
+                    rt_out('dump ' . $dumped);
+                }
+            }
             if ($c->ck('render-nonempty', is_string($html) && trim($html) !== '', 'the probe rendered nothing')) {
                 $ids  = [];
                 $tags = [];
@@ -2223,6 +2557,17 @@ function rt_probe_phase(array $probes, string $layout, string $stored, int $prin
                 }
                 foreach ($probe['html_tags'] ?? [] as $id => $want) {
                     $c->ck('html-tag', ($tags[$id] ?? null) === $want, 'the element with id="' . $id . '" is ' . ($tags[$id] ?? '(not on the page)') . ', not ' . $want);
+                }
+                rt_probe_page_checks($c, (string) $html, $probe);
+            }
+            if (($probe['fonts'] ?? []) !== []) {
+                $sources = rt_font_sources($pid);
+                foreach ($probe['fonts'] as $family) {
+                    $hit = false;
+                    foreach ($sources as $src) {
+                        $hit = $hit || stripos(str_replace(['+', '%20'], ' ', $src), $family) !== false;
+                    }
+                    $c->ck('font', $hit, 'no stylesheet for the family ' . $family . ' is queued for Google\'s font service (queued: ' . ($sources === [] ? 'none' : implode(' | ', $sources)) . ')');
                 }
             }
 
