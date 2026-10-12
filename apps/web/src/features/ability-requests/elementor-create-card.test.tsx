@@ -706,3 +706,73 @@ describe("a designed page", () => {
     expect(within(card).getByRole("button", { name: "Approve" })).toBeDisabled();
   });
 });
+
+// --- "Open in Elementor" on the card of a designed page --------------------------
+//
+// Once the draft exists the card links to Elementor's editor for the post and
+// to its preview, built from the site's own address and the post id alone. Both
+// are offered next to the design the page was built from, and neither before
+// the draft exists nor after it is gone.
+
+describe("the draft a designed page created", () => {
+  const done = (over: Partial<AbilityRequest> = {}) =>
+    designedRow(designedInput("v3-minimal-page"), { state: "done", outcome: "created", created_post_id: 418, ...decided, ...over });
+
+  /** The status links, by name, with their addresses. */
+  function linksOf(card: HTMLElement): Array<[string | null, string | null]> {
+    return within(card)
+      .queryAllByRole("link")
+      .map((a) => [a.textContent, a.getAttribute("href")]);
+  }
+
+  it("links to Open in Elementor and to Preview, in a new tab, beside the design", async () => {
+    renderTab([done()]);
+    const card = await openCard();
+    expect(card).toHaveTextContent("Draft created in Elementor.");
+    expect(linksOf(card)).toEqual([
+      ["Open in Elementor", "https://example.com/wp-admin/post.php?post=418&action=elementor"],
+      ["Preview", "https://example.com/?page_id=418&preview=true"],
+    ]);
+    for (const name of ["Open in Elementor", "Preview"]) {
+      const a = within(card).getByRole("link", { name });
+      expect(a.getAttribute("target")).toBe("_blank");
+      expect(a.getAttribute("rel")).toBe("noopener noreferrer");
+    }
+    expect(within(card).queryByRole("link", { name: "Edit the draft in WordPress" })).toBeNull();
+    expect(within(card).getByTestId("design-summary")).toBeInTheDocument();
+  });
+
+  it("follows the post's own id and a WordPress that lives in a sub-directory", async () => {
+    renderTab([done({ created_post_id: 9007 })], "https://example.com/blog");
+    const card = await openCard();
+    expect(linksOf(card)[0]).toEqual([
+      "Open in Elementor",
+      "https://example.com/blog/wp-admin/post.php?post=9007&action=elementor",
+    ]);
+  });
+
+  it("offers no link before the draft exists", async () => {
+    renderTab([designedRow(designedInput("v3-minimal-page"))]);
+    const card = await openCard();
+    expect(linksOf(card)).toEqual([]);
+    expect(card).not.toHaveTextContent("Open in Elementor");
+  });
+
+  it.each([
+    ["no site address", null],
+    ["an address that is not a plain web address", "javascript:alert(1)"],
+  ])("offers no link with %s", async (_name, siteUrl) => {
+    renderTab([done()], siteUrl);
+    const card = await openCard();
+    expect(card).toHaveTextContent("Draft created in Elementor.");
+    expect(linksOf(card)).toEqual([]);
+  });
+
+  it("offers no link to a draft that was moved to the trash", async () => {
+    renderTab([done({ trashed: true })]);
+    const card = await openCard();
+    expect(card).toHaveTextContent("Moved to the trash.");
+    expect(linksOf(card)).toEqual([]);
+  });
+});
+
