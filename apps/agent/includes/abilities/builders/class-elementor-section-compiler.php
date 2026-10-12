@@ -155,6 +155,26 @@ final class ElementorSectionCompiler
     }
 
     /**
+     * The tone of a section container as stored: the tone whose background
+     * colour the container holds, else the default. A section with a
+     * background image holds the colour of BACKGROUND_TONE.
+     *
+     * @param array<mixed> $settings The stored container's settings.
+     * @return string One of OutlineV3Schema::TONES.
+     */
+    public function toneOf(array $settings): string
+    {
+        $colour = $settings['background_color'] ?? null;
+        foreach (OutlineV3Schema::TONES as $tone) {
+            if ($colour === $this->tokens->tone($tone)['background']) {
+                return $tone;
+            }
+        }
+
+        return self::DEFAULT_TONE;
+    }
+
+    /**
      * The tokens of the design this compiler writes from.
      *
      * @return DesignTokens

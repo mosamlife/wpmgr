@@ -256,7 +256,7 @@ final class ElementorAdapter implements BuilderAdapter
      * document carries no meta: an edit stores only the tree, through
      * Elementor's own save.
      */
-    public function planEdit(int $postId, array $ops, IdSeed $ids, array $mediaById): array
+    public function planEdit(int $postId, array $ops, IdSeed $ids, array $mediaById, ?array $design = null): array
     {
         if ($postId < 1) {
             return ['code' => LayoutOps::CODE_UNREADABLE, 'detail' => 'not a post', 'op_index' => null];
@@ -275,7 +275,18 @@ final class ElementorAdapter implements BuilderAdapter
             return ['code' => LayoutOps::CODE_UNREADABLE, 'detail' => 'the Elementor document is not a list of elements', 'op_index' => null];
         }
 
-        $planned = LayoutOps::apply($tree, $ops, $ids, $mediaById, ($this->facts()['containers'] ?? null) === true);
+        // The design the edit carries compiles its new sections, patterns and groups.
+        $compiler = null;
+        if ($design !== null) {
+            try {
+                $tokens = DesignTokens::fromDesign($design);
+            } catch (\InvalidArgumentException $e) {
+                return ['code' => 'bad_input', 'detail' => 'design: the design could not be read', 'op_index' => null];
+            }
+            $active   = $this->facts()['active_breakpoints'] ?? null;
+            $compiler = new ElementorSectionCompiler($tokens, is_array($active) ? array_values($active) : null, $mediaById);
+        }
+        $planned = LayoutOps::apply($tree, $ops, $ids, $mediaById, ($this->facts()['containers'] ?? null) === true, $compiler);
         if (!isset($planned['tree'], $planned['changes'], $planned['touched'], $planned['new_count'])) {
             return ['code' => $planned['code'] ?? 'bad_input', 'detail' => $planned['detail'] ?? 'the operations could not be applied', 'op_index' => $planned['op_index'] ?? null];
         }

@@ -556,21 +556,25 @@ final class ElementorClassicMapper
      * @param string            $context     One of the CONTEXT_ values.
      * @param string            $pathPrefix  Prefix of every node path, e.g. "operations[2].".
      * @param list<string>|null $breakpoints The site's active breakpoints (ElementorFacts active_breakpoints), null when none is.
+     * @param ElementorSectionCompiler|null $design The compiler of a designed page, when the edit carries the page's design: sections, patterns and groups compile in its look.
+     * @param array{tone:string,align:string}|null $host The tone and alignment of the section the new nodes go into, for CONTEXT_GROUP with a design.
      * @return array{tree?: list<array<string, mixed>>, code?: string, detail?: string}
      */
-    public static function mapFragment(array $outline, IdSeed $ids, array $mediaById, bool $containers, string $context, string $pathPrefix, ?array $breakpoints = self::STOCK_BREAKPOINTS): array
+    public static function mapFragment(array $outline, IdSeed $ids, array $mediaById, bool $containers, string $context, string $pathPrefix, ?array $breakpoints = self::STOCK_BREAKPOINTS, ?ElementorSectionCompiler $design = null, ?array $host = null): array
     {
         $listPath = $pathPrefix . 'outline';
         if ($outline === [] || !ArrayShape::isList($outline)) {
             return ['code' => 'bad_input', 'detail' => $listPath . ': not a list of nodes'];
         }
-        $mapper = new self($ids, $mediaById, $containers, null, $breakpoints);
+        $mapper = new self($ids, $mediaById, $containers, $design, $breakpoints);
         switch ($context) {
             case self::CONTEXT_TOP:
                 $tree = $mapper->outline($outline, $listPath);
                 break;
             case self::CONTEXT_GROUP:
-                $tree = $mapper->groupChildren($outline, $listPath);
+                $tree = $design !== null && $host !== null
+                    ? $mapper->designedChildren($outline, $listPath, $host['tone'], $host['align'])
+                    : $mapper->groupChildren($outline, $listPath);
                 break;
             case self::CONTEXT_INNER:
                 $run = [];
@@ -726,6 +730,141 @@ final class ElementorClassicMapper
         return ['node' => $node];
     }
 
+    /**
+     * A stored pattern node with one piece of its text changed, for a
+     * page-edit set_text on a pattern path such as plans.1.price.
+     *
+     * The path is one ElementorPatternReader offers for the node as it is
+     * stored; only that widget's own settings path is written, in the form the
+     * compiler writes it, and every other key of the node keeps its value and
+     * its place. A text passes page-create's text rule, a link its link rule
+     * (a link to a section of the page, "#" and its anchor, included), a number
+     * is a whole number of at most nine digits, and the value written passes
+     * its own pin and the stored-string rules on its settings path alone.
+     *
+     * @param array<mixed> $node The stored pattern container.
+     * @param string       $path The pattern path.
+     * @param string       $text The new text, or the new link.
+     * @param string       $at   The operation's position, for refusal details.
+     * @return array{node?: array<mixed>, code?: string, detail?: string}
+     */
+    public static function setPatternText(array $node, string $path, string $text, string $at): array
+    {
+        $label  = is_array($node['settings'] ?? null) ? ($node['settings'][LeafPolicy::LABEL_KEY] ?? null) : null;
+        $named  = is_string($label) ? ElementorPatternCompiler::fromLabel($label) : null;
+        $fields = $named === null ? null : ElementorPatternReader::fields($node, $named['pattern'], $named['variant']);
+        $field  = $fields[$path] ?? null;
+        if ($field === null) {
+            return ['code' => 'node_not_editable', 'detail' => $at . ': this node does not offer ' . $path];
+        }
+        $form = $field['form'];
+        if ($form === 'url') {
+            $why = PageCreateBuilder::linkProblem($text, true);
+            if ($why !== null) {
+                return ['code' => 'bad_input', 'detail' => $at . '.text: ' . $why];
+            }
+            if (strpos($text, '&') !== false) {
+                return ['code' => 'link_invalid', 'detail' => $at . '.text: a link on an Elementor page cannot hold "&"; use a link without one'];
+            }
+            $value = $text;
+        } elseif ($form === 'number') {
+            if (preg_match('/^[0-9]{1,9}$/D', $text) !== 1) {
+                return ['code' => 'bad_input', 'detail' => $at . '.text: this is a whole number of at most 9 digits'];
+            }
+            $value = $text;
+        } else {
+            $why = LeafPolicy::textProblem($text, 'text');
+            if ($why !== null) {
+                return ['code' => 'bad_input', 'detail' => $at . '.text: ' . $why];
+            }
+            $value = $form === 'paragraph' ? '<p>' . LeafPolicy::htmlText($text) . '</p>' : LeafPolicy::htmlText($text);
+        }
+
+        $type    = null;
+        $written = self::rewrite($node, $field['id'], static function (array $widget) use ($field, $value, &$type): ?array {
+            $type     = $widget['widgetType'] ?? null;
+            $settings = $widget['settings'] ?? null;
+            if (!is_array($settings)) {
+                return null;
+            }
+            $widget['settings'] = self::putAt($settings, $field['at'], $value);
+
+            return $widget;
+        });
+        if ($written === null || !is_string($type)) {
+            return ['code' => 'node_not_editable', 'detail' => $at . ': this node does not offer ' . $path];
+        }
+
+        // The value at its own path: a widget holding only that value.
+        $only  = self::putAt([], $field['at'], $value);
+        $check = LeafPolicy::checkTree([['id' => 'set', 'elType' => 'widget', 'settings' => $only, 'elements' => [], 'widgetType' => $type]], self::designedKeys(), self::LEAF_RULES);
+        if ($check !== null) {
+            $reason = strpos($check['detail'], ': ');
+
+            return ['code' => $check['code'], 'detail' => $at . '.text: ' . ($reason === false ? $check['detail'] : substr($check['detail'], $reason + 2))];
+        }
+
+        return ['node' => $written];
+    }
+
+    /**
+     * The element with an id, rewritten by $change, inside a stored subtree.
+     *
+     * @param array<mixed>                        $node   The subtree.
+     * @param string                              $id     The element's id.
+     * @param callable(array<mixed>): (array<mixed>|null) $change The rewrite of the element; null refuses.
+     * @return array<mixed>|null The subtree, or null when the element is not there or $change refused.
+     */
+    private static function rewrite(array $node, string $id, callable $change): ?array
+    {
+        if (($node['id'] ?? null) === $id) {
+            return $change($node);
+        }
+        $children = $node['elements'] ?? null;
+        if (!is_array($children)) {
+            return null;
+        }
+        foreach ($children as $k => $child) {
+            if (!is_array($child)) {
+                continue;
+            }
+            $done = self::rewrite($child, $id, $change);
+            if ($done !== null) {
+                $children[$k]     = $done;
+                $node['elements'] = $children;
+
+                return $node;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * $settings with $value at the settings path $at.
+     *
+     * @param array<mixed>      $settings The settings.
+     * @param list<int|string>  $at       The path.
+     * @param string            $value    The value.
+     * @return array<mixed>
+     */
+    private static function putAt(array $settings, array $at, string $value): array
+    {
+        $step = array_shift($at);
+        if ($step === null) {
+            return $settings;
+        }
+        if ($at === []) {
+            $settings[$step] = $value;
+
+            return $settings;
+        }
+        $below            = is_array($settings[$step] ?? null) ? $settings[$step] : [];
+        $settings[$step] = self::putAt($below, $at, $value);
+
+        return $settings;
+    }
+
     // ---------------------------------------------------------------------
     // Mapping
     // ---------------------------------------------------------------------
@@ -857,6 +996,39 @@ final class ElementorClassicMapper
         } catch (\InvalidArgumentException $e) {
             return $this->fail('bad_input', $path . '.tone: a section tone is ground, surface, inverse or accent');
         }
+        $elements = $this->designedChildren($children, $path . '.children', $tone, $align);
+        if ($elements === null) {
+            return null;
+        }
+
+        try {
+            return $design->container($this->ids->next($path), $section, $elements);
+        } catch (\InvalidArgumentException $e) {
+            return $this->fail('bad_input', $path . ': the section could not be built');
+        }
+    }
+
+    /**
+     * The children of a designed section, or the nodes an edit puts into one:
+     * leaves as widgets in the design's look and the section's tone and
+     * alignment, groups and columns as the design's containers, patterns as the
+     * pattern compiler's.
+     *
+     * @param list<mixed> $children The validated nodes.
+     * @param string      $listPath Path of the list; a node's path is this plus "[i]".
+     * @param string      $tone     One of OutlineV3Schema::TONES.
+     * @param string      $align    One of OutlineV3Schema::ALIGNS.
+     * @return list<array<string, mixed>>|null
+     */
+    private function designedChildren(array $children, string $listPath, string $tone, string $align): ?array
+    {
+        $design = $this->design;
+        if ($design === null || $children === [] || !ArrayShape::isList($children)) {
+            return $this->fail('bad_input', $listPath . ': not a list of nodes');
+        }
+        if (!in_array($tone, OutlineV3Schema::TONES, true) || !in_array($align, OutlineV3Schema::ALIGNS, true)) {
+            return $this->fail('bad_input', $listPath . ': a section tone is ground, surface, inverse or accent, and its alignment start or center');
+        }
         $this->look     = new ElementorLeafStyle($design->tokens());
         $this->tone     = $tone;
         $this->align    = $align;
@@ -866,7 +1038,7 @@ final class ElementorClassicMapper
         $elements = [];
         $run      = [];
         foreach ($children as $j => $child) {
-            $at   = $path . '.children[' . $j . ']';
+            $at   = $listPath . '[' . $j . ']';
             $type = is_array($child) ? ($child['type'] ?? null) : null;
             if ($type !== 'group' && $type !== 'columns' && $type !== 'pattern') {
                 $run[] = [$at, $child];
@@ -899,11 +1071,8 @@ final class ElementorClassicMapper
             array_push($elements, ...$widgets);
         }
 
-        try {
-            return $design->container($this->ids->next($path), $section, $elements);
-        } catch (\InvalidArgumentException $e) {
-            return $this->fail('bad_input', $path . ': the section could not be built');
-        }
+
+        return $elements;
     }
 
     /**
@@ -1519,6 +1688,20 @@ final class ElementorClassicMapper
                 continue;
             }
 
+            // A designed section: a top-level container with WPMgr's section label and an anchor it could have been given.
+            if ($type === 'container' && $parentKind === '' && ($settings[LeafPolicy::LABEL_KEY] ?? null) === LeafPolicy::SECTION_LABEL) {
+                $anchor = $settings[LeafPolicy::ANCHOR_KEY] ?? null;
+                if (is_string($anchor) && preg_match('/' . OutlineV3Schema::ANCHOR_PATTERN . '/D', $anchor) === 1 && !in_array($anchor, OutlineV3Schema::RESERVED_ANCHORS, true)) {
+                    $projection->add($id, $parent, 'section', null, [], []);
+                    $projection->note($id, ['anchor' => $anchor]);
+                    $below = $node['elements'] ?? [];
+                    if (is_array($below)) {
+                        self::projectNodes($below, $id, 'section', $projection);
+                    }
+                    continue;
+                }
+            }
+
             $kind = self::classify($type, $settings, $parentKind);
             if ($kind === null) {
                 $projection->addLocked($id, $parent, $type === 'text-editor' ? self::LABEL_CUSTOM_TEXT : self::labelKey($type));
@@ -1526,6 +1709,9 @@ final class ElementorClassicMapper
             }
             [$kindName, $level, $editable, $text] = $kind;
             $projection->add($id, $parent, $kindName, $level, $editable, $text);
+            if ($kindName === 'buttons' && isset($text['url']) && strncmp($text['url'], '#', 1) === 0) {
+                $projection->note($id, ['links' => [$text['url']]]);
+            }
 
             if (in_array($type, ['container', 'section', 'column'], true)) {
                 $children = $node['elements'] ?? [];
@@ -1579,6 +1765,13 @@ final class ElementorClassicMapper
             return;
         }
         $projection->addPattern($id, $parent, $named['variant'], array_map(static fn (array $field): string => $field['text'], $fields));
+        $links = [];
+        foreach ($fields as $field) {
+            if ($field['form'] === 'url' && strncmp($field['text'], '#', 1) === 0) {
+                $links[] = $field['text'];
+            }
+        }
+        $projection->note($id, ['pattern' => $named['pattern']] + ($links === [] ? [] : ['links' => $links]));
         if ($composed && is_array($node['elements'] ?? null)) {
             // The two columns of a split hero are columns; the blocks of a stacked one are the pattern's own.
             self::projectNodes($node['elements'], $id, ($node['settings']['flex_direction'] ?? null) === 'row' ? 'columns' : 'pattern', $projection);

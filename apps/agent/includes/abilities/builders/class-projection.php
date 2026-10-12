@@ -69,6 +69,16 @@ final class Projection
     private array $refs = [];
 
     /**
+     * Facts about a node that only the agent's own checks read, by ref:
+     * anchor (a section), links (the sections of the page it links to, "#" and
+     * an anchor) and pattern (the pattern's name). nodes() carries them;
+     * toArray() leaves them out.
+     *
+     * @var array<string, array<string, mixed>>
+     */
+    private array $facts = [];
+
+    /**
      * @param array<mixed> $lockedLabels The adapter's label map, key => WPMgr's words; carries FALLBACK_LABEL.
      * @throws \InvalidArgumentException When a label is empty or not a string, or the fallback is missing.
      */
@@ -193,7 +203,32 @@ final class Projection
      */
     public function nodes(): array
     {
-        return $this->nodes;
+        if ($this->facts === []) {
+            return $this->nodes;
+        }
+        $out = [];
+        foreach ($this->nodes as $node) {
+            $out[] = isset($this->facts[$node['ref']]) ? $node + $this->facts[$node['ref']] : $node;
+        }
+
+        return $out;
+    }
+
+    /**
+     * Attach facts to a node already added: anchor, links or pattern. They
+     * appear in nodes() and never in toArray().
+     *
+     * @param string               $ref   The node's ref.
+     * @param array<string, mixed> $facts The facts.
+     * @return void
+     * @throws \InvalidArgumentException When no node has that ref.
+     */
+    public function note(string $ref, array $facts): void
+    {
+        if (!isset($this->refs[$ref])) {
+            throw new \InvalidArgumentException('only a node of the page carries facts');
+        }
+        $this->facts[$ref] = $facts + ($this->facts[$ref] ?? []);
     }
 
     /**

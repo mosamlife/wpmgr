@@ -235,7 +235,11 @@ final class BuilderPageEdit
             return self::refused(LayoutOps::CODE_UNREADABLE, 'the page\'s builder document could not be read');
         }
         if ($rule !== null) {
-            return ['refusal' => self::fail($rule['code'], $rule['detail'], ['op_index' => $rule['op_index']])];
+            return ['refusal' => self::fail($rule['code'], $rule['detail'], ['op_index' => $rule['op_index']] + (isset($rule['refs']) ? ['refs' => $rule['refs']] : []))];
+        }
+        // A section or a pattern is compiled with the page's design: the input's, which the control plane gives it.
+        if (!isset($input['design']) && self::holdsDesignedNodes($input['operations'])) {
+            return self::refused(DesignInput::CODE_NOT_READY, 'a section or a pattern is compiled with the design of the page, and the input has none');
         }
 
         $mediaById = self::media($input['operations'], $media);
@@ -244,7 +248,7 @@ final class BuilderPageEdit
         }
 
         try {
-            $planned = $a->planEdit($postId, $input['operations'], new IdSeed($requestId), $mediaById['by_id']);
+            $planned = $a->planEdit($postId, $input['operations'], new IdSeed($requestId), $mediaById['by_id'], $input['design'] ?? null);
         } catch (\Throwable $e) {
             return self::refused('bad_input', 'the operations could not be applied');
         }
@@ -729,6 +733,25 @@ final class BuilderPageEdit
         }
 
         return $refusal ?? ['code' => 'builder_not_enabled', 'detail' => 'the catalogue entry enables no page builder'];
+    }
+
+    /**
+     * Whether an operation puts a section or a pattern on the page.
+     *
+     * @param list<array<string, mixed>> $ops Parsed operations.
+     * @return bool
+     */
+    private static function holdsDesignedNodes(array $ops): bool
+    {
+        foreach ($ops as $op) {
+            foreach (is_array($op['outline'] ?? null) ? $op['outline'] : [] as $node) {
+                if (is_array($node) && in_array($node['type'] ?? null, ['section', 'pattern'], true)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
