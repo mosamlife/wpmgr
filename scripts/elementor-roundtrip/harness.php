@@ -271,6 +271,14 @@ function rt_brief($v): string
     return strlen($s) > 90 ? substr($s, 0, 87) . '...' : $s;
 }
 
+/** As rt_brief, for an answer whose detail the reader needs: up to $max characters. */
+function rt_long($v, int $max = 700): string
+{
+    $s = is_string($v) ? $v : (string) json_encode($v, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR);
+
+    return strlen($s) > $max ? substr($s, 0, $max - 3) . '...' : $s;
+}
+
 /**
  * The first place two decoded trees differ, or null when they are identical
  * in value, type and key order.
@@ -916,6 +924,9 @@ function rt_designed_anchors(array $outline): array
     return $out;
 }
 
+/** Settings Elementor stores and reads without a control, by element type: the navigator label of a container. */
+const RT_UNOWNED_KEYS = ['container' => ['_title']];
+
 /**
  * Hold every settings key of a tree to the controls Elementor registers for its element. A key no
  * control answers to is stored and ignored. Returns how many keys it looked at.
@@ -933,14 +944,19 @@ function rt_unregistered_keys(array $nodes, array &$bad, string $path = 'tree'):
         $at     = $path . '[' . $i . ']';
         $widget = ($node['elType'] ?? '') === 'widget';
         $type   = $widget ? (string) ($node['widgetType'] ?? '') : (string) ($node['elType'] ?? '');
-        $el     = $widget ? Plugin::$instance->widgets_manager->get_widget_types($type) : Plugin::$instance->elements_manager->get_element_types($type);
+        // The element as Elementor builds it from the stored data, which is what its CSS is generated from.
+        $data = ['id' => (string) ($node['id'] ?? ''), 'elType' => (string) ($node['elType'] ?? ''), 'settings' => is_array($node['settings'] ?? null) ? $node['settings'] : [], 'elements' => [], 'isInner' => (bool) ($node['isInner'] ?? false)];
+        if ($widget) {
+            $data['widgetType'] = $type;
+        }
+        $el = Plugin::$instance->elements_manager->create_element_instance($data);
         if (!is_object($el)) {
             $bad[] = $at . ' ' . $type . ': Elementor has no such element';
         } else {
-            $controls = $el->get_controls();
             foreach (array_keys(is_array($node['settings'] ?? null) ? $node['settings'] : []) as $key) {
                 ++$looked;
-                if (!isset($controls[$key])) {
+                // By name: a release may keep the controls that carry CSS apart from the others when it lists them all.
+                if ($el->get_controls((string) $key) === null && !in_array((string) $key, RT_UNOWNED_KEYS[$type] ?? [], true)) {
                     $bad[] = $at . ' ' . $type . ' ' . (string) ($node['id'] ?? '?') . ': no control named ' . $key;
                 }
             }
@@ -1055,9 +1071,10 @@ function rt_designed_phase(string $layout, string $stored, int $principal, bool 
     // What this site reports, which the pages are held to.
     $c        = new RtChecks();
     $c->ck('block-theme', wp_is_block_theme(), 'the harness site must run a block theme, which shows a designed page only as ' . RT_DESIGNED_FRAME);
-    $ctl      = Plugin::$instance->elements_manager->get_element_types('container');
-    $known    = is_object($ctl) ? array_keys($ctl->get_controls()) : [];
-    $c->ck('controls', in_array('padding', $known, true) && in_array('background_color', $known, true), 'Elementor lists ' . count($known) . ' control(s) for a container and not padding and background_color, so the key check would look at nothing');
+    $ctl      = Plugin::$instance->elements_manager->create_element_instance(['id' => 'a000001', 'elType' => 'container', 'settings' => [], 'elements' => [], 'isInner' => false]);
+    // The positive control of the key check: controls it must find, and one name it must not.
+    $found    = is_object($ctl) ? [$ctl->get_controls('padding') !== null, $ctl->get_controls('flex_direction') !== null, $ctl->get_controls('background_color') !== null, $ctl->get_controls('wpmgr_no_such_control') === null] : [];
+    $c->ck('controls', $found === [true, true, true, true], 'Elementor answers ' . rt_brief($found) . ' for a container\'s padding, flex_direction, background_color and a name no control has, so the key check would look at nothing');
     $report('facts', $c);
     $breakpoints = array_keys(Plugin::$instance->breakpoints->get_active_breakpoints());
 
@@ -1067,7 +1084,7 @@ function rt_designed_phase(string $layout, string $stored, int $principal, bool 
         $rid    = wp_generate_uuid4();
         $c      = new RtChecks();
         $pre    = $call('precheck', $rid, ['input' => $case['input']]);
-        if ($c->ck('precheck', ($pre['ok'] ?? false) === true && ($pre['outcome'] ?? null) === 'prechecked', rt_brief($pre))) {
+        if ($c->ck('precheck', ($pre['ok'] ?? false) === true && ($pre['outcome'] ?? null) === 'prechecked', rt_long($pre))) {
             $preview = is_array($pre['preview'] ?? null) ? $pre['preview'] : [];
             $tree    = $preview['tree'] ?? null;
             $bf      = is_array($pre['builder_facts'] ?? null) ? $pre['builder_facts'] : [];
@@ -1076,9 +1093,20 @@ function rt_designed_phase(string $layout, string $stored, int $principal, bool 
             $c->ck('breakpoints', ($bf['active_breakpoints'] ?? null) === $breakpoints, 'the precheck compiled for the breakpoints ' . rt_brief($bf['active_breakpoints'] ?? null) . ', Elementor reports ' . rt_brief($breakpoints));
             $c->ck('digests', $hex($pre['preview_digest'] ?? null) && $hex($pre['precheck_digest'] ?? null), 'the precheck gave no digests');
             $c->ck('preview-tree', is_array($tree) && $tree !== [], 'the precheck previewed no tree');
+            // The options written during the write are named in a refusal, so a refused page says what the save wrote.
+            $optionsWritten = [];
+            $noteOption     = static function ($name = '') use (&$optionsWritten): void {
+                $optionsWritten[(string) $name] = true;
+            };
+            add_action('added_option', $noteOption, 1, 1);
+            add_action('updated_option', $noteOption, 1, 1);
             $w = $call('write', $rid, ['input' => $case['input'], 'expected' => $digestsOf($pre)]);
-            if ($c->ck('write', ($w['ok'] ?? false) === true && ($w['outcome'] ?? null) === 'created', rt_brief($w))) {
-                ++$created;
+            remove_action('added_option', $noteOption, 1);
+            remove_action('updated_option', $noteOption, 1);
+            if (($w['code'] ?? null) === 'side_effect_detected') {
+                $w['harness_options_written'] = array_keys($optionsWritten);
+            }
+            if ($c->ck('write', ($w['ok'] ?? false) === true && ($w['outcome'] ?? null) === 'created', rt_long($w))) {
                 $pid = (int) ($w['post_id'] ?? 0);
                 $c->ck('write-digest', ($w['preview_digest'] ?? null) === ($pre['preview_digest'] ?? ''), 'the write answers a preview digest that is not the precheck\'s');
                 $c->ck('verify', ($w['verify'] ?? null) === ['tree_equal' => true, 'status' => 'draft'], 'the write answers verify ' . rt_brief($w['verify'] ?? null));
@@ -1125,7 +1153,14 @@ function rt_designed_phase(string $layout, string $stored, int $principal, bool 
                 }
                 if ($c->ck('render-nonempty', trim($html) !== '', 'the page rendered nothing')) {
                     $dom = rt_dom($html);
-                    $c->ck('render-script', $dom->getElementsByTagName('script')->length === 0 && stripos($html, '<script') === false, 'the page holds a script element');
+                    // A page may carry structured data (a FAQ's schema); no other script element may be on it.
+                    $runnable = 0;
+                    foreach ($dom->getElementsByTagName('script') as $script) {
+                        if (strtolower(trim($script->getAttribute('type'))) !== 'application/ld+json' || json_decode((string) $script->textContent, true) === null) {
+                            ++$runnable;
+                        }
+                    }
+                    $c->ck('render-script', $runnable === 0, 'the page holds ' . $runnable . ' script element(s) that are not structured data');
                     $onAttr = '';
                     $ids    = [];
                     foreach ($dom->getElementsByTagName('*') as $el) {
@@ -1154,7 +1189,7 @@ function rt_designed_phase(string $layout, string $stored, int $principal, bool 
                             $miss[] = rt_brief($t);
                         }
                     }
-                    $c->ck('render-text', $texts !== [] && $miss === [], $texts === [] ? 'the harness found no text in the outline' : count($miss) . ' text(s) not shown as written, first: ' . ($miss[0] ?? ''));
+                    $c->ck('render-text', ($texts !== [] || !rt_has_text_widget($held)) && $miss === [], $texts === [] ? 'the page has text widgets but the harness found no text in the outline' : count($miss) . ' text(s) not shown as written, first: ' . ($miss[0] ?? ''));
                 }
                 $file = RtPostCss::create($pid);
                 $path = (string) $file->get_path();
@@ -1184,6 +1219,8 @@ function rt_designed_phase(string $layout, string $stored, int $principal, bool 
                 $c->ck('revert-twice', ($again['ok'] ?? false) === true && ($again['outcome'] ?? null) === 'already_reverted', rt_brief($again));
             }
         }
+        // A write the agent refused after it made the draft leaves that draft in the trash, and it is counted here too.
+        $created += count(rt_posts_of($rid));
         ++$out['cases'];
         $report($name, $c);
     }
@@ -3402,13 +3439,25 @@ foreach ($rtMedia as $mid => $fact) {
     update_post_meta($mid, '_wp_attachment_image_alt', (string) ($fact['alt'] ?? ''));
     $rtMediaFacts[$mid] = ['url' => (string) ($fact['url'] ?? ''), 'alt' => (string) ($fact['alt'] ?? '')];
 }
-// The images the designed golden names become attachments too, with the library alt text it declares.
-$rtLibrary = rt_load(RT_DESIGNED_FILE)['arrays']['library_alt'] ?? null;
+// The images the designed golden names become attachments too: every image a case resolved, with the library alt text
+// the golden declares for it (an image the golden declares none for has none).
+$rtDesignedGolden = rt_load(RT_DESIGNED_FILE)['arrays'];
+$rtLibrary        = $rtDesignedGolden['library_alt'] ?? null;
 if (!is_array($rtLibrary) || $rtLibrary === []) {
     rt_broken('the designed golden declares no library images');
 }
+$rtDesignedImages = [];
+foreach ($rtDesignedGolden['cases'] as $rtCase) {
+    foreach ((array) ($rtCase['facts']['media'] ?? []) as $rtImage) {
+        $rtDesignedImages[(int) ($rtImage['id'] ?? 0)] = (string) ($rtLibrary[(string) ($rtImage['id'] ?? 0)] ?? '');
+    }
+}
 foreach ($rtLibrary as $mid => $alt) {
-    $mid  = (int) $mid;
+    $rtDesignedImages[(int) $mid] = (string) $alt;
+}
+unset($rtDesignedImages[0]);
+ksort($rtDesignedImages);
+foreach ($rtDesignedImages as $mid => $alt) {
     $up   = wp_upload_dir();
     $file = $up['path'] . '/rt-designed-' . $mid . '.png';
     $gd   = imagecreatetruecolor(800, 450);
