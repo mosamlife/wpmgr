@@ -94,6 +94,25 @@
  * one, and the style-cache entries of a second draft, which the edit does not
  * touch, must be the same after the edit as before it.
  *
+ * And the agent's create path for designed pages (outline version 3), on the same site. The
+ * inputs are the page-create inputs of the designed golden (elementor-designed-containers.json,
+ * each distinct page once), sent as the control plane sends them: with the page frame the site
+ * admits as the last member. On a containers site every page goes through precheck, write and
+ * undo exactly as in the agent path above, and is then held to what Elementor made of it:
+ *
+ *  14. the precheck answers the facts it compiled with (a block theme, the canvas frame, the
+ *      breakpoints Elementor reports) and the write stores the frame's page template;
+ *  15. every settings key of the stored tree is a control Elementor registers for its element, so
+ *      a misspelt key, which Elementor stores and ignores, is red for every page and not only for
+ *      the ones a probe was written for;
+ *  16. the rendered page carries each section's anchor as the id of exactly one element, shows
+ *      every text of the outline as written, holds no script element and no on* attribute, and
+ *      its post CSS file carries a rule for each section and the colour of each heading;
+ *  17. the undo trashes the page, and a second undo answers "already_reverted".
+ *
+ * On a sections site, where a container is not registered, one designed page is refused
+ * containers_required and nothing is created. The summary counts these pages as designed=.
+ *
  * And the render probes, from render-probes.json beside this file. A probe is a raw
  * Elementor tree (by layout), the declarations Elementor's own post CSS file must
  * carry for it and the ids the rendered page must carry. It is the check that a key
@@ -203,6 +222,16 @@ const RT_PLANTS = [
     'edit_view_other_cache',
     // The preview before the edit does not enqueue the page's styles, so it leaves no style-cache entry for the page (use the case name "after-view").
     'edit_view_no_styles',
+    // The designed pages are handed no page at all (use the case name "all").
+    'designed_no_cases',
+    // One settings key of a designed page's stored tree is misspelt before the keys are held to Elementor's controls (use the page's case name).
+    'designed_unknown_key',
+    // The rendered designed page loses the id of its first section (use the page's case name).
+    'designed_drop_anchor',
+    // The page template of a created designed page is another than the frame's, as stored (use the page's case name).
+    'designed_template_drift',
+    // The rendered designed page loses its first text (use the page's case name).
+    'designed_drop_text',
     // The render probes are handed no probe at all (use the case name "all").
     'probes_no_cases',
     // One setting key of a probe's tree is misspelt before the tree is saved (use the probe's name): Elementor keeps the
@@ -215,6 +244,9 @@ const RT_PLANTS = [
 
 /** The plants that act on a probe's tree; each probe names its own targets in "plants". */
 const RT_PROBE_PLANTS = ['misspell_key', 'drop_activator'];
+
+/** The plants that act on one designed page, named by its case in the designed golden. */
+const RT_DESIGNED_PLANTS = ['designed_unknown_key', 'designed_drop_anchor', 'designed_template_drift', 'designed_drop_text'];
 
 const RT_NODE_LIMIT_DEPTH = 64;
 
@@ -562,6 +594,31 @@ function rt_stored_tree(int $postId): array
 }
 
 /**
+ * A caller of the agent's ability_run command for wpmgr/page-create, with the catalogue entry the
+ * control plane sends for it: call(mode, request id, more members of p).
+ *
+ * @return Closure(string,string,array<string,mixed>=):array<string,mixed>
+ */
+function rt_create_caller(): Closure
+{
+    $entryText = (string) json_encode([
+        'name'          => 'wpmgr/page-create',
+        'source'        => 'wpmgr',
+        'class'         => 'write',
+        'status'        => 'admitted',
+        'enabled'       => true,
+        'approval_mode' => 'per_call',
+        'snapshot'      => 'created_post_trash',
+        'limits'        => ['builders_enabled' => ['elementor']],
+    ], JSON_UNESCAPED_SLASHES);
+    $entrySha = hash('sha256', $entryText);
+    $cmd      = new AbilityRunCommand();
+    wp_set_current_user(0);
+
+    return static fn (string $mode, string $rid, array $more = []): array => rt_ability($cmd, ['mode' => $mode, 'request_id' => $rid, 'entry' => $entryText, 'entry_sha256' => $entrySha] + $more);
+}
+
+/**
  * Run the agent's create path on this site for every outline in the case files,
  * then the refusals it must make. See the steps 5 to 7 in the file header.
  *
@@ -589,21 +646,7 @@ function rt_agent_phase(string $layout, string $stored, int $principal, array $f
         }
     };
 
-    // The catalogue entry the control plane sends for wpmgr/page-create.
-    $entryText = (string) json_encode([
-        'name'          => 'wpmgr/page-create',
-        'source'        => 'wpmgr',
-        'class'         => 'write',
-        'status'        => 'admitted',
-        'enabled'       => true,
-        'approval_mode' => 'per_call',
-        'snapshot'      => 'created_post_trash',
-        'limits'        => ['builders_enabled' => ['elementor']],
-    ], JSON_UNESCAPED_SLASHES);
-    $entrySha = hash('sha256', $entryText);
-    $cmd      = new AbilityRunCommand();
-    wp_set_current_user(0);
-    $call = static fn (string $mode, string $rid, array $more = []): array => rt_ability($cmd, ['mode' => $mode, 'request_id' => $rid, 'entry' => $entryText, 'entry_sha256' => $entrySha] + $more);
+    $call    = rt_create_caller();
     $inputOf = static function (string $name, $outline): string {
         try {
             return json_encode(['post_type' => 'page', 'editor' => 'builder:elementor', 'title' => 'Agent path ' . $name, 'outline' => $outline], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
@@ -773,6 +816,394 @@ function rt_agent_phase(string $layout, string $stored, int $principal, array $f
     $all  = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = %s", RT_MARKER));
     $c->ck('left-behind', is_array($left) && $left === [], 'post(s) the agent created are not in the trash: [' . implode(',', is_array($left) ? $left : []) . ']');
     $c->ck('created', $all === $created, 'the database holds ' . $all . ' post(s) the agent created, the run created ' . $created);
+    $report('leftover', $c);
+
+    return $out;
+}
+
+// ---------------------------------------------------------------------------
+// The agent's create path for designed pages
+// ---------------------------------------------------------------------------
+
+/** The golden of designed pages. Each case's "input" is the exact page-create input the control plane sends. */
+const RT_DESIGNED_FILE = '/rt/fixtures/elementor-designed-containers.json';
+
+/** The frame a block theme shows a designed page in. */
+const RT_DESIGNED_FRAME = 'canvas';
+
+/** The page template Elementor stores for that frame. */
+const RT_DESIGNED_TEMPLATE = 'elementor_canvas';
+
+/**
+ * The keys of an outline whose strings a visitor does not read: they choose a shape, a place or an
+ * address, or they are an attribute. Every other string of an outline is text the page must show.
+ */
+const RT_DESIGNED_NOT_TEXT = ['type', 'pattern', 'variant', 'anchor', 'url', 'style', 'tone', 'icon', 'align', 'width', 'min_height', 'spacing', 'overlay', 'focal', 'alt', 'size', 'suffix'];
+
+/**
+ * The designed inputs of this run: each distinct page of the golden once, as the control plane sends
+ * it to a site that admits only the canvas frame. Two cases that differ only in the facts of their
+ * site or in their frame are one page here, because this site decides those.
+ *
+ * @return list<array{name:string,input:string,outline:list<mixed>}>
+ */
+function rt_designed_inputs(): array
+{
+    $loaded = rt_load(RT_DESIGNED_FILE);
+    $flags  = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR;
+    $seen   = [];
+    $out    = [];
+    try {
+        foreach ($loaded['arrays']['cases'] as $case) {
+            $name  = is_array($case) ? (string) ($case['name'] ?? '') : '';
+            $input = is_array($case) ? ($case['input'] ?? null) : null;
+            $page  = is_string($input) ? json_decode($input, false, 64) : null;
+            if ($name === '' || !is_object($page) || !is_array($page->outline ?? null)) {
+                rt_broken('a case in ' . RT_DESIGNED_FILE . ' has no name or no page-create input: ' . rt_brief($name));
+            }
+            unset($page->page_frame);
+            $key = hash('sha256', json_encode($page, $flags));
+            if (isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key]       = true;
+            $outline          = json_decode(json_encode($page->outline, $flags), true, 64);
+            $page->page_frame = RT_DESIGNED_FRAME;
+            $out[]            = ['name' => $name, 'input' => json_encode($page, $flags), 'outline' => is_array($outline) ? $outline : []];
+        }
+    } catch (JsonException $e) {
+        rt_broken('a designed input cannot be re-encoded: ' . $e->getMessage());
+    }
+
+    return $out;
+}
+
+/**
+ * Every string of a designed outline that a visitor reads, in document order.
+ *
+ * @param mixed        $node
+ * @param list<string> $out
+ */
+function rt_designed_texts($node, array &$out, string $key = ''): void
+{
+    if (is_array($node)) {
+        foreach ($node as $k => $child) {
+            rt_designed_texts($child, $out, is_string($k) ? $k : $key);
+        }
+
+        return;
+    }
+    if (is_string($node) && $node !== '' && !in_array($key, RT_DESIGNED_NOT_TEXT, true)) {
+        $out[] = $node;
+    }
+}
+
+/**
+ * The anchors of an outline's sections, in order.
+ *
+ * @param list<mixed> $outline
+ * @return list<string>
+ */
+function rt_designed_anchors(array $outline): array
+{
+    $out = [];
+    foreach ($outline as $section) {
+        if (is_array($section) && is_string($section['anchor'] ?? null) && $section['anchor'] !== '') {
+            $out[] = $section['anchor'];
+        }
+    }
+
+    return $out;
+}
+
+/**
+ * Hold every settings key of a tree to the controls Elementor registers for its element. A key no
+ * control answers to is stored and ignored. Returns how many keys it looked at.
+ *
+ * @param array<mixed> $nodes
+ * @param list<string> $bad   What no control answers to.
+ */
+function rt_unregistered_keys(array $nodes, array &$bad, string $path = 'tree'): int
+{
+    $looked = 0;
+    foreach ($nodes as $i => $node) {
+        if (!is_array($node)) {
+            continue;
+        }
+        $at     = $path . '[' . $i . ']';
+        $widget = ($node['elType'] ?? '') === 'widget';
+        $type   = $widget ? (string) ($node['widgetType'] ?? '') : (string) ($node['elType'] ?? '');
+        $el     = $widget ? Plugin::$instance->widgets_manager->get_widget_types($type) : Plugin::$instance->elements_manager->get_element_types($type);
+        if (!is_object($el)) {
+            $bad[] = $at . ' ' . $type . ': Elementor has no such element';
+        } else {
+            $controls = $el->get_controls();
+            foreach (array_keys(is_array($node['settings'] ?? null) ? $node['settings'] : []) as $key) {
+                ++$looked;
+                if (!isset($controls[$key])) {
+                    $bad[] = $at . ' ' . $type . ' ' . (string) ($node['id'] ?? '?') . ': no control named ' . $key;
+                }
+            }
+        }
+        if (is_array($node['elements'] ?? null)) {
+            $looked += rt_unregistered_keys($node['elements'], $bad, $at . '.elements');
+        }
+    }
+
+    return $looked;
+}
+
+/**
+ * Plant: misspell the first settings key named $key anywhere in a tree.
+ *
+ * @param array<mixed> $nodes
+ */
+function rt_misspell_key(array &$nodes, string $key): bool
+{
+    foreach ($nodes as &$node) {
+        if (!is_array($node)) {
+            continue;
+        }
+        if (is_array($node['settings'] ?? null) && array_key_exists($key, $node['settings'])) {
+            $settings = [];
+            foreach ($node['settings'] as $k => $v) {
+                $settings[$k === $key ? $key . 'x' : $k] = $v;
+            }
+            $node['settings'] = $settings;
+
+            return true;
+        }
+        if (is_array($node['elements'] ?? null) && rt_misspell_key($node['elements'], $key)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * The colour each heading of a tree is given, by element id.
+ *
+ * @param array<mixed> $nodes
+ * @return array<string,string>
+ */
+function rt_heading_colours(array $nodes): array
+{
+    $out = [];
+    foreach ($nodes as $node) {
+        if (!is_array($node)) {
+            continue;
+        }
+        if (($node['widgetType'] ?? '') === 'heading' && is_string($node['settings']['title_color'] ?? null) && $node['settings']['title_color'] !== '' && is_string($node['id'] ?? null)) {
+            $out[$node['id']] = $node['settings']['title_color'];
+        }
+        if (is_array($node['elements'] ?? null)) {
+            $out += rt_heading_colours($node['elements']);
+        }
+    }
+
+    return $out;
+}
+
+/**
+ * Run the agent's create path for the designed pages on this site. See the steps 14 to 17 in the
+ * file header.
+ *
+ * @param bool $noCases Plant: hand the agent no page at all.
+ * @return array{cases:int,checks:int,failed:int,keys:int,css:int}
+ */
+function rt_designed_phase(string $layout, string $stored, int $principal, bool $noCases): array
+{
+    global $wpdb;
+    $out       = ['cases' => 0, 'checks' => 0, 'failed' => 0, 'keys' => 0, 'css' => 0];
+    $tagBase   = ELEMENTOR_VERSION . ' designed-' . $layout;
+    $created   = 0;
+    $hex       = static fn ($v): bool => is_string($v) && preg_match('/^[0-9a-f]{64}$/D', $v) === 1;
+    $report    = static function (string $what, RtChecks $c) use (&$out, $tagBase): void {
+        $out['checks'] += $c->count;
+        if ($c->fails === []) {
+            rt_out(sprintf('ok   [%s %s] checks=%d', $tagBase, $what, $c->count));
+
+            return;
+        }
+        ++$out['failed'];
+        foreach ($c->fails as $f) {
+            rt_out(sprintf('FAIL [%s %s] %s', $tagBase, $what, $f));
+        }
+    };
+    $call      = rt_create_caller();
+    $digestsOf = static fn (array $pre): array => ['precheck_digest' => (string) ($pre['precheck_digest'] ?? ''), 'preview_digest' => (string) ($pre['preview_digest'] ?? '')];
+    $marked    = static fn (): int => (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = %s", RT_MARKER));
+    $before    = $marked();
+    $inputs    = $noCases ? [] : rt_designed_inputs();
+
+    if ($layout !== 'containers') {
+        // A container is not registered on a sections site, so a designed page is refused before anything is built.
+        if ($inputs !== []) {
+            $c   = new RtChecks();
+            $rid = wp_generate_uuid4();
+            $pre = $call('precheck', $rid, ['input' => $inputs[0]['input']]);
+            $c->ck('refused', ($pre['ok'] ?? true) === false && ($pre['code'] ?? null) === 'containers_required', 'a designed page on a sections site was answered ' . rt_brief($pre));
+            $c->ck('nothing-created', rt_posts_of($rid) === [], 'a refused designed page created post(s)');
+            ++$out['cases'];
+            $report($inputs[0]['name'], $c);
+        }
+
+        return $out;
+    }
+
+    // What this site reports, which the pages are held to.
+    $c        = new RtChecks();
+    $c->ck('block-theme', wp_is_block_theme(), 'the harness site must run a block theme, which shows a designed page only as ' . RT_DESIGNED_FRAME);
+    $ctl      = Plugin::$instance->elements_manager->get_element_types('container');
+    $known    = is_object($ctl) ? array_keys($ctl->get_controls()) : [];
+    $c->ck('controls', in_array('padding', $known, true) && in_array('background_color', $known, true), 'Elementor lists ' . count($known) . ' control(s) for a container and not padding and background_color, so the key check would look at nothing');
+    $report('facts', $c);
+    $breakpoints = array_keys(Plugin::$instance->breakpoints->get_active_breakpoints());
+
+    foreach ($inputs as $case) {
+        $name   = $case['name'];
+        $plants = $GLOBALS['rtPlants'][$name] ?? [];
+        $rid    = wp_generate_uuid4();
+        $c      = new RtChecks();
+        $pre    = $call('precheck', $rid, ['input' => $case['input']]);
+        if ($c->ck('precheck', ($pre['ok'] ?? false) === true && ($pre['outcome'] ?? null) === 'prechecked', rt_brief($pre))) {
+            $preview = is_array($pre['preview'] ?? null) ? $pre['preview'] : [];
+            $tree    = $preview['tree'] ?? null;
+            $bf      = is_array($pre['builder_facts'] ?? null) ? $pre['builder_facts'] : [];
+            $c->ck('layout', ($preview['layout'] ?? null) === 'containers', 'the agent built the ' . rt_brief($preview['layout'] ?? '(none)') . ' layout on a containers site');
+            $c->ck('frame', ($bf['block_theme'] ?? null) === true && ($bf['page_frame'] ?? null) === RT_DESIGNED_FRAME, 'the precheck resolved ' . rt_brief($bf) . ' on a block theme');
+            $c->ck('breakpoints', ($bf['active_breakpoints'] ?? null) === $breakpoints, 'the precheck compiled for the breakpoints ' . rt_brief($bf['active_breakpoints'] ?? null) . ', Elementor reports ' . rt_brief($breakpoints));
+            $c->ck('digests', $hex($pre['preview_digest'] ?? null) && $hex($pre['precheck_digest'] ?? null), 'the precheck gave no digests');
+            $c->ck('preview-tree', is_array($tree) && $tree !== [], 'the precheck previewed no tree');
+            $w = $call('write', $rid, ['input' => $case['input'], 'expected' => $digestsOf($pre)]);
+            if ($c->ck('write', ($w['ok'] ?? false) === true && ($w['outcome'] ?? null) === 'created', rt_brief($w))) {
+                ++$created;
+                $pid = (int) ($w['post_id'] ?? 0);
+                $c->ck('write-digest', ($w['preview_digest'] ?? null) === ($pre['preview_digest'] ?? ''), 'the write answers a preview digest that is not the precheck\'s');
+                $c->ck('verify', ($w['verify'] ?? null) === ['tree_equal' => true, 'status' => 'draft'], 'the write answers verify ' . rt_brief($w['verify'] ?? null));
+
+                // What the database holds, read here and not taken from the answer.
+                $posts = rt_posts_of($rid);
+                $c->ck('one-post', $pid > 0 && $posts === [$pid], 'the posts marked with this request are [' . implode(',', $posts) . '], the answer names ' . $pid);
+                $row = $wpdb->get_row($wpdb->prepare("SELECT post_status, post_author, post_type FROM {$wpdb->posts} WHERE ID = %d", $pid), ARRAY_A);
+                $c->ck('draft', is_array($row) && $row['post_status'] === 'draft' && (int) $row['post_author'] === $principal && $row['post_type'] === 'page', 'the post is not a draft page of the principal: ' . rt_brief($row));
+                if (in_array('designed_template_drift', $plants, true)) {
+                    $wpdb->update($wpdb->postmeta, ['meta_value' => 'default'], ['post_id' => $pid, 'meta_key' => '_wp_page_template']);
+                }
+                $template = $wpdb->get_col($wpdb->prepare("SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s ORDER BY meta_id", $pid, '_wp_page_template'));
+                $c->ck('template', $template === [RT_DESIGNED_TEMPLATE], 'the page template rows are ' . rt_brief($template) . ', the ' . RT_DESIGNED_FRAME . ' frame stores ' . RT_DESIGNED_TEMPLATE);
+                [$rows, $decoded] = rt_stored_tree($pid);
+                $expect           = $stored === 'strings' && is_array($tree) ? rt_scalars_as_strings($tree) : $tree;
+                $d                = $decoded !== null && is_array($expect) ? rt_diff($expect, $decoded, 'tree') : 'expected one _elementor_data row holding a tree, found ' . $rows;
+                $c->ck('stored-tree', $d === null, (string) $d);
+
+                // Every settings key is a control Elementor registers for its element.
+                $held = is_array($decoded) ? $decoded : [];
+                if (in_array('designed_unknown_key', $plants, true)) {
+                    $c->ck('plant', rt_misspell_key($held, 'padding'), 'no padding key to misspell in this page');
+                }
+                $bad = [];
+                $n   = rt_unregistered_keys($held, $bad);
+                $out['keys'] += $n;
+                $c->ck('keys', $n > 0 && $bad === [], $n === 0 ? 'the tree holds no settings key to look at' : count($bad) . ' settings key(s) no Elementor control answers to, first: ' . implode(' | ', array_slice($bad, 0, 3)));
+
+                // The rendered page, as a visitor gets it, and the post CSS file Elementor wrote for it.
+                $anchors = rt_designed_anchors($case['outline']);
+                $texts   = [];
+                rt_designed_texts($case['outline'], $texts);
+                wp_set_current_user($principal);
+                try {
+                    $html = (string) Plugin::$instance->frontend->get_builder_content($pid, false);
+                } catch (Throwable $e) {
+                    $html = '';
+                    $c->ck('render', false, 'render threw ' . get_class($e) . ': ' . $e->getMessage());
+                }
+                setlocale(LC_NUMERIC, 'C');
+                if (in_array('designed_drop_anchor', $plants, true) && $anchors !== []) {
+                    $html = (string) preg_replace('/\sid="' . preg_quote($anchors[0], '/') . '"/', ' data-planted="1"', $html, 1);
+                }
+                if ($c->ck('render-nonempty', trim($html) !== '', 'the page rendered nothing')) {
+                    $dom = rt_dom($html);
+                    $c->ck('render-script', $dom->getElementsByTagName('script')->length === 0 && stripos($html, '<script') === false, 'the page holds a script element');
+                    $onAttr = '';
+                    $ids    = [];
+                    foreach ($dom->getElementsByTagName('*') as $el) {
+                        foreach ($el->attributes ?? [] as $attr) {
+                            if (stripos($attr->name, 'on') === 0 && $onAttr === '') {
+                                $onAttr = $el->nodeName . '[' . $attr->name . ']';
+                            }
+                        }
+                        $id = $el->getAttribute('id');
+                        if ($id !== '') {
+                            $ids[$id] = ($ids[$id] ?? 0) + 1;
+                        }
+                    }
+                    $c->ck('render-on', $onAttr === '', 'an on* attribute: ' . $onAttr);
+                    $c->ck('anchors', $anchors !== [], 'the page has no section anchor, so the anchor check would look at nothing');
+                    foreach ($anchors as $anchor) {
+                        $c->ck('anchor', ($ids[$anchor] ?? 0) === 1, 'the rendered page carries id="' . $anchor . '" on ' . ($ids[$anchor] ?? 0) . ' element(s), not one');
+                    }
+                    $page = rt_norm((string) $dom->textContent);
+                    if (in_array('designed_drop_text', $plants, true) && $texts !== []) {
+                        $page = str_replace(rt_norm($texts[0]), '', $page);
+                    }
+                    $miss = [];
+                    foreach ($texts as $t) {
+                        if (strpos($page, rt_norm($t)) === false) {
+                            $miss[] = rt_brief($t);
+                        }
+                    }
+                    $c->ck('render-text', $texts !== [] && $miss === [], $texts === [] ? 'the harness found no text in the outline' : count($miss) . ' text(s) not shown as written, first: ' . ($miss[0] ?? ''));
+                }
+                $file = RtPostCss::create($pid);
+                $path = (string) $file->get_path();
+                if (!is_file($path)) {
+                    $file->update();
+                    clearstatcache();
+                }
+                $css = is_file($path) ? (string) file_get_contents($path) : '';
+                if ($c->ck('css-file', $css !== '', 'no post CSS file at ' . $path . ', or it is empty')) {
+                    $rules = rt_css_rules($css);
+                    foreach ($held as $section) {
+                        $c->ck('css-section', is_array($section) && strpos($css, '.elementor-element-' . (string) ($section['id'] ?? '?')) !== false, 'the post CSS has no rule for the section ' . rt_brief(is_array($section) ? ($section['id'] ?? null) : null));
+                    }
+                    foreach (rt_heading_colours($held) as $el => $colour) {
+                        [$ok, $why] = rt_css_expect($rules, ['el' => $el, 'sel' => '.elementor-heading-title', 'media' => null, 'decl' => ['color' => $colour]]);
+                        ++$out['css'];
+                        $c->ck('css-heading', $ok, 'heading ' . $el . ': want color:' . $colour . ' ' . $why);
+                    }
+                }
+                wp_set_current_user(0);
+
+                // Undo.
+                $r = $call('revert', $rid, ['input' => '{}']);
+                $c->ck('revert', ($r['ok'] ?? false) === true && ($r['outcome'] ?? null) === 'reverted' && (int) ($r['post_id'] ?? 0) === $pid && ($r['trashed'] ?? null) === true, rt_brief($r));
+                $c->ck('trashed', rt_status_of($pid) === 'trash', 'after the revert the post is ' . rt_status_of($pid));
+                $again = $call('revert', $rid, ['input' => '{}']);
+                $c->ck('revert-twice', ($again['ok'] ?? false) === true && ($again['outcome'] ?? null) === 'already_reverted', rt_brief($again));
+            }
+        }
+        ++$out['cases'];
+        $report($name, $c);
+    }
+
+    // A plant that names no page would change nothing and prove nothing.
+    $names = array_column($inputs, 'name');
+    foreach ($GLOBALS['rtPlants'] ?? [] as $name => $kinds) {
+        foreach ($kinds as $kind) {
+            if (in_array($kind, RT_DESIGNED_PLANTS, true) && !in_array((string) $name, $names, true)) {
+                ++$out['failed'];
+                rt_out(sprintf('FAIL [%s %s] plant: no designed page is named %s', $tagBase, (string) $name, (string) $name));
+            }
+        }
+    }
+
+    // Nothing the designed pages made may be left outside the trash, and they made exactly what this run asked for.
+    $c    = new RtChecks();
+    $left = $wpdb->get_col($wpdb->prepare("SELECT p.ID FROM {$wpdb->posts} p INNER JOIN {$wpdb->postmeta} m ON m.post_id = p.ID AND m.meta_key = %s WHERE p.post_status <> 'trash' ORDER BY p.ID", RT_MARKER));
+    $c->ck('left-behind', is_array($left) && $left === [], 'post(s) the agent created are not in the trash: [' . implode(',', is_array($left) ? $left : []) . ']');
+    $c->ck('created', $marked() - $before === $created, 'the designed run created ' . $created . ' post(s), the database gained ' . ($marked() - $before));
     $report('leftover', $c);
 
     return $out;
@@ -2971,6 +3402,26 @@ foreach ($rtMedia as $mid => $fact) {
     update_post_meta($mid, '_wp_attachment_image_alt', (string) ($fact['alt'] ?? ''));
     $rtMediaFacts[$mid] = ['url' => (string) ($fact['url'] ?? ''), 'alt' => (string) ($fact['alt'] ?? '')];
 }
+// The images the designed golden names become attachments too, with the library alt text it declares.
+$rtLibrary = rt_load(RT_DESIGNED_FILE)['arrays']['library_alt'] ?? null;
+if (!is_array($rtLibrary) || $rtLibrary === []) {
+    rt_broken('the designed golden declares no library images');
+}
+foreach ($rtLibrary as $mid => $alt) {
+    $mid  = (int) $mid;
+    $up   = wp_upload_dir();
+    $file = $up['path'] . '/rt-designed-' . $mid . '.png';
+    $gd   = imagecreatetruecolor(800, 450);
+    imagefill($gd, 0, 0, (int) imagecolorallocate($gd, 200, 120, 30));
+    imagepng($gd, $file);
+    imagedestroy($gd);
+    $att = wp_insert_attachment(['import_id' => $mid, 'post_mime_type' => 'image/png', 'post_title' => 'rt designed ' . $mid, 'post_content' => '', 'post_status' => 'inherit'], $file, 0, true);
+    if (is_wp_error($att) || (int) $att !== $mid) {
+        rt_broken('attachment ' . $mid . ' cannot be created with that id: ' . (is_wp_error($att) ? $att->get_error_message() : 'got id ' . (int) $att));
+    }
+    wp_update_attachment_metadata($mid, wp_generate_attachment_metadata($mid, $file));
+    update_post_meta($mid, '_wp_attachment_image_alt', (string) $alt);
+}
 wp_set_current_user($principal);
 
 $rtCases     = 0;
@@ -3172,6 +3623,11 @@ $rtAgent = rt_agent_phase(
 $rtChecks += $rtAgent['checks'];
 $rtFailed += $rtAgent['failed'];
 
+// The agent's create path for designed pages, on the same site.
+$rtDesigned = rt_designed_phase($rtArgs['layout'], $rtArgs['stored'], $principal, in_array('designed_no_cases', $rtPlants['all'] ?? [], true));
+$rtChecks  += $rtDesigned['checks'];
+$rtFailed  += $rtDesigned['failed'];
+
 // The agent's edit path and the full restore, on the same site.
 $rtEdit    = rt_edit_phase($rtArgs['layout'], $rtArgs['stored'], $principal, $rtPlants, in_array('edit_no_cases', $rtPlants['all'] ?? [], true));
 $rtChecks += $rtEdit['checks'];
@@ -3210,6 +3666,15 @@ foreach (array_diff(RT_AGENT_SCENARIOS, $rtAgent['scenarios']) as $missing) {
     ++$rtFailed;
     rt_out('FAIL the agent path did not run the refusal scenario ' . $missing);
 }
+// So must the designed path: a page through it, and on a containers site the key check and the heading colours it holds the pages to.
+if ($rtDesigned['cases'] < 1) {
+    ++$rtFailed;
+    rt_out('FAIL the designed path ran no case');
+}
+if ($rtArgs['layout'] === 'containers' && ($rtDesigned['keys'] < 1 || $rtDesigned['css'] < 1)) {
+    ++$rtFailed;
+    rt_out(sprintf('FAIL the designed pages were held to %d settings key(s) and %d heading colour(s)', $rtDesigned['keys'], $rtDesigned['css']));
+}
 // So must the edit path: a case, every operation, and the full restore.
 if ($rtEdit['cases'] < 1) {
     ++$rtFailed;
@@ -3229,7 +3694,7 @@ if ($rtProbes['probes'] < 1) {
     rt_out('FAIL the probe phase ran no probe');
 }
 rt_out(sprintf(
-    'SUMMARY elementor=%s layout=%s cases=%d checks=%d texts=%d alts=%d agent=%d refused=%d edit=%d scenarios=%d probes=%d probes_failed=%d failed=%d',
+    'SUMMARY elementor=%s layout=%s cases=%d checks=%d texts=%d alts=%d agent=%d refused=%d designed=%d edit=%d scenarios=%d probes=%d probes_failed=%d failed=%d',
     ELEMENTOR_VERSION,
     $rtArgs['layout'],
     $rtCases,
@@ -3238,6 +3703,7 @@ rt_out(sprintf(
     $rtAltsSeen,
     $rtAgent['cases'],
     count($rtAgent['scenarios']),
+    $rtDesigned['cases'],
     $rtEdit['cases'],
     count($rtEdit['scenarios']),
     $rtProbes['probes'],
