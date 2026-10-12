@@ -6,7 +6,9 @@
 # download that does not match its sha256 (and on a cached file that has been
 # tampered with), when the Playground CLI fetches a WordPress of its own, on a
 # boot that never answers, on a run that prints no verdict, a verdict without
-# cases, a verdict its exit status contradicts, or a crash; and, against a real
+# cases, a verdict that ran no render probe or does not say how many were red, an
+# OK that counts a red probe, a verdict its exit status contradicts, or a crash
+# (and that a red probe is a defect, exit 1, never a missing verdict); and, against a real
 # WordPress under the Playground CLI, on a golden fixture with no cases, on a
 # mounted zip that is not the pinned file, and on each planted defect: an
 # unregistered widget type (which Elementor drops without saying so), a mapper
@@ -150,7 +152,7 @@ fi
 for l in "$HOME"/.wordpress-playground/*; do
   [ -L "$l" ] && echo "cache-link=$(basename "$l") -> $(readlink "$l")" >>"$out"
 done
-tail_ok="cases=3 checks=9 texts=2 alts=1 agent=2 refused=3"
+tail_ok="cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 probes=4 probes_failed=0"
 good="rt: SUMMARY elementor=$ver layout=$layout $tail_ok failed=0"
 case "${FAKE_MODE:-ok}" in
   ok)
@@ -162,9 +164,15 @@ case "${FAKE_MODE:-ok}" in
     fi
     echo "$good"; echo "rt: RESULT OK"; exit 0 ;;
   silent) exit 0 ;;
-  zero) echo "rt: SUMMARY elementor=$ver layout=$layout cases=0 checks=0 texts=0 alts=0 agent=2 refused=3 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
-  zeroagent) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=0 refused=3 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
-  norefusal) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=0 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
+  zero) echo "rt: SUMMARY elementor=$ver layout=$layout cases=0 checks=0 texts=0 alts=0 agent=2 refused=3 probes=4 probes_failed=0 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
+  zeroagent) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=0 refused=3 probes=4 probes_failed=0 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
+  norefusal) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=0 probes=4 probes_failed=0 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
+  # The probe verdict: the count of probes that ran, and how many of them were red.
+  noprobes) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
+  zeroprobes) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 probes=0 probes_failed=0 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
+  noprobetally) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 probes=4 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
+  probesredok) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 probes=4 probes_failed=1 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
+  probefail) echo "rt: FAIL [$ver $layout probe-smoke-heading-colour] css: no rule for element abc1234 declares color:#123456"; echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 probes=4 probes_failed=1 failed=1"; echo "rt: RESULT FAIL"; exit 1 ;;
   wronglayout) if [ "$layout" = containers ]; then other=sections; else other=containers; fi; echo "rt: SUMMARY elementor=$ver layout=$other $tail_ok failed=0"; echo "rt: RESULT OK"; exit 0 ;;
   nolayout) echo "rt: SUMMARY elementor=$ver $tail_ok failed=0"; echo "rt: RESULT OK"; exit 0 ;;
   oldsummary) echo "rt: SUMMARY elementor=$ver cases=3 checks=9 texts=2 alts=1 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
@@ -186,6 +194,7 @@ offline=(RT_ALLOW_FILE_URLS=1 "RT_PINS_FILE=$tmp/pins-good.txt" "RT_BLUEPRINT=$t
 expect "an honest run passes" 0 "${offline[@]}" "RT_CACHE=$tmp/c1" "FAKE_ARGS_FILE=$tmp/args1"
 said "a green run says which versions and layouts ran" "4 boot(s), 2 version(s) x 2 layout(s)"
 said "a green run says every version passed" "every version passed"
+said "a green run carries the probe tally of each boot" "probes=4 probes_failed=0"
 args="$(cat "$tmp/args1" 2>/dev/null || true)"
 case "$args" in *"layout=sections"*) ok "the layout of the boot is passed to the harness" ;; *) bad "the layout is not passed to the harness: $args" ;; esac
 # Each layout boots a site whose container experiment was set in the blueprint before it started.
@@ -331,7 +340,7 @@ expect "a timeout that is not a number is red" 2 "${offline[@]}" "RT_CACHE=$tmp/
 said "  and it says what is wrong" "RT_TIMEOUT must be"
 
 # --- must go red: a run that gives no usable verdict ------------------------------------------
-for mode in silent zero zeroagent norefusal wronglayout nolayout oldsummary nosummary exit1ok okfail crash; do
+for mode in silent zero zeroagent norefusal noprobes zeroprobes noprobetally probesredok wronglayout nolayout oldsummary nosummary exit1ok okfail crash; do
   expect "stand-in mode '$mode' gives no usable verdict and is red" 2 "${offline[@]}" "RT_CACHE=$tmp/c7" RT_VERSIONS=4.3.4 RT_LAYOUTS=containers "FAKE_MODE=$mode"
   said "  and it says there was no usable verdict ($mode)" "gave no usable verdict"
 done
@@ -341,6 +350,20 @@ expect "a verdict that ran no agent case is red even though it says OK" 2 "${off
 said "  and it shows the agent count it saw" "agent='0'"
 expect "a verdict that ran no refusal scenario is red even though it says OK" 2 "${offline[@]}" "RT_CACHE=$tmp/c7" RT_VERSIONS=4.3.4 RT_LAYOUTS=containers FAKE_MODE=norefusal
 said "  and it shows the refusal count it saw" "refused='0'"
+# The probe verdict. A boot whose harness ran no render probe looked at nothing the designed pages rely on, and a boot
+# whose summary counts a red probe cannot be an OK, whatever the harness's own result line says.
+expect "probe_verdict_required: a verdict with no probe count is red even though it says OK" 2 "${offline[@]}" "RT_CACHE=$tmp/c7" RT_VERSIONS=4.3.4 RT_LAYOUTS=containers FAKE_MODE=noprobes
+said "  and it shows the probe count it saw" "probes=''"
+expect "probe_verdict_required: a verdict that ran zero probes is red even though it says OK" 2 "${offline[@]}" "RT_CACHE=$tmp/c7" RT_VERSIONS=4.3.4 RT_LAYOUTS=containers FAKE_MODE=zeroprobes
+said "  and it shows the probe count it saw" "probes='0'"
+expect "probe_verdict_required: a verdict that does not say how many probes were red is red even though it says OK" 2 "${offline[@]}" "RT_CACHE=$tmp/c7" RT_VERSIONS=4.3.4 RT_LAYOUTS=containers FAKE_MODE=noprobetally
+said "  and it shows the tally it saw" "probes_failed=''"
+expect "probe_red_is_defect: a verdict that counts a red probe and says OK is red" 2 "${offline[@]}" "RT_CACHE=$tmp/c7" RT_VERSIONS=4.3.4 RT_LAYOUTS=containers FAKE_MODE=probesredok
+said "  and it shows the tally it saw" "probes_failed='1'"
+expect "probe_red_is_defect: a red probe is a defect found (exit 1), not a broken run" 1 "${offline[@]}" "RT_CACHE=$tmp/c7" RT_VERSIONS=4.3.4 RT_LAYOUTS=containers FAKE_MODE=probefail
+said "  and it names the probe" "probe-smoke-heading-colour"
+said "  and it says the version failed" "Elementor 4.3.4 (containers) FAILED"
+not_said "  and it is not called a missing verdict" "gave no usable verdict"
 expect "a verdict for the other layout is red even though it says OK" 2 "${offline[@]}" "RT_CACHE=$tmp/c7" RT_VERSIONS=4.3.4 RT_LAYOUTS=containers FAKE_MODE=wronglayout
 said "  and it says the layout did not match" "layout ok=0"
 expect "a harness that does not say which layout it ran is red" 2 "${offline[@]}" "RT_CACHE=$tmp/c7" RT_VERSIONS=4.3.4 RT_LAYOUTS=containers FAKE_MODE=nolayout
