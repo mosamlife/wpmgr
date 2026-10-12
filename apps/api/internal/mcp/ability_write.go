@@ -736,7 +736,8 @@ type abilityRequestFacts struct {
 
 // buildAbilityRequestFacts computes the card facts and presented_digest over
 // them, the nonce and the card copy version (engine v4 §4.1). A page with
-// images stores its images' facts as card_facts; an outline beyond heading,
+// images stores its images' facts as card_facts, and a designed page its
+// design and the page frame it is built in; an outline beyond heading,
 // paragraph and list is card copy version 2.
 func buildAbilityRequestFacts(auth AuthorizedRequest, row sqlc.Site, host string, e *sqlc.AbilityCatalogue, entrySum string, input []byte, facts pageCreateFacts, pc checkedPrecheck, now time.Time) (abilityRequestFacts, error) {
 	f := abilityRequestFacts{
@@ -752,7 +753,7 @@ func buildAbilityRequestFacts(auth AuthorizedRequest, row sqlc.Site, host string
 	if facts.usesLayout {
 		f.copyVersion = AbilityCardCopyVersionLayout
 	}
-	card, err := pageCardFactsJSON(pc.media, pc.builder)
+	card, err := pageCardFactsJSON(pc.media, pc.builder, facts.design, facts.pageFrame)
 	if err != nil {
 		return abilityRequestFacts{}, err
 	}

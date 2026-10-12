@@ -1107,10 +1107,18 @@ func pageContentImagesMatch(content string, media []pageMediaFact) bool {
 // page builder that builds the page. Every image string is the site's,
 // cleaned and capped; the base fingerprint binds the raw facts. A request
 // with images and no builder stores exactly {kind, media}.
+//
+// A designed page's card also holds its design, every field checked and its
+// colours upper case, and its page frame as the page is built in it: the
+// input's page_frame, else the default the control plane applied. The
+// presented digest covers these bytes, so approving the card approves that
+// design in that frame. A version 2 page's card holds neither member.
 type pageCardFacts struct {
-	Kind    string           `json:"kind"`
-	Media   []PageCardMedia  `json:"media,omitempty"`
-	Builder *PageCardBuilder `json:"builder,omitempty"`
+	Kind      string           `json:"kind"`
+	Media     []PageCardMedia  `json:"media,omitempty"`
+	Builder   *PageCardBuilder `json:"builder,omitempty"`
+	Design    *pageDesign      `json:"design,omitempty"`
+	PageFrame string           `json:"page_frame,omitempty"`
 }
 
 // PageCardBuilder is the page builder of a page-create request's card, as
@@ -1138,12 +1146,15 @@ type PageCardMedia struct {
 const pageCardFactsKind = "page_create"
 
 // pageCardFactsJSON is the stored card_facts for a page-create request, or
-// nil when the outline has no image and no page builder builds the page.
-func pageCardFactsJSON(media []pageMediaFact, builder *PageCardBuilder) ([]byte, error) {
-	if len(media) == 0 && builder == nil {
+// nil when the outline has no image, no page builder builds the page and it
+// is not a designed page. design and frame are a designed page's checked
+// design and its page frame (pageCreateFacts.design and .pageFrame), nil and
+// "" for a version 2 page.
+func pageCardFactsJSON(media []pageMediaFact, builder *PageCardBuilder, design *pageDesign, frame string) ([]byte, error) {
+	if len(media) == 0 && builder == nil && design == nil && frame == "" {
 		return nil, nil
 	}
-	card := pageCardFacts{Kind: pageCardFactsKind, Builder: builder}
+	card := pageCardFacts{Kind: pageCardFactsKind, Builder: builder, Design: design, PageFrame: frame}
 	for _, m := range media {
 		card.Media = append(card.Media, PageCardMedia{
 			ID: m.ID, Filename: humantext.CapRunes(humantext.Clean(m.Filename), pageCreateMaxFilenameChars),
@@ -1198,16 +1209,20 @@ func ReadPageCardFacts(stored []byte) ([]PageCardMedia, bool) {
 }
 
 // readPageCardTop reads a stored page-create card's members: kind is
-// page_create, media and builder are the only others, and a builder member,
-// when there is one, is a complete one. ok is false for anything else, so a
-// card with a damaged builder shows neither its images nor its builder.
+// page_create, media, builder, design and page_frame are the only others, a
+// builder member, when there is one, is a complete one, and a designed page's
+// members are as readPageCardDesign reads them. ok is false for anything
+// else, so a card with a damaged builder or design shows neither its images
+// nor its builder.
 func readPageCardTop(stored []byte) (map[string]json.RawMessage, bool) {
 	top, ok := jsonObjectOf(stored)
 	if !ok {
 		return nil, false
 	}
 	for k := range top {
-		if k != "kind" && k != "media" && k != "builder" {
+		switch k {
+		case "kind", "media", "builder", "design", "page_frame":
+		default:
 			return nil, false
 		}
 	}
@@ -1219,7 +1234,38 @@ func readPageCardTop(stored []byte) (map[string]json.RawMessage, bool) {
 			return nil, false
 		}
 	}
+	if _, _, ok := readPageCardDesign(top); !ok {
+		return nil, false
+	}
 	return top, true
+}
+
+// readPageCardDesign reads a designed page's design and page frame from a
+// stored card's members. A card holds both or neither, and only with a page
+// builder; the design must pass every check of the input's design, and the
+// frame must be one of pageFrames. design is nil for a version 2 page's card,
+// and ok is false for anything else.
+func readPageCardDesign(top map[string]json.RawMessage) (*pageDesign, string, bool) {
+	rawDesign, hasDesign := top["design"]
+	rawFrame, hasFrame := top["page_frame"]
+	if !hasDesign && !hasFrame {
+		return nil, "", true
+	}
+	if !hasDesign || !hasFrame {
+		return nil, "", false
+	}
+	if _, has := top["builder"]; !has {
+		return nil, "", false
+	}
+	design, problem := validatePageDesign(rawDesign)
+	if problem != nil {
+		return nil, "", false
+	}
+	frame, ok := jsonStringOf(rawFrame)
+	if !ok || !slices.Contains(pageFrames, frame) {
+		return nil, "", false
+	}
+	return &design, frame, true
 }
 
 // ReadPageCardBuilder reads the page builder of a page-create request's
