@@ -411,7 +411,7 @@ final class ElementorPatternCards
     {
         $value = is_array($item) ? ($item[$field] ?? null) : null;
         if (!is_string($value) || $value === '') {
-            throw new \InvalidArgumentException('a plan has its ' . $field . ' as text that is not empty');
+            throw new \InvalidArgumentException('a plan has its name, price, period, button text and button link as text that is not empty');
         }
 
         return $value;
