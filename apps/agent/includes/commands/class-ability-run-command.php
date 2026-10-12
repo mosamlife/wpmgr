@@ -17,6 +17,9 @@ use WPMgr\Agent\Abilities\Builders\BuilderPageStructure;
 use WPMgr\Agent\Abilities\Builders\BuilderRegistry;
 use WPMgr\Agent\Abilities\Builders\DraftEligibility;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
+use WPMgr\Agent\Abilities\Builders\ElementorSectionCompiler;
+use WPMgr\Agent\Abilities\Builders\OutlineV3Schema;
+use WPMgr\Agent\Abilities\Builders\Refusal;
 use WPMgr\Agent\Abilities\OwnAbilities;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
 use WPMgr\Agent\Abilities\RestCall;
@@ -1445,7 +1448,8 @@ final class AbilityRunCommand implements CommandInterface
 
         $checked = PageCreateBuilder::validate($input);
         if (!isset($checked['spec'])) {
-            return $this->fail((string) ($checked['code'] ?? 'bad_input'), (string) ($checked['detail'] ?? 'invalid input'));
+            // A refusal of a designed page carries its failures beside the code and the detail.
+            return $this->fail((string) ($checked['code'] ?? 'bad_input'), (string) ($checked['detail'] ?? 'invalid input'), false, array_diff_key($checked, ['code' => 1, 'detail' => 1, 'spec' => 1]));
         }
         $spec     = $checked['spec'];
         $inputSha = hash('sha256', $inputText);
@@ -1565,6 +1569,14 @@ final class AbilityRunCommand implements CommandInterface
      */
     private function builderBuild(array $spec, BuilderAdapter $adapter, string $requestId): array
     {
+        // A section background that is not an image is named as that, before the
+        // images are resolved: the resolution would only say it is not available.
+        if (($spec['outline_version'] ?? null) === OutlineV3Schema::VERSION) {
+            $background = ElementorSectionCompiler::backgroundRefusal($spec['outline'] ?? null, fn (int $id): ?string => $this->attachmentMime($id));
+            if ($background !== null) {
+                return ['refusal' => Refusal::command($background)];
+            }
+        }
         $resolved = $this->pageCreateMedia(PageCreateBuilder::mediaIds($spec));
         if (!isset($resolved['facts'])) {
             return ['refusal' => $resolved['refusal'] ?? $this->fail('image_not_available', 'an image could not be resolved')];
@@ -1702,6 +1714,24 @@ final class AbilityRunCommand implements CommandInterface
             'base_fingerprint' => PageCreateBuilder::baseFingerprint($spec['post_type'], $facts),
             'media'            => $facts,
         ];
+    }
+
+    /**
+     * The type of an attachment the principal may read; null for an id that
+     * names no such attachment.
+     *
+     * @param int $id Attachment id.
+     * @return string|null
+     */
+    private function attachmentMime(int $id): ?string
+    {
+        $post = get_post($id);
+        if (!is_object($post) || (string) $post->post_type !== 'attachment' || !current_user_can('read_post', $id)) {
+            return null;
+        }
+        $mime = get_post_mime_type($id);
+
+        return is_string($mime) && $mime !== '' ? $mime : null;
     }
 
     /**

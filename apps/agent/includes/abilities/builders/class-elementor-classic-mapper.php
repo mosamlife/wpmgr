@@ -739,6 +739,9 @@ final class ElementorClassicMapper
      */
     private function outline(array $outline, string $listPath = 'outline'): ?array
     {
+        if ($this->design !== null) {
+            return $this->designedPage($outline, $listPath);
+        }
         $tree  = [];
         $run   = [];
         $start = '';
@@ -778,6 +781,145 @@ final class ElementorClassicMapper
         }
 
         return $tree;
+    }
+
+    /**
+     * The sections of a designed page, each as its container.
+     *
+     * @param list<mixed> $outline  Outline version 3: sections.
+     * @param string      $listPath Path of the outline; a section's path is this plus "[i]".
+     * @return list<array<string, mixed>>|null
+     */
+    private function designedPage(array $outline, string $listPath): ?array
+    {
+        if (!$this->designAllowed($listPath, 'a designed page')) {
+            return null;
+        }
+        $tree = [];
+        foreach ($outline as $i => $section) {
+            $path = $listPath . '[' . $i . ']';
+            if (!is_array($section) || ($section['type'] ?? null) !== 'section') {
+                return $this->fail('layout_invalid', $path . ': every top-level item of a designed page is a section');
+            }
+            $built = $this->designedSection($section, $path);
+            if ($built === null) {
+                return null;
+            }
+            $tree[] = $built;
+        }
+
+        return $tree;
+    }
+
+    /**
+     * One section as its container: its leaves as widgets in the design's
+     * look and the section's tone and alignment, its groups and columns as
+     * the design's containers, and its patterns as the pattern compiler's.
+     * A hero and a call to action hold blocks, which are built as the
+     * section's leaves are, in the alignment the pattern's variant asks for.
+     *
+     * @param array<mixed> $section A section of the validated outline.
+     * @param string       $path    Its outline path.
+     * @return array<string, mixed>|null
+     */
+    private function designedSection(array $section, string $path): ?array
+    {
+        $design   = $this->design;
+        $children = $section['children'] ?? null;
+        if ($design === null || !is_array($children) || $children === [] || !ArrayShape::isList($children)) {
+            return $this->fail('bad_input', $path . '.children: not a list of nodes');
+        }
+        $align = $section['align'] ?? 'start';
+        if (!is_string($align) || !in_array($align, OutlineV3Schema::ALIGNS, true)) {
+            return $this->fail('bad_input', $path . '.align: a section alignment is start or center');
+        }
+        try {
+            $tone = $design->tone($section);
+        } catch (\InvalidArgumentException $e) {
+            return $this->fail('bad_input', $path . '.tone: a section tone is ground, surface, inverse or accent');
+        }
+        $this->look     = new ElementorLeafStyle($design->tokens());
+        $this->tone     = $tone;
+        $this->align    = $align;
+        $this->leadNext = false;
+        $patterns       = new ElementorPatternCompiler($design->tokens(), $design, $this->media);
+
+        $elements = [];
+        $run      = [];
+        foreach ($children as $j => $child) {
+            $at   = $path . '.children[' . $j . ']';
+            $type = is_array($child) ? ($child['type'] ?? null) : null;
+            if ($type !== 'group' && $type !== 'columns' && $type !== 'pattern') {
+                $run[] = [$at, $child];
+                continue;
+            }
+            if ($run !== []) {
+                $widgets = $this->leafList($run);
+                if ($widgets === null) {
+                    return null;
+                }
+                array_push($elements, ...$widgets);
+                $run = [];
+            }
+            $this->leadNext = false;
+            $built          = match ($type) {
+                'group'   => $this->group($child, $at),
+                'columns' => $this->columns($child, $at, false),
+                default   => $this->designedPattern($patterns, $child, $at, $tone),
+            };
+            if ($built === null) {
+                return null;
+            }
+            $elements[] = $built;
+        }
+        if ($run !== []) {
+            $widgets = $this->leafList($run);
+            if ($widgets === null) {
+                return null;
+            }
+            array_push($elements, ...$widgets);
+        }
+
+        try {
+            return $design->container($this->ids->next($path), $section, $elements);
+        } catch (\InvalidArgumentException $e) {
+            return $this->fail('bad_input', $path . ': the section could not be built');
+        }
+    }
+
+    /**
+     * One pattern as its container. The blocks of a hero or a call to action
+     * are built first, as a section's leaves are, in the alignment of the
+     * pattern's variant.
+     *
+     * @param ElementorPatternCompiler $patterns The page's pattern compiler.
+     * @param array<mixed>             $pattern  A pattern node of the validated outline.
+     * @param string                   $path     Its outline path.
+     * @param string                   $tone     The tone of the section it stands in.
+     * @return array<string, mixed>|null
+     */
+    private function designedPattern(ElementorPatternCompiler $patterns, array $pattern, string $path, string $tone): ?array
+    {
+        $name   = $pattern['pattern'] ?? null;
+        $blocks = [];
+        if ($name === 'hero' || $name === 'cta') {
+            $variant = $pattern['variant'] ?? null;
+            $align   = is_string($name) && is_string($variant) ? ElementorPatternCompiler::align($name, $variant) : null;
+            $leaves  = $pattern['children'] ?? null;
+            if ($align === null || $this->look === null || !is_array($leaves)) {
+                return $this->fail('bad_input', $path . ': a ' . (string) $name . ' holds blocks and has a variant of its own');
+            }
+            $r = self::mapDesignedLeaves($leaves, $this->ids, $this->media, $this->look, $tone, $align, $path . '.children');
+            if (!isset($r['tree'])) {
+                return $this->fail((string) ($r['code'] ?? 'bad_input'), (string) ($r['detail'] ?? $path . '.children: could not be mapped'));
+            }
+            $blocks = $r['tree'];
+        }
+        try {
+            return $patterns->compile($this->ids, $path, $pattern, $tone, $blocks);
+        } catch (\InvalidArgumentException $e) {
+            return $this->fail('bad_input', $path . ': the pattern could not be built');
+        }
     }
 
     /**

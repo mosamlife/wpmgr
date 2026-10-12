@@ -231,6 +231,13 @@ final class BuilderPageCreate
             }
             $byId[$fact['id']] = $fact;
         }
+        // A logo's alt text is the one saved with its image in the library.
+        if (($spec['outline_version'] ?? null) === OutlineV3Schema::VERSION) {
+            $logoAlt = ElementorPatternCompiler::logoAltRefusal($spec['outline'] ?? null, $byId);
+            if ($logoAlt !== null) {
+                return self::refusedEnvelope($logoAlt);
+            }
+        }
 
         try {
             $built = $a->buildCreate($spec, new IdSeed($requestId), $byId);

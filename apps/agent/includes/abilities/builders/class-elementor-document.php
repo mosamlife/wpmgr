@@ -1011,9 +1011,13 @@ final class ElementorDocument
      *                                page-settings row after the save; null
      *                                when the insert wrote none, and then the
      *                                post must have no such row.
+     * @param array<string, array<string, string>>|null $allowed The allowlist the
+     *                                tree is held to; null for a plain page's
+     *                                (ElementorClassicMapper::ALLOWED_KEYS), the
+     *                                designed one for a designed page's.
      * @return string|null
      */
-    public function verifyCreated(int $postId, array $tree, int $principal, string $requestId, string $postType, ?string $template = null, ?array $pageSettings = null): ?string
+    public function verifyCreated(int $postId, array $tree, int $principal, string $requestId, string $postType, ?string $template = null, ?array $pageSettings = null, ?array $allowed = null): ?string
     {
         if ($postId < 1) {
             return 'post_missing';
@@ -1069,7 +1073,7 @@ final class ElementorDocument
         if (!$this->storedAsBuilt($decoded, $tree)) {
             return 'tree_differs';
         }
-        if (LeafPolicy::checkTree($tree, ElementorClassicMapper::ALLOWED_KEYS, ElementorClassicMapper::LEAF_RULES) !== null) {
+        if (LeafPolicy::checkTree($tree, $allowed ?? ElementorClassicMapper::ALLOWED_KEYS, ElementorClassicMapper::LEAF_RULES) !== null) {
             return 'leaf_policy';
         }
 

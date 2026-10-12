@@ -180,8 +180,20 @@ final class ElementorAdapter implements BuilderAdapter
         if (!is_string($postType) || !in_array($postType, self::POST_TYPES, true)) {
             return ['code' => 'bad_input', 'detail' => 'post_type: not a type an Elementor page is created as'];
         }
-        $containers = ($this->facts()['containers'] ?? null) === true;
-        $mapped     = ElementorClassicMapper::map($spec, $ids, $mediaById, $containers);
+        $facts      = $this->facts();
+        $containers = ($facts['containers'] ?? null) === true;
+        $design     = null;
+        if (($spec['outline_version'] ?? null) === OutlineV3Schema::VERSION) {
+            // A designed page: the design's tokens, and the breakpoints the site has active.
+            try {
+                $tokens = DesignTokens::fromDesign(is_array($spec['design'] ?? null) ? $spec['design'] : []);
+            } catch (\InvalidArgumentException $e) {
+                return ['code' => 'bad_input', 'detail' => 'design: the design could not be read'];
+            }
+            $active = $facts['active_breakpoints'] ?? null;
+            $design = new ElementorSectionCompiler($tokens, is_array($active) ? array_values($active) : null, $mediaById);
+        }
+        $mapped = ElementorClassicMapper::map($spec, $ids, $mediaById, $containers, $design);
         if (!isset($mapped['tree'])) {
             return ['code' => $mapped['code'] ?? 'bad_input', 'detail' => $mapped['detail'] ?? 'outline: could not be mapped'];
         }
@@ -275,7 +287,9 @@ final class ElementorAdapter implements BuilderAdapter
      * {@inheritDoc}
      *
      * The post type is the one the document's type stands for, and the page
-     * template the one the document's meta carries, if any.
+     * template the one the document's meta carries, if any. Only a designed
+     * page carries one, and its tree is held to the designed allowlist for
+     * the breakpoints this site has active; a plain page's to ALLOWED_KEYS.
      */
     public function verifyCreated(int $postId, NativeDocument $doc, int $principal, string $requestId): ?string
     {
@@ -288,7 +302,10 @@ final class ElementorAdapter implements BuilderAdapter
         $pageTemplate = $doc->meta[ElementorDocument::KEY_PAGE_TEMPLATE] ?? null;
         $pageSettings = $doc->meta[ElementorDocument::KEY_PAGE_SETTINGS] ?? null;
 
-        return $this->document->verifyCreated($postId, $doc->tree, $principal, $requestId, $postType, is_string($pageTemplate) ? $pageTemplate : null, is_array($pageSettings) ? $pageSettings : null);
+        $active  = $this->facts()['active_breakpoints'] ?? null;
+        $allowed = is_string($pageTemplate) ? LeafPolicy::forBreakpoints(ElementorClassicMapper::designedKeys(), is_array($active) ? array_values($active) : []) : null;
+
+        return $this->document->verifyCreated($postId, $doc->tree, $principal, $requestId, $postType, is_string($pageTemplate) ? $pageTemplate : null, is_array($pageSettings) ? $pageSettings : null, $allowed);
     }
 
     /**

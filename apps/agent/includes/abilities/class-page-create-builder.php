@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Abilities;
 
 use WPMgr\Agent\Abilities\Builders\BuilderRegistry;
+use WPMgr\Agent\Abilities\Builders\DesignInput;
+use WPMgr\Agent\Abilities\Builders\OutlineV3;
 use WPMgr\Agent\Abilities\Builders\OutlineV3Schema;
 
 // Direct-file-access guard: keep above the docblock.
@@ -22,6 +24,11 @@ if (!defined('ABSPATH')) {
  *   outline           1..200 items; an item is a block, a group or columns
  *   elementor_format  optional, only with "builder:elementor":
  *                     "site_default" (the default) | "classic" | "atomic"
+ *   outline_version   optional, only with "builder:elementor" and elementor_format
+ *                     "classic": 3, a designed page; absent is the outline above
+ *   design            required with outline_version 3, and only then (DesignInput)
+ *   page_frame        optional, only with outline_version 3: "theme" | "full_width"
+ *                     | "canvas"
  *
  * A page-builder editor ("builder:<id>") passes this grammar on its shape;
  * which builders exist, are compiled in and are enabled is decided by the
@@ -208,12 +215,21 @@ final class PageCreateBuilder
      * editor). Nothing is rewritten.
      *
      * @param object $input Decoded input.
-     * @return array{spec?:array{post_type:string,editor:string,title:string,outline:list<array<string,mixed>>,elementor_format?:string},code?:string,detail?:string}
+     * An input with outline_version 3 is a designed page: its outline is
+     * judged by OutlineV3 and its design by DesignInput, and a refusal of
+     * either carries its failures. The spec of such a page also holds
+     * outline_version, design (arrays) and, when sent, page_frame.
+     *
+     * @return array{spec?:array{post_type:string,editor:string,title:string,outline:list<array<string,mixed>>,elementor_format?:string,outline_version?:int,design?:array<string,mixed>,page_frame?:string},code?:string,detail?:string,failures?:list<array<string,mixed>>,pattern?:string,item_schema?:array<string,mixed>}
      */
     public static function validate(object $input): array
     {
         $vars    = get_object_vars($input);
         $allowed = ['post_type', 'editor', 'title', 'outline', 'elementor_format'];
+        // The members of a designed page are admitted by the version that names them.
+        if (array_key_exists('outline_version', $vars)) {
+            $allowed = array_merge($allowed, ['outline_version', 'design', 'page_frame']);
+        }
         foreach (array_keys($vars) as $key) {
             if (!in_array((string) $key, $allowed, true)) {
                 return self::bad('bad_input', 'unknown input field');
@@ -238,6 +254,18 @@ final class PageCreateBuilder
                 return self::bad('bad_input', 'elementor_format must be site_default, classic or atomic');
             }
         }
+        $designed = array_key_exists('outline_version', $vars);
+        if ($designed) {
+            if ($vars['outline_version'] !== OutlineV3Schema::VERSION) {
+                return self::bad('bad_input', 'outline_version must be ' . OutlineV3Schema::VERSION . ' or left out');
+            }
+            if ($editor !== self::EDITOR_BUILDER_ELEMENTOR || $format !== 'classic') {
+                return self::bad('bad_input', 'outline_version ' . OutlineV3Schema::VERSION . ' is only for editor builder:elementor with elementor_format classic');
+            }
+            if (array_key_exists('page_frame', $vars) && (!is_string($vars['page_frame']) || !in_array($vars['page_frame'], OutlineV3Schema::PAGE_FRAMES, true))) {
+                return self::bad('bad_input', 'page_frame must be ' . implode(', ', OutlineV3Schema::PAGE_FRAMES));
+            }
+        }
         $title = $vars['title'] ?? null;
         if (!is_string($title)) {
             return self::bad('bad_input', 'title must be a string');
@@ -245,6 +273,9 @@ final class PageCreateBuilder
         $why = self::textProblem($title, self::MAX_TITLE_CHARS);
         if ($why !== null) {
             return self::bad('create_content_invalid', 'title: ' . $why);
+        }
+        if ($designed) {
+            return self::validateDesigned($vars, $type, $title);
         }
 
         $outline = $vars['outline'] ?? null;
@@ -277,6 +308,41 @@ final class PageCreateBuilder
         $spec = ['post_type' => $type, 'editor' => $editor, 'title' => $title, 'outline' => $nodes];
         if ($editor === self::EDITOR_BUILDER_ELEMENTOR) {
             $spec['elementor_format'] = $format ?? self::ELEMENTOR_FORMATS[0];
+        }
+
+        return ['spec' => $spec];
+    }
+
+    /**
+     * The rest of the input of a designed page, whose version, editor, format
+     * and frame have passed: its design and its outline.
+     *
+     * @param array<string,mixed> $vars  The input's members.
+     * @param string              $type  The post type.
+     * @param string              $title The page title.
+     * @return array<string,mixed> validate()'s answer.
+     */
+    private static function validateDesigned(array $vars, string $type, string $title): array
+    {
+        $design = DesignInput::check($vars['design'] ?? null);
+        if (!isset($design['design'])) {
+            return $design;
+        }
+        $outline = OutlineV3::validate($vars['outline'] ?? null, self::chars($title));
+        if (!isset($outline['outline'])) {
+            return $outline;
+        }
+        $spec = [
+            'post_type'        => $type,
+            'editor'           => self::EDITOR_BUILDER_ELEMENTOR,
+            'title'            => $title,
+            'outline'          => $outline['outline'],
+            'elementor_format' => 'classic',
+            'outline_version'  => OutlineV3Schema::VERSION,
+            'design'           => $design['design'],
+        ];
+        if (array_key_exists('page_frame', $vars)) {
+            $spec['page_frame'] = $vars['page_frame'];
         }
 
         return ['spec' => $spec];
@@ -1277,6 +1343,24 @@ final class PageCreateBuilder
                 case 'columns':
                     foreach ($node['columns'] as $children) {
                         self::collectIds($children, $ids);
+                    }
+                    break;
+                case 'section':
+                    $background = $node['background'] ?? null;
+                    if (is_array($background) && isset($background['attachment_id'])) {
+                        $ids[(int) $background['attachment_id']] = true;
+                    }
+                    self::collectIds($node['children'] ?? [], $ids);
+                    break;
+                case 'pattern':
+                    // A hero and a call to action hold blocks; logos and testimonials hold pictures.
+                    self::collectIds($node['children'] ?? [], $ids);
+                    foreach (['logos', 'testimonials'] as $items) {
+                        foreach ($node[$items] ?? [] as $item) {
+                            if (is_array($item) && isset($item['attachment_id'])) {
+                                $ids[(int) $item['attachment_id']] = true;
+                            }
+                        }
                     }
                     break;
             }

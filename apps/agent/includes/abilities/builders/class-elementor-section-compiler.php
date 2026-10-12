@@ -155,6 +155,16 @@ final class ElementorSectionCompiler
     }
 
     /**
+     * The tokens of the design this compiler writes from.
+     *
+     * @return DesignTokens
+     */
+    public function tokens(): DesignTokens
+    {
+        return $this->tokens;
+    }
+
+    /**
      * A section as a container around its children.
      *
      * @param string                     $id       The container's id, from IdSeed.
