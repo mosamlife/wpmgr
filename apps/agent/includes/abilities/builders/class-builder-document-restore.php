@@ -50,7 +50,9 @@ if (!defined('ABSPATH')) {
  * database handle is the SQLite database integration's driver takes it
  * without that read. The descriptor's
  * derived keys (caches the builder rebuilds from the page) are deleted, never
- * restored or guarded. After the commit the post's object caches are
+ * restored or guarded; the page template and the builder's page settings are
+ * never derived (DocumentDescriptor), so both come back byte for byte like
+ * any other row. After the commit the post's object caches are
  * dropped and the adapter's afterRestore() drops what the builder caches
  * outside these rows. Must not be called inside an open transaction: starting
  * one commits it.

@@ -22,8 +22,12 @@ namespace WPMgr\Agent\Tests\Builders;
 
 use Brain\Monkey;
 use Brain\Monkey\Functions;
+use WPMgr\Agent\Abilities\AbilityWriteScope;
 use WPMgr\Agent\Abilities\Builders\BuilderDocumentFingerprint;
+use WPMgr\Agent\Abilities\Builders\BuilderDocumentRestore;
+use WPMgr\Agent\Abilities\Builders\BuilderDocumentSnapshot;
 use WPMgr\Agent\Abilities\Builders\BuilderPageCreate;
+use WPMgr\Agent\Abilities\Builders\DocumentDescriptor;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
 use WPMgr\Agent\Abilities\Builders\ElementorDocument;
 use WPMgr\Agent\Abilities\Builders\ElementorStyleCache;
@@ -60,6 +64,9 @@ final class ElementorPageFrameTest extends TestCase
     private const TITLE = 'Our services & more';
 
     private const TEMPLATE = '_wp_page_template';
+
+    /** The request whose snapshot an undo test takes. */
+    private const UNDO_REQUEST = '7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
 
     /** The theme's list once Elementor has added its templates to it. */
     private const WITH_ELEMENTOR = [
@@ -101,6 +108,9 @@ final class ElementorPageFrameTest extends TestCase
 
     /** @var (\Closure(): void)|null Runs inside update_post_meta() after its write, as a listener on it would. */
     private ?\Closure $afterMetaWrite = null;
+
+    /** @var (\Closure(): void)|null Runs inside clean_post_cache() after a restore's commit, as a listener on it would. */
+    private ?\Closure $duringUndo = null;
 
     /** @var mixed */
     private $savedWpdb;
@@ -720,6 +730,197 @@ final class ElementorPageFrameTest extends TestCase
             $this->assertSame(['ok' => false, 'written' => null], self::outcomeOf($result), $name);
             $this->assertSame($code, $result['code'] ?? null, $name . ': ' . (string) ($result['detail'] ?? ''));
         }
+    }
+
+    /**
+     * Undo puts the page template and the page settings back byte for byte.
+     * A change that wrote both (the hidden title through setPageSetting(),
+     * the template as a frame change stores it) is undone, by a person's
+     * undo and by the automatic restore, to exactly each key's rows from
+     * before; a key the change added has no row again. A change that wrote
+     * neither leaves both rows as they are, meta ids included. No descriptor
+     * may list core's page template key or a key of the document as derived,
+     * since a restore deletes a derived key instead of putting it back.
+     */
+    public function testUndoRestoresTemplateAndPageSettingsBytes(): void
+    {
+        $this->undoWiring();
+        $settings = serialize(['background_color' => '#1F2937', 'custom_note' => "a\\b \"quoted\" caf\u{e9}"]);
+        foreach (['rows before' => [[$settings], 'elementor_header_footer'], 'no rows before' => [[], null]] as $name => [$rows, $template]) {
+            $this->storedUndoPage($rows, $template);
+            $before   = $this->frameRows();
+            $snapshot = $this->snapshotOf(self::NEW_ID);
+            $this->frameChange();
+            $this->assertNotSame($before[ElementorDocument::KEY_PAGE_SETTINGS], $this->frameRows()[ElementorDocument::KEY_PAGE_SETTINGS], $name . ': the change wrote the page settings');
+            $this->assertNotSame($before[self::TEMPLATE], $this->frameRows()[self::TEMPLATE], $name . ': the change wrote the template');
+            $changed = BuilderDocumentRestore::changes(self::NEW_ID, $snapshot, []);
+            $this->assertSame([ElementorDocument::KEY_PAGE_SETTINGS, self::TEMPLATE], array_column($changed['changed_keys'], 'key'), $name);
+
+            $adapter = new ElementorAdapter($this->api);
+            $this->assertNull(BuilderDocumentRestore::scoped(self::NEW_ID, $snapshot, $changed['changed_keys'], $changed['changed_fields'], $adapter->descriptor(), $adapter), $name);
+            $this->assertSame($before, $this->frameRows(), $name . ': each key holds exactly its rows from before the change');
+        }
+
+        // The automatic restore inside the call that wrote.
+        $this->storedUndoPage([$settings], 'elementor_header_footer');
+        $before   = $this->frameRows();
+        $adapter  = new ElementorAdapter($this->api);
+        $beforeFp = (string) BuilderDocumentFingerprint::ofPost(self::NEW_ID, $adapter->descriptor()->exactKeys);
+        $snapshot = $this->snapshotOf(self::NEW_ID);
+        $this->frameChange();
+        $this->assertNull(BuilderDocumentRestore::full(self::NEW_ID, $snapshot, $adapter->descriptor(), $adapter, $beforeFp));
+        $this->assertSame($before, $this->frameRows(), 'the automatic restore puts both keys back');
+
+        // A change that wrote neither key.
+        $this->storedUndoPage([$settings], 'elementor_header_footer');
+        $kept     = $this->frameRowsWithIds();
+        $snapshot = $this->snapshotOf(self::NEW_ID);
+        update_post_meta(self::NEW_ID, ElementorDocument::KEY_DATA, '[]');
+        $changed = BuilderDocumentRestore::changes(self::NEW_ID, $snapshot, []);
+        $this->assertSame([ElementorDocument::KEY_DATA], array_column($changed['changed_keys'], 'key'));
+        $adapter = new ElementorAdapter($this->api);
+        $this->assertNull(BuilderDocumentRestore::scoped(self::NEW_ID, $snapshot, $changed['changed_keys'], $changed['changed_fields'], $adapter->descriptor(), $adapter));
+        $this->assertSame($kept, $this->frameRowsWithIds(), 'a key the change did not write is neither deleted nor rewritten');
+
+        // No descriptor can make a restore delete either key.
+        $this->assertSame(['_elementor_css', '_elementor_element_cache', '_elementor_page_assets'], $adapter->descriptor()->derivedKeys, 'the adapter\'s caches stay derived');
+        foreach ([
+            'core\'s page template' => [ElementorDocument::DESCRIPTOR_KEYS, [], [self::TEMPLATE], []],
+            'the page settings'     => [ElementorDocument::DESCRIPTOR_KEYS, [], [ElementorDocument::KEY_PAGE_SETTINGS], []],
+            'a flag key'            => [[ElementorDocument::KEY_DATA], [], [ElementorDocument::KEY_EDIT_MODE], [ElementorDocument::KEY_EDIT_MODE]],
+            'a key under a prefix'  => [[], ['_elementor_'], ['_elementor_css'], []],
+        ] as $name => [$exact, $prefixes, $derived, $flags]) {
+            try {
+                new DocumentDescriptor($exact, $prefixes, $derived, $flags);
+                $this->fail($name . ': a descriptor that makes a restore delete a key it puts back was built');
+            } catch (\InvalidArgumentException $e) {
+                $this->assertStringContainsString('derived', $e->getMessage(), $name);
+            }
+        }
+    }
+
+    /**
+     * The undo's own writes stay inside the page's write scope, the one
+     * save() runs under: the restored rows and the page's own style-cache
+     * entry pass; another post's page settings, the kit's page settings or
+     * another post's cache entry written during the undo trip it.
+     */
+    public function testUndoWritesPassTheWriteScopeAndOthersTrip(): void
+    {
+        $this->undoWiring();
+        $cache  = ElementorStyleCache::PREFIX . 'widget';
+        $before = ['state' => true, 'children' => [self::OTHER => ['state' => true]]];
+        $own    = ['state' => true, 'children' => [self::OTHER => ['state' => true], self::NEW_ID => ['state' => true]]];
+        $other  = ['state' => true, 'children' => [self::OTHER => ['state' => false], self::NEW_ID => ['state' => true]]];
+        foreach ([
+            'own rows and own cache entry'   => [[], function () use ($cache, $before, $own): void {
+                $this->fire('updated_option', $cache, $before, $own);
+            }],
+            'another post\'s page settings' => [[AbilityWriteScope::V_OTHER_META], function (): void {
+                $this->fire('updated_post_meta', 601, self::OTHER, ElementorDocument::KEY_PAGE_SETTINGS, ['hide_title' => 'yes']);
+            }],
+            'the kit\'s page settings'      => [[AbilityWriteScope::V_OTHER_META], function (): void {
+                $this->fire('updated_post_meta', 2, self::KIT, ElementorDocument::KEY_PAGE_SETTINGS, ['system_colors' => []]);
+            }],
+            'another post\'s cache entry'   => [[AbilityWriteScope::V_OPTION], function () use ($cache, $before, $other): void {
+                $this->fire('updated_option', $cache, $before, $other);
+            }],
+        ] as $name => [$violations, $during]) {
+            $this->storedUndoPage([serialize(['background_color' => '#1F2937'])], 'elementor_header_footer');
+            $was      = $this->frameRows();
+            $snapshot = $this->snapshotOf(self::NEW_ID);
+            $this->frameChange();
+            $changed          = BuilderDocumentRestore::changes(self::NEW_ID, $snapshot, []);
+            $adapter          = new ElementorAdapter($this->api);
+            $scope            = new AbilityWriteScope(self::NEW_ID, (new ElementorDocument($this->api))->saveOptionPatterns(), ElementorDocument::saveOptionChecks());
+            $this->duringUndo = $during;
+            $problem          = $scope->run(static fn () => BuilderDocumentRestore::scoped(self::NEW_ID, $snapshot, $changed['changed_keys'], $changed['changed_fields'], $adapter->descriptor(), $adapter));
+            $this->duringUndo = null;
+            $outcome          = $scope->outcome();
+
+            $this->assertNull($problem, $name);
+            $this->assertSame($was, $this->frameRows(), $name . ': both keys are back');
+            $this->assertSame($violations === [], $outcome['clean'], $name . ': ' . implode(', ', $outcome['violations']));
+            $this->assertSame($violations, $outcome['violations'], $name);
+        }
+    }
+
+    /**
+     * The stubs an undo needs: snapshots stored as options, cache drops, and
+     * clean_post_cache() running duringUndo as a listener on it would.
+     */
+    private function undoWiring(): void
+    {
+        $this->coreMetaWrites();
+        Functions\when('add_option')->alias(fn ($name, $value = '', $unused = '', $autoload = null): bool => $this->wpdb->addOptionLikeCore((string) $name, $value, $unused, $autoload));
+        Functions\when('delete_option')->alias(fn ($name): bool => $this->wpdb->deleteOptionLikeCore((string) $name));
+        Functions\when('wp_cache_delete')->justReturn(true);
+        Functions\when('clean_post_cache')->alias(function (): void {
+            if ($this->duringUndo !== null) {
+                ($this->duringUndo)();
+            }
+        });
+    }
+
+    /**
+     * Start again with a stored Elementor page: a tree, $settings as its
+     * page-settings rows and, unless null, $template as its page template.
+     *
+     * @param list<string> $settings Stored page-settings rows.
+     */
+    private function storedUndoPage(array $settings, ?string $template): void
+    {
+        $this->storedPage($settings);
+        $this->wpdb->addMeta(++$this->metaId, self::NEW_ID, ElementorDocument::KEY_DATA, '[{"id":"a1b2c3d","elType":"container","settings":[],"elements":[]}]');
+        if ($template !== null) {
+            $this->wpdb->addMeta(++$this->metaId, self::NEW_ID, self::TEMPLATE, $template);
+        }
+    }
+
+    /** A change that writes both keys: the hidden title, then a canvas template. */
+    private function frameChange(): void
+    {
+        $result = $this->hideTitle();
+        $this->assertSame(['ok' => true, 'written' => true], self::outcomeOf($result), (string) ($result['detail'] ?? ''));
+        update_post_meta(self::NEW_ID, self::TEMPLATE, 'elementor_canvas');
+    }
+
+    /**
+     * The page's stored rows of the page settings and the page template.
+     *
+     * @return array<string, list<string|null>>
+     */
+    private function frameRows(): array
+    {
+        return [ElementorDocument::KEY_PAGE_SETTINGS => $this->stored(ElementorDocument::KEY_PAGE_SETTINGS), self::TEMPLATE => $this->stored(self::TEMPLATE)];
+    }
+
+    /**
+     * The page's stored rows of the page settings and the page template,
+     * meta ids included.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function frameRowsWithIds(): array
+    {
+        return array_values(array_filter($this->wpdb->metaRowsOf(self::NEW_ID), static fn (array $r): bool => in_array($r['meta_key'], [ElementorDocument::KEY_PAGE_SETTINGS, self::TEMPLATE], true)));
+    }
+
+    /**
+     * Takes, loads and decodes the post's snapshot, as page-edit and its
+     * undo do.
+     *
+     * @return array<string, mixed>
+     */
+    private function snapshotOf(int $postId): array
+    {
+        $taken = BuilderDocumentSnapshot::take($postId, self::UNDO_REQUEST);
+        $this->assertTrue($taken['ok'], (string) ($taken['code'] ?? ''));
+        $loaded  = BuilderDocumentSnapshot::load(self::UNDO_REQUEST);
+        $decoded = BuilderDocumentSnapshot::decode((string) ($loaded['json'] ?? ''), self::UNDO_REQUEST, $postId);
+        $this->assertIsArray($decoded);
+
+        return $decoded;
     }
 
     /**
