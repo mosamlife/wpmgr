@@ -284,6 +284,9 @@ type elementorBuild struct {
 	ids        *elementorIDs
 	urls       map[int64]string
 	containers bool
+	// sections supplies designed layout settings while leaves keep their
+	// ordinary look, as mapFragment's top and inner contexts do.
+	sections *designSections
 	// anyImage maps an image whose attachment id has no known address
 	// with an empty address: for comparing projections, which never show
 	// an image's address.
@@ -438,6 +441,9 @@ func (b *elementorBuild) group(n map[string]json.RawMessage, path string) (phpOb
 			elements = append(elements, widgets...)
 		}
 	}
+	if b.containers && b.sections != nil {
+		return b.sections.group(id, elements), true
+	}
 	return b.boxedColumn(id, columnID, elements), true
 }
 
@@ -497,6 +503,14 @@ func (b *elementorBuild) columns(n map[string]json.RawMessage, path string, nest
 			if widths != nil {
 				size = widths[k]
 			}
+			if b.sections != nil {
+				column, ok := b.sections.column(columnID, int(size), elements)
+				if !ok {
+					return nil, false
+				}
+				built = append(built, column)
+				continue
+			}
 			width := phpObject{{"unit", "%"}, {"size", strconv.FormatInt(size, 10)}, {"sizes", phpList{}}}
 			built = append(built, elementorLayout(columnID, "container", phpObject{
 				{"content_width", "full"}, {"flex_direction", "column"}, {"width", width},
@@ -510,6 +524,9 @@ func (b *elementorBuild) columns(n map[string]json.RawMessage, path string, nest
 		built = append(built, elementorLayout(columnID, "column", settings, elements, nested))
 	}
 	if b.containers {
+		if b.sections != nil {
+			return b.sections.row(id, built), true
+		}
 		width := "boxed"
 		if nested {
 			width = "full"

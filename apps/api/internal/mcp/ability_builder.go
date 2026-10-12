@@ -172,6 +172,10 @@ func elementorOutlineProblem(input []byte) *pageBuilderProblem {
 }
 
 func elementorNodeProblem(raw json.RawMessage, path string) *pageBuilderProblem {
+	return elementorNodeProblemWithDesign(raw, path, false)
+}
+
+func elementorNodeProblemWithDesign(raw json.RawMessage, path string, designed bool) *pageBuilderProblem {
 	n, ok := jsonObjectOf(raw)
 	if !ok {
 		return nil
@@ -197,14 +201,18 @@ func elementorNodeProblem(raw json.RawMessage, path string) *pageBuilderProblem 
 			}
 		}
 	case "buttons":
+		styles := elementorButtonStyles
+		if designed {
+			styles = designedButtonStyles
+		}
 		list, _ := jsonArrayOf(n["buttons"])
 		for j, rawButton := range list {
 			at := fmt.Sprintf("%s.buttons[%d]", path, j)
 			b, _ := jsonObjectOf(rawButton)
 			if raw, has := b["style"]; has {
-				if style, _ := jsonStringOf(raw); !stringIn(style, elementorButtonStyles) {
+				if style, _ := jsonStringOf(raw); !stringIn(style, styles) {
 					return &pageBuilderProblem{code: pageNodeNotSupported, node: at, field: "style",
-						allowed: elementorButtonStyles, hint: hintNodeNotSupportedByBuilder}
+						allowed: styles, hint: hintNodeNotSupportedByBuilder}
 				}
 			}
 			if url, _ := jsonStringOf(b["url"]); strings.Contains(url, "&") {
@@ -214,7 +222,7 @@ func elementorNodeProblem(raw json.RawMessage, path string) *pageBuilderProblem 
 	case "group":
 		children, _ := jsonArrayOf(n["children"])
 		for j, child := range children {
-			if p := elementorNodeProblem(child, fmt.Sprintf("%s.children[%d]", path, j)); p != nil {
+			if p := elementorNodeProblemWithDesign(child, fmt.Sprintf("%s.children[%d]", path, j), designed); p != nil {
 				return p
 			}
 		}
@@ -224,7 +232,7 @@ func elementorNodeProblem(raw json.RawMessage, path string) *pageBuilderProblem 
 			col, _ := jsonObjectOf(rawCol)
 			children, _ := jsonArrayOf(col["children"])
 			for m, child := range children {
-				if p := elementorNodeProblem(child, fmt.Sprintf("%s.columns[%d].children[%d]", path, k, m)); p != nil {
+				if p := elementorNodeProblemWithDesign(child, fmt.Sprintf("%s.columns[%d].children[%d]", path, k, m), designed); p != nil {
 					return p
 				}
 			}

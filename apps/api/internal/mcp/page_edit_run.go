@@ -93,7 +93,7 @@ func pageEditRefusalOf(r pageCreateRefusal) *toolRefusal {
 func pageEditOutlineProblem(f pageEditFacts) *pageBuilderProblem {
 	for i, op := range f.ops {
 		for j, raw := range op.Outline {
-			if p := elementorNodeProblem(raw, fmt.Sprintf("operations[%d].outline[%d]", i, j)); p != nil {
+			if p := elementorNodeProblemWithDesign(raw, fmt.Sprintf("operations[%d].outline[%d]", i, j), f.design != nil); p != nil {
 				return p
 			}
 		}

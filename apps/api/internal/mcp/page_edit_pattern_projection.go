@@ -127,7 +127,9 @@ func elementorPatternWidgets(node any, typ string, depth int) []any {
 
 type elementorPatternField struct {
 	projField
-	form string
+	form   string
+	widget any
+	at     []string
 }
 
 func elementorPatternFields(node any, name, variant string) ([]elementorPatternField, bool) {
@@ -155,7 +157,7 @@ func elementorPatternFields(node any, name, variant string) ([]elementorPatternF
 		default:
 			text = phpHTMLEntityDecode(text)
 		}
-		out = append(out, elementorPatternField{projField{path, text}, form})
+		out = append(out, elementorPatternField{projField: projField{path, text}, form: form, widget: widget, at: at})
 	}
 	within := func(n int) bool { spec := patternSpecs[name]; return n >= spec.min && n <= spec.max }
 	repeated := func(part string, n int) string {
