@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/wpversion"
 )
 
 // TestMinAgentVersionForAbilityEngine_Pinned pins the literal: the first
@@ -21,6 +23,30 @@ func TestMinAgentVersionForAbilityEngine_Pinned(t *testing.T) {
 	if MinAgentVersionForAbilityEngine != firstVersionWithAbilityRun {
 		t.Fatalf("MinAgentVersionForAbilityEngine = %q, want %q; if the floor is re-gated, update this pin in the same commit",
 			MinAgentVersionForAbilityEngine, firstVersionWithAbilityRun)
+	}
+}
+
+// TestMinAgentVersionForDesignedPagesPinned pins the literal: the first agent
+// release whose wpmgr/page-create builds a designed Elementor page (outline
+// version 3). It is re-pinned to the number that release ships as, in the
+// same commit as the constant, m177's usage text and the contract test that
+// reads that text.
+func TestMinAgentVersionForDesignedPagesPinned(t *testing.T) {
+	const firstVersionWithDesignedPages = "0.61.165"
+	if MinAgentVersionForDesignedPages != firstVersionWithDesignedPages {
+		t.Fatalf("MinAgentVersionForDesignedPages = %q, want %q; if the floor is re-gated, update this pin, m177's usage and the contract test in the same commit",
+			MinAgentVersionForDesignedPages, firstVersionWithDesignedPages)
+	}
+	// A designed page is built on the builder path and edited by page-edit, so
+	// its floor sits above every floor that path needs.
+	for name, below := range map[string]string{
+		"builder adapters": MinAgentVersionForBuilderAdapters,
+		"builder edit":     MinAgentVersionForBuilderEdit,
+	} {
+		if wpversion.Compare(MinAgentVersionForDesignedPages, below) <= 0 {
+			t.Errorf("the designed pages floor %q must be above the %s floor %q",
+				MinAgentVersionForDesignedPages, name, below)
+		}
 	}
 }
 

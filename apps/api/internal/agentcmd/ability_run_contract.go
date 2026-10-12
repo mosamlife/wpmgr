@@ -86,6 +86,16 @@ const MinAgentVersionForBuilderAdapters = "0.61.161"
 // min_agent_version, and it moves with the release that ships builder edit.
 const MinAgentVersionForBuilderEdit = "0.61.163"
 
+// MinAgentVersionForDesignedPages is the first agent release whose
+// wpmgr/page-create builds a designed Elementor page: outline version 3, with
+// a design, a page frame, sections and patterns. The entry's own floor stays
+// MinAgentVersionForPageCreate, so an outline of version 2 still runs on older
+// agents; the control plane applies this floor to a version 3 input, at run
+// and again at dispatch, so an older agent is never asked to build one. m177's
+// usage text names the same release, and it moves with the number that
+// release ships as.
+const MinAgentVersionForDesignedPages = "0.61.165"
+
 // AbilityRunMaxAllowedDraftIDs bounds p.allowed_draft_ids: the control plane
 // names at most the one post an input is about, so p stays far under
 // AbilityRunMaxPBytes however many drafts WPMgr created on the site.
