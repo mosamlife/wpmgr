@@ -10,16 +10,22 @@ import (
 
 // The top-level members that make a page-create input a designed page
 // (outline_version 3, design, page_frame): what they need around them and
-// what they default to. The outline grammar of version 3 is not under test
-// here; every input below holds an outline of version 2 blocks, so a refusal
-// can only come from the members this file is about.
+// what they default to. The outline grammar of version 3 is under test in
+// page_create_v3_outline_test.go; every input below holds one section of
+// version 2 blocks (a version 2 input, one outline of those blocks), so a
+// refusal can only come from the members this file is about.
 
 // v3HeadDesign is a design with every field explicit.
 const v3HeadDesign = `{"colors":{"ground":"#F6F5F2","surface":"#FFFFFF","ink":"#15171C","muted":"#5A606C","accent":"#0D7A63","on_accent":"#FFFFFF"},` +
 	`"fonts":{"heading":"Manrope","body":"Source Sans 3"},"scale":{"base_px":17,"ratio":1.25},"radius":"md","density":"normal"}`
 
-// v3HeadOutline is an outline the grammar accepts and that holds no hero.
-const v3HeadOutline = `[{"type":"heading","level":2,"text":"Welcome"},{"type":"paragraph","text":"A plain outline."}]`
+// v3HeadOutlineV2 is an outline of version 2 the grammar accepts, and
+// v3HeadOutline the outline of a designed page that holds the same blocks in a
+// section. Neither holds a hero.
+const (
+	v3HeadOutlineV2 = `[{"type":"heading","level":2,"text":"Welcome"},{"type":"paragraph","text":"A plain outline."}]`
+	v3HeadOutline   = `[{"type":"section","anchor":"intro","children":[{"type":"heading","level":2,"text":"Welcome"},{"type":"paragraph","text":"A plain outline."}]}]`
+)
 
 // v3HeadMembers are the members of a valid designed-page input, in the order
 // the shared case table writes them.
@@ -35,7 +41,8 @@ var v3HeadMembers = []struct{ key, raw string }{
 
 // v3HeadInput builds an input from v3HeadMembers: set replaces a member's JSON
 // (a key that is not a member is added at the end, sorted), drop removes
-// members.
+// members. An input without outline_version holds the outline of version 2,
+// unless set names an outline.
 func v3HeadInput(set map[string]string, drop ...string) []byte {
 	dropped := map[string]bool{}
 	for _, d := range drop {
@@ -49,6 +56,9 @@ func v3HeadInput(set map[string]string, drop ...string) []byte {
 			continue
 		}
 		raw := m.raw
+		if m.key == "outline" && dropped["outline_version"] {
+			raw = v3HeadOutlineV2
+		}
 		if o, ok := set[m.key]; ok {
 			raw = o
 		}
@@ -161,8 +171,8 @@ func TestOutlineV3OnlyElementorClassic(t *testing.T) {
 	})
 
 	t.Run("the design is judged before the outline", func(t *testing.T) {
-		// An outline of version 3 nodes is not one this grammar walks yet; the
-		// design, which comes first, still gets its own answer.
+		// The design comes first: an outline that is no designed page's still
+		// gets the design's own answer.
 		sections := `[{"type":"section","anchor":"intro","children":[{"type":"paragraph","text":"Hi."}]}]`
 		v3HeadRefused(t, v3HeadInput(map[string]string{"outline": sections}, "design"), pageDesignNotReady)
 	})
@@ -202,7 +212,7 @@ func TestPageFrameDefault(t *testing.T) {
 			"hero and more":   {"[" + frameHero + "," + frameNoHero + "]", pageFrameFullWidth},
 			"no hero":         {"[" + frameNoHero + "]", pageFrameTheme},
 			"empty sections":  {`[{"type":"section","anchor":"x","children":[]}]`, pageFrameTheme},
-			"version 2 nodes": {v3HeadOutline, pageFrameTheme},
+			"version 2 nodes": {v3HeadOutlineV2, pageFrameTheme},
 		} {
 			got, ok := pageFrameOf(member(""), pageFrameOutline(t, tc.outline))
 			if !ok || got != tc.want {

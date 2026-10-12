@@ -132,11 +132,17 @@ const (
 	pageAtTop pagePlace = iota
 	pageAtGroup
 	pageAtColumn
+	// pageAtSection is a child of a section, which stands where the top of a
+	// version 2 outline stands.
+	pageAtSection
 )
 
-// pageWalk carries the page-wide counters through one validation.
+// pageWalk carries the page-wide counters through one validation. designed is
+// set for an outline of version 3: its top level holds sections only.
 type pageWalk struct {
 	nodes, images, buttons, tables int
+	sections                       int
+	designed                       bool
 	blockOnly                      bool
 	usesLayout                     bool
 	ids                            []int64
@@ -209,15 +215,20 @@ func validatePageCreateInput(input []byte) (pageCreateFacts, string) {
 		f.design = &design
 	}
 	outline, ok := jsonArrayOf(top["outline"])
-	if !ok || len(outline) == 0 || len(outline) > pageCreateMaxTopLevelNodes {
+	// The top level of a designed page is bounded by its section and hero
+	// caps, which answer layout_invalid however long the list is.
+	if !ok || len(outline) == 0 || (!designed && len(outline) > pageCreateMaxTopLevelNodes) {
 		return pageCreateFacts{}, pageCreateBadInput
 	}
 	if designed {
 		if f.pageFrame, ok = pageFrameOf(top, outline); !ok {
 			return pageCreateFacts{}, pageCreateBadInput
 		}
+		if pageOutlineHeroes(outline) > pageCreateMaxHeroes {
+			return pageCreateFacts{}, pageCreateLayoutInvalid
+		}
 	}
-	w := pageWalk{seen: map[int64]struct{}{}}
+	w := pageWalk{seen: map[int64]struct{}{}, designed: designed}
 	for _, n := range outline {
 		if code := w.node(n, pageAtTop); code != "" {
 			return pageCreateFacts{}, code
@@ -268,6 +279,13 @@ func pageFrameOf(top map[string]json.RawMessage, outline []json.RawMessage) (str
 // hero pattern as one of its children. Only the shape is read: where a hero
 // may stand is the grammar's rule, and a node that is not an object is ignored.
 func pageOutlineHasHero(outline []json.RawMessage) bool {
+	return pageOutlineHeroes(outline) > 0
+}
+
+// pageOutlineHeroes counts the hero patterns among the children of the
+// sections of a version 3 outline, read by shape alone.
+func pageOutlineHeroes(outline []json.RawMessage) int {
+	heroes := 0
 	for _, raw := range outline {
 		section, ok := jsonObjectOf(raw)
 		if !ok {
@@ -286,11 +304,11 @@ func pageOutlineHasHero(outline []json.RawMessage) bool {
 				continue
 			}
 			if name, ok := jsonStringOf(n["pattern"]); ok && name == "hero" {
-				return true
+				heroes++
 			}
 		}
 	}
-	return false
+	return heroes
 }
 
 // node is one outline node at a placement.
@@ -305,6 +323,11 @@ func (w *pageWalk) node(raw json.RawMessage, at pagePlace) string {
 	kind, ok := jsonStringOf(n["type"])
 	if !ok {
 		return pageCreateBadInput
+	}
+	if w.designed {
+		if code, handled := w.designedNode(n, kind, at); handled {
+			return code
+		}
 	}
 	switch kind {
 	case "heading":
@@ -364,7 +387,7 @@ func (w *pageWalk) node(raw json.RawMessage, at pagePlace) string {
 	case "table":
 		return w.table(n)
 	case "group":
-		if at != pageAtTop {
+		if at != pageAtTop && at != pageAtSection {
 			return pageCreateLayoutInvalid
 		}
 		if !keysExactly(n, []string{"type", "children"}, "type", "children") {
@@ -413,14 +436,7 @@ func (w *pageWalk) image(n map[string]json.RawMessage) string {
 			return pageCreateBadInput
 		}
 	}
-	if w.images++; w.images > pageCreateMaxImages {
-		return pageCreateLayoutInvalid
-	}
-	if _, dup := w.seen[id]; !dup {
-		w.seen[id] = struct{}{}
-		w.ids = append(w.ids, id)
-	}
-	return ""
+	return w.media(id)
 }
 
 func (w *pageWalk) buttonsNode(n map[string]json.RawMessage) string {
