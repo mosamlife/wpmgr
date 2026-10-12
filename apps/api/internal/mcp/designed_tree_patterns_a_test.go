@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,17 +19,11 @@ var designedPatternsAAreas = []struct {
 }
 
 // TestDesignedPatternsABuiltNotStoodIn: the golden cases of these four areas
-// are held to the twin's own tree. A pattern the twin does not register is
-// answered, in TestDesignedTreeGolden, by the golden's subtree at its place, so
-// the case would pass without the twin compiling anything; here a case of an
-// area whose pattern has no compiler fails instead, and so does an area whose
-// prefix is not in the gate.
+// are held to the twin's own tree: a case of an area whose pattern has no
+// compiler fails, and so does an area that no golden case starts with.
 func TestDesignedPatternsABuiltNotStoodIn(t *testing.T) {
 	cases := readDesignedGolden(t)
 	for _, area := range designedPatternsAAreas {
-		if !slices.Contains(designedGoldenGate, area.prefix) {
-			t.Errorf("the gate does not enable %q", area.prefix)
-		}
 		held := 0
 		for _, c := range cases {
 			if !strings.HasPrefix(c.Name, area.prefix) {

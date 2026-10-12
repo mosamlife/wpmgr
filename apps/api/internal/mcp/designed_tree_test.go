@@ -7,30 +7,8 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
-	"strings"
 	"testing"
 )
-
-// designedGoldenGate is the case names the twin is held to, as prefixes: a
-// golden case whose name starts with none of them is listed as skipped, never
-// run and never silently passed. A job that compiles a new area adds its
-// prefixes here; a prefix that matches no case fails the test.
-var designedGoldenGate = []string{
-	"design-",
-	"tones-and-button-styles",
-	"section-",
-	"leaves-of-every-kind",
-	"responsive-probe-",
-	"hero-",
-	"cta-band",
-	"stats-",
-	"logos-",
-	"testimonials-",
-	"faq-",
-	"escapes-in-every-pattern",
-	"features-",
-	"pricing-",
-}
 
 type designedGoldenMedia struct {
 	ID          int64  `json:"id"`
@@ -75,16 +53,6 @@ func readDesignedGolden(t *testing.T) []designedGoldenCase {
 		t.Fatalf("%s holds no cases", path)
 	}
 	return g.Cases
-}
-
-// designedGateOf is the gate entry that enables a case, "" when none does.
-func designedGateOf(name string) string {
-	for _, p := range designedGoldenGate {
-		if strings.HasPrefix(name, p) {
-			return p
-		}
-	}
-	return ""
 }
 
 func (f designedGoldenFacts) media(t *testing.T) []pageMediaFact {
@@ -176,46 +144,24 @@ func designedTreeDifference(got, want []byte) string {
 		string(got[from:min(i+120, len(got))]) + "\nwant: ..." + string(want[from:min(i+120, len(want))])
 }
 
-// TestDesignedTreeGolden: for every enabled golden case the tree the control
-// plane builds is the agent's tree byte for byte as PHP encodes it, and the
-// preview digest over those bytes is the one the agent answered.
+// TestDesignedTreeGolden: for every golden case the tree the control plane
+// builds, with its own compiler for every pattern the case holds, is the
+// agent's tree byte for byte as PHP encodes it, and the preview digest over
+// those bytes is the one the agent answered. No case is left out and no
+// pattern is answered by the golden's own subtree.
 func TestDesignedTreeGolden(t *testing.T) {
 	cases := readDesignedGolden(t)
-	matched := map[string]bool{}
-	var ran, skipped []string
+	ran := 0
 	for _, c := range cases {
-		gate := designedGateOf(c.Name)
-		if gate == "" {
-			skipped = append(skipped, c.Name)
-			t.Run(c.Name, func(t *testing.T) { t.Skip("not enabled yet: no gate entry covers this case") })
-			continue
-		}
-		matched[gate] = true
-		ran = append(ran, c.Name)
+		ran++
 		t.Run(c.Name, func(t *testing.T) {
 			input := []byte(c.Input)
-			golden, ok := phpDecodeDocument(c.Tree, elementorTreeMaxDepth, true)
-			if !ok {
-				t.Fatal("the golden tree does not decode")
-			}
-			goldenTree, _ := golden.(phpList)
-
-			patterns := map[string]designedPatternFunc{}
-			for name, build := range designedPatternBuilders {
-				patterns[name] = build
-			}
-			var standIn []string
 			for _, kind := range designedPatternKinds(t, input) {
-				if _, built := patterns[kind]; !built {
-					patterns[kind] = goldenPatternStandIn(goldenTree)
-					standIn = append(standIn, kind)
+				if _, built := designedPatternBuilders[kind]; !built {
+					t.Fatalf("the twin has no compiler for the %s pattern", kind)
 				}
 			}
-			if len(standIn) > 0 {
-				t.Logf("the subtrees of the %s patterns are the golden's own: the twin does not compile them yet", strings.Join(standIn, ", "))
-			}
-
-			tree, ok := designedTreeWith(input, c.Facts.RequestID, c.Facts.ActiveBreakpoints, c.Facts.media(t), patterns)
+			tree, ok := designedClassicTree(input, c.Facts.RequestID, c.Facts.ActiveBreakpoints, c.Facts.media(t))
 			if !ok {
 				t.Fatal("the control plane could not build the tree")
 			}
@@ -245,13 +191,8 @@ func TestDesignedTreeGolden(t *testing.T) {
 			}
 		})
 	}
-	for _, p := range designedGoldenGate {
-		if !matched[p] {
-			t.Errorf("gate entry %q matches no golden case", p)
-		}
+	if ran == 0 || ran != len(cases) {
+		t.Fatalf("ran %d of %d golden cases", ran, len(cases))
 	}
-	if len(ran) == 0 {
-		t.Fatal("no golden case ran")
-	}
-	t.Logf("ran %d of %d golden cases; not enabled yet: %s", len(ran), len(cases), strings.Join(skipped, ", "))
+	t.Logf("ran %d of %d golden cases", ran, len(cases))
 }
