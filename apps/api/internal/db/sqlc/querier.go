@@ -1636,6 +1636,12 @@ type Querier interface {
 	// draft for this post. The agent checks the post itself before it reads or
 	// changes it.
 	GetEligibleCreatedDraft(ctx context.Context, arg GetEligibleCreatedDraftParams) (GetEligibleCreatedDraftRow, error)
+	// The exact input_json of the request GetEligibleCreatedDraft names: the
+	// same predicates and the same order, so both name one request, and id is
+	// returned so a caller can check that they did. pgx.ErrNoRows: no eligible
+	// draft for this post. A page edit reads the design its draft was created
+	// with from this input.
+	GetEligibleCreatedDraftInput(ctx context.Context, arg GetEligibleCreatedDraftInputParams) (GetEligibleCreatedDraftInputRow, error)
 	// m61: resolve a config row by its webhook_route_token_hash for the public
 	// webhook dispatcher.  Runs under InAgentTx (webhook path, no tenant GUC).
 	// Returns the full row so the handler can load and decrypt the per-row signing
