@@ -66,6 +66,16 @@ interface ElementorApi
     public function activeBreakpoints(): ?array;
 
     /**
+     * The family names in Elementor's font registry, as Elementor keys them:
+     * its own fonts and those other plugins register through Elementor. Null
+     * when Elementor is not loaded, the registry cannot be read or is not a
+     * map, or it holds more families than the runtime reads.
+     *
+     * @return list<string>|null
+     */
+    public function fontFamilies(): ?array;
+
+    /**
      * Elementor's document for a post, read fresh (not from Elementor's
      * per-request cache). Null when there is none.
      *

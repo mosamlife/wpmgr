@@ -15,7 +15,9 @@ if (!defined('ABSPATH')) {
  * Elementor is reached only through its main plugin instance and the public
  * managers on it, and only when its classes are already in memory:
  * class_exists() is asked without autoloading, so on a site without Elementor
- * nothing is loaded and every method answers "cannot tell". Every call is
+ * nothing is loaded and every method answers "cannot tell". The one class
+ * autoloaded is Elementor's fonts class, which Elementor loads on first use:
+ * it is asked for only once the main plugin instance is found. Every call is
  * guarded, and anything Elementor throws becomes that answer (null, false or
  * 0); no method throws. The one write is deletePostCss(), which asks Elementor
  * to delete one post's generated CSS.
@@ -34,6 +36,12 @@ final class ElementorRuntime implements ElementorApi
     /** Elementor's post CSS file class, which its files manager builds. */
     public const POST_CSS_CLASS = 'Elementor\\Core\\Files\\CSS\\Post';
 
+    /** Elementor's fonts class, which holds its font registry. */
+    public const FONTS_CLASS = 'Elementor\\Fonts';
+
+    /** Most families a font registry may hold to be read at all. */
+    public const MAX_FONT_FAMILIES = 20000;
+
     /** A plain version token: a digit first, at most 32 bytes. */
     private const RE_VERSION = '/^[0-9][0-9A-Za-z._+-]{0,31}$/D';
 
@@ -50,11 +58,13 @@ final class ElementorRuntime implements ElementorApi
      * @param string $pluginClass     Tests only: stands in for Elementor's main plugin class. Production passes none.
      * @param string $utilsClass      Tests only: stands in for Elementor's utility class. Production passes none.
      * @param string $versionConstant Tests only: stands in for Elementor's version constant. Production passes none.
+     * @param string $fontsClass      Tests only: stands in for Elementor's fonts class. Production passes none.
      */
     public function __construct(
         private readonly string $pluginClass = self::PLUGIN_CLASS,
         private readonly string $utilsClass = self::UTILS_CLASS,
-        private readonly string $versionConstant = self::VERSION_CONSTANT
+        private readonly string $versionConstant = self::VERSION_CONSTANT,
+        private readonly string $fontsClass = self::FONTS_CLASS
     ) {
     }
 
@@ -143,6 +153,41 @@ final class ElementorRuntime implements ElementorApi
         }
 
         return $names;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * The registry is the map of family to font type that Elementor's fonts
+     * class answers; a family key that is empty is not reported.
+     */
+    public function fontFamilies(): ?array
+    {
+        try {
+            if ($this->plugin() === null) {
+                return null;
+            }
+            $class = $this->fontsClass;
+            $read  = class_exists($class) ? [$class, 'get_fonts'] : null;
+            if ($read === null || !is_callable($read)) {
+                return null;
+            }
+            $fonts = $read();
+        } catch (\Throwable $e) {
+            return null;
+        }
+        if (!is_array($fonts) || count($fonts) > self::MAX_FONT_FAMILIES) {
+            return null;
+        }
+        $families = [];
+        foreach (array_keys($fonts) as $family) {
+            $family = (string) $family;
+            if ($family !== '') {
+                $families[] = $family;
+            }
+        }
+
+        return $families;
     }
 
     /**

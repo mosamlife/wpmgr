@@ -80,6 +80,18 @@ final class ElementorAdapter implements BuilderAdapter
     }
 
     /**
+     * The family names in Elementor's font registry on this site, read each
+     * time it is asked: only a page whose design names a family needs them,
+     * so the facts do not carry them.
+     *
+     * @return list<string>|null Null when the registry cannot be read.
+     */
+    public function fontFamilies(): ?array
+    {
+        return $this->api->fontFamilies();
+    }
+
+    /**
      * The document checks, save and read-back for this adapter's Elementor.
      *
      * @return ElementorDocument

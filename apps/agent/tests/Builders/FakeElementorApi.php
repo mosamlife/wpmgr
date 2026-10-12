@@ -47,6 +47,14 @@ final class FakeElementorApi implements ElementorApi
     public ?array $activeBreakpoints = ['mobile', 'tablet'];
 
     /**
+     * What fontFamilies() answers: the registry the shared case table's font
+     * row gives the site.
+     *
+     * @var list<string>|null
+     */
+    public ?array $fontFamilies = ['Manrope', 'Inter', 'Lora', 'Roboto', 'Source Sans 3'];
+
+    /**
      * Post id => Elementor document stand-in.
      *
      * @var array<int, object>
@@ -142,6 +150,16 @@ final class FakeElementorApi implements ElementorApi
         $this->calls[] = ['activeBreakpoints', []];
 
         return $this->loaded ? $this->activeBreakpoints : null;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function fontFamilies(): ?array
+    {
+        $this->calls[] = ['fontFamilies', []];
+
+        return $this->loaded ? $this->fontFamilies : null;
     }
 
     /**

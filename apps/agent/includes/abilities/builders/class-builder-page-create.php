@@ -174,6 +174,15 @@ final class BuilderPageCreate
                 return self::refusedPrecheck(ElementorDocument::CODE_TEMPLATE_UNAVAILABLE, $why);
             }
         }
+        // A design's fonts are judged before anything is built: the closed
+        // family pattern first, then Elementor's font registry.
+        if (array_key_exists('design', $spec)) {
+            $design = $spec['design'];
+            $font   = FontRegistry::refusal(is_array($design) ? ($design['fonts'] ?? null) : null, static fn (): ?array => $a->fontFamilies());
+            if ($font !== null) {
+                return self::refusedEnvelope($font);
+            }
+        }
 
         $byId = [];
         foreach ($mediaFacts as $fact) {
@@ -781,6 +790,17 @@ final class BuilderPageCreate
             'doc'              => null,
             'title'            => '',
         ];
+    }
+
+    /**
+     * A precheck refusal that carries the refusal envelope's failures.
+     *
+     * @param array{code:string,detail:string,failures:list<array<string,mixed>>} $refusal From Refusal::make().
+     * @return array{refusal: array<string, mixed>, preview: array<string, mixed>, preview_digest: string, base_fingerprint: string, tree: array<mixed>, doc: null, title: string}
+     */
+    private static function refusedEnvelope(array $refusal): array
+    {
+        return ['refusal' => Refusal::command($refusal)] + self::refusedPrecheck($refusal['code'], $refusal['detail']);
     }
 
     /**

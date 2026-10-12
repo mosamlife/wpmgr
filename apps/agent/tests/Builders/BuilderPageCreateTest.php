@@ -26,6 +26,7 @@ use WPMgr\Agent\Abilities\Builders\BuilderPageCreate;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
 use WPMgr\Agent\Abilities\Builders\ElementorDocument;
 use WPMgr\Agent\Abilities\Builders\ElementorFacts;
+use WPMgr\Agent\Abilities\Builders\FontRegistry;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -325,6 +326,52 @@ final class BuilderPageCreateTest extends TestCase
         unset($this->alts[5]);
         $outline[0]['alt'] = '';
         $this->assertArrayNotHasKey('refusal', $this->precheck(self::spec($outline), $request, $facts));
+    }
+
+    public function test_precheck_checks_the_design_fonts_against_elementors_registry(): void
+    {
+        [$outline, $golden, $request] = self::golden(self::CONTAINERS, 'heading');
+        $this->api->fontFamilies      = ['Manrope', 'Source Sans 3'];
+        $design                       = ['fonts' => ['heading' => 'Manrope', 'body' => 'Source Sans 3']];
+
+        // Registry families pass, and the page is built as before.
+        $ok = $this->precheck(self::spec($outline) + ['design' => $design], $request);
+        $this->assertArrayNotHasKey('refusal', $ok);
+        $this->assertSame($golden, $ok['preview']['tree']);
+        $this->assertCount(1, $this->api->callsTo('fontFamilies'));
+
+        // A family the registry lacks is font_unknown, with the envelope's
+        // failures, before anything is built.
+        $this->api->calls           = [];
+        $design['fonts']['heading'] = 'Manrop';
+        $refused                    = $this->precheck(self::spec($outline) + ['design' => $design], $request);
+        $this->assertSame(false, $refused['refusal']['ok'] ?? null);
+        $this->assertSame('refused', $refused['refusal']['outcome'] ?? null);
+        $this->assertSame('font_unknown', $refused['refusal']['code'] ?? null);
+        $this->assertSame(false, $refused['refusal']['retryable'] ?? null);
+        $this->assertSame(
+            [['path' => 'design.fonts', 'key' => 'heading', 'reason' => FontRegistry::REASON_UNKNOWN, 'allowed' => ['Manrope']]],
+            $refused['refusal']['failures'] ?? null
+        );
+        $this->assertSame([], $this->api->callsTo('createElementInstance'), 'refused before the page is built');
+        $this->assertSame([], $refused['tree']);
+        $this->assertSame('', $refused['preview_digest']);
+
+        // A name outside the closed pattern is refused before the registry is read.
+        $this->api->calls           = [];
+        $design['fonts']['heading'] = 'Manrope;}';
+        $refused                    = $this->precheck(self::spec($outline) + ['design' => $design], $request);
+        $this->assertSame('bad_input', $refused['refusal']['code'] ?? null);
+        $this->assertSame([], $this->api->callsTo('fontFamilies'));
+
+        // A design that is not an object is refused; a spec without a design
+        // reads no registry.
+        $refused = $this->precheck(self::spec($outline) + ['design' => 'Manrope'], $request);
+        $this->assertSame('bad_input', $refused['refusal']['code'] ?? null);
+        $this->api->calls = [];
+        $plain            = $this->precheck(self::spec($outline), $request);
+        $this->assertArrayNotHasKey('refusal', $plain);
+        $this->assertSame([], $this->api->callsTo('fontFamilies'));
     }
 
     public function test_atomic_refused_in_a1(): void
