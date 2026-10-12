@@ -18,17 +18,31 @@ if (!defined('ABSPATH')) {
  *   id = first $length hex characters of
  *        sha256(json_encode(["wpmgr.builder.id.v1", request_id, node_path, counter]))
  *
+ * A repeater item's _id (one entry of a list control such as an accordion's
+ * tabs) is derived the same way under its own domain label, and is always
+ * ITEM_LENGTH characters, the form Elementor stores:
+ *
+ *   _id = first 7 hex characters of
+ *         sha256(json_encode(["wpmgr.builder.item.v1", request_id, node_path, control, index, counter]))
+ *
  * json_encode() with default flags. The counter starts at 0 for each call and
- * is bumped while the id equals one already issued by this seed or reserved
- * (an id already on the page), so the same request, node paths, call order
- * and reservations always give the same ids.
+ * is bumped while the id equals one already issued by this seed (a node id or
+ * an item id) or reserved (an id already on the page), so the same request,
+ * node paths, controls, indexes, call order and reservations always give the
+ * same ids, and one seed never issues the same id twice.
  *
  * Ids are lowercase hex; Elementor's are 7 characters long.
  */
 final class IdSeed
 {
-    /** Domain label hashed into every id. */
+    /** Domain label hashed into every node id. */
     public const DOMAIN = 'wpmgr.builder.id.v1';
+
+    /** Domain label hashed into every repeater item id. */
+    public const ITEM_DOMAIN = 'wpmgr.builder.item.v1';
+
+    /** Hex characters in a repeater item id. */
+    public const ITEM_LENGTH = 7;
 
     /** Counter values tried before giving up on a free id. */
     private const MAX_ATTEMPTS = 1000;
@@ -71,9 +85,48 @@ final class IdSeed
      */
     public function next(string $nodePath): string
     {
+        return $this->issue([self::DOMAIN, $this->requestId, $nodePath], $this->length);
+    }
+
+    /**
+     * The _id for item $index of the repeater control $control on the node
+     * at $nodePath.
+     *
+     * @param string $nodePath Where the node sits in the input, e.g. "outline[2].children[0]".
+     * @param string $control  The repeater control, e.g. "tabs".
+     * @param int    $index    The item's position in the list, from 0.
+     * @return string
+     * @throws \InvalidArgumentException When the control is empty or the index is negative.
+     * @throws \RuntimeException When no free id is found within the attempt limit.
+     * @throws \JsonException When the request id, node path or control is not valid UTF-8.
+     */
+    public function item(string $nodePath, string $control, int $index): string
+    {
+        if ($control === '') {
+            throw new \InvalidArgumentException('a repeater item id needs its control');
+        }
+        if ($index < 0) {
+            throw new \InvalidArgumentException('a repeater item index must not be negative');
+        }
+
+        return $this->issue([self::ITEM_DOMAIN, $this->requestId, $nodePath, $control, $index], self::ITEM_LENGTH);
+    }
+
+    /**
+     * The first id derived from $parts and a counter that this seed has not
+     * issued or reserved, now marked as taken.
+     *
+     * @param list<string|int> $parts  What is hashed before the counter.
+     * @param int              $length Hex characters in the id.
+     * @return string
+     * @throws \RuntimeException When no free id is found within the attempt limit.
+     * @throws \JsonException When a part is not valid UTF-8.
+     */
+    private function issue(array $parts, int $length): string
+    {
         for ($counter = 0; $counter < self::MAX_ATTEMPTS; $counter++) {
-            $encoded = json_encode([self::DOMAIN, $this->requestId, $nodePath, $counter], JSON_THROW_ON_ERROR);
-            $id      = substr(hash('sha256', $encoded), 0, $this->length);
+            $encoded = json_encode(array_merge($parts, [$counter]), JSON_THROW_ON_ERROR);
+            $id      = substr(hash('sha256', $encoded), 0, $length);
             if (!isset($this->taken[$id])) {
                 $this->taken[$id] = true;
 
