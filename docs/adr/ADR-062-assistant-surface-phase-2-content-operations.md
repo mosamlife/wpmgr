@@ -1617,3 +1617,297 @@ to learn the status or the builder of a post the AI has no right to.
   draft, is a change to this amendment.
 - Every later ability that reads or changes a draft for the AI applies this rule
   and no other, so that "a draft the AI may touch" means one thing.
+
+## Amendments (2026-10-12)
+
+One amendment records what a designed Elementor page changes: A-062-17. No
+decision text above is rewritten.
+
+### A-062-17: A designed Elementor page carries style keys, an anchor and a label, is framed by a page template, and is followed by derived writes, all inside the page's write scope
+
+`wpmgr/page-create` and `wpmgr/page-edit` build and change a designed Elementor
+page: an outline of version 3, made of sections (a tone, a background image
+with an overlay, an anchor, spacing, alignment, a minimum height) that hold
+plain content, columns, groups and the patterns hero, features, testimonials,
+pricing, faq, cta, logos and stats, together with a design of literal values:
+the colour roles ground, surface, ink, muted, accent and on_accent, font family
+names, a type scale and a density. The page is still a draft that WPMgr created
+for the AI (A-062-14), still stored through Elementor's own document save, and
+still put back from WPMgr's own copy (A-062-9). This amendment is the boundary
+of what such a page may hold, what the agent writes beside it, and where. It
+gives the content service user no capability, adds no tool, and writes nothing
+site-wide: no kit, no global colour or font, no global style. A colour or font
+is written as its literal value and no key binds it to the site's kit, so the
+site's globals neither change the page nor are changed by it.
+
+Outline version 3 is admitted only for `builder:elementor` with
+`elementor_format` classic, and only on a site whose Elementor builds with
+containers. A site that builds sections and columns refuses a section or a
+pattern with `containers_required`, naming the node, and a plain outline is
+still built there as it always was.
+
+**The keys that were refused.** Elementor stores how a page looks as settings
+keys. WPMgr does not rely on Elementor to reject a wrong key or a wrong value:
+the agent checks each one itself, before anything is stored. Until this
+amendment the agent wrote content and structure keys only (text, links, images,
+spacing, a container's direction, gap and width) and refused every style key.
+For a designed page that refusal is lifted key by key, under the rules below,
+and for nothing else. The rules live in the agent's `LeafPolicy`. Nothing is
+stripped or rewritten: a key or value that fails a rule refuses the whole call
+with the path of the failure in WPMgr's own words, and nothing is stored. After
+the rules, the agent builds each new node with Elementor without saving it and
+compares: a node Elementor would store differently from the tree is refused
+`builder_would_change_layout`, never a warning.
+
+**What stays refused.** `__globals__`, `__dynamic__`, `custom_css`,
+`_attributes`, `custom_attributes` and `_css_classes` in any settings, at any
+depth and in any case; every key that starts with `motion_fx_` or `sticky`; and
+the element types html, shortcode, template, sidebar, menu-anchor, text-path,
+WordPress widgets, forms, and the atomic svg, component and video types. No
+allowlist can name them. No script, style, iframe, object or embed sequence is
+stored in any string, in the form written or in any form reached by decoding
+character references.
+
+**The anchor.** `_element_id` is the HTML id of an element, and so an address in
+the page. It is written only at the top of the settings of a WPMgr section
+container: a container at the top of the tree whose `_title` is exactly
+`WPMgr · Section`. Its value matches `^[a-z][a-z0-9-]{1,39}$`, is not one of
+content, main, primary, page, masthead, colophon, site-header, site-footer or
+wpadminbar (ids a theme or WordPress already uses), and is not the anchor of an
+earlier element of the same tree. The key is spelled in lower case and nowhere
+else. The outline is refused before anything is built with `anchor_invalid`,
+`anchor_reserved` or `anchor_duplicate`, and the stored tree is checked again
+by the same rule. A link to `#slug` must resolve to an anchor on the page once
+the whole call is applied (`link_anchor_missing`), and a call that removes a
+section whose anchor a link still names is refused `anchor_in_use`.
+
+**The label.** `_title` is the name Elementor's Navigator shows for a container.
+It is written only at the top of the settings of a container, and its value is
+`WPMgr · ` followed by a name: ASCII letters and digits, the first a letter,
+with single spaces or hyphens between words, up to 40 characters. The agent
+reads the label back to recognise a pattern. A container with a pattern's label
+and the shape that pattern builds projects as that pattern, with its fields
+addressed by path (`plans.1.price`), and a pattern whose subtree a person has
+restructured in Elementor projects as locked, with the label
+`wpmgr:pattern-edited`, a node WPMgr does not edit.
+
+**The style keys.** Each element type has its own list of settings paths a
+designed page may write, and a path not on its list is refused
+`style_key_not_allowed`. The list is `ElementorClassicMapper::designedKeys()`:
+the keys content and structure need, the keys the designed text and button
+styles write, and the keys the patterns write. Where two of those lists pin the
+same path on a heading, a text editor or a button, the pin takes every value
+either list allows; a container keeps the pin its own list gives, so a
+section's content width and direction are never narrowed by a button row's. By
+family:
+
+| Element | Families written |
+|---|---|
+| container | layout (content width, direction, wrap, gap, alignment, justification, width, HTML tag); spacing (padding, with tablet and mobile overrides); background (colour, image, position, size, repeat) and its overlay (colour, opacity); minimum height; border (colour, width, radius); box shadow; the anchor and the label |
+| section, column | the structure keys of a plain page |
+| heading | title, level, colour, alignment, typography |
+| text editor | content, colour, alignment, typography |
+| button | text, link, alignment, size, type, fill and its hover, text colour, hover colour, border, typography |
+| image | address, id, source, size, alignment, caption, width |
+| spacer | height |
+| accordion | items (title, content, id), the FAQ schema switch, colours |
+| testimonial | content, image, name, job, image position, alignment, colours |
+| counter | starting and ending number, suffix, title, colours |
+| icon box | icon, title, description, position, title level, colours, title typography |
+| icon list | items (text, icon, id), colours, icon size |
+
+An icon is one of a closed list of neutral names in Elementor's built-in solid
+icon library, so there is no upload and no SVG.
+
+**Shape pins.** Every style value is checked as a whole against one written
+form, is never walked into, and is never converted. The forms are:
+
+- `slider`: exactly `unit` and `size`. The unit is one of px, em, vh and % (a
+  key may name fewer), and the size is a decimal number written as a string.
+- `dimensions`: exactly `unit` (px), `top`, `right`, `bottom` and `left` as
+  decimal numbers of 0 or more written as strings, and `isLinked` true or
+  false.
+- `gaps`: exactly `column` and `row` as decimal numbers of 0 or more written as
+  strings, `isLinked` true or false, and `unit` (px).
+- `colour`: an upper-case `#RRGGBB`, `transparent`, or `rgba(r,g,b,a)` with no
+  spaces, the channels 0 to 255 and the alpha 0 to 1.
+- `switcher`: `"yes"` or `""`.
+- `image`: exactly `id` and `url`, or `id`, `url` and `source` (library). The
+  `id` is a whole number above 0 written as a string, and the `url` passes
+  page-create's image address rule. A background image must also be an
+  attachment of the site that is an image, or the call is refused
+  `background_not_image`, and it counts toward the existing cap on images in one
+  call.
+- `link`: exactly `url`, `is_external` and `nofollow`, the last two `"on"` or
+  `""`. The `url` passes page-create's link rule, which also admits `#` and a
+  section anchor.
+- `enum`: a value from the list the key names.
+
+Numbers are written as strings throughout, because the pinned Elementor
+versions differ in whether a number is stored as written, and a numeric string
+is stored as written on all of them. A value of any other form is
+`leaf_unsafe`.
+
+**Group activators.** A sub-field of a group control is written only beside its
+group's switch, which the agent always writes with the group. A sub-field
+without its switch, or beside a switch holding another value, refuses the node
+as `group_activator_missing`.
+
+| Group | Activator | Value |
+|---|---|---|
+| typography | `typography_typography` | `custom` |
+| title typography | `title_typography_typography` | `custom` |
+| background | `background_background` | `classic` |
+| background overlay | `background_overlay_background` | `classic` |
+| button hover background | `button_background_hover_background` | `classic` |
+| border | `border_border` | `solid` |
+| box shadow | `box_shadow_box_shadow_type` | `yes` |
+
+`border_radius` belongs to no group and needs no activator.
+
+**Breakpoints.** A key that overrides a breakpoint ends in `_tablet` or
+`_mobile`. It is written only for a control the element's list names as
+responsive, and only on a site that has that breakpoint active. The agent reads
+the site's active breakpoints and reports them in the precheck's
+`builder_facts.active_breakpoints`, and the list a tree is checked against is
+the designed list with every override of an inactive breakpoint removed, so such
+an override is `style_key_not_allowed`. A site that cannot report its
+breakpoints gets no override. An override of mobile_extra, tablet_extra, laptop
+or widescreen is never written, even where a list names it.
+
+**Fonts, the design and text.** A key ending `font_family` holds a name that
+matches `^[A-Za-z0-9 ]{1,60}$`, and at write time the family must be one that
+Elementor's own font registry on the site lists, spelled as Elementor spells
+it, or the call is refused `font_unknown`. The `design` object has the members
+colors, fonts, scale, radius and density; a missing member is
+`design_not_ready`, and ink on ground, ink on surface or on_accent on accent
+below a contrast of 4.5:1 is `design_contrast_low`, both before anything is
+built. Every string stored in a node is held to the stored-string rule that
+already applied: it must equal what the HTML sanitiser makes of it with inline
+styles allowed nowhere.
+
+**Derived writes.** Storing a tree through Elementor's save is followed by writes
+that are not the tree: the page's stylesheet and, on a site with Elementor Pro,
+a cached copy of the page's rendered elements that is served in place of the
+stored page. The agent makes these itself, once, for the one page, inside the
+same write scope as the save.
+
+- *The page's CSS.* After a save has stored the page, the agent asks Elementor
+  to make that post's CSS again, once. Where Elementor serves the stylesheet as
+  a file, the file must exist and have been modified no earlier than 2 seconds
+  before the write began. A stylesheet that was not made again is the warning
+  `css_not_regenerated` in the answer: the page is stored, and the write is
+  neither refused nor put back. Elementor's site-wide clear is never asked for,
+  because a page write changes one page and only that page's CSS is made again.
+- *The element cache.* When Elementor Pro is active, the page's cached-element
+  row (`_elementor_element_cache`, unless Elementor names another key, and never
+  a row that is one of the page's own) is deleted through core's meta API, on
+  that post only. `wpmgr/page-structure` reports `element_cache_active` while
+  such a row would be served.
+- *After a restore.* The restore of A-062-9, in the call that wrote and in a
+  person's undo, ends the same way for the one page. Elementor's post CSS object
+  removes the generated file and the CSS meta, Elementor's per-post style
+  invalidation clears the page's local styles, the derived rows (`_elementor_css`,
+  the element cache and `_elementor_page_assets`) are deleted, and the page's CSS
+  is made again once from the rows that are back. A stylesheet that cannot be
+  confirmed after a restore is not reported, because a restore returns no result
+  to carry it; Elementor makes it again when the page is next shown.
+- *The template and the settings.* `_wp_page_template` and
+  `_elementor_page_settings` are written once, with the page, as the page frame
+  below describes. No page edit changes either.
+
+**Where the writes run.** The save, the derived writes and a restore all run
+inside the agent's write scope for the one page, and the active kit is compared
+before and after. While the scope is armed it allows the page's own posts row;
+the revisions of it, recorded as they are inserted; post meta on the page and on
+those revisions; the options a short list names for the page (two transients
+named for the page's id, and before Elementor 3.35.9 its asset cache option);
+and Elementor's style-cache validity options, only write by write, where the
+value after differs from the value before by nothing but the page's own entry.
+Every derived write above is a write the scope already allows for the page, so
+none of them widens the scope. Anything else is `side_effect_detected` and the
+page is put back, and the answer holds fixed labels and no site text: a write to
+another post or its meta, a change to a term relationship, an option off the
+list, a user or a role, and a change to the active kit. The stylesheet file is
+not a WordPress write; the modification-time rule above is its check.
+
+**The page frame.** A designed page has a frame, `page_frame`: `theme`,
+`full_width` or `canvas`, sent only with outline version 3. The agent stores it
+as the post's `_wp_page_template`. `theme` is the theme's own template (the
+empty string), `full_width` is `elementor_header_footer`, and `canvas` is
+`elementor_canvas`. The agent maps a frame to its template in one place, and
+the write and the read-back both use it.
+
+- *The default.* Without `page_frame`, a block theme gets `canvas`. A classic
+  theme gets `full_width` when the first block of the first section is a hero
+  pattern, and `theme` otherwise. `canvas` on a classic theme is built only
+  when it is asked for.
+- *Block themes.* A block theme admits `canvas` only, decided 2026-10-12. On a
+  block theme `elementor_header_footer` shows neither of the theme's template
+  parts and prints WordPress's generic fallback header and footer, and the page
+  setting that hides the title leaves the title in place. Both were measured on
+  each pinned Elementor version, and the probes `frame-header-footer` and
+  `frame-hide-title` in `scripts/elementor-roundtrip/render-probes.json` hold
+  them. `canvas` prints the page's content with no theme header, footer or
+  title. A frame the site does not admit is refused `page_frame_unavailable`,
+  the failure lists the frames it does admit, and the frame is never replaced
+  by another. A site fact that is missing or of another type reads as a block
+  theme, which is the narrower answer.
+- *Availability.* The template must be one the active theme offers for the post
+  type, Elementor's additions included, or the call is refused
+  `page_template_unavailable`: core's save puts a template that list does not
+  hold back to the default on the next update of the post row. The theme's own
+  template is always available.
+- *How it is written.* The template is a plain row of the draft's insert. It is
+  never written through Elementor's document save, which replaces a page's
+  settings wholesale, and the read-back requires it to be the post's one
+  template row. The page settings `{hide_title: "yes"}` are a plain row of the
+  same insert, for a `full_width` page that opens with a hero, so the theme's
+  title does not sit above the hero; the read-back requires the stored row to
+  hold the bytes of that array, or the post to have no such row when none was
+  written. No page edit writes either row. Both are rows of the page that the
+  snapshot of A-062-9 keeps, so a restore puts them back byte for byte.
+- *Approval.* The precheck answers the frame it resolved and whether the theme
+  is a block theme in `builder_facts` (`page_frame`, `block_theme`), and it runs
+  again when the write runs, so a frame the site stopped admitting since the
+  approval is refused and not replaced. The control plane stores that frame as
+  the last member of the request's input before the card is shown, never a
+  default of its own, so the write builds the frame the person saw. An input
+  that cannot carry the member within its size limit is refused.
+
+**What the control plane holds.** It does not take the agent's word for the
+page. It checks the `design` object and the outline with a grammar that is a
+twin of the agent's, builds the tree itself from the same input, the same
+request id, the images the site resolved and the breakpoints the precheck
+reported, and refuses a precheck whose tree differs from its own in any node,
+setting, id or order, before anything is stored. The digest a person approves is
+recomputed over its own bytes. The agent judges the design again where it reads
+the input, so neither side relies on the other having checked it.
+
+A page-edit that adds a section or a pattern is compiled with the design of the
+draft: the `design` in its input when it sends one, otherwise the design of the
+`wpmgr/page-create` request that made the draft, read by the draft's post. The
+design the site compiles with is then a member of the input the request stores
+and the digest covers, so nothing the site compiles with is outside what a
+person approves. A draft made without a design has none to give, and an edit
+that adds a section or a pattern to it is refused `design_not_ready`.
+
+An agent below the release that ships this is never asked. A version 3 input
+for `wpmgr/page-create`, and a `wpmgr/page-edit` input that carries a design,
+puts a section or a pattern on the page, or names a pattern path in `set_text`,
+run only on agent 0.61.165 or later. The control plane decides at run and again
+at dispatch, and an input it cannot read counts as designed. A plain outline
+and a plain edit keep their older floors.
+
+**What it does not do.**
+
+- It does not bind a colour or a font to the site's kit, write the kit, or
+  clear any cache site-wide.
+- It does not store HTML, script, a shortcode, custom CSS, a dynamic tag or an
+  element attribute, and no allowlist can admit them.
+- It does not widen which pages may be changed. A person's own page, a
+  published page and a copy of an eligible draft stay as A-062-14 leaves them.
+- It does not write a theme file. A frame selects a template the theme or
+  Elementor already offers.
+- Widening any list above (a key, a pin, an activator, a breakpoint or a frame)
+  is a change to this amendment.
