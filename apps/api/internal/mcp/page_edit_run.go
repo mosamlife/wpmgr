@@ -48,15 +48,36 @@ const (
 // refused: a schema mismatch carries the schema, a ref named twice the
 // agent's code and our fixed hint.
 func pageEditInputRefusal(code string) *toolRefusal {
+	return pageEditRefusalOf(pageCreateRefusal{Code: code})
+}
+
+// pageEditRefusalOf is pageEditInputRefusal for a refusal that may carry
+// failures (the design's): the message spells out the first three and
+// failures[] holds the rest. A value the design may not hold carries the
+// page-edit schema.
+func pageEditRefusalOf(r pageCreateRefusal) *toolRefusal {
+	code := r.Code
+	msg, failures := msgPageEditInput, []refusalFailure(nil)
+	if len(r.Failures) > 0 {
+		msg, failures = refusalEnvelope(pageCreateRefusalSummary(code), r.Failures)
+	}
 	if code == pageCreateBadInput {
-		return argRefusal(reasonInvalidArguments, "input", "", msgAbilityArgInput, pageEditInputSchema)
+		ref := argRefusal(reasonInvalidArguments, "input", "", msgAbilityArgInput, pageEditInputSchema)
+		if len(failures) > 0 {
+			ref.err = domain.Validation(ErrCodeInvalidToolArguments, msg).WithDetails(map[string]any{
+				"argument": "input", "retryable": false, "schema": pageEditInputSchema, "failures": failures,
+			})
+		}
+		return ref
+	}
+	details := map[string]any{"argument": "input", "code": code, "hint": precheckRefusalHint(code), "retryable": false}
+	if len(failures) > 0 {
+		details["failures"] = failures
 	}
 	return &toolRefusal{
 		reason: reasonInvalidArguments,
-		err: domain.Validation(ErrCodeInvalidToolArguments, msgPageEditInput).WithDetails(map[string]any{
-			"argument": "input", "code": code, "hint": precheckRefusalHint(code), "retryable": false,
-		}),
-		meta: map[string]any{"argument": "input", "code": code},
+		err:    domain.Validation(ErrCodeInvalidToolArguments, msg).WithDetails(details),
+		meta:   map[string]any{"argument": "input", "code": code},
 	}
 }
 
@@ -99,9 +120,9 @@ func pageEditBuilderRefusal(f pageEditFacts) *toolRefusal {
 // page-edit input before the site sees it, in order: the rules that need no
 // page, then Elementor's node rules for every new node.
 func pageEditPreInputRefusal(input []byte) (pageEditFacts, *toolRefusal) {
-	facts, code := validatePageEditInput(input)
-	if code != "" {
-		return pageEditFacts{}, pageEditInputRefusal(code)
+	facts, refusal := checkPageEditInput(input)
+	if refusal.Code != "" {
+		return pageEditFacts{}, pageEditRefusalOf(refusal)
 	}
 	if r := pageEditBuilderRefusal(facts); r != nil {
 		return pageEditFacts{}, r
@@ -145,6 +166,20 @@ func (s *Service) runPageEditChecked(ctx context.Context, auth AuthorizedRequest
 	allowed, err := s.allowedDraftIDsFor(ctx, eng, site, input)
 	if err != nil {
 		return "", fmt.Errorf("site_ability_run: %w", err)
+	}
+	// The nodes a call adds to a draft made with a design are compiled with
+	// that design: the site is asked about, and the request stores, the input
+	// with the design in it. A page that is no eligible draft is left to the
+	// site, whose one answer for it is the same for every such page.
+	if len(allowed) > 0 {
+		var dr *toolRefusal
+		input, facts, dr, err = s.pageEditInheritDesign(ctx, eng, site, input, facts)
+		if dr != nil {
+			return "", dr
+		}
+		if err != nil {
+			return "", fmt.Errorf("site_ability_run: %w", err)
+		}
 	}
 	precheckID := uuid.New()
 	callCtx, cancel := context.WithTimeout(ctx, abilityRunTimeout)

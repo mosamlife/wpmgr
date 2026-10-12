@@ -8,7 +8,9 @@ package mcp
 //   - the input is the exact JSON text of an object of at most 65536 bytes,
 //     valid UTF-8, nested at most 32 deep, with no unpaired UTF-16 surrogate
 //     escape (the agent's decoder refuses each of those);
-//   - post_id, base_fingerprint and 1..25 operations, and nothing else;
+//   - post_id, base_fingerprint and 1..25 operations, and an optional design
+//     (page-create's design object, judged as page-create judges it), and
+//     nothing else;
 //   - each operation in the published schema's shape: one anchor per insert
 //     or move, position only on an insert into a node, refs of 1..32
 //     letters, digits, "_" or "-";
@@ -124,49 +126,80 @@ type pageEditFacts struct {
 	postID          int64
 	baseFingerprint string
 	ops             []pageEditOp
+	// design is the input's own design member, every field checked and its
+	// colours upper case; nil when the input sends none.
+	design *pageDesign
+}
+
+// addsNodes reports whether the call puts new nodes on the page: an insert or
+// a replace.
+func (f pageEditFacts) addsNodes() bool {
+	for _, op := range f.ops {
+		if len(op.Outline) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // validatePageEditInput checks input against every page-edit rule that needs
 // no page. It returns the facts, or the agent's refusal code for the first
-// problem: ops_invalid for a ref named twice, bad_input for anything else.
+// problem: ops_invalid for a ref named twice, bad_input for anything else,
+// and for a design the codes of page-create's design.
 func validatePageEditInput(input []byte) (pageEditFacts, string) {
+	f, refusal := checkPageEditInput(input)
+	return f, refusal.Code
+}
+
+// checkPageEditInput is validatePageEditInput with the failures behind a
+// refusal: a design that is refused says which of its fields. The design is
+// judged before the operations, as page-create judges it before the outline.
+func checkPageEditInput(input []byte) (pageEditFacts, pageCreateRefusal) {
+	bad := pageCreateRefusal{Code: pageCreateBadInput}
 	if len(input) > pageEditMaxInputBytes || !utf8.Valid(input) || jsonNestedDeeperThan(input, pageEditMaxDepth) ||
 		jsonHasLoneSurrogate(input) {
-		return pageEditFacts{}, pageCreateBadInput
+		return pageEditFacts{}, bad
 	}
 	top, ok := jsonObjectOf(input)
-	if !ok || !keysExactly(top, []string{"post_id", "base_fingerprint", "operations"},
+	if !ok || !keysExactly(top, []string{"post_id", "base_fingerprint", "operations", "design"},
 		"post_id", "base_fingerprint", "operations") {
-		return pageEditFacts{}, pageCreateBadInput
+		return pageEditFacts{}, bad
 	}
 	var f pageEditFacts
 	if f.postID, ok = jsonIntOf(top["post_id"]); !ok || f.postID < 1 {
-		return pageEditFacts{}, pageCreateBadInput
+		return pageEditFacts{}, bad
 	}
 	if f.baseFingerprint, ok = jsonStringOf(top["base_fingerprint"]); !ok ||
 		!pageEditFingerprintPattern.MatchString(f.baseFingerprint) {
-		return pageEditFacts{}, pageCreateBadInput
+		return pageEditFacts{}, bad
+	}
+	if raw, has := top["design"]; has {
+		design, problem := validatePageDesign(raw)
+		if problem != nil {
+			return pageEditFacts{}, pageCreateRefusal{Code: problem.Code, Failures: refusalFailuresOfDesign(problem.Failures)}
+		}
+		f.design = &design
 	}
 	ops, ok := jsonArrayOf(top["operations"])
 	if !ok || len(ops) == 0 || len(ops) > pageEditMaxOps {
-		return pageEditFacts{}, pageCreateBadInput
+		return pageEditFacts{}, bad
 	}
 	named := make(map[string]struct{}, len(ops)*2)
 	f.ops = make([]pageEditOp, 0, len(ops))
 	for _, raw := range ops {
 		op, ok := pageEditOperation(raw)
 		if !ok {
-			return pageEditFacts{}, pageCreateBadInput
+			return pageEditFacts{}, bad
 		}
 		for _, ref := range op.refs() {
 			if _, twice := named[ref]; twice {
-				return pageEditFacts{}, pageEditOpsInvalid
+				return pageEditFacts{}, pageCreateRefusal{Code: pageEditOpsInvalid}
 			}
 			named[ref] = struct{}{}
 		}
 		f.ops = append(f.ops, op)
 	}
-	return f, ""
+	return f, pageCreateRefusal{}
 }
 
 // pageEditOperation is one operation in its normalised form, or ok=false.

@@ -165,6 +165,10 @@ type abilityEngine struct {
 	// wpmgr/page-edit; nil when the store does not implement it, and then
 	// neither runs.
 	drafts DraftEligibilityStore
+	// designs reads the design a draft was created with for wpmgr/page-edit;
+	// nil when the store does not implement it, and then an edit inherits no
+	// design.
+	designs DraftDesignStore
 }
 
 // AbilityRefresher queues one site's inventory refresh. It is unique per
@@ -235,6 +239,9 @@ func (s *Service) EnableAbilityTools(store AbilityStore, agent AbilityAgent, ent
 	}
 	if d, ok := store.(DraftEligibilityStore); ok {
 		s.abilities.drafts = d
+	}
+	if d, ok := store.(DraftDesignStore); ok {
+		s.abilities.designs = d
 	}
 	return nil
 }
