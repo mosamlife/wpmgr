@@ -434,7 +434,7 @@ final class ProjectionTest extends TestCase
         foreach ([['hero', 'background'], ['hero', 'centered'], ['cta', 'band']] as [$pattern, $variant]) {
             [$page] = self::page($pattern, $variant, 0, ['mobile', 'tablet'], false);
             $nodes  = self::projected($page);
-            $this->assertSame(['group', 'pattern', 'heading', 'paragraph'], array_column($nodes, 'kind'), $pattern . ' ' . $variant);
+            $this->assertSame(['section', 'pattern', 'heading', 'paragraph'], array_column($nodes, 'kind'), $pattern . ' ' . $variant);
             $this->assertSame($variant, $nodes[1]['variant']);
             $this->assertSame([], $nodes[1]['editable']);
             $this->assertSame(['text'], $nodes[2]['editable']);
@@ -445,16 +445,16 @@ final class ProjectionTest extends TestCase
         // A split hero with a picture is a row of two columns; without one it is the stacked group.
         [$page] = self::page('hero', 'split', 0, ['mobile', 'tablet'], true);
         $nodes  = self::projected($page);
-        $this->assertSame(['group', 'pattern', 'column', 'heading', 'paragraph', 'column', 'image'], array_column($nodes, 'kind'));
+        $this->assertSame(['section', 'pattern', 'column', 'heading', 'paragraph', 'column', 'image'], array_column($nodes, 'kind'));
         $this->assertSame('split', $nodes[1]['variant']);
         [$page] = self::page('hero', 'split', 0, ['mobile', 'tablet'], false);
-        $this->assertSame(['group', 'pattern', 'heading', 'paragraph'], array_column(self::projected($page), 'kind'));
+        $this->assertSame(['section', 'pattern', 'heading', 'paragraph'], array_column(self::projected($page), 'kind'));
 
         // A block holding dynamic content is locked on its own; the hero stays a pattern.
         [$page] = self::page('hero', 'centered', 0, ['mobile', 'tablet'], false);
         $page[0]['elements'][0]['elements'][0]['settings']['__dynamic__'] = ['title' => '[elementor-tag id="x"]'];
         $nodes = self::projected($page);
-        $this->assertSame(['group', 'pattern', 'locked', 'paragraph'], array_column($nodes, 'kind'));
+        $this->assertSame(['section', 'pattern', 'locked', 'paragraph'], array_column($nodes, 'kind'));
         $this->assertSame('Elementor element with dynamic content or custom code', $nodes[2]['label']);
     }
 
@@ -608,13 +608,13 @@ final class ProjectionTest extends TestCase
         foreach ($others as $what => $label) {
             $copy = $page;
             $copy[0]['elements'][0]['settings'][LeafPolicy::LABEL_KEY] = $label;
-            $this->assertSame(['group', 'group', 'heading', 'paragraph'], array_column(self::projected($copy), 'kind'), $what . ': a container like any other');
+            $this->assertSame(['section', 'group', 'heading', 'paragraph'], array_column(self::projected($copy), 'kind'), $what . ': a container like any other');
         }
 
         // A label on a widget does not make a pattern of it.
         $copy = $page;
         $copy[0]['elements'][0]['elements'][0]['settings'][LeafPolicy::LABEL_KEY] = $exact;
-        $this->assertSame(['group', 'pattern', 'heading', 'paragraph'], array_column(self::projected($copy), 'kind'));
+        $this->assertSame(['section', 'pattern', 'heading', 'paragraph'], array_column(self::projected($copy), 'kind'));
 
         // The same shape with no label is not a pattern either.
         [$page] = self::page('pricing', 'three-plans', 3);

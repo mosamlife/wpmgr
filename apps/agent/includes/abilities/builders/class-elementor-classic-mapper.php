@@ -781,13 +781,15 @@ final class ElementorClassicMapper
         }
 
         $type    = null;
-        $written = self::rewrite($node, $field['id'], static function (array $widget) use ($field, $value, &$type): ?array {
+        $after   = [];
+        $written = self::rewrite($node, $field['id'], static function (array $widget) use ($field, $value, &$type, &$after): ?array {
             $type     = $widget['widgetType'] ?? null;
             $settings = $widget['settings'] ?? null;
             if (!is_array($settings)) {
                 return null;
             }
             $widget['settings'] = self::putAt($settings, $field['at'], $value);
+            $after              = $widget['settings'];
 
             return $widget;
         });
@@ -795,8 +797,9 @@ final class ElementorClassicMapper
             return ['code' => 'node_not_editable', 'detail' => $at . ': this node does not offer ' . $path];
         }
 
-        // The value at its own path: a widget holding only that value.
-        $only  = self::putAt([], $field['at'], $value);
+        // The value with the rest of its setting (a link keeps its other members): a widget holding only that setting.
+        $top   = $field['at'][0];
+        $only  = [$top => $after[$top] ?? null];
         $check = LeafPolicy::checkTree([['id' => 'set', 'elType' => 'widget', 'settings' => $only, 'elements' => [], 'widgetType' => $type]], self::designedKeys(), self::LEAF_RULES);
         if ($check !== null) {
             $reason = strpos($check['detail'], ': ');
