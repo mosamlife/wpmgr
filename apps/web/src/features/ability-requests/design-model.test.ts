@@ -1,7 +1,20 @@
 import { describe, expect, it } from "vitest";
 
-import { cornersWords, fontWords, frameWords, spacingWords, swatchesOf, typeRamp } from "./design-model";
-import { DESIGN_COLOUR_ROLES, PAGE_FRAMES, SCALE_RATIOS, type PageDesign } from "./outline-model";
+import {
+  backgroundFraming,
+  cornersWords,
+  fontWords,
+  frameWords,
+  patternWords,
+  sectionFacts,
+  sectionTone,
+  spacingWords,
+  swatchesOf,
+  thumbSize,
+  toneSwatch,
+  typeRamp,
+} from "./design-model";
+import { DESIGN_COLOUR_ROLES, PAGE_FRAMES, SCALE_RATIOS, type PageDesign, type SectionNode } from "./outline-model";
 
 // The card draws the sizes the agent writes. This table is the agent's own
 // output: DesignTokens::typography() (apps/agent/includes/abilities/builders/
@@ -135,6 +148,133 @@ describe("the words of a design", () => {
       fontWords("system"),
     ];
     // An en dash (U+2013) or an em dash (U+2014), named by code so this file holds neither.
+    const dashes = new RegExp(`[${String.fromCharCode(0x2013)}${String.fromCharCode(0x2014)}]`);
+    for (const w of words) expect(w).not.toMatch(dashes);
+  });
+});
+
+// --- The sections of a designed page
+
+// The tones, the defaults and the overlay strengths are the agent's own:
+// ElementorSectionCompiler (DEFAULT_TONE, DEFAULT_WIDTH, DEFAULT_SPACING,
+// DEFAULT_OVERLAY, DEFAULT_FOCAL, DEFAULT_MIN_HEIGHT, BACKGROUND_TONE,
+// SCREEN_HEIGHT_VH) and DesignTokens::tone() and overlay().
+
+const COLOURS: PageDesign["colors"] = {
+  ground: "#FAF7F0",
+  surface: "#EFE8DA",
+  ink: "#1B1F2A",
+  muted: "#555B66",
+  accent: "#B4452B",
+  on_accent: "#FFF9F0",
+};
+
+type SectionLook = Partial<Pick<SectionNode, "tone" | "background" | "width" | "spacing" | "align" | "min_height">>;
+
+describe("the tone a section is written in", () => {
+  it.each<[string, SectionLook, string]>([
+    ["names none", {}, "ground"],
+    ["is ground", { tone: "ground" }, "ground"],
+    ["is surface", { tone: "surface" }, "surface"],
+    ["is inverse", { tone: "inverse" }, "inverse"],
+    ["is accent", { tone: "accent" }, "accent"],
+    ["names none, with a background", { background: { attachment_id: 5 } }, "inverse"],
+    ["is surface, with a background", { tone: "surface", background: { attachment_id: 5 } }, "inverse"],
+    ["is accent, with a background", { tone: "accent", background: { attachment_id: 5 } }, "inverse"],
+  ])("a section whose tone %s is written in %s", (_name, section, expected) => {
+    expect(sectionTone(section)).toBe(expected);
+  });
+});
+
+describe("the colour a tone paints", () => {
+  it.each([
+    ["ground", "Ground", "ground", "#FAF7F0"],
+    ["surface", "Surface", "surface", "#EFE8DA"],
+    ["inverse", "Inverse", "ink", "#1B1F2A"],
+    ["accent", "Accent", "accent", "#B4452B"],
+  ] as const)("the %s tone is the design's %s colour", (tone, label, role, hex) => {
+    expect(toneSwatch(COLOURS, tone)).toEqual({ tone, label, role, hex, chip: hex });
+  });
+
+  it("hands on no chip for a colour that is not a closed shape", () => {
+    const odd = { ...COLOURS, accent: "#B4452B;background:url(//evil.example)" };
+    expect(toneSwatch(odd, "accent").chip).toBeNull();
+  });
+});
+
+describe("a section's settings in words", () => {
+  it.each<[string, SectionLook, string[]]>([
+    ["names none: the agent's defaults", {}, ["Boxed", "Large spacing", "Text at the start", "Height follows content"]],
+    [
+      "names every option",
+      { width: "full", spacing: "xl", align: "center", min_height: "screen" },
+      ["Full width", "Extra large spacing", "Text centred", "Height 80% of the screen"],
+    ],
+    ["names the medium spacing", { spacing: "md" }, ["Boxed", "Medium spacing", "Text at the start", "Height follows content"]],
+    ["names the large spacing", { spacing: "lg" }, ["Boxed", "Large spacing", "Text at the start", "Height follows content"]],
+  ])("a section that %s", (_name, section, expected) => {
+    expect(sectionFacts(section)).toEqual(expected);
+  });
+});
+
+describe("a background's framing", () => {
+  it.each([
+    [{}, { overlay: "strong", opacity: 0.65, overlayWords: "Strong overlay", focal: "center", focalTop: 50, focalWords: "Focal point: centre" }],
+    [{ overlay: "soft", focal: "top" }, { overlay: "soft", opacity: 0.45, overlayWords: "Soft overlay", focal: "top", focalTop: 12, focalWords: "Focal point: top" }],
+    [{ overlay: "none", focal: "bottom" }, { overlay: "none", opacity: null, overlayWords: "No overlay", focal: "bottom", focalTop: 88, focalWords: "Focal point: bottom" }],
+  ] as const)("%j is drawn as %j", (named, expected) => {
+    expect(backgroundFraming({ attachment_id: 5, ...named })).toEqual(expected);
+  });
+});
+
+describe("a pattern by name and variant", () => {
+  it.each([
+    ["hero", "background", "Hero · background"],
+    ["hero", "split", "Hero · split"],
+    ["hero", "centered", "Hero · centered"],
+    ["cta", "band", "Call to action · band"],
+    ["features", "split", "Features · split"],
+    ["features", "bento", "Features · bento"],
+    ["features", "grid", "Features · grid"],
+    ["testimonials", "featured", "Testimonials · featured"],
+    ["pricing", "three-plans", "Pricing · three plans"],
+    ["faq", "accordion", "FAQ · accordion"],
+    ["logos", "row", "Logos · row"],
+    ["stats", "counters", "Stats · counters"],
+  ] as const)("%s %s reads %s", (pattern, variant, words) => {
+    expect(patternWords({ pattern, variant })).toBe(words);
+  });
+});
+
+describe("the miniature of a background", () => {
+  it.each([
+    [1600, 900, 114],
+    [1000, 1000, 64],
+    [400, 1200, 48],
+    [4000, 500, 160],
+    [0, 0, 114],
+    [1600, 0, 114],
+    [0, 900, 114],
+  ])("an image of %i by %i is %i px wide at 64 px high", (width, height, wide) => {
+    expect(thumbSize(width, height)).toEqual({ width: wide, height: 64 });
+  });
+});
+
+describe("the words for sections", () => {
+  it("hold no en dash and no em dash", () => {
+    const words = [
+      ...(["ground", "surface", "inverse", "accent"] as const).map((t) => toneSwatch(COLOURS, t).label),
+      ...sectionFacts({}),
+      ...sectionFacts({ width: "full", spacing: "xl", align: "center", min_height: "screen" }),
+      ...sectionFacts({ spacing: "md" }),
+      backgroundFraming({ attachment_id: 5 }).overlayWords,
+      backgroundFraming({ attachment_id: 5, overlay: "soft" }).overlayWords,
+      backgroundFraming({ attachment_id: 5, overlay: "none" }).overlayWords,
+      backgroundFraming({ attachment_id: 5, focal: "top" }).focalWords,
+      patternWords({ pattern: "pricing", variant: "three-plans" }),
+      patternWords({ pattern: "cta", variant: "band" }),
+      patternWords({ pattern: "faq", variant: "accordion" }),
+    ];
     const dashes = new RegExp(`[${String.fromCharCode(0x2013)}${String.fromCharCode(0x2014)}]`);
     for (const w of words) expect(w).not.toMatch(dashes);
   });

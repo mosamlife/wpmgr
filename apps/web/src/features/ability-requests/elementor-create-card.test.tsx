@@ -666,13 +666,46 @@ describe("a designed page", () => {
     expect(designRows(card)[0]?.[1]).toMatch(/^Full width /);
   });
 
-  it("keeps Approve off until the sections are shown, so nothing is approved unseen", async () => {
-    renderTab([designedRow(designedInput("v3-full-landing-page"))]);
+  // Approve keys on what the card shows in full: a designed page is shown once
+  // its design and its sections are, and the card says nothing of "cannot show".
+  it("can be approved once its design and its sections are shown, and posts the row's own presented_digest", async () => {
+    approveMock.mockReturnValue(ok(designedRow(designedInput("v3-full-landing-page"), { state: "approved", ...decided })));
+    renderTab([designedRow(designedInput("v3-full-landing-page"), { presented_digest: "e".repeat(64) })]);
     const card = await openCard();
     expect(within(card).getByTestId("design-summary")).toBeInTheDocument();
-    expect(card).toHaveTextContent(NOT_SHOWABLE);
+    expect(within(card).getByTestId("design-sections")).toBeInTheDocument();
+    expect(card).not.toHaveTextContent(NOT_SHOWABLE);
+    expect(card).not.toHaveTextContent(NOTHING_PUBLISHED);
+    expect(within(card).getByRole("button", { name: "Decline" })).toHaveFocus();
+    const approve = within(card).getByRole("button", { name: "Approve" });
+    expect(approve).toBeEnabled();
+    fireEvent.click(approve);
+    await waitFor(() =>
+      expect(approveMock).toHaveBeenCalledWith({
+        path: { siteId: "site-1", requestId: "pc-1" },
+        body: { presented_digest: "e".repeat(64) },
+      }),
+    );
+  });
+
+  it("keeps Approve off for a shown designed page that carries no presented_digest", async () => {
+    renderTab([designedRow(designedInput("v3-full-landing-page"), { presented_digest: undefined })]);
+    const card = await openCard();
+    expect(within(card).getByTestId("design-sections")).toBeInTheDocument();
     expect(within(card).getByRole("button", { name: "Approve" })).toBeDisabled();
     expect(within(card).getByRole("button", { name: "Decline" })).toBeEnabled();
+  });
+
+  it("states what Elementor builds from the design, not from the site's Elementor settings", async () => {
+    renderTab([designedRow(designedInput("v3-full-landing-page"))]);
+    const card = await openCard();
+    expect(rows(within(card).getByTestId("builder-rows"))).toEqual([
+      [
+        "Elementor",
+        "Built from Elementor's own containers and widgets, styled by the design chosen above. WPMgr does not change Elementor's site-wide styles, templates, header or footer.",
+      ],
+      ...ELEMENTOR_ROWS.slice(1),
+    ]);
   });
 
   it("draws no design on a version 2 Elementor card or on a block-editor card", async () => {
@@ -684,8 +717,10 @@ describe("a designed page", () => {
     expect(cards).toHaveLength(2);
     for (const card of cards) {
       expect(within(card).queryByTestId("design-summary")).toBeNull();
+      expect(within(card).queryByTestId("design-sections")).toBeNull();
       expect(within(card).queryByRole("list", { name: "Design colours" })).toBeNull();
       expect(within(card).queryByRole("list", { name: "Type ramp" })).toBeNull();
+      expect(within(card).queryByRole("list", { name: "Page sections" })).toBeNull();
     }
   });
 
@@ -701,9 +736,193 @@ describe("a designed page", () => {
     const card = await openCard();
     expect(card).toHaveTextContent(NOT_SHOWABLE);
     expect(within(card).queryByTestId("design-summary")).toBeNull();
+    expect(within(card).queryByTestId("design-sections")).toBeNull();
     expect(card.querySelector("img")).toBeNull();
     expect(card.innerHTML).not.toContain("evil.example");
     expect(within(card).getByRole("button", { name: "Approve" })).toBeDisabled();
+  });
+});
+
+// --- the sections of a designed page ---------------------------------------------
+//
+// Every section is listed in page order with the swatch of the tone it is
+// written in, its #anchor, its settings in words, a miniature of its background
+// image and the patterns it holds, by name and variant. The tones and the
+// defaults are the agent's own (ElementorSectionCompiler: DEFAULT_TONE,
+// DEFAULT_WIDTH, DEFAULT_SPACING, DEFAULT_OVERLAY, DEFAULT_FOCAL,
+// DEFAULT_MIN_HEIGHT and BACKGROUND_TONE; DesignTokens::tone and overlay).
+
+type MediaOver = Parameters<typeof mediaFact>[1];
+type SectionDoc = Record<string, unknown> & { children: Array<Record<string, unknown>> };
+
+const sectionDocs = (doc: Doc) => doc.outline as SectionDoc[];
+
+/** The full landing page in six different colours, its hero background (attachment 42) as the site described it. */
+function landingRow(change?: (doc: Doc) => void, hero: MediaOver = {}): AbilityRequest {
+  const input = designedInput("v3-full-landing-page", (d) => {
+    designOf(d).colors = { ...SIX_COLOURS };
+    change?.(d);
+  });
+  const media = imageIdsOf(input).map((id) =>
+    mediaFact(id, id === 42 ? { filename: "hero.jpg", width: 1600, height: 900, ...hero } : {}),
+  );
+  return designedRow(input, { page_media: media, presented_digest: "e".repeat(64) });
+}
+
+describe("the sections of a designed page", () => {
+  const sectionsOf = (card: HTMLElement) => within(card).getAllByTestId("design-section");
+  const textOf = (el: HTMLElement, id: string) => within(el).getByTestId(id).textContent;
+
+  it("lists every section in page order, each with its #anchor and the tone it is written in", async () => {
+    renderTab([landingRow()]);
+    const card = await openCard();
+    expect(within(card).getByRole("list", { name: "Page sections" })).toBeInTheDocument();
+    expect(sectionsOf(card).map((li) => [textOf(li, "section-anchor"), textOf(li, "section-tone")])).toEqual([
+      ["#top", "Inverse"],
+      ["#clients", "Surface"],
+      ["#features", "Ground"],
+      ["#numbers", "Surface"],
+      ["#stories", "Ground"],
+      ["#pricing", "Surface"],
+      ["#faq", "Ground"],
+      ["#signup", "Accent"],
+    ]);
+  });
+
+  it("paints each tone swatch with the design's colour for that tone, inverse being ink", async () => {
+    renderTab([landingRow()]);
+    const card = await openCard();
+    const { ground, surface, ink, accent } = SIX_COLOURS;
+    const expected = [ink, surface, ground, surface, ground, surface, ground, accent];
+    sectionsOf(card).forEach((li, i) => {
+      expect(within(li).getByTestId("section-tone-swatch")).toHaveStyle({ backgroundColor: expected[i]! });
+    });
+  });
+
+  it("writes a section with a background image in the inverse tone, whatever tone it names", async () => {
+    renderTab([landingRow((d) => (sectionDocs(d)[0]!.tone = "surface"))]);
+    const card = await openCard();
+    const top = sectionsOf(card)[0]!;
+    expect(textOf(top, "section-tone")).toBe("Inverse");
+    expect(within(top).getByTestId("section-tone-swatch")).toHaveStyle({ backgroundColor: SIX_COLOURS.ink });
+  });
+
+  it("states each section's settings in words, with the values the agent writes when the AI names none", async () => {
+    renderTab([landingRow()]);
+    const card = await openCard();
+    const facts = sectionsOf(card).map((li) => textOf(li, "section-facts"));
+    expect(facts).toEqual([
+      "Full width · Extra large spacing · Text centred · Height 80% of the screen",
+      "Boxed · Medium spacing · Text at the start · Height follows content",
+      "Boxed · Large spacing · Text at the start · Height follows content",
+      "Boxed · Large spacing · Text at the start · Height follows content",
+      "Boxed · Large spacing · Text at the start · Height follows content",
+      "Boxed · Extra large spacing · Text at the start · Height follows content",
+      "Boxed · Large spacing · Text at the start · Height follows content",
+      "Boxed · Large spacing · Text centred · Height follows content",
+    ]);
+  });
+
+  it("shows a section's background as a miniature in the image's proportions, with the file's facts", async () => {
+    renderTab([landingRow()]);
+    const card = await openCard();
+    const thumb = within(sectionsOf(card)[0]!).getByTestId("background-thumb");
+    expect(textOf(thumb, "thumb-file")).toBe("hero.jpg");
+    expect(textOf(thumb, "thumb-size")).toBe("1600 × 900");
+    expect(textOf(thumb, "thumb-framing")).toBe("Strong overlay · Focal point: centre");
+    expect(within(thumb).getByTestId("thumb-tile")).toHaveStyle({ width: "114px", height: "64px" });
+    // The overlay is the design's ink at the strength the agent writes, and the marker sits at the focal point.
+    expect(within(thumb).getByTestId("thumb-overlay")).toHaveStyle({ backgroundColor: SIX_COLOURS.ink, opacity: "0.65" });
+    expect(within(thumb).getByTestId("thumb-focal")).toHaveStyle({ top: "50%" });
+    const link = within(thumb).getByRole("link", { name: /View image in WordPress/ });
+    expect(link).toHaveAttribute("href", "https://example.com/wp-admin/post.php?post=42&action=edit");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    // A section with no background has none, and the page has one background.
+    expect(within(card).getAllByTestId("background-thumb")).toHaveLength(1);
+    expect(within(sectionsOf(card)[1]!).queryByTestId("background-thumb")).toBeNull();
+  });
+
+  it.each<[string, string, string | null, string, string]>([
+    ["none", "top", null, "12%", "No overlay · Focal point: top"],
+    ["soft", "bottom", "0.45", "88%", "Soft overlay · Focal point: bottom"],
+    ["strong", "center", "0.65", "50%", "Strong overlay · Focal point: centre"],
+  ])("draws the overlay %s and the focal point %s as the agent writes them", async (overlay, focal, opacity, top, words) => {
+    renderTab([landingRow((d) => (sectionDocs(d)[0]!.background = { attachment_id: 42, overlay, focal }))]);
+    const card = await openCard();
+    const thumb = within(sectionsOf(card)[0]!).getByTestId("background-thumb");
+    if (opacity === null) expect(within(thumb).queryByTestId("thumb-overlay")).toBeNull();
+    else expect(within(thumb).getByTestId("thumb-overlay")).toHaveStyle({ opacity });
+    expect(within(thumb).getByTestId("thumb-focal")).toHaveStyle({ top });
+    expect(textOf(thumb, "thumb-framing")).toBe(words);
+  });
+
+  it("states a strong overlay and a central focal point when the background names neither", async () => {
+    renderTab([landingRow((d) => (sectionDocs(d)[0]!.background = { attachment_id: 42 }))]);
+    const card = await openCard();
+    const thumb = within(sectionsOf(card)[0]!).getByTestId("background-thumb");
+    expect(textOf(thumb, "thumb-framing")).toBe("Strong overlay · Focal point: centre");
+  });
+
+  it("draws no picture of a site file: the miniature is made of numbers and closed values", async () => {
+    renderTab([landingRow()]);
+    const card = await openCard();
+    expect(card.querySelector("img, picture, canvas, video")).toBeNull();
+    expect(card.querySelector("[style*='url(']")).toBeNull();
+  });
+
+  it("shows the site's file name as text in a bidi isolate, never as markup", async () => {
+    const hostile = "<img src=x onerror=alert(1)>.jpg";
+    renderTab([landingRow(undefined, { filename: hostile })]);
+    const card = await openCard();
+    const file = within(card).getByTestId("thumb-file");
+    expect(file.textContent).toBe(hostile);
+    expect(file.querySelector("bdi")?.textContent).toBe(hostile);
+    expect(card.querySelector("img")).toBeNull();
+  });
+
+  it("names each pattern and its variant, one to a section, in page order", async () => {
+    renderTab([landingRow()]);
+    const card = await openCard();
+    expect(within(card).getAllByTestId("section-pattern").map((el) => el.textContent)).toEqual([
+      "Hero · background",
+      "Logos · row",
+      "Features · split",
+      "Stats · counters",
+      "Testimonials · featured",
+      "Pricing · three plans",
+      "FAQ · accordion",
+      "Call to action · band",
+    ]);
+    expect(sectionsOf(card).map((li) => within(li).getAllByTestId("section-pattern").length)).toEqual([1, 1, 1, 1, 1, 1, 1, 1]);
+  });
+
+  it("shows what a section holds beside its patterns, the AI's words in a bidi isolate", async () => {
+    const hostile = "<b>What we do</b> & <img src=x onerror=alert(1)>";
+    renderTab([landingRow((d) => (sectionDocs(d)[2]!.children[0]!.text = hostile))]);
+    const card = await openCard();
+    const features = sectionsOf(card)[2]!;
+    expect(within(features).getByText("Heading 2")).toBeInTheDocument();
+    expect(within(features).getByText(hostile).closest("bdi")).not.toBeNull();
+    expect(card.querySelector("img")).toBeNull();
+  });
+
+  it("labels the three button styles, the text style included", async () => {
+    renderTab([designedRow(designedInput("buttons-in-three-styles"))]);
+    const card = await openCard();
+    expect(within(card).getAllByText(/^Button · /).map((el) => el.textContent)).toEqual([
+      "Button · Filled",
+      "Button · Outline",
+      "Button · Text",
+    ]);
+  });
+
+  it("marks a button link to a section of the page, shown as text and never as a link", async () => {
+    renderTab([designedRow(designedInput("link-to-a-later-anchor"))]);
+    const card = await openCard();
+    expect(card).toHaveTextContent("Links to #pricing");
+    expect(card.querySelector("[data-chip='section']")).toHaveTextContent("A section of this page");
+    expect(card.querySelector("a[href='#pricing']")).toBeNull();
   });
 });
 

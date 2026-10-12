@@ -1092,8 +1092,9 @@ export function buttonsLabel(align: "left" | "center" | undefined): string {
   return align === "center" ? "Buttons · centred" : "Buttons";
 }
 
-export function buttonLabel(style: "fill" | "outline" | undefined): string {
-  return style === "outline" ? "Button · Outline" : "Button · Filled";
+export function buttonLabel(style: "fill" | "outline" | "text" | undefined): string {
+  if (style === "outline") return "Button · Outline";
+  return style === "text" ? "Button · Text" : "Button · Filled";
 }
 
 /** "1200 × 800", or null when the site did not report a size. */

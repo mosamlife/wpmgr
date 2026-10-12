@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 
 import { editDraftHref } from "./ability-card-model";
 import {
+  anchorOfLink,
   buttonLabel,
   buttonsLabel,
   classifyLink,
@@ -20,7 +21,14 @@ import {
   type OutlineNode,
   type PageMediaFact,
   type PagePreview,
+  type SectionNode,
 } from "./outline-model";
+
+/** What a section of a designed page holds beside its patterns: the leaves, columns and groups of version 2, with text buttons. */
+export type SectionLeaf = Exclude<SectionNode["children"][number], { type: "pattern" }>;
+
+/** A node the outline view draws: a version 2 node, or one a designed page's section holds. */
+type ViewNode = OutlineNode | SectionLeaf;
 
 // The readable outline of an AI page request (design: the page is shown as an
 // outline, never as a rendered page). Everything here is a React text node:
@@ -110,6 +118,24 @@ export function OutlineFragmentView({ nodes, siteHost, siteUrl, label }: Outline
   );
 }
 
+export interface OutlineNodeViewProps {
+  /** One node of a designed page's section. */
+  node: SectionLeaf;
+  /** What the site said about each image the page names. */
+  media: ReadonlyMap<number, PageMediaFact>;
+  /** The site's host as WPMgr recorded it (site_host), to tell its own links from others. */
+  siteHost: string;
+  /** The site's own address, for "View image in WordPress". Unknown is fine. */
+  siteUrl?: string | null;
+}
+
+/** One leaf, column row or group of a designed page's section, drawn as the outline of a version 2 page draws it. */
+export function OutlineNodeView({ node, media, siteHost, siteUrl }: OutlineNodeViewProps) {
+  // A designed page is built by Elementor, whose images show the media library's alt text.
+  const ctx: Ctx = { media, siteHost, siteUrl: siteUrl ?? null, altFromLibrary: true };
+  return <NodeView node={node} ctx={ctx} />;
+}
+
 /** The AI's or the site's words, isolated so odd text direction cannot reorder what is around it. */
 function Txt({ children, className }: { children: ReactNode; className?: string }) {
   return <bdi className={className}>{children}</bdi>;
@@ -120,7 +146,7 @@ function Label({ children }: { children: ReactNode }) {
   return <span className="text-xs font-medium text-muted-foreground">{children}</span>;
 }
 
-function Nodes({ nodes, ctx }: { nodes: readonly OutlineNode[]; ctx: Ctx }) {
+function Nodes({ nodes, ctx }: { nodes: readonly ViewNode[]; ctx: Ctx }) {
   return (
     <div className="space-y-2">
       {nodes.map((node, i) => (
@@ -142,7 +168,7 @@ function Container({ label, children }: { label: string; children: ReactNode }) 
   );
 }
 
-function NodeView({ node, ctx }: { node: OutlineNode; ctx: Ctx }) {
+function NodeView({ node, ctx }: { node: ViewNode; ctx: Ctx }) {
   switch (node.type) {
     case "heading":
       return (
@@ -204,7 +230,10 @@ function NodeView({ node, ctx }: { node: OutlineNode; ctx: Ctx }) {
                 {/* The address is shown as text and is never a link. It is ASCII by the
                     grammar, so it needs no isolation. */}
                 <span className="break-all">{`Links to ${button.url}`}</span>{" "}
-                <LinkChip target={classifyLink(button.url, ctx.siteHost)} />
+                <LinkChip
+                  target={classifyLink(button.url, ctx.siteHost)}
+                  onThisPage={anchorOfLink(button.url) !== null}
+                />
               </p>
             </div>
           ))}
@@ -306,7 +335,19 @@ function ImageView({ node, ctx }: { node: ImageNode; ctx: Ctx }) {
   );
 }
 
-function LinkChip({ target }: { target: LinkTarget | null }) {
+function LinkChip({ target, onThisPage = false }: { target: LinkTarget | null; onThisPage?: boolean }) {
+  // A "#anchor" link names a section of the page itself; the page's own rules
+  // have already checked that the section exists.
+  if (onThisPage) {
+    return (
+      <span
+        data-chip="section"
+        className="inline-flex items-center rounded bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+      >
+        A section of this page
+      </span>
+    );
+  }
   // A null target cannot reach here (the grammar refuses the link first).
   if (target === null) return null;
   if (target.kind === "site") {
