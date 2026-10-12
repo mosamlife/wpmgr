@@ -197,6 +197,53 @@ final class DesignedAllowlistTest extends TestCase
         }
     }
 
+    public function test_no_value_a_listed_pin_takes_is_lost_in_the_merge(): void
+    {
+        $keys = ElementorClassicMapper::designedKeys();
+
+        foreach ([ElementorClassicMapper::ALLOWED_KEYS, ElementorLeafStyle::KEYS] as $source) {
+            foreach ($source as $type => $paths) {
+                foreach ($paths as $path => $pin) {
+                    $from   = explode(':', $pin, 2);
+                    $merged = explode(':', $keys[$type][$path], 2);
+                    if ($from[0] !== $merged[0] || !isset($from[1], $merged[1])) {
+                        continue;
+                    }
+                    foreach (explode('|', $from[1]) as $value) {
+                        $this->assertContains($value, explode('|', $merged[1]), $type . ' ' . $path);
+                    }
+                }
+            }
+        }
+    }
+
+    /** @return array<string,array{0:string,1:string,2:string}> A listed pin, a leaf style's pin, the merged pin. */
+    public static function widenings(): array
+    {
+        return [
+            'two lists join'          => ['enum:left', 'enum:center', 'enum:left|center'],
+            'a shared value once'     => ['enum:left', 'enum:left|center', 'enum:left|center'],
+            'units join'              => ['slider:px', 'slider:em|px', 'slider:px|em'],
+            'the open pin stays open' => ['enum', 'enum:center', 'enum'],
+            'the open style pin'      => ['enum:md', 'enum', 'enum'],
+            'another name'            => ['text', 'enum', 'enum'],
+            'the same pin'            => ['colour', 'colour', 'colour'],
+        ];
+    }
+
+    /**
+     * @dataProvider widenings
+     * @param string $listed The mapper's pin.
+     * @param string $style  The leaf style's pin.
+     * @param string $merged The pin of the designed allowlist.
+     */
+    public function test_a_leaf_style_pin_widens_a_listed_one(string $listed, string $style, string $merged): void
+    {
+        $widen = new \ReflectionMethod(ElementorClassicMapper::class, 'widen');
+
+        $this->assertSame($merged, $widen->invoke(null, $listed, $style));
+    }
+
     public function test_a_pattern_never_changes_a_pin_the_mapper_or_a_leaf_style_lists(): void
     {
         $keys = ElementorClassicMapper::designedKeys();
@@ -280,6 +327,11 @@ final class DesignedAllowlistTest extends TestCase
             $this->assertArrayHasKey('tree', $r, $name . ': ' . ($r['detail'] ?? ''));
             $this->assertNull(self::check($r['tree'][0], $active), $name);
         }
+
+        // A designed page is checked for its compiler's breakpoints, whatever the plain ones say.
+        $r = ElementorClassicMapper::map(['outline' => [self::columnsNode()]], new IdSeed(self::REQUEST), [], true, self::sections(self::STOCK_BREAKPOINTS), ['tablet']);
+        $this->assertArrayHasKey('tree', $r, (string) ($r['detail'] ?? ''));
+        $this->assertSame('column', $r['tree'][0]['settings']['flex_direction_mobile'] ?? null);
     }
 
     public function test_a_plain_row_writes_its_phone_direction_only_where_the_site_has_the_mobile_breakpoint(): void
