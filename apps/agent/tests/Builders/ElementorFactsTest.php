@@ -42,6 +42,13 @@ final class ElementorFactsTest extends TestCase
     /** @var array<int, object> */
     private array $users = [];
 
+    /**
+     * Post id => meta key => the single value get_post_meta() answers.
+     *
+     * @var array<int, array<string, mixed>>
+     */
+    private array $meta = [];
+
     protected function set_up(): void
     {
         parent::set_up();
@@ -52,6 +59,10 @@ final class ElementorFactsTest extends TestCase
             fn ($name, $default = false) => array_key_exists($name, $this->options) ? $this->options[$name] : $default
         );
         Functions\when('get_userdata')->alias(fn ($id) => $this->users[(int) $id] ?? false);
+        $this->meta = [];
+        Functions\when('get_post_meta')->alias(
+            fn ($id, $key = '', $single = false) => $this->meta[(int) $id][$key] ?? ($single ? '' : [])
+        );
         ElementorPluginStandIn::$instance = null;
         ElementorUtilsStandIn::$sanitise  = null;
     }
@@ -372,7 +383,7 @@ final class ElementorFactsTest extends TestCase
         ];
         foreach ($throwers as $throw) {
             $plugin = new ElementorPluginStandIn();
-            foreach (['documents', 'elements_manager', 'widgets_manager', 'experiments', 'kits_manager', 'files_manager'] as $name) {
+            foreach (['documents', 'elements_manager', 'widgets_manager', 'experiments', 'kits_manager', 'files_manager', 'breakpoints'] as $name) {
                 $plugin->{$name} = new ElementorManagerStandIn($throw);
             }
             ElementorPluginStandIn::$instance = $plugin;
@@ -657,6 +668,102 @@ final class ElementorFactsTest extends TestCase
         $this->assertSame(['service_role_excluded', 'pro_active'], ElementorFacts::BLOCK_KEYS);
     }
 
+    public function testActiveBreakpoints(): void
+    {
+        $api              = new FakeElementorApi();
+        $api->activeKitId = 42;
+
+        // The kit has never saved the key: Elementor's breakpoints manager
+        // answers, and the facts list Elementor's names smallest first.
+        $api->activeBreakpoints = ['tablet', 'mobile'];
+        $this->assertSame(['mobile', 'tablet'], $this->collect($api)['active_breakpoints']);
+        $this->assertCount(1, $api->callsTo('activeBreakpoints'));
+
+        // Kit settings saved without the key, or with it unset, are a kit
+        // that has never saved it.
+        foreach ([['container_width' => ['unit' => 'px', 'size' => '1140']], ['active_breakpoints' => null]] as $settings) {
+            $this->meta[42]['_elementor_page_settings'] = $settings;
+            $api->calls                                  = [];
+            $this->assertSame(['mobile', 'tablet'], $this->collect($api)['active_breakpoints'], var_export($settings, true));
+            $this->assertCount(1, $api->callsTo('activeBreakpoints'));
+        }
+
+        // The list the kit saved is the answer, and the manager is not asked.
+        // Only Elementor's own breakpoint names are kept, in Elementor's order.
+        $saved = [
+            [['viewport_mobile', 'viewport_tablet'], ['mobile', 'tablet']],
+            [['viewport_tablet', 'viewport_mobile', 'viewport_laptop'], ['mobile', 'tablet', 'laptop']],
+            [
+                ['viewport_widescreen', 'viewport_laptop', 'viewport_tablet_extra', 'viewport_tablet', 'viewport_mobile_extra', 'viewport_mobile'],
+                ['mobile', 'mobile_extra', 'tablet', 'tablet_extra', 'laptop', 'widescreen'],
+            ],
+            [['viewport_laptop'], ['laptop']],
+            [[], []],
+            [
+                ['viewport_mobile', 'viewport_mobile', 'viewport_phablet', 'mobile', 'tablet', 'viewport_TABLET', ' viewport_tablet', 'viewport_tablet ', 'viewport_tablet<', 7, null, true, ['viewport_tablet']],
+                ['mobile'],
+            ],
+        ];
+        foreach ($saved as [$list, $expected]) {
+            $this->meta[42]['_elementor_page_settings'] = ['active_breakpoints' => $list];
+            $api->calls                                  = [];
+            $this->assertSame($expected, $this->collect($api)['active_breakpoints'], var_export($list, true));
+            $this->assertSame([], $api->callsTo('activeBreakpoints'));
+        }
+
+        // A saved value that is not a list cannot be read: null, and the
+        // manager is not asked in its place.
+        foreach (['viewport_mobile', 5, true, 1.5] as $bad) {
+            $this->meta[42]['_elementor_page_settings'] = ['active_breakpoints' => $bad];
+            $api->calls                                  = [];
+            $this->assertNull($this->collect($api)['active_breakpoints'], var_export($bad, true));
+            $this->assertSame([], $api->callsTo('activeBreakpoints'));
+        }
+
+        // Settings of another post are not the kit's: with no active kit the
+        // manager answers.
+        $this->meta[42]['_elementor_page_settings'] = ['active_breakpoints' => ['viewport_laptop']];
+        $api->activeKitId                           = 0;
+        $api->activeBreakpoints                     = ['mobile', 'phablet', 'laptop', 'tablet', 'mobile'];
+        $this->assertSame(['mobile', 'tablet', 'laptop'], $this->collect($api)['active_breakpoints']);
+
+        // The manager cannot answer, or Elementor is not loaded: null.
+        $api->activeBreakpoints = null;
+        $this->assertNull($this->collect($api)['active_breakpoints']);
+        $api->activeBreakpoints = ['mobile', 'tablet'];
+        $api->loaded            = false;
+        $this->assertNull($this->collect($api)['active_breakpoints']);
+
+        // A kit read that throws is not answered by the manager either.
+        $api->loaded      = true;
+        $api->activeKitId = 42;
+        Functions\when('get_post_meta')->alias(static fn () => throw new \RuntimeException('meta failed'));
+        $api->calls = [];
+        $this->assertNull($this->collect($api)['active_breakpoints']);
+        $this->assertSame([], $api->callsTo('activeBreakpoints'));
+
+        // The runtime asks Elementor's breakpoints manager and reports the
+        // names it keys its active breakpoints by.
+        $breakpoint = new \stdClass();
+        $answers    = [
+            [['mobile' => $breakpoint, 'tablet' => $breakpoint], ['mobile', 'tablet']],
+            [['laptop' => $breakpoint, 'mobile' => $breakpoint, 'tablet' => $breakpoint], ['laptop', 'mobile', 'tablet']],
+            [[], []],
+            [[0 => $breakpoint, 'Tablet' => $breakpoint, 'tab let' => $breakpoint, 'mobile' => $breakpoint], ['mobile']],
+            ['mobile', null],
+            [null, null],
+            [$breakpoint, null],
+        ];
+        $plugin                           = new ElementorPluginStandIn();
+        ElementorPluginStandIn::$instance = $plugin;
+        $runtime                          = $this->standInRuntime();
+        foreach ($answers as [$answer, $expected]) {
+            $plugin->breakpoints = new ElementorManagerStandIn(static fn () => $answer);
+            $this->assertSame($expected, $runtime->activeBreakpoints(), var_export($answer, true));
+            $this->assertSame([['get_active_breakpoints', []]], $plugin->breakpoints->calls);
+        }
+    }
+
     /**
      * @param FakeElementorApi $api Elementor double.
      * @return array<string, mixed>
@@ -733,12 +840,14 @@ final class ElementorFactsTest extends TestCase
         $this->assertFalse($runtime->widgetTypeExists('heading'));
         $this->assertNull($runtime->ksesPostDeep(['a' => '<b>x</b>']));
         $this->assertFalse($runtime->deletePostCss(41));
+        $this->assertNull($runtime->activeBreakpoints());
 
         $facts = ElementorFacts::collect($runtime, self::PRINCIPAL);
         $this->assertSame($loaded, $facts['active']);
         $this->assertNull($facts['containers']);
         $this->assertNull($facts['atomic']);
         $this->assertSame(0, $facts['active_kit_id']);
+        $this->assertNull($facts['active_breakpoints']);
     }
 
     /**
@@ -777,6 +886,9 @@ final class ElementorPluginStandIn
 
     /** @var object|null */
     public $files_manager = null;
+
+    /** @var object|null */
+    public $breakpoints = null;
 }
 
 /**
@@ -855,6 +967,15 @@ final class ElementorManagerStandIn
     public function get_active_id(...$args)
     {
         return $this->answer('get_active_id', $args);
+    }
+
+    /**
+     * @param mixed ...$args Arguments.
+     * @return mixed
+     */
+    public function get_active_breakpoints(...$args)
+    {
+        return $this->answer('get_active_breakpoints', $args);
     }
 
     /**

@@ -40,6 +40,12 @@ final class ElementorRuntime implements ElementorApi
     /** A positive decimal id that fits an int. */
     private const RE_ID = '/^[1-9][0-9]{0,17}$/D';
 
+    /** A breakpoint name as Elementor keys one: lowercase letters, digits and _. */
+    private const RE_BREAKPOINT = '/^[a-z][a-z0-9_]{0,31}$/D';
+
+    /** Most breakpoint names reported. */
+    private const MAX_BREAKPOINTS = 16;
+
     /**
      * @param string $pluginClass     Tests only: stands in for Elementor's main plugin class. Production passes none.
      * @param string $utilsClass      Tests only: stands in for Elementor's utility class. Production passes none.
@@ -107,6 +113,36 @@ final class ElementorRuntime implements ElementorApi
         }
 
         return self::positiveId($id);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * Elementor's breakpoints manager keys its active breakpoints by name; a
+     * key that is not a plain breakpoint name is not reported.
+     */
+    public function activeBreakpoints(): ?array
+    {
+        try {
+            $active = $this->call('breakpoints', 'get_active_breakpoints', []);
+        } catch (\Throwable $e) {
+            return null;
+        }
+        if (!is_array($active)) {
+            return null;
+        }
+        $names = [];
+        foreach (array_keys($active) as $name) {
+            if (!is_string($name) || preg_match(self::RE_BREAKPOINT, $name) !== 1) {
+                continue;
+            }
+            $names[] = $name;
+            if (count($names) >= self::MAX_BREAKPOINTS) {
+                break;
+            }
+        }
+
+        return $names;
     }
 
     /**

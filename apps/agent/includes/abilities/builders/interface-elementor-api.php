@@ -53,6 +53,19 @@ interface ElementorApi
     public function activeKitId(): int;
 
     /**
+     * The names Elementor's breakpoints manager keys its active breakpoints
+     * by (mobile, tablet, laptop, ...), in the order it reports them. Null
+     * when the manager cannot be asked or does not answer with a list.
+     *
+     * The manager answers from the active kit's saved list when there is
+     * one and from Elementor's defaults when there is none, so this is the
+     * answer to use when the kit has never saved its list.
+     *
+     * @return list<string>|null
+     */
+    public function activeBreakpoints(): ?array;
+
+    /**
      * Elementor's document for a post, read fresh (not from Elementor's
      * per-request cache). Null when there is none.
      *

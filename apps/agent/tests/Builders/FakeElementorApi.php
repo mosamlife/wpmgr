@@ -39,6 +39,14 @@ final class FakeElementorApi implements ElementorApi
     public int $activeKitId = 0;
 
     /**
+     * What activeBreakpoints() answers: the breakpoints manager's names, as
+     * Elementor's defaults give them.
+     *
+     * @var list<string>|null
+     */
+    public ?array $activeBreakpoints = ['mobile', 'tablet'];
+
+    /**
      * Post id => Elementor document stand-in.
      *
      * @var array<int, object>
@@ -124,6 +132,16 @@ final class FakeElementorApi implements ElementorApi
         $this->calls[] = ['activeKitId', []];
 
         return $this->loaded ? $this->activeKitId : 0;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function activeBreakpoints(): ?array
+    {
+        $this->calls[] = ['activeBreakpoints', []];
+
+        return $this->loaded ? $this->activeBreakpoints : null;
     }
 
     /**

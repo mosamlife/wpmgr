@@ -25,6 +25,7 @@ use WPMgr\Agent\Abilities\Builders\BuilderDocumentFingerprint;
 use WPMgr\Agent\Abilities\Builders\BuilderPageCreate;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
 use WPMgr\Agent\Abilities\Builders\ElementorDocument;
+use WPMgr\Agent\Abilities\Builders\ElementorFacts;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -307,6 +308,8 @@ final class BuilderPageCreateTest extends TestCase
 
         $ok = $this->precheck(self::spec($outline), $request, $facts);
         $this->assertArrayNotHasKey('refusal', $ok);
+        // The facts read the kit's settings; every other read is the alt.
+        $asked = array_values(array_filter($asked, static fn (array $read): bool => $read[1] !== ElementorFacts::KIT_SETTINGS_META));
         $this->assertSame([[5, '_wp_attachment_image_alt', true]], $asked, 'the alt is read from the media library, one value');
         $this->assertSame($golden, $ok['preview']['tree']);
         $this->assertSame($facts, $ok['preview']['media'], 'the preview carries the image facts as resolved');

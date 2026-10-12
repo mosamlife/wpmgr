@@ -400,7 +400,7 @@ final class BuilderPageStructureTest extends TestCase
 
         $asked = array_unique(array_column($this->api->calls, 0));
         $this->assertSame([], array_values(array_intersect($asked, self::DOCUMENT_API)), 'Elementor\'s document and element API is never asked');
-        $this->assertSame([], array_values(array_diff($asked, ['loaded', 'version', 'experimentActive', 'activeKitId'])), 'only the facts the version comes from');
+        $this->assertSame([], array_values(array_diff($asked, ['loaded', 'version', 'experimentActive', 'activeKitId', 'activeBreakpoints'])), 'only the facts the version comes from');
         $this->assertNotSame([], $this->wpdb->queries, 'precondition: the rows were read with SQL');
         foreach ($this->wpdb->queries as $query) {
             $this->assertStringStartsWith('SELECT ', $query['sql'], 'the read sends only SELECTs');
