@@ -5,7 +5,14 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import type { AbilityRequest } from "@wpmgr/api";
 
 import { renderWithProviders } from "@/test/render";
-import { elementorFacts, mediaFact, pageCreateRow, pageInput, type PageBuilderRow } from "@/test/ability-request-rows";
+import {
+  elementorFacts,
+  imageIdsOf,
+  mediaFact,
+  pageCreateRow,
+  pageInput,
+  type PageBuilderRow,
+} from "@/test/ability-request-rows";
 
 import { AiEditingSection } from "./ai-editing-section";
 
@@ -491,5 +498,211 @@ describe("the AI's words on an Elementor card", () => {
     expect(card.querySelector("img")).toBeNull();
     expect(card.querySelector("script")).toBeNull();
     expect(within(card).getByRole("button", { name: "Approve" })).toBeEnabled();
+  });
+});
+
+// --- a designed page (outline version 3) ----------------------------------------
+//
+// The design the AI chose is drawn from the exact input: six swatches, the type
+// ramp at the sizes the agent writes, the fonts, corners and spacing, and the
+// page frame the site resolved (the control plane adds it to the input as its
+// last member, mcp/page_create_input.go pageCreateInputWithFrame). The inputs
+// are the shared designed-page cases that the control plane, the agent and this
+// card all read.
+
+const V3_CASES = join(process.cwd(), "..", "agent", "tests", "fixtures", "ability-run", "page-create-v3-cases.json");
+
+type Doc = Record<string, unknown>;
+
+/** The input text of one shared designed-page case, after `change` has edited its page. */
+function designedInput(name: string, change?: (doc: Doc) => void): string {
+  const file = JSON.parse(readFileSync(V3_CASES, "utf8")) as { cases: Array<{ name: string; input: string }> };
+  const found = file.cases.find((c) => c.name === name);
+  if (!found) throw new Error(`the shared designed-page cases have no ${name}`);
+  if (change === undefined) return found.input;
+  const doc = JSON.parse(found.input) as Doc;
+  change(doc);
+  return JSON.stringify(doc);
+}
+
+const designOf = (doc: Doc) => doc.design as Doc & { colors: Doc; fonts: Doc; scale: Doc };
+
+/** A pending designed-page request as the queue returns it: every attachment the page names has a fact. */
+function designedRow(input_json: string, over: Partial<AbilityRequest> = {}): AbilityRequest {
+  const ids = imageIdsOf(input_json);
+  return pageCreateRow({
+    input_json,
+    page_builder: elementorFacts(),
+    media: ids.length > 0 ? ids.map((id) => mediaFact(id)) : null,
+    ...over,
+  });
+}
+
+/** Six different colours, so a swatch drawn from the wrong role cannot match by accident. */
+const SIX_COLOURS = {
+  ground: "#FAF7F0",
+  surface: "#EFE8DA",
+  ink: "#1B1F2A",
+  muted: "#555B66",
+  accent: "#B4452B",
+  on_accent: "#FFF9F0",
+};
+
+describe("a designed page", () => {
+  /** The rows of the design's list as [label, text] pairs. */
+  const designRows = (card: HTMLElement) => rows(within(card).getByTestId("design-rows"));
+
+  it("shows the six design colours as swatches, each named by its role and spelled out", async () => {
+    renderTab([designedRow(designedInput("v3-minimal-page", (d) => (designOf(d).colors = { ...SIX_COLOURS })))]);
+    const card = await openCard();
+    const items = within(within(card).getByRole("list", { name: "Design colours" })).getAllByRole("listitem");
+    expect(items.map((li) => [within(li).getByTestId("swatch-role").textContent, within(li).getByTestId("swatch-hex").textContent])).toEqual([
+      ["Ground", "#FAF7F0"],
+      ["Surface", "#EFE8DA"],
+      ["Ink", "#1B1F2A"],
+      ["Muted", "#555B66"],
+      ["Accent", "#B4452B"],
+      ["On accent", "#FFF9F0"],
+    ]);
+    // The chip is drawn in the colour its own label spells out.
+    for (const [i, hex] of Object.values(SIX_COLOURS).entries()) {
+      expect(within(items[i]!).getByTestId("swatch-chip")).toHaveStyle({ backgroundColor: hex });
+    }
+  });
+
+  it("draws the type ramp in pixels, at the sizes the agent writes for a base of 17 and a major third", async () => {
+    renderTab([designedRow(designedInput("v3-minimal-page"))]);
+    const card = await openCard();
+    const ramp = within(card).getByRole("list", { name: "Type ramp" });
+    const steps = within(ramp)
+      .getAllByRole("listitem")
+      .map((li) => [within(li).getByTestId("ramp-name").textContent, within(li).getByTestId("ramp-size").textContent]);
+    expect(steps).toEqual([
+      ["Display", "52 px"],
+      ["Heading 2", "33 px"],
+      ["Heading 3", "27 px"],
+      ["Lead", "21 px"],
+      ["Body", "17 px"],
+      ["Eyebrow", "14 px"],
+      ["Button", "16 px"],
+    ]);
+    // Each sample is drawn at the size beside it, in the weight the agent writes.
+    expect(within(ramp).getByTestId("ramp-sample-display")).toHaveStyle({ fontSize: "52px", fontWeight: "700" });
+    expect(within(ramp).getByTestId("ramp-sample-h3")).toHaveStyle({ fontSize: "27px", fontWeight: "600" });
+    expect(within(ramp).getByTestId("ramp-sample-body")).toHaveStyle({ fontSize: "17px", fontWeight: "400" });
+  });
+
+  it("follows the design's own base and ratio: 20 px and a perfect fourth", async () => {
+    const input = designedInput("v3-minimal-page", (d) => (designOf(d).scale = { base_px: 20, ratio: "perfect_fourth" }));
+    renderTab([designedRow(input)]);
+    const card = await openCard();
+    const sizes = within(within(card).getByRole("list", { name: "Type ramp" }))
+      .getAllByRole("listitem")
+      .map((li) => within(li).getByTestId("ramp-size").textContent);
+    expect(sizes).toEqual(["84 px", "47 px", "36 px", "27 px", "20 px", "16 px", "19 px"]);
+  });
+
+  it.each([
+    ["theme", "In the theme", "The theme's own page layout, with its header and footer."],
+    ["full_width", "Full width", "The theme's header and footer, with the content spanning the full width."],
+    ["canvas", "Content only", "No theme header, footer or page title."],
+  ])("names the page frame %s that the site resolved", async (frame, name, line) => {
+    renderTab([designedRow(designedInput("v3-minimal-page", (d) => (d.page_frame = frame)))]);
+    const card = await openCard();
+    expect(designRows(card)).toContainEqual(["Page frame", `${name} ${line}`]);
+  });
+
+  it.each<[string, ((d: Doc) => void) | undefined, Array<[string, string]>]>([
+    [
+      "the site's own font for system, rounded corners and normal spacing",
+      undefined,
+      [
+        ["Heading font", "Manrope"],
+        ["Body font", "The site's own font"],
+        ["Corners", "Rounded (12 px)"],
+        ["Spacing", "Normal"],
+      ],
+    ],
+    [
+      "two named fonts, very rounded corners and airy spacing",
+      (d) => {
+        const design = designOf(d);
+        design.fonts = { heading: "Source Serif 4", body: "Inter" };
+        design.radius = "lg";
+        design.density = "airy";
+      },
+      [
+        ["Heading font", "Source Serif 4"],
+        ["Body font", "Inter"],
+        ["Corners", "Very rounded (20 px)"],
+        ["Spacing", "Airy (125% of normal)"],
+      ],
+    ],
+    [
+      "square corners and compact spacing",
+      (d) => {
+        designOf(d).radius = "none";
+        designOf(d).density = "compact";
+      },
+      [
+        ["Corners", "Square (0 px)"],
+        ["Spacing", "Compact (75% of normal)"],
+      ],
+    ],
+  ])("shows the fonts, the corners and the spacing: %s", async (_name, change, expected) => {
+    renderTab([designedRow(designedInput("v3-minimal-page", change))]);
+    const card = await openCard();
+    for (const row of expected) expect(designRows(card)).toContainEqual(row);
+  });
+
+  it("shows the whole design of a full landing page the same way, with its frame", async () => {
+    renderTab([designedRow(designedInput("v3-full-landing-page"))]);
+    const card = await openCard();
+    expect(within(within(card).getByRole("list", { name: "Design colours" })).getAllByRole("listitem")).toHaveLength(6);
+    expect(within(within(card).getByRole("list", { name: "Type ramp" })).getAllByRole("listitem")).toHaveLength(7);
+    expect(designRows(card)).toContainEqual(["Heading font", "Manrope"]);
+    expect(designRows(card)).toContainEqual(["Body font", "Source Sans 3"]);
+    expect(designRows(card)[0]?.[0]).toBe("Page frame");
+    expect(designRows(card)[0]?.[1]).toMatch(/^Full width /);
+  });
+
+  it("keeps Approve off until the sections are shown, so nothing is approved unseen", async () => {
+    renderTab([designedRow(designedInput("v3-full-landing-page"))]);
+    const card = await openCard();
+    expect(within(card).getByTestId("design-summary")).toBeInTheDocument();
+    expect(card).toHaveTextContent(NOT_SHOWABLE);
+    expect(within(card).getByRole("button", { name: "Approve" })).toBeDisabled();
+    expect(within(card).getByRole("button", { name: "Decline" })).toBeEnabled();
+  });
+
+  it("draws no design on a version 2 Elementor card or on a block-editor card", async () => {
+    renderTab([
+      elementorRow(elementorFacts(), { id: "pc-v2" }),
+      pageCreateRow({ id: "pc-blocks", input_json: pageInput({ outline: [{ type: "paragraph", text: "Hello." }] }) }),
+    ]);
+    const cards = await screen.findAllByRole("article", { name: /Create a draft/ });
+    expect(cards).toHaveLength(2);
+    for (const card of cards) {
+      expect(within(card).queryByTestId("design-summary")).toBeNull();
+      expect(within(card).queryByRole("list", { name: "Design colours" })).toBeNull();
+      expect(within(card).queryByRole("list", { name: "Type ramp" })).toBeNull();
+    }
+  });
+
+  // The card draws colours and numbers from closed shapes only; anything else
+  // makes the whole request not showable, and nothing of the design is drawn.
+  it.each<[string, (d: Doc) => void]>([
+    ["a font name that is markup", (d) => (designOf(d).fonts = { heading: 'x"><img src=x onerror=alert(1)>', body: "system" })],
+    ["a colour that carries style rules", (d) => (designOf(d).colors = { ...SIX_COLOURS, accent: "#B4452B;background:url(//evil.example)" })],
+    ["a ratio that is a number", (d) => (designOf(d).scale = { base_px: 17, ratio: 1.25 })],
+    ["a page frame that is not one of the three", (d) => (d.page_frame = "wide")],
+  ])("draws none of a design with %s", async (_name, change) => {
+    renderTab([designedRow(designedInput("v3-minimal-page", change))]);
+    const card = await openCard();
+    expect(card).toHaveTextContent(NOT_SHOWABLE);
+    expect(within(card).queryByTestId("design-summary")).toBeNull();
+    expect(card.querySelector("img")).toBeNull();
+    expect(card.innerHTML).not.toContain("evil.example");
+    expect(within(card).getByRole("button", { name: "Approve" })).toBeDisabled();
   });
 });

@@ -8,8 +8,9 @@ import { useDeepLinkFocus } from "@/features/ai-requests/use-deep-link";
 import { UNDO_WINDOW_OVER_LINE, ranAutomatically } from "@/features/ai-trust/ai-trust-copy";
 
 import { AutoApprovalRows, RanAutomaticallyChip, WaitingBecauseRow } from "./auto-approval";
+import { DesignSummary } from "./design-summary";
 import { LayoutPreview } from "./layout-preview";
-import { layoutSummary, parsePageBuilder, parsePagePreview } from "./outline-model";
+import { layoutSummary, parseDesignedPagePreview, parsePageBuilder, parsePagePreview } from "./outline-model";
 import { PageEditCard } from "./page-edit-card";
 import { alsoCoversLine, isPageEdit } from "./page-edit-model";
 import { isRestWrite } from "./rest-card-model";
@@ -99,6 +100,14 @@ function PageCreateCard({
   // preview also keeps Approve off.
   const parsed = parsePagePreview(request.input_json, request.page_media, request.page_builder);
   const preview = parsed !== null && (parsed.builder !== null) === elementor ? parsed : null;
+  // A designed page (outline version 3) has its own reader, and the two refuse
+  // each other's input. The card shows its design in full; Approve stays on
+  // `preview` alone, so a designed page cannot be approved until its sections
+  // are shown as well.
+  const designed =
+    preview === null && elementor
+      ? parseDesignedPagePreview(request.input_json, request.page_media, request.page_builder)
+      : null;
   const builder = elementor ? parsePageBuilder(request.page_builder) : null;
   const layout = preview ? layoutSummary(preview.outline) : null;
   const outlineLabelId = useId();
@@ -180,7 +189,12 @@ function PageCreateCard({
             altFromLibrary={preview.builder !== null}
           />
         ) : (
-          <p className="text-sm text-muted-foreground">{NOT_SHOWABLE_COPY}</p>
+          <>
+            {designed ? (
+              <DesignSummary title={designed.title} design={designed.design} pageFrame={designed.pageFrame} />
+            ) : null}
+            <p className="text-sm text-muted-foreground">{NOT_SHOWABLE_COPY}</p>
+          </>
         )}
       </div>
 
