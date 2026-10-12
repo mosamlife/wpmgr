@@ -40,6 +40,15 @@ if (!defined('ABSPATH')) {
  * The same request, input and site give the same bytes, so the write's
  * re-check matches the approved precheck.
  *
+ * An outline version 3 page also has a page frame (pageFrame()), stored as
+ * the page template ElementorDocument::pageTemplate() names. precheck()
+ * refuses page_template_unavailable when the site does not offer that
+ * template for the post type, since core's post save would put it back to
+ * the default on the next update of the post row. The template is a plain
+ * row of the insert, never written through the document's settings save,
+ * and the read-back requires it to have survived the save. An outline
+ * before version 3 gets no template row.
+ *
  * write() inserts the draft, records it on the ledger, saves the tree through
  * the adapter and reads the page back. A draft that fails any step after the
  * insert is moved to the trash and the answer says so ("trashed"). A created
@@ -154,6 +163,17 @@ final class BuilderPageCreate
         if (!is_string($version) || $version === '') {
             return self::refusedPrecheck(AdapterStatus::CODE, 'version_unverified');
         }
+        $frame    = self::pageFrame($spec);
+        $template = is_string($frame) ? ElementorDocument::pageTemplate($frame) : null;
+        if ($frame === false || (is_string($frame) && $template === null)) {
+            return self::refusedPrecheck('bad_input', 'page_frame must be theme, full_width or canvas, with outline_version 3');
+        }
+        if ($template !== null) {
+            $why = ElementorDocument::pageTemplateProblem($postType, $template);
+            if ($why !== null) {
+                return self::refusedPrecheck(ElementorDocument::CODE_TEMPLATE_UNAVAILABLE, $why);
+            }
+        }
 
         $byId = [];
         foreach ($mediaFacts as $fact) {
@@ -175,6 +195,14 @@ final class BuilderPageCreate
         $doc = $built['doc'] ?? null;
         if (!$doc instanceof NativeDocument) {
             return self::refusedPrecheck((string) ($built['code'] ?? 'bad_input'), (string) ($built['detail'] ?? 'the page could not be built'));
+        }
+        if ($template !== null) {
+            // A plain row of the insert, never the document's settings save.
+            try {
+                $doc = new NativeDocument($doc->tree, array_merge($doc->meta, [ElementorDocument::KEY_PAGE_TEMPLATE => $template]));
+            } catch (\Throwable $e) {
+                return self::refusedPrecheck('bad_input', 'the page could not be encoded');
+            }
         }
         $problem = $a->document()->precheckTree($doc->tree);
         if ($problem !== null) {
@@ -219,6 +247,50 @@ final class BuilderPageCreate
             'doc'              => $doc,
             'title'            => $storedTitle,
         ];
+    }
+
+    /**
+     * The page frame $spec asks for: its page_frame, or, for an outline
+     * version 3 without one, full_width when the outline opens with a hero
+     * and theme otherwise. Null for an outline before version 3, whose page
+     * gets no template row. False when page_frame is not one of
+     * OutlineV3Schema::PAGE_FRAMES or comes without outline version 3.
+     *
+     * @param array<string, mixed> $spec A page-create spec.
+     * @return string|false|null
+     */
+    public static function pageFrame(array $spec): string|false|null
+    {
+        $v3 = ($spec['outline_version'] ?? null) === OutlineV3Schema::VERSION;
+        if (array_key_exists('page_frame', $spec)) {
+            $frame = $spec['page_frame'];
+
+            return $v3 && is_string($frame) && in_array($frame, OutlineV3Schema::PAGE_FRAMES, true) ? $frame : false;
+        }
+        if (!$v3) {
+            return null;
+        }
+
+        return self::opensWithHero($spec['outline'] ?? null) ? 'full_width' : 'theme';
+    }
+
+    /**
+     * Whether the first block of the first section is a hero pattern, the
+     * one place the outline grammar lets a hero stand. Nodes may be arrays
+     * or decoded JSON objects.
+     *
+     * @param mixed $outline The outline.
+     * @return bool
+     */
+    private static function opensWithHero(mixed $outline): bool
+    {
+        $section = is_array($outline) ? ($outline[0] ?? null) : null;
+        $section = is_object($section) ? get_object_vars($section) : $section;
+        $blocks  = is_array($section) ? ($section['children'] ?? null) : null;
+        $block   = is_array($blocks) ? ($blocks[0] ?? null) : null;
+        $block   = is_object($block) ? get_object_vars($block) : $block;
+
+        return is_array($block) && ($block['type'] ?? null) === 'pattern' && ($block['pattern'] ?? null) === 'hero';
     }
 
     /**

@@ -43,7 +43,11 @@ if (!defined('ABSPATH')) {
  *   builder_save_refused, a kit change or a write outside the scope is
  *   side_effect_detected.
  * - verifyCreated() reads the stored rows back with SQL and requires the
- *   whole stored tree to equal the built one.
+ *   whole stored tree to equal the built one, and the page template the
+ *   insert wrote, when it wrote one, to be the post's one template row.
+ * - pageTemplate() is the one place a page frame is mapped to the page
+ *   template it is stored as; pageTemplateProblem() refuses a template the
+ *   site does not offer for the post type.
  * - editTargetProblem() adds to targetProblem() what an edit needs: a page
  *   or a post, no autosave by anyone, no edit lock held by someone else, and
  *   one stored element tree that can be read as a list.
@@ -75,6 +79,23 @@ final class ElementorDocument
 
     /** The post meta rows of an Elementor page, as the fingerprint covers them. */
     public const DESCRIPTOR_KEYS = [self::KEY_DATA, self::KEY_EDIT_MODE, self::KEY_PAGE_SETTINGS, self::KEY_TEMPLATE_TYPE];
+
+    /** The post's page template: core's row, written as plain meta. */
+    public const KEY_PAGE_TEMPLATE = '_wp_page_template';
+
+    /** Refusal: the site does not offer a page frame's template for the post type. */
+    public const CODE_TEMPLATE_UNAVAILABLE = 'page_template_unavailable';
+
+    /**
+     * The page template each page frame is stored as; "" is the theme's own
+     * template. The one place a frame is mapped to a template: read it
+     * through pageTemplate().
+     */
+    private const FRAME_TEMPLATES = [
+        'theme'      => '',
+        'full_width' => 'elementor_header_footer',
+        'canvas'     => 'elementor_canvas',
+    ];
 
     /** The marker on a post WPMgr created, holding the request id. */
     public const MARKER_KEY = '_wpmgr_created_by_request';
@@ -162,6 +183,51 @@ final class ElementorDocument
     public static function templateType(string $postType): string
     {
         return $postType === 'page' ? self::TEMPLATE_PAGE : self::TEMPLATE_POST;
+    }
+
+    /**
+     * The page template a page frame is stored as, or null for a name that
+     * is not a page frame.
+     *
+     * @param string $frame A page frame: theme, full_width or canvas.
+     * @return string|null
+     */
+    public static function pageTemplate(string $frame): ?string
+    {
+        return self::FRAME_TEMPLATES[$frame] ?? null;
+    }
+
+    /**
+     * Why a new post of $postType cannot keep $template as its page
+     * template, or null. The theme's own template ("") always can. Any
+     * other must be in the list of page templates the active theme offers
+     * for the post type, the page builder's additions included: core's
+     * post save puts a template that list does not hold back to the
+     * default on any later update of the post row.
+     *
+     * @param string $postType The post type being created.
+     * @param string $template A template pageTemplate() answered.
+     * @return string|null
+     */
+    public static function pageTemplateProblem(string $postType, string $template): ?string
+    {
+        if ($template === '') {
+            return null;
+        }
+        $offered = null;
+        try {
+            $theme = function_exists('wp_get_theme') ? wp_get_theme() : null;
+            if (is_object($theme) && method_exists($theme, 'get_page_templates')) {
+                $offered = $theme->get_page_templates(null, $postType);
+            }
+        } catch (\Throwable $e) {
+            $offered = null;
+        }
+        if (!is_array($offered)) {
+            return 'the theme\'s page templates could not be read';
+        }
+
+        return isset($offered[$template]) ? null : 'the site does not offer the ' . $template . ' page template for a ' . $postType;
     }
 
     /**
@@ -517,15 +583,18 @@ final class ElementorDocument
      * @param int          $principal The WPMgr service user the page was created as.
      * @param string       $requestId The request that created the page.
      * @param string       $postType  The post type that was created.
+     * @param string|null  $template  The page template the insert wrote, which
+     *                                must be the post's one template row after
+     *                                the save; null when the insert wrote none.
      * @return string|null
      */
-    public function verifyCreated(int $postId, array $tree, int $principal, string $requestId, string $postType): ?string
+    public function verifyCreated(int $postId, array $tree, int $principal, string $requestId, string $postType, ?string $template = null): ?string
     {
         if ($postId < 1) {
             return 'post_missing';
         }
         try {
-            $stored = BuilderDocumentFingerprint::read($postId, array_merge(self::DESCRIPTOR_KEYS, [self::MARKER_KEY]));
+            $stored = BuilderDocumentFingerprint::read($postId, array_merge(self::DESCRIPTOR_KEYS, [self::MARKER_KEY, self::KEY_PAGE_TEMPLATE]));
         } catch (\Throwable $e) {
             return 'post_unreadable';
         }
@@ -556,6 +625,9 @@ final class ElementorDocument
         }
         if (isset($rows[self::KEY_PAGE_SETTINGS])) {
             return 'page_settings';
+        }
+        if ($template !== null && ($rows[self::KEY_PAGE_TEMPLATE] ?? []) !== [$template]) {
+            return 'page_template';
         }
         if ($requestId === '' || ($rows[self::MARKER_KEY] ?? []) !== [$requestId]) {
             return 'marker';
@@ -589,7 +661,9 @@ final class ElementorDocument
      * slug are the snapshot's (post_type, author, parent, post_name); the
      * edit mode is builder (edit_mode); the document type rows are the
      * snapshot's and name a page or a post (template_type); the page settings
-     * rows are the snapshot's, byte for byte (page_settings); there is one
+     * rows are the snapshot's, byte for byte (page_settings); the page
+     * template rows are the snapshot's, byte for byte, so the update of the
+     * post row the save makes kept the template (page_template); there is one
      * _elementor_data row (data_missing) that decodes (data_not_json) to the
      * whole planned tree, untouched nodes included, by the rule verifyCreated()
      * uses (tree_differs). Last, what the edit wrote passes the key, pin and
@@ -613,7 +687,7 @@ final class ElementorDocument
             return 'snapshot_unreadable';
         }
         try {
-            $stored = BuilderDocumentFingerprint::read($postId, self::DESCRIPTOR_KEYS);
+            $stored = BuilderDocumentFingerprint::read($postId, array_merge(self::DESCRIPTOR_KEYS, [self::KEY_PAGE_TEMPLATE]));
             $author = $stored === null ? null : self::storedAuthor($postId);
         } catch (\Throwable $e) {
             return 'post_unreadable';
@@ -647,6 +721,9 @@ final class ElementorDocument
         }
         if (($rows[self::KEY_PAGE_SETTINGS] ?? []) !== $snapshot['rows'][self::KEY_PAGE_SETTINGS]) {
             return 'page_settings';
+        }
+        if (($rows[self::KEY_PAGE_TEMPLATE] ?? []) !== $snapshot['rows'][self::KEY_PAGE_TEMPLATE]) {
+            return 'page_template';
         }
         $data = $rows[self::KEY_DATA] ?? [];
         if (count($data) !== 1) {
@@ -802,7 +879,7 @@ final class ElementorDocument
             }
             $post[$column] = $value;
         }
-        $rows = array_fill_keys(self::DESCRIPTOR_KEYS, []);
+        $rows = array_fill_keys(array_merge(self::DESCRIPTOR_KEYS, [self::KEY_PAGE_TEMPLATE]), []);
         foreach ($before['meta'] as $pair) {
             if (!is_array($pair) || !is_string($pair[0] ?? null) || !array_key_exists(1, $pair) || ($pair[1] !== null && !is_string($pair[1]))) {
                 return null;

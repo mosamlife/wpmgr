@@ -262,7 +262,8 @@ final class ElementorAdapter implements BuilderAdapter
     /**
      * {@inheritDoc}
      *
-     * The post type is the one the document's type stands for.
+     * The post type is the one the document's type stands for, and the page
+     * template the one the document's meta carries, if any.
      */
     public function verifyCreated(int $postId, NativeDocument $doc, int $principal, string $requestId): ?string
     {
@@ -272,7 +273,9 @@ final class ElementorAdapter implements BuilderAdapter
             return 'template_type';
         }
 
-        return $this->document->verifyCreated($postId, $doc->tree, $principal, $requestId, $postType);
+        $pageTemplate = $doc->meta[ElementorDocument::KEY_PAGE_TEMPLATE] ?? null;
+
+        return $this->document->verifyCreated($postId, $doc->tree, $principal, $requestId, $postType, is_string($pageTemplate) ? $pageTemplate : null);
     }
 
     /**
