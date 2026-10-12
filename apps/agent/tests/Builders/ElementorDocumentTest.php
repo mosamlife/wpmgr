@@ -375,24 +375,44 @@ final class ElementorDocumentTest extends TestCase
         $this->assertSame('the save wrote outside the page: option_written, other_post_meta_written, other_post_written', $dirty['detail'] ?? null);
     }
 
-    public function test_save_options_follow_the_version(): void
+    public function test_save_transients_are_target_bound_and_icon_cache_is_checked(): void
     {
         $document = $this->api->addDocument(self::TARGET);
+        $doc = new ElementorDocument($this->api);
         $document->onSave = function (): bool {
-            $this->fire('added_option', '_elementor_assets_data', []);
             $this->fire('deleted_option', '_transient__elementor_editor_unsaved_' . self::TARGET);
 
             return true;
         };
-        $doc = new ElementorDocument($this->api);
+        foreach (['3.20.4', '3.35.9', '4.3.4', null] as $version) {
+            $this->api->version = $version;
+            $this->assertTrue($doc->save(self::TARGET, self::tree(), self::KIT)['ok'], (string) $version);
+            $this->assertNotContains('_elementor_assets_data', $doc->saveOptionPatterns());
+        }
 
-        $this->api->version = '3.20.4';
-        $this->assertTrue($doc->save(self::TARGET, self::tree(), self::KIT)['ok'], '3.20.x writes its asset cache option');
+        $document->onSave = function (): bool {
+            $this->fire('added_option', '_elementor_assets_data', ['css' => ['x' => 1]]);
 
-        foreach (['3.35.9', '4.3.4', null] as $version) {
+            return true;
+        };
+        foreach (['3.20.4', '3.35.9', '4.3.4', null] as $version) {
             $this->api->version = $version;
             $result             = $doc->save(self::TARGET, self::tree(), self::KIT);
             $this->assertSame(['option_written'], $result['scope']['violations'] ?? null, (string) $version);
+        }
+
+        $document->onSave = function (): bool {
+            $this->fire('updated_option', '_elementor_assets_data', [], [
+                'svg' => ['font-icon' => ['fas-check' => ['content' => ['width' => 512, 'height' => 512, 'path' => '<path/>', 'key' => 'fas-check'], 'version' => '5.15.3']]],
+                'css' => ['widgets' => ['icon-box' => ['content' => '.icon-box {}', 'version' => '1']]],
+                'json' => ['widgets' => ['accordion' => ['content' => ['mobile' => ['enabled' => true]], 'version' => '1']]],
+            ]);
+
+            return true;
+        };
+        foreach (['3.20.4', '3.35.9', '4.3.4', null] as $version) {
+            $this->api->version = $version;
+            $this->assertTrue($doc->save(self::TARGET, self::tree(), self::KIT)['ok'], (string) $version);
         }
 
         // Another post's transient is never the target's.

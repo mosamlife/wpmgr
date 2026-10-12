@@ -37,8 +37,10 @@ if (!defined('ABSPATH')) {
  *   with a tripwire on the active kit's rows. Besides the target and the
  *   options saveOptionPatterns() names, the save may write Elementor's
  *   style-cache validity options, write by write, only where the write
- *   changes nothing but the target's own entry (ElementorStyleCache). Anything
- *   the save prints is discarded and the numeric locale is put back whatever
+ *   changes nothing but the target's own entry (ElementorStyleCache), and
+ *   the assets option only for additions or refreshes in the sections admitted
+ *   by ElementorAssetsCache. Anything the save prints is discarded and the
+ *   numeric locale is put back whatever
  *   the save does. A throw is builder_crashed, any answer but true is
  *   builder_save_refused, a kit change or a write outside the scope is
  *   side_effect_detected. A save that stored the page then regenerates the
@@ -145,15 +147,6 @@ final class ElementorDocument
         '_transient_timeout__elementor_editor_unsaved_{target}',
         '_transient__elementor_mcp_mutation_{target}',
         '_transient_timeout__elementor_mcp_mutation_{target}',
-    ];
-
-    /**
-     * Options the save may also write on a range of versions: lowest
-     * version, highest version, option names. Before 3.35.9 the save may
-     * write Elementor's asset cache option.
-     */
-    public const VERSIONED_OPTION_PATTERNS = [
-        ['3.20.0', '3.35.8', ['_elementor_assets_data']],
     ];
 
     /** The active kit's rows the tripwire covers. */
@@ -482,39 +475,31 @@ final class ElementorDocument
     }
 
     /**
-     * The option patterns the save may write on the running Elementor.
-     * An unknown version gets only the patterns of every version. The
-     * style-cache validity options are not among them: the save's scope
-     * checks each write of those (saveOptionChecks()).
+     * The option patterns the save may write on every Elementor version.
+     * The style-cache validity and assets options are not among them: the
+     * save's scope checks each write of those (saveOptionChecks()).
      *
      * @return list<string>
      */
     public function saveOptionPatterns(): array
     {
-        $patterns = self::SAVE_OPTION_PATTERNS;
-        $version  = $this->api->version();
-        if ($version === null) {
-            return $patterns;
-        }
-        foreach (self::VERSIONED_OPTION_PATTERNS as [$min, $max, $names]) {
-            if (VersionCompare::inRange($version, $min, $max)) {
-                array_push($patterns, ...$names);
-            }
-        }
-
-        return $patterns;
+        return self::SAVE_OPTION_PATTERNS;
     }
 
     /**
      * The value checks of the save's scope, on every Elementor version: an
      * option whose name starts with ElementorStyleCache::PREFIX is the save's
      * own only where ElementorStyleCache::ownWrite() admits the write.
+     * ElementorAssetsCache admits only its exact option and asset-entry writes.
      *
-     * @return array<string, callable(mixed, mixed, int): bool>
+     * @return array<string, callable(mixed, mixed, int, string): bool>
      */
     public static function saveOptionChecks(): array
     {
-        return [ElementorStyleCache::PREFIX => [ElementorStyleCache::class, 'ownWrite']];
+        return [
+            ElementorStyleCache::PREFIX => [ElementorStyleCache::class, 'ownWrite'],
+            ElementorAssetsCache::OPTION => [ElementorAssetsCache::class, 'ownWrite'],
+        ];
     }
 
     /**

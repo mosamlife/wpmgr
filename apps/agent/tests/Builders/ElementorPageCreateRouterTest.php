@@ -906,6 +906,78 @@ final class ElementorPageCreateRouterTest extends TestCase
         $this->assertSame($uid, $this->currentUser);
     }
 
+    /** @dataProvider designedIconCacheWrites */
+    public function test_designed_icon_cache_save(string $pattern, string $version, string $write, bool $clean): void
+    {
+        $this->enable();
+        $this->v3Site();
+        $this->api->version = $version;
+        $page = $this->v3Decoded('v3-full-landing-page');
+        $page['outline'] = array_values(array_filter($page['outline'], static fn (array $section): bool => $section['anchor'] === $pattern));
+        $this->assertCount(1, $page['outline']);
+        $input = (string) json_encode($page);
+        $pre = $this->precheck(self::REQ_GOLDEN, $input);
+        $this->assertTrue($pre['ok'] ?? null, (string) json_encode($pre));
+        $this->assertStringContainsString('"widgetType":"' . ($pattern === 'features' ? 'icon-box' : 'accordion') . '"', (string) json_encode($pre['preview']['tree']));
+
+        $name = '_elementor_assets_data';
+        $old = ['svg' => ['font-icon' => ['fas fa-star' => ['content' => ['width' => 512, 'height' => 512, 'path' => '<path/>', 'key' => 'fas fa-star'], 'version' => '1']]], 'other' => ['keep' => true]];
+        $new = $old;
+        $new['svg']['font-icon']['fas fa-star']['version'] = '2';
+        $new['svg']['font-icon']['fas fa-plus'] = ['content' => ['width' => 448, 'height' => 512, 'path' => '<path d="M0 0"/>', 'key' => 'fas fa-plus'], 'version' => '2'];
+        $new['css']['widgets'][$pattern] = ['content' => '.elementor-widget-' . $pattern . ' {}', 'version' => $version];
+        $new['json']['widgets'][$pattern] = ['content' => ['mobile' => ['width' => 100, 'enabled' => true]], 'version' => $version];
+        if ($write === 'outside') {
+            $new['other']['keep'] = false;
+        } elseif ($write === 'delete') {
+            unset($new['svg']['font-icon']['fas fa-star']);
+        } elseif ($write === 'extra') {
+            $new['svg']['font-icon']['fas fa-plus']['extra'] = 'x';
+        } elseif ($write === 'object') {
+            $new['json']['widgets'][$pattern]['content']['mobile']['object'] = new \stdClass();
+        } elseif ($write === 'fourth section') {
+            $new['css']['other'] = ['extra' => ['content' => '.other {}', 'version' => '1']];
+        } elseif ($write === 'prefix') {
+            $name .= '_x';
+        } elseif ($write === 'other option') {
+            $name = 'unrelated_option';
+        }
+        $this->options[$name] = $old;
+        $this->alterOnSave = function (array $tree) use ($name, $old, $new): array {
+            $this->options[$name] = $new;
+            $this->fire('updated_option', $name, $old, $new);
+
+            return $tree;
+        };
+        $result = $this->write(self::REQ_GOLDEN, $input, $pre['precheck_digest'], $pre['preview_digest']);
+        if ($clean) {
+            $this->assertSame('created', $result['outcome'] ?? null, (string) json_encode($result));
+            $this->assertSame(['tree_equal' => true, 'status' => 'draft'], $result['verify']);
+            $this->assertSame('draft', $this->posts[(int) $result['post_id']]->post_status);
+            $this->assertSame('completed', AbilityLedger::get(self::REQ_GOLDEN)['phase'] ?? null);
+        } else {
+            $this->assertSame('side_effect_detected', $result['code'] ?? null, (string) json_encode($result));
+            $this->assertTrue($result['trashed'] ?? null, (string) json_encode($result));
+            $this->assertSame('trash', $this->posts[(int) $result['post_id']]->post_status);
+        }
+        $this->assertSame([], $this->hooks);
+    }
+
+    /** @return array<string, array{string, string, string, bool}> */
+    public static function designedIconCacheWrites(): array
+    {
+        $cases = [];
+        foreach (['features', 'faq'] as $pattern) {
+            foreach (['3.20.4', '3.35.9', '4.3.4'] as $version) {
+                foreach (['icons' => true, 'outside' => false, 'delete' => false, 'extra' => false, 'object' => false, 'fourth section' => false, 'prefix' => false, 'other option' => false] as $write => $clean) {
+                    $cases[$pattern . ' ' . $version . ' ' . $write] = [$pattern, $version, $write, $clean];
+                }
+            }
+        }
+
+        return $cases;
+    }
+
     // ---- helpers -----------------------------------------------------------
 
     /** The accept/refuse table of an outline version 3 input. */

@@ -32,8 +32,9 @@ if (!defined('ABSPATH')) {
  *   the prefix of a given value check is admitted only write by write: each
  *   add, update and delete of it is a violation unless the check, given the
  *   value before and the value after (ABSENT for an option that did not
- *   exist, or no longer does) and the target id, answers true. A check that
- *   throws answers false. The value before a delete is read just before the
+ *   exist, or no longer does), the target id and the full option name,
+ *   answers true. A check that throws answers false. The value before a
+ *   delete is read just before the
  *   delete; one that cannot be read is a violation;
  * - users, roles, super admins, the privilege options and the active blog:
  *   blocked and put back as AbilitySideEffects does, and a violation;
@@ -105,7 +106,7 @@ final class AbilityWriteScope
     /** @var list<string> Option patterns with the target substituted. */
     private array $patterns = [];
 
-    /** @var array<string, callable(mixed, mixed, int): mixed> Option-name prefix => value check. */
+    /** @var array<string, callable(mixed, mixed, int, string): mixed> Option-name prefix => value check. */
     private array $checks = [];
 
     private bool $armed = false;
@@ -127,7 +128,7 @@ final class AbilityWriteScope
     /**
      * @param int                 $targetId       Post the save may write.
      * @param list<mixed>         $optionPatterns Option-name patterns the save may write; "*" is the only wildcard.
-     * @param array<mixed, mixed> $optionChecks   Option-name prefix => value check: callable(mixed $before, mixed $after, int $targetId), true when that one write is the save's own.
+     * @param array<mixed, mixed> $optionChecks   Option-name prefix => value check: callable(mixed $before, mixed $after, int $targetId, string $name), true when that one write is the save's own.
      * @throws \InvalidArgumentException When the post id is not positive, or a check has no plain prefix or is not callable.
      */
     public function __construct(int $targetId, array $optionPatterns, array $optionChecks = [])
@@ -346,7 +347,7 @@ final class AbilityWriteScope
             return;
         }
         try {
-            $own = $check($before, $after, $this->targetId) === true;
+            $own = $check($before, $after, $this->targetId, self::nameOf($name)) === true;
         } catch (\Throwable $e) {
             $own = false;
         }
