@@ -39,6 +39,9 @@ if (!defined('ABSPATH')) {
  *                    centred, and the rows stack on a phone. The widgets stand
  *                    in the outline's order, so the k-th testimonial widget in
  *                    document order is item k
+ *   faq accordion    a group holding one accordion widget, FAQ schema on, its
+ *                    k-th tab the k-th question and answer; each tab has a
+ *                    repeater id of its own
  *
  * The blocks of a hero or a cta arrive built, by the leaf compiler in the tone
  * of the section and in the alignment align() names for the variant: the
@@ -99,12 +102,18 @@ final class ElementorPatternCompiler
     /**
      * Every settings key a pattern writes that the mapper's own list does not
      * carry, by element type, with the pin that holds its whole value: a
-     * counter, a testimonial, the rows and columns of a pattern and a
-     * wrapping row.
+     * counter, a testimonial, an accordion, the rows and columns of a pattern
+     * and a wrapping row. The members of a list control are LISTS'.
      *
      * @var array<string,array<string,string>>
      */
     public const KEYS = [
+        'accordion'   => [
+            'faq_schema'       => 'enum:yes',
+            'title_color'      => 'colour',
+            'tab_active_color' => 'colour',
+            'content_color'    => 'colour',
+        ],
         'testimonial' => [
             'testimonial_content'        => 'html',
             'testimonial_image'          => 'image',
@@ -132,6 +141,21 @@ final class ElementorPatternCompiler
             'flex_align_items' => 'enum:center',
             'width'            => 'slider:%',
             'width_mobile'     => 'slider:%',
+        ],
+    ];
+
+    /**
+     * The list controls a pattern writes, by element type: the control, the
+     * members of one item with their pins, and the most items it holds.
+     * LeafPolicy lists a path for each position of a list, so allowedKeys()
+     * lists "<control>.<position>.<member>" for every position below that most
+     * and for no other.
+     *
+     * @var array<string,array<string,array{0:array<string,string>,1:int}>>
+     */
+    public const LISTS = [
+        'accordion' => [
+            'tabs' => [['tab_title' => 'html', 'tab_content' => 'html', '_id' => 'enum'], OutlineV3Schema::ITEM_CAPS['faq'][1]],
         ],
     ];
 
@@ -224,6 +248,17 @@ final class ElementorPatternCompiler
                 $allowed[$type] = ($allowed[$type] ?? []) + $paths;
             }
         }
+        foreach (self::LISTS as $type => $lists) {
+            foreach ($lists as $control => [$members, $most]) {
+                $paths = [];
+                for ($position = 0; $position < $most; $position++) {
+                    foreach ($members as $member => $pin) {
+                        $paths[$control . '.' . $position . '.' . $member] = $pin;
+                    }
+                }
+                $allowed[$type] = ($allowed[$type] ?? []) + $paths;
+            }
+        }
 
         return $allowed;
     }
@@ -248,6 +283,7 @@ final class ElementorPatternCompiler
             'logos'        => $this->logos($ids, $path, $pattern),
             'features'     => $this->features($ids, $path, $pattern, $tone),
             'testimonials' => $this->testimonials($ids, $path, $pattern, $tone),
+            'faq'          => $this->faq($ids, $path, $pattern, $tone),
             default        => throw new \InvalidArgumentException('this pattern is not one the compiler builds'),
         };
     }
@@ -414,6 +450,45 @@ final class ElementorPatternCompiler
     }
 
     /**
+     * Faq: one accordion with FAQ schema on, a tab for each question.
+     *
+     * The accordion is the classic one, which every Elementor release the
+     * round trip runs registers. A tab is the question as its title and the
+     * answer as one paragraph; each has a repeater id from the IdSeed. The
+     * titles are in the tone's heading colour, the open one in its accent
+     * colour and the answers in its body colour.
+     *
+     * @param IdSeed              $ids     Node ids for this request.
+     * @param string              $path    The pattern's outline path.
+     * @param array<string,mixed> $pattern The faq node.
+     * @param string              $tone    The tone of the section it stands in.
+     * @return array{id:string,elType:string,settings:array<string,mixed>,elements:list<array<string,mixed>>,isInner:bool}
+     * @throws \InvalidArgumentException When the node is not a faq pattern the grammar accepts.
+     */
+    public function faq(IdSeed $ids, string $path, array $pattern, string $tone): array
+    {
+        $label   = self::label('faq', self::variantOf($pattern, 'faq'));
+        $items   = self::itemsOf($pattern, 'faq');
+        $colours = $this->tokens->tone($tone);
+        $id      = $ids->next($path);
+        $at      = $path . '.faq';
+        $tabs    = [];
+        foreach ($items as $i => $item) {
+            $tabs[] = self::tab($ids->item($at, 'tabs', $i), $item);
+        }
+        $settings  = [
+            'tabs'             => $tabs,
+            'faq_schema'       => 'yes',
+            'title_color'      => $colours['heading'],
+            'tab_active_color' => $colours['accent'],
+            'content_color'    => $colours['body'],
+        ];
+        $accordion = ['id' => $ids->next($at), 'elType' => 'widget', 'settings' => $settings, 'elements' => [], 'widgetType' => 'accordion'];
+
+        return $this->stack($id, $label, [$accordion]);
+    }
+
+    /**
      * A hero around its built blocks.
      *
      * @param IdSeed                    $ids      Node ids for this request.
@@ -548,6 +623,25 @@ final class ElementorPatternCompiler
         }
 
         return ['url' => $url, 'id' => (string) $attachment, 'source' => 'library'];
+    }
+
+    /**
+     * One tab of an accordion, in the key order Elementor returns.
+     *
+     * @param string $id   The tab's repeater id.
+     * @param mixed  $item The faq item: question and answer.
+     * @return array{tab_title:string,tab_content:string,_id:string}
+     * @throws \InvalidArgumentException When the item holds a value the grammar does not accept.
+     */
+    private static function tab(string $id, mixed $item): array
+    {
+        $question = is_array($item) ? ($item['question'] ?? null) : null;
+        $answer   = is_array($item) ? ($item['answer'] ?? null) : null;
+        if (!is_string($question) || $question === '' || !is_string($answer) || $answer === '') {
+            throw new \InvalidArgumentException('a question has a title and an answer of text');
+        }
+
+        return ['tab_title' => LeafPolicy::htmlText($question), 'tab_content' => '<p>' . LeafPolicy::htmlText($answer) . '</p>', '_id' => $id];
     }
 
     /**

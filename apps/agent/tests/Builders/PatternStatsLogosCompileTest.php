@@ -438,6 +438,12 @@ final class PatternStatsLogosCompileTest extends TestCase
                 'variant'      => 'featured',
                 'testimonials' => [['quote' => 'Good.', 'name' => 'A', 'role' => 'B', 'attachment_id' => 5]],
             ], 'ground'),
+            $patterns->faq(new IdSeed(self::REQUEST), self::AT, [
+                'type'    => 'pattern',
+                'pattern' => 'faq',
+                'variant' => 'accordion',
+                'faq'     => [['question' => 'Why?', 'answer' => 'Because.']],
+            ], 'ground'),
         ];
         $written = [];
         $walk    = static function (array $element) use (&$walk, &$written): void {
