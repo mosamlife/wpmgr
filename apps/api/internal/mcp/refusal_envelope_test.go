@@ -239,7 +239,7 @@ func TestPageCreateRun_DesignRefusalNamesTheFailingPair(t *testing.T) {
 	// The run path takes integers only, so the scale's ratio is written as 1
 	// here: the design refuses it after the failure each case is about, which
 	// stays the first.
-	closeInk :=string(v3HeadInput(map[string]string{"design": `{"colors":{"ground":"#F6F5F2","surface":"#FFFFFF","ink":"#F0EFEA","muted":"#5A606C","accent":"#0D7A63","on_accent":"#FFFFFF"},` +
+	closeInk := string(v3HeadInput(map[string]string{"design": `{"colors":{"ground":"#F6F5F2","surface":"#FFFFFF","ink":"#F0EFEA","muted":"#5A606C","accent":"#0D7A63","on_accent":"#FFFFFF"},` +
 		`"fonts":{"heading":"Manrope","body":"Source Sans 3"},"scale":{"base_px":17,"ratio":1},"radius":"md","density":"normal"}`}))
 	incomplete := string(v3HeadInput(map[string]string{"design": `{"colors":{"ground":"#F6F5F2","surface":"#FFFFFF","ink":"#15171C","muted":"#5A606C","accent":"#0D7A63","on_accent":"#FFFFFF"},` +
 		`"fonts":{"heading":"Manrope"},"scale":{"base_px":17,"ratio":1},"radius":"md"}`}))
