@@ -473,6 +473,8 @@ export interface PagePreview {
  * with no fact from the site. A page Elementor builds also needs the site's
  * builder facts (page_builder), an elementor_format they agree with, and no
  * node Elementor does not build; a page in a WordPress editor has no builder.
+ * An input with outline_version 3 is a designed page: this reader refuses it
+ * and parseDesignedPagePreview reads it, so neither shows the other in part.
  */
 export function parsePagePreview(inputJson: string, pageMedia?: unknown, pageBuilder?: unknown): PagePreview | null {
   const raw = readInput(inputJson);
