@@ -664,7 +664,6 @@ final class ElementorDocumentTest extends TestCase
             'no file where one was asked for'          => [['status' => 'file', 'path' => $path], null, null, true],
             'a file older than the write'              => [['status' => 'file', 'path' => $path], time() - 3600, null, true],
             'a file ten seconds older'                 => [['status' => 'file', 'path' => $path], time() - 10, null, true],
-            'a file one second older (coarse clocks)'  => [['status' => 'file', 'path' => $path], time() - 1, null, false],
             'a file mode with no path to look at'      => [['status' => 'file', 'path' => ''], null, null, true],
             'a path that is a directory'               => [['status' => 'file', 'path' => dirname($path)], null, null, true],
             'a regeneration Elementor cannot give'     => [null, null, null, true],
@@ -694,6 +693,17 @@ final class ElementorDocumentTest extends TestCase
             } else {
                 $this->assertArrayNotHasKey('warnings', $result, $why);
             }
+        }
+
+        // The edge of "at or after the write", with the start of the write given: a clock
+        // that keeps the time to two seconds may trail it by two, and no more.
+        $since                   = 1800000000;
+        $this->api->regenerated  = ['status' => 'file', 'path' => $path];
+        $this->api->onRegenerate = null;
+        foreach ([$since + 1 => true, $since => true, $since - 2 => true, $since - 3 => false] as $modified => $kept) {
+            self::writeCss($path, $modified);
+            $warnings = $doc->refreshCaches(self::TARGET, $since);
+            $this->assertSame($kept ? [] : ['css_not_regenerated'], array_column($warnings, 'code'), 'a file modified at ' . ($modified - $since) . ' seconds from the start of the write');
         }
 
         // A save that did not store the page regenerates nothing.
@@ -825,13 +835,23 @@ final class ElementorDocumentTest extends TestCase
     }
 
     /**
-     * A stylesheet with the given modification time.
+     * A stylesheet that reads back with the given modification time. Where a
+     * runner reports a time other than the one touch() set, the time set is
+     * moved by the difference, so a test states what the check will read.
      */
     private static function writeCss(string $path, int $mtime): void
     {
         file_put_contents($path, '.elementor-41 .elementor-element{color:#123456}');
         touch($path, $mtime);
         clearstatcache();
+        $skew = (int) filemtime($path) - $mtime;
+        if ($skew !== 0) {
+            touch($path, $mtime - $skew);
+            clearstatcache();
+        }
+        if (filemtime($path) !== $mtime) {
+            throw new \LogicException('the stylesheet\'s modification time cannot be set on this runner');
+        }
     }
 
     /**
