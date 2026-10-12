@@ -1087,6 +1087,100 @@ describe("a designed page as data", () => {
       expect(showDoc(doc) !== null).toBe(shown);
     });
 
+    // An Elementor page cannot keep an ampersand in a link, so a link holding one
+    // is refused wherever the page holds a link: a button of a section, of the
+    // hero, of the call to action, of a group or of a column, and the button of
+    // every plan. The same rule the agent and the control plane answer
+    // (the shared table's link_no_ampersand rows).
+    describe("a link holds no ampersand", () => {
+      const WITH_AMPERSAND = "/signup?plan=pro&seats=5";
+      const WITHOUT_AMPERSAND = "/signup?plan=pro";
+      const buttonsNode = (url: string): Doc => ({ type: "buttons", buttons: [{ text: "Go", url }] });
+      const addToSection = (d: Doc, node: Doc) => {
+        asList(sectionAt(d, 2).children).push(node);
+      };
+      const planCta = (d: Doc, index: number): Doc => asDoc(asDoc(asList(patternIn(d, "pricing").plans)[index]).cta);
+
+      const places: Array<[string, (d: Doc, url: string) => void]> = [
+        ["a button of a section", (d, url) => addToSection(d, buttonsNode(url))],
+        ["a button of the hero", (d, url) => heroButtonUrl(d, url)],
+        [
+          "a button of the call to action",
+          (d, url) => {
+            asDoc(asList(asDoc(asList(patternIn(d, "cta").children)[2]).buttons)[0]).url = url;
+          },
+        ],
+        ["a button of a group", (d, url) => addToSection(d, { type: "group", children: [buttonsNode(url)] })],
+        [
+          "a button of a column",
+          (d, url) =>
+            addToSection(d, {
+              type: "columns",
+              columns: [{ children: [buttonsNode(url)] }, { children: [{ type: "paragraph", text: "Beside it." }] }],
+            }),
+        ],
+        [
+          "the button of the first plan",
+          (d, url) => {
+            planCta(d, 0).url = url;
+          },
+        ],
+        [
+          "the button of the second plan",
+          (d, url) => {
+            planCta(d, 1).url = url;
+          },
+        ],
+        [
+          "the button of the last plan",
+          (d, url) => {
+            planCta(d, 2).url = url;
+          },
+        ],
+      ];
+
+      it.each(places)("%s: refused with an ampersand, shown without one", (_name, put) => {
+        const refused = v3Doc("v3-full-landing-page");
+        put(refused, WITH_AMPERSAND);
+        expect(showDoc(refused)).toBeNull();
+
+        const shown = v3Doc("v3-full-landing-page");
+        put(shown, WITHOUT_AMPERSAND);
+        expect(showDoc(shown)).not.toBeNull();
+      });
+
+      it.each<[string, string]>([
+        ["an absolute address", "https://example.com/buy?plan=pro&seats=5"],
+        ["an ampersand after the query", "/buy?plan=pro&"],
+        ["an ampersand in the fragment", "/buy#a&b"],
+        ["a character reference", "/buy?a=1&amp;b=2"],
+      ])("%s is refused in a plan button and in a section button", (_name, url) => {
+        const plan = v3Doc("v3-full-landing-page");
+        planCta(plan, 1).url = url;
+        expect(showDoc(plan)).toBeNull();
+
+        const section = v3Doc("v3-full-landing-page");
+        addToSection(section, buttonsNode(url));
+        expect(showDoc(section)).toBeNull();
+      });
+
+      it("keeps an ampersand that is text: a heading, a button label, a plan's name, price, feature and button label", () => {
+        const doc = v3Doc("v3-full-landing-page");
+        const plan = asDoc(asList(patternIn(doc, "pricing").plans)[0]);
+        plan.name = "Team & Agency";
+        plan.price = "49 & up";
+        plan.features = ["5 sites & staging"];
+        asDoc(plan.cta).text = "Start & save";
+        addToSection(doc, { type: "heading", level: 2, text: "Terms & pricing" });
+        addToSection(doc, { type: "buttons", buttons: [{ text: "Terms & conditions", url: "/terms" }] });
+        const shown = showDoc(doc);
+        expect(shown).not.toBeNull();
+        const text = JSON.stringify(shown?.sections);
+        expect(text).toContain("Team & Agency");
+        expect(text).toContain("Terms & conditions");
+      });
+    });
+
     it("judges a link to an anchor after the whole page, not at the place it stands", () => {
       expect(showDoc(v3Doc("link-to-a-later-anchor"))).not.toBeNull();
     });

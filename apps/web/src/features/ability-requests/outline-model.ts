@@ -870,10 +870,7 @@ function inspectSections(sections: readonly SectionNode[]): DesignedFacts {
       case "buttons":
         f.nodes += n.buttons.length;
         f.buttons += n.buttons.length;
-        for (const b of n.buttons) {
-          f.links.push(b.url);
-          if (b.url.includes("&")) f.elementorRefuses = true;
-        }
+        for (const b of n.buttons) f.links.push(b.url);
         break;
       case "table":
         f.tables += 1;
@@ -927,8 +924,14 @@ function inspectSections(sections: readonly SectionNode[]): DesignedFacts {
   return f;
 }
 
-/** True when a link is one the grammar accepts: a "#anchor" of the page, a site path, or an https address. */
+/**
+ * True when a link is one the grammar accepts: a "#anchor" of the page, a site
+ * path, or an https address, and none holds an "&" (an Elementor page cannot
+ * keep one). Every link of a designed page, a button's and a plan's alike,
+ * is judged here.
+ */
 function designedLinkResolves(url: string, anchors: readonly string[]): boolean {
+  if (url.includes("&")) return false;
   if (url.startsWith("#")) {
     const anchor = anchorOfLink(url);
     return anchor !== null && anchors.includes(anchor);
