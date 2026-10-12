@@ -134,6 +134,8 @@ describe("the words of a design", () => {
       spacingWords("airy"),
       fontWords("system"),
     ];
-    for (const w of words) expect(w).not.toMatch(/[–—]/);
+    // An en dash (U+2013) or an em dash (U+2014), named by code so this file holds neither.
+    const dashes = new RegExp(`[${String.fromCharCode(0x2013)}${String.fromCharCode(0x2014)}]`);
+    for (const w of words) expect(w).not.toMatch(dashes);
   });
 });
