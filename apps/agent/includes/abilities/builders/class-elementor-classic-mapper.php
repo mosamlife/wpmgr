@@ -458,7 +458,7 @@ final class ElementorClassicMapper
         if ($outline === [] || !ArrayShape::isList($outline)) {
             return ['code' => 'bad_input', 'detail' => $listPath . ': not a list of nodes'];
         }
-        $mapper = new self($ids, $mediaById, $containers);
+        $mapper = new self($ids, $mediaById, $containers, null);
         switch ($context) {
             case self::CONTEXT_TOP:
                 $tree = $mapper->outline($outline, $listPath);
@@ -518,7 +518,7 @@ final class ElementorClassicMapper
         if (!in_array($tone, OutlineV3Schema::TONES, true) || !in_array($align, OutlineV3Schema::ALIGNS, true)) {
             return ['code' => 'bad_input', 'detail' => $listPath . ': a section tone is ground, surface, inverse or accent, and its alignment start or center'];
         }
-        $mapper        = new self($ids, $mediaById, true);
+        $mapper        = new self($ids, $mediaById, true, null);
         $mapper->look  = $look;
         $mapper->tone  = $tone;
         $mapper->align = $align;
