@@ -14,6 +14,12 @@ package mcp
 // problem gets the agent's own refusal code. The shared case table
 // (apps/agent/tests/fixtures/ability-run/page-create-layout-cases.json) pins
 // both sides.
+//
+// An input that sends outline_version 3 is a designed page. It is admitted for
+// Elementor's classic format alone, and the format must be stated: the
+// default, site_default, is resolved by the site and not here. It then needs a
+// design, and may send page_frame. Without outline_version 3, design and
+// page_frame are unknown members, as before.
 
 import (
 	_ "embed"
@@ -76,6 +82,23 @@ const (
 	pageEditorClassic = "wordpress_classic"
 )
 
+// pageOutlineVersionDesigned is the one outline_version an input may send. An
+// input without it holds outline grammar v2.
+const pageOutlineVersionDesigned = 3
+
+// The page frames of a designed page: how the page sits in the theme. theme
+// keeps the theme's header, footer and page title; full_width keeps the
+// header and footer and hides the title; canvas removes the header and footer
+// as well, so it is never a default.
+const (
+	pageFrameTheme     = "theme"
+	pageFrameFullWidth = "full_width"
+	pageFrameCanvas    = "canvas"
+)
+
+// pageFrames are the values page_frame may hold.
+var pageFrames = []string{pageFrameTheme, pageFrameFullWidth, pageFrameCanvas}
+
 // pageCreateFacts are what the control plane reads from a valid input.
 type pageCreateFacts struct {
 	postType string
@@ -86,6 +109,14 @@ type pageCreateFacts struct {
 	// that input's elementor_format, site_default when it sends none.
 	builder         string
 	elementorFormat string
+	// outlineVersion is pageOutlineVersionDesigned for a designed page, 0 for
+	// an input without outline_version. design is that page's design, every
+	// field checked and its colours upper case, and pageFrame the frame it
+	// sits in: the input's page_frame, else full_width when the outline has a
+	// hero and theme when it has none. Both are empty for a version 2 input.
+	outlineVersion int
+	design         *pageDesign
+	pageFrame      string
 	// usesLayout: the outline holds a block beyond heading, paragraph and
 	// list, so the request needs MinAgentVersionForPageLayout and is shown
 	// with card copy version 2.
@@ -121,7 +152,7 @@ func validatePageCreateInput(input []byte) (pageCreateFacts, string) {
 	}
 	for k := range top {
 		switch k {
-		case "post_type", "editor", "title", "outline", "elementor_format":
+		case "post_type", "editor", "title", "outline", "elementor_format", "outline_version", "design", "page_frame":
 		default:
 			return pageCreateFacts{}, pageCreateBadInput
 		}
@@ -149,12 +180,42 @@ func validatePageCreateInput(input []byte) (pageCreateFacts, string) {
 		}
 		f.elementorFormat = format
 	}
+	if f.outlineVersion, ok = pageOutlineVersionOf(top); !ok {
+		return pageCreateFacts{}, pageCreateBadInput
+	}
+	designed := f.outlineVersion == pageOutlineVersionDesigned
+	if designed {
+		// A designed page is built with Elementor's classic format, and an
+		// input that does not state it has site_default, which only the site
+		// can resolve.
+		if f.builder != pageBuilderElementor || f.elementorFormat != elementorFormatClassic {
+			return pageCreateFacts{}, pageCreateBadInput
+		}
+	} else if _, has := top["design"]; has {
+		return pageCreateFacts{}, pageCreateBadInput
+	} else if _, has := top["page_frame"]; has {
+		return pageCreateFacts{}, pageCreateBadInput
+	}
 	if f.title, ok = jsonStringOf(top["title"]); !ok || strings.TrimSpace(f.title) == "" {
 		return pageCreateFacts{}, pageCreateBadInput
+	}
+	// The design is judged before the outline, so a page without one is
+	// told that rather than anything about its nodes.
+	if designed {
+		design, problem := validatePageDesign(top["design"])
+		if problem != nil {
+			return pageCreateFacts{}, problem.Code
+		}
+		f.design = &design
 	}
 	outline, ok := jsonArrayOf(top["outline"])
 	if !ok || len(outline) == 0 || len(outline) > pageCreateMaxTopLevelNodes {
 		return pageCreateFacts{}, pageCreateBadInput
+	}
+	if designed {
+		if f.pageFrame, ok = pageFrameOf(top, outline); !ok {
+			return pageCreateFacts{}, pageCreateBadInput
+		}
 	}
 	w := pageWalk{seen: map[int64]struct{}{}}
 	for _, n := range outline {
@@ -167,6 +228,69 @@ func validatePageCreateInput(input []byte) (pageCreateFacts, string) {
 	}
 	f.usesLayout, f.mediaIDs = w.usesLayout, w.ids
 	return f, ""
+}
+
+// pageOutlineVersionOf reads outline_version from the input's top level:
+// absent is 0 (outline grammar v2), and a member that is sent must be the
+// whole number pageOutlineVersionDesigned, so 3.0, "3" and every other number
+// are refused.
+func pageOutlineVersionOf(top map[string]json.RawMessage) (int, bool) {
+	raw, has := top["outline_version"]
+	if !has {
+		return 0, true
+	}
+	if n, ok := jsonIntOf(raw); ok && n == pageOutlineVersionDesigned {
+		return pageOutlineVersionDesigned, true
+	}
+	return 0, false
+}
+
+// pageFrameOf reads page_frame from the input's top level and applies its
+// default. A member that is sent must be one of pageFrames; one that is not
+// sent is full_width when the outline has a hero and theme when it has none.
+// Canvas is only ever asked for.
+func pageFrameOf(top map[string]json.RawMessage, outline []json.RawMessage) (string, bool) {
+	raw, has := top["page_frame"]
+	if !has {
+		if pageOutlineHasHero(outline) {
+			return pageFrameFullWidth, true
+		}
+		return pageFrameTheme, true
+	}
+	frame, ok := jsonStringOf(raw)
+	if !ok || !slices.Contains(pageFrames, frame) {
+		return "", false
+	}
+	return frame, true
+}
+
+// pageOutlineHasHero reports whether a section of a version 3 outline holds a
+// hero pattern as one of its children. Only the shape is read: where a hero
+// may stand is the grammar's rule, and a node that is not an object is ignored.
+func pageOutlineHasHero(outline []json.RawMessage) bool {
+	for _, raw := range outline {
+		section, ok := jsonObjectOf(raw)
+		if !ok {
+			continue
+		}
+		children, ok := jsonArrayOf(section["children"])
+		if !ok {
+			continue
+		}
+		for _, child := range children {
+			n, ok := jsonObjectOf(child)
+			if !ok {
+				continue
+			}
+			if kind, ok := jsonStringOf(n["type"]); !ok || kind != "pattern" {
+				continue
+			}
+			if name, ok := jsonStringOf(n["pattern"]); ok && name == "hero" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // node is one outline node at a placement.
