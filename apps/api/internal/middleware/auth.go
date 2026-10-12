@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/aipolicy"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/auth"
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
@@ -129,89 +130,150 @@ func (a *Authenticator) Authenticate() gin.HandlerFunc {
 			}
 		}
 
-		p := domain.Principal{Type: domain.PrincipalUser, UserID: userID, TenantID: activeTenant}
-
-		// Verify membership + resolve role in the active tenant (if one is set).
-		if activeTenant != uuid.Nil {
-			role, member := a.authSvc.RoleInTenant(ctx, userID, activeTenant)
-			if member {
-				// Full org member: Scope="org", unchanged behaviour.
-				p.Role = string(role)
-				p.Scope = domain.ScopeOrg
-			} else if a.tenantSoftDeleted(ctx, activeTenant) {
-				// GH #152: the active tenant has been soft-deleted (or no longer
-				// exists at all). RoleInTenant's backing query (ListMembershipsForUser)
-				// already excludes a soft-deleted tenant's membership rows, so a
-				// FORMER org member lands here too, not just a genuine non-member —
-				// without this explicit check they could still fall through to the
-				// site_shares/client_members branches below and regain ScopeSite
-				// access via an unrelated collaborator/portal grant into the SAME
-				// now-deleted tenant. Fail closed exactly like the "no shares, no
-				// client memberships" case: clear TenantID (RequireTenant -> 403)
-				// but keep UserID so /auth/me still works.
-				p.TenantID = uuid.Nil
-			} else {
-				// No membership row. Check site_shares for collaborator access.
-				// Run under InUserTx so the site_shares_self_read RLS policy
-				// (USING user_id = app.user_id) allows the SELECT.
-				shares, shareErr := a.resolveActiveShares(ctx, userID, activeTenant)
-				if shareErr == nil && len(shares) > 0 {
-					// Site-scoped collaborator: collect site IDs + highest role.
-					// site_shares win and are EXCLUSIVE: when the user has one or
-					// more active shares, client_members is NOT consulted. Merging
-					// would let a share role (up to operator) escalate to cover
-					// the client's sites, which the share never granted.
-					p.Scope = domain.ScopeSite
-					p.TenantID = activeTenant
-					siteIDs := make([]uuid.UUID, 0, len(shares))
-					highestRole := authz.RoleViewer
-					for _, s := range shares {
-						siteIDs = append(siteIDs, s.SiteID)
-						r := authz.Role(s.Role)
-						// Clamp per-site role to operator maximum (belt-and-braces).
-						// A site-scoped collaborator must NEVER receive an effective
-						// role of admin or owner regardless of what the share row
-						// holds: admin would pass org-level permission checks before
-						// the RequirePermission org_scope_required guard fires.
-						// Clamping to operator here means the stored share role can
-						// never escalate to org-level actions.
-						if r.AtLeast(authz.RoleAdmin) {
-							r = authz.RoleOperator
-						}
-						if r.AtLeast(highestRole) {
-							highestRole = r
-						}
-					}
-					p.AllowedSiteIDs = siteIDs
-					p.Role = string(highestRole)
-				} else {
-					// No shares (or lookup error). Check client_members for portal
-					// access. This branch is only reached when zero site_shares
-					// exist so there is no risk of role mixing.
-					ca, caErr := a.resolveClientAccess(ctx, userID, activeTenant)
-					if caErr != nil || len(ca.clientIDs) == 0 {
-						// No client memberships either: user has no access to this
-						// tenant. Clear TenantID so RequireTenant returns 403, but
-						// keep UserID so /auth/me still works.
-						p.TenantID = uuid.Nil
-					} else {
-						// Portal principal: site allowlist is the union across ALL
-						// client memberships in this tenant.
-						p.Scope = domain.ScopeSite
-						p.TenantID = activeTenant
-						p.AllowedSiteIDs = ca.siteIDs
-						p.ClientIDs = ca.clientIDs
-						// Hard-clamp to RoleClient; client_members has no role
-						// column so nothing stored can ever raise this above client.
-						p.Role = string(authz.RoleClient)
-					}
-				}
-			}
-		}
+		// Every lookup in the builder already fails closed, so its error
+		// changes nothing here.
+		p, _ := a.buildSessionPrincipal(ctx, userID, activeTenant)
 
 		c.Request = c.Request.WithContext(domain.WithPrincipal(c.Request.Context(), p))
 		c.Next()
 	}
+}
+
+// buildSessionPrincipal is the one code path that turns a signed-in user and
+// a tenant into the principal they hold there now. The session authenticator
+// calls it for every request; the AI decision engine calls it, through
+// ResolveSetter, for the person an automatic approval stands for, so both
+// apply the same membership, site-share and client rules.
+//
+// Every lookup fails closed: a failed read grants nothing. It also returns
+// the first lookup error it met, for a caller that must tell "has no access"
+// from "could not check". The principal is the same with or without that
+// error.
+func (a *Authenticator) buildSessionPrincipal(ctx context.Context, userID, activeTenant uuid.UUID) (domain.Principal, error) {
+	var firstErr error
+	note := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	p := domain.Principal{Type: domain.PrincipalUser, UserID: userID, TenantID: activeTenant}
+
+	// Verify membership + resolve role in the active tenant (if one is set).
+	if activeTenant != uuid.Nil {
+		role, member, roleErr := a.authSvc.MembershipRole(ctx, userID, activeTenant)
+		note(roleErr)
+		softDeleted := false
+		if !member {
+			var delErr error
+			softDeleted, delErr = a.tenantSoftDeletedErr(ctx, activeTenant)
+			note(delErr)
+		}
+		if member {
+			// Full org member: Scope="org", unchanged behaviour.
+			p.Role = string(role)
+			p.Scope = domain.ScopeOrg
+		} else if softDeleted {
+			// GH #152: the active tenant has been soft-deleted (or no longer
+			// exists at all). RoleInTenant's backing query (ListMembershipsForUser)
+			// already excludes a soft-deleted tenant's membership rows, so a
+			// FORMER org member lands here too, not just a genuine non-member —
+			// without this explicit check they could still fall through to the
+			// site_shares/client_members branches below and regain ScopeSite
+			// access via an unrelated collaborator/portal grant into the SAME
+			// now-deleted tenant. Fail closed exactly like the "no shares, no
+			// client memberships" case: clear TenantID (RequireTenant -> 403)
+			// but keep UserID so /auth/me still works.
+			p.TenantID = uuid.Nil
+		} else {
+			// No membership row. Check site_shares for collaborator access.
+			// Run under InUserTx so the site_shares_self_read RLS policy
+			// (USING user_id = app.user_id) allows the SELECT.
+			shares, shareErr := a.resolveActiveShares(ctx, userID, activeTenant)
+			note(shareErr)
+			if shareErr == nil && len(shares) > 0 {
+				// Site-scoped collaborator: collect site IDs + highest role.
+				// site_shares win and are EXCLUSIVE: when the user has one or
+				// more active shares, client_members is NOT consulted. Merging
+				// would let a share role (up to operator) escalate to cover
+				// the client's sites, which the share never granted.
+				p.Scope = domain.ScopeSite
+				p.TenantID = activeTenant
+				siteIDs := make([]uuid.UUID, 0, len(shares))
+				highestRole := authz.RoleViewer
+				for _, s := range shares {
+					siteIDs = append(siteIDs, s.SiteID)
+					r := authz.Role(s.Role)
+					// Clamp per-site role to operator maximum (belt-and-braces).
+					// A site-scoped collaborator must NEVER receive an effective
+					// role of admin or owner regardless of what the share row
+					// holds: admin would pass org-level permission checks before
+					// the RequirePermission org_scope_required guard fires.
+					// Clamping to operator here means the stored share role can
+					// never escalate to org-level actions.
+					if r.AtLeast(authz.RoleAdmin) {
+						r = authz.RoleOperator
+					}
+					if r.AtLeast(highestRole) {
+						highestRole = r
+					}
+				}
+				p.AllowedSiteIDs = siteIDs
+				p.Role = string(highestRole)
+			} else {
+				// No shares (or lookup error). Check client_members for portal
+				// access. This branch is only reached when zero site_shares
+				// exist so there is no risk of role mixing.
+				ca, caErr := a.resolveClientAccess(ctx, userID, activeTenant)
+				note(caErr)
+				if caErr != nil || len(ca.clientIDs) == 0 {
+					// No client memberships either: user has no access to this
+					// tenant. Clear TenantID so RequireTenant returns 403, but
+					// keep UserID so /auth/me still works.
+					p.TenantID = uuid.Nil
+				} else {
+					// Portal principal: site allowlist is the union across ALL
+					// client memberships in this tenant.
+					p.Scope = domain.ScopeSite
+					p.TenantID = activeTenant
+					p.AllowedSiteIDs = ca.siteIDs
+					p.ClientIDs = ca.clientIDs
+					// Hard-clamp to RoleClient; client_members has no role
+					// column so nothing stored can ever raise this above client.
+					p.Role = string(authz.RoleClient)
+				}
+			}
+		}
+	}
+	return p, firstErr
+}
+
+// ResolveSetter builds the principal userID holds in tenantID now, through
+// the session authenticator's own code path, and reads the account's status.
+// It is the setter check's input: the person an automatic approval stands
+// for must still be a member with the authority their choice needs, with an
+// active account. Any failed read sets LookupFailed, which the decision
+// treats as a failed check, never as a pass.
+//
+// The share lookup runs in a transaction that carries userID as app.user_id,
+// so this must never be called inside a transaction that approves a request.
+func (a *Authenticator) ResolveSetter(ctx context.Context, tenantID, userID uuid.UUID) aipolicy.Setter {
+	s := aipolicy.Setter{UserID: userID}
+	if userID == uuid.Nil || tenantID == uuid.Nil {
+		return s
+	}
+	p, err := a.buildSessionPrincipal(ctx, userID, tenantID)
+	s.Principal = p
+	if err != nil {
+		s.LookupFailed = true
+	}
+	status, found, err := a.authSvc.AccountStatus(ctx, userID)
+	if err != nil {
+		s.LookupFailed = true
+	}
+	if found {
+		s.AccountStatus = status
+	}
+	return s
 }
 
 // tenantSoftDeleted reports whether tenantID has been soft-deleted (GH #152)
@@ -221,11 +283,18 @@ func (a *Authenticator) Authenticate() gin.HandlerFunc {
 // transient DB error can never leave a torn-down tenant's collaborator/portal
 // grants reachable.
 func (a *Authenticator) tenantSoftDeleted(ctx context.Context, tenantID uuid.UUID) bool {
+	deleted, _ := a.tenantSoftDeletedErr(ctx, tenantID)
+	return deleted
+}
+
+// tenantSoftDeletedErr is tenantSoftDeleted with the lookup error kept. On an
+// error it answers true, as tenantSoftDeleted does.
+func (a *Authenticator) tenantSoftDeletedErr(ctx context.Context, tenantID uuid.UUID) (bool, error) {
 	t, err := sqlc.New(a.pool.Pool).GetTenant(ctx, tenantID)
 	if err != nil {
-		return true
+		return true, err
 	}
-	return t.DeletedAt.Valid
+	return t.DeletedAt.Valid, nil
 }
 
 // resolveActiveShares loads non-expired site_shares for (userID, tenantID).

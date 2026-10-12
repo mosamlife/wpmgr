@@ -51,6 +51,40 @@ type Config struct {
 	Conn          ConnConfig       `koanf:"conn"`
 	Hosted        HostedConfig     `koanf:"hosted"`
 	Billing       BillingConfig    `koanf:"billing"`
+	AI            AIConfig         `koanf:"ai"`
+}
+
+// AIConfig holds the operator settings for AI editing.
+type AIConfig struct {
+	// LaunchNotice (WPMGR_AI_LAUNCH_NOTICE) says whether the one-time email
+	// telling each organisation that its sites now run AI drafts without
+	// asking (ADR-065) is sent: "on", the default, or "off". Read it through
+	// LaunchNoticeOn, which decides what every other value means.
+	LaunchNotice string `koanf:"launch_notice"`
+}
+
+// LaunchNoticeOn reports whether the AI launch notice may be sent. "on" (in
+// any case, surrounding space ignored) sends it, and so does an empty value,
+// which is the same as leaving the variable unset. "off" holds it, and so
+// does any other value: a sent email cannot be taken back, while a held one
+// is sent by the first boot that reads on. Advisories names a value that is
+// neither, so the hold is not silent.
+func (a AIConfig) LaunchNoticeOn() bool {
+	v, _ := a.launchNotice()
+	return v
+}
+
+// launchNotice reads LaunchNotice: whether the notice may be sent, and
+// whether the value was one LaunchNoticeOn recognises.
+func (a AIConfig) launchNotice() (on, recognised bool) {
+	switch strings.ToLower(strings.TrimSpace(a.LaunchNotice)) {
+	case "", "on":
+		return true, true
+	case "off":
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 // BillingConfig gates the M16 Phase B payment-provider integration
@@ -934,6 +968,8 @@ func defaults() map[string]any {
 		"billing.razorpay.plan_agency_inr":   "",
 		"billing.razorpay.plan_scale_usd":    "",
 		"billing.razorpay.plan_scale_inr":    "",
+		// ADR-065: the AI launch notice is sent unless an operator holds it.
+		"ai.launch_notice": "on",
 	}
 }
 
@@ -1203,6 +1239,11 @@ func mapEnvKey(k string) string {
 		return "social.google." + strings.TrimPrefix(k, "social_google_")
 	case strings.HasPrefix(k, "social_github_"):
 		return "social.github." + strings.TrimPrefix(k, "social_github_")
+	// WPMGR_AI_LAUNCH_NOTICE -> ai.launch_notice. Without this case the
+	// variable falls through to the passthrough below, unmarshal ignores it,
+	// and "off" sends the notice anyway.
+	case k == "ai_launch_notice":
+		return "ai.launch_notice"
 	default:
 		return k
 	}

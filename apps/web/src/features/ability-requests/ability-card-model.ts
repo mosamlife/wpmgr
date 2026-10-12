@@ -1,5 +1,11 @@
 import type { AbilityRequest } from "@wpmgr/api";
 
+import {
+  OUTCOME_UNKNOWN_LINE,
+  ranAutomatically,
+  settingNotSentLine,
+} from "@/features/ai-trust/ai-trust-copy";
+
 import { ELEMENTOR_EDITOR, type PageBuilderFacts } from "./outline-model";
 
 // Pure logic for the AI page-creation approval card (engine slice E2). Every
@@ -167,6 +173,17 @@ export function clockTime(iso: string | null | undefined): string {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+/**
+ * An approved row that has not been sent yet. A row the site's setting
+ * approved was not decided by any person, so it never says "Approved at".
+ */
+export function approvedNotStartedText(r: AbilityRequest): string {
+  const lead = ranAutomatically(r.approval)
+    ? `Allowed by this site's setting at ${clockTime(r.decided_at)}.`
+    : `Approved at ${clockTime(r.decided_at)}.`;
+  return `${lead} Not started yet. WPMgr sends it to the site shortly.`;
+}
+
 export type AbilityStatusKind =
   | "pending"
   | "approved"
@@ -234,16 +251,43 @@ function undoStatus(r: AbilityRequest, trashedCounts: boolean, laterEdits: numbe
   return null;
 }
 
+/**
+ * A failure whose end state the record settles: the site refused before it
+ * changed anything, or what it changed was put back or moved to the trash.
+ * Those keep their own words. Every other failure leaves the result open.
+ */
+function failureEndStateKnown(r: AbilityRequest): boolean {
+  return r.outcome === "refused" || r.trashed === true || r.restored === true;
+}
+
+/**
+ * A change the site's setting approved was decided by no person, so a status
+ * that leans on "what you approved" cannot stand. Where WPMgr cannot vouch for
+ * the result, because it is unresolved or the failure left the end state open,
+ * the card says so in one plain sentence and names where to read the answer
+ * (design §8.9). The kind is unchanged, so a failure keeps its red border and
+ * its place under "Failed or result unknown". A person's own approval is
+ * untouched, and so is a failure whose end state is known. Whatever else a
+ * card's status carries (a tone, links) is kept.
+ */
+export function automaticStatus<S extends AbilityStatus>(r: AbilityRequest, status: S): S {
+  if (!ranAutomatically(r.approval)) return status;
+  const open = status.kind === "unknown_outcome" || (status.kind === "failed" && !failureEndStateKnown(r));
+  return open ? { ...status, text: OUTCOME_UNKNOWN_LINE } : status;
+}
+
 export function abilityStatus(r: AbilityRequest, laterEdits = 0): AbilityStatus {
+  return automaticStatus(r, baseAbilityStatus(r, laterEdits));
+}
+
+/** The status as a person's own approval reads it; `abilityStatus` adjusts it for an automatic one. */
+function baseAbilityStatus(r: AbilityRequest, laterEdits: number): AbilityStatus {
   const noun = isPostRequest(r) ? "post" : "page";
   switch (r.state) {
     case "pending":
       return { kind: "pending", text: "Waiting for your decision." };
     case "approved":
-      return {
-        kind: "approved",
-        text: `Approved at ${clockTime(r.decided_at)}. Not started yet. WPMgr sends it to the site shortly.`,
-      };
+      return { kind: "approved", text: approvedNotStartedText(r) };
     case "dispatched":
       return { kind: "running", text: `WPMgr is creating the draft ${noun}.` };
     case "outcome_unknown": {
@@ -318,7 +362,9 @@ export function abilityStatus(r: AbilityRequest, laterEdits = 0): AbilityStatus 
     case "not_sent":
       return {
         kind: "not_sent",
-        text: `Nothing was sent: ${notSentText(r.not_sent_reason)}. Nothing was created.`,
+        text:
+          settingNotSentLine(r.not_sent_reason) ??
+          `Nothing was sent: ${notSentText(r.not_sent_reason)}. Nothing was created.`,
       };
     case "declined":
       return { kind: "declined", text: `Declined at ${clockTime(r.decided_at)}. Nothing was created.` };
@@ -427,4 +473,14 @@ export function draftLinks(r: AbilityRequest, status: AbilityStatus, siteUrl: st
 
 export function isPending(r: AbilityRequest): boolean {
   return r.state === "pending";
+}
+
+/**
+ * True when a done change's Undo period has passed with nothing undone: the
+ * card then says so rather than silently dropping the button.
+ */
+export function undoWindowOver(request: AbilityRequest, statusKind: string, canUndo: boolean): boolean {
+  if (statusKind !== "done" || canUndo || !request.undo_available_until) return false;
+  const end = Date.parse(request.undo_available_until);
+  return Number.isFinite(end) && end <= Date.now();
 }

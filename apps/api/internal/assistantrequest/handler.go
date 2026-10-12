@@ -1,6 +1,7 @@
 package assistantrequest
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
+	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
 )
@@ -131,6 +133,20 @@ func (h *Handler) decline(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, toDTO(req))
+}
+
+// RenderCachePurgeRequests renders rows exactly as the request queue returns
+// them, for the AI activity feed.
+func (h *Handler) RenderCachePurgeRequests(ctx context.Context, p domain.Principal, rows []sqlc.AssistantCachePurgeRequest) ([]any, error) {
+	reqs, err := h.svc.Render(ctx, p, rows)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]any, 0, len(reqs))
+	for _, r := range reqs {
+		out = append(out, toDTO(r))
+	}
+	return out, nil
 }
 
 func listResponse(q Queue, limit, offset int32) ListResponse {

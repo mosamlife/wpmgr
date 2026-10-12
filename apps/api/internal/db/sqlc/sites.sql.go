@@ -24,7 +24,7 @@ SET agent_public_key = $3,
     php_version = $5,
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, ai_mode, ai_mode_source, ai_mode_set_by, ai_mode_set_at, ai_mode_version, ai_mode_step_up, ai_mode_launch_emailed_at, created_at, updated_at
 `
 
 type AttachAgentToSiteParams struct {
@@ -87,6 +87,13 @@ func (q *Queries) AttachAgentToSite(ctx context.Context, arg AttachAgentToSitePa
 		&i.ContentEditingEnabledAt,
 		&i.ContentEditingPrincipalUserID,
 		&i.ContentEditingEnabledBy,
+		&i.AiMode,
+		&i.AiModeSource,
+		&i.AiModeSetBy,
+		&i.AiModeSetAt,
+		&i.AiModeVersion,
+		&i.AiModeStepUp,
+		&i.AiModeLaunchEmailedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -96,7 +103,7 @@ func (q *Queries) AttachAgentToSite(ctx context.Context, arg AttachAgentToSitePa
 const createSite = `-- name: CreateSite :one
 INSERT INTO sites (tenant_id, url, name, status, wp_version, php_version)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, ai_mode, ai_mode_source, ai_mode_set_by, ai_mode_set_at, ai_mode_version, ai_mode_step_up, ai_mode_launch_emailed_at, created_at, updated_at
 `
 
 type CreateSiteParams struct {
@@ -162,6 +169,13 @@ func (q *Queries) CreateSite(ctx context.Context, arg CreateSiteParams) (Site, e
 		&i.ContentEditingEnabledAt,
 		&i.ContentEditingPrincipalUserID,
 		&i.ContentEditingEnabledBy,
+		&i.AiMode,
+		&i.AiModeSource,
+		&i.AiModeSetBy,
+		&i.AiModeSetAt,
+		&i.AiModeVersion,
+		&i.AiModeStepUp,
+		&i.AiModeLaunchEmailedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -172,7 +186,7 @@ const createSiteForEnroll = `-- name: CreateSiteForEnroll :one
 INSERT INTO sites (tenant_id, url, name, status, wp_version, php_version,
                    agent_public_key, enrolled_at, last_seen_at, health_status, tags)
 VALUES ($1, $2, $3, 'active', $4, $5, $6, now(), now(), 'healthy', $7)
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, ai_mode, ai_mode_source, ai_mode_set_by, ai_mode_set_at, ai_mode_version, ai_mode_step_up, ai_mode_launch_emailed_at, created_at, updated_at
 `
 
 type CreateSiteForEnrollParams struct {
@@ -238,6 +252,13 @@ func (q *Queries) CreateSiteForEnroll(ctx context.Context, arg CreateSiteForEnro
 		&i.ContentEditingEnabledAt,
 		&i.ContentEditingPrincipalUserID,
 		&i.ContentEditingEnabledBy,
+		&i.AiMode,
+		&i.AiModeSource,
+		&i.AiModeSetBy,
+		&i.AiModeSetAt,
+		&i.AiModeVersion,
+		&i.AiModeStepUp,
+		&i.AiModeLaunchEmailedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -263,7 +284,7 @@ func (q *Queries) DeleteSite(ctx context.Context, arg DeleteSiteParams) (int64, 
 }
 
 const getSite = `-- name: GetSite :one
-SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.components_updated_at, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.monitoring_paused_at, s.monitoring_paused_by, s.monitoring_paused_reason, s.monitoring_resume_at, s.content_editing_enabled_at, s.content_editing_principal_user_id, s.content_editing_enabled_by, s.created_at, s.updated_at,
+SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.components_updated_at, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.monitoring_paused_at, s.monitoring_paused_by, s.monitoring_paused_reason, s.monitoring_resume_at, s.content_editing_enabled_at, s.content_editing_principal_user_id, s.content_editing_enabled_by, s.ai_mode, s.ai_mode_source, s.ai_mode_set_by, s.ai_mode_set_at, s.ai_mode_version, s.ai_mode_step_up, s.ai_mode_launch_emailed_at, s.created_at, s.updated_at,
        COALESCE(pc.cache_enabled, false) AS page_cache_enabled,
        COALESCE(oc.enabled, false) AS object_cache_enabled
 FROM sites s
@@ -321,6 +342,13 @@ type GetSiteRow struct {
 	ContentEditingEnabledAt       pgtype.Timestamptz `json:"content_editing_enabled_at"`
 	ContentEditingPrincipalUserID *int64             `json:"content_editing_principal_user_id"`
 	ContentEditingEnabledBy       pgtype.UUID        `json:"content_editing_enabled_by"`
+	AiMode                        string             `json:"ai_mode"`
+	AiModeSource                  string             `json:"ai_mode_source"`
+	AiModeSetBy                   pgtype.UUID        `json:"ai_mode_set_by"`
+	AiModeSetAt                   pgtype.Timestamptz `json:"ai_mode_set_at"`
+	AiModeVersion                 int64              `json:"ai_mode_version"`
+	AiModeStepUp                  *string            `json:"ai_mode_step_up"`
+	AiModeLaunchEmailedAt         pgtype.Timestamptz `json:"ai_mode_launch_emailed_at"`
 	CreatedAt                     time.Time          `json:"created_at"`
 	UpdatedAt                     time.Time          `json:"updated_at"`
 	PageCacheEnabled              bool               `json:"page_cache_enabled"`
@@ -380,6 +408,13 @@ func (q *Queries) GetSite(ctx context.Context, arg GetSiteParams) (GetSiteRow, e
 		&i.ContentEditingEnabledAt,
 		&i.ContentEditingPrincipalUserID,
 		&i.ContentEditingEnabledBy,
+		&i.AiMode,
+		&i.AiModeSource,
+		&i.AiModeSetBy,
+		&i.AiModeSetAt,
+		&i.AiModeVersion,
+		&i.AiModeStepUp,
+		&i.AiModeLaunchEmailedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PageCacheEnabled,
@@ -414,7 +449,7 @@ func (q *Queries) GetSiteAppHealthSettings(ctx context.Context, arg GetSiteAppHe
 
 const getSiteByAgentKey = `-- name: GetSiteByAgentKey :one
 
-SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, created_at, updated_at FROM sites
+SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, ai_mode, ai_mode_source, ai_mode_set_by, ai_mode_set_at, ai_mode_version, ai_mode_step_up, ai_mode_launch_emailed_at, created_at, updated_at FROM sites
 WHERE agent_public_key = $1 AND agent_public_key <> ''
 `
 
@@ -466,6 +501,13 @@ func (q *Queries) GetSiteByAgentKey(ctx context.Context, agentPublicKey string) 
 		&i.ContentEditingEnabledAt,
 		&i.ContentEditingPrincipalUserID,
 		&i.ContentEditingEnabledBy,
+		&i.AiMode,
+		&i.AiModeSource,
+		&i.AiModeSetBy,
+		&i.AiModeSetAt,
+		&i.AiModeVersion,
+		&i.AiModeStepUp,
+		&i.AiModeLaunchEmailedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -474,7 +516,7 @@ func (q *Queries) GetSiteByAgentKey(ctx context.Context, agentPublicKey string) 
 
 const getSiteByURLForEnroll = `-- name: GetSiteByURLForEnroll :one
 
-SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, created_at, updated_at FROM sites
+SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, ai_mode, ai_mode_source, ai_mode_set_by, ai_mode_set_at, ai_mode_version, ai_mode_step_up, ai_mode_launch_emailed_at, created_at, updated_at FROM sites
 WHERE tenant_id = $1 AND url = $2
 `
 
@@ -531,6 +573,13 @@ func (q *Queries) GetSiteByURLForEnroll(ctx context.Context, arg GetSiteByURLFor
 		&i.ContentEditingEnabledAt,
 		&i.ContentEditingPrincipalUserID,
 		&i.ContentEditingEnabledBy,
+		&i.AiMode,
+		&i.AiModeSource,
+		&i.AiModeSetBy,
+		&i.AiModeSetAt,
+		&i.AiModeVersion,
+		&i.AiModeStepUp,
+		&i.AiModeLaunchEmailedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -915,7 +964,7 @@ func (q *Queries) ListSiteAddressesInScope(ctx context.Context, arg ListSiteAddr
 }
 
 const listSites = `-- name: ListSites :many
-SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.components_updated_at, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.monitoring_paused_at, s.monitoring_paused_by, s.monitoring_paused_reason, s.monitoring_resume_at, s.content_editing_enabled_at, s.content_editing_principal_user_id, s.content_editing_enabled_by, s.created_at, s.updated_at,
+SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.components_updated_at, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.monitoring_paused_at, s.monitoring_paused_by, s.monitoring_paused_reason, s.monitoring_resume_at, s.content_editing_enabled_at, s.content_editing_principal_user_id, s.content_editing_enabled_by, s.ai_mode, s.ai_mode_source, s.ai_mode_set_by, s.ai_mode_set_at, s.ai_mode_version, s.ai_mode_step_up, s.ai_mode_launch_emailed_at, s.created_at, s.updated_at,
        COALESCE(pc.cache_enabled, false) AS page_cache_enabled,
        COALESCE(oc.enabled, false) AS object_cache_enabled
 FROM sites s
@@ -1005,6 +1054,13 @@ type ListSitesRow struct {
 	ContentEditingEnabledAt       pgtype.Timestamptz `json:"content_editing_enabled_at"`
 	ContentEditingPrincipalUserID *int64             `json:"content_editing_principal_user_id"`
 	ContentEditingEnabledBy       pgtype.UUID        `json:"content_editing_enabled_by"`
+	AiMode                        string             `json:"ai_mode"`
+	AiModeSource                  string             `json:"ai_mode_source"`
+	AiModeSetBy                   pgtype.UUID        `json:"ai_mode_set_by"`
+	AiModeSetAt                   pgtype.Timestamptz `json:"ai_mode_set_at"`
+	AiModeVersion                 int64              `json:"ai_mode_version"`
+	AiModeStepUp                  *string            `json:"ai_mode_step_up"`
+	AiModeLaunchEmailedAt         pgtype.Timestamptz `json:"ai_mode_launch_emailed_at"`
 	CreatedAt                     time.Time          `json:"created_at"`
 	UpdatedAt                     time.Time          `json:"updated_at"`
 	PageCacheEnabled              bool               `json:"page_cache_enabled"`
@@ -1115,6 +1171,13 @@ func (q *Queries) ListSites(ctx context.Context, arg ListSitesParams) ([]ListSit
 			&i.ContentEditingEnabledAt,
 			&i.ContentEditingPrincipalUserID,
 			&i.ContentEditingEnabledBy,
+			&i.AiMode,
+			&i.AiModeSource,
+			&i.AiModeSetBy,
+			&i.AiModeSetAt,
+			&i.AiModeVersion,
+			&i.AiModeStepUp,
+			&i.AiModeLaunchEmailedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PageCacheEnabled,
@@ -1200,7 +1263,7 @@ func (q *Queries) ListSitesAgentVersions(ctx context.Context, tenantID uuid.UUID
 }
 
 const listSitesForMCPScope = `-- name: ListSitesForMCPScope :many
-SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.components_updated_at, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.monitoring_paused_at, s.monitoring_paused_by, s.monitoring_paused_reason, s.monitoring_resume_at, s.content_editing_enabled_at, s.content_editing_principal_user_id, s.content_editing_enabled_by, s.created_at, s.updated_at
+SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.components_updated_at, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.monitoring_paused_at, s.monitoring_paused_by, s.monitoring_paused_reason, s.monitoring_resume_at, s.content_editing_enabled_at, s.content_editing_principal_user_id, s.content_editing_enabled_by, s.ai_mode, s.ai_mode_source, s.ai_mode_set_by, s.ai_mode_set_at, s.ai_mode_version, s.ai_mode_step_up, s.ai_mode_launch_emailed_at, s.created_at, s.updated_at
 FROM sites s
 WHERE s.tenant_id = $1
   AND s.id = ANY($2::uuid[])
@@ -1317,6 +1380,13 @@ func (q *Queries) ListSitesForMCPScope(ctx context.Context, arg ListSitesForMCPS
 			&i.ContentEditingEnabledAt,
 			&i.ContentEditingPrincipalUserID,
 			&i.ContentEditingEnabledBy,
+			&i.AiMode,
+			&i.AiModeSource,
+			&i.AiModeSetBy,
+			&i.AiModeSetAt,
+			&i.AiModeVersion,
+			&i.AiModeStepUp,
+			&i.AiModeLaunchEmailedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -1395,7 +1465,7 @@ const setSiteAgeRecipient = `-- name: SetSiteAgeRecipient :one
 UPDATE sites
 SET age_recipient = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, ai_mode, ai_mode_source, ai_mode_set_by, ai_mode_set_at, ai_mode_version, ai_mode_step_up, ai_mode_launch_emailed_at, created_at, updated_at
 `
 
 type SetSiteAgeRecipientParams struct {
@@ -1451,6 +1521,13 @@ func (q *Queries) SetSiteAgeRecipient(ctx context.Context, arg SetSiteAgeRecipie
 		&i.ContentEditingEnabledAt,
 		&i.ContentEditingPrincipalUserID,
 		&i.ContentEditingEnabledBy,
+		&i.AiMode,
+		&i.AiModeSource,
+		&i.AiModeSetBy,
+		&i.AiModeSetAt,
+		&i.AiModeVersion,
+		&i.AiModeStepUp,
+		&i.AiModeLaunchEmailedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1482,7 +1559,7 @@ const setSiteTags = `-- name: SetSiteTags :one
 UPDATE sites
 SET tags = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, ai_mode, ai_mode_source, ai_mode_set_by, ai_mode_set_at, ai_mode_version, ai_mode_step_up, ai_mode_launch_emailed_at, created_at, updated_at
 `
 
 type SetSiteTagsParams struct {
@@ -1536,6 +1613,13 @@ func (q *Queries) SetSiteTags(ctx context.Context, arg SetSiteTagsParams) (Site,
 		&i.ContentEditingEnabledAt,
 		&i.ContentEditingPrincipalUserID,
 		&i.ContentEditingEnabledBy,
+		&i.AiMode,
+		&i.AiModeSource,
+		&i.AiModeSetBy,
+		&i.AiModeSetAt,
+		&i.AiModeVersion,
+		&i.AiModeStepUp,
+		&i.AiModeLaunchEmailedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1548,7 +1632,7 @@ SET last_seen_at = now(),
     health_status = 'healthy',
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, ai_mode, ai_mode_source, ai_mode_set_by, ai_mode_set_at, ai_mode_version, ai_mode_step_up, ai_mode_launch_emailed_at, created_at, updated_at
 `
 
 type TouchSiteSeenParams struct {
@@ -1601,6 +1685,13 @@ func (q *Queries) TouchSiteSeen(ctx context.Context, arg TouchSiteSeenParams) (S
 		&i.ContentEditingEnabledAt,
 		&i.ContentEditingPrincipalUserID,
 		&i.ContentEditingEnabledBy,
+		&i.AiMode,
+		&i.AiModeSource,
+		&i.AiModeSetBy,
+		&i.AiModeSetAt,
+		&i.AiModeVersion,
+		&i.AiModeStepUp,
+		&i.AiModeLaunchEmailedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1658,7 +1749,7 @@ SET wp_version   = $3,
     health_status = 'healthy',
     updated_at   = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, ai_mode, ai_mode_source, ai_mode_set_by, ai_mode_set_at, ai_mode_version, ai_mode_step_up, ai_mode_launch_emailed_at, created_at, updated_at
 `
 
 type UpdateSiteMetadataParams struct {
@@ -1747,6 +1838,13 @@ func (q *Queries) UpdateSiteMetadata(ctx context.Context, arg UpdateSiteMetadata
 		&i.ContentEditingEnabledAt,
 		&i.ContentEditingPrincipalUserID,
 		&i.ContentEditingEnabledBy,
+		&i.AiMode,
+		&i.AiModeSource,
+		&i.AiModeSetBy,
+		&i.AiModeSetAt,
+		&i.AiModeVersion,
+		&i.AiModeStepUp,
+		&i.AiModeLaunchEmailedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

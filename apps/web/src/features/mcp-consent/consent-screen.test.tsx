@@ -121,31 +121,25 @@ describe("ConsentScreen — what it can do and what it cannot", () => {
     expect(screen.getByText(/It cannot read your backups' contents\./i)).toBeTruthy();
   });
 
-  it("says who makes a change, without claiming an approval screen this connection cannot reach", () => {
-    // Nothing in the product can propose anything (no proposal table, no
-    // approval queue, no approval screen anywhere in the route tree). This
-    // bullet used to say "It can suggest work to you and nothing more.
-    // Anything that changes a site is approved by a person, in this
-    // dashboard, on a screen this connection cannot reach" -- both a false
-    // capability claim and a pointer at a screen that does not exist.
-    //
-    // The first rewrite, "Everything that changes a site is done by a
-    // person, here in this dashboard," went too far the other way: it is a
-    // categorical claim the product falsifies twice over --
-    // update_runs.scheduled_at (apps/api/db/schema.sql:1185) fires a run
-    // later from DispatchWorker with nobody present, and POST /updates is
-    // reachable by an API-key principal with no dashboard and no person
-    // (apps/api/internal/update/handler.go:44, RequireOrgScope +
-    // PermSiteWrite only; middleware/auth.go:56 gives API-key principals org
-    // scope; schema.sql:1147-1148 documents created_by as NULL for them). The
-    // sentence below claims only what is categorically true: never THIS
-    // connection, without asserting who or what else does it.
+  it("says only a signed-in person approves a change or sets how much an AI may do, and that a connection cannot raise its own limits", () => {
+    // Two earlier wordings are retired and must not come back. The first said
+    // the connection "can suggest work" and pointed at an approval screen it
+    // cannot reach: a false capability claim. The second said "There is no
+    // setting or mode that lets this connection do it instead", which stopped
+    // being true once a site's setting can let an AI's own drafts run without
+    // asking. The sentence below claims only what stays true: who may approve
+    // or loosen, and that a connection cannot raise its own limits. It does
+    // not say who or what else makes a change, because that varies by site.
     renderWithProviders(<ConsentScreen {...props()} />);
     // The bold lead-in stays exactly as it was.
     expect(screen.getByText(/It cannot approve anything\./i)).toBeTruthy();
     const bullet = screen.getByText(/It cannot approve anything\./i).closest("li")!;
-    expect(bullet).toHaveTextContent(/site changes are made elsewhere in wpmgr/i);
-    expect(bullet).toHaveTextContent(/never by this connection/i);
+    expect(bullet).toHaveTextContent(
+      "It cannot approve anything. Only a signed-in person can approve a change, or set how much an AI may do on a site. A connection can never raise its own limits.",
+    );
+    expect(bullet).not.toHaveTextContent(/no setting or mode/i);
+    expect(bullet).not.toHaveTextContent(/made elsewhere in wpmgr/i);
+    expect(bullet).not.toHaveTextContent(/never by this connection/i);
     expect(bullet).not.toHaveTextContent(/propose/i);
     expect(bullet).not.toHaveTextContent(/done by a person/i);
     expect(bullet).not.toHaveTextContent(/screen this connection cannot reach/i);
@@ -726,6 +720,29 @@ describe("ConsentScreen, the mcp:site site-tools section", () => {
     expect(readBox().disabled).toBe(false);
     expect(requestBox().disabled).toBe(false);
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+  });
+
+  it("describes the request tick as changes made as far as each site's setting allows, never as approval of each one", async () => {
+    renderWithProviders(<ConsentScreen {...props({ consent: siteConsent() })} />, {
+      withRouter: true,
+    });
+    const box = within(await screen.findByTestId("consent-site-capability"));
+    expect(
+      box.getByText(
+        "Make changes through the site's tools, as far as each site's setting allows. Some changes always wait for you.",
+      ),
+    ).toBeTruthy();
+    expect(
+      box.getByText(
+        /Each site's setting decides which changes run at once and which wait until someone allowed to edit that site's content approves them in WPMgr\. Some changes always wait\./,
+      ),
+    ).toBeTruthy();
+    // The retired wording said a person approves every request one at a time,
+    // which a site set to Auto for AI drafts no longer asks for.
+    const text = screen.getByTestId("consent-site-capability").textContent ?? "";
+    expect(text).not.toMatch(/You approve each one/i);
+    expect(text).not.toMatch(/approve each request one at a time/i);
+    expect(text).not.toMatch(/Nothing runs until someone allowed to edit/i);
   });
 
   it("sends the fleet reads and both site tools when the person changes nothing", async () => {

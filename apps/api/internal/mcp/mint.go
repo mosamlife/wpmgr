@@ -298,6 +298,17 @@ type MintedConnection struct {
 	Capabilities  []Capability
 }
 
+// aiAutoByCreator says whether a new connection starts allowed to run
+// changes where each site's setting allows it: only when a signed-in person
+// creates it, and that person is then recorded as the one who allowed it
+// (mcp_grants.ai_auto_set_by). A connection created with an API key has no
+// person behind it and starts on 'never'. The database refuses
+// 'site_setting' unless the transaction carries the recorded person as
+// app.user_id, which the creating transaction does for a signed-in person.
+func aiAutoByCreator(p domain.Principal) bool {
+	return p.Type == domain.PrincipalUser && p.UserID != uuid.Nil
+}
+
 // MintConnection creates a grant and its first connection token in ONE
 // transaction, and returns the plaintext once.
 //
@@ -538,6 +549,12 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 			// validated for shape in step 2; the database CHECK is the backstop
 			// behind that, not the diagnosis.
 			SetupClient: req.SetupClient,
+
+			// m174. A connection a signed-in person mints may run changes
+			// where each site's setting allows it, with that person recorded
+			// as the one who allowed it. One minted with an API key starts on
+			// 'never' until a person allows it (ADR-065).
+			AiAutoByCreator: aiAutoByCreator(req.Principal),
 		},
 		func(grantID uuid.UUID) sqlc.CreateMCPConnectionTokenParams {
 			return sqlc.CreateMCPConnectionTokenParams{

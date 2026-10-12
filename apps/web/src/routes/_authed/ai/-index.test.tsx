@@ -274,8 +274,13 @@ describe("what a connection can and cannot do", () => {
       screen.getByText("Run PHP, WP-CLI, a shell, or open a file path of its choosing"),
     ).toBeInTheDocument();
     expect(
-      screen.getByText("Be granted a “skip approval” setting. There isn’t one."),
+      screen.getByText("Change how much it is trusted on a site. Only a signed-in person can."),
     ).toBeInTheDocument();
+    // The retired line said there is no "skip approval" setting. A site's
+    // setting can now let a connection's own drafts run without asking, so
+    // that sentence would be false on this page.
+    expect(screen.queryByText(/skip approval/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/There isn’t one/i)).not.toBeInTheDocument();
   });
 
   it("renders the contract for a principal who cannot create connections", async () => {

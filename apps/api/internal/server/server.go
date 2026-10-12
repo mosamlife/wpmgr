@@ -19,6 +19,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
 	"github.com/mosamlife/wpmgr/apps/api/internal/aireadiness"
+	"github.com/mosamlife/wpmgr/apps/api/internal/aitrust"
 	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/assistantrequest"
@@ -292,6 +293,11 @@ type Deps struct {
 	// /fleet/ai-readiness). Advisory only: nothing reads its result to allow
 	// or refuse anything. Nil leaves the routes unmounted.
 	AIReadinessH *aireadiness.Handler
+	// AITrustH serves the AI trust settings and the AI activity feed:
+	// GET/PUT /sites/{siteId}/ai/mode, GET /ai/connections/{grantId}/usage,
+	// PUT /ai/connections/{grantId}/auto and GET /ai/activity. Nil leaves
+	// them unmounted.
+	AITrustH *aitrust.Handler
 	// MCPDiscoveryH serves the two unauthenticated OAuth discovery documents:
 	// GET /.well-known/oauth-authorization-server (RFC 8414) and GET
 	// /.well-known/oauth-protected-resource (RFC 9728), the second also at its
@@ -671,6 +677,11 @@ func New(deps Deps) *Server {
 	}
 	if deps.AIReadinessH != nil {
 		deps.AIReadinessH.Register(v1)
+	}
+	// The AI trust settings and activity. On v1, so RequireAuth and
+	// RequireTenant apply before the per-route gates inside Register.
+	if deps.AITrustH != nil {
+		deps.AITrustH.Register(v1)
 	}
 	deps.TenantH.Register(v1)
 	deps.SiteH.Register(v1)

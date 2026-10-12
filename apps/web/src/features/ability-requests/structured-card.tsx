@@ -1,9 +1,12 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { setUpForLine } from "@/features/ai-requests/request-card-model";
+import { useDeepLinkFocus } from "@/features/ai-requests/use-deep-link";
+import { UNDO_WINDOW_OVER_LINE, ranAutomatically } from "@/features/ai-trust/ai-trust-copy";
 
-import { clockTime, isPending } from "./ability-card-model";
+import { clockTime, isPending, undoWindowOver } from "./ability-card-model";
 import type { AbilityRequestCardProps } from "./ability-request-card";
+import { AutoApprovalRows, RanAutomaticallyChip, WaitingBecauseRow } from "./auto-approval";
 import {
   REST_NOT_SHOWABLE_COPY,
   isPublishedImmediately,
@@ -27,28 +30,41 @@ export function StructuredAbilityCard(props: AbilityRequestCardProps & { canUndo
     undoPending = false,
     notice,
     autoFocusDecline = false,
+    deepLinked = false,
     className,
     canUndo,
+    currentUserId,
   } = props;
   const facts = parseRestCardFacts(request);
   const pending = isPending(request);
+  const { articleRef, declineRef } = useDeepLinkFocus(deepLinked, pending);
   const status = restWriteStatus(request);
   const setUpFor = setUpForLine(request);
   const busy = approvePending || declinePending;
   const title = restCardTitle(facts, request.site_label);
   const live = facts !== null && isPublishedImmediately(facts);
+  const auto = ranAutomatically(request.approval);
   return (
     <article
+      ref={articleRef}
       aria-label={title}
-      className={cn("space-y-3 rounded-lg border border-border bg-card p-4", className)}
+      tabIndex={deepLinked ? -1 : undefined}
+      className={cn(
+        "space-y-3 rounded-lg border border-border bg-card p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]",
+        auto && status.kind === "failed" && "border-destructive",
+        className,
+      )}
     >
       <div className="space-y-1">
-        <h3 className="text-sm font-semibold text-foreground">
-          {facts ? facts.route_title : "Change a site field"}
-          {facts ? (
-            <span className="ml-2 font-mono text-xs font-normal text-muted-foreground">{facts.method}</span>
-          ) : null}
-        </h3>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <h3 className="text-sm font-semibold text-foreground">
+            {facts ? facts.route_title : "Change a site field"}
+            {facts ? (
+              <span className="ml-2 font-mono text-xs font-normal text-muted-foreground">{facts.method}</span>
+            ) : null}
+          </h3>
+          {auto ? <RanAutomaticallyChip /> : null}
+        </div>
         <div>
           <p className="text-xs font-medium text-muted-foreground">From the site</p>
           <p className="text-sm text-muted-foreground">{request.site_host}</p>
@@ -60,6 +76,8 @@ export function StructuredAbilityCard(props: AbilityRequestCardProps & { canUndo
         <dd className="min-w-0 break-words text-foreground">{request.grant_label}</dd>
         <dt className="text-muted-foreground">Set up for</dt>
         <dd className="min-w-0 break-words text-foreground">{setUpFor.primary}</dd>
+        <WaitingBecauseRow request={request} />
+        <AutoApprovalRows request={request} currentUserId={currentUserId} />
         {pending ? (
           <>
             <dt className="text-muted-foreground">Timing</dt>
@@ -122,6 +140,9 @@ export function StructuredAbilityCard(props: AbilityRequestCardProps & { canUndo
       )}
 
       {pending ? null : <p className="text-sm text-foreground">{status.text}</p>}
+      {!pending && undoWindowOver(request, status.kind, canUndo) ? (
+        <p className="text-sm text-muted-foreground">{UNDO_WINDOW_OVER_LINE}</p>
+      ) : null}
 
       {notice ? (
         <p role="alert" className="text-sm text-destructive">
@@ -132,6 +153,7 @@ export function StructuredAbilityCard(props: AbilityRequestCardProps & { canUndo
       {pending ? (
         <div className="flex flex-wrap justify-end gap-2">
           <Button
+            ref={declineRef}
             type="button"
             variant="outline"
             autoFocus={autoFocusDecline}

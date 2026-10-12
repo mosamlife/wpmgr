@@ -11,8 +11,9 @@ import {
 // The site-tools box (scope mcp:site), shared by the wizard's capability step
 // and the consent screen so the two cannot describe it differently. Two
 // explicit ticks, in no preset: the read can return page text, and the request
-// only ever creates a request that a person approves in WPMgr. The box keeps no
-// ticks of its own; the host passes them in. The wizard opens both clear, and
+// lets the connection make changes as far as each site's setting allows (a
+// change the setting does not allow waits for a person in WPMgr). The box keeps
+// no ticks of its own; the host passes them in. The wizard opens both clear, and
 // the consent screen opens both ticked when the app asked for site tools.
 //
 // THE REQUEST NEEDS THE READ. A connection holding "ask for changes" without

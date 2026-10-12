@@ -31,6 +31,14 @@ import type { AbilityRequest } from "@wpmgr/api";
 //     builder elementor, format classic, layout containers or sections, a
 //     version of the checked shape. It is null on an Elementor row whose
 //     stored facts do not read back.
+//   m174 (assistant_ability_requests_policy_approval_shape_check, ..._ask_reason_check,
+//     ..._not_sent_reason_check; abilityrequest/approval_dto.go approvalOf and
+//     askReasonOf): an approval is on the approved states only, a person's
+//     approval names no setting, a setting's approval names the mode and the
+//     class WPMgr decided and belongs to a request that never waited (no
+//     ask_reason), an ask_reason is one of the contract's ten, and a request
+//     closed because a setting or a class changed carries setting_changed or
+//     class_changed.
 
 const STATES = [
   "pending",
@@ -60,8 +68,25 @@ const NOT_SENT_REASONS = new Set([
   "entry_disabled",
   "route_changed",
   "route_disabled",
+  "setting_changed",
+  "class_changed",
 ]);
 const UNDO_STATES = new Set(["available", "in_progress", "undone", "refused_conflict", "refused_published", "failed"]);
+/** The states in which a request has been approved, by a person or by a setting (approval_dto.go approvedStates). */
+const APPROVED = new Set(["approved", "dispatched", "done", "failed", "not_sent", "outcome_unknown"]);
+/** The AIAskReason enum of the contract: the reasons the wire can carry. */
+const ASK_REASONS = new Set([
+  "kind_always_asks",
+  "unknown_target_state",
+  "site_mode_ask",
+  "kind_not_in_mode",
+  "setter_lacks_permission",
+  "over_change_budget",
+  "over_site_cap",
+  "connection_never_auto",
+  "connection_setter_invalid",
+  "not_checked",
+]);
 
 /** The v1 block types: anything else makes the request card copy version 2. */
 const V1_TYPES = new Set(["heading", "paragraph", "list"]);
@@ -179,6 +204,16 @@ export function assertDbShape(r: AbilityRequest): void {
   if (!/^[!-~]{1,255}$/.test(r.site_host)) fail("site_host must be printable ASCII with no spaces");
   if (!["token", "browser_sign_in"].includes(r.grant_via)) fail("grant_via");
   if (r.presented_digest !== undefined && !/^[0-9a-f]{64}$/.test(r.presented_digest)) fail("presented_digest shape");
+
+  if (r.approval != null) {
+    if (!APPROVED.has(r.state)) fail("an approval belongs to the approved states");
+    if (r.approval.source === "person" && r.approval.setting != null) fail("a person's approval names no setting");
+    if (r.approval.source === "policy") {
+      if (r.ask_reason != null) fail("a request a setting approved never waited, so it has no ask_reason");
+      if (r.change_class == null) fail("a setting's approval names the class WPMgr decided");
+    }
+  }
+  if (r.ask_reason != null && !ASK_REASONS.has(r.ask_reason)) fail("ask_reason value");
 
   if (r.ability_name === "wpmgr/page-edit") {
     if (r.editor !== ELEMENTOR) fail("a page edit is an Elementor edit");
@@ -427,4 +462,49 @@ export function pageEditRow(
   };
   assertDbShape(row);
   return row;
+}
+
+// --- how a request was approved, and why one waits (approval tiers) -----------
+
+type ApprovalFields = Pick<AbilityRequest, "approval" | "change_class" | "change_kind_name">;
+
+/** WPMgr's name for the draft class as copy uses it (aipolicy Class.KindName). */
+const AI_DRAFT_KIND = "changes to the AI's own drafts";
+
+/**
+ * What a request carries once a site's setting approved it with no person
+ * deciding (approval_dto.go approvalOf): the setting it relied on, copied onto
+ * the row, and the class WPMgr decided. `over` changes the copied setting.
+ */
+export function autoApproved(
+  over: Partial<NonNullable<NonNullable<AbilityRequest["approval"]>["setting"]>> = {},
+): ApprovalFields {
+  return {
+    approval: {
+      source: "policy",
+      setting: {
+        mode: "ai_drafts",
+        source: "person",
+        set_by_user_id: "user-1",
+        set_by_name: "Priya",
+        set_by_account_deleted: false,
+        set_at: "2026-10-09T12:00:00Z",
+        ...over,
+      },
+    },
+    change_class: "ai_draft",
+    change_kind_name: AI_DRAFT_KIND,
+  };
+}
+
+/** What a request carries once a person approved it: no setting, and the class WPMgr decided. */
+export function personApproved(): ApprovalFields {
+  return { approval: { source: "person", setting: null }, change_class: "ai_draft", change_kind_name: AI_DRAFT_KIND };
+}
+
+/** What a request that waits for a person carries: why it waits, and the class WPMgr decided. */
+export function waitsBecause(
+  reason: NonNullable<AbilityRequest["ask_reason"]>,
+): Pick<AbilityRequest, "ask_reason" | "change_class" | "change_kind_name"> {
+  return { ask_reason: reason, change_class: "ai_draft", change_kind_name: AI_DRAFT_KIND };
 }
