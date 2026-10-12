@@ -230,6 +230,9 @@ final class ElementorClassicMapper
     /** Label key of a WordPress widget placed in Elementor. */
     public const LABEL_WP_WIDGET = 'wpmgr:wp-widget';
 
+    /** Label key of a WPMgr pattern whose subtree a person restructured in Elementor. */
+    public const LABEL_PATTERN_EDITED = 'wpmgr:pattern-edited';
+
     /** New nodes at the top of the page: leaves are wrapped, groups and columns map as on a new page. */
     public const CONTEXT_TOP = 'top';
 
@@ -250,6 +253,7 @@ final class ElementorClassicMapper
         self::LABEL_CUSTOM_TEXT    => 'Elementor text with formatting WPMgr does not edit',
         self::LABEL_ATOMIC         => 'Elementor v4 element',
         self::LABEL_WP_WIDGET      => 'WordPress widget',
+        self::LABEL_PATTERN_EDITED => 'WPMgr pattern changed in Elementor',
         'html'                     => 'Elementor HTML code',
         'shortcode'                => 'Elementor shortcode',
         'template'                 => 'Elementor saved template',
@@ -1342,6 +1346,11 @@ final class ElementorClassicMapper
                 $projection->addLocked($id, $parent, self::LABEL_DYNAMIC);
                 continue;
             }
+            $named = $type === 'container' ? self::patternOf($settings) : null;
+            if ($named !== null) {
+                self::projectPattern($node, $id, $parent, $named, $projection);
+                continue;
+            }
 
             $kind = self::classify($type, $settings, $parentKind);
             if ($kind === null) {
@@ -1358,6 +1367,79 @@ final class ElementorClassicMapper
                 }
             }
         }
+    }
+
+    /**
+     * The pattern and variant a container's Navigator label names.
+     *
+     * @param array<mixed> $settings The container's settings.
+     * @return array{pattern:string,variant:string}|null
+     */
+    private static function patternOf(array $settings): ?array
+    {
+        $label = $settings[LeafPolicy::LABEL_KEY] ?? null;
+
+        return is_string($label) ? ElementorPatternCompiler::fromLabel($label) : null;
+    }
+
+    /**
+     * A container labelled as a WPMgr pattern: a pattern node when its subtree
+     * is the shape the compiler builds (ElementorPatternReader), else locked,
+     * its children not walked. An item pattern is one node that offers its
+     * items by path; a hero or a call to action holds ordinary blocks, which
+     * are walked and projected as any other.
+     *
+     * @param array<mixed>                       $node       The stored container.
+     * @param string                             $id         Its id.
+     * @param string                             $parent     Parent ref.
+     * @param array{pattern:string,variant:string} $named      The pattern and variant of its label.
+     * @param Projection                         $projection Projection being built.
+     * @return void
+     * @throws \InvalidArgumentException When an element below a hero or a call to action is not an object or has no usable, unique id.
+     */
+    private static function projectPattern(array $node, string $id, string $parent, array $named, Projection $projection): void
+    {
+        $fields = ElementorPatternReader::fields($node, $named['pattern'], $named['variant']);
+        if ($fields === null) {
+            $projection->addLocked($id, $parent, self::LABEL_PATTERN_EDITED);
+
+            return;
+        }
+        $composed = in_array($named['pattern'], ElementorPatternCompiler::COMPOSED, true);
+        if (!$composed && self::subtreeHoldsDynamicKey($node, 0)) {
+            $projection->addLocked($id, $parent, self::LABEL_DYNAMIC);
+
+            return;
+        }
+        $projection->addPattern($id, $parent, $named['variant'], array_map(static fn (array $field): string => $field['text'], $fields));
+        if ($composed && is_array($node['elements'] ?? null)) {
+            // The two columns of a split hero are columns; the blocks of a stacked one are the pattern's own.
+            self::projectNodes($node['elements'], $id, ($node['settings']['flex_direction'] ?? null) === 'row' ? 'columns' : 'pattern', $projection);
+        }
+    }
+
+    /**
+     * Whether any element below a node holds a key that makes it dynamic
+     * content or code, or stands deeper than the projection follows.
+     *
+     * @param array<mixed> $node  A stored element.
+     * @param int          $depth How deep it stands.
+     * @return bool
+     */
+    private static function subtreeHoldsDynamicKey(array $node, int $depth): bool
+    {
+        $children = $node['elements'] ?? [];
+        foreach (is_array($children) ? $children : [] as $child) {
+            if (!is_array($child)) {
+                continue;
+            }
+            $settings = $child['settings'] ?? [];
+            if ($depth > 8 || (is_array($settings) && self::holdsDynamicKey($settings, 1)) || self::subtreeHoldsDynamicKey($child, $depth + 1)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1484,8 +1566,20 @@ final class ElementorClassicMapper
      * @param string $stored Stored text.
      * @return string
      */
-    private static function decode(string $stored): string
+    public static function decode(string $stored): string
     {
         return html_entity_decode($stored, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    }
+
+    /**
+     * The text of a text editor holding exactly one paragraph of WPMgr's
+     * template, with its character references decoded; null for other HTML.
+     *
+     * @param string $html Stored text editor HTML.
+     * @return string|null
+     */
+    public static function paragraphText(string $html): ?string
+    {
+        return preg_match(self::TEMPLATES['paragraph'], $html) === 1 ? self::decode(substr($html, 3, -4)) : null;
     }
 }

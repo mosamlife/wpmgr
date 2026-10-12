@@ -499,7 +499,7 @@ final class ElementorPatternCards
      * @param int    $count   Cards.
      * @return list<list<int|null>>
      */
-    private static function rowShares(string $variant, int $count): array
+    public static function rowShares(string $variant, int $count): array
     {
         $rows = [];
         if ($variant === 'bento') {
