@@ -113,9 +113,9 @@ func TestPageEditPrecheckConflictNamesTheReasonAndHint(t *testing.T) {
 		hint      []string
 	}{
 		{"editor open, the agent says not retryable", "editor_open", false, "editor_open", true,
-			[]string{"open in Elementor", "Wait three minutes", "three times"}},
+			[]string{"open in an editor (Elementor or the WordPress editor)", "Wait three minutes", "three times", "close the page in that editor"}},
 		{"editor open, the agent says retryable", "editor_open", true, "editor_open", true,
-			[]string{"open in Elementor", "Wait three minutes", "three times"}},
+			[]string{"open in an editor (Elementor or the WordPress editor)", "Wait three minutes", "three times", "close the page in that editor"}},
 		{"changed since read, the agent says retryable", "changed_since_read", true, "changed_since_read", false,
 			[]string{"changed after you read it", "wpmgr/page-structure"}},
 		{"autosave pending, the agent says retryable", "autosave_pending", true, "autosave_pending", false,

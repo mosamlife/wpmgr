@@ -13,7 +13,8 @@ import (
 const (
 	// DetailChangedSinceRead: the page changed after the AI read it.
 	DetailChangedSinceRead = mcp.PageEditConflictChangedSinceRead
-	// DetailEditorOpen: someone has the page open in Elementor.
+	// DetailEditorOpen: someone has the page open in an editor (Elementor or
+	// the WordPress editor).
 	DetailEditorOpen = mcp.PageEditConflictEditorOpen
 	// DetailAutosavePending: someone has unsaved Elementor changes on it.
 	DetailAutosavePending = mcp.PageEditConflictAutosavePending

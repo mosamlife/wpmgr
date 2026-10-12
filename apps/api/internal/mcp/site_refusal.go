@@ -18,7 +18,8 @@ import (
 const (
 	// PageEditConflictChangedSinceRead: the page changed after the AI read it.
 	PageEditConflictChangedSinceRead = "changed_since_read"
-	// PageEditConflictEditorOpen: someone has the page open in Elementor.
+	// PageEditConflictEditorOpen: someone has the page open in an editor
+	// (Elementor or the WordPress editor).
 	PageEditConflictEditorOpen = "editor_open"
 	// PageEditConflictAutosavePending: someone has unsaved Elementor changes
 	// on it.
@@ -35,9 +36,10 @@ const unknownRefusalCode = "unknown"
 // Fixed hints for a page-edit conflict, one per reason and one for a
 // conflict that names none.
 const (
-	hintPageEditConflictEditorOpen = "Someone has this page open in Elementor. Wait three minutes, then send the " +
-		"same call again: WordPress frees a page about two and a half minutes after its editor is closed. If it " +
-		"is refused for this reason three times, stop and ask the person to close the page in Elementor."
+	hintPageEditConflictEditorOpen = "Someone has this page open in an editor (Elementor or the WordPress " +
+		"editor). Wait three minutes, then send the same call again: WordPress frees a page about two and a half " +
+		"minutes after its editor is closed. If it is refused for this reason three times, stop and ask the " +
+		"person to close the page in that editor."
 	hintPageEditConflictChangedSinceRead = "The page changed after you read it. Read the page again with " +
 		"wpmgr/page-structure, then send the edit with the base_fingerprint and refs that read gives."
 	hintPageEditConflictAutosavePending = "Someone has unsaved Elementor changes on this page. Ask the person to " +

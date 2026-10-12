@@ -68,15 +68,23 @@ const CodeUndoUnavailable = "ability_request_undo_unavailable"
 // undo stays available.
 const CodeUndoBusy = "ability_request_undo_busy"
 
+// CodeUndoEditorOpen: the site refused the undo because the page is open in
+// an editor there. Nothing was changed and the undo is available again; it
+// can run once the editor is closed and WordPress frees the page.
+const CodeUndoEditorOpen = "ability_request_undo_editor_open"
+
 // Undo refusal copy.
 const (
 	msgUndoUnavailable = "This change can no longer be undone from WPMgr."
 	msgUndoLaterFirst  = "Undo the later change first."
 	msgUndoBusy        = "A change to this draft is still being finished. Try again in a minute."
 	msgUndoChainLong   = "WPMgr has changed this draft too many times for one undo to check, so it cannot move it to the trash. Remove it in WordPress if you do not want it."
+	msgUndoEditorOpen  = "This page is open in an editor. Try Undo again in a few minutes."
 )
 
 func errUndoUnavailable() error { return domain.Conflict(CodeUndoUnavailable, msgUndoUnavailable) }
+
+func errUndoEditorOpen() error { return domain.Conflict(CodeUndoEditorOpen, msgUndoEditorOpen) }
 
 // editListLimit is ListEditRequestsForPost's row limit. A list that long may
 // be missing the newest edits, so a draft with that many edit requests is
@@ -89,7 +97,9 @@ const editListLimit = 200
 // scheduled or private now, target_not_draft when it is no longer a draft or
 // is gone, and conflict when the page is open, has an autosave, or a later
 // change rewrote what this change wrote (changed_after_this_change): nothing
-// was written in any of these. snapshot_tampered (the kept copy, its ledger
+// was written in any of these. Undo does not ask this about a page open in an
+// editor: that conflict releases the undo first (undoRetryable).
+// snapshot_tampered (the kept copy, its ledger
 // record and the hash this undo sent are not one) and restore_mismatch (the
 // put-back did not read back as the copy) finish it as failed.
 func undoResultFor(resp agentcmd.AbilityRunResponse, err error) string {
@@ -368,7 +378,7 @@ func (s *Service) Undo(ctx context.Context, p domain.Principal, siteID, requestI
 			return none, err
 		}
 		if released {
-			return none, errUndoRetry()
+			return none, errUndoReleased(sendErr)
 		}
 		return after, nil
 	}
@@ -412,6 +422,17 @@ const CodeUndoRetry = "ability_request_undo_retry"
 func errUndoRetry() error {
 	return domain.ServiceUnavailable(CodeUndoRetry,
 		"The site did not confirm the undo. It is still available; try again in a moment.")
+}
+
+// errUndoReleased is the answer to an undo released for a retry: 409
+// CodeUndoEditorOpen when the site refused it because the page is open in an
+// editor (undoEditorOpen), else 503 CodeUndoRetry.
+func errUndoReleased(sendErr error) error {
+	var refusal *agentcmd.AbilityRunRefusal
+	if errors.As(sendErr, &refusal) && undoEditorOpen(refusal) {
+		return errUndoEditorOpen()
+	}
+	return errUndoRetry()
 }
 
 func (s *Service) clock() time.Time {
@@ -482,13 +503,16 @@ func UndoOffered(r sqlc.AssistantAbilityRequest, agentVersion string, newestEdit
 // undoRetryable is true when the revert's answer settles nothing: the call
 // did not reach the site, timed out, or its reply was lost, or the site was
 // busy with this request or its post, or could not read its own database
-// (a page edit's kept copy, or the page). The undo is released so the person
-// can retry; a revert that did run answers already_reverted next time.
+// (a page edit's kept copy, or the page), or someone has the page open in an
+// editor (undoEditorOpen), which WordPress frees on its own once the editor
+// is closed. The undo is released so the person can retry; a revert that did
+// run answers already_reverted next time. Nothing retries it for them.
 //
 // A definite answer that a resend cannot change is not retryable and
-// finishes the undo as failed: any other refusal, a 4xx from the site (the
-// token rejected, the route gone because the plugin was removed, a bad
-// request) other than 408, 425 and 429, and a reply that did not decode.
+// finishes the undo (undoResultFor): any other refusal, any other conflict
+// among them, a 4xx from the site (the token rejected, the route gone
+// because the plugin was removed, a bad request) other than 408, 425 and
+// 429, and a reply that did not decode.
 //
 // A recovery undo answered not_revertible is final too, and is not released:
 // the gate on MinAgentVersionForRecoveryUndo means the site's agent knows the
@@ -506,7 +530,7 @@ func undoRetryable(err error) bool {
 		case "target_in_flight", "request_in_flight", "snapshot_unreadable", "data_unreadable":
 			return true
 		}
-		return false
+		return undoEditorOpen(refusal)
 	}
 	if errors.Is(err, agentcmd.ErrAbilityRunMalformed) {
 		return false
@@ -516,6 +540,13 @@ func undoRetryable(err error) bool {
 		return !permanentHTTPStatus(cmdErr.Status)
 	}
 	return true
+}
+
+// undoEditorOpen: the site refused the revert because someone holds the
+// page's edit lock, which it answers as conflict with detail editor_open,
+// compared exactly. The agent's own retryable flag is not read.
+func undoEditorOpen(refusal *agentcmd.AbilityRunRefusal) bool {
+	return refusal.Code == "conflict" && refusal.Detail == DetailEditorOpen
 }
 
 // permanentHTTPStatus is a 4xx a resend of the same call would get again.
@@ -583,6 +614,9 @@ func (s *Service) recordUndoRelease(ctx context.Context, run undoTxRunner, p dom
 		var refusal *agentcmd.AbilityRunRefusal
 		if errors.As(sendErr, &refusal) {
 			md["code"] = refusal.Code
+			if undoEditorOpen(refusal) {
+				md["reason"] = DetailEditorOpen
+			}
 		} else {
 			md["code"] = "transport"
 		}
