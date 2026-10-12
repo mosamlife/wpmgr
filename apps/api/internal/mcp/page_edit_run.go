@@ -27,6 +27,7 @@ const (
 	pageEditNodeNotEditable = "node_not_editable"
 	pageEditOpNotSupported  = "op_not_supported_by_builder"
 	pageEditPageTooLarge    = "page_too_large"
+	pageEditAnchorInUse     = "anchor_in_use"
 
 	hintPageEditOpsInvalid = "Name each node at most once in one call, as the node an operation changes or as the " +
 		"place it puts new nodes, and never name a node that an earlier operation in the same call removed or " +
@@ -41,6 +42,10 @@ const (
 		"insert, replace or remove instead, as wpmgr/page-structure's answer allows."
 	hintPageEditPageTooLarge = "The call adds more than 400 new nodes, or leaves the page with more than 800 nodes " +
 		"or a page larger than WPMgr edits. Send fewer or smaller changes."
+	hintPageEditAnchorInUse = "A section this call removes, or replaces without its anchor, is still linked to by a " +
+		"node that stays on the page. Change or remove those links in the same call, or keep the section's " +
+		"anchor. Read the page with wpmgr/page-structure to see each section's anchor and the nodes that link " +
+		"to it."
 	msgPageEditInput = "the operations do not follow the page edit rules, so nothing was asked"
 )
 

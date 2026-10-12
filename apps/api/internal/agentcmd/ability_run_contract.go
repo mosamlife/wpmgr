@@ -633,6 +633,9 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"h1_outside_hero":            {},
 	"pattern_items_out_of_range": {},
 	"icon_unknown":               {},
+	// wpmgr/page-edit on a designed page: a section the call removes, or
+	// replaces without its anchor, is still linked to by a node that stays.
+	"anchor_in_use": {},
 	// Refusals only the site can make for a designed page: a font family its
 	// Elementor does not have, a page frame whose template its theme does not
 	// offer, a page frame its theme cannot show a designed page in (a block

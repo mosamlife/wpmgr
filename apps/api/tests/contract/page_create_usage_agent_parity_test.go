@@ -6,7 +6,9 @@ package contract
 // own code, and the control plane's builder floor the third. These gates read
 // the agent's constants from its source, the floor from agentcmd, and the
 // stored usage from the migrations and db/schema.sql, and fail when the usage
-// says anything the agent or the floor does not.
+// says anything the agent or the floor does not. They also read the refusal
+// codes the agent's designed-page tables answer, and fail when one is outside
+// the closed set of agent codes or has no hint for the AI.
 //
 // The usage checked is the one the newest page-create copy migration writes,
 // found by its declaration, and db/schema.sql's seed must carry the same text.
@@ -15,6 +17,7 @@ package contract
 // text some other way fails the equality check instead of passing unseen.
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -25,12 +28,14 @@ import (
 	"testing"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
+	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 	"github.com/mosamlife/wpmgr/apps/api/migrations"
 )
 
 const (
 	agentElementorFactsFile  = "../agent/includes/abilities/builders/class-elementor-facts.php"
 	agentElementorMapperFile = "../agent/includes/abilities/builders/class-elementor-classic-mapper.php"
+	agentOutlineV3SchemaFile = "../agent/includes/abilities/builders/class-outline-v3-schema.php"
 	pageCreateSchemaFile     = "db/schema.sql"
 
 	// The first migration whose page-create usage described Elementor. It is
@@ -43,6 +48,7 @@ type elementorAgentFacts struct {
 	classicMin  string   // ElementorFacts::CLASSIC_MIN, e.g. 3.20.0
 	classicMax  string   // ElementorFacts::CLASSIC_MAX, e.g. 4.3.99
 	imageAligns []string // ElementorClassicMapper::IMAGE_ALIGN, in order
+	maxSections int      // OutlineV3Schema::MAX_SECTIONS
 }
 
 var (
@@ -52,6 +58,8 @@ var (
 	// An Atomic request is refused before any version is looked at.
 	reAtomicRefused = regexp.MustCompile(
 		`if \(\$format === self::FORMAT_ATOMIC\) \{\s*return \['code' => self::CODE, 'detail' => 'atomic_unavailable'\];`)
+
+	reMaxSections = regexp.MustCompile(`(?m)^\s*public const MAX_SECTIONS = (\d+);`)
 
 	reImageAlign      = regexp.MustCompile(`(?m)^\s*private const IMAGE_ALIGN = \[([^\]]*)\];`)
 	reImageAlignValue = regexp.MustCompile(`^'([a-z_]+)'$`)
@@ -74,7 +82,7 @@ var (
 // parseElementorAgentFacts reads the agent's constants and rules. Anything it
 // cannot find is an error, never a default: a check that cannot see the
 // agent's rule has nothing to compare the usage with.
-func parseElementorAgentFacts(factsSrc, mapperSrc string) (elementorAgentFacts, error) {
+func parseElementorAgentFacts(factsSrc, mapperSrc, schemaSrc string) (elementorAgentFacts, error) {
 	var f elementorAgentFacts
 	var problems []string
 
@@ -113,6 +121,12 @@ func parseElementorAgentFacts(factsSrc, mapperSrc string) (elementorAgentFacts, 
 			"the usage says a button link cannot contain &")
 	}
 
+	if m := reMaxSections.FindStringSubmatch(schemaSrc); m != nil {
+		f.maxSections, _ = strconv.Atoi(m[1])
+	} else {
+		problems = append(problems, "OutlineV3Schema::MAX_SECTIONS not found as a whole number")
+	}
+
 	if len(problems) > 0 {
 		return f, errors.New(strings.Join(problems, "\n"))
 	}
@@ -140,8 +154,10 @@ func englishOr(vals []string) string {
 
 // pageCreateUsageProblems lists every way usage disagrees with the agent, or
 // with builderFloor, the first agent release the control plane sends a
-// builder page to (agentcmd.MinAgentVersionForBuilderAdapters).
-func pageCreateUsageProblems(usage string, f elementorAgentFacts, builderFloor string) []string {
+// builder page to (agentcmd.MinAgentVersionForBuilderAdapters), or with
+// designedFloor, the first one it sends a designed page to
+// (agentcmd.MinAgentVersionForDesignedPages).
+func pageCreateUsageProblems(usage string, f elementorAgentFacts, builderFloor, designedFloor string) []string {
 	var problems []string
 	if want := "Elementor pages need the WPMgr plugin " + builderFloor + " or later"; !strings.Contains(usage, want) {
 		problems = append(problems, fmt.Sprintf("does not name the WPMgr plugin floor for a builder page "+
@@ -165,6 +181,14 @@ func pageCreateUsageProblems(usage string, f elementorAgentFacts, builderFloor s
 	}
 	if want := "elementor_format atomic is always refused"; !strings.Contains(usage, want) {
 		problems = append(problems, fmt.Sprintf("does not say an Atomic request is always refused: want %q", want))
+	}
+	if want := "Designed pages need the WPMgr plugin " + designedFloor + " or later"; !strings.Contains(usage, want) {
+		problems = append(problems, fmt.Sprintf("does not name the WPMgr plugin floor for a designed page "+
+			"(MinAgentVersionForDesignedPages %s): want %q", designedFloor, want))
+	}
+	if want := fmt.Sprintf("Use up to %d sections", f.maxSections); !strings.Contains(usage, want) {
+		problems = append(problems, fmt.Sprintf("does not name the section cap the agent enforces "+
+			"(OutlineV3Schema::MAX_SECTIONS %d): want %q", f.maxSections, want))
 	}
 	return problems
 }
@@ -305,23 +329,25 @@ func schemaPageCreateUsage(t *testing.T) string {
 	return usage
 }
 
-func readElementorAgentFacts(t *testing.T) (factsSrc, mapperSrc string, f elementorAgentFacts) {
+func readElementorAgentFacts(t *testing.T) (factsSrc, mapperSrc, schemaSrc string, f elementorAgentFacts) {
 	t.Helper()
 	factsSrc = readRepoFile(t, agentElementorFactsFile)
 	mapperSrc = readRepoFile(t, agentElementorMapperFile)
-	f, err := parseElementorAgentFacts(factsSrc, mapperSrc)
+	schemaSrc = readRepoFile(t, agentOutlineV3SchemaFile)
+	f, err := parseElementorAgentFacts(factsSrc, mapperSrc, schemaSrc)
 	if err != nil {
 		t.Fatalf("the agent's Elementor rules could not be read, so the usage cannot be checked against them:\n%v", err)
 	}
-	return factsSrc, mapperSrc, f
+	return factsSrc, mapperSrc, schemaSrc, f
 }
 
 // TestPageCreateUsageMatchesAgentElementorRules: the stored page-create usage
 // names the Elementor range the agent builds, the image alignments and the
-// button link rule it enforces, and that Atomic is always refused; and
+// button link rule it enforces, that Atomic is always refused, the section cap
+// of a designed page, and the plugin release a designed page needs; and
 // db/schema.sql seeds the same usage the newest copy migration writes.
 func TestPageCreateUsageMatchesAgentElementorRules(t *testing.T) {
-	_, _, f := readElementorAgentFacts(t)
+	_, _, _, f := readElementorAgentFacts(t)
 
 	names := pageCreateUsageMigrations(t)
 	found := false
@@ -340,7 +366,8 @@ func TestPageCreateUsageMatchesAgentElementorRules(t *testing.T) {
 			pageCreateSchemaFile, newest, schema, usage)
 	}
 
-	if problems := pageCreateUsageProblems(usage, f, agentcmd.MinAgentVersionForBuilderAdapters); len(problems) > 0 {
+	if problems := pageCreateUsageProblems(usage, f, agentcmd.MinAgentVersionForBuilderAdapters,
+		agentcmd.MinAgentVersionForDesignedPages); len(problems) > 0 {
 		t.Fatalf("the page-create usage %s writes disagrees with the agent (%s, %s):\n  - %s\nusage: %q",
 			newest, agentElementorFactsFile, agentElementorMapperFile, strings.Join(problems, "\n  - "), usage)
 	}
@@ -349,29 +376,47 @@ func TestPageCreateUsageMatchesAgentElementorRules(t *testing.T) {
 // TestPageCreateUsageCheckRefusesDrift: the check above is not vacuous. The
 // usage #890 corrected fails it, and today's usage fails it, for the planted
 // reason, once the agent's range or alignments or the builder floor move, or
-// once the agent drops a rule the usage describes.
+// once the agent drops a rule the usage describes, or once the designed-pages
+// floor or the section cap moves.
 func TestPageCreateUsageCheckRefusesDrift(t *testing.T) {
-	factsSrc, mapperSrc, f := readElementorAgentFacts(t)
-	floor := agentcmd.MinAgentVersionForBuilderAdapters
+	factsSrc, mapperSrc, schemaSrc, f := readElementorAgentFacts(t)
+	floor, designed := agentcmd.MinAgentVersionForBuilderAdapters, agentcmd.MinAgentVersionForDesignedPages
 	names := pageCreateUsageMigrations(t)
 	if len(names) == 0 {
 		t.Fatal("no page-create copy migration found")
 	}
 	usage := migrationPageCreateUsage(t, names[len(names)-1])
-	if p := pageCreateUsageProblems(usage, f, floor); len(p) > 0 {
+	if p := pageCreateUsageProblems(usage, f, floor, designed); len(p) > 0 {
 		t.Fatalf("SETUP: today's usage must pass before drift is planted: %v", p)
 	}
 
 	t.Run("m166's usage", func(t *testing.T) {
-		if p := pageCreateUsageProblems(migrationPageCreateUsage(t, pageCreateUsageAnchor), f, floor); len(p) == 0 {
+		if p := pageCreateUsageProblems(migrationPageCreateUsage(t, pageCreateUsageAnchor), f, floor, designed); len(p) == 0 {
 			t.Fatal("m166's usage, which claimed Elementor 3.20 or later and left out the alignment and link rules, passes the check")
 		}
 	})
 
 	t.Run("a raised builder floor", func(t *testing.T) {
-		p := pageCreateUsageProblems(usage, f, floor+".1")
-		if len(p) != 1 || !strings.Contains(p[0], "WPMgr plugin floor") {
+		p := pageCreateUsageProblems(usage, f, floor+".1", designed)
+		if len(p) != 1 || !strings.Contains(p[0], "WPMgr plugin floor for a builder page") {
 			t.Fatalf("today's usage against a moved builder floor gave %q, want the floor problem alone", p)
+		}
+	})
+
+	t.Run("a raised designed-pages floor", func(t *testing.T) {
+		p := pageCreateUsageProblems(usage, f, floor, designed+".1")
+		if len(p) != 1 || !strings.Contains(p[0], "WPMgr plugin floor for a designed page") {
+			t.Fatalf("today's usage against a moved designed-pages floor gave %q, want the floor problem alone", p)
+		}
+	})
+	t.Run("a designed-pages floor the usage never names", func(t *testing.T) {
+		cut := strings.Replace(usage, "Designed pages need the WPMgr plugin "+designed+" or later", "Designed pages need a recent plugin", 1)
+		if cut == usage {
+			t.Fatal("SETUP: the plant changed nothing")
+		}
+		p := pageCreateUsageProblems(cut, f, floor, designed)
+		if len(p) != 1 || !strings.Contains(p[0], "WPMgr plugin floor for a designed page") {
+			t.Fatalf("a usage without the designed-pages floor gave %q, want the floor problem alone", p)
 		}
 	})
 
@@ -387,27 +432,41 @@ func TestPageCreateUsageCheckRefusesDrift(t *testing.T) {
 		}
 		return src[:m[4]] + strconv.Itoa(minor+1) + src[m[5]:]
 	}
+	raise := func(t *testing.T, re *regexp.Regexp, src string) string {
+		t.Helper()
+		m := re.FindStringSubmatchIndex(src)
+		if m == nil {
+			t.Fatalf("SETUP: %s not found", re)
+		}
+		n, err := strconv.Atoi(src[m[2]:m[3]])
+		if err != nil {
+			t.Fatalf("SETUP: %v", err)
+		}
+		return src[:m[2]] + strconv.Itoa(n+1) + src[m[3]:]
+	}
 	for _, tc := range []struct {
 		what      string
 		factsSrc  string
 		mapperSrc string
+		schemaSrc string
 		want      string // the problem the plant must produce
 	}{
-		{"a raised CLASSIC_MAX", bump(t, reClassicMax, factsSrc), mapperSrc, "Elementor range"},
-		{"a raised CLASSIC_MIN", bump(t, reClassicMin, factsSrc), mapperSrc, "Elementor range"},
+		{"a raised CLASSIC_MAX", bump(t, reClassicMax, factsSrc), mapperSrc, schemaSrc, "Elementor range"},
+		{"a raised CLASSIC_MIN", bump(t, reClassicMin, factsSrc), mapperSrc, schemaSrc, "Elementor range"},
 		{"an added image alignment", factsSrc, strings.Replace(mapperSrc,
 			"private const IMAGE_ALIGN = ['none', 'center'];", "private const IMAGE_ALIGN = ['none', 'center', 'left'];", 1),
-			"image alignments"},
+			schemaSrc, "image alignments"},
+		{"a raised MAX_SECTIONS", factsSrc, mapperSrc, raise(t, reMaxSections, schemaSrc), "section cap"},
 	} {
 		t.Run(tc.what, func(t *testing.T) {
-			moved, err := parseElementorAgentFacts(tc.factsSrc, tc.mapperSrc)
+			moved, err := parseElementorAgentFacts(tc.factsSrc, tc.mapperSrc, tc.schemaSrc)
 			if err != nil {
 				t.Fatalf("SETUP: %v", err)
 			}
 			if reflectEqualFacts(moved, f) {
 				t.Fatalf("SETUP: the planted change did not move the facts: %+v", moved)
 			}
-			p := pageCreateUsageProblems(usage, moved, floor)
+			p := pageCreateUsageProblems(usage, moved, floor, designed)
 			if len(p) != 1 || !strings.Contains(p[0], tc.want) {
 				t.Fatalf("today's usage against facts %+v gave %q, want the %s problem alone", moved, p, tc.want)
 			}
@@ -418,15 +477,17 @@ func TestPageCreateUsageCheckRefusesDrift(t *testing.T) {
 		what      string
 		factsSrc  string
 		mapperSrc string
+		schemaSrc string
 	}{
-		{"a dropped button link rule", factsSrc, strings.Replace(mapperSrc, "strpos($url, '&')", "strpos($url, '#')", 1)},
-		{"a dropped Atomic refusal", strings.Replace(factsSrc, "'detail' => 'atomic_unavailable'", "'detail' => 'atomic_later'", 1), mapperSrc},
+		{"a dropped button link rule", factsSrc, strings.Replace(mapperSrc, "strpos($url, '&')", "strpos($url, '#')", 1), schemaSrc},
+		{"a dropped Atomic refusal", strings.Replace(factsSrc, "'detail' => 'atomic_unavailable'", "'detail' => 'atomic_later'", 1), mapperSrc, schemaSrc},
+		{"a dropped section cap", factsSrc, mapperSrc, strings.Replace(schemaSrc, "MAX_SECTIONS", "MAX_PAGE_SECTIONS", 1)},
 	} {
 		t.Run(tc.what, func(t *testing.T) {
-			if tc.factsSrc == factsSrc && tc.mapperSrc == mapperSrc {
-				t.Fatal("SETUP: the plant changed neither source")
+			if tc.factsSrc == factsSrc && tc.mapperSrc == mapperSrc && tc.schemaSrc == schemaSrc {
+				t.Fatal("SETUP: the plant changed no source")
 			}
-			if _, err := parseElementorAgentFacts(tc.factsSrc, tc.mapperSrc); err == nil {
+			if _, err := parseElementorAgentFacts(tc.factsSrc, tc.mapperSrc, tc.schemaSrc); err == nil {
 				t.Fatal("the agent's rules parse without it; the usage would keep claiming a rule the agent dropped")
 			}
 		})
@@ -434,6 +495,265 @@ func TestPageCreateUsageCheckRefusesDrift(t *testing.T) {
 }
 
 func reflectEqualFacts(a, b elementorAgentFacts) bool {
-	return a.classicMin == b.classicMin && a.classicMax == b.classicMax &&
+	return a.classicMin == b.classicMin && a.classicMax == b.classicMax && a.maxSections == b.maxSections &&
 		strings.Join(a.imageAligns, ",") == strings.Join(b.imageAligns, ",")
+}
+
+// ---------------------------------------------------------------------------
+// The refusal codes the agent's designed-page tables answer.
+//
+// The agent answers a designed page's input with a code. The control plane
+// reads that code against its closed set (agentcmd.AbilityRunRefusalCodes): a
+// code outside it arrives as unknown. It gives the AI a fixed hint for an
+// input-related code (mcp.PrecheckRefusalHint): a code without one arrives
+// with nothing to act on. Both are checked here for every code the agent's
+// designed-page tables answer, read from the agent's own files so that a code
+// the agent adds is seen without an edit to this file.
+// ---------------------------------------------------------------------------
+
+const (
+	agentBuildersDir       = "../agent/includes/abilities/builders/"
+	agentOutlineV3File     = agentBuildersDir + "class-outline-v3.php"
+	agentPageCreateV3Cases = "../agent/tests/fixtures/ability-run/page-create-v3-cases.json"
+	agentPageEditCases     = "../agent/tests/fixtures/ability-run/page-edit-ops-cases.json"
+)
+
+// agentDesignedCodeConsts are the constants that spell the refusal codes a
+// designed page's checks answer on the site: the design, a font, the page
+// frame and its template, containers, a background, and a logo's alt text.
+var agentDesignedCodeConsts = []struct{ file, name string }{
+	{"class-design-input.php", "CODE_NOT_READY"},
+	{"class-design-input.php", "CODE_CONTRAST_LOW"},
+	{"class-font-registry.php", "CODE_UNKNOWN"},
+	{"class-builder-page-create.php", "CODE_FRAME_UNAVAILABLE"},
+	{"class-elementor-document.php", "CODE_TEMPLATE_UNAVAILABLE"},
+	{"class-elementor-classic-mapper.php", "CODE_CONTAINERS_REQUIRED"},
+	{"class-elementor-section-compiler.php", "CODE_BACKGROUND_NOT_IMAGE"},
+	{"class-elementor-pattern-compiler.php", "CODE_ALT_FROM_LIBRARY"},
+}
+
+var (
+	// OutlineV3's table of what a refusal says first, by code.
+	reOutlineSummary    = regexp.MustCompile(`(?s)private const SUMMARY = \[(.*?)\n\s*\];`)
+	reOutlineSummaryKey = regexp.MustCompile(`(?m)^\s*'([a-z][a-z0-9_]*)'\s*=>`)
+)
+
+// agentV3Sources is the text of everything the agent's codes are read from.
+type agentV3Sources struct {
+	createCases string            // page-create-v3-cases.json
+	editCases   string            // page-edit-ops-cases.json
+	outline     string            // class-outline-v3.php
+	classes     map[string]string // builder class file name -> source
+}
+
+// agentCaseCodes adds, to codes, the refusal codes the rows of the named lists
+// of a shared case table answer (the "agent" column; "ok" is an accept), keyed
+// to where the first one was found. A list that is missing or answers no
+// refusal is an error: a table that lost its refused rows proves nothing.
+func agentCaseCodes(codes map[string]string, table, label string, lists ...string) error {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(table), &doc); err != nil {
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	for _, list := range lists {
+		raw, ok := doc[list]
+		if !ok {
+			return fmt.Errorf("%s has no list %q", label, list)
+		}
+		var rows []struct {
+			Name  string `json:"name"`
+			Agent string `json:"agent"`
+		}
+		if err := json.Unmarshal(raw, &rows); err != nil {
+			return fmt.Errorf("%s %s: %w", label, list, err)
+		}
+		refused := 0
+		for _, r := range rows {
+			if r.Agent == "" {
+				return fmt.Errorf("%s %s: row %q has no agent answer", label, list, r.Name)
+			}
+			if r.Agent == "ok" {
+				continue
+			}
+			refused++
+			if _, seen := codes[r.Agent]; !seen {
+				codes[r.Agent] = label + " " + list + " row " + r.Name
+			}
+		}
+		if refused == 0 {
+			return fmt.Errorf("%s %s answers no refusal at all", label, list)
+		}
+	}
+	return nil
+}
+
+// agentV3RefusalCodes is every refusal code the agent's designed-page tables
+// answer, keyed to the first place it was found: the rows of the page-create
+// table and of the page-edit table's version 3 rows, the codes OutlineV3 says
+// a refusal first by, and the constants of agentDesignedCodeConsts.
+func agentV3RefusalCodes(src agentV3Sources) (map[string]string, error) {
+	codes := map[string]string{}
+	if err := agentCaseCodes(codes, src.createCases, "page-create-v3-cases.json", "cases"); err != nil {
+		return nil, err
+	}
+	if err := agentCaseCodes(codes, src.editCases, "page-edit-ops-cases.json", "v3_cases"); err != nil {
+		return nil, err
+	}
+	block := reOutlineSummary.FindStringSubmatch(src.outline)
+	if block == nil {
+		return nil, errors.New("OutlineV3::SUMMARY not found")
+	}
+	keys := reOutlineSummaryKey.FindAllStringSubmatch(block[1], -1)
+	if len(keys) == 0 {
+		return nil, errors.New("OutlineV3::SUMMARY holds no code")
+	}
+	for _, k := range keys {
+		if _, seen := codes[k[1]]; !seen {
+			codes[k[1]] = "OutlineV3::SUMMARY"
+		}
+	}
+	for _, c := range agentDesignedCodeConsts {
+		re := regexp.MustCompile(`(?m)^\s*(?:public |private |protected )?const ` + regexp.QuoteMeta(c.name) + `\s*=\s*'([a-z][a-z0-9_]*)';`)
+		m := re.FindStringSubmatch(src.classes[c.file])
+		if m == nil {
+			return nil, fmt.Errorf("%s::%s not found as a quoted code", c.file, c.name)
+		}
+		if _, seen := codes[m[1]]; !seen {
+			codes[m[1]] = c.file + " " + c.name
+		}
+	}
+	return codes, nil
+}
+
+// agentCodeProblems lists every code that the closed set lacks or that has no
+// hint of one line.
+func agentCodeProblems(codes map[string]string, inClosedSet func(string) bool, hint func(string) string) []string {
+	var problems []string
+	names := make([]string, 0, len(codes))
+	for code := range codes {
+		names = append(names, code)
+	}
+	sort.Strings(names)
+	for _, code := range names {
+		if !inClosedSet(code) {
+			problems = append(problems, fmt.Sprintf("%s (%s) is not in agentcmd.AbilityRunRefusalCodes, so it arrives as unknown", code, codes[code]))
+		}
+		if h := hint(code); h == "" || strings.Contains(h, "\n") {
+			problems = append(problems, fmt.Sprintf("%s (%s) has no one-line hint in the control plane (mcp.PrecheckRefusalHint)", code, codes[code]))
+		}
+	}
+	return problems
+}
+
+func closedSetHas(code string) bool {
+	_, ok := agentcmd.AbilityRunRefusalCodes[code]
+	return ok
+}
+
+func readAgentV3Sources(t *testing.T) agentV3Sources {
+	t.Helper()
+	src := agentV3Sources{
+		createCases: readRepoFile(t, agentPageCreateV3Cases),
+		editCases:   readRepoFile(t, agentPageEditCases),
+		outline:     readRepoFile(t, agentOutlineV3File),
+		classes:     map[string]string{},
+	}
+	for _, c := range agentDesignedCodeConsts {
+		if _, ok := src.classes[c.file]; !ok {
+			src.classes[c.file] = readRepoFile(t, agentBuildersDir+c.file)
+		}
+	}
+	return src
+}
+
+// TestAgentV3RefusalCodesAreKnownWithAHint: every refusal code the agent's
+// designed-page tables answer is in the closed set of agent codes and has a
+// hint for the AI.
+func TestAgentV3RefusalCodesAreKnownWithAHint(t *testing.T) {
+	codes, err := agentV3RefusalCodes(readAgentV3Sources(t))
+	if err != nil {
+		t.Fatalf("the agent's designed-page refusal codes could not be read:\n%v", err)
+	}
+	// Positive control: codes that only one place of the agent gives. If one
+	// is not found the reading lost that place, and nothing below would be
+	// checked for it.
+	for code, from := range map[string]string{
+		"anchor_in_use":             "page-edit-ops-cases.json",
+		"link_anchor_missing":       "page-create-v3-cases.json",
+		"font_unknown":              "page-create-v3-cases.json",
+		"page_template_unavailable": "class-elementor-document.php",
+		"image_alt_from_library":    "class-elementor-pattern-compiler.php",
+	} {
+		if got, ok := codes[code]; !ok || !strings.Contains(got, from) {
+			t.Fatalf("the reading of the agent's codes lost %s, which %s gives (found: %q); "+
+				"the check below would pass over it", code, from, got)
+		}
+	}
+	if problems := agentCodeProblems(codes, closedSetHas, mcp.PrecheckRefusalHint); len(problems) > 0 {
+		t.Fatalf("the agent answers codes the control plane does not know with a hint:\n  - %s", strings.Join(problems, "\n  - "))
+	}
+}
+
+// TestAgentV3RefusalCodeCheckRefusesDrift: the check above is not vacuous. A
+// code the agent adds without the control plane, a code with no hint, a hint
+// of two lines, a table that lost its refused rows and a renamed constant are
+// each refused for their own reason, and today's codes are not.
+func TestAgentV3RefusalCodeCheckRefusesDrift(t *testing.T) {
+	src := readAgentV3Sources(t)
+	codes, err := agentV3RefusalCodes(src)
+	if err != nil {
+		t.Fatalf("SETUP: %v", err)
+	}
+	if p := agentCodeProblems(codes, closedSetHas, mcp.PrecheckRefusalHint); len(p) > 0 {
+		t.Fatalf("SETUP: today's codes must pass before drift is planted: %v", p)
+	}
+
+	t.Run("a code the agent added alone", func(t *testing.T) {
+		added := map[string]string{"a_code_the_agent_added": "a planted row"}
+		for k, v := range codes {
+			added[k] = v
+		}
+		p := agentCodeProblems(added, closedSetHas, mcp.PrecheckRefusalHint)
+		if len(p) != 2 || !strings.Contains(p[0], "AbilityRunRefusalCodes") || !strings.Contains(p[1], "hint") {
+			t.Fatalf("a new code gave %q, want one problem for the closed set and one for the hint", p)
+		}
+	})
+	t.Run("a code in the closed set with no hint", func(t *testing.T) {
+		bare := func(code string) string {
+			if code == "anchor_in_use" {
+				return ""
+			}
+			return mcp.PrecheckRefusalHint(code)
+		}
+		p := agentCodeProblems(codes, closedSetHas, bare)
+		if len(p) != 1 || !strings.Contains(p[0], "anchor_in_use") || !strings.Contains(p[0], "hint") {
+			t.Fatalf("a missing hint gave %q, want the hint problem for anchor_in_use alone", p)
+		}
+	})
+	t.Run("a hint of two lines", func(t *testing.T) {
+		two := func(code string) string { return mcp.PrecheckRefusalHint(code) + "\nand more" }
+		if p := agentCodeProblems(codes, closedSetHas, two); len(p) != len(codes) {
+			t.Fatalf("a two-line hint gave %d problems for %d codes", len(p), len(codes))
+		}
+	})
+	t.Run("a table that lost its refused rows", func(t *testing.T) {
+		allOK := `{"cases":[{"name":"a","agent":"ok"}],"v3_cases":[{"name":"b","agent":"ok"}]}`
+		moved := src
+		moved.createCases, moved.editCases = allOK, allOK
+		if _, err := agentV3RefusalCodes(moved); err == nil {
+			t.Fatal("tables that answer only ok are read as holding every code")
+		}
+	})
+	t.Run("a renamed constant", func(t *testing.T) {
+		moved := src
+		moved.classes = map[string]string{}
+		for k, v := range src.classes {
+			moved.classes[k] = v
+		}
+		moved.classes["class-elementor-document.php"] = strings.Replace(
+			src.classes["class-elementor-document.php"], "CODE_TEMPLATE_UNAVAILABLE", "CODE_TEMPLATE_GONE", 1)
+		if _, err := agentV3RefusalCodes(moved); err == nil {
+			t.Fatal("a renamed code constant is read as holding every code")
+		}
+	})
 }

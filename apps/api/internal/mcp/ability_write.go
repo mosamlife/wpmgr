@@ -738,6 +738,7 @@ var precheckRefusalHints = map[string]string{
 	pageEditNodeNotEditable:         hintPageEditNodeNotEditable,
 	pageEditOpNotSupported:          hintPageEditOpNotSupported,
 	pageEditPageTooLarge:            hintPageEditPageTooLarge,
+	pageEditAnchorInUse:             hintPageEditAnchorInUse,
 }
 
 // pageCreateFloorRefusal is the run path's per-input floor: nil when an
@@ -767,6 +768,14 @@ func pageCreateFloorRefusal(agentVersion string, input []byte) *toolRefusal {
 // or "" for a code that is not about the input.
 func precheckRefusalHint(code string) string {
 	return precheckRefusalHints[code]
+}
+
+// PrecheckRefusalHint is precheckRefusalHint for a caller outside the
+// package: the fixed hint the AI gets for an input-related refusal code the
+// agent answers, "" for a code that is not about the input. The contract gates
+// hold the agent's refusal codes to it.
+func PrecheckRefusalHint(code string) string {
+	return precheckRefusalHint(code)
 }
 
 // abilityRequestFacts are the stored facts a request's digest covers.
