@@ -665,6 +665,12 @@ const (
 	hintDesignContrastLow = "Text must be readable on the colour it sits on. ink needs a contrast of at least 4.5 to 1 " +
 		"against both ground and surface, and on_accent at least 4.5 to 1 against accent. The failures name the pair and " +
 		"its measured contrast: change one colour of that pair, then send the whole design again."
+	hintFontUnknown = "A font family of the design is not one that Elementor on this site has. Each failure names the role, " +
+		"heading or body, and lists the closest families the site has: use one of those, spelled as listed, " +
+		"or send system for a role that should set no family. Then send the whole design again."
+	hintPageTemplateUnavailable = "The site does not offer the page template that this page frame needs for the post type. " +
+		"Choose a page_frame whose template the site has: " + pageFrameTheme + " uses the theme's own template, and " +
+		pageFrameFullWidth + " and " + pageFrameCanvas + " use Elementor's page templates."
 )
 
 // precheckRefusalHints are the input-related refusal codes and their fixed
@@ -682,6 +688,8 @@ var precheckRefusalHints = map[string]string{
 	pageCreateNeedsBlockEditor:      hintLayoutNeedsBlockEditor,
 	pageDesignNotReady:              hintDesignNotReady,
 	pageDesignContrastLow:           hintDesignContrastLow,
+	pageDesignFontUnknown:           hintFontUnknown,
+	pageFrameTemplateUnavailable:    hintPageTemplateUnavailable,
 	pageCreateAnchorInvalid:         hintAnchorInvalid,
 	pageCreateAnchorDuplicate:       hintAnchorDuplicate,
 	pageCreateAnchorReserved:        hintAnchorReserved,

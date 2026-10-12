@@ -1473,6 +1473,14 @@ const (
 	pageDesignContrastLow = "design_contrast_low"
 )
 
+// Refusals that only the site can make, since they depend on its own Elementor
+// and theme: a font family the design names that the site's font registry
+// does not have, and a page frame whose template the theme does not offer.
+const (
+	pageDesignFontUnknown        = "font_unknown"
+	pageFrameTemplateUnavailable = "page_template_unavailable"
+)
+
 // designFailure is one problem found in a design object. Path and Key
 // together are the dotted address of the offending field in the input
 // ("design.colors" and "ink"); Reason is WPMgr's own words for the fix;
