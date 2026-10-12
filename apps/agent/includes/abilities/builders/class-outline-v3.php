@@ -833,7 +833,7 @@ final class OutlineV3
         if (!is_string($b['url'])) {
             return self::refuse('bad_input', $where, 'url', 'must be a string', [], $pattern);
         }
-        $why = PageCreateBuilder::linkProblem($b['url'], true);
+        $why = PageCreateBuilder::designedLinkProblem($b['url']);
         if ($why !== null) {
             return self::refuse('link_invalid', $where, 'url', $why, [], $pattern);
         }

@@ -656,6 +656,25 @@ final class PageCreateBuilder
     }
 
     /**
+     * Why a button link of a designed page (outline version 3) is not
+     * acceptable, or null: the rule of linkProblem() with in-page anchors, and
+     * no "&" anywhere in the link, because an Elementor page cannot keep one.
+     * The reason never repeats the link.
+     *
+     * @param string $url Link.
+     * @return string|null
+     */
+    public static function designedLinkProblem(string $url): ?string
+    {
+        $why = self::linkProblem($url, true);
+        if ($why !== null) {
+            return $why;
+        }
+
+        return strpos($url, '&') === false ? null : 'a link on an Elementor page cannot hold "&"; use a link without one';
+    }
+
+    /**
      * The limits, as published to the AI in the catalogue entry.
      *
      * @return array<string,int>
@@ -1006,7 +1025,7 @@ final class PageCreateBuilder
                 return self::bad('bad_input', $where . '.url must be a string');
             }
             $v3  = ($ctx['v3'] ?? false) === true;
-            $why = self::linkProblem($url, $v3);
+            $why = $v3 ? self::designedLinkProblem($url) : self::linkProblem($url);
             if ($why !== null) {
                 return self::bad('link_invalid', $where . '.url ' . $why);
             }

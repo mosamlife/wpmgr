@@ -744,6 +744,119 @@ final class OutlineV3GrammarTest extends TestCase
         $this->assertSame('link_invalid', $r['code'] ?? 'accepted');
     }
 
+    // -------------------------------------------------------------------------
+    // A link with "&": an Elementor page cannot keep it
+    // -------------------------------------------------------------------------
+
+    /**
+     * Each place a designed page carries a button link, the link holding an
+     * "&": the children of a section, then the start of the path a refusal
+     * names and the key it names.
+     *
+     * @return array<string,array{0:list<array<string,mixed>>,1:string,2:string}>
+     */
+    public static function ampersandLinks(): array
+    {
+        $query   = 'https://example.com/pricing?plan=pro&seats=5';
+        $buttons = static fn (string ...$urls): array => ['type' => 'buttons', 'buttons' => array_map(static fn (string $u): array => ['text' => 'Go', 'url' => $u], $urls)];
+        $plan    = static fn (string $url): array => ['name' => 'Team', 'price' => '49', 'features' => ['5 sites'], 'cta' => ['text' => 'Choose Team', 'url' => $url]];
+
+        return [
+            'a button in a section'          => [[$buttons($query)], 'outline[0].children[0]', 'buttons[0].url'],
+            'the second button of a row'     => [[$buttons('/go', $query)], 'outline[0].children[0]', 'buttons[1].url'],
+            'a site path with a query'       => [[$buttons('/pricing?plan=pro&seats=5')], 'outline[0].children[0]', 'buttons[0].url'],
+            'an ampersand last'              => [[$buttons('https://example.com/pricing?plan=pro&')], 'outline[0].children[0]', 'buttons[0].url'],
+            'an ampersand first in the query' => [[$buttons('/pricing?&plan=pro')], 'outline[0].children[0]', 'buttons[0].url'],
+            'a button in a group'            => [[['type' => 'group', 'children' => [$buttons($query)]]], 'outline[0].children[0]', 'children[0].buttons[0].url'],
+            'a button in a column'           => [[['type' => 'columns', 'columns' => [['children' => [['type' => 'paragraph', 'text' => 'A.']]], ['children' => [$buttons($query)]]]]], 'outline[0].children[0]', 'columns[1].children[0].buttons[0].url'],
+            'a button of the hero'           => [[self::pattern('hero', 'centered', ['children' => [['type' => 'heading', 'level' => 1, 'text' => 'Title'], $buttons($query)]])], 'outline[0].children[0].children[1]', 'buttons[0].url'],
+            'a button of a cta'              => [[self::pattern('cta', 'band', ['children' => [$buttons($query)]])], 'outline[0].children[0].children[0]', 'buttons[0].url'],
+            'the button of a plan'           => [[self::pattern('pricing', 'three-plans', ['plans' => [$plan('/signup'), $plan($query)]])], 'outline[0].children[0].plans[1]', 'url'],
+            'the button of the first plan'   => [[self::pattern('pricing', 'three-plans', ['plans' => [$plan('/signup?plan=pro&seats=5')]])], 'outline[0].children[0].plans[0]', 'url'],
+        ];
+    }
+
+    /**
+     * @dataProvider ampersandLinks
+     * @param list<array<string,mixed>> $children The children of the section under test.
+     */
+    public function testALinkHoldingAnAmpersandIsRefusedAsALinkBeforeAnythingIsBuilt(array $children, string $path, string $key): void
+    {
+        $r = self::check(self::page($children));
+
+        $this->assertSame('link_invalid', $r['code'] ?? 'accepted', (string) ($r['detail'] ?? ''));
+        $failure = $r['failures'][0];
+        $this->assertStringStartsWith($path, $failure['path']);
+        $this->assertSame($key, $failure['key']);
+        $this->assertStringContainsString('"&"', $failure['reason'], 'the refusal names the character');
+        $this->assertStringContainsString('without one', $failure['reason'], 'the refusal says what to do');
+        $this->assertCount(1, $r['failures']);
+        $this->assertStringNotContainsString('example.com', $r['detail'], 'a refusal never echoes the link');
+        $this->assertStringNotContainsString('seats', $r['detail'], 'a refusal never echoes the link');
+    }
+
+    /**
+     * @dataProvider ampersandLinks
+     * @param list<array<string,mixed>> $children The children of the section under test.
+     */
+    public function testAPageEditInsertHoldsTheSameRule(array $children, string $path, string $key): void
+    {
+        $r = OutlineV3::fragment(json_decode((string) json_encode([self::section('intro', $children)]), false, 64));
+
+        $this->assertSame('link_invalid', $r['code'] ?? 'accepted', (string) ($r['detail'] ?? ''));
+        $this->assertSame($key, $r['failures'][0]['key']);
+    }
+
+    /**
+     * The links a designed page keeps: no "&" in any of them. An "&" in a
+     * text is a text, and stays.
+     *
+     * @return array<string,array{0:string}>
+     */
+    public static function linksWithoutAnAmpersand(): array
+    {
+        return [
+            'a query with one parameter' => ['https://example.com/pricing?plan=pro'],
+            'a site path with a query'   => ['/pricing?plan=pro'],
+            'a plain path'               => ['/pricing'],
+            'an in-page link'            => ['#pricing'],
+            'an encoded ampersand'       => ['/pricing?plan=a%26b'],
+        ];
+    }
+
+    /**
+     * @dataProvider linksWithoutAnAmpersand
+     */
+    public function testALinkWithoutAnAmpersandIsKeptInAButtonAndInAPlan(string $url): void
+    {
+        $plan    = ['name' => 'Team & Co', 'price' => '49', 'features' => ['Q&A for 5 sites'], 'cta' => ['text' => 'Terms & plans', 'url' => $url]];
+        $outline = self::page([
+            ['type' => 'paragraph', 'text' => 'Questions & answers.'],
+            ['type' => 'buttons', 'buttons' => [['text' => 'Terms & pricing', 'url' => $url]]],
+            self::pattern('pricing', 'three-plans', ['plans' => [$plan]]),
+        ]);
+        $outline[] = self::section('pricing');
+        $r         = self::check($outline);
+
+        $this->assertArrayHasKey('outline', $r, (string) ($r['detail'] ?? ''));
+        $this->assertSame($url, $r['outline'][0]['children'][1]['buttons'][0]['url']);
+        $this->assertSame($url, $r['outline'][0]['children'][2]['plans'][0]['cta']['url']);
+        $this->assertSame('Terms & pricing', $r['outline'][0]['children'][1]['buttons'][0]['text']);
+    }
+
+    public function testVersionTwoStillTakesAnAmpersandInALink(): void
+    {
+        $r = PageCreateBuilder::validate(json_decode((string) json_encode([
+            'post_type' => 'page',
+            'editor'    => 'wordpress_blocks',
+            'title'     => 'Page',
+            'outline'   => [['type' => 'buttons', 'buttons' => [['text' => 'Go', 'url' => 'https://example.com/pricing?plan=pro&seats=5']]]],
+        ]), false));
+
+        $this->assertArrayNotHasKey('code', $r, (string) ($r['detail'] ?? ''));
+        $this->assertNull(PageCreateBuilder::linkProblem('https://example.com/pricing?plan=pro&seats=5', true), 'the link rule shared with a page edit is unchanged');
+    }
+
     /**
      * @return array<string,array{0:mixed}>
      */
