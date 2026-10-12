@@ -19442,7 +19442,10 @@ export type UndoAbilityRequestErrors = {
    * a later edit of the same page is still in effect), or a page
    * edit of the draft is still being made or undone
    * (`ability_request_undo_busy`; the undo stays offered). Nothing
-   * was sent to the site.
+   * was sent to the site. Or the site refused a page edit's undo
+   * because the page is open in an editor there
+   * (`ability_request_undo_editor_open`): nothing was changed and
+   * the undo stays offered.
    *
    */
   409: Error;

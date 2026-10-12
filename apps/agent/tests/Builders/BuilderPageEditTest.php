@@ -426,6 +426,42 @@ final class BuilderPageEditTest extends TestCase
         $this->assertSame(['conflict', 'autosave_pending'], self::codeOf($this->plan($input)));
     }
 
+    public function test_editor_open_is_retryable_other_conflicts_are_not(): void
+    {
+        $input = $this->input(self::ops());
+
+        // Someone else holds the edit lock: worth asking again once it lapses.
+        $this->locks[self::TARGET] = 9;
+        $open = $this->plan($input)['refusal'] ?? [];
+        $this->assertSame(['conflict', 'editor_open', true], [$open['code'] ?? null, $open['detail'] ?? null, $open['retryable'] ?? null], (string) json_encode($open));
+        $this->assertSame(['ok', 'outcome', 'code', 'detail', 'retryable'], array_keys($open), 'the detail is the one token, nothing from the site');
+
+        // An autosave waits on a person, and a page that moved on needs a new read.
+        $this->locks                   = [];
+        $this->autosaves[self::TARGET] = 9;
+        $autosave = $this->plan($input)['refusal'] ?? [];
+        $this->assertSame(['conflict', 'autosave_pending', false], [$autosave['code'] ?? null, $autosave['detail'] ?? null, $autosave['retryable'] ?? null]);
+        $this->autosaves = [];
+        $stale = $this->plan($this->input(self::ops(), str_repeat('c', 64)))['refusal'] ?? [];
+        $this->assertSame(['conflict', 'changed_since_read', false], [$stale['code'] ?? null, $stale['detail'] ?? null, $stale['retryable'] ?? null]);
+
+        // The lock taken between the approval and the write.
+        $plan = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, (string) json_encode($plan['refusal'] ?? null));
+        $this->api->storingDocument(self::TARGET, $this->rows);
+        $before                    = $this->rows->metaRowsOf(self::TARGET);
+        $post                      = $this->rows->postRow(self::TARGET);
+        $this->locks[self::TARGET] = 9;
+        $r = $this->write($input, $this->digest($input)($plan['base_fingerprint'], $plan['preview_digest']), $plan['preview_digest']);
+        $this->assertSame(['conflict', 'editor_open', true, false], [$r['code'] ?? null, $r['detail'] ?? null, $r['retryable'] ?? null, $r['ok'] ?? null], (string) json_encode($r));
+        $this->assertSame([], $this->api->documents[self::TARGET]->saves, 'Elementor was never asked to save');
+        $this->assertSame($before, $this->rows->metaRowsOf(self::TARGET), 'nothing written');
+        $this->assertSame($post, $this->rows->postRow(self::TARGET));
+        $this->assertNull(AbilityLedger::get(self::EDIT), 'no ledger row');
+        $this->assertSame([], $this->rows->optionRows(), 'no snapshot');
+        $this->assertSame([], $this->wpdb->claims, 'the target claim is released');
+    }
+
     public function test_page_changed_before_the_snapshot_is_conflict(): void
     {
         $input = $this->input(self::ops());

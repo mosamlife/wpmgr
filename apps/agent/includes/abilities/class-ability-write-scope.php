@@ -28,7 +28,13 @@ if (!defined('ABSPATH')) {
  *   them again;
  * - options: a name outside the given patterns is a violation. "{target}" in
  *   a pattern stands for the target id in decimal, so a pattern written for
- *   one post never admits another post's option;
+ *   one post never admits another post's option. A name that starts with
+ *   the prefix of a given value check is admitted only write by write: each
+ *   add, update and delete of it is a violation unless the check, given the
+ *   value before and the value after (ABSENT for an option that did not
+ *   exist, or no longer does) and the target id, answers true. A check that
+ *   throws answers false. The value before a delete is read just before the
+ *   delete; one that cannot be read is a violation;
  * - users, roles, super admins, the privilege options and the active blog:
  *   blocked and put back as AbilitySideEffects does, and a violation;
  * - outbound HTTP: refused and its host reported, never a violation.
@@ -48,6 +54,9 @@ final class AbilityWriteScope
 {
     /** Placeholder in an option pattern for the target id. */
     public const TARGET = '{target}';
+
+    /** What a value check is given for an option that did not exist, or no longer does. */
+    public const ABSENT = "\0wpmgr_absent_option";
 
     /** A post other than the target, or a revision of another post, was written. */
     public const V_OTHER_POST = 'other_post_written';
@@ -96,6 +105,9 @@ final class AbilityWriteScope
     /** @var list<string> Option patterns with the target substituted. */
     private array $patterns = [];
 
+    /** @var array<string, callable(mixed, mixed, int): mixed> Option-name prefix => value check. */
+    private array $checks = [];
+
     private bool $armed = false;
 
     private ?AbilitySideEffects $inner = null;
@@ -113,10 +125,12 @@ final class AbilityWriteScope
     private array $hooks = [];
 
     /**
-     * @param int         $targetId       Post the save may write.
-     * @param list<mixed> $optionPatterns Option-name patterns the save may write; "*" is the only wildcard.
+     * @param int                 $targetId       Post the save may write.
+     * @param list<mixed>         $optionPatterns Option-name patterns the save may write; "*" is the only wildcard.
+     * @param array<mixed, mixed> $optionChecks   Option-name prefix => value check: callable(mixed $before, mixed $after, int $targetId), true when that one write is the save's own.
+     * @throws \InvalidArgumentException When the post id is not positive, or a check has no plain prefix or is not callable.
      */
-    public function __construct(int $targetId, array $optionPatterns)
+    public function __construct(int $targetId, array $optionPatterns, array $optionChecks = [])
     {
         if ($targetId < 1) {
             throw new \InvalidArgumentException('A write scope needs a post id.');
@@ -126,6 +140,12 @@ final class AbilityWriteScope
             if (is_string($pattern) && $pattern !== '') {
                 $this->patterns[] = str_replace(self::TARGET, (string) $targetId, $pattern);
             }
+        }
+        foreach ($optionChecks as $prefix => $check) {
+            if (!is_string($prefix) || preg_match('/^[A-Za-z0-9_-]{1,150}$/D', $prefix) !== 1 || !is_callable($check)) {
+                throw new \InvalidArgumentException('An option check needs a plain name prefix and a callable.');
+            }
+            $this->checks[$prefix] = $check;
         }
     }
 
@@ -158,7 +178,13 @@ final class AbilityWriteScope
         $this->targetKeys = [];
         $this->violations = [];
         $this->armed      = true;
-        $this->inner      = new AbilitySideEffects($this->patterns, []);
+        // A checked name is left to its check, write by write, never to the
+        // inner recorder's patterns alone.
+        $checked = [];
+        foreach (array_keys($this->checks) as $prefix) {
+            $checked[] = $prefix . '*';
+        }
+        $this->inner = new AbilitySideEffects(array_merge($this->patterns, $checked), []);
         $this->inner->arm();
 
         $insert = function ($postId = 0, $post = null, $update = false): void {
@@ -204,6 +230,32 @@ final class AbilityWriteScope
         $this->hook('deleted_term_relationships', $deletedTerms, 1, PHP_INT_MIN);
         $this->hook('map_meta_cap', $metaCap, 4, PHP_INT_MAX);
         $this->hook('user_has_cap', $userCaps, 2, PHP_INT_MAX);
+        if ($this->checks === []) {
+            return;
+        }
+        $updated = function ($name = '', $before = null, $after = null): void {
+            $this->checkedWrite($name, $before, $after);
+        };
+        $added = function ($name = '', $value = null): void {
+            $this->checkedWrite($name, self::ABSENT, $value);
+        };
+        // Core fires delete_option before the delete, and only for an option
+        // that exists, so the value read here is the one being deleted.
+        $deleting = function ($name = ''): void {
+            if (!$this->armed || $this->checkFor($name) === null) {
+                return;
+            }
+            $before = get_option(self::nameOf($name), self::ABSENT);
+            if ($before === self::ABSENT) {
+                $this->violations[self::V_OPTION] = true;
+
+                return;
+            }
+            $this->checkedWrite($name, $before, self::ABSENT);
+        };
+        $this->hook('updated_option', $updated, 3, PHP_INT_MIN);
+        $this->hook('added_option', $added, 2, PHP_INT_MIN);
+        $this->hook('delete_option', $deleting, 1, PHP_INT_MIN);
     }
 
     /**
@@ -272,6 +324,64 @@ final class AbilityWriteScope
             'revision_ids'     => array_keys($this->revisions),
             'target_meta_keys' => array_map('strval', array_keys($this->targetKeys)),
         ];
+    }
+
+    /**
+     * One write of an option: a violation when a value check covers its name
+     * and does not answer true. A name no check covers is the inner
+     * recorder's.
+     *
+     * @param mixed $name   Option name.
+     * @param mixed $before Value before the write, or ABSENT.
+     * @param mixed $after  Value after the write, or ABSENT.
+     * @return void
+     */
+    private function checkedWrite($name, $before, $after): void
+    {
+        if (!$this->armed) {
+            return;
+        }
+        $check = $this->checkFor($name);
+        if ($check === null) {
+            return;
+        }
+        try {
+            $own = $check($before, $after, $this->targetId) === true;
+        } catch (\Throwable $e) {
+            $own = false;
+        }
+        if (!$own) {
+            $this->violations[self::V_OPTION] = true;
+        }
+    }
+
+    /**
+     * The value check whose prefix the option name starts with, or null.
+     *
+     * @param mixed $name Option name.
+     * @return callable|null
+     */
+    private function checkFor($name): ?callable
+    {
+        $name = self::nameOf($name);
+        foreach ($this->checks as $prefix => $check) {
+            if (str_starts_with($name, (string) $prefix)) {
+                return $check;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * An option name as the inner recorder reads it: a scalar as text, else ''.
+     *
+     * @param mixed $name Option name.
+     * @return string
+     */
+    private static function nameOf($name): string
+    {
+        return is_scalar($name) ? (string) $name : '';
     }
 
     /**

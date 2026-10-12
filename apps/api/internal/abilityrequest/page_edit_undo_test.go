@@ -2,6 +2,8 @@ package abilityrequest
 
 import (
 	"errors"
+	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -54,6 +56,68 @@ func TestUndoRetryable_PageEditReadFailures(t *testing.T) {
 	for _, code := range []string{"snapshot_tampered", "restore_mismatch", "refused_published", "target_not_draft", "conflict", "created_post_touched"} {
 		if undoRetryable(&agentcmd.AbilityRunRefusal{Code: code}) {
 			t.Errorf("%s: retryable, but the site gave a definite answer", code)
+		}
+	}
+}
+
+// The site refused the undo because the page is open in an editor (conflict
+// with detail editor_open): nothing was written, and the edit lock lapses on
+// its own once the editor is closed, so the undo is released for the person
+// to try again. Every other conflict is final, and so is any detail that is
+// not exactly editor_open. The agent's retryable flag decides nothing.
+func TestUndoRetryable_ReleasesOnlyAnEditorOpenConflict(t *testing.T) {
+	conflict := func(detail string, agentSays bool) error {
+		return &agentcmd.AbilityRunRefusal{Code: "conflict", Detail: detail, Retryable: agentSays}
+	}
+	for name, err := range map[string]error{
+		"editor open": conflict("editor_open", true),
+		"editor open, the agent says it is final": conflict("editor_open", false),
+		"editor open, wrapped":                    fmt.Errorf("revert: %w", conflict("editor_open", true)),
+	} {
+		if !undoRetryable(err) {
+			t.Errorf("%s: not released, so an open editor ends the undo for good", name)
+		}
+	}
+	for name, err := range map[string]error{
+		"changed since read":                         conflict("changed_since_read", false),
+		"changed since read, the agent says retry":   conflict("changed_since_read", true),
+		"autosave pending":                           conflict("autosave_pending", false),
+		"autosave pending, the agent says retry":     conflict("autosave_pending", true),
+		"changed after this change":                  conflict("changed_after_this_change", false),
+		"no detail, the agent says retry":            conflict("", true),
+		"a member in another case":                   conflict("Editor_Open", true),
+		"a member with a space after it":             conflict("editor_open ", true),
+		"a member with more after it":                conflict("editor_opened", true),
+		"the site's own sentence":                    conflict("someone is editing this post right now", true),
+		"another code carrying the word":             &agentcmd.AbilityRunRefusal{Code: "created_post_touched", Detail: "editor_open", Retryable: true},
+		"target_not_draft carrying the word":         &agentcmd.AbilityRunRefusal{Code: "target_not_draft", Detail: "editor_open"},
+		"refused_published carrying the word, retry": &agentcmd.AbilityRunRefusal{Code: "refused_published", Detail: "editor_open", Retryable: true},
+	} {
+		if undoRetryable(err) {
+			t.Errorf("%s: released, but the site gave a definite answer", name)
+		}
+	}
+}
+
+// The person is told why a released undo did not run: a page open in an
+// editor answers 409 with fixed text that says so; anything else that settled
+// nothing is the 503 retry.
+func TestErrUndoReleased_SaysThePageIsOpenInAnEditor(t *testing.T) {
+	err := errUndoReleased(fmt.Errorf("revert: %w", &agentcmd.AbilityRunRefusal{Code: "conflict", Detail: "editor_open"}))
+	de, ok := domain.AsDomain(err)
+	if !ok || de.Code != "ability_request_undo_editor_open" || domain.HTTPStatus(err) != http.StatusConflict ||
+		de.Message != "This page is open in an editor. Try Undo again in a few minutes." {
+		t.Fatalf("editor open: got %v (status %d), want 409 ability_request_undo_editor_open with the fixed text", err, domain.HTTPStatus(err))
+	}
+	for name, sendErr := range map[string]error{
+		"transport":           errors.New("dial tcp: connection refused"),
+		"target_in_flight":    &agentcmd.AbilityRunRefusal{Code: "target_in_flight"},
+		"snapshot_unreadable": &agentcmd.AbilityRunRefusal{Code: "snapshot_unreadable"},
+		"in flight, the word": &agentcmd.AbilityRunRefusal{Code: "request_in_flight", Detail: "editor_open"},
+	} {
+		err := errUndoReleased(sendErr)
+		if de, ok := domain.AsDomain(err); !ok || de.Code != CodeUndoRetry || domain.HTTPStatus(err) != http.StatusServiceUnavailable {
+			t.Errorf("%s: got %v, want 503 %s", name, err, CodeUndoRetry)
 		}
 	}
 }

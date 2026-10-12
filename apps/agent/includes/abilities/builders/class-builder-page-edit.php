@@ -68,6 +68,12 @@ if (!defined('ABSPATH')) {
  * bytes. The same request, input and stored page give the same bytes, so a
  * write's re-plan matches the approved precheck.
  *
+ * Every refusal carries "retryable", true only for conflict with detail
+ * editor_open: an edit lock lapses on its own once the editor is closed, so
+ * the same call can succeed later. Every other refusal, conflict with
+ * autosave_pending or changed_since_read included, needs a person or a new
+ * read first, and is false.
+ *
  * write() re-plans under a claim on the target post, requires both digests
  * to be the approved ones, records the ledger row, snapshots the page
  * (BuilderDocumentSnapshot), checks the snapshot is the page the approval
@@ -910,7 +916,8 @@ final class BuilderPageEdit
     }
 
     /**
-     * A refusal in the command's shape.
+     * A refusal in the command's shape. retryable is true only for conflict
+     * with detail editor_open.
      *
      * @param string               $code   Refusal code.
      * @param string               $detail Reason.
@@ -924,7 +931,7 @@ final class BuilderPageEdit
             'outcome'   => 'refused',
             'code'      => $code,
             'detail'    => $detail,
-            'retryable' => false,
+            'retryable' => $code === self::CODE_CONFLICT && $detail === ElementorDocument::TARGET_LOCKED,
         ] + $extra;
     }
 }

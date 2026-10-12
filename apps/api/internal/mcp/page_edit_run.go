@@ -167,15 +167,7 @@ func (s *Service) runPageEditChecked(ctx context.Context, auth AuthorizedRequest
 					meta: map[string]any{"code": refusal.Code},
 				}
 			}
-			details := map[string]any{"code": refusal.Code, "retryable": refusal.Retryable}
-			if hint := precheckRefusalHint(refusal.Code); hint != "" {
-				details["hint"] = hint
-			}
-			return "", &toolRefusal{
-				reason: reasonAbilityPrecheckRefused,
-				err:    domain.Validation(ErrCodeInvalidToolArguments, msgAbilityAgentRefused).WithDetails(details),
-				meta:   map[string]any{"code": refusal.Code},
-			}
+			return "", sitePrecheckRefusal(AbilityPageEdit, refusal)
 		}
 		return "", refuse(reasonSiteUnreachable, domain.Unavailable(ErrCodeSiteUnreachable,
 			msgSiteUnreachable).WithDetails(map[string]any{"retryable": true}))

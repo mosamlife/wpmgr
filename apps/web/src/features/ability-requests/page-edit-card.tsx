@@ -16,7 +16,7 @@ import { ranAutomatically } from "@/features/ai-trust/ai-trust-copy";
 
 import {
   NOT_SHOWABLE_COPY,
-  clockTime,
+  abilityTiming,
   draftPreviewHref,
   elementorEditHref,
   isPending,
@@ -140,9 +140,7 @@ export function PageEditCard({
         {pending ? (
           <>
             <dt className="text-muted-foreground">Timing</dt>
-            <dd className="text-foreground">
-              Asked {clockTime(request.created_at)} · closes {clockTime(request.expires_at)}
-            </dd>
+            <dd className="text-foreground">{abilityTiming(request)}</dd>
           </>
         ) : null}
       </dl>

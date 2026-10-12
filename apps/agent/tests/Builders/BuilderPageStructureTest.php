@@ -71,6 +71,15 @@ final class BuilderPageStructureTest extends TestCase
     /** @var list<string> Option writes, by name. */
     private array $optionWrites = [];
 
+    /** @var array<int,int> Post id => the user holding its edit lock. */
+    private array $locks = [];
+
+    /** @var array<int,int> Post id => the user with an autosave of it. */
+    private array $autosaves = [];
+
+    /** @var list<array{0:string,1:list<mixed>}> Calls of the core lock and autosave reads. */
+    private array $openReads = [];
+
     private int $metaId = 10;
 
     private mixed $savedWpdb = null;
@@ -92,6 +101,20 @@ final class BuilderPageStructureTest extends TestCase
             });
         }
         Functions\when('get_userdata')->justReturn(false);
+        $this->locks     = [];
+        $this->autosaves = [];
+        $this->openReads = [];
+        Functions\when('wp_check_post_lock')->alias(function ($id) {
+            $this->openReads[] = ['wp_check_post_lock', [$id]];
+
+            return $this->locks[(int) $id] ?? false;
+        });
+        Functions\when('wp_get_post_autosave')->alias(function ($id, $user = 0) {
+            $this->openReads[] = ['wp_get_post_autosave', [$id, $user]];
+            $by                = $this->autosaves[(int) $id] ?? null;
+
+            return $by !== null && ($user === 0 || $user === $by) ? (object) ['ID' => 500, 'post_type' => 'revision'] : false;
+        });
 
         $this->hadWpdb   = array_key_exists('wpdb', $GLOBALS);
         $this->savedWpdb = $GLOBALS['wpdb'] ?? null;
@@ -121,8 +144,8 @@ final class BuilderPageStructureTest extends TestCase
     {
         $out = $this->structure(self::DRAFT, null, 500, [self::DRAFT]);
 
-        $this->assertSame(['post_id', 'builder', 'builder_version', 'format', 'status', 'editable', 'base_fingerprint', 'node_count', 'truncated', 'nodes'], array_keys($out));
-        $this->assertSame([self::DRAFT, 'elementor', '3.35.9', 'classic', 'draft', true, 5, false], [$out['post_id'], $out['builder'], $out['builder_version'], $out['format'], $out['status'], $out['editable'], $out['node_count'], $out['truncated']]);
+        $this->assertSame(['post_id', 'builder', 'builder_version', 'format', 'status', 'editable', 'open_state', 'base_fingerprint', 'node_count', 'truncated', 'nodes'], array_keys($out));
+        $this->assertSame([self::DRAFT, 'elementor', '3.35.9', 'classic', 'draft', true, null, 5, false], [$out['post_id'], $out['builder'], $out['builder_version'], $out['format'], $out['status'], $out['editable'], $out['open_state'], $out['node_count'], $out['truncated']]);
         $this->assertSame(BuilderDocumentFingerprint::ofPost(self::DRAFT, ElementorDocument::DESCRIPTOR_KEYS), $out['base_fingerprint'], 'the page\'s builder_document_v1');
         $this->assertSame(
             json_encode(ElementorClassicMapper::project(self::golden())->toArray(500)['nodes']),
@@ -138,6 +161,47 @@ final class BuilderPageStructureTest extends TestCase
         // The draft's own fingerprint changes when its rows do.
         $this->wpdb->addMeta(++$this->metaId, self::DRAFT, ElementorDocument::KEY_PAGE_SETTINGS, 'a:0:{}');
         $this->assertNotSame($out['base_fingerprint'], $this->structure(self::DRAFT, null, 500, [self::DRAFT])['base_fingerprint']);
+    }
+
+    public function test_a_draft_open_in_the_editor_says_so(): void
+    {
+        // Someone else holds the edit lock.
+        $this->locks[self::DRAFT] = 9;
+        $open = $this->structure(self::DRAFT, null, 500, [self::DRAFT]);
+        $this->assertSame(['editor_open', true], [$open['open_state'], $open['editable']], 'still the draft the AI may edit');
+
+        // Someone has an autosave of it, the lock lapsed or not.
+        $this->autosaves[self::DRAFT] = 9;
+        $this->assertSame('autosave_pending', $this->structure(self::DRAFT, null, 500, [self::DRAFT])['open_state']);
+        $this->locks = [];
+        $autosave    = $this->structure(self::DRAFT, self::LEFT, 500, [self::DRAFT]);
+        $this->assertSame(['autosave_pending', true], [$autosave['open_state'], $autosave['editable']], 'a subtree read says so too');
+
+        // Neither.
+        $this->autosaves = [];
+        $free            = $this->structure(self::DRAFT, null, 500, [self::DRAFT]);
+        $this->assertSame([null, true], [$free['open_state'], $free['editable']]);
+        $reads = array_values(array_unique(array_column($this->openReads, 0)));
+        sort($reads);
+        $this->assertSame(['wp_check_post_lock', 'wp_get_post_autosave'], $reads, 'core\'s lock and autosave reads');
+        foreach ($this->openReads as [$read, $args]) {
+            $this->assertSame($read === 'wp_get_post_autosave' ? [self::DRAFT, 0] : [self::DRAFT], $args, $read . ': of the draft; an autosave by any user');
+        }
+
+        // A published page is never the AI's to edit: nothing is read.
+        $this->openReads = [];
+        $this->locks[self::PUBLISHED]     = 9;
+        $this->autosaves[self::PUBLISHED] = 9;
+        $published                        = $this->structure(self::PUBLISHED, null, 500, []);
+        $this->assertSame([null, false], [$published['open_state'], $published['editable']]);
+        $this->assertSame([], $this->openReads, 'no lock or autosave read for a read-only page');
+
+        // Only core's reads: Elementor's document API is never asked.
+        $this->assertSame([], $this->api->callsTo('document'));
+        foreach ($this->wpdb->queries as $query) {
+            $this->assertStringStartsWith('SELECT ', $query['sql'], 'the read sends only SELECTs');
+        }
+        $this->assertSame([], $this->optionWrites, 'no option is written');
     }
 
     public function test_published_page_read_only_with_empty_editable(): void

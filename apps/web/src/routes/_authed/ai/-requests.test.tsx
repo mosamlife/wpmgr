@@ -4,6 +4,7 @@ import type { AssistantRequest, AssistantRequestList, Me } from "@wpmgr/api";
 
 import { createTestQueryClient, renderWithProviders } from "@/test/render";
 import { authKeys } from "@/features/auth/use-auth";
+import { formatTime } from "@/features/ai-requests/request-card-model";
 
 import { Route } from "./requests";
 
@@ -172,6 +173,23 @@ describe("/ai/requests renders the queue", () => {
     listMock.mockReturnValue(ok(list([pendingRequest({ scope: "url" })])));
     renderPage();
     expect(await screen.findByText("xn--bcher-kva.de")).toBeInTheDocument();
+  });
+
+  // The control plane opens the window for 24 hours
+  // (apps/api/internal/mcp/write_rail.go, requestWindow). The instant used is on
+  // a different calendar day from the instant 24 hours later in every zone, and
+  // each expectation is derived from the same instants.
+  it("names the day the request closes when it closes on a later day", async () => {
+    const created_at = "2026-10-10T04:11:41Z";
+    const expires_at = new Date(Date.parse(created_at) + 24 * 60 * 60 * 1000).toISOString();
+    listMock.mockReturnValue(ok(list([pendingRequest({ created_at, expires_at })])));
+    renderPage();
+    const card = await screen.findByRole("article", { name: /Clear one page on Shop/ });
+    const timing = (within(card).getByText(/· asked/).textContent ?? "").replace(/\s+/g, " ").trim();
+    expect(timing.startsWith(`· asked ${formatTime(created_at)} · closes `)).toBe(true);
+    const closes = timing.slice(timing.indexOf(" · closes ") + " · closes ".length);
+    expect(closes).not.toBe(formatTime(expires_at));
+    expect(closes).toContain(new Intl.DateTimeFormat([], { weekday: "short" }).format(new Date(expires_at)));
   });
 
   it("renders the Punycode host line as text on an all-scoped card, with no Page address row", async () => {

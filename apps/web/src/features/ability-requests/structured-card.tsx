@@ -4,7 +4,7 @@ import { setUpForLine } from "@/features/ai-requests/request-card-model";
 import { useDeepLinkFocus } from "@/features/ai-requests/use-deep-link";
 import { UNDO_WINDOW_OVER_LINE, ranAutomatically } from "@/features/ai-trust/ai-trust-copy";
 
-import { clockTime, isPending, undoWindowOver } from "./ability-card-model";
+import { abilityTiming, isPending, undoWindowOver } from "./ability-card-model";
 import type { AbilityRequestCardProps } from "./ability-request-card";
 import { AutoApprovalRows, RanAutomaticallyChip, WaitingBecauseRow } from "./auto-approval";
 import {
@@ -81,9 +81,7 @@ export function StructuredAbilityCard(props: AbilityRequestCardProps & { canUndo
         {pending ? (
           <>
             <dt className="text-muted-foreground">Timing</dt>
-            <dd className="text-foreground">
-              Asked {clockTime(request.created_at)} · closes {clockTime(request.expires_at)}
-            </dd>
+            <dd className="text-foreground">{abilityTiming(request)}</dd>
           </>
         ) : null}
       </dl>

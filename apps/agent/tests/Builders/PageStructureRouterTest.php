@@ -110,6 +110,8 @@ final class PageStructureRouterTest extends TestCase
         Functions\when('is_user_logged_in')->justReturn(false);
         Functions\when('register_rest_route')->justReturn(true);
         Functions\when('get_userdata')->justReturn(false);
+        Functions\when('wp_check_post_lock')->justReturn(false);
+        Functions\when('wp_get_post_autosave')->justReturn(false);
         $GLOBALS['wp_version'] = '6.4.2';
 
         $keypair        = sodium_crypto_sign_keypair();

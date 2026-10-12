@@ -34,10 +34,14 @@ if (!defined('ABSPATH')) {
  *   draft, not an Elementor page, the active kit, the front page, the posts
  *   page or the shop page, or Elementor does not let the current user edit it.
  * - save() runs the save inside an AbilityWriteScope bound to the target,
- *   with a tripwire on the active kit's rows. Anything the save prints is
- *   discarded and the numeric locale is put back whatever the save does. A
- *   throw is builder_crashed, any answer but true is builder_save_refused, a
- *   kit change or a write outside the scope is side_effect_detected.
+ *   with a tripwire on the active kit's rows. Besides the target and the
+ *   options saveOptionPatterns() names, the save may write Elementor's
+ *   style-cache validity options, write by write, only where the write
+ *   changes nothing but the target's own entry (ElementorStyleCache). Anything
+ *   the save prints is discarded and the numeric locale is put back whatever
+ *   the save does. A throw is builder_crashed, any answer but true is
+ *   builder_save_refused, a kit change or a write outside the scope is
+ *   side_effect_detected.
  * - verifyCreated() reads the stored rows back with SQL and requires the
  *   whole stored tree to equal the built one.
  * - editTargetProblem() adds to targetProblem() what an edit needs: a page
@@ -162,7 +166,9 @@ final class ElementorDocument
 
     /**
      * The option patterns the save may write on the running Elementor.
-     * An unknown version gets only the patterns of every version.
+     * An unknown version gets only the patterns of every version. The
+     * style-cache validity options are not among them: the save's scope
+     * checks each write of those (saveOptionChecks()).
      *
      * @return list<string>
      */
@@ -180,6 +186,18 @@ final class ElementorDocument
         }
 
         return $patterns;
+    }
+
+    /**
+     * The value checks of the save's scope, on every Elementor version: an
+     * option whose name starts with ElementorStyleCache::PREFIX is the save's
+     * own only where ElementorStyleCache::ownWrite() admits the write.
+     *
+     * @return array<string, callable(mixed, mixed, int): bool>
+     */
+    public static function saveOptionChecks(): array
+    {
+        return [ElementorStyleCache::PREFIX => [ElementorStyleCache::class, 'ownWrite']];
     }
 
     /**
@@ -451,7 +469,7 @@ final class ElementorDocument
             return ['ok' => false, 'code' => self::CODE_REFUSED, 'detail' => 'the active kit could not be read', 'scope' => null];
         }
 
-        $scope   = new AbilityWriteScope($postId, $this->saveOptionPatterns());
+        $scope   = new AbilityWriteScope($postId, $this->saveOptionPatterns(), self::saveOptionChecks());
         $locale  = setlocale(LC_NUMERIC, '0');
         $level   = ob_get_level();
         $saved   = null;
