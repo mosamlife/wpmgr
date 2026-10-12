@@ -1023,19 +1023,27 @@ final class ElementorPageFrameTest extends TestCase
     }
 
     /**
-     * A version 3 spec over a plain outline the classic mapper builds today.
+     * A version 3 spec: one section holding the blocks of a plain outline, and a design.
      *
      * @return array<string,mixed>
      */
     private function v3Spec(string $frame, string $postType = 'page'): array
     {
         return [
-            'post_type'       => $postType,
-            'editor'          => 'builder:elementor',
-            'title'           => self::TITLE,
-            'outline'         => self::outline(),
-            'outline_version' => 3,
-            'page_frame'      => $frame,
+            'post_type'        => $postType,
+            'editor'           => 'builder:elementor',
+            'title'            => self::TITLE,
+            'elementor_format' => 'classic',
+            'outline'          => [['type' => 'section', 'anchor' => 'intro', 'children' => self::outline()]],
+            'outline_version'  => 3,
+            'design'           => [
+                'colors'  => ['ground' => '#F6F5F2', 'surface' => '#FFFFFF', 'ink' => '#15171C', 'muted' => '#5A606C', 'accent' => '#0D7A63', 'on_accent' => '#FFFFFF'],
+                'fonts'   => ['heading' => 'Manrope', 'body' => 'system'],
+                'scale'   => ['base_px' => 17, 'ratio' => 'major_third'],
+                'radius'  => 'md',
+                'density' => 'normal',
+            ],
+            'page_frame'       => $frame,
         ];
     }
 

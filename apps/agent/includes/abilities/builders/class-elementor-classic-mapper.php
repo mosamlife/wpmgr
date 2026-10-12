@@ -739,7 +739,9 @@ final class ElementorClassicMapper
      */
     private function outline(array $outline, string $listPath = 'outline'): ?array
     {
-        if ($this->design !== null) {
+        // An outline of sections is a designed page; an outline of blocks, groups and
+        // columns takes the design's containers for its groups and rows, if it has one.
+        if ($this->design !== null && self::holdsSection($outline)) {
             return $this->designedPage($outline, $listPath);
         }
         $tree  = [];
@@ -781,6 +783,23 @@ final class ElementorClassicMapper
         }
 
         return $tree;
+    }
+
+    /**
+     * Whether any top-level node of the outline is a section.
+     *
+     * @param list<mixed> $outline Outline nodes.
+     * @return bool
+     */
+    private static function holdsSection(array $outline): bool
+    {
+        foreach ($outline as $node) {
+            if (is_array($node) && ($node['type'] ?? null) === 'section') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
