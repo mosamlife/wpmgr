@@ -26,7 +26,14 @@ if (!defined('ABSPATH')) {
  *   three rounds, which must reach a fixed point).
  * - L3 keys: every node type and every settings path is on the adapter's
  *   allowlist, and the hard-denied types and keys are refused at any depth
- *   even when an allowlist names them.
+ *   even when an allowlist names them. Two keys are written only where their
+ *   own rule allows, also when an allowlist names them elsewhere: the anchor
+ *   (ANCHOR_KEY) only at the top of a WPMgr section container's settings,
+ *   holding an anchor of the outline's form that is not reserved and not used
+ *   by an earlier element of the tree; and the Navigator label (LABEL_KEY)
+ *   only at the top of a container's settings, holding LABEL_PREFIX and a
+ *   name. A WPMgr section container is a container at the top of the tree
+ *   whose label is SECTION_LABEL.
  * - L4 pins: the pin of a settings path picks the extra check for its value.
  *
  * Nothing is ever stripped or rewritten: a failure refuses the whole call,
@@ -50,9 +57,20 @@ final class LeafPolicy
         'custom_css',
         '_attributes',
         'custom_attributes',
-        '_element_id',
         '_css_classes',
     ];
+
+    /** The settings key of an element's HTML id, which is its in-page anchor. */
+    public const ANCHOR_KEY = '_element_id';
+
+    /** The settings key of an element's Navigator label. */
+    public const LABEL_KEY = '_title';
+
+    /** What every Navigator label WPMgr writes starts with. */
+    public const LABEL_PREFIX = "WPMgr \u{00B7} ";
+
+    /** The Navigator label of a WPMgr section container. */
+    public const SECTION_LABEL = self::LABEL_PREFIX . 'Section';
 
     /** Settings key prefixes refused anywhere, compared without regard to case. */
     public const DENIED_KEY_PREFIXES = ['motion_fx_', 'sticky'];
@@ -91,6 +109,12 @@ final class LeafPolicy
 
     /** Deepest settings nesting walked. */
     private const MAX_SETTINGS_DEPTH = 8;
+
+    /** The name after LABEL_PREFIX: words of ASCII letters and digits, the first starting with a letter, one space or hyphen between words. */
+    private const LABEL_NAME = '/^[A-Za-z][A-Za-z0-9]*(?:[ -][A-Za-z0-9]+)*$/D';
+
+    /** Longest name after LABEL_PREFIX, in characters. */
+    private const MAX_LABEL_NAME_CHARS = 40;
 
     /** Sequences refused anywhere in raw text: the page-create rule. */
     private const RAW_FORBIDDEN = ['<', '>', '{{', '}}', '{%', '%}', '<!--', '-->', '`'];
@@ -265,7 +289,9 @@ final class LeafPolicy
             return self::refuse(self::CODE_KEY, 'elements: not a list of nodes');
         }
 
-        return self::checkNodes($nodes, 'elements', 1, $allowedKeys, $rules);
+        $anchors = [];
+
+        return self::checkNodes($nodes, 'elements', 1, $allowedKeys, $rules, $anchors);
     }
 
     /**
@@ -274,9 +300,10 @@ final class LeafPolicy
      * @param int                                              $depth       Nesting depth of the list.
      * @param array<string, array<string, string>>             $allowedKeys Allowlist.
      * @param array{refuse_braces?: mixed, forbidden?: mixed}  $rules       Leaf rules.
+     * @param array<string, true>                              $anchors     Anchors already written in this tree.
      * @return array{code: string, detail: string}|null
      */
-    private static function checkNodes(array $nodes, string $where, int $depth, array $allowedKeys, array $rules): ?array
+    private static function checkNodes(array $nodes, string $where, int $depth, array $allowedKeys, array $rules, array &$anchors): ?array
     {
         if ($depth > self::MAX_NODE_DEPTH) {
             return self::refuse(self::CODE_KEY, $where . ': elements nested deeper than ' . self::MAX_NODE_DEPTH . ' levels');
@@ -286,7 +313,7 @@ final class LeafPolicy
             if (!is_array($node) || ($node !== [] && ArrayShape::isList($node))) {
                 return self::refuse(self::CODE_KEY, $at . ': not a node');
             }
-            $refusal = self::checkNode($node, $at, $depth, $allowedKeys, $rules);
+            $refusal = self::checkNode($node, $at, $depth, $allowedKeys, $rules, $anchors);
             if ($refusal !== null) {
                 return $refusal;
             }
@@ -301,9 +328,10 @@ final class LeafPolicy
      * @param int                                              $depth       Nesting depth.
      * @param array<string, array<string, string>>             $allowedKeys Allowlist.
      * @param array{refuse_braces?: mixed, forbidden?: mixed}  $rules       Leaf rules.
+     * @param array<string, true>                              $anchors     Anchors already written in this tree.
      * @return array{code: string, detail: string}|null
      */
-    private static function checkNode(array $node, string $at, int $depth, array $allowedKeys, array $rules): ?array
+    private static function checkNode(array $node, string $at, int $depth, array $allowedKeys, array $rules, array &$anchors): ?array
     {
         foreach (array_keys($node) as $key) {
             $denied = self::deniedKey((string) $key);
@@ -361,7 +389,12 @@ final class LeafPolicy
         if (!is_array($settings)) {
             return self::refuse(self::CODE_KEY, $at . ': settings not an object');
         }
-        $refusal = self::checkSettings($settings, '', $at . '.settings', 1, $allowedKeys[$type], $rules);
+        $container = $elType === 'container';
+        $placed    = [
+            self::ANCHOR_KEY => $container && $depth === 1 && ($settings[self::LABEL_KEY] ?? null) === self::SECTION_LABEL,
+            self::LABEL_KEY  => $container,
+        ];
+        $refusal   = self::checkSettings($settings, '', $at . '.settings', 1, $allowedKeys[$type], $rules, $placed, $anchors);
         if ($refusal !== null) {
             return $refusal;
         }
@@ -371,7 +404,7 @@ final class LeafPolicy
             return self::refuse(self::CODE_KEY, $at . ': elements not a list of nodes');
         }
 
-        return self::checkNodes($children, $at . '.elements', $depth + 1, $allowedKeys, $rules);
+        return self::checkNodes($children, $at . '.elements', $depth + 1, $allowedKeys, $rules, $anchors);
     }
 
     /**
@@ -381,9 +414,11 @@ final class LeafPolicy
      * @param int                                              $depth    Settings nesting depth.
      * @param array<string, string>                            $paths    The type's settings paths and pins.
      * @param array{refuse_braces?: mixed, forbidden?: mixed}  $rules    Leaf rules.
+     * @param array<string, bool>                              $placed   Whether this node may carry each ruled key at the top of its settings.
+     * @param array<string, true>                              $anchors  Anchors already written in this tree.
      * @return array{code: string, detail: string}|null
      */
-    private static function checkSettings(array $settings, string $prefix, string $at, int $depth, array $paths, array $rules): ?array
+    private static function checkSettings(array $settings, string $prefix, string $at, int $depth, array $paths, array $rules, array $placed, array &$anchors): ?array
     {
         if ($depth > self::MAX_SETTINGS_DEPTH) {
             return self::refuse(self::CODE_KEY, $at . ': settings nested deeper than ' . self::MAX_SETTINGS_DEPTH . ' levels');
@@ -395,12 +430,16 @@ final class LeafPolicy
                 return self::refuse(self::CODE_KEY, $at . ': key ' . $denied . ' is never written');
             }
             $path   = $prefix === '' ? $key : $prefix . '.' . $key;
+            $ruled  = self::ruledProblem($key, $value, $prefix === '' ? $placed : [], $anchors);
+            if ($ruled !== null) {
+                return self::refuse($ruled[0], ($ruled[0] === self::CODE_KEY ? $at : $at . '.' . $path) . ': ' . $ruled[1]);
+            }
             $listed = array_key_exists($path, $paths);
             if (is_array($value) && $value !== []) {
                 if (!self::isAncestor($path, $paths)) {
                     return self::refuse(self::CODE_KEY, $at . ': a settings key not on the adapter allowlist');
                 }
-                $refusal = self::checkSettings($value, $path, $at, $depth + 1, $paths, $rules);
+                $refusal = self::checkSettings($value, $path, $at, $depth + 1, $paths, $rules, [], $anchors);
                 if ($refusal !== null) {
                     return $refusal;
                 }
@@ -420,6 +459,67 @@ final class LeafPolicy
         }
 
         return null;
+    }
+
+    /**
+     * The rule of the anchor and label keys, checked before the allowlist:
+     * null for any other key, and null for a ruled key that is spelled in
+     * lower case, allowed in this place and holds an acceptable value. An
+     * accepted anchor is recorded in $anchors, so a later element of the
+     * same tree cannot write it again.
+     *
+     * @param string              $key     Settings key as given.
+     * @param mixed               $value   Its value.
+     * @param array<string, bool> $placed  Whether each ruled key may be written here.
+     * @param array<string, true> $anchors Anchors already written in this tree.
+     * @return array{0: string, 1: string}|null Code and reason.
+     */
+    private static function ruledProblem(string $key, $value, array $placed, array &$anchors): ?array
+    {
+        $ruled = strtolower($key);
+        if ($ruled !== self::ANCHOR_KEY && $ruled !== self::LABEL_KEY) {
+            return null;
+        }
+        if ($key !== $ruled) {
+            return [self::CODE_KEY, 'key ' . $ruled . ' is written only in lower case'];
+        }
+        if (($placed[$ruled] ?? false) !== true) {
+            return [self::CODE_KEY, $ruled === self::ANCHOR_KEY
+                ? 'key ' . self::ANCHOR_KEY . ' is written only at the top of a WPMgr section container\'s settings'
+                : 'key ' . self::LABEL_KEY . ' is written only at the top of a container\'s settings'];
+        }
+        if ($ruled === self::LABEL_KEY) {
+            return self::isLabel($value) ? null : [self::CODE_UNSAFE, 'not a label of the WPMgr prefix, then a name of letters and digits with single spaces or hyphens between words, up to ' . self::MAX_LABEL_NAME_CHARS . ' characters'];
+        }
+        if (!is_string($value) || preg_match('/' . OutlineV3Schema::ANCHOR_PATTERN . '/D', $value) !== 1) {
+            return [self::CODE_UNSAFE, 'not an anchor of a lower-case letter, then 1 to 39 lower-case letters, digits or hyphens'];
+        }
+        if (in_array($value, OutlineV3Schema::RESERVED_ANCHORS, true)) {
+            return [self::CODE_UNSAFE, 'an anchor the theme or WordPress already uses'];
+        }
+        if (isset($anchors[$value])) {
+            return [self::CODE_UNSAFE, 'an anchor an earlier element already uses'];
+        }
+        $anchors[$value] = true;
+
+        return null;
+    }
+
+    /**
+     * Whether a value is LABEL_PREFIX followed by a name LABEL_NAME accepts,
+     * of at most MAX_LABEL_NAME_CHARS characters.
+     *
+     * @param mixed $value Value.
+     * @return bool
+     */
+    private static function isLabel($value): bool
+    {
+        if (!is_string($value) || strncmp($value, self::LABEL_PREFIX, strlen(self::LABEL_PREFIX)) !== 0) {
+            return false;
+        }
+        $name = substr($value, strlen(self::LABEL_PREFIX));
+
+        return strlen($name) <= self::MAX_LABEL_NAME_CHARS && preg_match(self::LABEL_NAME, $name) === 1;
     }
 
     /**

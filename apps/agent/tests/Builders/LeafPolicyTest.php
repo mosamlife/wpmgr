@@ -49,6 +49,21 @@ final class LeafPolicyTest extends TestCase
         'spacer'      => ['space.unit' => 'enum', 'space.size' => 'int', 'space.sizes' => 'enum'],
     ];
 
+    /** A WPMgr section container's label, written out here rather than read from the class. */
+    private const SECTION = "WPMgr \u{00B7} Section";
+
+    /** A WPMgr pattern container's label. */
+    private const FEATURES = "WPMgr \u{00B7} Features";
+
+    /** The refusal of an anchor anywhere but the top of a section container's settings. */
+    private const OFF_SECTION = 'key _element_id is written only at the top of a WPMgr section container\'s settings';
+
+    /** The refusal of an anchor value outside the SP-09 form. */
+    private const NOT_ANCHOR = 'not an anchor of a lower-case letter, then 1 to 39 lower-case letters, digits or hyphens';
+
+    /** The refusal of a label outside the WPMgr form. */
+    private const NOT_LABEL = 'not a label of the WPMgr prefix, then a name of letters and digits with single spaces or hyphens between words, up to 40 characters';
+
     /** Tags the sanitiser double keeps. */
     private const KEPT_TAGS = ['p', 'h2', 'h3', 'h4', 'ul', 'ol', 'li', 'blockquote', 'cite', 'table', 'tr', 'td', 'b', 'img', 'a'];
 
@@ -288,7 +303,6 @@ final class LeafPolicyTest extends TestCase
             'motion_fx prefix'     => [['text' => 'Go', 'motion_fx_motion_fx_scrolling' => 'yes'], 'motion_fx_*'],
             'sticky prefix'        => [['text' => 'Go', 'sticky_on' => ['desktop']], 'sticky*'],
             'case folded'          => [['text' => 'Go', 'Custom_CSS' => 'a{}'], 'custom_css'],
-            '_element_id'          => [['text' => 'Go', '_element_id' => 'x'], '_element_id'],
         ];
         $faulty                  = self::KEYS;
         $faulty['button']        = $faulty['button'] + ['__dynamic__.text' => 'text', 'motion_fx_motion_fx_scrolling' => 'enum', '_element_id' => 'enum'];
@@ -330,6 +344,168 @@ final class LeafPolicyTest extends TestCase
                 ['code' => 'adapter_key_not_allowed', 'detail' => 'elements[0].elements[0]: element type ' . $entry . ' is never written'],
                 LeafPolicy::checkTree($tree, $faulty, self::RULES),
                 $type
+            );
+        }
+    }
+
+    public function test_anchor_written_only_on_a_wpmgr_section_container(): void
+    {
+        $keys = $this->ruledKeys();
+        $page = [
+            $this->container('s1', ['_title' => self::SECTION, '_element_id' => 'pricing', 'content_width' => 'boxed'], [
+                $this->container('p1', ['_title' => self::FEATURES], [$this->widget('h1', 'heading', ['title' => 'Plans'])]),
+            ]),
+            // The anchor may come before the label.
+            $this->container('s2', ['_element_id' => 'ab', '_title' => self::SECTION], []),
+            $this->container('s3', ['_title' => self::SECTION, '_element_id' => 'a' . str_repeat('-9', 19) . 'z'], []),
+            $this->container('s4', ['_title' => self::SECTION], []),
+        ];
+        $this->assertNull(LeafPolicy::checkTree($page, $keys, self::RULES), 'anchors on WPMgr section containers');
+        $this->assertSame(
+            ['code' => 'adapter_key_not_allowed', 'detail' => 'elements[0].settings: a settings key not on the adapter allowlist'],
+            LeafPolicy::checkTree([$page[0]], self::KEYS, self::RULES),
+            'the adapter allowlist still has to name the key'
+        );
+
+        $deepButton = [$this->container('s1', ['_title' => self::SECTION], [
+            $this->container('c1', [], [$this->widget('b1', 'button', ['text' => 'Go', '_element_id' => 'pricing'])]),
+        ])];
+        $offSection = [
+            'nested container with the section label' => [
+                [$this->container('s1', ['_title' => self::SECTION], [$this->container('s2', ['_element_id' => 'pricing', '_title' => self::SECTION], [])])],
+                'elements[0].elements[0].settings',
+            ],
+            'top-level container with no label'       => [[$this->container('s1', ['_element_id' => 'pricing'], [])], 'elements[0].settings'],
+            'top-level container with a pattern label' => [[$this->container('s1', ['_element_id' => 'pricing', '_title' => self::FEATURES], [])], 'elements[0].settings'],
+            'widget inside a section'                 => [$deepButton, 'elements[0].elements[0].elements[0].settings'],
+            'top-level widget'                        => [[$this->widget('b1', 'button', ['_element_id' => 'pricing'])], 'elements[0].settings'],
+            'inside a settings object'                => [[$this->container('s1', ['_title' => self::SECTION, 'width' => ['unit' => '%', '_element_id' => 'pricing']], [])], 'elements[0].settings'],
+        ];
+        foreach ($offSection as $name => [$tree, $at]) {
+            $this->assertSame(
+                ['code' => 'adapter_key_not_allowed', 'detail' => $at . ': ' . self::OFF_SECTION],
+                LeafPolicy::checkTree($tree, $keys, self::RULES),
+                $name
+            );
+        }
+        $this->assertSame(
+            ['code' => 'adapter_key_not_allowed', 'detail' => 'elements[0].settings: key _element_id is written only in lower case'],
+            LeafPolicy::checkTree([$this->container('s1', ['_title' => self::SECTION, '_Element_ID' => 'pricing'], [])], $this->ruledKeys(['container' => ['_Element_ID' => 'text']]), self::RULES)
+        );
+
+        $badValues = [
+            'upper case'       => 'Pricing',
+            'one character'    => 'a',
+            '41 characters'    => 'a' . str_repeat('-9', 19) . 'za',
+            'digit first'      => '1pricing',
+            'hyphen first'     => '-pricing',
+            'trailing newline' => "pricing\n",
+            'space'            => 'pri cing',
+            'underscore'       => 'pricing_2',
+            'empty'            => '',
+            'not ASCII'        => "pr\u{00ED}cing",
+            'integer'          => 5,
+            'list'             => ['pricing'],
+            'empty list'       => [],
+        ];
+        foreach ($badValues as $name => $value) {
+            $this->assertSame(
+                ['code' => 'leaf_unsafe', 'detail' => 'elements[0].settings._element_id: ' . self::NOT_ANCHOR],
+                LeafPolicy::checkTree([$this->container('s1', ['_title' => self::SECTION, '_element_id' => $value], [])], $keys, self::RULES),
+                $name
+            );
+        }
+        foreach (['content', 'main', 'primary', 'page', 'masthead', 'colophon', 'site-header', 'site-footer', 'wpadminbar'] as $reserved) {
+            $this->assertSame(
+                ['code' => 'leaf_unsafe', 'detail' => 'elements[0].settings._element_id: an anchor the theme or WordPress already uses'],
+                LeafPolicy::checkTree([$this->container('s1', ['_title' => self::SECTION, '_element_id' => $reserved], [])], $keys, self::RULES),
+                $reserved
+            );
+        }
+        $this->assertSame(
+            ['code' => 'leaf_unsafe', 'detail' => 'elements[2].settings._element_id: an anchor an earlier element already uses'],
+            LeafPolicy::checkTree([
+                $this->container('s1', ['_title' => self::SECTION, '_element_id' => 'pricing'], []),
+                $this->container('s2', ['_title' => self::SECTION, '_element_id' => 'faq'], []),
+                $this->container('s3', ['_title' => self::SECTION, '_element_id' => 'pricing'], []),
+            ], $keys, self::RULES)
+        );
+    }
+
+    public function test_label_written_only_with_the_wpmgr_prefix(): void
+    {
+        $keys   = $this->ruledKeys();
+        $labels = [self::SECTION, self::FEATURES, "WPMgr \u{00B7} Pricing card", "WPMgr \u{00B7} Call-to-action", "WPMgr \u{00B7} FAQ 2", "WPMgr \u{00B7} " . str_repeat('ab', 20)];
+        foreach ($labels as $label) {
+            $tree = [$this->container('s1', ['_title' => $label], [$this->container('c1', ['_title' => $label], [])])];
+            $this->assertNull(LeafPolicy::checkTree($tree, $keys, self::RULES), $label);
+        }
+
+        $badValues = [
+            'no prefix'           => 'Section',
+            'prefix lower case'   => "wpmgr \u{00B7} Section",
+            'prefix upper case'   => "WPMGR \u{00B7} Section",
+            'hyphen for the dot'  => 'WPMgr - Section',
+            'no spaces'           => "WPMgr\u{00B7}Section",
+            'no-break space'      => "WPMgr\u{00A0}\u{00B7} Section",
+            'character reference' => 'WPMgr &#183; Section',
+            'prefix only'         => "WPMgr \u{00B7} ",
+            'two spaces'          => "WPMgr \u{00B7}  Section",
+            'trailing space'      => "WPMgr \u{00B7} Section ",
+            'trailing newline'    => "WPMgr \u{00B7} Section\n",
+            'digit first'         => "WPMgr \u{00B7} 2nd",
+            'markup'              => "WPMgr \u{00B7} <b>Section</b>",
+            'quote'               => "WPMgr \u{00B7} Section\"",
+            '41 characters'       => "WPMgr \u{00B7} " . str_repeat('ab', 20) . 'c',
+            'integer'             => 7,
+            'list'                => [self::SECTION],
+            'empty list'          => [],
+        ];
+        foreach ($badValues as $name => $value) {
+            $this->assertSame(
+                ['code' => 'leaf_unsafe', 'detail' => 'elements[0].settings._title: ' . self::NOT_LABEL],
+                LeafPolicy::checkTree([$this->container('s1', ['_title' => $value], [])], $keys, self::RULES),
+                $name
+            );
+        }
+
+        $offContainer = 'key _title is written only at the top of a container\'s settings';
+        $this->assertSame(
+            ['code' => 'adapter_key_not_allowed', 'detail' => 'elements[0].elements[0].settings: ' . $offContainer],
+            LeafPolicy::checkTree([$this->container('s1', [], [$this->widget('b1', 'button', ['text' => 'Go', '_title' => self::SECTION])])], $keys, self::RULES),
+            'a widget'
+        );
+        $this->assertSame(
+            ['code' => 'adapter_key_not_allowed', 'detail' => 'elements[0].settings: ' . $offContainer],
+            LeafPolicy::checkTree([$this->container('s1', ['width' => ['unit' => '%', '_title' => self::SECTION]], [])], $keys, self::RULES),
+            'inside a settings object'
+        );
+        $this->assertSame(
+            ['code' => 'adapter_key_not_allowed', 'detail' => 'elements[0].settings: key _title is written only in lower case'],
+            LeafPolicy::checkTree([$this->container('s1', ['_TITLE' => self::SECTION], [])], $this->ruledKeys(['container' => ['_TITLE' => 'text']]), self::RULES)
+        );
+    }
+
+    public function test_globals_stays_denied(): void
+    {
+        $this->assertContains('__globals__', LeafPolicy::DENIED_KEYS);
+
+        // An allowlist that names a binding is overruled, even on a section container that is otherwise accepted.
+        $keys    = $this->ruledKeys();
+        $section = ['_title' => self::SECTION, '_element_id' => 'pricing'];
+        $this->assertNull(LeafPolicy::checkTree([$this->container('s1', $section, [])], $keys, self::RULES));
+        $cases = [
+            'binding'     => [[$this->container('s1', $section + ['__globals__' => ['background_color' => 'globals/colors?id=primary']], [])], 'elements[0].settings'],
+            'empty map'   => [[$this->container('s1', $section + ['__globals__' => []], [])], 'elements[0].settings'],
+            'case folded' => [[$this->container('s1', $section + ['__GLOBALS__' => ['background_color' => 'globals/colors?id=primary']], [])], 'elements[0].settings'],
+            'nested'      => [[$this->container('s1', $section + ['width' => ['unit' => '%', '__globals__' => []]], [])], 'elements[0].settings'],
+            'on a widget' => [[$this->container('s1', $section, [$this->widget('h1', 'heading', ['title' => 'Hi', '__globals__' => ['title_color' => 'globals/colors?id=primary']])])], 'elements[0].elements[0].settings'],
+        ];
+        foreach ($cases as $name => [$tree, $at]) {
+            $this->assertSame(
+                ['code' => 'adapter_key_not_allowed', 'detail' => $at . ': key __globals__ is never written'],
+                LeafPolicy::checkTree($tree, $keys, self::RULES),
+                $name
             );
         }
     }
@@ -452,6 +628,35 @@ final class LeafPolicyTest extends TestCase
             LeafPolicy::checkTree($tree, self::KEYS, ['refuse_braces' => 'yes', 'forbidden' => []])
         );
         $this->assertSame('the adapter leaf rules are malformed', LeafPolicy::storedProblem('Hi', ['refuse_braces' => false, 'forbidden' => ['']]));
+    }
+
+    /**
+     * The test allowlist with the anchor, the label and a binding listed on
+     * types and paths where the policy must still refuse them, so a refusal
+     * proves the policy and not the allowlist.
+     *
+     * @param array<string, array<string, string>> $more Extra paths by type.
+     * @return array<string, array<string, string>>
+     */
+    private function ruledKeys(array $more = []): array
+    {
+        $keys               = self::KEYS;
+        $keys['container'] += [
+            '_element_id'                  => 'text',
+            '_title'                       => 'text',
+            'width._element_id'            => 'text',
+            'width._title'                 => 'text',
+            'width.__globals__'            => 'text',
+            '__globals__.background_color' => 'text',
+            '__GLOBALS__.background_color' => 'text',
+        ];
+        $keys['button']    += ['_element_id' => 'text', '_title' => 'text'];
+        $keys['heading']   += ['__globals__.title_color' => 'text'];
+        foreach ($more as $type => $paths) {
+            $keys[$type] = ($keys[$type] ?? []) + $paths;
+        }
+
+        return $keys;
     }
 
     /**
