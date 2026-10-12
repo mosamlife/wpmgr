@@ -41,6 +41,14 @@
 # whole agent path. Run it BEFORE the real check so a guard that fails open
 # cannot pass.
 #
+# plants.sh, which CI runs after the round trip, plants a defect in a render probe's tree once for each
+# plant in plants.txt and requires every run to come back red because of that plant. Against the stand-in
+# it is proven to pass plants the probes notice, on the pins and layouts the list names and no others,
+# and to fail on a plant the run passes, a plant one pin passes, a run that is red on another probe or
+# on two, a red verdict with no failing check of the probe or no red probe in its tally, a run that gives
+# no verdict or prints nothing or no boot count, a list that is missing, empty or malformed, and a run.sh
+# that is missing or cannot be run. The committed list is held to render-probes.json.
+#
 # The first group runs run.sh against a stand-in for npx and file:// pins, and
 # needs no network and no Playground. The second group boots a real WordPress
 # under the Playground CLI for Elementor 4.3.4 (a few boots), downloads what the
