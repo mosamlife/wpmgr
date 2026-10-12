@@ -125,6 +125,16 @@
       "widgets": {
         "icon-box": true
       },
+      "plants": {
+        "misspell_key": {
+          "el": "a1b0001",
+          "key": "title_color"
+        },
+        "drop_activator": {
+          "el": "a1b0001",
+          "key": "title_typography_typography"
+        }
+      },
       "html_text": [
         "Single origin",
         "Roasted weekly in small batches."

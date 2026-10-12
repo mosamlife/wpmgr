@@ -112,6 +112,16 @@
  *      media condition (a fact recorded as false); every "html_ids" id is on exactly
  *      one element, and every "html_tags" id is on an element of that tag.
  *
+ * A probe may also hold the page itself to "html_text" (texts shown), "html_has" (the elements
+ * a small selector finds: exactly "count", default one, or at least "min", and optionally one
+ * of them showing "text"), "widgets" (registered or not on this site), "fonts" (families queued
+ * for Google's font service once the post's stylesheet is enqueued), "theme" (a block theme that
+ * must be active), "render": "page" with "page": {template, settings} (the published page as a
+ * visitor gets it, with its template and page settings written as plain post meta), "since" (the
+ * Elementor release a probe applies from; on older pins it is skipped with a note and not counted)
+ * and "plants" (the element and setting key the plants misspell_key and drop_activator act on).
+ * dump=<probe> prints the stored tree and the rendered page of a probe, to write its expectations.
+ *
  * A probe must expect at least one declaration to be present (its positive control),
  * and the phase must run at least one probe on every layout, or it is red. A probe
  * that fails prints a line "FAIL [<version> <layout> probe-<name>] <check>: <why>"
@@ -194,7 +204,16 @@ const RT_PLANTS = [
     'edit_view_no_styles',
     // The render probes are handed no probe at all (use the case name "all").
     'probes_no_cases',
+    // One setting key of a probe's tree is misspelt before the tree is saved (use the probe's name): Elementor keeps the
+    // unknown key and ignores it, so the declaration the key stood for is missing from the post CSS.
+    'misspell_key',
+    // The activator of a group control is removed from a probe's tree before it is saved (use the probe's name): the
+    // group's other keys stay, and Elementor writes none of them.
+    'drop_activator',
 ];
+
+/** The plants that act on a probe's tree; each probe names its own targets in "plants". */
+const RT_PROBE_PLANTS = ['misspell_key', 'drop_activator'];
 
 const RT_NODE_LIMIT_DEPTH = 64;
 
@@ -2232,6 +2251,13 @@ function rt_probe_check_page(array $probe, string $at): void
     if (isset($probe['theme']) && (!is_string($probe['theme']) || preg_match('/^[a-z0-9-]{1,60}$/D', $probe['theme']) !== 1)) {
         rt_broken($at . ' has a "theme" that is not a theme folder name');
     }
+    foreach ($probe['plants'] ?? [] as $kind => $target) {
+        if (!in_array($kind, RT_PROBE_PLANTS, true) || !is_array($target) || array_is_list($target)
+            || !is_string($target['el'] ?? null) || preg_match('/^[a-z0-9]{1,16}$/D', $target['el']) !== 1
+            || !is_string($target['key'] ?? null) || $target['key'] === '') {
+            rt_broken($at . ' has a plant target that is not one of ' . implode(', ', RT_PROBE_PLANTS) . ' with an element id and a settings key');
+        }
+    }
     if (isset($probe['render']) && !in_array($probe['render'], ['content', 'page'], true)) {
         rt_broken($at . ' has a "render" that is neither content nor page');
     }
@@ -2247,6 +2273,67 @@ function rt_probe_check_page(array $probe, string $at): void
             rt_broken($at . ' has page settings that are not an object');
         }
     }
+}
+
+/**
+ * The settings of the node of a tree with an id, by reference, or null.
+ *
+ * @param array<mixed> $nodes
+ * @return ?array<mixed>
+ */
+function &rt_probe_node(array &$nodes, string $id)
+{
+    $none = null;
+    foreach ($nodes as &$node) {
+        if (($node['id'] ?? null) === $id) {
+            return $node;
+        }
+        if (is_array($node['elements'] ?? null)) {
+            $found = &rt_probe_node($node['elements'], $id);
+            if ($found !== null) {
+                return $found;
+            }
+        }
+    }
+
+    return $none;
+}
+
+/**
+ * Plant a defect in a probe's tree before it is saved: the setting key the probe names for the plant is
+ * misspelt (last two letters swapped) or removed. Null when it was applied, else why it could not be: a
+ * plant that changed nothing would prove nothing.
+ *
+ * @param array<mixed>        $tree
+ * @param array<string,mixed> $probe
+ */
+function rt_probe_plant(array &$tree, array $probe, string $kind): ?string
+{
+    $target = $probe['plants'][$kind] ?? null;
+    if (!is_array($target)) {
+        return 'the probe names no target for the plant ' . $kind;
+    }
+    $node = &rt_probe_node($tree, (string) $target['el']);
+    if ($node === null || !is_array($node['settings'] ?? null) || !array_key_exists($target['key'], $node['settings'])) {
+        return 'the element ' . $target['el'] . ' has no setting ' . $target['key'] . ' to plant ' . $kind . ' on';
+    }
+    $key = (string) $target['key'];
+    if ($kind === 'drop_activator') {
+        unset($node['settings'][$key]);
+
+        return null;
+    }
+    $new = substr($key, 0, -2) . substr($key, -1) . substr($key, -2, 1);
+    if ($new === $key) {
+        $new .= 'x';
+    }
+    $settings = [];
+    foreach ($node['settings'] as $k => $v) {
+        $settings[$k === $key ? $new : $k] = $v;
+    }
+    $node['settings'] = $settings;
+
+    return null;
 }
 
 /**
@@ -2504,6 +2591,12 @@ function rt_probe_phase(array $probes, string $layout, string $stored, int $prin
         }
         ++$out['probes'];
         $c   = new RtChecks();
+        foreach ($GLOBALS['rtPlants'][$probe['name']] ?? [] as $kind) {
+            if (in_array($kind, RT_PROBE_PLANTS, true)) {
+                $why = rt_probe_plant($tree, $probe, $kind);
+                $c->ck('plant', $why === null, (string) $why);
+            }
+        }
         $pid = wp_insert_post([
             'post_type'    => 'page',
             'post_status'  => 'draft',
@@ -2610,6 +2703,16 @@ function rt_probe_phase(array $probes, string $layout, string $stored, int $prin
         }
         if (is_int($pid)) {
             rt_trash($pid);
+        }
+    }
+    // A plant that names no probe would change nothing and prove nothing.
+    $known = array_column($probes, 'name');
+    foreach ($GLOBALS['rtPlants'] ?? [] as $name => $kinds) {
+        foreach ($kinds as $kind) {
+            if (in_array($kind, RT_PROBE_PLANTS, true) && !in_array((string) $name, $known, true)) {
+                ++$out['failed'];
+                rt_out(sprintf('FAIL [%s %s probe-%s] plant: no probe is named %s', ELEMENTOR_VERSION, $layout, $name, $name));
+            }
         }
     }
 

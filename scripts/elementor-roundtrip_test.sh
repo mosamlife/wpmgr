@@ -26,9 +26,16 @@
 # after tree that leaves none of the written texts on the page is red. For the
 # render probes it proves the check goes red on a probe whose expected declaration
 # is edited, whose absent declaration is there, or whose id or tag is not on the
-# page, on a probe file that cannot be used and on a phase handed no probe. It also
+# page, on a probe file that cannot be used and on a phase handed no probe; for the
+# pattern and page-frame probes, on a link without its nofollow, an accordion without
+# its FAQ schema, a widget registered when the probe says it is not, a selector the
+# harness cannot read, another theme or font family than the page has, and the
+# opposite of a recorded false fact; and for the plants that act on a probe's tree,
+# on a misspelt setting key, a group control without its activator, a plant that
+# names no probe and a plant whose target is not in the tree. It also
 # proves what it must NOT block: an honest run, a probe whose second alternative
-# holds, a cached download, a run of one
+# holds, a probe that applies from a later release (skipped out loud), a plant that
+# leaves every other probe green, a cached download, a run of one
 # version or one layout out of several, a blueprint that sets some other site
 # option, and, in the planted run, every case that carries no plant and the
 # whole agent path. Run it BEFORE the real check so a guard that fails open
@@ -699,6 +706,26 @@ set-text-every-field render-link"
     probe_expect "frame_font_red: a Google family the page does not use is not found queued" 1 "$tmp/probes-frame-font"
     said "  and it names the family and what is queued" "font: no stylesheet for the family Lobster is queued for Google's font service (queued: "
     said "  and the family the page does use was queued all the same" "Poppins"
+  fi
+  # The plants that act on a probe's tree: a misspelt setting key, and a group control that loses its activator. Each is
+  # applied to the probe that names its target, must turn that probe red on the declarations it stood for, and must leave
+  # every other probe green; a plant that names no probe is red, since it would change nothing.
+  expect "plant_misspell_red: a misspelt setting key turns the real round trip red" 1 "${real_c[@]}" "RT_PLANT=plant=misspell_key@pattern-icon-box"
+  said "  and the red check is the colour the key stood for, on its own probe" "rt: FAIL [4.3.4 containers probe-pattern-icon-box] css: css[1] element a1b0001 .elementor-icon-box-title: want color:#2B1D16 (has no color)"
+  fail_n="$(printf '%s\n' "$LAST_OUT" | grep -c '^rt: FAIL ' || true)"
+  if [ "$fail_n" = 1 ]; then ok "  and nothing else is red"; else bad "  $fail_n failure line(s), wanted exactly the probe's"; fi
+  said "  and the summary counts the one red probe" "probes_failed=1"
+  not_said "  and the plant was applied" "] plant:"
+  expect "plant_activator_red: a group control that loses its activator turns the real round trip red" 1 "${real_c[@]}" "RT_PLANT=plant=drop_activator@pattern-icon-box"
+  said "  and the red check is the group's declarations, on its own probe" "rt: FAIL [4.3.4 containers probe-pattern-icon-box] css: css[1] element a1b0001 .elementor-icon-box-title: want font-size:22px (has no font-size); font-weight:600 (has no font-weight)"
+  not_said "  and the colour, which the group does not own, is still there" "want color:#2B1D16"
+  fail_n="$(printf '%s\n' "$LAST_OUT" | grep -c '^rt: FAIL ' || true)"
+  if [ "$fail_n" = 1 ]; then ok "  and nothing else is red"; else bad "  $fail_n failure line(s), wanted exactly the probe's"; fi
+  expect "a plant that names no probe is red" 1 "${real_c[@]}" "RT_PLANT=plant=misspell_key@no-such-probe"
+  said "  and it says so" "plant: no probe is named no-such-probe"
+  if pattern_case "$tmp/probes-plant-target" "point the plant at a setting the element does not have" pattern-icon-box 'p.plants.misspell_key.key = "no_such_setting";'; then
+    RT_PLANT="plant=misspell_key@pattern-icon-box" probe_expect "a plant whose target is not in the tree is red, not a pass" 1 "$tmp/probes-plant-target"
+    said "  and it says the element has no such setting" "plant: the element a1b0001 has no setting no_such_setting to plant misspell_key on"
   fi
   # What it must NOT block: a probe that applies from a later release is skipped, out loud, and is not counted as run.
   if pattern_case "$tmp/probes-since" "make the nested accordion apply from a later release" pattern-accordion-nested 'p.since = "9.9.9";'; then
