@@ -90,8 +90,8 @@ final class OutlineV3CasesTest extends TestCase
     ];
 
     /** Floors that keep the run from passing by judging next to nothing. */
-    private const MIN_ROWS_RUN         = 37;
-    private const MIN_REFUSED_ROWS_RUN = 26;
+    private const MIN_ROWS_RUN         = 39;
+    private const MIN_REFUSED_ROWS_RUN = 28;
 
     // -------------------------------------------------------------------------
     // The rows
