@@ -40,6 +40,11 @@ if (!defined('ABSPATH')) {
  * The same request, input and site give the same bytes, so the write's
  * re-check matches the approved precheck.
  *
+ * An outline version 3 page is built from containers. precheck() refuses it
+ * with containers_required, before anything is built, when the site builds
+ * sections and columns or cannot say; a plain outline is built there as it
+ * always was.
+ *
  * An outline version 3 page also has a page frame (pageFrame()), stored as
  * the page template ElementorDocument::pageTemplate() names. precheck()
  * refuses page_template_unavailable when the site does not offer that
@@ -163,6 +168,12 @@ final class BuilderPageCreate
         if (!is_string($version) || $version === '') {
             return self::refusedPrecheck(AdapterStatus::CODE, 'version_unverified');
         }
+        // A designed page (outline version 3) is built from containers; a site
+        // that builds sections and columns, or cannot say, is refused before
+        // anything is built.
+        if (($spec['outline_version'] ?? null) === OutlineV3Schema::VERSION && ($facts['containers'] ?? null) !== true) {
+            return self::refusedEnvelope(self::containersRequired());
+        }
         $frame    = self::pageFrame($spec);
         $template = is_string($frame) ? ElementorDocument::pageTemplate($frame) : null;
         if ($frame === false || (is_string($frame) && $template === null)) {
@@ -263,6 +274,20 @@ final class BuilderPageCreate
             'doc'              => $doc,
             'title'            => $storedTitle,
         ];
+    }
+
+    /**
+     * The refusal of a designed page on a site that builds sections and columns.
+     *
+     * @return array{code:string,detail:string,failures:list<array<string,mixed>>}
+     */
+    private static function containersRequired(): array
+    {
+        return Refusal::make(ElementorClassicMapper::CODE_CONTAINERS_REQUIRED, 'A designed page needs Elementor containers, and this site builds sections and columns.', [[
+            'path'   => 'input',
+            'key'    => 'outline_version',
+            'reason' => 'a designed page needs Elementor containers; turn on the Container feature in Elementor, or send a plain outline without outline_version',
+        ]]);
     }
 
     /**

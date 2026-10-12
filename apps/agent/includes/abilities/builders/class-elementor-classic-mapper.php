@@ -58,6 +58,11 @@ if (!defined('ABSPATH')) {
  * and changes one text with setText(), which writes the same bytes create
  * writes for that text.
  *
+ * Design-carrying nodes (DESIGN_NODES: a section and a pattern) are built from
+ * containers. A site that builds sections and columns refuses each with
+ * CODE_CONTAINERS_REQUIRED, naming the node's path, and a plain outline is
+ * built there as it always was.
+ *
  * Pure: no WordPress write. The only WordPress function reached is the HTML
  * sanitiser, through LeafPolicy.
  */
@@ -129,6 +134,12 @@ final class ElementorClassicMapper
         'refuse_braces' => false,
         'forbidden'     => ['[elementor-tag'],
     ];
+
+    /** The refusal of a design-carrying node on a site that builds sections and columns. */
+    public const CODE_CONTAINERS_REQUIRED = 'containers_required';
+
+    /** The outline node types that carry a design, which only containers can hold. */
+    public const DESIGN_NODES = ['section', 'pattern'];
 
     /** Label key of an element holding dynamic content, code or attributes. */
     public const LABEL_DYNAMIC = 'wpmgr:dynamic';
@@ -719,6 +730,9 @@ final class ElementorClassicMapper
     private function leaf(array $node, string $path): ?array
     {
         $type = $node['type'] ?? null;
+        if (in_array($type, self::DESIGN_NODES, true) && !$this->designAllowed($path, 'a ' . $type)) {
+            return null;
+        }
         switch ($type) {
             case 'heading':
                 $level = $node['level'] ?? null;
@@ -779,6 +793,24 @@ final class ElementorClassicMapper
         }
 
         return $this->fail('bad_input', $path . ': not a known node type');
+    }
+
+    /**
+     * Whether a design-carrying node may be built here. A site that builds
+     * sections and columns may not, and the refusal is recorded.
+     *
+     * @param string $path Its outline path.
+     * @param string $what What it is, for the refusal.
+     * @return bool
+     */
+    private function designAllowed(string $path, string $what): bool
+    {
+        if ($this->containers) {
+            return true;
+        }
+        $this->fail(self::CODE_CONTAINERS_REQUIRED, $path . ': ' . $what . ' needs Elementor containers, and this site builds sections and columns');
+
+        return false;
     }
 
     /**
