@@ -220,19 +220,33 @@ final class ElementorSectionCompiler
      */
     public function row(string $id, array $columns): array
     {
-        $gap      = $this->tokens->rowGap();
         $settings = ['flex_direction' => 'row'];
         if ($this->isActive('mobile')) {
             $settings['flex_direction_mobile'] = 'column';
         }
-        $settings['flex_gap'] = self::gaps($gap['desktop']);
+
+        return self::inner($id, $settings + $this->gapSettings(), $columns);
+    }
+
+    /**
+     * The design's row gap as container settings: flex_gap at the desktop step,
+     * the same across and down, then flex_gap_tablet and flex_gap_mobile, each
+     * written only when the site has that breakpoint active. A row and a
+     * pattern's wrapping row take their spacing from it.
+     *
+     * @return array<string,array{column:string,row:string,isLinked:bool,unit:string}>
+     */
+    public function gapSettings(): array
+    {
+        $gap      = $this->tokens->rowGap();
+        $settings = ['flex_gap' => self::gaps($gap['desktop'])];
         foreach (['tablet', 'mobile'] as $breakpoint) {
             if ($this->isActive($breakpoint)) {
                 $settings['flex_gap_' . $breakpoint] = self::gaps($gap[$breakpoint]);
             }
         }
 
-        return self::inner($id, $settings, $columns);
+        return $settings;
     }
 
     /**

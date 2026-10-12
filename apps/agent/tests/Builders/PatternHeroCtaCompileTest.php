@@ -198,22 +198,18 @@ final class PatternHeroCtaCompileTest extends TestCase
     }
 
     /**
-     * The key sets a page that holds patterns is checked against: the mapper's,
-     * then the leaf styles', then the row keys the mapper's list does not carry
-     * yet, then the patterns'. A set never narrows the pin of a key an earlier
-     * one lists.
+     * The mapper's allowed keys with the leaf styles' added: a leaf's style may
+     * widen a pin (a centred heading), a container's never narrows a section's.
      *
      * @param array<string,array<string,string>> $keys Allowed keys.
      * @return array<string,array<string,string>>
      */
     private static function withLeafStyle(array $keys): array
     {
-        $rows = ['container' => ['flex_gap' => 'gaps', 'flex_gap_tablet' => 'gaps', 'flex_gap_mobile' => 'gaps', 'width' => 'slider:%', 'width_mobile' => 'slider:%']];
         foreach (ElementorLeafStyle::KEYS as $type => $paths) {
             // A leaf's style widens its pins (a centred heading); a container's must not narrow a section's.
             $keys[$type] = $type === 'container' ? ($keys[$type] ?? []) + $paths : array_merge($keys[$type] ?? [], $paths);
         }
-        $keys['container'] += $rows['container'];
 
         return $keys;
     }
