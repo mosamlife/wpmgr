@@ -289,6 +289,29 @@ final class OutlineV3Schema
     }
 
     /**
+     * The schema of one item of an item pattern, as the input schema publishes
+     * it; null for a pattern that holds children (hero, cta) and for a name
+     * that is no pattern.
+     *
+     * @param string $pattern Pattern name.
+     * @return array<string,mixed>|null
+     */
+    public static function itemSchema(string $pattern): ?array
+    {
+        $array = self::PATTERN_ARRAY[$pattern] ?? null;
+        if ($array === null) {
+            return null;
+        }
+        foreach (self::patterns([]) as $node) {
+            if (($node['properties']['pattern']['enum'][0] ?? null) === $pattern) {
+                return $node['properties'][$array]['items'];
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * What set_text may name in `field`: a plain field of the node, or a
      * pattern path.
      *
