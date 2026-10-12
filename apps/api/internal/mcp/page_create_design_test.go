@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -320,5 +321,322 @@ func TestDesignContrastLowNamesPair(t *testing.T) {
 		if fails := designContrastFailures(designColours{}); len(fails) != 0 {
 			t.Errorf("empty colours are judged: %+v", fails)
 		}
+	})
+}
+
+// specDesignJSON is the design example of the spec (elementor.md 2.3).
+const specDesignJSON = `{"colors": {"ground": "#F6F5F2", "surface": "#FFFFFF", "ink": "#15171C", "muted": "#5A606C", "accent": "#0D7A63", "on_accent": "#FFFFFF"},
+ "fonts": {"heading": "Manrope", "body": "Source Sans 3"}, "scale": {"base_px": 17, "ratio": 1.25},
+ "radius": "md", "density": "normal"}`
+
+// specDesign is what the validator makes of it.
+var specDesign = pageDesign{
+	Colors:  designColours{Ground: "#F6F5F2", Surface: "#FFFFFF", Ink: "#15171C", Muted: "#5A606C", Accent: "#0D7A63", OnAccent: "#FFFFFF"},
+	Fonts:   designFonts{Heading: "Manrope", Body: "Source Sans 3"},
+	Scale:   designScale{BasePx: 17, Ratio: 1.25},
+	Radius:  "md",
+	Density: "normal",
+}
+
+// designChange replaces one field of the spec design with raw JSON, or
+// removes it when raw is empty. path is "design" for a field of the design
+// itself and "design.<group>" for a field of a group; a key with no group
+// path names a whole group ("design", "fonts").
+type designChange struct{ path, key, raw string }
+
+func designEdit(t *testing.T, changes ...designChange) json.RawMessage {
+	t.Helper()
+	var top map[string]any
+	if err := json.Unmarshal([]byte(specDesignJSON), &top); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range changes {
+		target := top
+		if group := strings.TrimPrefix(strings.TrimPrefix(c.path, "design"), "."); group != "" {
+			target = top[group].(map[string]any)
+		}
+		if c.raw == "" {
+			delete(target, c.key)
+		} else {
+			target[c.key] = json.RawMessage(c.raw)
+		}
+	}
+	b, err := json.Marshal(top)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// designLeaves are the twelve fields a design must hold, as path and key.
+var designLeaves = []struct{ path, key string }{
+	{"design.colors", "ground"}, {"design.colors", "surface"}, {"design.colors", "ink"},
+	{"design.colors", "muted"}, {"design.colors", "accent"}, {"design.colors", "on_accent"},
+	{"design.fonts", "heading"}, {"design.fonts", "body"},
+	{"design.scale", "base_px"}, {"design.scale", "ratio"},
+	{"design", "radius"}, {"design", "density"},
+}
+
+func TestDesignNotReady(t *testing.T) {
+	t.Run("the spec example is ready, and marshals as the spec writes it", func(t *testing.T) {
+		got, problem := validatePageDesign(json.RawMessage(specDesignJSON))
+		if problem != nil {
+			t.Fatalf("the spec example is refused: %+v", problem)
+		}
+		if got != specDesign {
+			t.Errorf("got %+v, want %+v", got, specDesign)
+		}
+		b, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `{"colors":{"ground":"#F6F5F2","surface":"#FFFFFF","ink":"#15171C","muted":"#5A606C","accent":"#0D7A63","on_accent":"#FFFFFF"},` +
+			`"fonts":{"heading":"Manrope","body":"Source Sans 3"},"scale":{"base_px":17,"ratio":1.25},"radius":"md","density":"normal"}`
+		if string(b) != want {
+			t.Errorf("marshalled %s, want %s", b, want)
+		}
+	})
+
+	t.Run("every field left out makes the design not ready", func(t *testing.T) {
+		for _, l := range designLeaves {
+			got, problem := validatePageDesign(designEdit(t, designChange{path: l.path, key: l.key}))
+			if problem == nil || problem.Code != pageDesignNotReady || len(problem.Failures) != 1 {
+				t.Errorf("without %s.%s: %+v, want one design_not_ready failure", l.path, l.key, problem)
+				continue
+			}
+			if f := problem.Failures[0]; f.Path != l.path || f.Key != l.key || f.code != pageDesignNotReady || f.Reason == "" {
+				t.Errorf("without %s.%s: failure %+v", l.path, l.key, f)
+			}
+			if got != (pageDesign{}) {
+				t.Errorf("without %s.%s: a refused design returned %+v", l.path, l.key, got)
+			}
+		}
+	})
+
+	t.Run("a group left out is one failure", func(t *testing.T) {
+		for _, group := range []string{"colors", "fonts", "scale"} {
+			_, problem := validatePageDesign(designEdit(t, designChange{path: "design", key: group}))
+			if problem == nil || problem.Code != pageDesignNotReady || len(problem.Failures) != 1 ||
+				problem.Failures[0].Path != "design" || problem.Failures[0].Key != group || len(problem.Failures[0].Allowed) == 0 {
+				t.Errorf("without %s: %+v, want one design_not_ready failure naming what the group holds", group, problem)
+			}
+		}
+	})
+
+	t.Run("an empty design lists every part, in the spec's order", func(t *testing.T) {
+		_, problem := validatePageDesign(json.RawMessage(`{}`))
+		if problem == nil || problem.Code != pageDesignNotReady {
+			t.Fatalf("got %+v", problem)
+		}
+		var keys []string
+		for _, f := range problem.Failures {
+			if f.Path != "design" || f.code != pageDesignNotReady {
+				t.Errorf("failure %+v", f)
+			}
+			keys = append(keys, f.Key)
+		}
+		if strings.Join(keys, ",") != "colors,fonts,scale,radius,density" {
+			t.Errorf("failures at %q, want colors,fonts,scale,radius,density", keys)
+		}
+	})
+
+	t.Run("no design at all is not ready", func(t *testing.T) {
+		for _, raw := range []json.RawMessage{nil, {}} {
+			_, problem := validatePageDesign(raw)
+			if problem == nil || problem.Code != pageDesignNotReady || len(problem.Failures) != 1 ||
+				problem.Failures[0].Path != "" || problem.Failures[0].Key != "design" {
+				t.Errorf("absent design %q: %+v, want one design_not_ready failure at design", raw, problem)
+			}
+		}
+	})
+
+	t.Run("a design that is not an object is bad input, not missing", func(t *testing.T) {
+		for _, raw := range []string{`"md"`, `[]`, `null`, `7`, `true`} {
+			_, problem := validatePageDesign(json.RawMessage(raw))
+			if problem == nil || problem.Code != pageCreateBadInput || len(problem.Failures) != 1 ||
+				problem.Failures[0].Key != "design" || len(problem.Failures[0].Allowed) != 5 {
+				t.Errorf("design %s: %+v, want one bad_input failure at design", raw, problem)
+			}
+		}
+	})
+
+	t.Run("a field that is there but null is wrong, not missing", func(t *testing.T) {
+		for _, l := range designLeaves {
+			_, problem := validatePageDesign(designEdit(t, designChange{path: l.path, key: l.key, raw: "null"}))
+			if problem == nil || problem.Code != pageCreateBadInput || len(problem.Failures) != 1 ||
+				problem.Failures[0].Path != l.path || problem.Failures[0].Key != l.key {
+				t.Errorf("%s.%s null: %+v, want one bad_input failure", l.path, l.key, problem)
+			}
+		}
+		for _, group := range []string{"colors", "fonts", "scale"} {
+			_, problem := validatePageDesign(designEdit(t, designChange{path: "design", key: group, raw: "null"}))
+			if problem == nil || problem.Code != pageCreateBadInput || len(problem.Failures) != 1 || problem.Failures[0].Key != group {
+				t.Errorf("%s null: %+v, want one bad_input failure", group, problem)
+			}
+		}
+	})
+
+	t.Run("the code is the first failure's, in the spec's order", func(t *testing.T) {
+		for _, c := range []struct {
+			name    string
+			changes []designChange
+			code    string
+			keys    string
+		}{
+			{"radius wrong, density left out", []designChange{{"design", "radius", `"round"`}, {"design", "density", ""}},
+				pageCreateBadInput, "radius,density"},
+			{"fonts.body left out, density wrong", []designChange{{"design.fonts", "body", ""}, {"design", "density", `"dense"`}},
+				pageDesignNotReady, "body,density"},
+			{"low contrast, radius left out", []designChange{{"design.colors", "ground", `"#6E6E6E"`}, {"design", "radius", ""}},
+				pageDesignContrastLow, "ink,radius"},
+			{"low contrast, ratio wrong", []designChange{{"design.colors", "surface", `"#4A4A4A"`}, {"design.scale", "ratio", `"x"`}},
+				pageDesignContrastLow, "ink,ratio"},
+			{"colour wrong, contrast would also fail", []designChange{{"design.colors", "ink", `"#000000"`}, {"design.colors", "ground", `"#111111"`}},
+				pageCreateBadInput, "ink"},
+		} {
+			_, problem := validatePageDesign(designEdit(t, c.changes...))
+			if problem == nil {
+				t.Errorf("%s: accepted", c.name)
+				continue
+			}
+			var keys []string
+			for _, f := range problem.Failures {
+				keys = append(keys, f.Key)
+			}
+			if problem.Code != c.code || strings.Join(keys, ",") != c.keys {
+				t.Errorf("%s: code %s on %q, want %s on %q", c.name, problem.Code, keys, c.code, c.keys)
+			}
+		}
+	})
+}
+
+func TestDesignFontsScaleRadiusDensity(t *testing.T) {
+	refused := func(t *testing.T, path, key, raw string) {
+		t.Helper()
+		got, problem := validatePageDesign(designEdit(t, designChange{path: path, key: key, raw: raw}))
+		if problem == nil || problem.Code != pageCreateBadInput || len(problem.Failures) != 1 {
+			t.Errorf("%s.%s = %s: %+v, want one bad_input failure", path, key, raw, problem)
+			return
+		}
+		if f := problem.Failures[0]; f.Path != path || f.Key != key || f.Reason == "" {
+			t.Errorf("%s.%s = %s: failure %+v", path, key, raw, f)
+		}
+		if got != (pageDesign{}) {
+			t.Errorf("%s.%s = %s: a refused design returned %+v", path, key, raw, got)
+		}
+	}
+	accepted := func(t *testing.T, path, key, raw string) pageDesign {
+		t.Helper()
+		got, problem := validatePageDesign(designEdit(t, designChange{path: path, key: key, raw: raw}))
+		if problem != nil {
+			t.Errorf("%s.%s = %s is refused: %+v", path, key, raw, problem)
+		}
+		return got
+	}
+
+	t.Run("a font family is 1 to 60 letters, digits and spaces, or system", func(t *testing.T) {
+		for _, key := range []string{"heading", "body"} {
+			for _, name := range []string{"Manrope", "Source Sans 3", "system", "A", "Noto Sans 400", strings.Repeat("a", 60)} {
+				got := accepted(t, "design.fonts", key, `"`+name+`"`)
+				if (key == "heading" && got.Fonts.Heading != name) || (key == "body" && got.Fonts.Body != name) {
+					t.Errorf("%s %q came back as %+v", key, name, got.Fonts)
+				}
+			}
+			for _, raw := range []string{
+				`""`, `"` + strings.Repeat("a", 61) + `"`, `"Manrope;"`, `"Manrope\n"`, `"Manrope\t"`, `"Man\"rope"`, `"a/b"`,
+				`"Source Sans 3 (var)"`, `"Ünicode"`, `"<b>"`, `"font-family"`, `"Playfair_Display"`, `"Mañana"`, `"Manrope\u0000"`,
+				`"body { color: red }"`, `7`, `null`, `true`, `[]`, `{}`,
+			} {
+				refused(t, "design.fonts", key, raw)
+			}
+		}
+	})
+
+	t.Run("a font key that is not heading or body is refused with both", func(t *testing.T) {
+		_, problem := validatePageDesign(designEdit(t, designChange{path: "design.fonts", key: "mono", raw: `"Fira Code"`}))
+		if problem == nil || len(problem.Failures) != 1 || problem.Failures[0].Key != "mono" ||
+			strings.Join(problem.Failures[0].Allowed, ",") != "heading,body" {
+			t.Errorf("got %+v", problem)
+		}
+	})
+
+	t.Run("base_px is a whole number from 15 to 20", func(t *testing.T) {
+		for _, n := range []string{"15", "16", "17", "18", "19", "20"} {
+			want, _ := strconv.ParseInt(n, 10, 64)
+			if got := accepted(t, "design.scale", "base_px", n); got.Scale.BasePx != want {
+				t.Errorf("base_px %s came back as %+v", n, got.Scale)
+			}
+		}
+		for _, raw := range []string{"14", "21", "0", "-17", "17.5", "17.0", "1.7e1", `"17"`, "null", "true", "[17]", "99999999999999999999"} {
+			refused(t, "design.scale", "base_px", raw)
+		}
+	})
+
+	t.Run("ratio is a number from 1.125 to 1.333", func(t *testing.T) {
+		for _, n := range []string{"1.125", "1.15", "1.2", "1.25", "1.3", "1.333"} {
+			got := accepted(t, "design.scale", "ratio", n)
+			want, _ := strconv.ParseFloat(n, 64)
+			if got.Scale.Ratio != want {
+				t.Errorf("ratio %s came back as %v", n, got.Scale.Ratio)
+			}
+		}
+		for _, raw := range []string{"1.124", "1.1249999", "1.334", "1.3331", "1", "0", "-1.25", "2", "1e0", `"1.25"`, "null", "true", "[1.25]", "1e999"} {
+			refused(t, "design.scale", "ratio", raw)
+		}
+	})
+
+	t.Run("a scale key that is not base_px or ratio is refused with both", func(t *testing.T) {
+		_, problem := validatePageDesign(designEdit(t, designChange{path: "design.scale", key: "steps", raw: "5"}))
+		if problem == nil || len(problem.Failures) != 1 || problem.Failures[0].Key != "steps" ||
+			strings.Join(problem.Failures[0].Allowed, ",") != "base_px,ratio" {
+			t.Errorf("got %+v", problem)
+		}
+	})
+
+	t.Run("radius is none, sm, md or lg", func(t *testing.T) {
+		for _, v := range []string{"none", "sm", "md", "lg"} {
+			if got := accepted(t, "design", "radius", `"`+v+`"`); got.Radius != v {
+				t.Errorf("radius %s came back as %q", v, got.Radius)
+			}
+		}
+		for _, raw := range []string{`"xl"`, `""`, `"MD"`, `"md "`, `"medium"`, "1", "null", `["md"]`} {
+			refused(t, "design", "radius", raw)
+		}
+		_, problem := validatePageDesign(designEdit(t, designChange{path: "design", key: "radius", raw: `"xl"`}))
+		if problem == nil || strings.Join(problem.Failures[0].Allowed, ",") != "none,sm,md,lg" {
+			t.Errorf("a refused radius does not list the values: %+v", problem)
+		}
+	})
+
+	t.Run("density is compact, normal or airy", func(t *testing.T) {
+		for _, v := range []string{"compact", "normal", "airy"} {
+			if got := accepted(t, "design", "density", `"`+v+`"`); got.Density != v {
+				t.Errorf("density %s came back as %q", v, got.Density)
+			}
+		}
+		for _, raw := range []string{`"dense"`, `"Normal"`, `""`, `"airy "`, "0", "null", `["airy"]`} {
+			refused(t, "design", "density", raw)
+		}
+		_, problem := validatePageDesign(designEdit(t, designChange{path: "design", key: "density", raw: `"dense"`}))
+		if problem == nil || strings.Join(problem.Failures[0].Allowed, ",") != "compact,normal,airy" {
+			t.Errorf("a refused density does not list the values: %+v", problem)
+		}
+	})
+
+	t.Run("a key the design does not have is refused with the five it has", func(t *testing.T) {
+		_, problem := validatePageDesign(designEdit(t, designChange{path: "design", key: "shadows", raw: `{}`}))
+		if problem == nil || problem.Code != pageCreateBadInput || len(problem.Failures) != 1 ||
+			problem.Failures[0].Path != "design" || problem.Failures[0].Key != "shadows" ||
+			strings.Join(problem.Failures[0].Allowed, ",") != "colors,fonts,scale,radius,density" {
+			t.Errorf("got %+v", problem)
+		}
+	})
+
+	t.Run("colours are checked on the way through, and come back upper case", func(t *testing.T) {
+		got := accepted(t, "design.colors", "accent", `"#0d7a63"`)
+		if got.Colors.Accent != "#0D7A63" {
+			t.Errorf("accent came back as %q", got.Colors.Accent)
+		}
+		refused(t, "design.colors", "ink", `"#000000"`)
 	})
 }

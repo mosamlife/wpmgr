@@ -597,6 +597,19 @@ func jsonIntOf(raw []byte) (int64, bool) {
 	return n, true
 }
 
+// jsonNumberOf reads a JSON number of any shape (a fraction and an exponent
+// are allowed) that fits a float64.
+func jsonNumberOf(raw []byte) (float64, bool) {
+	if c := jsonLeadByte(raw); c != '-' && (c < '0' || c > '9') {
+		return 0, false
+	}
+	var n float64
+	if json.Unmarshal(raw, &n) != nil {
+		return 0, false
+	}
+	return n, true
+}
+
 func jsonBoolOf(raw []byte) (bool, bool) {
 	switch strings.TrimSpace(string(raw)) {
 	case "true":
@@ -1136,20 +1149,10 @@ var designColourPattern = regexp.MustCompile(`^#[0-9A-F]{6}$`)
 // and then unknown keys; a role that failed is left empty in the result.
 func parseDesignColours(raw json.RawMessage) (designColours, []designFailure) {
 	var out designColours
-	if len(raw) == 0 {
-		return out, []designFailure{{
-			Path: "design", Key: "colors", code: pageDesignNotReady,
-			Reason: "missing; a design needs all six colours", Allowed: slices.Clone(designColourRoles),
-		}}
+	obj, fails := designGroupObject(raw, "colors", designColourRoles, "the six colours")
+	if fails != nil {
+		return out, fails
 	}
-	obj, ok := jsonObjectOf(raw)
-	if !ok {
-		return out, []designFailure{{
-			Path: "design", Key: "colors", code: pageCreateBadInput,
-			Reason: "must be an object holding the six colours", Allowed: slices.Clone(designColourRoles),
-		}}
-	}
-	var fails []designFailure
 	for _, role := range designColourRoles {
 		v, has := obj[role]
 		if !has {
@@ -1298,4 +1301,218 @@ func designContrastFailures(c designColours) []designFailure {
 		})
 	}
 	return fails
+}
+
+// designFonts are the two font families of a design.
+type designFonts struct {
+	Heading string `json:"heading"`
+	Body    string `json:"body"`
+}
+
+// designScale is the type scale of a design.
+type designScale struct {
+	BasePx int64   `json:"base_px"`
+	Ratio  float64 `json:"ratio"`
+}
+
+// pageDesign is a design object that passed every check, its colours upper
+// case. It marshals as the spec writes the object.
+type pageDesign struct {
+	Colors  designColours `json:"colors"`
+	Fonts   designFonts   `json:"fonts"`
+	Scale   designScale   `json:"scale"`
+	Radius  string        `json:"radius"`
+	Density string        `json:"density"`
+}
+
+// designProblem is why a design was refused: the refusal code and every
+// failure found.
+type designProblem struct {
+	Code     string          `json:"code"`
+	Failures []designFailure `json:"failures"`
+}
+
+// The design's own keys and closed sets, in the order failures are reported.
+var (
+	designTopKeys   = []string{"colors", "fonts", "scale", "radius", "density"}
+	designFontKeys  = []string{"heading", "body"}
+	designScaleKeys = []string{"base_px", "ratio"}
+	designRadii     = []string{"none", "sm", "md", "lg"}
+	designDensities = []string{"compact", "normal", "airy"}
+)
+
+const (
+	// designFontSystem as a family means "set no family".
+	designFontSystem = "system"
+	designBasePxMin  = 15
+	designBasePxMax  = 20
+	designRatioMin   = 1.125
+	designRatioMax   = 1.333
+)
+
+// designFontPattern is the closed set a font family name comes from: it is
+// all the control plane lets through, and the agent checks the name against
+// Elementor's registry. Go's $ matches at the end of the text only.
+var designFontPattern = regexp.MustCompile(`^[A-Za-z0-9 ]{1,60}$`)
+
+// validatePageDesign checks a design object as page-create and page-edit
+// send it (elementor.md 2.3), before any agent call. raw is the value of the
+// input's "design" key, empty when the key is absent.
+//
+// The design is ready only when every field is present, so a field left out
+// is design_not_ready; a field that is there with a value it may not hold is
+// the grammar's bad_input; two colours too close are design_contrast_low.
+// Every failure is collected, in the spec's order (colours, then fonts,
+// scale, radius, density, then keys the design does not have), and the
+// problem's code is the first failure's. A refused design returns the zero
+// pageDesign. Nothing in raw is rewritten: the colours of the result are the
+// upper-case form of what was sent.
+func validatePageDesign(raw json.RawMessage) (pageDesign, *designProblem) {
+	if len(raw) == 0 {
+		return pageDesign{}, newDesignProblem(designFailure{
+			Key: "design", code: pageDesignNotReady, Allowed: slices.Clone(designTopKeys),
+			Reason: "missing; send the whole design: colors, fonts, scale, radius and density",
+		})
+	}
+	obj, ok := jsonObjectOf(raw)
+	if !ok {
+		return pageDesign{}, newDesignProblem(designFailure{
+			Key: "design", code: pageCreateBadInput, Allowed: slices.Clone(designTopKeys),
+			Reason: "must be an object holding colors, fonts, scale, radius and density",
+		})
+	}
+	var d pageDesign
+	var fails, more []designFailure
+	d.Colors, more = parseDesignColours(obj["colors"])
+	fails = append(fails, more...)
+	d.Fonts, more = parseDesignFonts(obj["fonts"])
+	fails = append(fails, more...)
+	d.Scale, more = parseDesignScale(obj["scale"])
+	fails = append(fails, more...)
+	d.Radius, more = designChoice(obj, "radius", designRadii)
+	fails = append(fails, more...)
+	d.Density, more = designChoice(obj, "density", designDensities)
+	fails = append(fails, more...)
+	fails = append(fails, designUnknownKeys("design", obj, designTopKeys)...)
+	if len(fails) > 0 {
+		return pageDesign{}, newDesignProblem(fails...)
+	}
+	return d, nil
+}
+
+// newDesignProblem is the problem for these failures, coded as the first.
+func newDesignProblem(fails ...designFailure) *designProblem {
+	return &designProblem{Code: fails[0].code, Failures: fails}
+}
+
+// designGroupObject reads one of the design's nested objects (colors, fonts
+// or scale). raw is empty when the key is absent: the design is not ready.
+// A value that is not an object is bad input. Either way the failures are
+// returned and the object is not; what says what the object holds.
+func designGroupObject(raw json.RawMessage, key string, keys []string, what string) (map[string]json.RawMessage, []designFailure) {
+	if len(raw) == 0 {
+		return nil, []designFailure{{
+			Path: "design", Key: key, code: pageDesignNotReady, Allowed: slices.Clone(keys),
+			Reason: "missing; a design needs " + what,
+		}}
+	}
+	obj, ok := jsonObjectOf(raw)
+	if !ok {
+		return nil, []designFailure{{
+			Path: "design", Key: key, code: pageCreateBadInput, Allowed: slices.Clone(keys),
+			Reason: "must be an object holding " + what,
+		}}
+	}
+	return obj, nil
+}
+
+// parseDesignFonts reads the two font families. A family is a name of 1 to
+// 60 letters, digits and spaces, or system.
+func parseDesignFonts(raw json.RawMessage) (designFonts, []designFailure) {
+	var out designFonts
+	obj, fails := designGroupObject(raw, "fonts", designFontKeys, "a heading font and a body font")
+	if fails != nil {
+		return out, fails
+	}
+	for _, key := range designFontKeys {
+		v, has := obj[key]
+		if !has {
+			fails = append(fails, designFailure{
+				Path: "design.fonts", Key: key, code: pageDesignNotReady,
+				Reason: "missing; set it to a font family name, or " + designFontSystem + " to set no family",
+			})
+			continue
+		}
+		name, ok := jsonStringOf(v)
+		if !ok || !designFontPattern.MatchString(name) {
+			fails = append(fails, designFailure{
+				Path: "design.fonts", Key: key, code: pageCreateBadInput,
+				Reason: "must be a font family name of 1 to 60 letters, digits and spaces, or " + designFontSystem + " to set no family",
+			})
+			continue
+		}
+		switch key {
+		case "heading":
+			out.Heading = name
+		case "body":
+			out.Body = name
+		}
+	}
+	return out, append(fails, designUnknownKeys("design.fonts", obj, designFontKeys)...)
+}
+
+// parseDesignScale reads the type scale: base_px a whole number from 15 to
+// 20 and ratio a number from 1.125 to 1.333.
+func parseDesignScale(raw json.RawMessage) (designScale, []designFailure) {
+	var out designScale
+	obj, fails := designGroupObject(raw, "scale", designScaleKeys, "a base size and a ratio")
+	if fails != nil {
+		return out, fails
+	}
+	if v, has := obj["base_px"]; !has {
+		fails = append(fails, designFailure{
+			Path: "design.scale", Key: "base_px", code: pageDesignNotReady,
+			Reason: fmt.Sprintf("missing; set it to a whole number from %d to %d", designBasePxMin, designBasePxMax),
+		})
+	} else if n, ok := jsonIntOf(v); !ok || n < designBasePxMin || n > designBasePxMax {
+		fails = append(fails, designFailure{
+			Path: "design.scale", Key: "base_px", code: pageCreateBadInput,
+			Reason: fmt.Sprintf("must be a whole number from %d to %d", designBasePxMin, designBasePxMax),
+		})
+	} else {
+		out.BasePx = n
+	}
+	if v, has := obj["ratio"]; !has {
+		fails = append(fails, designFailure{
+			Path: "design.scale", Key: "ratio", code: pageDesignNotReady,
+			Reason: fmt.Sprintf("missing; set it to a number from %g to %g", designRatioMin, designRatioMax),
+		})
+	} else if r, ok := jsonNumberOf(v); !ok || r < designRatioMin || r > designRatioMax {
+		fails = append(fails, designFailure{
+			Path: "design.scale", Key: "ratio", code: pageCreateBadInput,
+			Reason: fmt.Sprintf("must be a number from %g to %g", designRatioMin, designRatioMax),
+		})
+	} else {
+		out.Ratio = r
+	}
+	return out, append(fails, designUnknownKeys("design.scale", obj, designScaleKeys)...)
+}
+
+// designChoice reads a field of the design that holds one of a closed set of
+// strings (radius, density).
+func designChoice(obj map[string]json.RawMessage, key string, allowed []string) (string, []designFailure) {
+	raw, has := obj[key]
+	if !has {
+		return "", []designFailure{{
+			Path: "design", Key: key, code: pageDesignNotReady, Allowed: slices.Clone(allowed),
+			Reason: "missing; set it to one of the listed values",
+		}}
+	}
+	if s, ok := jsonStringOf(raw); ok && slices.Contains(allowed, s) {
+		return s, nil
+	}
+	return "", []designFailure{{
+		Path: "design", Key: key, code: pageCreateBadInput, Allowed: slices.Clone(allowed),
+		Reason: "must be one of the listed values",
+	}}
 }
