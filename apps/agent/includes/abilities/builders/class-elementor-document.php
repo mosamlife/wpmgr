@@ -41,7 +41,12 @@ if (!defined('ABSPATH')) {
  *   the save prints is discarded and the numeric locale is put back whatever
  *   the save does. A throw is builder_crashed, any answer but true is
  *   builder_save_refused, a kit change or a write outside the scope is
- *   side_effect_detected.
+ *   side_effect_detected. A save that stored the page then regenerates the
+ *   page's CSS once, inside the same scope (refreshCaches()), so the writes
+ *   of that regeneration are held to the scope too.
+ * - refreshCaches() makes the page's CSS again once and checks the stylesheet
+ *   file where Elementor serves one. A stylesheet that was not regenerated is
+ *   the warning css_not_regenerated, never a refusal: the page is stored.
  * - verifyCreated() reads the stored rows back with SQL and requires the
  *   whole stored tree to equal the built one, and the page template the
  *   insert wrote, when it wrote one, to be the post's one template row.
@@ -85,6 +90,16 @@ final class ElementorDocument
 
     /** Refusal: the site does not offer a page frame's template for the post type. */
     public const CODE_TEMPLATE_UNAVAILABLE = 'page_template_unavailable';
+
+    /** Warning: the page's stylesheet was not regenerated, so the page may print stale styles until Elementor makes it again. */
+    public const WARNING_CSS_NOT_REGENERATED = 'css_not_regenerated';
+
+    /**
+     * Seconds a stylesheet file's modification time may trail the start of
+     * the write and still count as written by it: file systems keep the time
+     * to the second, and some to two.
+     */
+    public const MTIME_SLACK_SECONDS = 2;
 
     /**
      * The page template each page frame is stored as; "" is the theme's own
@@ -515,12 +530,16 @@ final class ElementorDocument
      * Save $tree on the post through Elementor's document save.
      *
      * "scope" is the write scope's outcome, its revision_ids being the
-     * revisions this save made; null when the save was not reached.
+     * revisions this save made; null when the save was not reached. A save
+     * that stored the page regenerates the page's CSS once before the scope
+     * is disarmed; "warnings" is present, and lists what refreshCaches()
+     * reported, only when it reported something. Nothing in it refuses the
+     * save.
      *
      * @param int          $postId Target post, checked by targetProblem().
      * @param array<mixed> $tree   Element tree, checked by precheckTree().
      * @param int          $kitId  The active kit's post id; 0 when there is none.
-     * @return array{ok: bool, code?: string, detail?: string, scope: array<string, mixed>|null}
+     * @return array{ok: bool, code?: string, detail?: string, scope: array<string, mixed>|null, warnings?: list<array{code: string, detail: string}>}
      */
     public function save(int $postId, array $tree, int $kitId): array
     {
@@ -535,14 +554,23 @@ final class ElementorDocument
             return ['ok' => false, 'code' => self::CODE_REFUSED, 'detail' => 'the active kit could not be read', 'scope' => null];
         }
 
-        $scope   = new AbilityWriteScope($postId, $this->saveOptionPatterns(), self::saveOptionChecks());
-        $locale  = setlocale(LC_NUMERIC, '0');
-        $level   = ob_get_level();
-        $saved   = null;
-        $crashed = false;
+        $scope    = new AbilityWriteScope($postId, $this->saveOptionPatterns(), self::saveOptionChecks());
+        $locale   = setlocale(LC_NUMERIC, '0');
+        $level    = ob_get_level();
+        $since    = time();
+        $saved    = null;
+        $crashed  = false;
+        $warnings = [];
         ob_start();
         try {
-            $saved = $scope->run(static fn () => $save(['elements' => $tree]));
+            $saved = $scope->run(function () use ($save, $tree, $postId, $since, &$warnings) {
+                $stored = $save(['elements' => $tree]);
+                if ($stored === true) {
+                    $warnings = $this->refreshCaches($postId, $since);
+                }
+
+                return $stored;
+            });
         } catch (\Throwable $e) {
             $crashed = true;
         } finally {
@@ -571,7 +599,94 @@ final class ElementorDocument
             return ['ok' => false, 'code' => self::CODE_REFUSED, 'detail' => 'Elementor did not save the page', 'scope' => $outcome];
         }
 
-        return ['ok' => true, 'scope' => $outcome];
+        return $warnings === [] ? ['ok' => true, 'scope' => $outcome] : ['ok' => true, 'scope' => $outcome, 'warnings' => $warnings];
+    }
+
+    /**
+     * The warnings of a save's answer, each with a code and a detail, or none.
+     * An entry of any other shape is dropped, so a caller puts nothing it did
+     * not read into a result.
+     *
+     * @param array<string, mixed> $saved What save() answered.
+     * @return list<array{code: string, detail: string}>
+     */
+    public static function warningsOf(array $saved): array
+    {
+        $listed = $saved['warnings'] ?? null;
+        if (!is_array($listed)) {
+            return [];
+        }
+        $warnings = [];
+        foreach ($listed as $warning) {
+            if (is_array($warning) && is_string($warning['code'] ?? null) && is_string($warning['detail'] ?? null)) {
+                $warnings[] = ['code' => $warning['code'], 'detail' => $warning['detail']];
+            }
+        }
+
+        return $warnings;
+    }
+
+    /**
+     * Make the page's CSS again, once, after its tree was stored, and check
+     * the stylesheet where Elementor serves one as a file.
+     *
+     * $since is the time the write began. When the regenerated stylesheet is
+     * a file, that file must exist and have been modified no earlier than
+     * $since less MTIME_SLACK_SECONDS; a stylesheet printed in the page, or
+     * none because the page has nothing to style, has no file to look at.
+     * Elementor's site-wide clear is never asked for.
+     *
+     * Every answer is a warning, never a refusal, and no warning quotes the
+     * site: Elementor cannot regenerate (or throws), reports a file stylesheet
+     * with no path, or the file is missing, not a file, or older than the
+     * write. Never throws.
+     *
+     * @param int $postId The stored page.
+     * @param int $since  Unix time the write began.
+     * @return list<array{code: string, detail: string}> Empty when the stylesheet is as it should be.
+     */
+    public function refreshCaches(int $postId, int $since): array
+    {
+        $warnings = [];
+        $problem  = $this->cssProblem($postId, $since);
+        if ($problem !== null) {
+            $warnings[] = ['code' => self::WARNING_CSS_NOT_REGENERATED, 'detail' => $problem];
+        }
+
+        return $warnings;
+    }
+
+    /**
+     * Why the page's stylesheet cannot be taken as regenerated, or null.
+     *
+     * @param int $postId The stored page.
+     * @param int $since  Unix time the write began.
+     * @return string|null
+     */
+    private function cssProblem(int $postId, int $since): ?string
+    {
+        try {
+            $css = $this->api->regeneratePostCss($postId);
+        } catch (\Throwable $e) {
+            return 'Elementor failed while making the page\'s stylesheet again';
+        }
+        if ($css === null) {
+            return 'Elementor could not make the page\'s stylesheet again';
+        }
+        if ($css['status'] !== 'file') {
+            return null;
+        }
+        $path = $css['path'];
+        if ($path === '') {
+            return 'the page\'s stylesheet file could not be located';
+        }
+        clearstatcache(true, $path);
+        $modified = is_file($path) ? filemtime($path) : false;
+        if ($modified === false) {
+            return 'the page\'s stylesheet file was not written';
+        }
+
+        return $modified >= $since - self::MTIME_SLACK_SECONDS ? null : 'the page\'s stylesheet file is older than the write';
     }
 
     /**

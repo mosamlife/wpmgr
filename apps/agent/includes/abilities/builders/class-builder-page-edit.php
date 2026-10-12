@@ -640,6 +640,12 @@ final class BuilderPageEdit
             'preview_digest'  => $plan['preview_digest'],
             'changes_applied' => count($plan['changes']),
         ];
+        // A stylesheet that was not regenerated does not undo the edit; the
+        // person is told.
+        $warnings = ElementorDocument::warningsOf($saved);
+        if ($warnings !== []) {
+            $result['warnings'] = $warnings;
+        }
         $recorded = $ledgerUpdate([
             'phase'            => 'completed',
             'after_fp'         => $afterFp,

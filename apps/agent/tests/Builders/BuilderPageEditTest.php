@@ -228,6 +228,18 @@ final class BuilderPageEditTest extends TestCase
         $this->assertSame([], $this->wpdb->claims, 'the target claim is released');
     }
 
+    public function test_a_stylesheet_that_was_not_regenerated_is_a_warning_on_an_applied_edit(): void
+    {
+        $this->api->regenerated = ['status' => 'file', 'path' => sys_get_temp_dir() . '/wpmgr-no-such-dir/post-41.css'];
+
+        $r = $this->approvedWrite($this->input(self::ops()));
+
+        $this->assertSame([true, 'applied'], [$r['ok'] ?? null, $r['outcome'] ?? null], (string) json_encode($r));
+        $this->assertSame(['css_not_regenerated'], array_column($r['warnings'] ?? [], 'code'));
+        $this->assertSame([[self::TARGET]], $this->api->callsTo('regeneratePostCss'), 'regenerated once');
+        $this->assertSame([], $this->api->callsTo('deletePostCss'), 'nothing was put back');
+    }
+
     public function test_snapshot_before_any_effect(): void
     {
         $input = $this->input(self::ops());

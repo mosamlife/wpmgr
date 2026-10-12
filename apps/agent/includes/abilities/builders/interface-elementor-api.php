@@ -140,4 +140,23 @@ interface ElementorApi
      * @return bool
      */
     public function deletePostCss(int $postId): bool;
+
+    /**
+     * Make a post's CSS again through a new post CSS object of Elementor's
+     * own, which writes the stylesheet file and the post's CSS meta, then ask
+     * that object what it left.
+     *
+     * "status" is the status of the post's CSS meta: "file" when the
+     * stylesheet is served as a file, "inline" when it is printed in the page,
+     * "empty" when the page has nothing to style. "path" is the file Elementor
+     * writes a "file" stylesheet to, or "" when it cannot be had.
+     *
+     * Null when the answer cannot be had: the post id is not positive,
+     * Elementor is not loaded or has no post CSS class, Elementor throws, or
+     * its object does not report a status.
+     *
+     * @param int $postId Post id.
+     * @return array{status: string, path: string}|null
+     */
+    public function regeneratePostCss(int $postId): ?array;
 }

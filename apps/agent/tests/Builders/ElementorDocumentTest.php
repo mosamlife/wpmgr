@@ -68,6 +68,9 @@ final class ElementorDocumentTest extends TestCase
     /** @var string|false */
     private $locale = false;
 
+    /** @var list<string> Directories made for stylesheets, removed after each test. */
+    private array $cssDirs = [];
+
     protected function set_up(): void
     {
         parent::set_up();
@@ -123,6 +126,13 @@ final class ElementorDocumentTest extends TestCase
 
     protected function tear_down(): void
     {
+        foreach ($this->cssDirs as $dir) {
+            foreach (glob($dir . '/*') ?: [] as $file) {
+                unlink($file);
+            }
+            rmdir($dir);
+        }
+        $this->cssDirs = [];
         if (is_string($this->locale)) {
             setlocale(LC_NUMERIC, $this->locale);
         }
@@ -639,6 +649,115 @@ final class ElementorDocumentTest extends TestCase
         $this->assertSame([], $this->hooks, 'nothing left installed after the save');
     }
 
+    public function testCssRegeneratedOnceElseWarns(): void
+    {
+        $document = $this->api->addDocument(self::TARGET);
+        $doc      = new ElementorDocument($this->api);
+        $path     = $this->cssDir() . '/post-' . self::TARGET . '.css';
+
+        // label => [what regenerate answers, the file before, what the regeneration does, whether it warns]
+        $cases = [
+            'a stylesheet written by the regeneration' => [['status' => 'file', 'path' => $path], null, fn () => self::writeCss($path, time()), false],
+            'a stylesheet written a moment ahead'      => [['status' => 'file', 'path' => $path], null, fn () => self::writeCss($path, time() + 5), false],
+            'a page with nothing to style'             => [['status' => 'empty', 'path' => $path], null, null, false],
+            'styles printed in the page'               => [['status' => 'inline', 'path' => $path], null, null, false],
+            'no file where one was asked for'          => [['status' => 'file', 'path' => $path], null, null, true],
+            'a file older than the write'              => [['status' => 'file', 'path' => $path], time() - 3600, null, true],
+            'a file ten seconds older'                 => [['status' => 'file', 'path' => $path], time() - 10, null, true],
+            'a file one second older (coarse clocks)'  => [['status' => 'file', 'path' => $path], time() - 1, null, false],
+            'a file mode with no path to look at'      => [['status' => 'file', 'path' => ''], null, null, true],
+            'a path that is a directory'               => [['status' => 'file', 'path' => dirname($path)], null, null, true],
+            'a regeneration Elementor cannot give'     => [null, null, null, true],
+            'a regeneration that throws'               => [['status' => 'file', 'path' => $path], null, static function (): void {
+                throw new \RuntimeException('Elementor failed');
+            }, true],
+        ];
+        foreach ($cases as $why => [$answer, $before, $during, $warns]) {
+            @unlink($path);
+            clearstatcache();
+            if ($before !== null) {
+                self::writeCss($path, $before);
+            }
+            $this->api->calls        = [];
+            $this->api->regenerated  = $answer;
+            $this->api->onRegenerate = $during === null ? null : static function () use ($during): void {
+                $during();
+            };
+
+            $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+
+            $this->assertTrue($result['ok'], $why . ': the write still succeeds: ' . json_encode($result));
+            $this->assertSame([[self::TARGET]], $this->api->callsTo('regeneratePostCss'), $why . ': regenerated once, for the page');
+            if ($warns) {
+                $this->assertSame(['css_not_regenerated'], array_column($result['warnings'] ?? [], 'code'), $why);
+                $this->assertNotSame('', $result['warnings'][0]['detail'] ?? '', $why . ': the warning says why');
+            } else {
+                $this->assertArrayNotHasKey('warnings', $result, $why);
+            }
+        }
+
+        // A save that did not store the page regenerates nothing.
+        $this->api->regenerated  = ['status' => 'file', 'path' => $path];
+        $this->api->onRegenerate = null;
+        $this->api->calls        = [];
+        $document->onSave        = static fn (): bool => false;
+        $this->assertSame('builder_save_refused', $doc->save(self::TARGET, self::tree(), self::KIT)['code'] ?? null);
+        $document->onSave = static function (): bool {
+            throw new \RuntimeException('Elementor failed');
+        };
+        $this->assertSame('builder_crashed', $doc->save(self::TARGET, self::tree(), self::KIT)['code'] ?? null);
+        $this->assertSame([], $this->api->callsTo('regeneratePostCss'), 'a refused or crashed save regenerates nothing');
+    }
+
+    public function testRegenerationWritesAreTheSavesOwnAndOtherWritesTrip(): void
+    {
+        $this->api->addDocument(self::TARGET);
+        $doc    = new ElementorDocument($this->api);
+        $name   = self::CACHE . 'local';
+        $other  = ['state' => true, 'meta' => '6ac9bb9c3d4e5'];
+        $before = ['state' => false, 'children' => [self::OTHER => $other]];
+        $own    = ['state' => false, 'children' => [self::OTHER => $other, self::TARGET => self::viewedEntry()]];
+        $theirs = ['state' => false, 'children' => [self::OTHER => ['state' => false], self::TARGET => self::viewedEntry()]];
+
+        $admitted = [
+            'the page\'s own CSS row, added'    => fn () => $this->fire('added_post_meta', 700, self::TARGET, '_elementor_css', ['status' => 'file']),
+            'the page\'s own CSS row, updated'  => fn () => $this->fire('updated_post_meta', 701, self::TARGET, '_elementor_css', ['status' => 'file']),
+            'the page\'s own style-cache entry' => fn () => $this->fire('updated_option', $name, $before, $own),
+        ];
+        foreach ($admitted as $why => $write) {
+            $this->api->onRegenerate = static function () use ($write): void {
+                $write();
+            };
+            $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+            $this->assertSame([true, []], [$result['ok'], $result['scope']['violations'] ?? null], $why . ': ' . json_encode($result));
+            $this->assertSame([], $this->hooks, $why . ': nothing left installed');
+        }
+
+        $tripped = [
+            'another post\'s CSS row'               => [fn () => $this->fire('updated_post_meta', 702, self::OTHER, '_elementor_css', ['status' => 'file']), 'other_post_meta_written'],
+            'another post\'s style-cache entry'     => [fn () => $this->fire('updated_option', $name, $before, $theirs), 'option_written'],
+            'an option the save has no pattern for' => [fn () => $this->fire('updated_option', 'elementor_unrelated_setting', 'a', 'b'), 'option_written'],
+            'a term change'                         => [fn () => $this->fire('set_object_terms', self::TARGET, [], [5], 'category', false, []), 'term_changed'],
+        ];
+        foreach ($tripped as $why => [$write, $violation]) {
+            $this->api->onRegenerate = static function () use ($write): void {
+                $write();
+            };
+            $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+            $this->assertSame(['side_effect_detected', [$violation]], [$result['code'] ?? null, $result['scope']['violations'] ?? null], $why . ': ' . json_encode($result));
+            $this->assertSame([], $this->hooks, $why . ': nothing left installed');
+        }
+
+        // The regeneration runs inside the scope, and the scope is gone after it.
+        $armed                   = [];
+        $this->api->onRegenerate = function () use (&$armed): void {
+            $armed = array_column($this->hooks, 0);
+        };
+        $doc->save(self::TARGET, self::tree(), self::KIT);
+        $this->assertContains('added_post_meta', $armed, 'armed while the stylesheet is regenerated');
+        $this->assertSame([], $this->hooks);
+    }
+
     /**
      * The golden containers tree for two columns.
      *
@@ -691,6 +810,28 @@ final class ElementorDocumentTest extends TestCase
         }
         $this->wpdb->addMeta(2, self::KIT, '_elementor_page_settings', 'a:1:{s:13:"system_colors";a:0:{}}');
         $this->wpdb->addMeta(3, self::KIT, '_elementor_data', '[]');
+    }
+
+    /**
+     * A directory for stylesheets, removed after the test.
+     */
+    private function cssDir(): string
+    {
+        $dir = sys_get_temp_dir() . '/wpmgr-css-' . bin2hex(random_bytes(6));
+        mkdir($dir, 0700);
+        $this->cssDirs[] = $dir;
+
+        return $dir;
+    }
+
+    /**
+     * A stylesheet with the given modification time.
+     */
+    private static function writeCss(string $path, int $mtime): void
+    {
+        file_put_contents($path, '.elementor-41 .elementor-element{color:#123456}');
+        touch($path, $mtime);
+        clearstatcache();
     }
 
     /**

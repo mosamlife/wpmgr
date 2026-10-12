@@ -421,6 +421,12 @@ final class BuilderPageCreate
             'after_fp'          => $afterFp,
             'verify'            => ['tree_equal' => true, 'status' => 'draft'],
         ];
+        // A stylesheet that was not regenerated does not undo the page; the
+        // person is told.
+        $warnings = ElementorDocument::warningsOf($saved);
+        if ($warnings !== []) {
+            $result['warnings'] = $warnings;
+        }
         // Undo checks a builder draft against this record: the fingerprint
         // its save left and the revisions that save made. A draft without
         // the record could never be undone, so it is not left behind.

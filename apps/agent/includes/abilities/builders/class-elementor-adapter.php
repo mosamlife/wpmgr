@@ -308,12 +308,17 @@ final class ElementorAdapter implements BuilderAdapter
      * local styles in every context through Elementor's style-clear action,
      * on the path Elementor clears when a post is published or deleted. The
      * derived meta rows are already gone. Never Elementor's site-wide clear.
+     * Last, the post's CSS is made again once from the rows that are back
+     * (ElementorDocument::refreshCaches()); a stylesheet that cannot be
+     * confirmed is not reported, since a restore returns no result to carry
+     * it, and Elementor makes it again when the page is next shown.
      */
     public function afterRestore(int $postId): void
     {
         if ($postId < 1) {
             return;
         }
+        $since = time();
         $this->api->deletePostCss($postId);
         try {
             do_action('elementor/atomic-widgets/styles/clear', [self::STYLES_KEY_LOCAL, $postId]); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- firing Elementor's documented per-post style invalidation; not a custom hook
@@ -321,5 +326,6 @@ final class ElementorAdapter implements BuilderAdapter
             // Elementor rebuilds the styles on the post's next save.
             unset($e);
         }
+        $this->document->refreshCaches($postId, $since);
     }
 }

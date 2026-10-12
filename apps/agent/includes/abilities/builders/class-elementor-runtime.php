@@ -19,8 +19,9 @@ if (!defined('ABSPATH')) {
  * autoloaded is Elementor's fonts class, which Elementor loads on first use:
  * it is asked for only once the main plugin instance is found. Every call is
  * guarded, and anything Elementor throws becomes that answer (null, false or
- * 0); no method throws. The one write is deletePostCss(), which asks Elementor
- * to delete one post's generated CSS.
+ * 0); no method throws. The writes are deletePostCss(), which asks Elementor
+ * to delete one post's generated CSS, and regeneratePostCss(), which asks it
+ * to make that CSS again.
  */
 final class ElementorRuntime implements ElementorApi
 {
@@ -59,12 +60,14 @@ final class ElementorRuntime implements ElementorApi
      * @param string $utilsClass      Tests only: stands in for Elementor's utility class. Production passes none.
      * @param string $versionConstant Tests only: stands in for Elementor's version constant. Production passes none.
      * @param string $fontsClass      Tests only: stands in for Elementor's fonts class. Production passes none.
+     * @param string $postCssClass    Tests only: stands in for Elementor's post CSS class. Production passes none.
      */
     public function __construct(
         private readonly string $pluginClass = self::PLUGIN_CLASS,
         private readonly string $utilsClass = self::UTILS_CLASS,
         private readonly string $versionConstant = self::VERSION_CONSTANT,
-        private readonly string $fontsClass = self::FONTS_CLASS
+        private readonly string $fontsClass = self::FONTS_CLASS,
+        private readonly string $postCssClass = self::POST_CSS_CLASS
     ) {
     }
 
@@ -325,6 +328,52 @@ final class ElementorRuntime implements ElementorApi
         }
 
         return true;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * A new post CSS object, from the class's own create(), so what an earlier
+     * render of the post in this request left in Elementor's per-request
+     * file objects is never written again. Its update() writes the
+     * stylesheet file and the CSS meta; its meta then says whether the
+     * stylesheet is a file, and its get_path() says where.
+     */
+    public function regeneratePostCss(int $postId): ?array
+    {
+        if ($postId <= 0) {
+            return null;
+        }
+        try {
+            if ($this->plugin() === null) {
+                return null;
+            }
+            $create = [$this->postCssClass, 'create'];
+            if (!is_callable($create)) {
+                return null;
+            }
+            $file = $create($postId);
+            if (!is_object($file)) {
+                return null;
+            }
+            $update  = [$file, 'update'];
+            $getMeta = [$file, 'get_meta'];
+            $getPath = [$file, 'get_path'];
+            if (!is_callable($update) || !is_callable($getMeta)) {
+                return null;
+            }
+            $update();
+            $meta = $getMeta();
+            $path = is_callable($getPath) ? $getPath() : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+        $status = is_array($meta) ? ($meta['status'] ?? null) : null;
+        if (!is_string($status) || $status === '') {
+            return null;
+        }
+
+        return ['status' => $status, 'path' => is_string($path) ? $path : ''];
     }
 
     /**

@@ -562,6 +562,24 @@ final class BuilderPageCreateTest extends TestCase
         ], array_diff_key($this->ledgerRow, ['created_post_id' => 1]));
     }
 
+    public function test_a_stylesheet_that_was_not_regenerated_is_a_warning_on_a_created_draft(): void
+    {
+        [$outline, , $request] = self::golden(self::CONTAINERS, 'columns');
+        $spec                  = self::spec($outline);
+        $built                 = $this->precheck($spec, $request);
+        $this->elementorSaves();
+        $this->api->regenerated = ['status' => 'file', 'path' => sys_get_temp_dir() . '/wpmgr-no-such-dir/post-41.css'];
+
+        $result = $this->write($spec, $request, $built);
+
+        $this->assertTrue($result['ok'] ?? null, (string) json_encode($result));
+        $this->assertSame('created', $result['outcome'] ?? null);
+        $this->assertSame(['css_not_regenerated'], array_column($result['warnings'] ?? [], 'code'));
+        $this->assertSame('draft', $this->rows[self::NEW_ID]['post_status'], 'the draft is kept');
+        $this->assertSame($result, $this->ledgerRow['result'], 'the recorded result carries the warning');
+        $this->assertSame([[self::NEW_ID]], $this->api->callsTo('regeneratePostCss'), 'regenerated once');
+    }
+
     public function test_revert_guard_allows_own_revisions_only(): void
     {
         $row = $this->createdDraft();

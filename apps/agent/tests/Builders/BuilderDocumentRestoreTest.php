@@ -613,6 +613,23 @@ final class BuilderDocumentRestoreTest extends TestCase
         $this->assertSame([], $this->trace);
     }
 
+    public function test_elementor_after_restore_regenerates_the_post_css_once_after_dropping_it(): void
+    {
+        $this->adapter->afterRestore(self::POST_ID);
+        $order = array_column(array_filter($this->api->calls, static fn (array $c): bool => in_array($c[0], ['deletePostCss', 'regeneratePostCss'], true)), 0);
+        $this->assertSame(['deletePostCss', 'regeneratePostCss'], $order, 'dropped, then made again');
+        $this->assertSame([[self::POST_ID]], $this->api->callsTo('regeneratePostCss'));
+
+        // Not a post: nothing regenerated.
+        $this->adapter->afterRestore(0);
+        $this->assertSame([[self::POST_ID]], $this->api->callsTo('regeneratePostCss'));
+
+        // An Elementor that cannot regenerate leaves the restore as it was.
+        $this->api->regenerated = null;
+        $this->adapter->afterRestore(self::POST_ID);
+        $this->assertCount(2, $this->api->callsTo('regeneratePostCss'));
+    }
+
     public function test_elementor_after_restore_survives_a_throwing_listener(): void
     {
         Monkey\tearDown();

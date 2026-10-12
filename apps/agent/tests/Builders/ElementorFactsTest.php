@@ -509,6 +509,75 @@ final class ElementorFactsTest extends TestCase
         $this->assertFalse($runtime->deletePostCss(41));
     }
 
+    public function test_runtime_regenerates_post_css_on_a_fresh_post_css_object(): void
+    {
+        ElementorPostCssStandIn::reset();
+        $plugin                           = new ElementorPluginStandIn();
+        ElementorPluginStandIn::$instance = $plugin;
+        $runtime                          = $this->postCssRuntime();
+
+        // A new object for the post, regenerated once, then asked what it left.
+        $this->assertSame(['status' => 'file', 'path' => '/uploads/elementor/css/post-41.css'], $runtime->regeneratePostCss(41));
+        $this->assertSame(['create:41', 'update:41', 'meta:41', 'path:41'], ElementorPostCssStandIn::$events);
+
+        // Another regeneration builds another object, so nothing rendered earlier in the request is written again.
+        ElementorPostCssStandIn::$events = [];
+        $runtime->regeneratePostCss(41);
+        $this->assertSame(['create:41', 'update:41', 'meta:41', 'path:41'], ElementorPostCssStandIn::$events);
+
+        // A page whose stylesheet is printed in the page, or empty.
+        foreach (['inline', 'empty'] as $status) {
+            ElementorPostCssStandIn::$meta = ['status' => $status, 'time' => 5];
+            $this->assertSame(['status' => $status, 'path' => '/uploads/elementor/css/post-41.css'], $runtime->regeneratePostCss(41), $status);
+        }
+
+        // No post: Elementor is not asked.
+        ElementorPostCssStandIn::$events = [];
+        $this->assertNull($runtime->regeneratePostCss(0));
+        $this->assertNull($runtime->regeneratePostCss(-3));
+        $this->assertSame([], ElementorPostCssStandIn::$events);
+
+        // Elementor that cannot answer, or throws: null, never a throw.
+        $cannot = [
+            'update() throws'         => static function (): void {
+                ElementorPostCssStandIn::$throwIn = 'update';
+            },
+            'create() throws'         => static function (): void {
+                ElementorPostCssStandIn::$throwIn = 'create';
+            },
+            'get_meta() throws'       => static function (): void {
+                ElementorPostCssStandIn::$throwIn = 'meta';
+            },
+            'meta is not an array'    => static function (): void {
+                ElementorPostCssStandIn::$meta = 'file';
+            },
+            'meta has no status'      => static function (): void {
+                ElementorPostCssStandIn::$meta = ['time' => 5];
+            },
+            'status is not a string'  => static function (): void {
+                ElementorPostCssStandIn::$meta = ['status' => 1];
+            },
+        ];
+        foreach ($cannot as $why => $set) {
+            ElementorPostCssStandIn::reset();
+            $set();
+            $this->assertNull($runtime->regeneratePostCss(41), $why);
+        }
+
+        // A path that cannot be had is empty, so the caller cannot look at a file.
+        ElementorPostCssStandIn::reset();
+        ElementorPostCssStandIn::$path = null;
+        $this->assertSame(['status' => 'file', 'path' => ''], $runtime->regeneratePostCss(41));
+
+        // A class with no create(), and no Elementor at all.
+        ElementorPostCssStandIn::reset();
+        $this->assertNull((new ElementorRuntime(ElementorPluginStandIn::class, ElementorUtilsStandIn::class, self::VERSION_STANDIN, ElementorRuntime::FONTS_CLASS, \stdClass::class))->regeneratePostCss(41));
+        ElementorPluginStandIn::$instance = null;
+        ElementorPostCssStandIn::$events  = [];
+        $this->assertNull($runtime->regeneratePostCss(41));
+        $this->assertSame([], ElementorPostCssStandIn::$events, 'without Elementor nothing is asked');
+    }
+
     public function test_sanitiser_is_elementors_own_where_the_running_elementor_has_one(): void
     {
         // Elementor 4.x: its utility class has kses_post_deep().
@@ -789,6 +858,20 @@ final class ElementorFactsTest extends TestCase
     }
 
     /**
+     * A runtime whose post CSS class is the stand-in that records its calls.
+     *
+     * @return ElementorRuntime
+     */
+    private function postCssRuntime(): ElementorRuntime
+    {
+        if (!defined(self::VERSION_STANDIN)) {
+            define(self::VERSION_STANDIN, '3.35.9');
+        }
+
+        return new ElementorRuntime(ElementorPluginStandIn::class, ElementorUtilsStandIn::class, self::VERSION_STANDIN, ElementorRuntime::FONTS_CLASS, ElementorPostCssStandIn::class);
+    }
+
+    /**
      * A runtime over an Elementor whose utility class has no deep sanitiser,
      * as in Elementor 3.x.
      *
@@ -889,6 +972,83 @@ final class ElementorPluginStandIn
 
     /** @var object|null */
     public $breakpoints = null;
+}
+
+/**
+ * Stands in for Elementor's post CSS class: create() makes an object for a
+ * post, and every call is recorded in order.
+ */
+final class ElementorPostCssStandIn
+{
+    /** @var list<string> */
+    public static array $events = [];
+
+    /** @var mixed What get_meta() answers. */
+    public static mixed $meta = ['status' => 'file', 'time' => 5];
+
+    /** @var string|null What get_path() answers. */
+    public static ?string $path = '/uploads/elementor/css/post-41.css';
+
+    /** @var string Which call throws: create, update, meta or none. */
+    public static string $throwIn = 'none';
+
+    public function __construct(private readonly int $postId)
+    {
+    }
+
+    public static function reset(): void
+    {
+        self::$events  = [];
+        self::$meta    = ['status' => 'file', 'time' => 5];
+        self::$path    = '/uploads/elementor/css/post-41.css';
+        self::$throwIn = 'none';
+    }
+
+    /**
+     * @param int $postId Post id.
+     * @return self
+     */
+    public static function create(int $postId): self
+    {
+        self::$events[] = 'create:' . $postId;
+        if (self::$throwIn === 'create') {
+            throw new \RuntimeException('Elementor failed');
+        }
+
+        return new self($postId);
+    }
+
+    public function update(): void
+    {
+        self::$events[] = 'update:' . $this->postId;
+        if (self::$throwIn === 'update') {
+            throw new \RuntimeException('Elementor failed');
+        }
+    }
+
+    /**
+     * @param string|null $property Meta property.
+     * @return mixed
+     */
+    public function get_meta($property = null)
+    {
+        self::$events[] = 'meta:' . $this->postId;
+        if (self::$throwIn === 'meta') {
+            throw new \RuntimeException('Elementor failed');
+        }
+
+        return self::$meta;
+    }
+
+    /**
+     * @return string|null
+     */
+    public function get_path()
+    {
+        self::$events[] = 'path:' . $this->postId;
+
+        return self::$path;
+    }
 }
 
 /**
