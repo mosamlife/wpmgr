@@ -174,7 +174,7 @@ fi
 for l in "$HOME"/.wordpress-playground/*; do
   [ -L "$l" ] && echo "cache-link=$(basename "$l") -> $(readlink "$l")" >>"$out"
 done
-tail_ok="cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 probes=4 probes_failed=0"
+tail_ok="cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 designed=2 probes=4 probes_failed=0"
 good="rt: SUMMARY elementor=$ver layout=$layout $tail_ok failed=0"
 # One line per boot: the release, the layout and the plant it was handed.
 if [ -n "${FAKE_CALLS_FILE:-}" ]; then
@@ -196,7 +196,7 @@ case "${FAKE_MODE:-ok}" in
     if [ "$applies" -eq 0 ]; then echo "$good"; echo "rt: RESULT OK"; exit 0; fi
     own="rt: FAIL [$ver $layout probe-$probe] css: css[1] element a1b0001 .elementor-icon-box-title: want color:#2B1D16 (has no color)"
     other="rt: FAIL [$ver $layout probe-smoke-heading-colour] css: css[0] element 4ead001 .elementor-heading-title: want color:#123456 (has no color)"
-    red_one="cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 probes=4 probes_failed=1"
+    red_one="cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 designed=2 probes=4 probes_failed=1"
     case "$FAKE_MODE" in
       plantred) echo "$own"; echo "rt: note [$ver $layout probe-$probe] about: a stand-in"; echo "rt: SUMMARY elementor=$ver layout=$layout $red_one failed=1" ;;
       plantwrong) echo "$other"; echo "rt: SUMMARY elementor=$ver layout=$layout $red_one failed=1" ;;
@@ -219,15 +219,18 @@ case "${FAKE_MODE:-ok}" in
     fi
     echo "$good"; echo "rt: RESULT OK"; exit 0 ;;
   silent) exit 0 ;;
-  zero) echo "rt: SUMMARY elementor=$ver layout=$layout cases=0 checks=0 texts=0 alts=0 agent=2 refused=3 probes=4 probes_failed=0 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
-  zeroagent) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=0 refused=3 probes=4 probes_failed=0 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
-  norefusal) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=0 probes=4 probes_failed=0 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
+  zero) echo "rt: SUMMARY elementor=$ver layout=$layout cases=0 checks=0 texts=0 alts=0 agent=2 refused=3 designed=2 probes=4 probes_failed=0 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
+  zeroagent) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=0 refused=3 designed=2 probes=4 probes_failed=0 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
+  norefusal) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=0 designed=2 probes=4 probes_failed=0 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
+  # The designed pages: the count of pages the agent's create path made and undid (or refused for want of containers).
+  nodesigned) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 probes=4 probes_failed=0 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
+  zerodesigned) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 designed=0 probes=4 probes_failed=0 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
   # The probe verdict: the count of probes that ran, and how many of them were red.
-  noprobes) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
-  zeroprobes) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 probes=0 probes_failed=0 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
-  noprobetally) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 probes=4 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
-  probesredok) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 probes=4 probes_failed=1 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
-  probefail) echo "rt: FAIL [$ver $layout probe-smoke-heading-colour] css: no rule for element abc1234 declares color:#123456"; echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 probes=4 probes_failed=1 failed=1"; echo "rt: RESULT FAIL"; exit 1 ;;
+  noprobes) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 designed=2 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
+  zeroprobes) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 designed=2 probes=0 probes_failed=0 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
+  noprobetally) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 designed=2 probes=4 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
+  probesredok) echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 designed=2 probes=4 probes_failed=1 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
+  probefail) echo "rt: FAIL [$ver $layout probe-smoke-heading-colour] css: no rule for element abc1234 declares color:#123456"; echo "rt: SUMMARY elementor=$ver layout=$layout cases=3 checks=9 texts=2 alts=1 agent=2 refused=3 designed=2 probes=4 probes_failed=1 failed=1"; echo "rt: RESULT FAIL"; exit 1 ;;
   wronglayout) if [ "$layout" = containers ]; then other=sections; else other=containers; fi; echo "rt: SUMMARY elementor=$ver layout=$other $tail_ok failed=0"; echo "rt: RESULT OK"; exit 0 ;;
   nolayout) echo "rt: SUMMARY elementor=$ver $tail_ok failed=0"; echo "rt: RESULT OK"; exit 0 ;;
   oldsummary) echo "rt: SUMMARY elementor=$ver cases=3 checks=9 texts=2 alts=1 failed=0"; echo "rt: RESULT OK"; exit 0 ;;
@@ -395,7 +398,7 @@ expect "a timeout that is not a number is red" 2 "${offline[@]}" "RT_CACHE=$tmp/
 said "  and it says what is wrong" "RT_TIMEOUT must be"
 
 # --- must go red: a run that gives no usable verdict ------------------------------------------
-for mode in silent zero zeroagent norefusal noprobes zeroprobes noprobetally probesredok wronglayout nolayout oldsummary nosummary exit1ok okfail crash; do
+for mode in silent zero zeroagent norefusal nodesigned zerodesigned noprobes zeroprobes noprobetally probesredok wronglayout nolayout oldsummary nosummary exit1ok okfail crash; do
   expect "stand-in mode '$mode' gives no usable verdict and is red" 2 "${offline[@]}" "RT_CACHE=$tmp/c7" RT_VERSIONS=4.3.4 RT_LAYOUTS=containers "FAKE_MODE=$mode"
   said "  and it says there was no usable verdict ($mode)" "gave no usable verdict"
 done
@@ -650,6 +653,79 @@ check="$here/elementor-roundtrip/run.sh"
 # red at once, on any machine, whether or not the real round trip runs. Group 2 runs the same table.
 node_bin="$(command -v node || true)"
 [ -n "$node_bin" ] || { echo "FAIL setup: node not found (the agent mutations are applied with it)"; exit 1; }
+# The designed-page probes keep the compiler's tree shape and name rendered anchors.
+if probe_shape="$("$node_bin" -e '
+  const fs = require("fs");
+  const probes = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).probes;
+  const names = ["card-border-shadow", "logos-wrapping-row", "background-focal-top-bottom", "pattern-pricing-card", "testimonial-without-picture"];
+  const errors = [];
+  const object = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  const checkSettings = (value, at) => {
+    if (typeof value === "number") errors.push(at + ": numeric settings must be strings");
+    if (typeof value === "string" && /^#/.test(value) && !/^#[0-9A-F]{6}([0-9A-F]{2})?$/.test(value))
+      errors.push(at + ": hex colours must be upper case");
+    if (value !== null && typeof value === "object")
+      for (const [key, child] of Object.entries(value)) checkSettings(child, at + "." + key);
+  };
+  for (const name of names) {
+    const matches = probes.filter((p) => p.name === name);
+    if (matches.length !== 1) { errors.push(name + ": expected one probe"); continue; }
+    const p = matches[0], ids = new Set(), anchors = [];
+    if (typeof p.about !== "string" || p.about.trim() === "") errors.push(name + ": missing about");
+    const walk = (nodes) => {
+      if (!Array.isArray(nodes) || nodes.length === 0) { errors.push(name + ": missing containers tree"); return; }
+      for (const n of nodes) {
+        if (!/^[0-9a-f]{7}$/.test(n.id) || ids.has(n.id)) errors.push(name + ": invalid or duplicate element id " + n.id);
+        ids.add(n.id);
+        if (!object(n.settings)) errors.push(name + ": missing settings for " + n.id);
+        checkSettings(n.settings, name + "." + n.id);
+        if (n.settings?._element_id) anchors.push(n.settings._element_id);
+        if (!Array.isArray(n.elements)) errors.push(name + ": missing elements for " + n.id);
+        else if (n.elements.length) walk(n.elements);
+      }
+    };
+    walk(p.trees?.containers);
+    if (!Array.isArray(p.css) || p.css.length === 0) errors.push(name + ": missing positive CSS expectation");
+    for (const exp of p.css || []) {
+      const alternatives = exp.any || [exp.decl];
+      if (!ids.has(exp.el) || typeof exp.sel !== "string" || !(exp.media === null || typeof exp.media === "string")
+        || alternatives.length === 0 || alternatives.some((d) => !object(d) || Object.keys(d).length === 0))
+        errors.push(name + ": malformed CSS expectation");
+    }
+    if (!Array.isArray(p.html_ids) || p.html_ids.length === 0 || p.html_ids.some((id) => anchors.filter((a) => a === id).length !== 1))
+      errors.push(name + ": html_ids must name anchors in the tree");
+  }
+  if (errors.length) { console.error(errors.join("\n")); process.exit(1); }
+  console.log(names.join(", "));
+' "$here/elementor-roundtrip/render-probes.json" 2>"$tmp/probe-shape.err")"; then
+  ok "designed_probe_shape: $probe_shape"
+else
+  bad "designed_probe_shape: $(cat "$tmp/probe-shape.err")"
+fi
+
+# An empty testimonial media control keeps both empty strings and expects no picture markup.
+if "$node_bin" -e '
+  const fs = require("fs"), assert = require("assert/strict");
+  const probes = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).probes;
+  const p = probes.find((p) => p.name === "testimonial-without-picture");
+  assert.ok(p, "missing testimonial-without-picture probe");
+  const nodes = (tree) => tree.flatMap((n) => [n, ...nodes(n.elements)]);
+  const widgets = nodes(p.trees.containers).filter((n) => n.widgetType === "testimonial");
+  assert.equal(widgets.length, 1, "expected one testimonial widget");
+  const w = widgets[0];
+  assert.deepEqual(w.settings.testimonial_image, { url: "", id: "" });
+  assert.ok(p.css.some((e) => e.el === w.id && e.sel === ".elementor-testimonial-content" && e.decl?.color),
+    "missing testimonial CSS positive control");
+  assert.ok(p.html_has.some((e) => e.sel === ".elementor-testimonial-content" && e.text === w.settings.testimonial_content),
+    "missing visible testimonial text");
+  for (const sel of [".elementor-testimonial-image", "img", "picture"])
+    assert.ok(p.html_has.some((e) => e.sel === sel && e.count === 0), "missing absence expectation for " + sel);
+' "$here/elementor-roundtrip/render-probes.json" 2>"$tmp/testimonial-probe.err"; then
+  ok "testimonial_without_picture: empty media value and no picture expectations"
+else
+  bad "testimonial_without_picture: $(cat "$tmp/testimonial-probe.err")"
+fi
+
 # mutate <name> <file under includes> <old> <new> [<old> <new> ...]: each <old> must occur exactly once, and
 # each <new> must differ from it.
 mutate() {
