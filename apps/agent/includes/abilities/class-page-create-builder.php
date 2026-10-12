@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Abilities;
 
 use WPMgr\Agent\Abilities\Builders\BuilderRegistry;
+use WPMgr\Agent\Abilities\Builders\OutlineV3Schema;
 
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
@@ -556,7 +557,53 @@ final class PageCreateBuilder
      */
     public static function inputSchema(): array
     {
-        $leaves  = self::leafSchemas();
+        $leaves                = self::leafSchemas();
+        [$columns, $group]     = self::containerSchemas($leaves);
+        $leaves3               = self::leafSchemas(true);
+        [$columns3, $group3]   = self::containerSchemas($leaves3);
+        $section               = OutlineV3Schema::section($leaves3, $group3, $columns3);
+
+        return [
+            'type'                 => 'object',
+            'properties'           => [
+                'post_type' => ['type' => 'string', 'enum' => ['page', 'post']],
+                'editor'    => ['type' => 'string', 'enum' => [self::EDITOR_BLOCKS, self::EDITOR_CLASSIC, self::EDITOR_BUILDER_ELEMENTOR]],
+                'title'     => ['type' => 'string', 'minLength' => 1, 'maxLength' => self::MAX_TITLE_CHARS],
+                'outline'   => [
+                    'type'     => 'array',
+                    'minItems' => 1,
+                    'maxItems' => self::MAX_TOP_LEVEL_NODES,
+                    'items'    => ['oneOf' => array_merge($leaves, [$group, $columns, $section])],
+                ],
+                'elementor_format' => ['type' => 'string', 'enum' => self::ELEMENTOR_FORMATS],
+                'outline_version'  => OutlineV3Schema::versionSchema(),
+                'design'           => OutlineV3Schema::designSchema(),
+                'page_frame'       => OutlineV3Schema::pageFrameSchema(),
+            ],
+            'required'             => ['post_type', 'editor', 'title', 'outline'],
+            'additionalProperties' => false,
+        ];
+    }
+
+    /**
+     * The pattern nodes of outline version 3 as a page-edit outline may hold
+     * them directly: an item edit replaces a pattern node.
+     *
+     * @return list<array<string,mixed>>
+     */
+    public static function patternSchemas(): array
+    {
+        return OutlineV3Schema::patterns(self::leafSchemas(true));
+    }
+
+    /**
+     * The columns and group nodes over one set of leaves, written out in full.
+     *
+     * @param list<array<string,mixed>> $leaves Leaf schemas.
+     * @return array{0:array<string,mixed>,1:array<string,mixed>} Columns, then group.
+     */
+    private static function containerSchemas(array $leaves): array
+    {
         $columns = self::nodeSchema('columns', [
             'widths'  => [
                 'type'     => 'array',
@@ -582,23 +629,7 @@ final class PageCreateBuilder
             'children' => ['type' => 'array', 'minItems' => 1, 'maxItems' => self::MAX_CHILDREN, 'items' => ['oneOf' => array_merge($leaves, [$columns])]],
         ], ['children']);
 
-        return [
-            'type'                 => 'object',
-            'properties'           => [
-                'post_type' => ['type' => 'string', 'enum' => ['page', 'post']],
-                'editor'    => ['type' => 'string', 'enum' => [self::EDITOR_BLOCKS, self::EDITOR_CLASSIC, self::EDITOR_BUILDER_ELEMENTOR]],
-                'title'     => ['type' => 'string', 'minLength' => 1, 'maxLength' => self::MAX_TITLE_CHARS],
-                'outline'   => [
-                    'type'     => 'array',
-                    'minItems' => 1,
-                    'maxItems' => self::MAX_TOP_LEVEL_NODES,
-                    'items'    => ['oneOf' => array_merge($leaves, [$group, $columns])],
-                ],
-                'elementor_format' => ['type' => 'string', 'enum' => self::ELEMENTOR_FORMATS],
-            ],
-            'required'             => ['post_type', 'editor', 'title', 'outline'],
-            'additionalProperties' => false,
-        ];
+        return [$columns, $group];
     }
 
     /**
@@ -1352,11 +1383,14 @@ final class PageCreateBuilder
     // ---------------------------------------------------------------------
 
     /**
-     * The nine block variants.
+     * The nine block variants. Inside an outline version 3 section a heading
+     * may be level 1 (the hero's, once per page) and a button style may also
+     * be text; the grammar says where.
      *
+     * @param bool $v3 The forms a version 3 section holds.
      * @return list<array<string,mixed>>
      */
-    private static function leafSchemas(): array
+    private static function leafSchemas(bool $v3 = false): array
     {
         $text = ['type' => 'string', 'minLength' => 1, 'maxLength' => self::MAX_TEXT_CHARS];
         $cell = ['type' => 'string', 'maxLength' => self::MAX_CELL_CHARS];
@@ -1364,7 +1398,7 @@ final class PageCreateBuilder
 
         return [
             self::nodeSchema('heading', [
-                'level' => ['type' => 'integer', 'minimum' => 2, 'maximum' => 4],
+                'level' => ['type' => 'integer', 'minimum' => $v3 ? 1 : 2, 'maximum' => 4],
                 'text'  => $text,
             ], ['level', 'text']),
             self::nodeSchema('paragraph', ['text' => $text], ['text']),
@@ -1389,7 +1423,7 @@ final class PageCreateBuilder
                         'properties'           => [
                             'text'  => ['type' => 'string', 'minLength' => 1, 'maxLength' => self::MAX_BUTTON_TEXT_CHARS],
                             'url'   => ['type' => 'string', 'minLength' => 1, 'maxLength' => self::MAX_URL_BYTES],
-                            'style' => ['type' => 'string', 'enum' => ['fill', 'outline']],
+                            'style' => ['type' => 'string', 'enum' => $v3 ? ['fill', 'outline', 'text'] : ['fill', 'outline']],
                         ],
                         'required'             => ['text', 'url'],
                         'additionalProperties' => false,

@@ -115,7 +115,9 @@ final class BuilderContractFixturesTest extends TestCase
         $this->assertSame(BuilderContract::MAX_OPS, $ops['maxItems']);
 
         $outlineItems = PageCreateBuilder::inputSchema()['properties']['outline']['items'];
-        $variants     = [];
+        // An edit outline is the page-create outline, plus the version 3 pattern nodes on their own.
+        $outlineItems['oneOf'] = array_merge($outlineItems['oneOf'], PageCreateBuilder::patternSchemas());
+        $variants              = [];
         foreach ($ops['items']['oneOf'] as $variant) {
             $this->assertFalse($variant['additionalProperties']);
             $props = $variant['properties'];
@@ -133,7 +135,7 @@ final class BuilderContractFixturesTest extends TestCase
             if (isset($props['outline'])) {
                 $this->assertSame(1, $props['outline']['minItems'], $name);
                 $this->assertSame(BuilderContract::MAX_OUTLINE_PER_OP, $props['outline']['maxItems'], $name);
-                $this->assertSame($outlineItems, $props['outline']['items'], $name . ': the page-create outline grammar, unchanged');
+                $this->assertSame($outlineItems, $props['outline']['items'], $name . ': the page-create outline grammar, and the pattern nodes');
             }
             if (isset($props['position'])) {
                 $this->assertSame(['first', 'last'], $props['position']['enum']);
@@ -166,7 +168,9 @@ final class BuilderContractFixturesTest extends TestCase
         $this->assertNotEmpty($outline);
 
         $builderOnly = array_values(array_diff(BuilderContract::KINDS, $outline));
-        $this->assertSame(['section', 'column', 'locked'], $builderOnly);
+        $this->assertSame(['column', 'locked'], $builderOnly, 'section and pattern are outline kinds of version 3 as well as builder kinds');
+        $this->assertContains('section', $outline);
+        $this->assertContains('pattern', $outline);
         $this->assertSame([], array_values(array_diff($outline, BuilderContract::KINDS)), 'every outline kind is a page kind');
         $this->assertContains('group', BuilderContract::KINDS);
         $this->assertSame(BuilderContract::KINDS, array_values(array_unique(BuilderContract::KINDS)));

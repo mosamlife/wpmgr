@@ -19,6 +19,8 @@ if (!defined('ABSPATH')) {
  * wpmgr/page-edit input (exact JSON text, an object):
  *   post_id           integer, at least 1
  *   base_fingerprint  the page's builder_document_v1, 64 lowercase hex
+ *   design            optional, the design object of outline version 3; absent,
+ *                     the design of the page-create request that made the draft
  *   operations        1..25 of:
  *     {"op":"set_text","ref":REF,"field":FIELD,"text":TEXT}
  *     {"op":"insert","after":REF,"outline":OUTLINE}
@@ -29,8 +31,10 @@ if (!defined('ABSPATH')) {
  *     {"op":"move","ref":REF,"after":REF}
  *     {"op":"move","ref":REF,"before":REF}
  *   REF      a node reference read from wpmgr/page-structure, matching RE_REF
- *   FIELD    one of FIELDS; the node's own editable list decides
- *   OUTLINE  1..50 wpmgr/page-create outline nodes, the same grammar
+ *   FIELD    one of FIELDS, or a pattern path such as plans.1.price; the
+ *            node's own editable list decides
+ *   OUTLINE  1..50 wpmgr/page-create outline nodes, the same grammar, with
+ *            version 3 sections and pattern nodes as well
  *
  * An insert names exactly one anchor, and only an insert into a node takes a
  * position. Anything outside the grammar is refused, never stripped. Rules
@@ -101,11 +105,12 @@ final class BuilderContract
         'group',
         'columns',
         'section',
+        'pattern',
         'column',
         'locked',
     ];
 
-    /** The fields set_text may name. A node's editable list is a subset. */
+    /** The plain fields set_text may name. A node's editable list is a subset; a pattern also offers paths. */
     public const FIELDS = ['text', 'url', 'alt', 'caption'];
 
     /** Where an insert into a node puts the new nodes. */
@@ -120,19 +125,23 @@ final class BuilderContract
      */
     public static function pageEditInputSchema(): array
     {
-        $ref     = self::refSchema();
-        $outline = [
+        $ref   = self::refSchema();
+        $items = PageCreateBuilder::inputSchema()['properties']['outline']['items'];
+        // A page-create outline item, and a version 3 pattern node on its own:
+        // an item edit inside a pattern replaces the pattern node.
+        $items['oneOf'] = array_merge($items['oneOf'], PageCreateBuilder::patternSchemas());
+        $outline        = [
             'type'     => 'array',
             'minItems' => 1,
             'maxItems' => self::MAX_OUTLINE_PER_OP,
-            'items'    => PageCreateBuilder::inputSchema()['properties']['outline']['items'],
+            'items'    => $items,
         ];
-        $text    = ['type' => 'string', 'maxLength' => PageCreateBuilder::MAX_TEXT_CHARS];
+        $text           = ['type' => 'string', 'maxLength' => PageCreateBuilder::MAX_TEXT_CHARS];
 
         $operations = [
             self::opSchema('set_text', [
                 'ref'   => $ref,
-                'field' => ['type' => 'string', 'enum' => self::FIELDS],
+                'field' => OutlineV3Schema::editFieldSchema(self::FIELDS),
                 'text'  => $text,
             ], ['ref', 'field', 'text']),
             self::opSchema('insert', ['after' => $ref, 'outline' => $outline], ['after', 'outline']),
@@ -159,6 +168,7 @@ final class BuilderContract
                     'maxItems' => self::MAX_OPS,
                     'items'    => ['oneOf' => $operations],
                 ],
+                'design'           => OutlineV3Schema::designSchema(),
             ],
             'required'             => ['post_id', 'base_fingerprint', 'operations'],
             'additionalProperties' => false,
