@@ -370,13 +370,18 @@ func TestOutlineV3Sections(t *testing.T) {
 		v3HeadRefused(t, v3Outline(v3Sec("one", "", hero, v3Para, hero)), pageCreateLayoutInvalid)
 	})
 
-	t.Run("version 2 and page-edit do not read a section", func(t *testing.T) {
-		// A version 2 input has no section; the page-edit insert path walks
-		// nodes as a version 2 outline and keeps refusing one.
+	t.Run("version 2 does not read a section, and page-edit does", func(t *testing.T) {
+		// A version 2 input has no section. The outline a page-edit adds is
+		// read for what each node is, so it takes a section (the shared edit
+		// table's version 3 rows pin it) and still refuses one inside another.
 		v2 := v3HeadInput(map[string]string{"outline": "[" + v3Sec("intro", "", v3Para) + "]"}, "outline_version", "design")
 		v3HeadRefused(t, v2, pageCreateBadInput)
-		if _, ok := pageEditOutline(json.RawMessage("[" + v3Sec("intro", "", v3Para) + "]")); ok {
-			t.Error("pageEditOutline accepted a section")
+		if _, ok := pageEditOutline(json.RawMessage("[" + v3Sec("intro", "", v3Para) + "]")); !ok {
+			t.Error("pageEditOutline refused a section")
+		}
+		nested := v3Sec("outer", "", v3Sec("inner", "", v3Para))
+		if _, ok := pageEditOutline(json.RawMessage("[" + nested + "]")); ok {
+			t.Error("pageEditOutline accepted a section inside a section")
 		}
 	})
 }

@@ -211,6 +211,21 @@ func TestPageEditInheritsDesign(t *testing.T) {
 	})
 }
 
+// TestPageEditSectionsAreCompiledWithTheDraftsDesign: a version 3 section
+// inserted into a designed draft is sent with the draft's design; into a
+// draft without one it is not ready.
+func TestPageEditSectionsAreCompiledWithTheDraftsDesign(t *testing.T) {
+	in := editOps(opsInsertSection, "")
+	got, facts, refusal, err := inheritDesign(t, &fakeDraftCreateInputs{input: []byte(designedCreateInput)}, designSite(), in)
+	if err != nil || refusal != nil || facts.design == nil || membersOf(t, got)["design"] == nil {
+		t.Fatalf("err=%v refusal=%v design=%+v input=%s", err, refusal, facts.design, got)
+	}
+	_, _, refusal, err = inheritDesign(t, &fakeDraftCreateInputs{input: []byte(plainCreateInput)}, designSite(), in)
+	if err != nil || refusal == nil || refusalDetails(t, refusal)["code"] != pageDesignNotReady {
+		t.Fatalf("a draft without a design: err=%v refusal=%v, want design_not_ready", err, refusal)
+	}
+}
+
 // TestPageEditDesignOnTheWire: runPageEdit sends the site the input with the
 // draft's design in it, and sends a design the input carries as it is.
 func TestPageEditDesignOnTheWire(t *testing.T) {
