@@ -277,6 +277,9 @@ func (w *pageWalk) anchor(a, where string) string {
 // anchor; the target is kept and judged by resolveLinks once the whole outline
 // is read, so a section further down resolves it.
 func (w *pageWalk) linkCode(url, where string) string {
+	if w.designed && strings.Contains(url, "&") {
+		return w.refuse(pageCreateLinkInvalid, where, "url", "must not contain an ampersand")
+	}
 	if w.designed && strings.HasPrefix(url, "#") {
 		slug := url[1:]
 		if !pageAnchorPattern.MatchString(slug) {
