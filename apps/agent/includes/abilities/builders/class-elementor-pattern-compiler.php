@@ -243,24 +243,34 @@ final class ElementorPatternCompiler
      */
     public static function allowedKeys(array $allowed): array
     {
-        foreach ([self::KEYS, ElementorPatternCards::keys()] as $keys) {
+        foreach ([self::KEYS, self::listKeys(), ElementorPatternCards::keys()] as $keys) {
             foreach ($keys as $type => $paths) {
-                $allowed[$type] = ($allowed[$type] ?? []) + $paths;
-            }
-        }
-        foreach (self::LISTS as $type => $lists) {
-            foreach ($lists as $control => [$members, $most]) {
-                $paths = [];
-                for ($position = 0; $position < $most; $position++) {
-                    foreach ($members as $member => $pin) {
-                        $paths[$control . '.' . $position . '.' . $member] = $pin;
-                    }
-                }
                 $allowed[$type] = ($allowed[$type] ?? []) + $paths;
             }
         }
 
         return $allowed;
+    }
+
+    /**
+     * The paths of LISTS' controls, a path for each position of each list.
+     *
+     * @return array<string,array<string,string>> Element type, then settings path, then pin.
+     */
+    private static function listKeys(): array
+    {
+        $keys = [];
+        foreach (self::LISTS as $type => $lists) {
+            foreach ($lists as $control => [$members, $most]) {
+                for ($position = 0; $position < $most; $position++) {
+                    foreach ($members as $member => $pin) {
+                        $keys[$type][$control . '.' . $position . '.' . $member] = $pin;
+                    }
+                }
+            }
+        }
+
+        return $keys;
     }
 
     /**
