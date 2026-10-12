@@ -46,7 +46,8 @@ if (!defined('ABSPATH')) {
  * by the node's outline path; a wrapper WPMgr adds is keyed by the path of
  * its first node plus a "#" suffix the outline never produces.
  *
- * Refused, never rewritten: an outline button (node_not_supported_by_builder),
+ * Refused, never rewritten: an outline button on a plain outline
+ * (node_not_supported_by_builder),
  * an image aligned wide or full (node_not_supported_by_builder), a paragraph
  * whose whole text is one http(s) address (create_content_invalid), alt text
  * that differs from the attachment's library alt (image_alt_from_library),
@@ -62,6 +63,12 @@ if (!defined('ABSPATH')) {
  * containers. A site that builds sections and columns refuses each with
  * CODE_CONTAINERS_REQUIRED, naming the node's path, and a plain outline is
  * built there as it always was.
+ *
+ * The leaves of a designed section (mapDesignedLeaves) take the design's look
+ * from ElementorLeafStyle: a level 1 heading is allowed, the first paragraph
+ * after it is the lead, a list, quote and table are body text, and buttons
+ * are a fill, an outline or text, standing in one row. All of it is in the
+ * section's tone and alignment.
  *
  * Pure: no WordPress write. The only WordPress function reached is the HTML
  * sanitiser, through LeafPolicy.

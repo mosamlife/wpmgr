@@ -32,6 +32,10 @@ if (!defined('ABSPATH')) {
  * A heading always carries its alignment. Text carries one only when the
  * section is centred, because left is what Elementor gives text without one.
  *
+ * A button is a fill, an outline or text, in the accent of the tone: size md,
+ * the design's radius, the Button typography, and a hover that is a computed
+ * literal. Buttons stand in a row container that wraps.
+ *
  * The keys come back in the order Elementor returns them, ready to follow the
  * content keys (`title` and `header_size`, `editor`). KEYS lists every key
  * written, with the pin LeafPolicy holds its value to.
