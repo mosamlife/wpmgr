@@ -143,7 +143,7 @@ final class Refusal
         }
         $unknown = array_diff(array_keys($failure), self::FAILURE_KEYS);
         if ($unknown !== []) {
-            throw new \InvalidArgumentException('a failure has no field ' . implode(', ', array_map('strval', $unknown)));
+            throw new \InvalidArgumentException('a failure holds only ref, path, key, reason and allowed');
         }
         $out = [];
         foreach (['ref' => self::MAX_REF_CHARS, 'path' => self::MAX_PATH_CHARS, 'key' => self::MAX_KEY_CHARS, 'reason' => self::MAX_REASON_CHARS] as $name => $max) {
@@ -151,7 +151,7 @@ final class Refusal
                 continue;
             }
             if (!is_string($failure[$name])) {
-                throw new \InvalidArgumentException('failure ' . $name . ' must be a string');
+                throw new \InvalidArgumentException('a failure ref, path, key and reason are strings');
             }
             $text = self::line($failure[$name], $max);
             if ($text !== '') {
@@ -163,7 +163,7 @@ final class Refusal
         }
         foreach (['key', 'reason'] as $name) {
             if (!isset($out[$name])) {
-                throw new \InvalidArgumentException('a failure needs a ' . $name);
+                throw new \InvalidArgumentException('a failure needs a key and a reason');
             }
         }
         if (array_key_exists('allowed', $failure)) {
