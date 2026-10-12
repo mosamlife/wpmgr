@@ -181,6 +181,56 @@ func TestDesignedItemPatternsRefuseWhatTheAgentRefuses(t *testing.T) {
 	}
 }
 
+// TestElementorItemIDsArePHPs: the _id of a repeater item is the one the
+// agent's IdSeed::item answers (PHP 8.5, over the class in
+// apps/agent/includes/abilities/builders), also when the first candidates are
+// taken and when the request id and the path are text json_encode escapes.
+func TestElementorItemIDsArePHPs(t *testing.T) {
+	const path = "outline[0].children[0].faq"
+	ids := &elementorIDs{requestID: designedVectorRequestID, taken: map[string]bool{}}
+	for i, want := range []string{"1a0f065", "2fcd2c6", "efd34c5"} {
+		if got, ok := ids.item(path, "tabs", i); !ok || got != want {
+			t.Errorf("tab %d: _id %q (%v), want %q", i, got, ok, want)
+		}
+	}
+	if !ids.taken["1a0f065"] {
+		t.Error("an issued item id is not in the set of taken ids")
+	}
+
+	// The same item asked for twice is issued two ids: the counter goes up.
+	again := &elementorIDs{requestID: designedVectorRequestID, taken: map[string]bool{}}
+	for _, want := range []string{"1a0f065", "ee0abde", "ff7e52f"} {
+		if got, ok := again.item(path, "tabs", 0); !ok || got != want {
+			t.Errorf("tab 0 asked for again: _id %q (%v), want %q", got, ok, want)
+		}
+	}
+
+	// An id taken before (by a node, or on the page already) is not issued.
+	taken := &elementorIDs{requestID: designedVectorRequestID, taken: map[string]bool{"1a0f065": true, "ee0abde": true}}
+	if got, ok := taken.item(path, "tabs", 0); !ok || got != "ff7e52f" {
+		t.Errorf("with two candidates taken: _id %q (%v), want ff7e52f", got, ok)
+	}
+
+	odd := &elementorIDs{requestID: "r/\"é—", taken: map[string]bool{}}
+	if got, ok := odd.item("outline[3].children[1]/é\"", "ta/bs", 11); !ok || got != "f83c985" {
+		t.Errorf("escaped text: _id %q (%v), want f83c985", got, ok)
+	}
+
+	for _, c := range []struct {
+		name             string
+		request, control string
+		index            int
+	}{
+		{"no request id", "", "tabs", 0},
+		{"no control", designedVectorRequestID, "", 0},
+		{"a negative index", designedVectorRequestID, "tabs", -1},
+	} {
+		if got, ok := (&elementorIDs{requestID: c.request, taken: map[string]bool{}}).item(path, c.control, c.index); ok {
+			t.Errorf("%s: issued %q", c.name, got)
+		}
+	}
+}
+
 // TestDesignedTestimonialsRowsAreCounted: the featured testimonial stands
 // alone, the others in rows of two; a row left with one column is centred, and
 // no other is.
