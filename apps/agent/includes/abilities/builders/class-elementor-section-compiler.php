@@ -99,9 +99,9 @@ final class ElementorSectionCompiler
      */
     public function settings(array $section): array
     {
-        $width   = self::option($section, 'width', OutlineV3Schema::WIDTHS, self::DEFAULT_WIDTH);
-        $tone    = self::option($section, 'tone', OutlineV3Schema::TONES, self::DEFAULT_TONE);
-        $spacing = self::option($section, 'spacing', OutlineV3Schema::SPACINGS, self::DEFAULT_SPACING);
+        $width   = self::option($section, 'width', OutlineV3Schema::WIDTHS, self::DEFAULT_WIDTH) ?? throw new \InvalidArgumentException('a section width is boxed or full');
+        $tone    = self::option($section, 'tone', OutlineV3Schema::TONES, self::DEFAULT_TONE) ?? throw new \InvalidArgumentException('a section tone is ground, surface, inverse or accent');
+        $spacing = self::option($section, 'spacing', OutlineV3Schema::SPACINGS, self::DEFAULT_SPACING) ?? throw new \InvalidArgumentException('a section spacing is md, lg or xl');
 
         return array_merge(
             [
@@ -175,20 +175,16 @@ final class ElementorSectionCompiler
      * @param string              $key      The option.
      * @param list<string>        $allowed  The values the grammar accepts.
      * @param string              $fallback The value of a section that names none.
-     * @return string
-     * @throws \InvalidArgumentException When the option is present and not one of $allowed.
+     * @return string|null Null when the option is present and not one of $allowed.
      */
-    private static function option(array $section, string $key, array $allowed, string $fallback): string
+    private static function option(array $section, string $key, array $allowed, string $fallback): ?string
     {
         if (!array_key_exists($key, $section)) {
             return $fallback;
         }
         $value = $section[$key];
-        if (!is_string($value) || !in_array($value, $allowed, true)) {
-            throw new \InvalidArgumentException('a section ' . $key . ' is ' . implode(', ', $allowed));
-        }
 
-        return $value;
+        return is_string($value) && in_array($value, $allowed, true) ? $value : null;
     }
 
     /**
