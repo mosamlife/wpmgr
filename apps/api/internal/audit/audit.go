@@ -37,6 +37,11 @@ const (
 	// id: an MCP grant is the credential a model acts under, the way a user id
 	// or an api_key id is the credential a human or a script acts under.
 	ActorAssistant = "assistant"
+	// ActorPolicy is a site's AI setting deciding a request with no person
+	// deciding it: an approval by the setting, or the engine leaving the
+	// request for a person. ActorID is the site id; metadata names the mode,
+	// its version and the person who chose it. Never a fabricated human.
+	ActorPolicy = "policy"
 
 	ActionLoginSuccess = "auth.login.success"
 	ActionLoginFailure = "auth.login.failure"
@@ -463,6 +468,9 @@ const (
 	ActionAbilityRequestNotSent    = "assistant.ability_request.not_sent"
 	ActionAbilityRequestDispatched = "assistant.ability_request.dispatched"
 	ActionAbilityRequestFailed     = "assistant.ability_request.failed"
+	// ActionAbilityRequestAsked is the policy engine leaving a request for a
+	// person; metadata.ask_reason says why. ActorType is ActorPolicy.
+	ActionAbilityRequestAsked = "assistant.ability_request.asked"
 	// ActionAssistantRequestCompleted is an ability request whose write the
 	// site applied (outcome created or applied).
 	ActionAssistantRequestCompleted = "assistant.request.completed"

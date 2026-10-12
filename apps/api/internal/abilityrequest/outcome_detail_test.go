@@ -46,13 +46,13 @@ func TestOutcomeDetailIsTheClosedConflictDetail(t *testing.T) {
 		{row(mcp.AbilityPageCreate, "conflict", "autosave_pending"), "<null>"},
 	}
 	for _, c := range cases {
-		got := toDTO(c.r, false, "", false).OutcomeDetail
+		got := toDTO(c.r, false, "", false, setterNames{}).OutcomeDetail
 		if detailStr(got) != c.want {
 			t.Fatalf("%s %s %q: outcome_detail %s, want %s", c.r.AbilityName, detailStr(c.r.OutcomeCode),
 				detailStr(c.r.SiteReportedText), detailStr(got), c.want)
 		}
 	}
-	b, err := json.Marshal(toDTO(row(mcp.AbilityPageEdit, "preview_changed", ""), false, "", false))
+	b, err := json.Marshal(toDTO(row(mcp.AbilityPageEdit, "preview_changed", ""), false, "", false, setterNames{}))
 	if err != nil {
 		t.Fatal(err)
 	}

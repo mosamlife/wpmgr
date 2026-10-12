@@ -24,6 +24,7 @@ import {
 } from "@wpmgr/api";
 
 import { aiReadinessKeys } from "@/features/ai-readiness/use-ai-readiness";
+import { aiTrustKeys } from "@/features/ai-trust/use-ai-trust";
 
 // AI site-change requests (engine slice E2): the per-site queue, approve,
 // decline, undo, and the per-site "AI editing" switch. The routes are all
@@ -166,6 +167,8 @@ function useAbilityMutation<V extends DecideVars>(
     onSettled: (_d, _e, vars) => {
       void qc.invalidateQueries({ queryKey: abilityRequestKeys.site(vars.siteId) });
       void qc.invalidateQueries({ queryKey: abilityRequestKeys.org() });
+      // An approval adds a row to AI activity and an undo changes one.
+      void qc.invalidateQueries({ queryKey: aiTrustKeys.activity() });
     },
   });
 }
@@ -234,6 +237,8 @@ export function useEnableContentEditing(
       // site report arriving, so both are asked again here.
       void qc.invalidateQueries({ queryKey: aiReadinessKeys.site(siteId) });
       void qc.invalidateQueries({ queryKey: aiReadinessKeys.fleet() });
+      // Turning AI editing on can set the site's AI mode to its default.
+      void qc.invalidateQueries({ queryKey: aiTrustKeys.siteMode(siteId) });
     },
   });
 }

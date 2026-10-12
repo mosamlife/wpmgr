@@ -88,16 +88,18 @@ func aarCountVisible(t *testing.T, tx pgx.Tx, id uuid.UUID) int {
 	return n
 }
 
-// aarApprove runs the shipped approve statement under an org principal and
-// returns its error unchanged, so a caller can assert the refusal.
+// aarApprove runs the shipped approve statement under the deciding person's
+// own org-wide principal, as a person's approval is made, and returns its
+// error unchanged, so a caller can assert the refusal.
 func aarApprove(t *testing.T, pool *db.Pool, row sqlc.AssistantAbilityRequest, digest string) (sqlc.AssistantAbilityRequest, error) {
 	t.Helper()
 	var out sqlc.AssistantAbilityRequest
-	err := pool.RunTenantTx(context.Background(), acprOrgPrincipal(row.TenantID), func(tx pgx.Tx) error {
+	decider := uuid.New()
+	err := pool.RunTenantTx(context.Background(), acprDeciderPrincipal(row.TenantID, decider), func(tx pgx.Tx) error {
 		mcpAssertAndReportRole(t, tx, "RunTenantTx (m156 approve)")
 		var err error
 		out, err = sqlc.New(tx).ApproveAbilityRequest(context.Background(), sqlc.ApproveAbilityRequestParams{
-			DecidedByUserID:       uuid.New(),
+			DecidedByUserID:       decider,
 			DispatchWindowSeconds: 3600,
 			TenantID:              row.TenantID,
 			ID:                    row.ID,

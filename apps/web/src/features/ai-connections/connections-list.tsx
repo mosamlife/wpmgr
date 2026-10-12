@@ -14,6 +14,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
+import { ConnectionAutoPanel } from "@/features/ai-trust/connection-auto-panel";
+
 import { capabilityLabel } from "./capabilities";
 import { PROTOCOL_FLOOR_VERSION } from "./client-table";
 import { ConnectionVerify } from "./connection-verify";
@@ -49,7 +51,18 @@ export interface ConnectionsListProps {
   onRevoke?: (connection: AiConnection) => void;
   /** Id currently being revoked, so its row can show the in-flight state. */
   revokingId?: string | null;
+  /**
+   * An owner or admin who is a full member: the people the server lets set a
+   * connection's switch for automatic changes. Anyone else sees the usage
+   * alone.
+   */
+  canManage?: boolean;
 }
+
+// The one panel that may be open under a row. Verification and automatic
+// changes share it, so opening one closes the other and the list never holds
+// more than one panel's polling at a time.
+type OpenPanel = { readonly id: string; readonly kind: "check" | "auto" } | null;
 
 function formatIso(iso: string): string {
   const d = new Date(iso);
@@ -66,15 +79,18 @@ export function ConnectionsList({
   connectAction,
   onRevoke,
   revokingId,
+  canManage = false,
 }: ConnectionsListProps) {
-  // Which row has its verification panel open. AT THE TOP, BEFORE THE EARLY
+  // Which row has a panel open, and which panel. AT THE TOP, BEFORE THE EARLY
   // RETURNS BELOW, because a hook after a conditional return is a hook that
   // sometimes does not run.
   //
   // ONE AT A TIME, DELIBERATELY. Each open panel polls its own connection, so
   // an "expand all" would put one request per connection per poll interval on
   // a fleet that may hold dozens.
-  const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [open, setOpen] = useState<OpenPanel>(null);
+  const isOpen = (id: string, kind: "check" | "auto") => open?.id === id && open.kind === kind;
+  const toggle = (id: string, kind: "check" | "auto") => setOpen(isOpen(id, kind) ? null : { id, kind });
 
   if (state.status === "loading") {
     return (
@@ -282,10 +298,22 @@ export function ConnectionsList({
                 <Button
                   variant="ghost"
                   size="sm"
-                  aria-expanded={verifyingId === c.id}
-                  onClick={() => setVerifyingId(verifyingId === c.id ? null : c.id)}
+                  aria-expanded={isOpen(c.id, "check")}
+                  onClick={() => toggle(c.id, "check")}
                 >
-                  {verifyingId === c.id ? "Hide check" : "Check connection"}
+                  {isOpen(c.id, "check") ? "Hide check" : "Check connection"}
+                </Button>
+                {/* WHAT THIS CONNECTION MAY CHANGE WITHOUT ASKING, next to the
+                    check because both are questions about one credential.
+                    Offered on a revoked connection too, read-only, so the
+                    hour's count stays readable after the fact. */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-expanded={isOpen(c.id, "auto")}
+                  onClick={() => toggle(c.id, "auto")}
+                >
+                  {isOpen(c.id, "auto") ? "Hide automatic changes" : "Automatic changes"}
                 </Button>
                 {/* An ALREADY-REVOKED grant gets no revoke button. The
                     endpoint is idempotent, so pressing it would succeed and
@@ -306,12 +334,21 @@ export function ConnectionsList({
                 )}
               </TableCell>
             </TableRow>
-            {verifyingId === c.id ? (
+            {open?.id === c.id ? (
               <TableRow>
                 {/* colSpan MATCHES THE HEADER above: seven columns. A short
                     span leaves the panel boxed into one cell. */}
                 <TableCell colSpan={7} className="bg-[var(--color-muted)]/30">
-                  <ConnectionVerify connectionId={c.id} />
+                  {open.kind === "check" ? (
+                    <ConnectionVerify connectionId={c.id} />
+                  ) : (
+                    <ConnectionAutoPanel
+                      grantId={c.id}
+                      connectionName={c.name}
+                      revoked={c.status === "revoked"}
+                      canManage={canManage}
+                    />
+                  )}
                 </TableCell>
               </TableRow>
             ) : null}

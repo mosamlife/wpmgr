@@ -58,6 +58,13 @@ func acprOrgPrincipal(tenant uuid.UUID) domain.Principal {
 	return domain.Principal{TenantID: tenant, Scope: domain.ScopeOrg}
 }
 
+// acprDeciderPrincipal is the approving person's own org-wide principal: a
+// person's approval is made in a transaction that carries that person's user
+// id, which m174's backstop requires of every approval naming a decider.
+func acprDeciderPrincipal(tenant, decider uuid.UUID) domain.Principal {
+	return domain.Principal{Type: domain.PrincipalUser, UserID: decider, TenantID: tenant, Scope: domain.ScopeOrg}
+}
+
 // acprParams is an honest pending request for one site, as the creation path
 // would build it. Callers override fields to plant a single fault.
 func acprParams(tenant, site, grant uuid.UUID, seed string) sqlc.InsertAssistantCachePurgeRequestParams {
@@ -95,12 +102,12 @@ func acprInsert(t *testing.T, pool *db.Pool, p domain.Principal, arg sqlc.Insert
 	return row
 }
 
-// acprApprove approves a pending row through the shipped statement under an
-// org principal and returns it.
+// acprApprove approves a pending row through the shipped statement under the
+// decider's own principal and returns it.
 func acprApprove(t *testing.T, pool *db.Pool, row sqlc.AssistantCachePurgeRequest, decider uuid.UUID) sqlc.AssistantCachePurgeRequest {
 	t.Helper()
 	var out sqlc.AssistantCachePurgeRequest
-	if err := pool.RunTenantTx(context.Background(), acprOrgPrincipal(row.TenantID), func(tx pgx.Tx) error {
+	if err := pool.RunTenantTx(context.Background(), acprDeciderPrincipal(row.TenantID, decider), func(tx pgx.Tx) error {
 		mcpAssertAndReportRole(t, tx, "RunTenantTx (m151 approve)")
 		var err error
 		out, err = sqlc.New(tx).ApproveAssistantCachePurgeRequest(context.Background(),
@@ -452,8 +459,10 @@ func TestAssistantCachePurgeRequestChecksAsAppRole(t *testing.T) {
 
 	// Approval after the window, through the shipped statement AND raw. A
 	// lapsed row is planted with a backdated created_at (INSERT may set it).
+	// The transaction carries the decider's own user id, as a person's
+	// approval does, so the window CHECK is what refuses it.
 	var lapsed uuid.UUID
-	if err := pool.RunTenantTx(ctx, p, func(tx pgx.Tx) error {
+	if err := pool.RunTenantTx(ctx, acprDeciderPrincipal(tenant, decider), func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx, `INSERT INTO assistant_cache_purge_requests
 			(tenant_id, site_id, proposed_by_grant_id, scope, site_label, site_host, grant_label,
 			 grant_via, digest_nonce, presented_digest, state, created_at, expires_at)

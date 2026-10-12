@@ -10,15 +10,19 @@ import type { AbilityRequest, Me } from "@wpmgr/api";
 
 import { createTestQueryClient, renderWithProviders } from "@/test/render";
 import { okResult, readiness } from "@/features/ai-readiness/readiness-fixtures";
+import { siteAiMode } from "@/features/ai-trust/ai-trust-fixtures";
 
 import { Route as ContentRoute } from "./$siteId.content";
 
-// Field names come from the generated AbilityRequest / ContentEditingState
-// (packages/openapi-client/src/generated/types.gen.ts). Error codes asserted
-// here are the ones the Go handlers return:
+// Field names come from the generated AbilityRequest / ContentEditingState /
+// SiteAiMode (packages/openapi-client/src/generated/types.gen.ts). Error codes
+// asserted here are the ones the Go handlers return:
 //   ability_request_changed            apps/api/internal/abilityrequest/service.go CodeRequestChanged (409)
 //   content_editing_agent_outdated     apps/api/internal/abilityrequest/content_editing.go (409)
 //   content_editing_unreachable        same file (503)
+// The site's AI mode is GET /api/v1/sites/{siteId}/ai/mode
+// (apps/api/internal/aitrust/handler.go getMode); its body is built by the
+// siteAiMode fixture from apps/api/internal/aitrust/dto.go.
 // Action keys asserted for audit live in apps/api/internal/audit/audit.go.
 
 const listReqs = vi.fn();
@@ -32,6 +36,9 @@ const getInv = vi.fn();
 // request. Stubbed here with a ready site so its (separate) failure states
 // cannot take the `alert` role these tests look for.
 const getReadiness = vi.fn();
+// Once AI editing is on, the same card reads the site's AI mode, whose state
+// line says what the AI may do without asking.
+const getAiMode = vi.fn();
 
 vi.mock("@wpmgr/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@wpmgr/api")>();
@@ -45,6 +52,7 @@ vi.mock("@wpmgr/api", async (importOriginal) => {
     enableSiteContentEditing: (...a: unknown[]): unknown => enableEditing(...a),
     getSiteContentInventory: (...a: unknown[]): unknown => getInv(...a),
     getSiteAiReadiness: (...a: unknown[]): unknown => getReadiness(...a),
+    getSiteAiMode: (...a: unknown[]): unknown => getAiMode(...a),
   };
 });
 
@@ -158,10 +166,11 @@ function renderTab(role: "operator" | "viewer" = "operator") {
 }
 
 beforeEach(() => {
-  for (const m of [listReqs, approveReq, declineReq, undoReq, getEditing, enableEditing, getInv, getReadiness]) {
+  for (const m of [listReqs, approveReq, declineReq, undoReq, getEditing, enableEditing, getInv, getReadiness, getAiMode]) {
     m.mockReset();
   }
   getReadiness.mockResolvedValue(okResult(readiness()));
+  getAiMode.mockResolvedValue(okResult(siteAiMode("site-1")));
   getEditing.mockResolvedValue(okEditing(true));
   listReqs.mockResolvedValue(okList([]));
   getInv.mockResolvedValue({
@@ -498,16 +507,39 @@ describe("AI editing switch", () => {
     expect(listReqs).not.toHaveBeenCalled();
   });
 
-  it("Turn on calls enable and shows the on state", async () => {
+  it("Turn on calls enable and shows the Auto for AI drafts state the site is then set to", async () => {
     getEditing.mockResolvedValue(okEditing(false));
+    // Turning AI editing on sets the site to Auto for AI drafts (source
+    // `enable_default`), and the mode is read once the switch reads as on.
     enableEditing.mockImplementation(() => {
       getEditing.mockResolvedValue(okEditing(true));
+      getAiMode.mockResolvedValue(okResult(siteAiMode("site-1", { mode: "ai_drafts", source: "enable_default" })));
       return Promise.resolve(okEditing(true));
     });
     renderTab();
     fireEvent.click(await screen.findByRole("button", { name: "Turn on" }));
     await waitFor(() => expect(enableEditing).toHaveBeenCalledWith({ path: { siteId: "site-1" }, body: {} }));
-    expect(await screen.findByText(/AI page creation is on/)).toBeInTheDocument();
+    expect(
+      await screen.findByText("AI editing is on. Drafts the AI makes run at once. Everything else waits for you."),
+    ).toBeInTheDocument();
+    expect(getAiMode).toHaveBeenCalledWith({ path: { siteId: "site-1" } });
+    expect(screen.queryByText("AI page creation is off for this site.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Turn on" })).toBeNull();
+  });
+
+  // The line under "AI editing" is the line of the mode the server reports,
+  // and of no other (design section 8.1). The dashboard sets the first two;
+  // the third is what the card says should the server report it.
+  it.each([
+    ["ask", "unset", "AI editing is on. Every change the AI asks for waits for your approval."],
+    ["ai_drafts", "enable_default", "AI editing is on. Drafts the AI makes run at once. Everything else waits for you."],
+    ["full", "person", "Full auto is on. Published pages can change without asking. Everything is listed in AI activity."],
+  ] as const)("on, set to %s: the state line is that mode's line", async (mode, source, line) => {
+    getAiMode.mockResolvedValue(okResult(siteAiMode("site-1", { mode, source })));
+    renderTab();
+    expect(await screen.findByText(line)).toBeInTheDocument();
+    expect(screen.getByTestId("ai-editing-state")).toHaveTextContent(line);
+    expect(screen.queryByText("AI page creation is off for this site.")).toBeNull();
     expect(screen.queryByRole("button", { name: "Turn on" })).toBeNull();
   });
 

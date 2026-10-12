@@ -43,6 +43,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentrelease"
 	"github.com/mosamlife/wpmgr/apps/api/internal/aireadiness"
+	"github.com/mosamlife/wpmgr/apps/api/internal/aitrust"
 	"github.com/mosamlife/wpmgr/apps/api/internal/apikey"
 	"github.com/mosamlife/wpmgr/apps/api/internal/assistantrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
@@ -412,6 +413,9 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 	abilityReqH := abilityrequest.NewHandler(abilityrequest.NewService(pool, mcpRepo, mcp.NewService(mcpRepo), auditRec, logger))
 	assistantReqH := assistantrequest.NewHandler(assistantrequest.NewService(
 		assistantrequest.NewRepo(pool), mcpRepo, mcp.NewService(mcpRepo), auditRec, logger))
+	// The AI trust settings and activity, wired as in production.
+	aiTrustSvc := aitrust.NewService(aitrust.NewRepo(pool, auditRec), nil, logger)
+	aiTrustSvc.SetRenderers(abilityReqH, assistantReqH)
 
 	// Track B S1 page-ownership inventory and its superadmin routes, wired as
 	// in production. Nothing is issued through them: only the route set is read.
@@ -435,6 +439,7 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 		AbilityRequestH:        abilityReqH,
 		AbilityTenantH:         abilities.NewTenantHandler(abilities.NewTenantRepo(pool, auditRec), admingate.NewPoolStore(pool)),
 		AIReadinessH:           aireadiness.NewHandler(aireadiness.NewService(aireadiness.NewRepo(pool), auditRec, logger)),
+		AITrustH:               aitrust.NewHandler(aiTrustSvc),
 		TenantH:                tenant.NewHandler(tenantSvc, auditRec),
 		SiteH:                  siteH,
 		SiteEventsH:            siteEventsH,

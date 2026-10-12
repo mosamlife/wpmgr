@@ -435,6 +435,21 @@ CREATE TABLE sites (
     content_editing_enabled_at        timestamptz,
     content_editing_principal_user_id bigint,
     content_editing_enabled_by        uuid,
+    -- m174: how much an AI connection may change on this site without a
+    -- click. ai_mode: ask | ai_drafts | full. ai_mode_source says who or what
+    -- set it (unset, migration, launch_default, enable_default, person,
+    -- tightened). ai_mode_set_by is the person whose choice it is (no FK: a
+    -- deleted account leaves a setting that does nothing until a person
+    -- chooses again). ai_mode_version moves by exactly one with each change
+    -- of mode, setter or source. Guarded by sites_ai_mode_guard (m174 block
+    -- below).
+    ai_mode                   text        NOT NULL DEFAULT 'ask',
+    ai_mode_source            text        NOT NULL DEFAULT 'unset',
+    ai_mode_set_by            uuid,
+    ai_mode_set_at            timestamptz,
+    ai_mode_version           bigint      NOT NULL DEFAULT 0,
+    ai_mode_step_up           text,
+    ai_mode_launch_emailed_at timestamptz,
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now(),
     -- m117: a resume time with no pause is incoherent, and a later phase reads
@@ -456,7 +471,35 @@ CREATE TABLE sites (
         CHECK (
             (content_editing_enabled_at IS NULL) = (content_editing_principal_user_id IS NULL)
             AND (content_editing_principal_user_id IS NULL OR content_editing_principal_user_id > 0)
-        )
+        ),
+    -- m174: the site mode's row rules.
+    CONSTRAINT sites_ai_mode_check
+        CHECK (ai_mode IN ('ask', 'ai_drafts', 'full')),
+    CONSTRAINT sites_ai_mode_source_check
+        CHECK (ai_mode_source IN ('unset', 'migration', 'launch_default',
+                                  'enable_default', 'person', 'tightened')),
+    CONSTRAINT sites_ai_mode_step_up_check
+        CHECK (ai_mode_step_up IS NULL
+               OR ai_mode_step_up IN ('password', 'totp', 'recent_sign_in')),
+    CONSTRAINT sites_ai_mode_version_check
+        CHECK (ai_mode_version >= 0),
+    CONSTRAINT sites_ai_mode_set_by_not_nil_check
+        CHECK (ai_mode_set_by IS NULL
+               OR ai_mode_set_by <> '00000000-0000-0000-0000-000000000000'::uuid),
+    -- A row no person chose can only be Ask, with no setter.
+    CONSTRAINT sites_ai_mode_unattributed_is_ask_check
+        CHECK (ai_mode_source NOT IN ('unset', 'migration', 'tightened')
+               OR (ai_mode = 'ask' AND ai_mode_set_by IS NULL)),
+    -- Nothing above Ask without a named person.
+    CONSTRAINT sites_ai_mode_above_ask_names_setter_check
+        CHECK (ai_mode = 'ask' OR ai_mode_set_by IS NOT NULL),
+    -- A default is Auto for AI drafts and nothing else.
+    CONSTRAINT sites_ai_mode_default_is_ai_drafts_check
+        CHECK (ai_mode_source NOT IN ('launch_default', 'enable_default')
+               OR ai_mode = 'ai_drafts'),
+    -- Full auto records the second check its person passed.
+    CONSTRAINT sites_ai_mode_full_has_step_up_check
+        CHECK (ai_mode <> 'full' OR ai_mode_step_up IS NOT NULL)
 );
 
 CREATE INDEX idx_sites_connection_state ON sites (tenant_id, connection_state);
@@ -7298,7 +7341,25 @@ CREATE TABLE mcp_grants (
     CONSTRAINT mcp_grants_idle_expire_after_days_check CHECK (
         idle_expire_after_days IS NULL
         OR (idle_expire_after_days >= 1 AND idle_expire_after_days <= 3650)
-    )
+    ),
+
+    -- m174: may this connection run a change without a click where the
+    -- site's mode allows it ('site_setting'), or does every change wait for a
+    -- person ('never')? A connection only narrows a site's mode. ai_auto_set_by
+    -- is the person whose authority keeps 'site_setting' on (no FK). Guarded
+    -- by mcp_grants_ai_auto_guard (m174 block below).
+    ai_auto        text        NOT NULL DEFAULT 'never',
+    ai_auto_set_by uuid        NULL,
+    ai_auto_set_at timestamptz NULL,
+    CONSTRAINT mcp_grants_ai_auto_check
+        CHECK (ai_auto IN ('site_setting', 'never')),
+    CONSTRAINT mcp_grants_ai_auto_names_setter_check
+        CHECK (ai_auto = 'never' OR ai_auto_set_by IS NOT NULL),
+    CONSTRAINT mcp_grants_ai_auto_set_by_not_nil_check
+        CHECK (ai_auto_set_by IS NULL
+               OR ai_auto_set_by <> '00000000-0000-0000-0000-000000000000'::uuid),
+    -- m174: the target of the composite foreign keys a later migration adds.
+    CONSTRAINT mcp_grants_tenant_id_id_key UNIQUE (tenant_id, id)
 );
 
 -- "Is this grant live right now" in one indexed read.
@@ -8365,9 +8426,12 @@ CREATE TABLE IF NOT EXISTS assistant_cache_purge_requests (
         ),
     CONSTRAINT assistant_cache_purge_requests_expiry_is_not_a_decision_check
         CHECK (state <> 'expired' OR decided_by_user_id IS NULL),
+    -- m174: a person's approval names a human; an automatic one never names a
+    -- decider (see the approval_source columns below).
     CONSTRAINT assistant_cache_purge_requests_approval_names_a_human_check
         CHECK (
             state NOT IN ('approved_undispatched', 'dispatched')
+            OR approval_source <> 'person'
             OR decided_by_user_id IS NOT NULL
         ),
     CONSTRAINT assistant_cache_purge_requests_rejection_names_a_human_check
@@ -8420,7 +8484,12 @@ CREATE TABLE IF NOT EXISTS assistant_cache_purge_requests (
             'forbidden_by_context',
             'agent_outdated',
             'dispatch_deadline_passed',
-            'transport_pre_send'
+            'transport_pre_send',
+            -- m174: an automatic approval whose setting, session or class
+            -- changed before the send.
+            'setting_changed',
+            'session_ended',
+            'class_changed'
         )),
     CONSTRAINT assistant_cache_purge_requests_not_sent_has_reason_check
         CHECK ((outcome IS NOT DISTINCT FROM 'not_sent')
@@ -8451,7 +8520,79 @@ CREATE TABLE IF NOT EXISTS assistant_cache_purge_requests (
         CHECK (wpmgr_cdn IN ('not_attempted', 'cleared', 'failed', 'not_configured')),
     site_reported_text text NULL
         CONSTRAINT assistant_cache_purge_requests_site_reported_text_check
-        CHECK (site_reported_text IS NULL OR length(site_reported_text) <= 512)
+        CHECK (site_reported_text IS NULL OR length(site_reported_text) <= 512),
+
+    -- m174: who or what approved (person, policy = the site's setting,
+    -- session), what that approval relied on, the class decided, why a
+    -- request asked, and when it was checked. Guarded by ai_approval_backstop
+    -- (m174 block below).
+    approval_source text NOT NULL DEFAULT 'person'
+        CONSTRAINT assistant_cache_purge_requests_approval_source_check
+        CHECK (approval_source IN ('person', 'policy', 'session')),
+    approval_site_mode text NULL
+        CONSTRAINT assistant_cache_purge_requests_approval_site_mode_check
+        CHECK (approval_site_mode IS NULL OR approval_site_mode IN ('ai_drafts', 'full')),
+    -- How the mode a 'policy' approval relied on was chosen. Only a 'policy'
+    -- approval records it.
+    approval_mode_source text NULL,
+    CONSTRAINT assistant_cache_purge_requests_approval_mode_source_check
+        CHECK (approval_mode_source IS NULL
+               OR (approval_source = 'policy'
+                   AND approval_mode_source IN ('launch_default', 'enable_default', 'person'))),
+    approval_mode_version bigint NULL
+        CONSTRAINT assistant_cache_purge_requests_approval_mode_version_check
+        CHECK (approval_mode_version IS NULL OR approval_mode_version > 0),
+    approval_setter_user_id uuid NULL
+        CONSTRAINT assistant_cache_purge_requests_approval_setter_not_nil_check
+        CHECK (approval_setter_user_id IS NULL
+               OR approval_setter_user_id <> '00000000-0000-0000-0000-000000000000'::uuid),
+    approval_setter_set_at timestamptz NULL,
+    approval_session_id uuid NULL,
+    base_change_class text NULL
+        CONSTRAINT assistant_cache_purge_requests_base_change_class_check
+        CHECK (base_change_class IS NULL OR base_change_class IN (
+            'ai_draft', 'operational', 'unpublished', 'live', 'publish', 'update',
+            'always_ask', 'by_target_status')),
+    change_class text NULL
+        CONSTRAINT assistant_cache_purge_requests_change_class_check
+        CHECK (change_class IS NULL OR change_class IN (
+            'ai_draft', 'operational', 'unpublished', 'live', 'publish', 'update',
+            'always_ask')),
+    ask_reason text NULL
+        CONSTRAINT assistant_cache_purge_requests_ask_reason_check
+        CHECK (ask_reason IS NULL OR ask_reason IN (
+            'kind_always_asks', 'unknown_target_state', 'site_mode_ask',
+            'kind_not_in_mode', 'setter_lacks_permission', 'over_change_budget',
+            'over_site_cap', 'connection_never_auto', 'connection_setter_invalid',
+            'not_checked', 'visible_auto_held', 'session_ended')),
+    policy_checked_at timestamptz NULL,
+    CONSTRAINT assistant_cache_purge_requests_policy_approval_shape_check
+        CHECK (state NOT IN ('approved_undispatched', 'dispatched')
+               OR approval_source <> 'policy'
+               OR (decided_by_user_id IS NULL
+                   AND approval_site_mode IS NOT NULL
+                   AND approval_mode_source IS NOT NULL
+                   AND approval_mode_version IS NOT NULL
+                   AND approval_setter_user_id IS NOT NULL
+                   AND approval_setter_set_at IS NOT NULL
+                   AND approval_session_id IS NULL
+                   AND base_change_class IS NOT NULL
+                   AND change_class IS NOT NULL
+                   AND ask_reason IS NULL
+                   AND policy_checked_at IS NOT NULL)),
+    CONSTRAINT assistant_cache_purge_requests_session_approval_shape_check
+        CHECK (state NOT IN ('approved_undispatched', 'dispatched')
+               OR approval_source <> 'session'
+               OR (decided_by_user_id IS NULL
+                   AND approval_session_id IS NOT NULL
+                   AND approval_setter_user_id IS NOT NULL
+                   AND approval_site_mode IS NULL
+                   AND approval_mode_source IS NULL
+                   AND approval_mode_version IS NULL
+                   AND base_change_class IS NOT NULL
+                   AND change_class IS NOT NULL
+                   AND ask_reason IS NULL
+                   AND policy_checked_at IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS assistant_cache_purge_requests_tenant_idx
     ON assistant_cache_purge_requests (tenant_id);
@@ -8512,6 +8653,11 @@ GRANT UPDATE (state, decided_at, decided_by_user_id, withdrawn_at,
               outcome, not_sent_reason, outcome_at,
               hosting_caches_cleared, hosting_caches_skipped,
               origin_only_confirmed, wpmgr_cdn, site_reported_text)
+    ON assistant_cache_purge_requests TO wpmgr_app;
+-- m174: the approval and decision columns.
+GRANT UPDATE (approval_source, approval_site_mode, approval_mode_source,
+              approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id,
+              base_change_class, change_class, ask_reason, policy_checked_at)
     ON assistant_cache_purge_requests TO wpmgr_app;
 
 -- ---------------------------------------------------------------------------
@@ -9322,7 +9468,23 @@ CREATE TABLE IF NOT EXISTS ability_catalogue (
         CONSTRAINT ability_catalogue_output_fields_shape_check
         CHECK (output_fields IS NULL OR (
             octet_length(output_fields::text) <= 16384
-            AND ability_output_shape_valid(output_fields, 0)))
+            AND ability_output_shape_valid(output_fields, 0))),
+    -- m174: the change class the approval engine looks up in the site's mode.
+    -- The default is the Ask list's value, so an entry nobody classed waits
+    -- for a person. Written only by set_ability_change_class(); not part of
+    -- ability_catalogue_row_sha256(), so no entry hash moves.
+    change_class text NOT NULL DEFAULT 'always_ask'
+        CONSTRAINT ability_catalogue_change_class_check
+        CHECK (change_class IN ('ai_draft', 'operational', 'unpublished', 'live',
+                                'publish', 'update', 'always_ask', 'by_target_status')),
+    -- A class that runs on Auto for AI drafts publishes nothing.
+    CONSTRAINT ability_catalogue_change_class_effect_check
+        CHECK (change_class NOT IN ('ai_draft', 'operational')
+               OR effect_copy IN ('draft', 'none')),
+    -- Every class that can run without a person, except one that changes no
+    -- content, has an undo.
+    CONSTRAINT ability_catalogue_change_class_snapshot_check
+        CHECK (change_class IN ('always_ask', 'operational') OR snapshot <> 'none')
 );
 
 -- One entry per name and range start. NULLS NOT DISTINCT so two wpmgr or core
@@ -9373,7 +9535,14 @@ CREATE TABLE IF NOT EXISTS ability_catalogue_audit (
     after_entry_sha256 text NULL,
     before_enabled boolean NULL,
     after_enabled boolean NOT NULL,
-    at timestamptz NOT NULL DEFAULT now()
+    at timestamptz NOT NULL DEFAULT now(),
+    -- m174: set, both, only on a re-class by set_ability_change_class().
+    before_change_class text NULL,
+    after_change_class text NULL,
+    CONSTRAINT ability_catalogue_audit_change_class_pair_check
+        CHECK ((before_change_class IS NULL) = (after_change_class IS NULL)
+               AND (after_change_class IS NULL
+                    OR (action = 'update' AND actor_user_id IS NOT NULL)))
 );
 
 CREATE INDEX IF NOT EXISTS ability_catalogue_audit_entry_idx
@@ -10393,10 +10562,13 @@ CREATE TABLE IF NOT EXISTS assistant_ability_requests (
                             'not_sent', 'outcome_unknown')
             OR (decided_at IS NOT NULL AND decided_at < expires_at)
         ),
+    -- m174: a person's approval names a human; an automatic one never names a
+    -- decider (see the approval_source columns below).
     CONSTRAINT assistant_ability_requests_approval_names_a_human_check
         CHECK (
             state NOT IN ('approved', 'dispatched', 'done', 'failed',
                             'not_sent', 'outcome_unknown')
+            OR approval_source <> 'person'
             OR decided_by_user_id IS NOT NULL
         ),
     CONSTRAINT assistant_ability_requests_decline_names_a_human_check
@@ -10517,7 +10689,12 @@ CREATE TABLE IF NOT EXISTS assistant_ability_requests (
             'entry_disabled',
             -- m161: a REST route edited or disabled after approval.
             'route_changed',
-            'route_disabled'
+            'route_disabled',
+            -- m174: an automatic approval whose setting, session or class
+            -- changed before the send.
+            'setting_changed',
+            'session_ended',
+            'class_changed'
         )),
     CONSTRAINT assistant_ability_requests_not_sent_has_reason_check
         CHECK ((outcome IS NOT DISTINCT FROM 'not_sent')
@@ -10593,6 +10770,84 @@ CREATE TABLE IF NOT EXISTS assistant_ability_requests (
         CHECK ((ability_name = 'wpmgr/rest-write') = (route_id IS NOT NULL)),
     CONSTRAINT assistant_ability_requests_rest_write_card_check
         CHECK (ability_name <> 'wpmgr/rest-write' OR card_facts IS NOT NULL),
+
+    -- m174: who or what approved (person, policy = the site's setting,
+    -- session), what that approval relied on, the class decided, why a
+    -- request asked, when it was checked, and the raw post status the
+    -- precheck checked (written at insert, never updated, no UPDATE grant).
+    -- Guarded by ai_approval_backstop (m174 block below).
+    approval_source text NOT NULL DEFAULT 'person'
+        CONSTRAINT assistant_ability_requests_approval_source_check
+        CHECK (approval_source IN ('person', 'policy', 'session')),
+    approval_site_mode text NULL
+        CONSTRAINT assistant_ability_requests_approval_site_mode_check
+        CHECK (approval_site_mode IS NULL OR approval_site_mode IN ('ai_drafts', 'full')),
+    -- How the mode a 'policy' approval relied on was chosen. Only a 'policy'
+    -- approval records it.
+    approval_mode_source text NULL,
+    CONSTRAINT assistant_ability_requests_approval_mode_source_check
+        CHECK (approval_mode_source IS NULL
+               OR (approval_source = 'policy'
+                   AND approval_mode_source IN ('launch_default', 'enable_default', 'person'))),
+    approval_mode_version bigint NULL
+        CONSTRAINT assistant_ability_requests_approval_mode_version_check
+        CHECK (approval_mode_version IS NULL OR approval_mode_version > 0),
+    approval_setter_user_id uuid NULL
+        CONSTRAINT assistant_ability_requests_approval_setter_not_nil_check
+        CHECK (approval_setter_user_id IS NULL
+               OR approval_setter_user_id <> '00000000-0000-0000-0000-000000000000'::uuid),
+    approval_setter_set_at timestamptz NULL,
+    approval_session_id uuid NULL,
+    base_change_class text NULL
+        CONSTRAINT assistant_ability_requests_base_change_class_check
+        CHECK (base_change_class IS NULL OR base_change_class IN (
+            'ai_draft', 'operational', 'unpublished', 'live', 'publish', 'update',
+            'always_ask', 'by_target_status')),
+    change_class text NULL
+        CONSTRAINT assistant_ability_requests_change_class_check
+        CHECK (change_class IS NULL OR change_class IN (
+            'ai_draft', 'operational', 'unpublished', 'live', 'publish', 'update',
+            'always_ask')),
+    ask_reason text NULL
+        CONSTRAINT assistant_ability_requests_ask_reason_check
+        CHECK (ask_reason IS NULL OR ask_reason IN (
+            'kind_always_asks', 'unknown_target_state', 'site_mode_ask',
+            'kind_not_in_mode', 'setter_lacks_permission', 'over_change_budget',
+            'over_site_cap', 'connection_never_auto', 'connection_setter_invalid',
+            'not_checked', 'visible_auto_held', 'session_ended')),
+    policy_checked_at timestamptz NULL,
+    checked_target_status text NULL
+        CONSTRAINT assistant_ability_requests_checked_target_status_check
+        CHECK (checked_target_status IS NULL OR char_length(checked_target_status) <= 64),
+    CONSTRAINT assistant_ability_requests_policy_approval_shape_check
+        CHECK (state NOT IN ('approved', 'dispatched', 'done', 'failed',
+                             'not_sent', 'outcome_unknown')
+               OR approval_source <> 'policy'
+               OR (decided_by_user_id IS NULL
+                   AND approval_site_mode IS NOT NULL
+                   AND approval_mode_source IS NOT NULL
+                   AND approval_mode_version IS NOT NULL
+                   AND approval_setter_user_id IS NOT NULL
+                   AND approval_setter_set_at IS NOT NULL
+                   AND approval_session_id IS NULL
+                   AND base_change_class IS NOT NULL
+                   AND change_class IS NOT NULL
+                   AND ask_reason IS NULL
+                   AND policy_checked_at IS NOT NULL)),
+    CONSTRAINT assistant_ability_requests_session_approval_shape_check
+        CHECK (state NOT IN ('approved', 'dispatched', 'done', 'failed',
+                             'not_sent', 'outcome_unknown')
+               OR approval_source <> 'session'
+               OR (decided_by_user_id IS NULL
+                   AND approval_session_id IS NOT NULL
+                   AND approval_setter_user_id IS NOT NULL
+                   AND approval_site_mode IS NULL
+                   AND approval_mode_source IS NULL
+                   AND approval_mode_version IS NULL
+                   AND base_change_class IS NOT NULL
+                   AND change_class IS NOT NULL
+                   AND ask_reason IS NULL
+                   AND policy_checked_at IS NOT NULL)),
 
     -- m169: THE PAGE EDIT FACTS. snapshot_sha256 is the hash of the copy the
     -- agent kept before an applied page edit; the outcome recording writes it
@@ -10712,6 +10967,13 @@ GRANT UPDATE (
     undo_started_at, undo_finished_at,
     -- m169
     snapshot_sha256, undo_code
+) ON assistant_ability_requests TO wpmgr_app;
+-- m174: the approval and decision columns. checked_target_status is not
+-- granted: it is written at insert only.
+GRANT UPDATE (
+    approval_source, approval_site_mode, approval_mode_source, approval_mode_version,
+    approval_setter_user_id, approval_setter_set_at, approval_session_id,
+    base_change_class, change_class, ask_reason, policy_checked_at
 ) ON assistant_ability_requests TO wpmgr_app;
 
 -- ===========================================================================
@@ -11001,7 +11263,19 @@ CREATE TABLE IF NOT EXISTS rest_route_catalogue (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     -- NULL only for a row the migration seeded or the stamp touched last.
-    updated_by_user_id uuid NULL
+    updated_by_user_id uuid NULL,
+    -- m174: as ability_catalogue.change_class. For wpmgr/rest-write the
+    -- route's class is the stored class. Not part of
+    -- rest_route_catalogue_row_sha256(), so no route hash moves.
+    change_class text NOT NULL DEFAULT 'always_ask'
+        CONSTRAINT rest_route_catalogue_change_class_check
+        CHECK (change_class IN ('ai_draft', 'operational', 'unpublished', 'live',
+                                'publish', 'update', 'always_ask', 'by_target_status')),
+    CONSTRAINT rest_route_catalogue_change_class_effect_check
+        CHECK (change_class NOT IN ('ai_draft', 'operational')
+               OR effect_copy IN ('draft', 'none')),
+    CONSTRAINT rest_route_catalogue_change_class_snapshot_check
+        CHECK (change_class IN ('always_ask', 'operational') OR snapshot <> 'none')
 );
 
 ALTER TABLE rest_route_catalogue ENABLE ROW LEVEL SECURITY;
@@ -11041,7 +11315,14 @@ CREATE TABLE IF NOT EXISTS rest_route_catalogue_audit (
             AND before_route_sha256 IS NULL
             AND after_route_sha256 IS NOT NULL
             AND before_enabled IS NOT DISTINCT FROM after_enabled)),
-    at timestamptz NOT NULL DEFAULT now()
+    at timestamptz NOT NULL DEFAULT now(),
+    -- m174: set, both, only on a re-class by set_ability_change_class().
+    before_change_class text NULL,
+    after_change_class text NULL,
+    CONSTRAINT rest_route_catalogue_audit_change_class_pair_check
+        CHECK ((before_change_class IS NULL) = (after_change_class IS NULL)
+               AND (after_change_class IS NULL
+                    OR (action = 'update' AND actor_user_id IS NOT NULL)))
 );
 
 CREATE INDEX IF NOT EXISTS rest_route_catalogue_audit_route_idx
@@ -11485,3 +11766,546 @@ REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON rest_route_catalogue FROM wpmgr_app;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON rest_route_catalogue_audit FROM wpmgr_app;
 GRANT SELECT ON rest_route_catalogue TO wpmgr_app;
 GRANT SELECT ON rest_route_catalogue_audit TO wpmgr_app;
+
+-- ===========================================================================
+-- Approval tiers, Merge A (m174)
+-- ===========================================================================
+--
+-- A person chooses, per site, how much an AI connection may change without a
+-- click (sites.ai_mode*); a connection runs by that setting or never
+-- (mcp_grants.ai_auto*); each request records who or what approved it and
+-- the class decided (the approval_* and class columns on both request
+-- tables); the catalogues carry each entry's and route's change class. The
+-- functions and triggers below are the database's half of that contract. The
+-- full argument is m174's header.
+
+-- The mode matrix, the one SQL copy. A Go table holds the same matrix and a
+-- test compares every pair. by_target_status is a stored value only and is
+-- false in every mode.
+CREATE OR REPLACE FUNCTION ai_mode_allows(p_mode text, p_class text)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE PARALLEL SAFE
+SET search_path = public, pg_temp
+AS $$
+    SELECT coalesce(
+        CASE p_mode
+            WHEN 'ai_drafts' THEN p_class IN ('ai_draft', 'operational')
+            WHEN 'full'      THEN p_class IN ('ai_draft', 'operational', 'unpublished',
+                                              'live', 'publish', 'update')
+            ELSE false
+        END,
+        false);
+$$;
+
+REVOKE ALL ON FUNCTION ai_mode_allows(text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION ai_mode_allows(text, text) TO wpmgr_app;
+
+-- sites_ai_mode_guard: an INSERT carries the defaults; the version moves by
+-- exactly one with each change of mode, setter or source, and set time and
+-- step-up move only with such a change; no runtime write produces source
+-- unset, migration or launch_default; a recorded setter is the signed-in
+-- person (app.user_id, never the all-zero uuid); a mode above ask is a
+-- person's choice; with no person the only change is down to ask, recorded
+-- as tightened; enable_default is written only from unset.
+CREATE OR REPLACE FUNCTION sites_ai_mode_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_raw     text := nullif(current_setting('app.user_id', true), '');
+    v_user    uuid;
+    v_changed boolean;
+BEGIN
+    IF v_raw IS NOT NULL AND v_raw <> '00000000-0000-0000-0000-000000000000' THEN
+        v_user := v_raw::uuid;
+    END IF;
+
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.ai_mode IS DISTINCT FROM 'ask'
+           OR NEW.ai_mode_source IS DISTINCT FROM 'unset'
+           OR NEW.ai_mode_set_by IS NOT NULL
+           OR NEW.ai_mode_set_at IS NOT NULL
+           OR NEW.ai_mode_version IS DISTINCT FROM 0
+           OR NEW.ai_mode_step_up IS NOT NULL THEN
+            RAISE EXCEPTION 'sites_ai_mode_guard: a new site starts on ask, unset, version 0, with no setter'
+                USING ERRCODE = '42501';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    v_changed := NEW.ai_mode IS DISTINCT FROM OLD.ai_mode
+              OR NEW.ai_mode_set_by IS DISTINCT FROM OLD.ai_mode_set_by
+              OR NEW.ai_mode_source IS DISTINCT FROM OLD.ai_mode_source;
+
+    IF NOT v_changed THEN
+        IF NEW.ai_mode_version IS DISTINCT FROM OLD.ai_mode_version
+           OR NEW.ai_mode_set_at IS DISTINCT FROM OLD.ai_mode_set_at
+           OR NEW.ai_mode_step_up IS DISTINCT FROM OLD.ai_mode_step_up THEN
+            RAISE EXCEPTION 'sites_ai_mode_guard: the version, set time and step-up move only with a change of mode, setter or source'
+                USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF NEW.ai_mode_version IS DISTINCT FROM OLD.ai_mode_version + 1 THEN
+        RAISE EXCEPTION 'sites_ai_mode_guard: a change of mode, setter or source moves the version by exactly one'
+            USING ERRCODE = '55000';
+    END IF;
+
+    IF NEW.ai_mode_source IN ('unset', 'migration', 'launch_default') THEN
+        RAISE EXCEPTION 'sites_ai_mode_guard: source % is never written at run time', NEW.ai_mode_source
+            USING ERRCODE = '42501';
+    END IF;
+
+    IF NEW.ai_mode_source = 'enable_default' AND OLD.ai_mode_source IS DISTINCT FROM 'unset' THEN
+        RAISE EXCEPTION 'sites_ai_mode_guard: the default applies only to a site no person has set'
+            USING ERRCODE = '55000';
+    END IF;
+
+    IF NEW.ai_mode_set_by IS NOT NULL AND NEW.ai_mode_set_by IS DISTINCT FROM v_user THEN
+        RAISE EXCEPTION 'sites_ai_mode_guard: the recorded setter is the signed-in person making the change'
+            USING ERRCODE = '42501';
+    END IF;
+
+    IF NEW.ai_mode <> 'ask' AND NEW.ai_mode_source NOT IN ('person', 'enable_default') THEN
+        RAISE EXCEPTION 'sites_ai_mode_guard: a mode above ask is a person''s choice'
+            USING ERRCODE = '42501';
+    END IF;
+
+    IF v_user IS NULL
+       AND (NEW.ai_mode <> 'ask'
+            OR NEW.ai_mode_source <> 'tightened'
+            OR NEW.ai_mode_set_by IS NOT NULL) THEN
+        RAISE EXCEPTION 'sites_ai_mode_guard: with no signed-in person the only change is down to ask, recorded as tightened'
+            USING ERRCODE = '42501';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION sites_ai_mode_guard() FROM PUBLIC;
+
+CREATE TRIGGER sites_ai_mode_guard
+    BEFORE INSERT OR UPDATE OF ai_mode, ai_mode_source, ai_mode_set_by,
+                               ai_mode_set_at, ai_mode_version, ai_mode_step_up
+    ON sites
+    FOR EACH ROW
+    EXECUTE FUNCTION sites_ai_mode_guard();
+
+-- mcp_grants_ai_auto_guard: a row that becomes site_setting, or changes its
+-- setter while site_setting, needs the signed-in person to be the recorded
+-- setter. Moving to never needs no person.
+CREATE OR REPLACE FUNCTION mcp_grants_ai_auto_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_raw     text := nullif(current_setting('app.user_id', true), '');
+    v_user    uuid;
+    v_raising boolean;
+BEGIN
+    IF v_raw IS NOT NULL AND v_raw <> '00000000-0000-0000-0000-000000000000' THEN
+        v_user := v_raw::uuid;
+    END IF;
+
+    IF NEW.ai_auto IS DISTINCT FROM 'site_setting' THEN
+        RETURN NEW;
+    END IF;
+
+    IF TG_OP = 'INSERT' THEN
+        v_raising := true;
+    ELSE
+        v_raising := OLD.ai_auto IS DISTINCT FROM 'site_setting'
+                  OR NEW.ai_auto_set_by IS DISTINCT FROM OLD.ai_auto_set_by;
+    END IF;
+
+    IF v_raising AND (v_user IS NULL OR NEW.ai_auto_set_by IS DISTINCT FROM v_user) THEN
+        RAISE EXCEPTION 'mcp_grants_ai_auto_guard: only the signed-in person recorded as its setter lets a connection run changes by the site''s setting'
+            USING ERRCODE = '42501';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION mcp_grants_ai_auto_guard() FROM PUBLIC;
+
+CREATE TRIGGER mcp_grants_ai_auto_guard
+    BEFORE INSERT OR UPDATE OF ai_auto, ai_auto_set_by
+    ON mcp_grants
+    FOR EACH ROW
+    EXECUTE FUNCTION mcp_grants_ai_auto_guard();
+
+-- One boolean about one grant: is it active and running by the site's
+-- setting? The dispatch reservation runs scoped to one site, where
+-- mcp_grants_site_scope_select hides every grant, so this function clears
+-- app.site_scope transaction-locally for the one read and puts it back
+-- before returning (an error rolls it back with the transaction). The tenant
+-- policy still applies.
+CREATE OR REPLACE FUNCTION mcp_grant_runs_by_setting(p_tenant_id uuid, p_grant_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+VOLATILE
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_scope text := current_setting('app.site_scope', true);
+    v_ok    boolean;
+BEGIN
+    PERFORM set_config('app.site_scope', '', true);
+    SELECT EXISTS (
+        SELECT 1
+        FROM mcp_grants g
+        WHERE g.tenant_id = p_tenant_id
+          AND g.id = p_grant_id
+          AND g.status = 'active'
+          AND g.ai_auto = 'site_setting'
+    ) INTO v_ok;
+    PERFORM set_config('app.site_scope', coalesce(v_scope, ''), true);
+    RETURN coalesce(v_ok, false);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION mcp_grant_runs_by_setting(uuid, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mcp_grant_runs_by_setting(uuid, uuid) TO wpmgr_app;
+
+-- Budget counts, the crash backstop's scan, the session count, and the
+-- activity feed, on both request tables.
+CREATE INDEX IF NOT EXISTS assistant_ability_requests_policy_grant_idx
+    ON assistant_ability_requests (proposed_by_grant_id, decided_at)
+    WHERE approval_source = 'policy';
+CREATE INDEX IF NOT EXISTS assistant_ability_requests_policy_tenant_idx
+    ON assistant_ability_requests (tenant_id, decided_at)
+    WHERE approval_source = 'policy';
+CREATE INDEX IF NOT EXISTS assistant_ability_requests_unchecked_idx
+    ON assistant_ability_requests (created_at)
+    WHERE state = 'pending' AND policy_checked_at IS NULL;
+CREATE INDEX IF NOT EXISTS assistant_ability_requests_session_idx
+    ON assistant_ability_requests (approval_session_id)
+    WHERE approval_session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS assistant_ability_requests_activity_created_idx
+    ON assistant_ability_requests (tenant_id, created_at DESC, id DESC)
+    WHERE state IN ('approved', 'dispatched', 'done', 'failed', 'not_sent', 'outcome_unknown');
+
+CREATE INDEX IF NOT EXISTS assistant_cache_purge_requests_policy_grant_idx
+    ON assistant_cache_purge_requests (proposed_by_grant_id, decided_at)
+    WHERE approval_source = 'policy';
+CREATE INDEX IF NOT EXISTS assistant_cache_purge_requests_policy_tenant_idx
+    ON assistant_cache_purge_requests (tenant_id, decided_at)
+    WHERE approval_source = 'policy';
+CREATE INDEX IF NOT EXISTS assistant_cache_purge_requests_unchecked_idx
+    ON assistant_cache_purge_requests (created_at)
+    WHERE state = 'pending' AND policy_checked_at IS NULL;
+CREATE INDEX IF NOT EXISTS assistant_cache_purge_requests_session_idx
+    ON assistant_cache_purge_requests (approval_session_id)
+    WHERE approval_session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS assistant_cache_purge_requests_activity_created_idx
+    ON assistant_cache_purge_requests (tenant_id, created_at DESC, id DESC)
+    WHERE state IN ('approved_undispatched', 'dispatched');
+
+-- ai_approval_backstop, on both request tables, for every role: a request is
+-- inserted pending, undecided and unchecked; checked_target_status never
+-- changes; the class, the reason it asked and the check time are written
+-- once, together, while it waits; the approval record changes only when a
+-- waiting request is approved; a request enters the approved states only
+-- from pending and only into the first of them; a person's named decider is
+-- the signed-in person; an approval by the site's setting runs with no user
+-- in the transaction and needs the recorded setting to be current, to allow
+-- the class, and the connection to run by it; an approval by session is
+-- refused until sessions arrive.
+CREATE OR REPLACE FUNCTION ai_approval_backstop()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_raw    text := nullif(current_setting('app.user_id', true), '');
+    v_user   uuid;
+    v_entry  text;
+    v_family text[];
+    v_ok     boolean;
+BEGIN
+    IF TG_TABLE_NAME = 'assistant_ability_requests' THEN
+        v_entry  := 'approved';
+        v_family := ARRAY['approved', 'dispatched', 'done', 'failed', 'not_sent', 'outcome_unknown'];
+    ELSIF TG_TABLE_NAME = 'assistant_cache_purge_requests' THEN
+        v_entry  := 'approved_undispatched';
+        v_family := ARRAY['approved_undispatched', 'dispatched'];
+    ELSE
+        RAISE EXCEPTION 'ai_approval_backstop: not written for table %', TG_TABLE_NAME
+            USING ERRCODE = '55000';
+    END IF;
+
+    IF v_raw IS NOT NULL AND v_raw <> '00000000-0000-0000-0000-000000000000' THEN
+        v_user := v_raw::uuid;
+    END IF;
+
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.state IS DISTINCT FROM 'pending' THEN
+            RAISE EXCEPTION 'ai_approval_backstop: a request is created pending'
+                USING ERRCODE = '55000';
+        END IF;
+        IF NEW.approval_source IS DISTINCT FROM 'person'
+           OR NEW.approval_site_mode IS NOT NULL
+           OR NEW.approval_mode_source IS NOT NULL
+           OR NEW.approval_mode_version IS NOT NULL
+           OR NEW.approval_setter_user_id IS NOT NULL
+           OR NEW.approval_setter_set_at IS NOT NULL
+           OR NEW.approval_session_id IS NOT NULL
+           OR NEW.base_change_class IS NOT NULL
+           OR NEW.change_class IS NOT NULL
+           OR NEW.ask_reason IS NOT NULL
+           OR NEW.policy_checked_at IS NOT NULL THEN
+            RAISE EXCEPTION 'ai_approval_backstop: a request is created undecided and unchecked'
+                USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'assistant_ability_requests' THEN
+        IF NEW.checked_target_status IS DISTINCT FROM OLD.checked_target_status THEN
+            RAISE EXCEPTION 'ai_approval_backstop: checked_target_status is recorded at creation and never changes'
+                USING ERRCODE = '55000';
+        END IF;
+    END IF;
+
+    IF NEW.base_change_class IS DISTINCT FROM OLD.base_change_class
+       OR NEW.change_class IS DISTINCT FROM OLD.change_class
+       OR NEW.ask_reason IS DISTINCT FROM OLD.ask_reason
+       OR NEW.policy_checked_at IS DISTINCT FROM OLD.policy_checked_at THEN
+        IF OLD.policy_checked_at IS NOT NULL
+           OR OLD.base_change_class IS NOT NULL
+           OR OLD.change_class IS NOT NULL
+           OR OLD.ask_reason IS NOT NULL
+           OR NEW.policy_checked_at IS NULL
+           OR OLD.state IS DISTINCT FROM 'pending'
+           OR NEW.state NOT IN ('pending', v_entry) THEN
+            RAISE EXCEPTION 'ai_approval_backstop: the class, the reason it asked and the check time are written once, together, while the request waits'
+                USING ERRCODE = '55000';
+        END IF;
+    END IF;
+
+    IF NOT (OLD.state = 'pending' AND NEW.state = v_entry) THEN
+        IF NEW.approval_source IS DISTINCT FROM OLD.approval_source
+           OR NEW.approval_site_mode IS DISTINCT FROM OLD.approval_site_mode
+           OR NEW.approval_mode_source IS DISTINCT FROM OLD.approval_mode_source
+           OR NEW.approval_mode_version IS DISTINCT FROM OLD.approval_mode_version
+           OR NEW.approval_setter_user_id IS DISTINCT FROM OLD.approval_setter_user_id
+           OR NEW.approval_setter_set_at IS DISTINCT FROM OLD.approval_setter_set_at
+           OR NEW.approval_session_id IS DISTINCT FROM OLD.approval_session_id THEN
+            RAISE EXCEPTION 'ai_approval_backstop: the approval record changes only when a waiting request is approved'
+                USING ERRCODE = '55000';
+        END IF;
+    END IF;
+
+    IF OLD.state <> ALL (v_family) AND NEW.state = ANY (v_family) THEN
+        IF OLD.state IS DISTINCT FROM 'pending' OR NEW.state IS DISTINCT FROM v_entry THEN
+            RAISE EXCEPTION 'ai_approval_backstop: only a waiting request is approved, and only into %', v_entry
+                USING ERRCODE = '55000';
+        END IF;
+
+        IF NEW.approval_source = 'person' THEN
+            IF NEW.decided_by_user_id IS NOT NULL
+               AND (v_user IS NULL OR NEW.decided_by_user_id IS DISTINCT FROM v_user) THEN
+                RAISE EXCEPTION 'ai_approval_backstop: a person''s approval is made by that person, signed in'
+                    USING ERRCODE = '42501';
+            END IF;
+        ELSIF NEW.approval_source = 'policy' THEN
+            IF v_raw IS NOT NULL THEN
+                RAISE EXCEPTION 'ai_approval_backstop: an approval by a site''s setting runs with no user in the transaction'
+                    USING ERRCODE = '42501';
+            END IF;
+            SELECT EXISTS (
+                       SELECT 1
+                       FROM sites s
+                       WHERE s.tenant_id = NEW.tenant_id
+                         AND s.id = NEW.site_id
+                         AND s.ai_mode = NEW.approval_site_mode
+                         AND s.ai_mode_source = NEW.approval_mode_source
+                         AND s.ai_mode_version = NEW.approval_mode_version
+                         AND s.ai_mode_set_by = NEW.approval_setter_user_id
+                         AND s.ai_mode_set_at IS NOT DISTINCT FROM NEW.approval_setter_set_at
+                         AND ai_mode_allows(s.ai_mode, NEW.change_class)
+                   )
+               AND mcp_grant_runs_by_setting(NEW.tenant_id, NEW.proposed_by_grant_id)
+            INTO v_ok;
+            IF NOT coalesce(v_ok, false) THEN
+                RAISE EXCEPTION 'ai_approval_backstop: an approval by a site''s setting needs that setting, as recorded, to be current and to allow this change, and the connection to run by it'
+                    USING ERRCODE = '42501';
+            END IF;
+        ELSE
+            RAISE EXCEPTION 'ai_approval_backstop: an approval by % is not accepted', NEW.approval_source
+                USING ERRCODE = '42501';
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION ai_approval_backstop() FROM PUBLIC;
+
+CREATE TRIGGER assistant_ability_requests_approval_backstop
+    BEFORE INSERT OR UPDATE
+    ON assistant_ability_requests
+    FOR EACH ROW
+    EXECUTE FUNCTION ai_approval_backstop();
+
+CREATE TRIGGER assistant_cache_purge_requests_approval_backstop
+    BEFORE INSERT OR UPDATE
+    ON assistant_cache_purge_requests
+    FOR EACH ROW
+    EXECUTE FUNCTION ai_approval_backstop();
+
+-- The seeded classes: wpmgr/page-create makes the AI's own drafts and
+-- wpmgr/page-edit changes them; the two REST write routes are classed by the
+-- checked status of their target. wpmgr/page-structure, a read, stays on the
+-- default.
+UPDATE ability_catalogue
+SET change_class = 'ai_draft'
+WHERE name IN ('wpmgr/page-create', 'wpmgr/page-edit')
+  AND source = 'wpmgr'
+  AND change_class = 'always_ask';
+
+UPDATE rest_route_catalogue
+SET change_class = 'by_target_status'
+WHERE route_id IN ('wp-v2-pages-update-fields', 'wp-v2-posts-update-fields')
+  AND class = 'write'
+  AND change_class = 'always_ask';
+
+-- The one runtime path that re-classes an entry (kind 'ability', id the
+-- entry_id) or a route (kind 'rest_route', id the route_id). SECURITY
+-- DEFINER, search_path pinned, superadmin actor, the writers' per-name lock,
+-- and the audit row naming the old and new class in the same statement.
+CREATE OR REPLACE FUNCTION set_ability_change_class(
+    p_actor_user_id uuid,
+    p_kind text,
+    p_id text,
+    p_class text
+)
+RETURNS text
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_name   text;
+    v_before ability_catalogue;
+    v_after  ability_catalogue;
+    v_rb     rest_route_catalogue;
+    v_ra     rest_route_catalogue;
+    v_entry  uuid;
+BEGIN
+    IF p_actor_user_id IS NULL OR NOT EXISTS (
+        SELECT 1 FROM users u
+        WHERE u.id = p_actor_user_id AND u.is_superadmin
+    ) THEN
+        RAISE EXCEPTION 'set_ability_change_class: actor is not a superadmin'
+            USING ERRCODE = '42501';
+    END IF;
+
+    IF p_class IS NULL OR p_class NOT IN ('ai_draft', 'operational', 'unpublished', 'live',
+                                          'publish', 'update', 'always_ask', 'by_target_status') THEN
+        RAISE EXCEPTION 'set_ability_change_class: % is not a change class', p_class
+            USING ERRCODE = '22023';
+    END IF;
+
+    IF p_kind = 'ability' THEN
+        IF p_id IS NULL OR p_id !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+            RAISE EXCEPTION 'set_ability_change_class: an ability is named by its entry id'
+                USING ERRCODE = '22023';
+        END IF;
+        v_entry := p_id::uuid;
+
+        SELECT name INTO v_name FROM ability_catalogue WHERE entry_id = v_entry;
+        IF v_name IS NULL THEN
+            RAISE EXCEPTION 'set_ability_change_class: no entry %', p_id
+                USING ERRCODE = 'P0002';
+        END IF;
+
+        PERFORM pg_advisory_xact_lock(hashtext('ability_catalogue'), hashtext(v_name));
+        SELECT * INTO v_before FROM ability_catalogue WHERE entry_id = v_entry FOR UPDATE;
+
+        UPDATE ability_catalogue AS ac SET
+            change_class = p_class,
+            updated_at = now(),
+            updated_by_user_id = p_actor_user_id
+        WHERE ac.entry_id = v_entry
+        RETURNING ac.* INTO v_after;
+
+        INSERT INTO ability_catalogue_audit (
+            entry_id, name, action, actor_user_id,
+            before_row_sha256, after_row_sha256,
+            before_entry_sha256, after_entry_sha256,
+            before_enabled, after_enabled,
+            before_change_class, after_change_class
+        ) VALUES (
+            v_after.entry_id,
+            v_after.name,
+            'update',
+            p_actor_user_id,
+            ability_catalogue_row_sha256(v_before),
+            ability_catalogue_row_sha256(v_after),
+            v_before.entry_sha256,
+            v_after.entry_sha256,
+            v_before.enabled,
+            v_after.enabled,
+            v_before.change_class,
+            v_after.change_class
+        );
+
+        RETURN v_after.change_class;
+    ELSIF p_kind = 'rest_route' THEN
+        IF p_id IS NULL OR p_id !~ '^[a-z0-9-]{1,64}$' THEN
+            RAISE EXCEPTION 'set_ability_change_class: a route is named by its route id'
+                USING ERRCODE = '22023';
+        END IF;
+
+        PERFORM pg_advisory_xact_lock(hashtext('rest_route_catalogue'), hashtext(p_id));
+        SELECT * INTO v_rb FROM rest_route_catalogue WHERE route_id = p_id FOR UPDATE;
+        IF v_rb.route_id IS NULL THEN
+            RAISE EXCEPTION 'set_ability_change_class: no route %', p_id
+                USING ERRCODE = 'P0002';
+        END IF;
+
+        UPDATE rest_route_catalogue AS rr SET
+            change_class = p_class,
+            updated_at = now(),
+            updated_by_user_id = p_actor_user_id
+        WHERE rr.route_id = p_id
+        RETURNING rr.* INTO v_ra;
+
+        INSERT INTO rest_route_catalogue_audit (
+            route_id, action, actor_user_id,
+            before_row_sha256, after_row_sha256,
+            before_route_sha256, after_route_sha256,
+            before_enabled, after_enabled,
+            before_change_class, after_change_class
+        ) VALUES (
+            v_ra.route_id,
+            'update',
+            p_actor_user_id,
+            rest_route_catalogue_row_sha256(v_rb),
+            rest_route_catalogue_row_sha256(v_ra),
+            v_rb.route_sha256,
+            v_ra.route_sha256,
+            v_rb.enabled,
+            v_ra.enabled,
+            v_rb.change_class,
+            v_ra.change_class
+        );
+
+        RETURN v_ra.change_class;
+    END IF;
+
+    RAISE EXCEPTION 'set_ability_change_class: kind % is not ability or rest_route', p_kind
+        USING ERRCODE = '22023';
+END;
+$$;
+
+REVOKE ALL ON FUNCTION set_ability_change_class(uuid, text, text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION set_ability_change_class(uuid, text, text, text) TO wpmgr_app;

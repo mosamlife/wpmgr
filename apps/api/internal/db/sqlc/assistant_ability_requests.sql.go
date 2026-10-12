@@ -50,7 +50,7 @@ WHERE tenant_id = $3
   AND presented_digest = $6
   AND state = 'pending'
   AND expires_at > now()
-RETURNING id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, snapshot_sha256, undo_code
+RETURNING id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at, checked_target_status, snapshot_sha256, undo_code
 `
 
 type ApproveAbilityRequestParams struct {
@@ -134,6 +134,172 @@ func (q *Queries) ApproveAbilityRequest(ctx context.Context, arg ApproveAbilityR
 		&i.RouteID,
 		&i.RouteSha256,
 		&i.CardFacts,
+		&i.ApprovalSource,
+		&i.ApprovalSiteMode,
+		&i.ApprovalModeSource,
+		&i.ApprovalModeVersion,
+		&i.ApprovalSetterUserID,
+		&i.ApprovalSetterSetAt,
+		&i.ApprovalSessionID,
+		&i.BaseChangeClass,
+		&i.ChangeClass,
+		&i.AskReason,
+		&i.PolicyCheckedAt,
+		&i.CheckedTargetStatus,
+		&i.SnapshotSha256,
+		&i.UndoCode,
+	)
+	return i, err
+}
+
+const approveAbilityRequestByPolicy = `-- name: ApproveAbilityRequestByPolicy :one
+UPDATE assistant_ability_requests AS r
+SET state = 'approved',
+    approval_source = 'policy',
+    approval_site_mode = $1::text,
+    approval_mode_source = $2::text,
+    approval_mode_version = $3::bigint,
+    approval_setter_user_id = $4::uuid,
+    approval_setter_set_at = $5::timestamptz,
+    base_change_class = $6::text,
+    change_class = $7::text,
+    decided_at = now(),
+    dispatch_deadline_at = now() + ($8::int * interval '1 second'),
+    policy_checked_at = now()
+WHERE r.tenant_id = $9::uuid
+  AND r.id = $10::uuid
+  AND r.site_id = $11::uuid
+  AND r.state = 'pending'
+  AND r.policy_checked_at IS NULL
+  AND r.expires_at > now()
+  AND EXISTS (
+      SELECT 1
+      FROM sites s
+      WHERE s.tenant_id = r.tenant_id
+        AND s.id = r.site_id
+        AND s.ai_mode = $1::text
+        AND s.ai_mode_source = $2::text
+        AND s.ai_mode_version = $3::bigint
+        AND s.ai_mode_set_by = $4::uuid
+        AND s.ai_mode_set_at = $5::timestamptz
+        AND ai_mode_allows(s.ai_mode, $7::text)
+  )
+  AND mcp_grant_runs_by_setting(r.tenant_id, r.proposed_by_grant_id)
+RETURNING id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at, checked_target_status, snapshot_sha256, undo_code
+`
+
+type ApproveAbilityRequestByPolicyParams struct {
+	SiteMode              string    `json:"site_mode"`
+	ModeSource            string    `json:"mode_source"`
+	ModeVersion           int64     `json:"mode_version"`
+	SetterUserID          uuid.UUID `json:"setter_user_id"`
+	SetterSetAt           time.Time `json:"setter_set_at"`
+	BaseChangeClass       string    `json:"base_change_class"`
+	ChangeClass           string    `json:"change_class"`
+	DispatchWindowSeconds int32     `json:"dispatch_window_seconds"`
+	TenantID              uuid.UUID `json:"tenant_id"`
+	ID                    uuid.UUID `json:"id"`
+	SiteID                uuid.UUID `json:"site_id"`
+}
+
+// m174. The approval by a site's setting, as one compare-and-set. Run it in
+// the organisation-wide tenant transaction the decision opens (db.InTenantTx:
+// no user and no site allowlist in the transaction), under the tenant's
+// policy lock. It approves only a request that still waits for its first
+// decision, inside its window, while the site's mode, the mode's source, its
+// version, its setter and its set time are exactly the ones the decision
+// relied on, the mode allows the class, and the connection is active and
+// runs by the site's setting. All of them are recorded on the row.
+//
+// No row (pgx.ErrNoRows) means one of those no longer holds: nothing was
+// written, and the caller decides again from a fresh read. ai_approval_backstop
+// re-checks every condition at the row, so a statement that drops one of them
+// is refused by the database rather than approving.
+func (q *Queries) ApproveAbilityRequestByPolicy(ctx context.Context, arg ApproveAbilityRequestByPolicyParams) (AssistantAbilityRequest, error) {
+	row := q.db.QueryRow(ctx, approveAbilityRequestByPolicy,
+		arg.SiteMode,
+		arg.ModeSource,
+		arg.ModeVersion,
+		arg.SetterUserID,
+		arg.SetterSetAt,
+		arg.BaseChangeClass,
+		arg.ChangeClass,
+		arg.DispatchWindowSeconds,
+		arg.TenantID,
+		arg.ID,
+		arg.SiteID,
+	)
+	var i AssistantAbilityRequest
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.SiteID,
+		&i.ProposedByGrantID,
+		&i.EntryID,
+		&i.EntrySha256,
+		&i.AbilityName,
+		&i.OperatorPermission,
+		&i.InputJson,
+		&i.InputSha256,
+		&i.TargetPostID,
+		&i.TargetKey,
+		&i.PrecheckDigest,
+		&i.PreviewDigest,
+		&i.BaseFingerprint,
+		&i.SiteLabel,
+		&i.SiteHost,
+		&i.GrantLabel,
+		&i.GrantVia,
+		&i.SetupClient,
+		&i.TitleExcerpt,
+		&i.Editor,
+		&i.PostType,
+		&i.EffectCopy,
+		&i.Snapshot,
+		&i.CardCopyVersion,
+		&i.DigestNonce,
+		&i.PresentedDigest,
+		&i.State,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.DecidedAt,
+		&i.DecidedByUserID,
+		&i.WithdrawnAt,
+		&i.DispatchDeadlineAt,
+		&i.ClaimedAt,
+		&i.DispatchAttempts,
+		&i.LastAttemptAt,
+		&i.LastAttemptCode,
+		&i.UnknownSince,
+		&i.LedgerCheckedAt,
+		&i.Outcome,
+		&i.OutcomeAt,
+		&i.OutcomeCode,
+		&i.NotSentReason,
+		&i.CreatedPostID,
+		&i.Restored,
+		&i.Trashed,
+		&i.SiteReportedText,
+		&i.UndoState,
+		&i.UndoAvailableUntil,
+		&i.UndoByUserID,
+		&i.UndoStartedAt,
+		&i.UndoFinishedAt,
+		&i.RouteID,
+		&i.RouteSha256,
+		&i.CardFacts,
+		&i.ApprovalSource,
+		&i.ApprovalSiteMode,
+		&i.ApprovalModeSource,
+		&i.ApprovalModeVersion,
+		&i.ApprovalSetterUserID,
+		&i.ApprovalSetterSetAt,
+		&i.ApprovalSessionID,
+		&i.BaseChangeClass,
+		&i.ChangeClass,
+		&i.AskReason,
+		&i.PolicyCheckedAt,
+		&i.CheckedTargetStatus,
 		&i.SnapshotSha256,
 		&i.UndoCode,
 	)
@@ -456,7 +622,7 @@ WHERE tenant_id = $2
   AND site_id = $4
   AND state = 'pending'
   AND expires_at > now()
-RETURNING id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, snapshot_sha256, undo_code
+RETURNING id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at, checked_target_status, snapshot_sha256, undo_code
 `
 
 type DeclineAbilityRequestParams struct {
@@ -533,6 +699,18 @@ func (q *Queries) DeclineAbilityRequest(ctx context.Context, arg DeclineAbilityR
 		&i.RouteID,
 		&i.RouteSha256,
 		&i.CardFacts,
+		&i.ApprovalSource,
+		&i.ApprovalSiteMode,
+		&i.ApprovalModeSource,
+		&i.ApprovalModeVersion,
+		&i.ApprovalSetterUserID,
+		&i.ApprovalSetterSetAt,
+		&i.ApprovalSessionID,
+		&i.BaseChangeClass,
+		&i.ChangeClass,
+		&i.AskReason,
+		&i.PolicyCheckedAt,
+		&i.CheckedTargetStatus,
 		&i.SnapshotSha256,
 		&i.UndoCode,
 	)
@@ -664,7 +842,7 @@ func (q *Queries) FinishAbilityRequestUndo(ctx context.Context, arg FinishAbilit
 }
 
 const getAbilityRequestForSite = `-- name: GetAbilityRequestForSite :one
-SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, snapshot_sha256, undo_code
+SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at, checked_target_status, snapshot_sha256, undo_code
 FROM assistant_ability_requests
 WHERE tenant_id = $1
   AND id = $2
@@ -739,6 +917,18 @@ func (q *Queries) GetAbilityRequestForSite(ctx context.Context, arg GetAbilityRe
 		&i.RouteID,
 		&i.RouteSha256,
 		&i.CardFacts,
+		&i.ApprovalSource,
+		&i.ApprovalSiteMode,
+		&i.ApprovalModeSource,
+		&i.ApprovalModeVersion,
+		&i.ApprovalSetterUserID,
+		&i.ApprovalSetterSetAt,
+		&i.ApprovalSessionID,
+		&i.BaseChangeClass,
+		&i.ChangeClass,
+		&i.AskReason,
+		&i.PolicyCheckedAt,
+		&i.CheckedTargetStatus,
 		&i.SnapshotSha256,
 		&i.UndoCode,
 	)
@@ -839,7 +1029,7 @@ func (q *Queries) GetAbilityRequestStatusForGrant(ctx context.Context, arg GetAb
 }
 
 const getApprovedAbilityRequestForDispatch = `-- name: GetApprovedAbilityRequestForDispatch :one
-SELECT r.id, r.tenant_id, r.site_id, r.proposed_by_grant_id, r.entry_id, r.entry_sha256, r.ability_name, r.operator_permission, r.input_json, r.input_sha256, r.target_post_id, r.target_key, r.precheck_digest, r.preview_digest, r.base_fingerprint, r.site_label, r.site_host, r.grant_label, r.grant_via, r.setup_client, r.title_excerpt, r.editor, r.post_type, r.effect_copy, r.snapshot, r.card_copy_version, r.digest_nonce, r.presented_digest, r.state, r.created_at, r.expires_at, r.decided_at, r.decided_by_user_id, r.withdrawn_at, r.dispatch_deadline_at, r.claimed_at, r.dispatch_attempts, r.last_attempt_at, r.last_attempt_code, r.unknown_since, r.ledger_checked_at, r.outcome, r.outcome_at, r.outcome_code, r.not_sent_reason, r.created_post_id, r.restored, r.trashed, r.site_reported_text, r.undo_state, r.undo_available_until, r.undo_by_user_id, r.undo_started_at, r.undo_finished_at, r.route_id, r.route_sha256, r.card_facts, r.snapshot_sha256, r.undo_code,
+SELECT r.id, r.tenant_id, r.site_id, r.proposed_by_grant_id, r.entry_id, r.entry_sha256, r.ability_name, r.operator_permission, r.input_json, r.input_sha256, r.target_post_id, r.target_key, r.precheck_digest, r.preview_digest, r.base_fingerprint, r.site_label, r.site_host, r.grant_label, r.grant_via, r.setup_client, r.title_excerpt, r.editor, r.post_type, r.effect_copy, r.snapshot, r.card_copy_version, r.digest_nonce, r.presented_digest, r.state, r.created_at, r.expires_at, r.decided_at, r.decided_by_user_id, r.withdrawn_at, r.dispatch_deadline_at, r.claimed_at, r.dispatch_attempts, r.last_attempt_at, r.last_attempt_code, r.unknown_since, r.ledger_checked_at, r.outcome, r.outcome_at, r.outcome_code, r.not_sent_reason, r.created_post_id, r.restored, r.trashed, r.site_reported_text, r.undo_state, r.undo_available_until, r.undo_by_user_id, r.undo_started_at, r.undo_finished_at, r.route_id, r.route_sha256, r.card_facts, r.approval_source, r.approval_site_mode, r.approval_mode_source, r.approval_mode_version, r.approval_setter_user_id, r.approval_setter_set_at, r.approval_session_id, r.base_change_class, r.change_class, r.ask_reason, r.policy_checked_at, r.checked_target_status, r.snapshot_sha256, r.undo_code,
        (r.dispatch_deadline_at <= now())::boolean AS past_deadline,
        EXISTS (
            SELECT 1 FROM ability_catalogue c
@@ -953,6 +1143,18 @@ func (q *Queries) GetApprovedAbilityRequestForDispatch(ctx context.Context, arg 
 		&i.AssistantAbilityRequest.RouteID,
 		&i.AssistantAbilityRequest.RouteSha256,
 		&i.AssistantAbilityRequest.CardFacts,
+		&i.AssistantAbilityRequest.ApprovalSource,
+		&i.AssistantAbilityRequest.ApprovalSiteMode,
+		&i.AssistantAbilityRequest.ApprovalModeSource,
+		&i.AssistantAbilityRequest.ApprovalModeVersion,
+		&i.AssistantAbilityRequest.ApprovalSetterUserID,
+		&i.AssistantAbilityRequest.ApprovalSetterSetAt,
+		&i.AssistantAbilityRequest.ApprovalSessionID,
+		&i.AssistantAbilityRequest.BaseChangeClass,
+		&i.AssistantAbilityRequest.ChangeClass,
+		&i.AssistantAbilityRequest.AskReason,
+		&i.AssistantAbilityRequest.PolicyCheckedAt,
+		&i.AssistantAbilityRequest.CheckedTargetStatus,
 		&i.AssistantAbilityRequest.SnapshotSha256,
 		&i.AssistantAbilityRequest.UndoCode,
 		&i.PastDeadline,
@@ -1012,7 +1214,7 @@ func (q *Queries) GetEligibleCreatedDraft(ctx context.Context, arg GetEligibleCr
 
 const getPendingAbilityRequestForSite = `-- name: GetPendingAbilityRequestForSite :one
 
-SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, snapshot_sha256, undo_code
+SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at, checked_target_status, snapshot_sha256, undo_code
 FROM assistant_ability_requests
 WHERE tenant_id = $1
   AND id = $2
@@ -1091,6 +1293,18 @@ func (q *Queries) GetPendingAbilityRequestForSite(ctx context.Context, arg GetPe
 		&i.RouteID,
 		&i.RouteSha256,
 		&i.CardFacts,
+		&i.ApprovalSource,
+		&i.ApprovalSiteMode,
+		&i.ApprovalModeSource,
+		&i.ApprovalModeVersion,
+		&i.ApprovalSetterUserID,
+		&i.ApprovalSetterSetAt,
+		&i.ApprovalSessionID,
+		&i.BaseChangeClass,
+		&i.ChangeClass,
+		&i.AskReason,
+		&i.PolicyCheckedAt,
+		&i.CheckedTargetStatus,
 		&i.SnapshotSha256,
 		&i.UndoCode,
 	)
@@ -1098,7 +1312,7 @@ func (q *Queries) GetPendingAbilityRequestForSite(ctx context.Context, arg GetPe
 }
 
 const getPendingAbilityRequestForTarget = `-- name: GetPendingAbilityRequestForTarget :one
-SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, snapshot_sha256, undo_code
+SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at, checked_target_status, snapshot_sha256, undo_code
 FROM assistant_ability_requests
 WHERE tenant_id = $1
   AND site_id = $2
@@ -1186,6 +1400,18 @@ func (q *Queries) GetPendingAbilityRequestForTarget(ctx context.Context, arg Get
 		&i.RouteID,
 		&i.RouteSha256,
 		&i.CardFacts,
+		&i.ApprovalSource,
+		&i.ApprovalSiteMode,
+		&i.ApprovalModeSource,
+		&i.ApprovalModeVersion,
+		&i.ApprovalSetterUserID,
+		&i.ApprovalSetterSetAt,
+		&i.ApprovalSessionID,
+		&i.BaseChangeClass,
+		&i.ChangeClass,
+		&i.AskReason,
+		&i.PolicyCheckedAt,
+		&i.CheckedTargetStatus,
 		&i.SnapshotSha256,
 		&i.UndoCode,
 	)
@@ -1227,7 +1453,7 @@ INSERT INTO assistant_ability_requests (
     site_label, site_host, grant_label, grant_via, setup_client,
     title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version,
     digest_nonce, presented_digest, state, expires_at,
-    route_id, route_sha256, card_facts
+    route_id, route_sha256, card_facts, checked_target_status
 ) VALUES (
     COALESCE($1::uuid, gen_random_uuid()),
     $2, $3, $4,
@@ -1238,46 +1464,48 @@ INSERT INTO assistant_ability_requests (
     $20, $21, $22,
     $23, $24, $25,
     $26, $27, 'pending', $28,
-    $29, $30, $31
+    $29, $30, $31,
+    $32
 )
 ON CONFLICT (tenant_id, site_id, proposed_by_grant_id, ability_name, target_key)
     WHERE state = 'pending'
 DO NOTHING
-RETURNING id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, snapshot_sha256, undo_code
+RETURNING id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at, checked_target_status, snapshot_sha256, undo_code
 `
 
 type InsertAbilityRequestParams struct {
-	ID                 pgtype.UUID `json:"id"`
-	TenantID           uuid.UUID   `json:"tenant_id"`
-	SiteID             uuid.UUID   `json:"site_id"`
-	ProposedByGrantID  uuid.UUID   `json:"proposed_by_grant_id"`
-	EntryID            uuid.UUID   `json:"entry_id"`
-	EntrySha256        string      `json:"entry_sha256"`
-	AbilityName        string      `json:"ability_name"`
-	OperatorPermission string      `json:"operator_permission"`
-	InputJson          string      `json:"input_json"`
-	InputSha256        string      `json:"input_sha256"`
-	TargetPostID       *int64      `json:"target_post_id"`
-	PrecheckDigest     string      `json:"precheck_digest"`
-	PreviewDigest      *string     `json:"preview_digest"`
-	BaseFingerprint    string      `json:"base_fingerprint"`
-	SiteLabel          string      `json:"site_label"`
-	SiteHost           string      `json:"site_host"`
-	GrantLabel         string      `json:"grant_label"`
-	GrantVia           string      `json:"grant_via"`
-	SetupClient        *string     `json:"setup_client"`
-	TitleExcerpt       *string     `json:"title_excerpt"`
-	Editor             *string     `json:"editor"`
-	PostType           *string     `json:"post_type"`
-	EffectCopy         string      `json:"effect_copy"`
-	Snapshot           string      `json:"snapshot"`
-	CardCopyVersion    int32       `json:"card_copy_version"`
-	DigestNonce        string      `json:"digest_nonce"`
-	PresentedDigest    string      `json:"presented_digest"`
-	ExpiresAt          time.Time   `json:"expires_at"`
-	RouteID            *string     `json:"route_id"`
-	RouteSha256        *string     `json:"route_sha256"`
-	CardFacts          []byte      `json:"card_facts"`
+	ID                  pgtype.UUID `json:"id"`
+	TenantID            uuid.UUID   `json:"tenant_id"`
+	SiteID              uuid.UUID   `json:"site_id"`
+	ProposedByGrantID   uuid.UUID   `json:"proposed_by_grant_id"`
+	EntryID             uuid.UUID   `json:"entry_id"`
+	EntrySha256         string      `json:"entry_sha256"`
+	AbilityName         string      `json:"ability_name"`
+	OperatorPermission  string      `json:"operator_permission"`
+	InputJson           string      `json:"input_json"`
+	InputSha256         string      `json:"input_sha256"`
+	TargetPostID        *int64      `json:"target_post_id"`
+	PrecheckDigest      string      `json:"precheck_digest"`
+	PreviewDigest       *string     `json:"preview_digest"`
+	BaseFingerprint     string      `json:"base_fingerprint"`
+	SiteLabel           string      `json:"site_label"`
+	SiteHost            string      `json:"site_host"`
+	GrantLabel          string      `json:"grant_label"`
+	GrantVia            string      `json:"grant_via"`
+	SetupClient         *string     `json:"setup_client"`
+	TitleExcerpt        *string     `json:"title_excerpt"`
+	Editor              *string     `json:"editor"`
+	PostType            *string     `json:"post_type"`
+	EffectCopy          string      `json:"effect_copy"`
+	Snapshot            string      `json:"snapshot"`
+	CardCopyVersion     int32       `json:"card_copy_version"`
+	DigestNonce         string      `json:"digest_nonce"`
+	PresentedDigest     string      `json:"presented_digest"`
+	ExpiresAt           time.Time   `json:"expires_at"`
+	RouteID             *string     `json:"route_id"`
+	RouteSha256         *string     `json:"route_sha256"`
+	CardFacts           []byte      `json:"card_facts"`
+	CheckedTargetStatus *string     `json:"checked_target_status"`
 }
 
 // id is the request id the site receives with the write. A caller that
@@ -1292,6 +1520,11 @@ type InsertAbilityRequestParams struct {
 // is generated and never written. m161: route_id, route_sha256 and
 // card_facts are set together for wpmgr/rest-write and are NULL for every
 // other ability (the table's CHECKs refuse anything else).
+// m174: checked_target_status is the raw post status the precheck checked
+// (restTargetFacts.Status, compared exactly, never the card's cleaned copy).
+// NULL for an ability with no target, page-create among them. It is written
+// here only: no UPDATE grant covers it and ai_approval_backstop refuses any
+// change to it.
 func (q *Queries) InsertAbilityRequest(ctx context.Context, arg InsertAbilityRequestParams) (AssistantAbilityRequest, error) {
 	row := q.db.QueryRow(ctx, insertAbilityRequest,
 		arg.ID,
@@ -1325,6 +1558,7 @@ func (q *Queries) InsertAbilityRequest(ctx context.Context, arg InsertAbilityReq
 		arg.RouteID,
 		arg.RouteSha256,
 		arg.CardFacts,
+		arg.CheckedTargetStatus,
 	)
 	var i AssistantAbilityRequest
 	err := row.Scan(
@@ -1385,6 +1619,18 @@ func (q *Queries) InsertAbilityRequest(ctx context.Context, arg InsertAbilityReq
 		&i.RouteID,
 		&i.RouteSha256,
 		&i.CardFacts,
+		&i.ApprovalSource,
+		&i.ApprovalSiteMode,
+		&i.ApprovalModeSource,
+		&i.ApprovalModeVersion,
+		&i.ApprovalSetterUserID,
+		&i.ApprovalSetterSetAt,
+		&i.ApprovalSessionID,
+		&i.BaseChangeClass,
+		&i.ChangeClass,
+		&i.AskReason,
+		&i.PolicyCheckedAt,
+		&i.CheckedTargetStatus,
 		&i.SnapshotSha256,
 		&i.UndoCode,
 	)
@@ -1393,7 +1639,7 @@ func (q *Queries) InsertAbilityRequest(ctx context.Context, arg InsertAbilityReq
 
 const listAbilityRequests = `-- name: ListAbilityRequests :many
 
-SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, snapshot_sha256, undo_code
+SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at, checked_target_status, snapshot_sha256, undo_code
 FROM assistant_ability_requests
 WHERE tenant_id = $1
 ORDER BY created_at DESC, id DESC
@@ -1477,6 +1723,18 @@ func (q *Queries) ListAbilityRequests(ctx context.Context, arg ListAbilityReques
 			&i.RouteID,
 			&i.RouteSha256,
 			&i.CardFacts,
+			&i.ApprovalSource,
+			&i.ApprovalSiteMode,
+			&i.ApprovalModeSource,
+			&i.ApprovalModeVersion,
+			&i.ApprovalSetterUserID,
+			&i.ApprovalSetterSetAt,
+			&i.ApprovalSessionID,
+			&i.BaseChangeClass,
+			&i.ChangeClass,
+			&i.AskReason,
+			&i.PolicyCheckedAt,
+			&i.CheckedTargetStatus,
 			&i.SnapshotSha256,
 			&i.UndoCode,
 		); err != nil {
@@ -1491,7 +1749,7 @@ func (q *Queries) ListAbilityRequests(ctx context.Context, arg ListAbilityReques
 }
 
 const listAbilityRequestsForSite = `-- name: ListAbilityRequestsForSite :many
-SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, snapshot_sha256, undo_code
+SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at, checked_target_status, snapshot_sha256, undo_code
 FROM assistant_ability_requests
 WHERE tenant_id = $1
   AND site_id = $2
@@ -1578,6 +1836,18 @@ func (q *Queries) ListAbilityRequestsForSite(ctx context.Context, arg ListAbilit
 			&i.RouteID,
 			&i.RouteSha256,
 			&i.CardFacts,
+			&i.ApprovalSource,
+			&i.ApprovalSiteMode,
+			&i.ApprovalModeSource,
+			&i.ApprovalModeVersion,
+			&i.ApprovalSetterUserID,
+			&i.ApprovalSetterSetAt,
+			&i.ApprovalSessionID,
+			&i.BaseChangeClass,
+			&i.ChangeClass,
+			&i.AskReason,
+			&i.PolicyCheckedAt,
+			&i.CheckedTargetStatus,
 			&i.SnapshotSha256,
 			&i.UndoCode,
 		); err != nil {
@@ -1755,7 +2025,7 @@ func (q *Queries) ListOpenAbilityRequestStatusForGrant(ctx context.Context, arg 
 }
 
 const listOrgAbilityRequests = `-- name: ListOrgAbilityRequests :many
-SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, snapshot_sha256, undo_code
+SELECT id, tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256, ability_name, operator_permission, input_json, input_sha256, target_post_id, target_key, precheck_digest, preview_digest, base_fingerprint, site_label, site_host, grant_label, grant_via, setup_client, title_excerpt, editor, post_type, effect_copy, snapshot, card_copy_version, digest_nonce, presented_digest, state, created_at, expires_at, decided_at, decided_by_user_id, withdrawn_at, dispatch_deadline_at, claimed_at, dispatch_attempts, last_attempt_at, last_attempt_code, unknown_since, ledger_checked_at, outcome, outcome_at, outcome_code, not_sent_reason, created_post_id, restored, trashed, site_reported_text, undo_state, undo_available_until, undo_by_user_id, undo_started_at, undo_finished_at, route_id, route_sha256, card_facts, approval_source, approval_site_mode, approval_mode_source, approval_mode_version, approval_setter_user_id, approval_setter_set_at, approval_session_id, base_change_class, change_class, ask_reason, policy_checked_at, checked_target_status, snapshot_sha256, undo_code
 FROM assistant_ability_requests
 WHERE tenant_id = $1
   AND ($2::text IS NULL OR state = $2::text)
@@ -1846,6 +2116,18 @@ func (q *Queries) ListOrgAbilityRequests(ctx context.Context, arg ListOrgAbility
 			&i.RouteID,
 			&i.RouteSha256,
 			&i.CardFacts,
+			&i.ApprovalSource,
+			&i.ApprovalSiteMode,
+			&i.ApprovalModeSource,
+			&i.ApprovalModeVersion,
+			&i.ApprovalSetterUserID,
+			&i.ApprovalSetterSetAt,
+			&i.ApprovalSessionID,
+			&i.BaseChangeClass,
+			&i.ChangeClass,
+			&i.AskReason,
+			&i.PolicyCheckedAt,
+			&i.CheckedTargetStatus,
 			&i.SnapshotSha256,
 			&i.UndoCode,
 		); err != nil {

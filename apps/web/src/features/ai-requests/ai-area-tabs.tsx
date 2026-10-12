@@ -3,7 +3,8 @@ import { Link } from "@tanstack/react-router";
 import { useOrgAbilityPendingCount } from "@/features/ability-requests/use-ability-requests";
 import { useAssistantRequests } from "./use-ai-requests";
 
-// The "AI connections [Connections] [Requests · 2]" tab bar (§2.6). Two real
+// The "AI connections [Connections] [Requests · 2] [Activity]" tab bar
+// (§2.6, approval tiers §8.7). Three real
 // TanStack Router links, same pattern as the site-detail tab bar
 // ($siteId.tsx's TABS) -- the router owns which one is active, this
 // component only supplies the count.
@@ -45,6 +46,9 @@ export function AiAreaTabs() {
       </Link>
       <Link to="/ai/requests" className={TAB_LINK_CLASS} activeProps={{ className: TAB_LINK_ACTIVE_CLASS }}>
         Requests{pendingCount !== null ? ` · ${pendingCount}` : ""}
+      </Link>
+      <Link to="/ai/activity" className={TAB_LINK_CLASS} activeProps={{ className: TAB_LINK_ACTIVE_CLASS }}>
+        Activity
       </Link>
     </nav>
   );

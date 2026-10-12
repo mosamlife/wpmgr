@@ -67,10 +67,10 @@ export const CONTRACT_CANNOT: readonly string[] = [
   "Approve its own change",
   "Reach a site outside its scope",
   "Run PHP, WP-CLI, a shell, or open a file path of its choosing",
-  // The deck writes this as one clause joined by an em dash. Split into two
-  // sentences: this repository ships no em or en dashes in copy, and the words
-  // are what matter.
-  "Be granted a “skip approval” setting. There isn’t one.",
+  // A site's setting can let a connection's changes run without asking, so the
+  // limit that holds is who may change that setting: a signed-in person, never
+  // a connection.
+  "Change how much it is trusted on a site. Only a signed-in person can.",
 ];
 
 /**

@@ -83,13 +83,13 @@ func TestOutsideChangeIsOneClosedKind(t *testing.T) {
 		{outsideRow(mcp.AbilityRestWrite, se, scope+"option_written"), "<null>"},
 	}
 	for _, c := range cases {
-		got := toDTO(c.r, false, "", false).OutsideChange
+		got := toDTO(c.r, false, "", false, setterNames{}).OutsideChange
 		if detailStr(got) != c.want {
 			t.Fatalf("%s %s %q: outside_change %s, want %s", c.r.AbilityName, detailStr(c.r.OutcomeCode),
 				detailStr(c.r.SiteReportedText), detailStr(got), c.want)
 		}
 	}
-	b, err := json.Marshal(toDTO(outsideRow(pe, "conflict", "editor_open"), false, "", false))
+	b, err := json.Marshal(toDTO(outsideRow(pe, "conflict", "editor_open"), false, "", false, setterNames{}))
 	if err != nil {
 		t.Fatal(err)
 	}

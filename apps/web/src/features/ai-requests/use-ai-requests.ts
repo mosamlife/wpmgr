@@ -18,6 +18,8 @@ import {
   type ApiError,
 } from "@wpmgr/api";
 
+import { aiTrustKeys } from "@/features/ai-trust/use-ai-trust";
+
 // The AI request queue (tracka-cache-purge-design-v7 §2.6, slice W2): the
 // global list behind /ai/requests, the site-nested list behind the
 // Performance/Cache banner, and approve/decline.
@@ -199,6 +201,7 @@ export function useApproveAssistantRequest(): UseMutationResult<
     onSuccess: (_data, vars) => {
       void qc.invalidateQueries({ queryKey: assistantRequestKeys.all });
       void qc.invalidateQueries({ queryKey: assistantRequestKeys.site(vars.siteId) });
+      void qc.invalidateQueries({ queryKey: aiTrustKeys.activity() });
     },
   });
 }
@@ -229,6 +232,7 @@ export function useDeclineAssistantRequest(): UseMutationResult<
     onSuccess: (_data, vars) => {
       void qc.invalidateQueries({ queryKey: assistantRequestKeys.all });
       void qc.invalidateQueries({ queryKey: assistantRequestKeys.site(vars.siteId) });
+      void qc.invalidateQueries({ queryKey: aiTrustKeys.activity() });
     },
   });
 }
