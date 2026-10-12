@@ -288,8 +288,8 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 The entries below summarize the notable changes since 0.55.0. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
 = 0.61.164 =
-* Added: Reading the structure of a page built in Elementor now also says whether someone has the draft open in Elementor or has unsaved changes to it. The read changes nothing on the site.
-* Changed: An edit or an undo that is refused because someone has the page open in Elementor now tells WPMgr it can be tried again once the editor is closed. A refusal for unsaved changes, or for a page that changed since the AI read it, is not marked that way.
+* Added: Reading the structure of an Elementor draft the AI can edit now also says whether someone has it open in an editor (Elementor or the WordPress editor) or has unsaved changes to it. A published page is not checked, so its status is not reported. The read changes nothing on the site.
+* Changed: An edit or an undo that is refused because someone has the page open in an editor (Elementor or the WordPress editor) now tells WPMgr it can be tried again once the editor is closed. A refusal for unsaved changes, or for a page that changed since the AI read it, is not marked that way.
 * Fixed: An edit of an Elementor draft that someone has previewed now goes through. Where Elementor keeps a style record for each page, the site used to count Elementor's own update of the page's entry as a change outside the page, refuse the edit and put the page back. A change to any other page's entry, or to anything else outside the page, still refuses the edit.
 
 = 0.61.163 =
@@ -465,7 +465,7 @@ The entries below summarize the notable changes since 0.55.0. This project ships
 == Upgrade Notice ==
 
 = 0.61.164 =
-Edits of an Elementor draft that someone has previewed now go through, and an edit or undo refused because the page is open in an editor can be tried again once it is closed. Reading a page's structure also says whether it is open.
+Edits of an Elementor draft that someone has previewed now go through, and an edit or undo refused because the page is open in an editor can be tried again once it is closed. Reading the structure of an Elementor draft the AI can edit also says whether it is open in an editor or has unsaved changes.
 
 = 0.61.163 =
 Lets a connected AI read an Elementor page and edit a draft it created, with your approval for each edit and an undo for each change. WPMgr needs this version on the site for it. Nothing is published.
