@@ -411,11 +411,10 @@ final class PageCreateEditRoundTripTest extends TestCase
         $this->assertNotSame($created['meta'][ElementorDocument::KEY_DATA], $edited['meta'][ElementorDocument::KEY_DATA], 'the edit wrote the element data');
         $this->assertSame(self::keysWithoutData($created['meta']), self::keysWithoutData($edited['meta']), 'every other row of the page is as the edit found it');
         $this->assertSame($this->frameRows($id), [ElementorDocument::KEY_PAGE_SETTINGS => [ElementorDocument::pageSettingsBytes(['hide_title' => 'yes'])], self::TEMPLATE => [ElementorDocument::pageTemplate('full_width')]], 'the edit left the frame alone');
-        $this->assertSame(
-            [self::NEW_PRICE],
-            self::leafChanges(json_decode((string) $created['meta'][ElementorDocument::KEY_DATA][0], true), json_decode((string) $edited['meta'][ElementorDocument::KEY_DATA][0], true)),
-            'one text of the stored tree differs: the price, from ' . self::PRICE . ' to ' . self::NEW_PRICE
-        );
+        $changes = self::leafChanges(json_decode((string) $created['meta'][ElementorDocument::KEY_DATA][0], true), json_decode((string) $edited['meta'][ElementorDocument::KEY_DATA][0], true));
+        $this->assertCount(1, $changes, 'one value of the stored tree differs: ' . (string) json_encode($changes));
+        $this->assertSame(self::NEW_PRICE, $changes[0][1], 'the price, now ' . self::NEW_PRICE);
+        $this->assertStringContainsString(self::PRICE, (string) $changes[0][0], 'the price, before ' . self::PRICE);
 
         // Read again: the same page, with that one price.
         $second = $this->structure($id);
@@ -1074,7 +1073,7 @@ final class PageCreateEditRoundTripTest extends TestCase
      *
      * @param mixed $before A tree.
      * @param mixed $after  The same tree after an edit.
-     * @return list<mixed> The after-values of every leaf that differs.
+     * @return list<array{0:mixed,1:mixed}> The before and after values of every leaf that differs.
      */
     private static function leafChanges(mixed $before, mixed $after): array
     {
@@ -1087,7 +1086,7 @@ final class PageCreateEditRoundTripTest extends TestCase
             return $out;
         }
 
-        return $before === $after ? [] : [$after];
+        return $before === $after ? [] : [[$before, $after]];
     }
 
     /**
