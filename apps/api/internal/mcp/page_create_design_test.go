@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -639,4 +640,67 @@ func TestDesignFontsScaleRadiusDensity(t *testing.T) {
 		}
 		refused(t, "design.colors", "ink", `"#000000"`)
 	})
+}
+
+// pageV3CasesFixture is the shared accept/refuse table of outline v3. The
+// agent's tests own it; it is never hand-edited from here.
+const pageV3CasesFixture = agentAbilityFixtures + "page-create-v3-cases.json"
+
+// TestDesignSharedCases: the design validator answers the shared v3 table.
+// A case whose rule is about the design is refused with the agent's own
+// code, and a v3 case the control plane accepts as a whole holds a design
+// that passes. (The table's other refusals break one other rule each, so the
+// design is not what they test.)
+func TestDesignSharedCases(t *testing.T) {
+	b, err := os.ReadFile(pageV3CasesFixture)
+	if err != nil {
+		t.Fatalf("read %s: %v", pageV3CasesFixture, err)
+	}
+	var doc struct {
+		Cases []struct {
+			Name  string `json:"name"`
+			Rule  string `json:"rule"`
+			Input string `json:"input"`
+			Agent string `json:"agent"`
+			Go    string `json:"go"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("decode %s: %v", pageV3CasesFixture, err)
+	}
+	refusedWith := map[string]int{}
+	accepted := 0
+	for _, c := range doc.Cases {
+		top, ok := jsonObjectOf([]byte(c.Input))
+		if !ok {
+			t.Errorf("%s: the input is not a JSON object", c.Name)
+			continue
+		}
+		raw, hasDesign := top["design"]
+		designRule := strings.HasPrefix(c.Rule, "design")
+		if !designRule && (c.Go != "accept" || !hasDesign) {
+			continue
+		}
+		_, problem := validatePageDesign(raw)
+		if designRule && c.Go == "refuse" {
+			if problem == nil || problem.Code != c.Agent {
+				t.Errorf("%s: %+v, want a %s problem", c.Name, problem, c.Agent)
+			}
+			refusedWith[c.Agent]++
+			continue
+		}
+		if problem != nil {
+			t.Errorf("%s: the control plane accepts the case, but its design is refused: %+v", c.Name, problem)
+		}
+		accepted++
+	}
+	// A table that read as empty, or lost a class of case, proves nothing.
+	for _, code := range []string{pageDesignNotReady, pageDesignContrastLow, pageCreateBadInput} {
+		if refusedWith[code] == 0 {
+			t.Errorf("the table has no design case refused with %s: %v", code, refusedWith)
+		}
+	}
+	if accepted < 3 {
+		t.Errorf("the table has %d accepted designs, want at least 3", accepted)
+	}
 }
