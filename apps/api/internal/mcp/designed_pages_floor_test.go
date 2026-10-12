@@ -86,3 +86,41 @@ func TestDesignedPagesFloorRefusesOlderAgent(t *testing.T) {
 		}
 	})
 }
+
+// firstAgentReleaseWithDesignedPages is the agent release that builds
+// designed pages, the floor the run path names.
+const firstAgentReleaseWithDesignedPages = "0.61.165"
+
+// TestPageCreateRun_DesignedPagesFloorIsPerInput holds a designed page to its
+// floor through the real transport. On the newest agent that does not build
+// designed pages the answer is the update-required refusal naming the floor,
+// and the site receives no precheck call; at the floor the precheck is sent,
+// so the refusal below it is the floor's and not another check's.
+func TestPageCreateRun_DesignedPagesFloorIsPerInput(t *testing.T) {
+	designed := string(v3HeadInput(nil))
+	if agentcmd.MinAgentVersionForDesignedPages != firstAgentReleaseWithDesignedPages ||
+		lastAgentReleaseWithoutDesignedPages != "0.61.164" {
+		t.Fatalf("the floor %s and the release below it %s are not the ones this test is about",
+			agentcmd.MinAgentVersionForDesignedPages, lastAgentReleaseWithoutDesignedPages)
+	}
+
+	agent := &refusingPrecheckAgent{code: "create_content_invalid"}
+	r, site := pageCreateRunRouterLimits(t, lastAgentReleaseWithoutDesignedPages, agent, elementorEnabled)
+	ref := runPageCreate(t, r, site, designed)
+	if ref.code != codeSiteAgentOutdated || ref.data["min_agent_version"] != firstAgentReleaseWithDesignedPages ||
+		ref.data["retryable"] != false || ref.msg != msgAbilityDesignedOutdated ||
+		!strings.Contains(ref.msg, firstAgentReleaseWithDesignedPages) {
+		t.Fatalf("a designed page on %s: %s", lastAgentReleaseWithoutDesignedPages, ref.raw)
+	}
+	if len(agent.calls) != 0 {
+		t.Fatalf("the site was asked %d times for a page it cannot build", len(agent.calls))
+	}
+
+	// At the floor the same input reaches the site, once, as a precheck.
+	agent = &refusingPrecheckAgent{code: "create_content_invalid"}
+	r, site = pageCreateRunRouterLimits(t, firstAgentReleaseWithDesignedPages, agent, elementorEnabled)
+	_ = runPageCreate(t, r, site, designed)
+	if len(agent.calls) != 1 || agent.calls[0].Mode != agentcmd.AbilityRunModePrecheck {
+		t.Fatalf("a designed page on %s: %d precheck calls, want 1", firstAgentReleaseWithDesignedPages, len(agent.calls))
+	}
+}
