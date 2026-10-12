@@ -82,6 +82,8 @@ final class PageCreateLayoutTest extends TestCase
         'anchor-41-characters',
         'anchor-missing',
         'design-density-missing',
+        'design-ratio-as-a-number',
+        'design-ratio-unknown-name',
         'features-2-items',
         'testimonials-7-items',
         'pricing-5-plans',

@@ -572,9 +572,8 @@ final class OutlineV3GrammarTest extends TestCase
         return [
             'second block of the first section' => [[self::section('top', [['type' => 'paragraph', 'text' => 'Before.'], $hero])], 'outline[0].children[1]'],
             'first block of the second section' => [[self::section('top'), self::section('more', [$hero])], 'outline[1].children[0]'],
-            'a second hero beside the first'    => [[self::section('top', [$hero, $hero])], 'outline[0].children[1]'],
-            'a second hero in a later section'  => [[self::section('top', [$hero]), self::section('more', [$hero])], 'outline[1].children[0]'],
             'after a call to action'            => [[self::section('top', [$cta, $hero])], 'outline[0].children[1]'],
+            'a call to action is not a hero'    => [[self::section('top', [$cta, $cta, $hero])], 'outline[0].children[2]'],
             'the last of fifty blocks'          => [[self::section('top', array_merge(array_fill(0, 49, ['type' => 'separator']), [$hero]))], 'outline[0].children[49]'],
         ];
     }
@@ -592,6 +591,74 @@ final class OutlineV3GrammarTest extends TestCase
         $this->assertSame($path, $r['failures'][0]['path']);
         $this->assertSame('pattern', $r['failures'][0]['key']);
         $this->assertStringContainsString('first block of the first section', $r['failures'][0]['reason'], 'the refusal says where the hero goes');
+    }
+
+    /**
+     * Each row: the outline, and the path of the second hero, the first one
+     * over the cap. The count comes before any hero's place is judged, so the
+     * answer is the same whether or not the first hero stands in place.
+     *
+     * @return array<string,array{0:list<array<string,mixed>>,1:string}>
+     */
+    public static function secondHeroes(): array
+    {
+        $hero  = self::pattern('hero', 'centered', ['children' => [['type' => 'paragraph', 'text' => 'Lead.']]]);
+        $lead  = ['type' => 'paragraph', 'text' => 'Before.'];
+        $cta   = self::pattern('cta', 'band', ['children' => [['type' => 'paragraph', 'text' => 'Join.']]]);
+        $group = ['type' => 'group', 'children' => [['type' => 'paragraph', 'text' => 'Inside.']]];
+
+        return [
+            'beside the first'                         => [[self::section('top', [$hero, $hero])], 'outline[0].children[1]'],
+            'in a later section'                       => [[self::section('top', [$hero]), self::section('more', [$hero])], 'outline[1].children[0]'],
+            'the first out of place'                   => [[self::section('top', [$lead, $hero]), self::section('more', [$hero])], 'outline[1].children[0]'],
+            'both out of place, in one section'        => [[self::section('top', [$lead, $hero, $hero])], 'outline[0].children[2]'],
+            'both in later sections'                   => [[self::section('top'), self::section('more', [$hero]), self::section('last', [$hero])], 'outline[2].children[0]'],
+            'three heroes name the second'             => [[self::section('top', [$hero, $hero, $hero])], 'outline[0].children[1]'],
+            'a call to action between the two'         => [[self::section('top', [$hero, $cta, $hero])], 'outline[0].children[2]'],
+            'a group beside two heroes'                => [[self::section('top', [$group, $hero, $hero])], 'outline[0].children[2]'],
+        ];
+    }
+
+    /**
+     * @dataProvider secondHeroes
+     * @param list<array<string,mixed>> $outline Outline.
+     * @param string                    $path    Path of the second hero.
+     */
+    public function testASecondHeroIsALayoutRuleCountedBeforeThePlace(array $outline, string $path): void
+    {
+        $r = self::check($outline);
+
+        $this->assertSame('layout_invalid', $r['code'] ?? 'accepted');
+        $this->assertCount(1, $r['failures']);
+        $this->assertSame($path, $r['failures'][0]['path']);
+        $this->assertSame('pattern', $r['failures'][0]['key']);
+        $this->assertStringContainsString('one hero', $r['failures'][0]['reason'], 'the refusal says a page has one hero');
+        $this->assertStringContainsString($path . '.pattern', $r['detail'], 'the message says where');
+    }
+
+    public function testTheHeroCountIsReadByShapeAndComesBeforeEveryOtherJudgement(): void
+    {
+        $hero = self::pattern('hero', 'centered', ['children' => [['type' => 'paragraph', 'text' => 'Lead.']]]);
+
+        // A second hero wins over a fault the walk would have found first.
+        $r = self::check([array_merge(self::section('top', [$hero, $hero]), ['colour' => 'red'])]);
+        $this->assertSame('layout_invalid', $r['code'] ?? 'accepted', 'the count is taken before the sections are read');
+
+        // Only a hero pattern that is a direct child of a section counts: other patterns, other nodes and
+        // junk do not, and a lone hero out of place is still the place rule's.
+        $odd = self::check([
+            self::section('top', [$hero]),
+            self::section('more', [self::pattern('cta', 'band', ['children' => [['type' => 'paragraph', 'text' => 'Join.']]]), ['type' => 'paragraph', 'text' => 'x']]),
+        ]);
+        $this->assertArrayHasKey('outline', $odd, (string) ($odd['detail'] ?? ''));
+
+        $lone = self::check([self::section('top', [['type' => 'paragraph', 'text' => 'x'], $hero])]);
+        $this->assertSame('hero_misplaced', $lone['code'] ?? 'accepted');
+
+        // Nodes that are not objects are the grammar's to refuse, not the count's.
+        $junk = OutlineV3::validate(json_decode((string) json_encode([self::section('top', [$hero]), 'text', null, 7, [self::section('more')]]), false, 64));
+        $this->assertNotSame('layout_invalid', $junk['code'] ?? '', 'junk beside one hero is not a second hero');
+        $this->assertSame('bad_input', $junk['code'] ?? 'accepted');
     }
 
     public function testTheHeroMayHaveBlocksAfterItAndSectionsAfterItsSection(): void

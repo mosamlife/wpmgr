@@ -58,13 +58,15 @@ final class OutlineV3CasesTest extends TestCase
 
     /**
      * Rules that look across the page: anchors, the links that point at them,
-     * the hero's place and heading level 1. Every row of them is run.
+     * the number of heroes, the hero's place and heading level 1. Every row of
+     * them is run.
      */
     private const PAGE_RULES = [
         'anchor_regex',
         'anchor_unique',
         'anchor_not_reserved',
         'link_anchor_resolves',
+        'hero_at_most_once',
         'hero_first',
         'h1_inside_hero_only',
         'h1_at_most_once',
@@ -170,7 +172,7 @@ final class OutlineV3CasesTest extends TestCase
         foreach (['v3-minimal-page', 'v3-full-landing-page', 'sections-21', 'features-2-items', 'icon-not-in-the-list', 'pattern-text-with-markup', 'link-anchor-malformed', 'buttons-in-three-styles', 'hero-first-with-the-h1'] as $name) {
             $this->assertArrayHasKey($name, $rows, $name . ' is run');
         }
-        foreach (['anchor-uppercase', 'anchor-41-characters', 'anchor-duplicate', 'anchor-reserved', 'link-anchor-missing', 'hero-in-the-second-section', 'hero-not-the-first-child', 'h1-without-a-hero', 'h1-in-a-later-section', 'h1-twice-in-the-hero'] as $name) {
+        foreach (['anchor-uppercase', 'anchor-41-characters', 'anchor-duplicate', 'anchor-reserved', 'link-anchor-missing', 'hero-in-the-second-section', 'hero-not-the-first-child', 'two-heroes', 'two-heroes-the-first-out-of-place', 'h1-without-a-hero', 'h1-in-a-later-section', 'h1-twice-in-the-hero'] as $name) {
             $this->assertArrayHasKey($name, $rows, $name . ' is run: the page-wide rules are judged here');
         }
         foreach (['design-missing', 'font-not-in-the-registry', 'outline-version-4', 'landing-page-over-the-input-limit'] as $name) {

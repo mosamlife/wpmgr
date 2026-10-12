@@ -30,7 +30,7 @@ final class DesignTokensColourTest extends TestCase
             'on_accent' => '#FFFFFF',
         ],
         'fonts'   => ['heading' => 'Manrope', 'body' => 'system'],
-        'scale'   => ['base_px' => 17, 'ratio' => 1.25],
+        'scale'   => ['base_px' => 17, 'ratio' => 'major_third'],
         'radius'  => 'md',
         'density' => 'normal',
     ];

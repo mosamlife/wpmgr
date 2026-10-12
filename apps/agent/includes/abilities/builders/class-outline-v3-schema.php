@@ -53,7 +53,12 @@ final class OutlineV3Schema
 
     public const SCALE_BASE_PX = [15, 20];
 
-    public const SCALE_RATIO = [1.125, 1.333];
+    /**
+     * The type-scale ratios of a design, by name, smallest first. The input
+     * carries the name and never the number: no field of the input has a
+     * fraction. DesignTokens::RATIOS maps each name to its number.
+     */
+    public const SCALE_RATIOS = ['major_second', 'minor_third', 'major_third', 'perfect_fourth'];
 
     public const RADII = ['none', 'sm', 'md', 'lg'];
 
@@ -186,7 +191,7 @@ final class OutlineV3Schema
             'fonts'   => self::object(['heading' => $font, 'body' => $font], ['heading', 'body']),
             'scale'   => self::object([
                 'base_px' => ['type' => 'integer', 'minimum' => self::SCALE_BASE_PX[0], 'maximum' => self::SCALE_BASE_PX[1]],
-                'ratio'   => ['type' => 'number', 'minimum' => self::SCALE_RATIO[0], 'maximum' => self::SCALE_RATIO[1]],
+                'ratio'   => ['type' => 'string', 'enum' => self::SCALE_RATIOS],
             ], ['base_px', 'ratio']),
             'radius'  => ['type' => 'string', 'enum' => self::RADII],
             'density' => ['type' => 'string', 'enum' => self::DENSITIES],

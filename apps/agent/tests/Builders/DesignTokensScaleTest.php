@@ -48,15 +48,15 @@ final class DesignTokensScaleTest extends TestCase
                 'on_accent' => '#FFFFFF',
             ],
             'fonts'   => ['heading' => 'Manrope', 'body' => 'system'],
-            'scale'   => ['base_px' => 17, 'ratio' => 1.25],
+            'scale'   => ['base_px' => 17, 'ratio' => 'major_third'],
             'radius'  => 'md',
             'density' => 'normal',
         ], $override);
     }
 
     /**
-     * @param int|float $base  Base size in px.
-     * @param int|float $ratio Scale ratio.
+     * @param mixed $base  Base size in px.
+     * @param mixed $ratio Scale ratio: a name of DesignTokens::RATIOS.
      * @return array<string,mixed>
      */
     private static function withScale($base, $ratio): array
@@ -88,14 +88,14 @@ final class DesignTokensScaleTest extends TestCase
     {
         // Expected values come from exact fraction arithmetic, none of them near a .5 tie.
         $cases = [
-            [17, 1.25, ['display' => 52, 'h2' => 33, 'h3' => 27, 'lead' => 21, 'body' => 17, 'eyebrow' => 14, 'button' => 16]],
-            [16, 1.2, ['display' => 40, 'h2' => 28, 'h3' => 23, 'lead' => 19, 'body' => 16, 'eyebrow' => 13, 'button' => 15]],
-            [18, 1.333, ['display' => 76, 'h2' => 43, 'h3' => 32, 'lead' => 24, 'body' => 18, 'eyebrow' => 14, 'button' => 17]],
-            [15, 1.125, ['display' => 27, 'h2' => 21, 'h3' => 19, 'lead' => 17, 'body' => 15, 'eyebrow' => 12, 'button' => 14]],
-            [20, 1.333, ['display' => 84, 'h2' => 47, 'h3' => 36, 'lead' => 27, 'body' => 20, 'eyebrow' => 16, 'button' => 19]],
-            [19, 1.2, ['display' => 47, 'h2' => 33, 'h3' => 27, 'lead' => 23, 'body' => 19, 'eyebrow' => 15, 'button' => 18]],
-            [17, 1.125, ['display' => 31, 'h2' => 24, 'h3' => 22, 'lead' => 19, 'body' => 17, 'eyebrow' => 14, 'button' => 16]],
-            [16, 1.25, ['display' => 49, 'h2' => 31, 'h3' => 25, 'lead' => 20, 'body' => 16, 'eyebrow' => 13, 'button' => 15]],
+            [17, 'major_third', ['display' => 52, 'h2' => 33, 'h3' => 27, 'lead' => 21, 'body' => 17, 'eyebrow' => 14, 'button' => 16]],
+            [16, 'minor_third', ['display' => 40, 'h2' => 28, 'h3' => 23, 'lead' => 19, 'body' => 16, 'eyebrow' => 13, 'button' => 15]],
+            [18, 'perfect_fourth', ['display' => 76, 'h2' => 43, 'h3' => 32, 'lead' => 24, 'body' => 18, 'eyebrow' => 14, 'button' => 17]],
+            [15, 'major_second', ['display' => 27, 'h2' => 21, 'h3' => 19, 'lead' => 17, 'body' => 15, 'eyebrow' => 12, 'button' => 14]],
+            [20, 'perfect_fourth', ['display' => 84, 'h2' => 47, 'h3' => 36, 'lead' => 27, 'body' => 20, 'eyebrow' => 16, 'button' => 19]],
+            [19, 'minor_third', ['display' => 47, 'h2' => 33, 'h3' => 27, 'lead' => 23, 'body' => 19, 'eyebrow' => 15, 'button' => 18]],
+            [17, 'major_second', ['display' => 31, 'h2' => 24, 'h3' => 22, 'lead' => 19, 'body' => 17, 'eyebrow' => 14, 'button' => 16]],
+            [16, 'major_third', ['display' => 49, 'h2' => 31, 'h3' => 25, 'lead' => 20, 'body' => 16, 'eyebrow' => 13, 'button' => 15]],
         ];
         foreach ($cases as [$base, $ratio, $sizes]) {
             $tokens = DesignTokens::fromDesign(self::withScale($base, $ratio));
@@ -105,11 +105,50 @@ final class DesignTokensScaleTest extends TestCase
         }
     }
 
+    public function test_a_ratio_name_stands_for_one_number_and_the_schema_offers_those_names(): void
+    {
+        // The input carries the name only; the number lives here and nowhere in the input.
+        $this->assertSame(
+            ['major_second' => 1.125, 'minor_third' => 1.2, 'major_third' => 1.25, 'perfect_fourth' => 1.333],
+            DesignTokens::RATIOS
+        );
+        $this->assertSame(array_keys(DesignTokens::RATIOS), OutlineV3Schema::SCALE_RATIOS);
+
+        $ratio = OutlineV3Schema::designSchema()['properties']['scale']['properties']['ratio'];
+        $this->assertSame(['type' => 'string', 'enum' => ['major_second', 'minor_third', 'major_third', 'perfect_fourth']], $ratio);
+
+        // Not one number-typed field in the design object: the signed run carries integers only.
+        $numbers = [];
+        $walk    = static function ($node, string $at) use (&$walk, &$numbers): void {
+            if (!is_array($node)) {
+                return;
+            }
+            if (($node['type'] ?? null) === 'number') {
+                $numbers[] = $at;
+            }
+            foreach ($node as $key => $child) {
+                $walk($child, $at . '/' . $key);
+            }
+        };
+        $walk(OutlineV3Schema::designSchema(), 'design');
+        $this->assertSame([], $numbers, 'the design schema holds no number-typed field');
+    }
+
+    public function test_each_ratio_name_is_accepted_and_sets_its_own_ramp(): void
+    {
+        // Base 20: display = 20 x ratio^5, rounded. The four names give four different ramps.
+        $display = [];
+        foreach (array_keys(DesignTokens::RATIOS) as $name) {
+            $display[$name] = DesignTokens::fromDesign(self::withScale(20, $name))->typography('display')['size'];
+        }
+        $this->assertSame(['major_second' => 36, 'minor_third' => 50, 'major_third' => 61, 'perfect_fourth' => 84], $display);
+    }
+
     public function test_a_half_pixel_rounds_up_and_a_whole_valued_float_base_is_a_whole_base(): void
     {
         // 18 x 1.25 = 22.5 exactly, so the lead is 23; 17.0 is the whole number 17 as JSON writes it.
-        $this->assertSame(23, DesignTokens::fromDesign(self::withScale(18, 1.25))->typography('lead')['size']);
-        $this->assertSame(17, DesignTokens::fromDesign(self::withScale(17.0, 1.25))->typography('body')['size']);
+        $this->assertSame(23, DesignTokens::fromDesign(self::withScale(18, 'major_third'))->typography('lead')['size']);
+        $this->assertSame(17, DesignTokens::fromDesign(self::withScale(17.0, 'major_third'))->typography('body')['size']);
     }
 
     public function test_family_follows_the_design_and_system_leaves_it_unset(): void
@@ -234,15 +273,24 @@ final class DesignTokensScaleTest extends TestCase
             'font not a string'      => self::design(['fonts' => ['heading' => 12, 'body' => 'system']]),
             'no scale'               => array_diff_key(self::design(), ['scale' => true]),
             'scale not a map'        => self::design(['scale' => 17]),
-            'no base'                => self::design(['scale' => ['ratio' => 1.25]]),
+            'no base'                => self::design(['scale' => ['ratio' => 'major_third']]),
             'no ratio'               => self::design(['scale' => ['base_px' => 17]]),
-            'base 14'                => self::withScale(14, 1.25),
-            'base 21'                => self::withScale(21, 1.25),
-            'base 17.5'              => self::withScale(17.5, 1.25),
-            'base as text'           => self::withScale('17', 1.25),
-            'ratio 1.124'            => self::withScale(17, 1.124),
-            'ratio 1.334'            => self::withScale(17, 1.334),
-            'ratio as text'          => self::withScale(17, '1.25'),
+            'base 14'                => self::withScale(14, 'major_third'),
+            'base 21'                => self::withScale(21, 'major_third'),
+            'base 17.5'              => self::withScale(17.5, 'major_third'),
+            'base as text'           => self::withScale('17', 'major_third'),
+            'ratio as the number'    => self::withScale(17, 1.25),
+            'ratio as an integer'    => self::withScale(17, 1),
+            'ratio as number text'   => self::withScale(17, '1.25'),
+            'ratio unknown name'     => self::withScale(17, 'golden'),
+            'ratio in capitals'      => self::withScale(17, 'Major_Third'),
+            'ratio with a newline'   => self::withScale(17, "major_third\n"),
+            'ratio with a space'     => self::withScale(17, ' major_third'),
+            'ratio with a hyphen'    => self::withScale(17, 'major-third'),
+            'ratio empty'            => self::withScale(17, ''),
+            'ratio null'             => self::withScale(17, null),
+            'ratio true'             => self::withScale(17, true),
+            'ratio a list'           => self::withScale(17, ['major_third']),
             'ratio not a number'     => self::withScale(17, NAN),
             'ratio infinite'         => self::withScale(17, INF),
             'no radius'              => array_diff_key(self::design(), ['radius' => true]),
@@ -264,7 +312,7 @@ final class DesignTokensScaleTest extends TestCase
 
     public function test_the_edges_of_the_allowed_ranges_are_accepted(): void
     {
-        foreach ([[15, 1.125], [20, 1.333], [15, 1.333], [20, 1.125]] as [$base, $ratio]) {
+        foreach ([[15, 'major_second'], [20, 'perfect_fourth'], [15, 'perfect_fourth'], [20, 'major_second'], [15, 'minor_third'], [20, 'major_third']] as [$base, $ratio]) {
             $tokens = DesignTokens::fromDesign(self::withScale($base, $ratio));
             $this->assertSame($base, $tokens->typography('body')['size'], $base . ' x ' . $ratio);
         }

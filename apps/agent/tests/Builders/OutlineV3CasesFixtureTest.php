@@ -36,9 +36,13 @@ final class OutlineV3CasesFixtureTest extends TestCase
     /** The wpmgr/page-create input limit in bytes. */
     private const MAX_INPUT_BYTES = 65536;
 
-    /** Sections on one page, and the images a page may show. */
+    /** Sections on one page, the images a page may show, and the heroes. */
     private const MAX_SECTIONS = 20;
     private const MAX_IMAGES   = 20;
+    private const MAX_HEROES   = 1;
+
+    /** The type-scale ratios a design may name. The input never carries the number. */
+    private const RATIOS = ['major_second', 'minor_third', 'major_third', 'perfect_fourth'];
 
     /** Children of one section. */
     private const MAX_CHILDREN = 50;
@@ -165,6 +169,8 @@ final class OutlineV3CasesFixtureTest extends TestCase
         $this->assertSame(OutlineV3Schema::PATTERN_ARRAY, self::PATTERN_ARRAY);
         $this->assertSame(OutlineV3Schema::RESERVED_ANCHORS, self::RESERVED);
         $this->assertSame(OutlineV3Schema::MAX_SECTIONS, self::MAX_SECTIONS);
+        $this->assertSame(OutlineV3Schema::MAX_HEROES, self::MAX_HEROES);
+        $this->assertSame(OutlineV3Schema::SCALE_RATIOS, self::RATIOS);
         $this->assertSame(OutlineV3Schema::MAX_SECTION_CHILDREN, self::MAX_CHILDREN);
         $this->assertSame('/' . OutlineV3Schema::ANCHOR_PATTERN . '/D', self::RE_ANCHOR);
         $this->assertSame(OutlineV3Schema::ICONS, self::doc()['icons']);
@@ -264,6 +270,55 @@ final class OutlineV3CasesFixtureTest extends TestCase
         }
     }
 
+    public function test_the_ratio_probe_takes_each_name_and_nothing_else(): void
+    {
+        // A positive control for the design probes: the same design with only the ratio changed.
+        $design = self::decode(self::caseNamed('v3-full-landing-page'))['design'];
+        $with   = static function ($ratio) use ($design): array {
+            $design['scale']['ratio'] = $ratio;
+
+            return $design;
+        };
+        foreach (self::RATIOS as $name) {
+            $this->assertTrue(self::designValuesValid($with($name)), $name . ' is a ratio');
+        }
+        foreach ([1.25, 1, '1.25', 'golden', 'Major_Third', "major_third\n", '', null, true] as $bad) {
+            $this->assertFalse(self::designValuesValid($with($bad)), var_export($bad, true) . ' is not a ratio');
+        }
+    }
+
+    public function test_the_hero_probes_split_the_count_from_the_place(): void
+    {
+        // One hero in place breaks neither; a lone hero out of place breaks the place; two heroes break the count only.
+        $one = self::decode(self::caseNamed('hero-first-with-the-h1'));
+        $this->assertSame(1, self::heroCount($one));
+        $this->assertFalse(self::heroMisplaced($one));
+
+        $lone = self::decode(self::caseNamed('hero-in-the-second-section'));
+        $this->assertSame(1, self::heroCount($lone));
+        $this->assertTrue(self::heroMisplaced($lone));
+
+        foreach (['two-heroes', 'two-heroes-the-first-out-of-place'] as $name) {
+            $two = self::decode(self::caseNamed($name));
+            $this->assertSame(2, self::heroCount($two), $name);
+            $this->assertFalse(self::heroMisplaced($two), $name . ': the place of a hero is not judged on a page with two');
+        }
+    }
+
+    /**
+     * @param string $name Case name.
+     * @return array<string,mixed>
+     */
+    private static function caseNamed(string $name): array
+    {
+        foreach (self::doc()['cases'] as $case) {
+            if ($case['name'] === $name) {
+                return $case;
+            }
+        }
+        self::fail('no case named ' . $name);
+    }
+
     public function test_the_size_cases_sit_on_the_input_limit(): void
     {
         $at   = null;
@@ -325,6 +380,7 @@ final class OutlineV3CasesFixtureTest extends TestCase
             'anchor_not_reserved'       => static fn (array $in): bool => self::anyAnchor($in, static fn (string $a): bool => in_array($a, self::RESERVED, true)),
             'link_anchor_resolves'      => static fn (array $in): bool => self::anyLink($in, static fn (string $u, array $anchors): bool => preg_match('/^#[a-z][a-z0-9-]{1,39}$/D', $u) === 1 && !in_array(substr($u, 1), $anchors, true)),
             'link_anchor_syntax'        => static fn (array $in): bool => self::anyLink($in, static fn (string $u, array $anchors): bool => $u !== '' && $u[0] === '#' && preg_match('/^#[a-z][a-z0-9-]{1,39}$/D', $u) !== 1),
+            'hero_at_most_once'         => static fn (array $in): bool => self::heroCount($in) > self::MAX_HEROES,
             'hero_first'                => static fn (array $in): bool => self::heroMisplaced($in),
             'h1_inside_hero_only'       => static fn (array $in): bool => self::facts($in)['h1_outside'],
             'h1_at_most_once'           => static fn (array $in): bool => self::facts($in)['h1_count'] > 1,
@@ -476,9 +532,36 @@ final class OutlineV3CasesFixtureTest extends TestCase
         return $memo[$key] = $f;
     }
 
-    /** @param array<string,mixed> $in Input. */
+    /**
+     * The heroes of a page, counted by shape alone as the grammar counts them:
+     * the hero patterns that are direct children of a section.
+     *
+     * @param array<string,mixed> $in Input.
+     */
+    private static function heroCount(array $in): int
+    {
+        $count = 0;
+        foreach (self::facts($in)['hero_at'] as [, , $direct]) {
+            if ($direct) {
+                ++$count;
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * Whether the hero is out of place. The place is judged only on a page
+     * with at most MAX_HEROES heroes: a second hero is counted first, so it
+     * breaks the count rule and not this one.
+     *
+     * @param array<string,mixed> $in Input.
+     */
     private static function heroMisplaced(array $in): bool
     {
+        if (self::heroCount($in) > self::MAX_HEROES) {
+            return false;
+        }
         foreach (self::facts($in)['hero_at'] as [$section, $index, $direct]) {
             if ($section !== 0 || $index !== 0 || !$direct) {
                 return true;
@@ -575,7 +658,7 @@ final class OutlineV3CasesFixtureTest extends TestCase
         }
         $base  = $design['scale']['base_px'];
         $ratio = $design['scale']['ratio'];
-        if (!is_int($base) || $base < 15 || $base > 20 || !(is_int($ratio) || is_float($ratio)) || $ratio < 1.125 || $ratio > 1.333) {
+        if (!is_int($base) || $base < 15 || $base > 20 || !in_array($ratio, self::RATIOS, true)) {
             return false;
         }
 

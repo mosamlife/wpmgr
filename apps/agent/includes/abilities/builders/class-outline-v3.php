@@ -36,8 +36,9 @@ if (!defined('ABSPATH')) {
  * The page as a whole has four more rules:
  *   anchors  a section anchor has the shape of ANCHOR_PATTERN, is not one of
  *            RESERVED_ANCHORS and is the anchor of one section only
- *   hero     the hero is the first block of the first section, so a page has
- *            at most one
+ *   hero     a page has at most one hero (layout_invalid, counted before any
+ *            hero's place is judged), and it is the first block of the first
+ *            section (hero_misplaced)
  *   title    the page has at most one level 1 heading, and it is in the hero
  *   links    a link of the form #anchor leads to a section of the page; it is
  *            judged after the whole outline, so a section further down
@@ -162,6 +163,11 @@ final class OutlineV3
             );
         }
 
+        $second = self::secondHero($outline);
+        if ($second !== null) {
+            return self::refuse('layout_invalid', $second, 'pattern', 'a page has one hero, the first block of the first section; remove this one, or make it a cta', [], 'hero');
+        }
+
         $ctx      = PageCreateBuilder::v3Counters($titleChars);
         $page     = ['anchors' => [], 'links' => [], 'titles' => 0];
         $sections = [];
@@ -181,6 +187,38 @@ final class OutlineV3
         }
 
         return ['outline' => $sections];
+    }
+
+    /**
+     * The path of the first hero over the cap, or null when the page has no
+     * more than OutlineV3Schema::MAX_HEROES. A hero is a pattern node named
+     * hero that is a direct child of a section; the count reads shape alone
+     * and judges nothing else, so it comes before any hero's place is judged:
+     * a page with two heroes is layout_invalid whether or not the first one
+     * stands where the hero goes.
+     *
+     * @param array<int|string,mixed> $outline The outline: a list.
+     * @return string|null Path of the hero that is one too many.
+     */
+    private static function secondHero(array $outline): ?string
+    {
+        $heroes = 0;
+        foreach ($outline as $i => $section) {
+            $children = is_object($section) ? ($section->children ?? null) : null;
+            if (!is_array($children)) {
+                continue;
+            }
+            foreach ($children as $j => $child) {
+                if (!is_object($child) || ($child->type ?? null) !== 'pattern' || ($child->pattern ?? null) !== 'hero') {
+                    continue;
+                }
+                if (++$heroes > OutlineV3Schema::MAX_HEROES) {
+                    return 'outline[' . $i . '].children[' . $j . ']';
+                }
+            }
+        }
+
+        return null;
     }
 
     // ---------------------------------------------------------------------

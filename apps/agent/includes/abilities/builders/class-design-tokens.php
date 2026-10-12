@@ -43,6 +43,12 @@ final class DesignTokens
     /** The family name that means: set no family, the theme's own applies. */
     private const SYSTEM_FONT = 'system';
 
+    /**
+     * The type-scale ratio each name of the input stands for. The input holds
+     * the name; this is the one place that holds the number.
+     */
+    public const RATIOS = ['major_second' => 1.125, 'minor_third' => 1.2, 'major_third' => 1.25, 'perfect_fourth' => 1.333];
+
     /** Opacity of the ink overlay on a background image, by strength. */
     private const OVERLAY_OPACITY = ['soft' => 0.45, 'strong' => 0.65];
 
@@ -188,8 +194,8 @@ final class DesignTokens
             throw new \InvalidArgumentException('a design base size is a whole number from 15 to 20');
         }
         $ratio = $scale['ratio'] ?? null;
-        if ((!is_int($ratio) && !is_float($ratio)) || !($ratio >= OutlineV3Schema::SCALE_RATIO[0] && $ratio <= OutlineV3Schema::SCALE_RATIO[1])) {
-            throw new \InvalidArgumentException('a design ratio is a number from 1.125 to 1.333');
+        if (!is_string($ratio) || !isset(self::RATIOS[$ratio])) {
+            throw new \InvalidArgumentException('a design ratio is major_second, minor_third, major_third or perfect_fourth');
         }
 
         $radius = $design['radius'] ?? null;
@@ -201,7 +207,7 @@ final class DesignTokens
             throw new \InvalidArgumentException('a design density is compact, normal or airy');
         }
 
-        return new self($colours, $families, $basePx, (float) $ratio, $radius, $density);
+        return new self($colours, $families, $basePx, self::RATIOS[$ratio], $radius, $density);
     }
 
     /**
