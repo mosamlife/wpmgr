@@ -45,13 +45,17 @@ if (!defined('ABSPATH')) {
  *   into; a hard-denied key anywhere inside it is still refused as a key.
  *   A key ending in FONT_FAMILY_SUFFIX holds a font family name of the
  *   outline's form.
+ * - L5 groups: a member of a group control (groupOf()) is written only
+ *   beside its group's activator holding the value GROUP_ACTIVATORS names,
+ *   or the node is refused group_activator_missing.
  *
  * Nothing is ever stripped or rewritten: a failure refuses the whole call,
  * with leaf_unsafe for a value, adapter_key_not_allowed for a type or a
- * key outside any allowlist's reach, and style_key_not_allowed for a
- * settings key an element's allowlist does not take. Refusal details are
- * WPMgr's own words and node positions, never text read from the tree. This
- * class holds no builder's allowlist; each adapter passes its own.
+ * key outside any allowlist's reach, style_key_not_allowed for a settings
+ * key an element's allowlist does not take, and group_activator_missing for
+ * an orphan group member. Refusal details are WPMgr's own words and node
+ * positions, never text read from the tree. This class holds no builder's
+ * allowlist; each adapter passes its own.
  */
 final class LeafPolicy
 {
@@ -64,11 +68,33 @@ final class LeafPolicy
     /** A settings key the element's own allowlist does not list, or a breakpoint override WPMgr does not write. */
     public const CODE_STYLE_KEY = 'style_key_not_allowed';
 
+    /** A member of a group control written without its group's activator. */
+    public const CODE_ACTIVATOR = 'group_activator_missing';
+
     /** The breakpoints WPMgr writes an override for: a key "<control>_tablet" or "<control>_mobile". */
     public const BREAKPOINTS_WRITTEN = ['tablet', 'mobile'];
 
     /** The other breakpoints a builder may define; an override for one is never written. */
     public const BREAKPOINTS_NOT_WRITTEN = ['mobile_extra', 'tablet_extra', 'laptop', 'widescreen'];
+
+    /**
+     * Group controls by group name: the activator key and the one value it
+     * holds. A key "<group>_<field>" other than the activator is a member of
+     * the longest group whose name it starts with, and a member is written
+     * only beside its activator holding that value.
+     */
+    public const GROUP_ACTIVATORS = [
+        'typography'              => ['typography_typography', 'custom'],
+        'title_typography'        => ['title_typography_typography', 'custom'],
+        'background'              => ['background_background', 'classic'],
+        'background_overlay'      => ['background_overlay_background', 'classic'],
+        'button_background_hover' => ['button_background_hover_background', 'classic'],
+        'border'                  => ['border_border', 'solid'],
+        'box_shadow'              => ['box_shadow_box_shadow_type', 'yes'],
+    ];
+
+    /** Controls that start with a group's name but are not members of it, with or without a breakpoint override. */
+    public const GROUP_STANDALONE = ['border_radius'];
 
     /** What a settings key holding a font family name ends with. */
     public const FONT_FAMILY_SUFFIX = 'font_family';
@@ -524,6 +550,12 @@ final class LeafPolicy
                 return self::refuse($why[0], $at . '.' . $path . ': ' . $why[1]);
             }
         }
+        if ($prefix === '') {
+            $orphan = self::activatorProblem($settings);
+            if ($orphan !== null) {
+                return self::refuse(self::CODE_ACTIVATOR, $at . '.' . $orphan);
+            }
+        }
 
         return null;
     }
@@ -602,6 +634,32 @@ final class LeafPolicy
     }
 
     /**
+     * The group control a settings key is a member of: the longest name in
+     * GROUP_ACTIVATORS the key starts with followed by "_", or null when no
+     * name matches, when the key is that group's activator, or when the key
+     * without a breakpoint override is in GROUP_STANDALONE.
+     *
+     * @param string $key Settings key at the top of a node's settings.
+     * @return string|null
+     */
+    public static function groupOf(string $key): ?string
+    {
+        $group = null;
+        foreach (array_keys(self::GROUP_ACTIVATORS) as $name) {
+            if (strncmp($key, $name . '_', strlen($name) + 1) === 0 && ($group === null || strlen($name) > strlen($group))) {
+                $group = $name;
+            }
+        }
+        if ($group === null || $key === self::GROUP_ACTIVATORS[$group][0]) {
+            return null;
+        }
+        $breakpoint = self::breakpointOf($key);
+        $control    = $breakpoint === null ? $key : substr($key, 0, -strlen('_' . $breakpoint));
+
+        return in_array($control, self::GROUP_STANDALONE, true) ? null : $group;
+    }
+
+    /**
      * The breakpoint a settings key overrides: the name in
      * BREAKPOINTS_WRITTEN or BREAKPOINTS_NOT_WRITTEN that ends the key after
      * a "_" and a control name of at least one character, or null.
@@ -648,6 +706,33 @@ final class LeafPolicy
         $control = substr($key, 0, -strlen('_' . $breakpoint));
         if (!array_key_exists($control, $paths) && !self::isAncestor($control, $paths)) {
             return 'a ' . $breakpoint . ' override of a control the allowlist does not list for this element';
+        }
+
+        return null;
+    }
+
+    /**
+     * The group rule over the top of a node's settings: the first key that is
+     * a member of a group (groupOf()) while that group's activator is missing
+     * or holds another value, as "<key>: <reason>", or null. Every key has
+     * passed the allowlist before this runs, so the key named is one the
+     * allowlist lists.
+     *
+     * @param array<mixed> $settings Settings at the top of a node.
+     * @return string|null
+     */
+    private static function activatorProblem(array $settings): ?string
+    {
+        foreach (array_keys($settings) as $key) {
+            $key   = (string) $key;
+            $group = self::groupOf($key);
+            if ($group === null) {
+                continue;
+            }
+            [$activator, $on] = self::GROUP_ACTIVATORS[$group];
+            if (($settings[$activator] ?? null) !== $on) {
+                return $key . ': a member of the ' . $group . ' group, written only beside ' . $activator . ' set to "' . $on . '"';
+            }
         }
 
         return null;

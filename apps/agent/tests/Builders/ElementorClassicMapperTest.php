@@ -190,6 +190,51 @@ final class ElementorClassicMapperTest extends TestCase
         $this->assertSame(LeafPolicy::CODE_STYLE_KEY, LeafPolicy::checkTree([$hero], LeafPolicy::forBreakpoints(ElementorClassicMapper::ALLOWED_KEYS, ['tablet']), ElementorClassicMapper::LEAF_RULES)['code'] ?? null);
     }
 
+    public function test_dropping_an_activator_from_an_e1_style_probe_is_refused(): void
+    {
+        $site    = LeafPolicy::forBreakpoints(ElementorClassicMapper::ALLOWED_KEYS, ['mobile', 'tablet']);
+        $planted = 0;
+        foreach (self::STYLE_PROBES as $probe) {
+            $this->walk(RoundTripProbes::tree($probe), function (array $node, string $at) use ($probe, $site, &$planted): void {
+                $own             = $node;
+                $own['elements'] = [];
+                if (str_starts_with((string) ($own['settings']['link']['url'] ?? ''), '#')) {
+                    unset($own['settings']['link']);
+                }
+                foreach (LeafPolicy::GROUP_ACTIVATORS as $group => $rule) {
+                    $members = array_filter(array_keys($own['settings']), static fn ($key): bool => LeafPolicy::groupOf((string) $key) === $group);
+                    if (!isset($own['settings'][$rule[0]]) || $members === []) {
+                        continue;
+                    }
+                    $dropped = $own;
+                    unset($dropped['settings'][$rule[0]]);
+                    $this->assertSame(LeafPolicy::CODE_ACTIVATOR, LeafPolicy::checkTree([$dropped], $site, ElementorClassicMapper::LEAF_RULES)['code'] ?? null, $probe . ' ' . $at . ' without ' . $rule[0]);
+                    ++$planted;
+                }
+            });
+        }
+        // typography on headings, text and buttons; background on sections and buttons; the overlay; border; the hover background.
+        $this->assertGreaterThanOrEqual(12, $planted);
+
+        // The link probe's button writes a background colour with no activator, which the compiler never does.
+        $button = RoundTripProbes::tree('pattern-link-nofollow')[0]['elements'][0];
+        $this->assertSame('button', $button['widgetType']);
+        $this->assertSame(LeafPolicy::CODE_ACTIVATOR, LeafPolicy::checkTree([$button], $site, ElementorClassicMapper::LEAF_RULES)['code'] ?? null);
+
+        // Every listed key of a group family belongs to a group LeafPolicy knows, or is an activator or a standalone control.
+        $activators = array_column(LeafPolicy::GROUP_ACTIVATORS, 0);
+        foreach (ElementorClassicMapper::ALLOWED_KEYS as $type => $paths) {
+            foreach (array_keys($paths) as $path) {
+                $key = explode('.', $path, 2)[0];
+                if (preg_match('/typography|background|border|shadow/', $key) !== 1) {
+                    continue;
+                }
+                $known = in_array($key, $activators, true) || LeafPolicy::groupOf($key) !== null || in_array($key, LeafPolicy::GROUP_STANDALONE, true);
+                $this->assertTrue($known, $type . '.' . $path . ': a group key whose group LeafPolicy does not know');
+            }
+        }
+    }
+
     public function test_outline_button_refused_with_node_path(): void
     {
         $outline = '[{"type":"group","children":[{"type":"heading","level":2,"text":"Book"},{"type":"columns","columns":['

@@ -889,6 +889,76 @@ final class LeafPolicyTest extends TestCase
         );
     }
 
+    public function test_group_member_without_its_activator_refused(): void
+    {
+        $keys   = ElementorClassicMapper::ALLOWED_KEYS;
+        $px     = static fn (string $size): array => ['unit' => 'px', 'size' => $size];
+        $sides  = ['unit' => 'px', 'top' => '1.5', 'right' => '1.5', 'bottom' => '1.5', 'left' => '1.5', 'isLinked' => true];
+        $orphan = static fn (string $key, string $group, string $activator, string $on): array => [
+            'code'   => 'group_activator_missing',
+            'detail' => 'elements[0].settings.' . $key . ': a member of the ' . $group . ' group, written only beside ' . $activator . ' set to "' . $on . '"',
+        ];
+        $check  = static fn (array $node, array $allowed): ?array => LeafPolicy::checkTree([$node], $allowed, self::RULES);
+
+        // typography, with a tablet override as a member too.
+        $this->assertSame($orphan('typography_font_size', 'typography', 'typography_typography', 'custom'), $check($this->widget('h1', 'heading', ['title' => 'Hi', 'typography_font_size' => $px('49')]), $keys));
+        $this->assertSame($orphan('typography_font_size_tablet', 'typography', 'typography_typography', 'custom'), $check($this->widget('h1', 'heading', ['title' => 'Hi', 'typography_font_size_tablet' => $px('40')]), $keys));
+        $this->assertNull($check($this->widget('h1', 'heading', ['title' => 'Hi', 'typography_typography' => 'custom', 'typography_font_size' => $px('49'), 'typography_font_size_tablet' => $px('40')]), $keys));
+        // An activator holding another value does not activate its group.
+        $loose = $this->ruledKeys(['heading' => ['typography_typography' => 'text', 'typography_font_size' => 'slider:px']]);
+        foreach (['', 'Custom', 'globals'] as $other) {
+            $this->assertSame($orphan('typography_font_size', 'typography', 'typography_typography', 'custom'), $check($this->widget('h1', 'heading', ['title' => 'Hi', 'typography_typography' => $other, 'typography_font_size' => $px('49')]), $loose), $other);
+        }
+
+        // background on a section, and the overlay, whose own activator the background's does not stand in for.
+        $section = ['_title' => self::SECTION, 'background_color' => '#F6F5F2'];
+        $this->assertSame($orphan('background_color', 'background', 'background_background', 'classic'), $check($this->container('s1', $section, []), $keys));
+        $this->assertNull($check($this->container('s1', ['background_background' => 'classic'] + $section, []), $keys));
+        $overlay = ['_title' => self::SECTION, 'background_background' => 'classic', 'background_overlay_color' => '#15171C', 'background_overlay_opacity' => $px('0.45')];
+        $this->assertSame($orphan('background_overlay_color', 'background_overlay', 'background_overlay_background', 'classic'), $check($this->container('s1', $overlay, []), $keys));
+        $this->assertNull($check($this->container('s1', $overlay + ['background_overlay_background' => 'classic'], []), $keys));
+
+        // border on a button; the radius is its own control and needs no activator.
+        $this->assertSame($orphan('border_width', 'border', 'border_border', 'solid'), $check($this->widget('b1', 'button', ['text' => 'Go', 'border_width' => $sides, 'border_color' => '#0D7A63']), $keys));
+        $this->assertNull($check($this->widget('b1', 'button', ['text' => 'Go', 'border_border' => 'solid', 'border_width' => $sides, 'border_color' => '#0D7A63']), $keys));
+        $this->assertNull($check($this->widget('b1', 'button', ['text' => 'Go', 'border_radius' => ['unit' => 'px', 'top' => '12', 'right' => '12', 'bottom' => '12', 'left' => '12', 'isLinked' => true]]), $keys));
+        // A button's hover background is a group of its own.
+        $this->assertSame($orphan('button_background_hover_color', 'button_background_hover', 'button_background_hover_background', 'classic'), $check($this->widget('b1', 'button', ['text' => 'Go', 'background_background' => 'classic', 'button_background_hover_color' => '#095545']), $keys));
+
+        // box_shadow and a prefixed typography group, through allowlists that list them.
+        $shadow = $this->ruledKeys(['container' => ['box_shadow_box_shadow_type' => 'enum:yes', 'box_shadow_box_shadow' => 'text']]);
+        $this->assertSame($orphan('box_shadow_box_shadow', 'box_shadow', 'box_shadow_box_shadow_type', 'yes'), $check($this->container('c1', ['box_shadow_box_shadow' => 'one'], []), $shadow));
+        $this->assertNull($check($this->container('c1', ['box_shadow_box_shadow_type' => 'yes', 'box_shadow_box_shadow' => 'one'], []), $shadow));
+        $title = $this->ruledKeys(['icon-box' => ['title_typography_typography' => 'enum:custom', 'title_typography_font_size' => 'slider:px']]);
+        $this->assertSame($orphan('title_typography_font_size', 'title_typography', 'title_typography_typography', 'custom'), $check($this->widget('i1', 'icon-box', ['title_typography_font_size' => $px('22')]), $title));
+        $this->assertNull($check($this->widget('i1', 'icon-box', ['title_typography_typography' => 'custom', 'title_typography_font_size' => $px('22')]), $title));
+    }
+
+    public function test_group_of_a_key(): void
+    {
+        $groups = [
+            'typography_font_size'        => 'typography',
+            'typography_font_size_mobile' => 'typography',
+            'title_typography_font_size'  => 'title_typography',
+            'background_color'            => 'background',
+            'background_overlay_opacity'  => 'background_overlay',
+            'button_background_hover_color' => 'button_background_hover',
+            'border_color'                => 'border',
+            'box_shadow_box_shadow'       => 'box_shadow',
+        ];
+        foreach ($groups as $key => $group) {
+            $this->assertSame($group, LeafPolicy::groupOf($key), $key);
+        }
+        $none = [
+            'typography_typography', 'background_background', 'background_overlay_background', 'button_background_hover_background',
+            'border_border', 'box_shadow_box_shadow_type', 'border_radius', 'border_radius_tablet', 'title_color', 'hover_color',
+            'button_text_color', 'typography', 'borderline', 'background', 'padding_mobile',
+        ];
+        foreach ($none as $key) {
+            $this->assertNull(LeafPolicy::groupOf($key), $key);
+        }
+    }
+
     /**
      * The test allowlist with the anchor, the label and a binding listed on
      * types and paths where the policy must still refuse them, so a refusal
