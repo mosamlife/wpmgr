@@ -1,7 +1,15 @@
 import { describe, it, expect } from "vitest";
 import type { AbilityRequest } from "@wpmgr/api";
 
-import { autoApproved, pageCreateRow, pageEditRow, personApproved, waitsBecause } from "./ability-request-rows";
+import {
+  autoApproved,
+  imageIdsOf,
+  mediaFact,
+  pageCreateRow,
+  pageEditRow,
+  personApproved,
+  waitsBecause,
+} from "./ability-request-rows";
 
 // The ability-request fixtures refuse a row no site could have, so a screen
 // test cannot be written against a state the screen is never shown. This pins
@@ -179,5 +187,42 @@ describe("the fixture's ask_reason and not_sent_reason (m174)", () => {
     expect(() =>
       pageEditRow({ state: "not_sent", decided_at: DECIDED, outcome: "not_sent", not_sent_reason: "setting_moved" }),
     ).toThrow(/not_sent_reason value/);
+  });
+});
+
+describe("the fixture's page_media (a designed page names images beyond its image blocks)", () => {
+  const designed = JSON.stringify({
+    post_type: "page",
+    editor: "builder:elementor",
+    elementor_format: "classic",
+    title: "Launch page",
+    outline_version: 3,
+    outline: [
+      {
+        type: "section",
+        anchor: "top",
+        background: { attachment_id: 42 },
+        children: [
+          { type: "image", attachment_id: 7, alt: "" },
+          { type: "pattern", pattern: "logos", variant: "row", logos: [{ attachment_id: 101, alt: "A" }, { attachment_id: 7, alt: "B" }] },
+        ],
+      },
+    ],
+  });
+
+  it("lists a section background, a logo and a picture once each, in document order", () => {
+    expect(imageIdsOf(designed)).toEqual([42, 7, 101]);
+  });
+
+  it("keeps the image blocks of a version 2 outline as before", () => {
+    const v2 = JSON.stringify({ outline: [{ type: "image", attachment_id: 5 }, { type: "paragraph", text: "x" }, { type: "image", attachment_id: 5 }] });
+    expect(imageIdsOf(v2)).toEqual([5]);
+  });
+
+  it("stops a request whose page_media leaves a background out", () => {
+    const row = (media: ReturnType<typeof mediaFact>[]) =>
+      pageCreateRow({ input_json: designed, page_builder: { builder: "elementor", format: "classic", version: "3.35.9", layout: "containers" }, media });
+    expect(() => row([mediaFact(42), mediaFact(7), mediaFact(101)])).not.toThrow();
+    expect(() => row([mediaFact(7), mediaFact(101)])).toThrow(/page_media must list/);
   });
 });
