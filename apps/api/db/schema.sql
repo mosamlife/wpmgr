@@ -9914,7 +9914,9 @@ WHERE NOT EXISTS (
 );
 
 -- m169: wpmgr/page-edit, changes to a draft WPMgr created in a page builder.
--- Undo strategy builder_document.
+-- Undo strategy builder_document. usage as m178 leaves it (pattern paths,
+-- version 3 insert and replace, anchors); m178 clears the entry hash, which
+-- the boot stamp fills.
 INSERT INTO ability_catalogue (
     name, source, class, status, enabled, approval_mode,
     snapshot, preview, effect_copy, operator_permission,
@@ -9933,15 +9935,20 @@ SELECT 'wpmgr/page-edit', 'wpmgr', 'write', 'admitted', true, 'per_call',
        'change wrote, newest change first.',
        'First read the page with wpmgr/page-structure. Send post_id, base_fingerprint (from that read) and ' ||
        'operations: 1 to 25 changes, applied in order. set_text sets one field (text, url, alt or caption) of a ' ||
-       'node whose editable list names it. insert adds outline items after or before a node, or into a node, first ' ||
-       'or last. replace puts outline items in place of a node. remove deletes a node. move puts a node after or ' ||
-       'before another. Outline items use the wpmgr/page-create outline, at most 50 in one change, and all text ' ||
-       'follows its rules: plain text only, and links that are https:// addresses or paths on this site that start ' ||
-       'with /. Change each node at most once in a request, and never name a node an earlier change in the same ' ||
-       'request removed or replaced. Locked nodes cannot be changed, moved or removed. If the page changed after ' ||
-       'your read, the request is refused with conflict: read the page again and send new changes. Only a draft ' ||
-       'WPMgr created with wpmgr/page-create, still a draft, can be changed; any other page is refused with ' ||
-       'target_not_eligible.'
+       'node whose editable list names it; in a pattern, name the field by its path, such as plans.1.price or ' ||
+       'faq.3.answer. insert adds outline items after or before a node, or into a node, first or last. replace ' ||
+       'puts outline items in place of a node; to add or remove items in a pattern, replace the pattern. remove ' ||
+       'deletes a node. move puts a node after or before another. Outline items use the wpmgr/page-create ' ||
+       'outline, at most 50 in one change, and all text follows its rules: plain text only, and links that are ' ||
+       'https:// addresses or paths on this site that start with /. On a designed page, insert and replace also ' ||
+       'take version 3 sections and patterns, built with the design the page was created with unless you send ' ||
+       'design, complete, as wpmgr/page-create takes it; they need the WPMgr plugin 0.61.165 or later. A ' ||
+       '#anchor link must name an anchor on the page after the whole request (link_anchor_missing), and a ' ||
+       'section whose anchor is still linked cannot be removed (anchor_in_use). Change each node at most once ' ||
+       'in a request, and never name a node an earlier change in the same request removed or replaced. Locked ' ||
+       'nodes cannot be changed, moved or removed. If the page changed after your read, the request is refused ' ||
+       'with conflict: read the page again and send new changes. Only a draft WPMgr created with ' ||
+       'wpmgr/page-create, still a draft, can be changed; any other page is refused with target_not_eligible.'
 WHERE NOT EXISTS (
     SELECT 1 FROM ability_catalogue c WHERE c.name = 'wpmgr/page-edit'
 );
