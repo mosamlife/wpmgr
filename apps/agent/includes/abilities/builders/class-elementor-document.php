@@ -94,6 +94,12 @@ final class ElementorDocument
     /** Refusal: the site does not offer a page frame's template for the post type. */
     public const CODE_TEMPLATE_UNAVAILABLE = 'page_template_unavailable';
 
+    /** The page setting that hides the page title, as Elementor names it. */
+    public const SETTING_HIDE_TITLE = 'hide_title';
+
+    /** The value of SETTING_HIDE_TITLE that hides the title. */
+    public const HIDE_TITLE = 'yes';
+
     /** Warning: the page's stylesheet was not regenerated, so the page may print stale styles until Elementor makes it again. */
     public const WARNING_CSS_NOT_REGENERATED = 'css_not_regenerated';
 
@@ -216,6 +222,176 @@ final class ElementorDocument
     public static function pageTemplate(string $frame): ?string
     {
         return self::FRAME_TEMPLATES[$frame] ?? null;
+    }
+
+    /**
+     * The whole page-settings array a new page is created with, or null for
+     * none: {hide_title: "yes"} for a full_width page that opens with a
+     * hero, so the theme's title does not sit above the hero. full_width is
+     * a classic theme's frame; a block theme's designed page is canvas,
+     * which prints no title. Written once, as a plain row of the insert.
+     *
+     * @param string $frame         The page frame the page is created with.
+     * @param bool   $opensWithHero Whether the outline opens with a hero.
+     * @return array<string, string>|null
+     */
+    public static function createdPageSettings(string $frame, bool $opensWithHero): ?array
+    {
+        return $frame === 'full_width' && $opensWithHero ? [self::SETTING_HIDE_TITLE => self::HIDE_TITLE] : null;
+    }
+
+    /**
+     * The bytes a page-settings array is stored as: what core's meta write
+     * stores for an array.
+     *
+     * @param array<mixed> $settings A page-settings array.
+     * @return string
+     */
+    public static function pageSettingsBytes(array $settings): string
+    {
+        return serialize($settings); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize -- the exact bytes core's maybe_serialize() stores for an array, compared with the stored row
+    }
+
+    /**
+     * Set one page setting of a stored page: read the post's whole
+     * page-settings array, set $key to $value in it, write the whole array
+     * back as the post's one row, slashed, and read the row's bytes back.
+     *
+     * Never through the document's settings save, which replaces the page
+     * settings wholesale. Call it before the tree's save, whose one
+     * regeneration of the page's CSS then includes the setting; it
+     * regenerates nothing itself.
+     *
+     * The stored settings must be no row (an empty array) or one row holding
+     * a serialized array of plain values that serializes back to exactly its
+     * bytes, so every other key is written back byte for byte; anything else
+     * is refused unwritten. The value already stored writes nothing
+     * (written: false). The write runs inside the post's write scope and
+     * under the kit tripwire, as save() does, so a write anywhere but the
+     * post's own rows during it is side_effect_detected. After the write
+     * the post's rows of the key, read with SQL, must be exactly the
+     * serialized array.
+     *
+     * @param int    $postId The stored page.
+     * @param string $key    A page setting, as Elementor names it.
+     * @param string $value  Its new value.
+     * @param int    $kitId  The active kit's post id; 0 when there is none.
+     * @return array{ok: bool, written?: bool, code?: string, detail?: string, scope: array<string, mixed>|null}
+     */
+    public function setPageSetting(int $postId, string $key, string $value, int $kitId): array
+    {
+        if ($postId < 1 || $key === '' || is_numeric($key)) {
+            return ['ok' => false, 'code' => self::CODE_REFUSED, 'detail' => 'no page setting to write', 'scope' => null];
+        }
+        try {
+            $current = self::storedPageSettings($postId);
+        } catch (\Throwable $e) {
+            $current = null;
+        }
+        if ($current === null) {
+            return ['ok' => false, 'code' => self::CODE_REFUSED, 'detail' => 'the page settings are not one plain array', 'scope' => null];
+        }
+        $merged       = $current;
+        $merged[$key] = $value;
+        if ($merged === $current) {
+            return ['ok' => true, 'written' => false, 'scope' => null];
+        }
+        try {
+            $kitBefore = self::kitDigest($kitId);
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'code' => self::CODE_REFUSED, 'detail' => 'the active kit could not be read', 'scope' => null];
+        }
+
+        $scope   = new AbilityWriteScope($postId, $this->saveOptionPatterns(), self::saveOptionChecks());
+        $stored  = false;
+        $crashed = false;
+        try {
+            $stored = $scope->run(static fn () => update_post_meta($postId, self::KEY_PAGE_SETTINGS, wp_slash($merged)));
+        } catch (\Throwable $e) {
+            $crashed = true;
+        }
+        $outcome = $scope->outcome();
+
+        try {
+            $kitChanged = self::kitDigest($kitId) !== $kitBefore;
+        } catch (\Throwable $e) {
+            $kitChanged = true;
+        }
+        if ($kitChanged) {
+            return ['ok' => false, 'code' => self::CODE_SIDE_EFFECT, 'detail' => 'the active kit changed during the page-settings write', 'scope' => $outcome];
+        }
+        if ($outcome['clean'] !== true) {
+            return ['ok' => false, 'code' => self::CODE_SIDE_EFFECT, 'detail' => 'the page-settings write wrote outside the page: ' . implode(', ', $outcome['violations']), 'scope' => $outcome];
+        }
+        if ($crashed) {
+            return ['ok' => false, 'code' => self::CODE_CRASHED, 'detail' => 'WordPress failed while writing the page settings', 'scope' => $outcome];
+        }
+        if ($stored === false) {
+            return ['ok' => false, 'code' => self::CODE_REFUSED, 'detail' => 'WordPress did not write the page settings', 'scope' => $outcome];
+        }
+        try {
+            $read = BuilderDocumentFingerprint::read($postId, [self::KEY_PAGE_SETTINGS]);
+        } catch (\Throwable $e) {
+            $read = null;
+        }
+        if ($read === null || ($read['rows'][self::KEY_PAGE_SETTINGS] ?? []) !== [self::pageSettingsBytes($merged)]) {
+            return ['ok' => false, 'code' => self::CODE_REFUSED, 'detail' => 'the page settings were not stored as written', 'scope' => $outcome];
+        }
+
+        return ['ok' => true, 'written' => true, 'scope' => $outcome];
+    }
+
+    /**
+     * The stored page settings of $postId as one plain array, read with
+     * SQL: an empty array when the post has no row; null when the post is
+     * gone, has more than one row, or its row is not a serialized array of
+     * plain values that serializes back to exactly its bytes.
+     *
+     * @param int $postId The stored page.
+     * @return array<mixed>|null
+     */
+    private static function storedPageSettings(int $postId): ?array
+    {
+        $read = BuilderDocumentFingerprint::read($postId, [self::KEY_PAGE_SETTINGS]);
+        if ($read === null) {
+            return null;
+        }
+        $rows = $read['rows'][self::KEY_PAGE_SETTINGS] ?? [];
+        if ($rows === []) {
+            return [];
+        }
+        $row = $rows[0];
+        if (count($rows) !== 1 || !is_string($row) || !str_starts_with($row, 'a:')) {
+            return null;
+        }
+        $settings = @unserialize($row, ['allowed_classes' => false]); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_unserialize,WordPress.PHP.NoSilencedErrors.Discouraged -- the page's own settings row; no class is ever instantiated and an object inside is refused below; a malformed row answers false
+        if (!is_array($settings) || !self::plainValues($settings, 0)) {
+            return null;
+        }
+
+        return self::pageSettingsBytes($settings) === $row ? $settings : null;
+    }
+
+    /**
+     * Whether $values holds only scalars, nulls and arrays of them, no
+     * deeper than MAX_DEPTH.
+     *
+     * @param array<mixed> $values Values.
+     * @param int          $depth  Depth of $values.
+     * @return bool
+     */
+    private static function plainValues(array $values, int $depth): bool
+    {
+        if ($depth > self::MAX_DEPTH) {
+            return false;
+        }
+        foreach ($values as $value) {
+            if (is_object($value) || is_resource($value) || (is_array($value) && !self::plainValues($value, $depth + 1))) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -776,9 +952,14 @@ final class ElementorDocument
      * @param string|null  $template  The page template the insert wrote, which
      *                                must be the post's one template row after
      *                                the save; null when the insert wrote none.
+     * @param array<mixed>|null $pageSettings The page settings the insert
+     *                                wrote, whose bytes must be the post's one
+     *                                page-settings row after the save; null
+     *                                when the insert wrote none, and then the
+     *                                post must have no such row.
      * @return string|null
      */
-    public function verifyCreated(int $postId, array $tree, int $principal, string $requestId, string $postType, ?string $template = null): ?string
+    public function verifyCreated(int $postId, array $tree, int $principal, string $requestId, string $postType, ?string $template = null, ?array $pageSettings = null): ?string
     {
         if ($postId < 1) {
             return 'post_missing';
@@ -813,7 +994,8 @@ final class ElementorDocument
         if (($rows[self::KEY_TEMPLATE_TYPE] ?? []) !== [self::templateType($postType)]) {
             return 'template_type';
         }
-        if (isset($rows[self::KEY_PAGE_SETTINGS])) {
+        $settingsRows = $rows[self::KEY_PAGE_SETTINGS] ?? [];
+        if ($pageSettings === null ? $settingsRows !== [] : $settingsRows !== [self::pageSettingsBytes($pageSettings)]) {
             return 'page_settings';
         }
         if ($template !== null && ($rows[self::KEY_PAGE_TEMPLATE] ?? []) !== [$template]) {

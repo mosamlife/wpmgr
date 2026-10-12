@@ -206,9 +206,16 @@ final class BuilderPageCreate
             return self::refusedPrecheck((string) ($built['code'] ?? 'bad_input'), (string) ($built['detail'] ?? 'the page could not be built'));
         }
         if ($template !== null) {
-            // A plain row of the insert, never the document's settings save.
+            // Plain rows of the insert, never the document's settings save:
+            // the template, and the page settings a page is created with
+            // (written once, here).
+            $rows     = [ElementorDocument::KEY_PAGE_TEMPLATE => $template];
+            $settings = ElementorDocument::createdPageSettings((string) $frame, self::opensWithHero($spec['outline'] ?? null));
+            if ($settings !== null) {
+                $rows[ElementorDocument::KEY_PAGE_SETTINGS] = $settings;
+            }
             try {
-                $doc = new NativeDocument($doc->tree, array_merge($doc->meta, [ElementorDocument::KEY_PAGE_TEMPLATE => $template]));
+                $doc = new NativeDocument($doc->tree, array_merge($doc->meta, $rows));
             } catch (\Throwable $e) {
                 return self::refusedPrecheck('bad_input', 'the page could not be encoded');
             }

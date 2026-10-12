@@ -286,8 +286,9 @@ final class ElementorAdapter implements BuilderAdapter
         }
 
         $pageTemplate = $doc->meta[ElementorDocument::KEY_PAGE_TEMPLATE] ?? null;
+        $pageSettings = $doc->meta[ElementorDocument::KEY_PAGE_SETTINGS] ?? null;
 
-        return $this->document->verifyCreated($postId, $doc->tree, $principal, $requestId, $postType, is_string($pageTemplate) ? $pageTemplate : null);
+        return $this->document->verifyCreated($postId, $doc->tree, $principal, $requestId, $postType, is_string($pageTemplate) ? $pageTemplate : null, is_array($pageSettings) ? $pageSettings : null);
     }
 
     /**

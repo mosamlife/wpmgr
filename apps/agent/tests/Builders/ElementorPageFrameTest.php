@@ -27,6 +27,7 @@ use WPMgr\Agent\Abilities\Builders\BuilderPageCreate;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
 use WPMgr\Agent\Abilities\Builders\ElementorDocument;
 use WPMgr\Agent\Abilities\Builders\ElementorStyleCache;
+use WPMgr\Agent\Abilities\Builders\NativeDocument;
 use WPMgr\Agent\Abilities\Builders\OutlineV3Schema;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
@@ -89,6 +90,12 @@ final class ElementorPageFrameTest extends TestCase
     private FakeElementorApi $api;
 
     private int $metaId = 100;
+
+    /** @var list<array{0:int,1:string,2:mixed}> update_post_meta() calls: post, key, the value as passed. */
+    private array $metaCalls = [];
+
+    /** @var (\Closure(): void)|null Runs inside update_post_meta() after its write, as a listener on it would. */
+    private ?\Closure $afterMetaWrite = null;
 
     /** @var mixed */
     private $savedWpdb;
@@ -182,7 +189,8 @@ final class ElementorPageFrameTest extends TestCase
             $this->authors[$id] = (int) $data['post_author'];
             $this->wpdb->addPost($id, $this->rows[$id]);
             foreach ((array) ($data['meta_input'] ?? []) as $key => $value) {
-                $this->wpdb->addMeta(++$this->metaId, $id, (string) $key, stripslashes((string) $value));
+                // As core's meta write: unslashed, an array serialized.
+                $this->wpdb->addMeta(++$this->metaId, $id, (string) $key, is_array($value) ? serialize(self::unslash($value)) : stripslashes((string) $value));
             }
 
             return $id;
@@ -385,6 +393,284 @@ final class ElementorPageFrameTest extends TestCase
                 $this->assertSame(['ok' => false, 'code' => $code, 'post_id' => self::NEW_ID, 'trashed' => true], self::summary($result), $name);
             }
         }
+    }
+
+    /**
+     * A full_width page that opens with a hero is created with its title
+     * hidden: the whole page-settings array {hide_title: "yes"} is one plain
+     * row of the insert, never a meta call of its own and never the
+     * document's save, and the read-back requires exactly those bytes.
+     */
+    public function testHiddenTitleWrittenOnceOnCreate(): void
+    {
+        $hidden = [ElementorDocument::SETTING_HIDE_TITLE => ElementorDocument::HIDE_TITLE];
+        $this->assertSame(['hide_title' => 'yes'], $hidden, 'Elementor\'s own setting name and value');
+        $this->assertSame($hidden, ElementorDocument::createdPageSettings('full_width', true));
+        foreach ([['full_width', false], ['theme', true], ['theme', false], ['canvas', true], ['wide', true]] as [$frame, $hero]) {
+            $this->assertNull(ElementorDocument::createdPageSettings($frame, $hero), $frame . ($hero ? ' with' : ' without') . ' a hero');
+        }
+
+        Functions\expect('update_post_meta')->never();
+        Functions\expect('add_post_meta')->never();
+        Functions\expect('update_metadata')->never();
+        $this->offered = ['page' => self::WITH_ELEMENTOR];
+        foreach ([
+            'kept'                => [null, null],
+            'changed by the save' => ['verify_mismatch', 'a:1:{s:10:"hide_title";s:0:"";}'],
+            'removed by the save' => ['verify_mismatch', null],
+        ] as $name => [$code, $rewrite]) {
+            $this->fresh();
+            $spec  = $this->v3Spec('full_width');
+            $built = $this->withHiddenTitle($this->precheck($spec));
+            $during = $code === null ? null : function () use ($rewrite): void {
+                $this->wpdb->delete($this->wpdb->postmeta, ['post_id' => self::NEW_ID, 'meta_key' => ElementorDocument::KEY_PAGE_SETTINGS]);
+                if ($rewrite !== null) {
+                    $this->wpdb->addMeta(++$this->metaId, self::NEW_ID, ElementorDocument::KEY_PAGE_SETTINGS, $rewrite);
+                }
+            };
+            $document = $this->elementorSaves('wp-page', $during);
+
+            $result = $this->write($spec, $built);
+
+            if ($code !== null) {
+                $this->assertSame(['ok' => false, 'code' => $code, 'post_id' => self::NEW_ID, 'trashed' => true], self::summary($result), $name);
+                continue;
+            }
+            $this->assertTrue($result['ok'] ?? null, $name . ': ' . (string) ($result['detail'] ?? ''));
+            $this->assertSame($hidden, $this->inserts[0]['meta_input'][ElementorDocument::KEY_PAGE_SETTINGS] ?? null, 'a plain row of the insert');
+            $this->assertSame(['a:1:{s:10:"hide_title";s:3:"yes";}'], $this->stored(ElementorDocument::KEY_PAGE_SETTINGS), 'one row, the whole array');
+            $this->assertSame([['elements' => $built['tree']]], $document->saves, 'the document save gets the tree, never page settings');
+        }
+    }
+
+    /**
+     * On a change the whole page-settings array is read, one key set, and the
+     * whole array written back in one meta write: every other key is kept,
+     * the same value again writes nothing, and a row that is not one plain
+     * array is refused unwritten.
+     */
+    public function testHideTitleMergeKeepsOtherKeys(): void
+    {
+        $this->coreMetaWrites();
+        $others = ['background_background' => 'classic', 'background_color' => '#1F2937', 'padding' => ['unit' => 'px', 'top' => '0', 'isLinked' => true], 'template' => 'elementor_header_footer'];
+        foreach ([
+            'appended'     => [[serialize($others)], $others + ['hide_title' => 'yes']],
+            'set in place' => [[serialize(['hide_title' => '', 'background_color' => '#1F2937'])], ['hide_title' => 'yes', 'background_color' => '#1F2937']],
+            'no row yet'   => [[], ['hide_title' => 'yes']],
+        ] as $name => [$rows, $after]) {
+            $document = $this->storedPage($rows);
+
+            $result = $this->hideTitle();
+
+            $this->assertSame(['ok' => true, 'written' => true], self::outcomeOf($result), $name . ': ' . (string) ($result['detail'] ?? ''));
+            $this->assertSame([serialize($after)], $this->stored(ElementorDocument::KEY_PAGE_SETTINGS), $name . ': the whole array, every other key kept');
+            $this->assertCount(1, $this->metaCalls, $name . ': one write of the whole array');
+            $this->assertSame([self::NEW_ID, ElementorDocument::KEY_PAGE_SETTINGS], array_slice($this->metaCalls[0], 0, 2), $name);
+            $this->assertSame([], $document->saves, $name . ': never the document\'s save');
+
+            $this->assertSame(['ok' => true, 'written' => false], self::outcomeOf($this->hideTitle()), $name . ': the same value again');
+            $this->assertCount(1, $this->metaCalls, $name . ': writes nothing');
+        }
+
+        foreach ([
+            'a string'       => ['s:3:"yes";'],
+            'not serialized' => ['hide_title=yes'],
+            'an object'      => ['a:1:{s:1:"a";O:8:"stdClass":0:{}}'],
+            'two rows'       => [serialize(['a' => '1']), serialize(['b' => '2'])],
+            'not canonical'  => ['a:1:{s:1:"a";d:0.1000000000000000055511151231257827;}'],
+        ] as $name => $rows) {
+            $document = $this->storedPage($rows);
+
+            $result = $this->hideTitle();
+
+            $this->assertSame(['ok' => false, 'written' => null], self::outcomeOf($result), $name);
+            $this->assertSame(ElementorDocument::CODE_REFUSED, $result['code'] ?? null, $name);
+            $this->assertSame([], $this->metaCalls, $name . ': nothing written');
+            $this->assertSame($rows, $this->stored(ElementorDocument::KEY_PAGE_SETTINGS), $name . ': the rows as they were');
+            $this->assertSame([], $document->saves, $name);
+        }
+    }
+
+    /**
+     * The whole array goes to the meta write slashed, so core's unslash
+     * leaves backslashes and quotes as they were, and the byte read-back
+     * refuses a row that does not hold exactly what was written.
+     */
+    public function testPageSettingsBytesSlashed(): void
+    {
+        $this->coreMetaWrites();
+        $before = ['custom_css' => 'selector .a::before { content: "\201C"; }', 'note' => 'Tom\'s "best" \\ page'];
+        $this->storedPage([serialize($before)]);
+
+        $result = $this->hideTitle();
+
+        $this->assertSame(['ok' => true, 'written' => true], self::outcomeOf($result), (string) ($result['detail'] ?? ''));
+        $this->assertSame([serialize($before + ['hide_title' => 'yes'])], $this->stored(ElementorDocument::KEY_PAGE_SETTINGS), 'backslashes and quotes byte for byte');
+        $this->assertSame(addslashes($before['custom_css']), $this->metaCalls[0][2]['custom_css'] ?? null, 'passed to the meta write slashed');
+
+        foreach ([
+            'changed after the write' => function (): void {
+                $this->wpdb->delete($this->wpdb->postmeta, ['post_id' => self::NEW_ID, 'meta_key' => ElementorDocument::KEY_PAGE_SETTINGS]);
+                $this->wpdb->addMeta(++$this->metaId, self::NEW_ID, ElementorDocument::KEY_PAGE_SETTINGS, serialize(['hide_title' => 'yes']));
+            },
+            'a second row added'      => function (): void {
+                $this->wpdb->addMeta(++$this->metaId, self::NEW_ID, ElementorDocument::KEY_PAGE_SETTINGS, serialize(['hide_title' => 'yes']));
+            },
+        ] as $name => $after) {
+            $this->storedPage([serialize($before)]);
+            $this->afterMetaWrite = $after;
+
+            $result = $this->hideTitle();
+
+            $this->assertSame(['ok' => false, 'written' => null], self::outcomeOf($result), $name);
+            $this->assertSame(ElementorDocument::CODE_REFUSED, $result['code'] ?? null, $name);
+        }
+        $this->storedPage([serialize($before)]);
+        $this->afterMetaWrite = null;
+        Functions\when('update_post_meta')->justReturn(true);
+        $this->assertSame(ElementorDocument::CODE_REFUSED, $this->hideTitle()['code'] ?? null, 'a write that reports success but stores nothing');
+    }
+
+    /**
+     * The page-settings write runs inside the post's write scope and under
+     * the kit tripwire, as the tree's save does: its own row and the post's
+     * own style-cache entry pass; another post's meta, another post's cache
+     * entry and a change to the kit are side_effect_detected.
+     */
+    public function testPageSettingsWriteScopeAdmitsOwnAndTripsOnOthers(): void
+    {
+        $this->coreMetaWrites();
+        $cache  = ElementorStyleCache::PREFIX . 'widget';
+        $before = ['state' => true, 'children' => [self::OTHER => ['state' => true]]];
+        $own    = ['state' => true, 'children' => [self::OTHER => ['state' => true], self::NEW_ID => ['state' => true]]];
+        $other  = ['state' => true, 'children' => [self::OTHER => ['state' => false], self::NEW_ID => ['state' => true]]];
+        foreach ([
+            'own row and own cache entry' => [null, function () use ($cache, $before, $own): void {
+                $this->fire('updated_option', $cache, $before, $own);
+            }],
+            'another post\'s page settings' => [ElementorDocument::CODE_SIDE_EFFECT, function (): void {
+                $this->fire('updated_post_meta', 601, self::OTHER, ElementorDocument::KEY_PAGE_SETTINGS, ['hide_title' => 'yes']);
+            }],
+            'another post\'s cache entry' => [ElementorDocument::CODE_SIDE_EFFECT, function () use ($cache, $before, $other): void {
+                $this->fire('updated_option', $cache, $before, $other);
+            }],
+            'the kit changed'             => [ElementorDocument::CODE_SIDE_EFFECT, function (): void {
+                $this->wpdb->delete($this->wpdb->postmeta, ['post_id' => self::KIT, 'meta_key' => ElementorDocument::KEY_PAGE_SETTINGS]);
+                $this->wpdb->addMeta(++$this->metaId, self::KIT, ElementorDocument::KEY_PAGE_SETTINGS, 'a:0:{}');
+            }],
+        ] as $name => [$code, $during]) {
+            $this->storedPage([serialize(['background_color' => '#1F2937'])]);
+            $this->afterMetaWrite = $during;
+
+            $result = $this->hideTitle();
+
+            if ($code === null) {
+                $this->assertSame(['ok' => true, 'written' => true], self::outcomeOf($result), $name . ': ' . (string) ($result['detail'] ?? ''));
+                $this->assertSame([ElementorDocument::KEY_PAGE_SETTINGS], $result['scope']['target_meta_keys'] ?? null, $name);
+                continue;
+            }
+            $this->assertSame(['ok' => false, 'written' => null], self::outcomeOf($result), $name);
+            $this->assertSame($code, $result['code'] ?? null, $name . ': ' . (string) ($result['detail'] ?? ''));
+        }
+    }
+
+    /**
+     * update_post_meta() as core runs it: the value unslashed, an array
+     * serialized, the key's rows replaced by one, and added_post_meta or
+     * updated_post_meta fired; false when the bytes would not change.
+     * afterMetaWrite then runs, as a listener on the write would.
+     */
+    private function coreMetaWrites(): void
+    {
+        Functions\when('update_post_meta')->alias(function ($postId, $key, $value) {
+            $this->metaCalls[] = [(int) $postId, (string) $key, $value];
+            $value  = self::unslash($value);
+            $bytes  = is_array($value) ? serialize($value) : (string) $value;
+            $read   = BuilderDocumentFingerprint::read((int) $postId, [(string) $key]);
+            $before = $read === null ? [] : ($read['rows'][(string) $key] ?? []);
+            if ($before === [$bytes]) {
+                return false;
+            }
+            $this->wpdb->delete($this->wpdb->postmeta, ['post_id' => (int) $postId, 'meta_key' => (string) $key]);
+            $this->wpdb->addMeta(++$this->metaId, (int) $postId, (string) $key, $bytes);
+            $this->fire($before === [] ? 'added_post_meta' : 'updated_post_meta', $this->metaId, (int) $postId, (string) $key, $value);
+            if ($this->afterMetaWrite !== null) {
+                ($this->afterMetaWrite)();
+            }
+
+            return $before === [] ? $this->metaId : true;
+        });
+    }
+
+    /**
+     * Start again with a stored Elementor page holding $rows as its
+     * page-settings rows; answers its stand-in document.
+     *
+     * @param list<string> $rows Stored page-settings rows.
+     */
+    private function storedPage(array $rows): object
+    {
+        $this->fresh();
+        $this->metaCalls          = [];
+        $this->rows[self::NEW_ID] = [
+            'post_type'         => 'page',
+            'post_status'       => 'draft',
+            'post_title'        => self::TITLE,
+            'post_content'      => '',
+            'post_modified_gmt' => '2026-10-09 07:00:00',
+        ];
+        $this->wpdb->addPost(self::NEW_ID, $this->rows[self::NEW_ID]);
+        foreach ($rows as $row) {
+            $this->wpdb->addMeta(++$this->metaId, self::NEW_ID, ElementorDocument::KEY_PAGE_SETTINGS, $row);
+        }
+
+        return $this->api->addDocument(self::NEW_ID, 'wp-page');
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function hideTitle(): array
+    {
+        return (new ElementorDocument($this->api))->setPageSetting(self::NEW_ID, ElementorDocument::SETTING_HIDE_TITLE, ElementorDocument::HIDE_TITLE, self::KIT);
+    }
+
+    /**
+     * precheck()'s answer with the hidden-title page settings in the
+     * document's rows, as precheck() builds them for a page that opens with
+     * a hero.
+     *
+     * @param array<string,mixed> $built precheck() answer.
+     * @return array<string,mixed>
+     */
+    private function withHiddenTitle(array $built): array
+    {
+        $this->assertArrayNotHasKey('refusal', $built, (string) json_encode($built['refusal'] ?? null));
+        $doc           = $built['doc'];
+        $built['doc']  = new NativeDocument($doc->tree, $doc->meta + [ElementorDocument::KEY_PAGE_SETTINGS => ElementorDocument::createdPageSettings('full_width', true)]);
+
+        return $built;
+    }
+
+    /**
+     * @param array<string,mixed> $result setPageSetting() answer.
+     * @return array{ok:mixed,written:mixed}
+     */
+    private static function outcomeOf(array $result): array
+    {
+        return ['ok' => $result['ok'] ?? null, 'written' => $result['written'] ?? null];
+    }
+
+    /**
+     * Core's wp_unslash(), over arrays too.
+     */
+    private static function unslash(mixed $value): mixed
+    {
+        if (is_array($value)) {
+            return array_map([self::class, 'unslash'], $value);
+        }
+
+        return is_string($value) ? stripslashes($value) : $value;
     }
 
     /**
