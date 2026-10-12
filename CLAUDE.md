@@ -138,20 +138,26 @@ reviews the result and pushes it. Review is unchanged: `security-reviewer`
 reviews every change on a path in the routing table's last row, whoever wrote
 it.
 
-- **One job per run**, briefed by the five rules above with one change: Codex
-  commits in its worktree and never pushes. The router pushes after review. The
-  brief also names the failing test to start from, the exact commands, and the
-  report to return.
-- **Its own worktree, in the background:** `codex exec -C <worktree> -s
-  workspace-write --add-dir <repo>/.git -o <file> - < <brief>`. Add
-  `--add-dir` for any build cache the job writes, such as `go env GOCACHE`. The
-  sandbox has no network, so installs and pushes happen outside it.
-- **The sandbox blocks some tests**, such as an `httptest` listener on `[::1]`
-  or anything needing Docker. Re-run the touched packages' full tests outside it
-  before pushing. Codex reporting green is not the check.
-- **Review every diff before it is pushed:** only the files the brief names, the
-  commit message rules below, and no generated-tree or migration edit the brief
-  did not ask for.
+- **One job per run**, briefed by the five rules above, except rule 5's push
+  and draft PR: Codex commits in its own clone and never pushes or opens a pull
+  request. The router fetches the job branch, reviews it, pushes it and opens
+  any PR. The brief also names the failing test to start from, the exact
+  commands, and the report to return.
+- **Its own clone, never this repository's `.git`.** Make it with `git clone
+  --shared`, so objects are read through this repository and never written to
+  it. Install dependencies there, then run `codex exec -C <clone> -s
+  workspace-write -o <file> - < <brief>` in the background. Never pass
+  `--add-dir` for this repository's `.git` or for a shared build cache: a
+  builder that can write either can plant a hook, a config line or a cached
+  build output that later runs outside the sandbox. A Go job keeps `GOCACHE`
+  inside its clone. The sandbox has no network, so installs, fetches and pushes
+  happen outside it.
+- **Read the diff before running anything from it outside the sandbox.** Refuse
+  a diff that touches files the brief did not name, `.githooks/`, CI, or a
+  generated tree or migration the brief did not ask for. Then re-run the touched
+  packages' full tests outside the sandbox, which blocks some of them (an
+  `httptest` listener on `[::1]`, anything needing Docker). Codex reporting
+  green is not the check.
 - **Which model and effort Codex runs at lives in `~/.codex/config.toml`**, not
   in this file. Raise the effort for a job in one of the irreversible categories
   the routing section lists.
@@ -165,10 +171,13 @@ in.
 
 - **The map, Isolation, Claims, What shipped code may say, Guards and tests,
   Commit messages and Long sessions bind you** exactly as they bind the router.
-- **Failing test first.** Show it fail, make the change, show it pass. Run the
-  tests the brief names, never a whole-repository run.
-- **Commit** with a message that starts with the job id. Codex does not push,
-  open a pull request or create a branch unless the brief says so.
+- **Failing test first, then commit early.** Show the failing test, the one
+  check allowed before the change. Make the change, commit at the first
+  increment that compiles, then run the other checks the brief names and commit
+  their fixes. Never a whole-repository run.
+- **Commit** on the branch you were started on, with a message that starts with
+  the job id. Codex never pushes, opens a pull request or creates a branch; the
+  router does.
 - **Change only what the brief names.** Never delete or move anything outside
   your worktree, and never open a folder outside this repository unless the
   brief names it.
