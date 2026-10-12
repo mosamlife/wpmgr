@@ -250,6 +250,60 @@ final class ElementorSectionCompiler
     }
 
     /**
+     * The settings that make a container a card, to follow its layout keys:
+     *
+     *   padding                 the design's card padding on all four sides at the
+     *   padding_tablet          desktop step, then the tablet and mobile steps, each
+     *   padding_mobile          written only when the site has that breakpoint active
+     *   border_border          "solid", the activator of the two below
+     *   border_width            $edgePx on all four sides
+     *   border_color            $edgeColour
+     *   border_radius           the design's radius on all four corners
+     *   box_shadow_box_shadow_type  "yes", the activator of the next, written only for a raised card
+     *   box_shadow_box_shadow       one layer: the wide layer of the design's card shadow
+     *
+     * A container holds a single shadow, so a card takes the wide layer of the
+     * design's two-layer card shadow and leaves the tight one.
+     *
+     * @param string $edgeColour The border colour: a colour LeafPolicy accepts.
+     * @param int    $edgePx     The border width in px, 1 or more.
+     * @param bool   $raised     Whether the card casts the card shadow.
+     * @return array<string,mixed>
+     * @throws \InvalidArgumentException When the border is not a width of at least 1 px.
+     */
+    public function cardSettings(string $edgeColour, int $edgePx, bool $raised): array
+    {
+        if ($edgePx < 1) {
+            throw new \InvalidArgumentException('a card border is at least 1 px wide');
+        }
+        $padding  = $this->tokens->cardPadding();
+        $settings = ['padding' => self::allSides((string) $padding['desktop'])];
+        foreach (['tablet', 'mobile'] as $breakpoint) {
+            if ($this->isActive($breakpoint)) {
+                $settings['padding_' . $breakpoint] = self::allSides((string) $padding[$breakpoint]);
+            }
+        }
+        $settings['border_border'] = 'solid';
+        $settings['border_width']  = self::allSides((string) $edgePx);
+        $settings['border_color']  = $edgeColour;
+        $settings['border_radius'] = self::allSides((string) $this->tokens->radius());
+        if ($raised) {
+            $layers = $this->tokens->cardShadow();
+            $wide   = $layers[count($layers) - 1];
+            $settings['box_shadow_box_shadow_type'] = 'yes';
+            $settings['box_shadow_box_shadow']      = [
+                'horizontal' => (string) $wide['x'],
+                'vertical'   => (string) $wide['y'],
+                'blur'       => (string) $wide['blur'],
+                'spread'     => (string) $wide['spread'],
+                'color'      => $wide['color'],
+            ];
+        }
+
+        return $settings;
+    }
+
+    /**
      * One column of a row: full content width, so that Elementor writes its
      * widths, at its share of the row, and the whole row's width on a phone
      * when the site has the mobile breakpoint active.
@@ -517,6 +571,17 @@ final class ElementorSectionCompiler
     private static function percent(int $size): array
     {
         return ['unit' => '%', 'size' => (string) $size];
+    }
+
+    /**
+     * A dimensions value with the same length on every side.
+     *
+     * @param string $length Length in px, as stored.
+     * @return array{unit:string,top:string,right:string,bottom:string,left:string,isLinked:bool}
+     */
+    private static function allSides(string $length): array
+    {
+        return ['unit' => 'px', 'top' => $length, 'right' => $length, 'bottom' => $length, 'left' => $length, 'isLinked' => true];
     }
 
     /**

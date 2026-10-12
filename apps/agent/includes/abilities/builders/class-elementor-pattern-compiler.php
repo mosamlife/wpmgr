@@ -116,6 +116,8 @@ final class ElementorPatternCompiler
 
     private ElementorSectionCompiler $sections;
 
+    private ElementorPatternCards $cards;
+
     /** @var array<mixed> */
     private array $media;
 
@@ -128,6 +130,7 @@ final class ElementorPatternCompiler
     {
         $this->tokens   = $tokens;
         $this->sections = $sections;
+        $this->cards    = new ElementorPatternCards($tokens, $sections);
         $this->media    = $media;
     }
 
@@ -193,8 +196,10 @@ final class ElementorPatternCompiler
      */
     public static function allowedKeys(array $allowed): array
     {
-        foreach (self::KEYS as $type => $paths) {
-            $allowed[$type] = ($allowed[$type] ?? []) + $paths;
+        foreach ([self::KEYS, ElementorPatternCards::keys()] as $keys) {
+            foreach ($keys as $type => $paths) {
+                $allowed[$type] = ($allowed[$type] ?? []) + $paths;
+            }
         }
 
         return $allowed;
@@ -218,8 +223,28 @@ final class ElementorPatternCompiler
             'cta'   => $this->cta($ids, $path, $pattern, $blocks),
             'stats' => $this->stats($ids, $path, $pattern, $tone),
             'logos' => $this->logos($ids, $path, $pattern),
+            'features' => $this->features($ids, $path, $pattern, $tone),
             default => throw new \InvalidArgumentException('this pattern is not one the compiler builds'),
         };
+    }
+
+    /**
+     * Features: icon boxes from the closed list of icons, as a two-column list
+     * (split) or as cards in rows (bento, grid). See ElementorPatternCards.
+     *
+     * @param IdSeed              $ids     Node ids for this request.
+     * @param string              $path    The pattern's outline path.
+     * @param array<string,mixed> $pattern The features node.
+     * @param string              $tone    The tone of the section it stands in.
+     * @return array{id:string,elType:string,settings:array<string,mixed>,elements:list<array<string,mixed>>,isInner:bool}
+     * @throws \InvalidArgumentException When the node is not a features pattern the grammar accepts.
+     */
+    public function features(IdSeed $ids, string $path, array $pattern, string $tone): array
+    {
+        $variant = self::variantOf($pattern, 'features');
+        $label   = self::label('features', $variant);
+
+        return self::labelled($this->cards->features($ids, $path, $variant, self::itemsOf($pattern, 'features'), $tone), $label);
     }
 
     /**
