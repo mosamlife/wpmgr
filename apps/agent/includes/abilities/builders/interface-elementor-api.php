@@ -159,4 +159,23 @@ interface ElementorApi
      * @return array{status: string, path: string}|null
      */
     public function regeneratePostCss(int $postId): ?array;
+
+    /**
+     * Whether Elementor Pro is active on this request: its version constant
+     * is defined. Asked of the constant alone, so it is the same answer the
+     * site's builder facts give as pro_active.
+     *
+     * @return bool
+     */
+    public function proActive(): bool;
+
+    /**
+     * The post meta key under which Elementor keeps a post's cached element
+     * output: Elementor's own document constant when this request has one
+     * that names a cache, else ElementorDocument::KEY_ELEMENT_CACHE. Always a
+     * key, never empty.
+     *
+     * @return string
+     */
+    public function elementCacheKey(): string;
 }

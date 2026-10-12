@@ -328,4 +328,15 @@ final class ElementorAdapter implements BuilderAdapter
         }
         $this->document->refreshCaches($postId, $since);
     }
+
+    /**
+     * {@inheritDoc}
+     *
+     * ElementorDocument::elementCacheActive(): Elementor Pro is active and
+     * the post has a cached element output row.
+     */
+    public function servesCachedRender(int $postId): bool
+    {
+        return $this->document->elementCacheActive($postId);
+    }
 }

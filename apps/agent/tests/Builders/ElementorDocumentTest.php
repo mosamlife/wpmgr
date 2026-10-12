@@ -71,12 +71,16 @@ final class ElementorDocumentTest extends TestCase
     /** @var list<string> Directories made for stylesheets, removed after each test. */
     private array $cssDirs = [];
 
+    /** @var list<array{0:int,1:string}> The delete_post_meta() calls: post id, meta key. */
+    private array $metaDeletes = [];
+
     protected function set_up(): void
     {
         parent::set_up();
         Monkey\setUp();
-        $this->hooks   = [];
-        $this->options = [];
+        $this->hooks       = [];
+        $this->options     = [];
+        $this->metaDeletes = [];
 
         $capture = function ($tag, $cb, $prio = 10, $args = 1) {
             $this->hooks[] = [(string) $tag, $cb, (int) $prio, (int) $args];
@@ -768,6 +772,152 @@ final class ElementorDocumentTest extends TestCase
         $this->assertSame([], $this->hooks);
     }
 
+    public function testElementCacheDeletedOnlyWithPro(): void
+    {
+        $document = $this->api->addDocument(self::TARGET);
+        $this->coreDeletePostMeta();
+        $doc   = new ElementorDocument($this->api);
+        $cache = ElementorDocument::KEY_ELEMENT_CACHE;
+        $newer = '_elementor_element_cache_v2';
+        $empty = ['status' => 'empty', 'path' => ''];
+
+        // label => [Pro active, the key Elementor names, what regenerating answers, the delete calls expected,
+        //           the cache keys the target still holds, the cache keys the other page still holds]
+        $cases = [
+            'Pro active, the default key'             => [true, $cache, $empty, [[self::TARGET, $cache]], [$newer], [$cache, $newer]],
+            'Pro not active'                          => [false, $cache, $empty, [], [$cache, $newer], [$cache, $newer]],
+            'Pro active, Elementor names another key' => [true, $newer, $empty, [[self::TARGET, $newer]], [$cache], [$cache, $newer]],
+            'Pro active, the stylesheet was not made' => [true, $cache, null, [[self::TARGET, $cache]], [$newer], [$cache, $newer]],
+        ];
+        foreach ($cases as $why => [$pro, $key, $regenerated, $deletes, $kept, $otherKept]) {
+            $this->resetRows();
+            $this->metaDeletes = [];
+            foreach ([self::TARGET, self::OTHER] as $post) {
+                foreach ([$cache, $newer] as $name) {
+                    $this->wpdb->addMeta(++$this->metaId, $post, $name, serialize(['timeout' => 1760086400, 'value' => '<div>old</div>']));
+                }
+            }
+            $this->api->pro             = $pro;
+            $this->api->elementCacheKey = $key;
+            $this->api->regenerated     = $regenerated;
+            $this->api->calls           = [];
+
+            $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+
+            $this->assertTrue($result['ok'], $why . ': the write still succeeds: ' . json_encode($result));
+            $this->assertSame($deletes, $this->metaDeletes, $why . ': the delete calls');
+            $this->assertSame($kept, self::keysOf($this->wpdb->metaRowsOf(self::TARGET), [$cache, $newer]), $why . ': the cache rows the page keeps');
+            $this->assertSame($otherKept, self::keysOf($this->wpdb->metaRowsOf(self::OTHER), [$cache, $newer]), $why . ': another page\'s cache rows are never touched');
+            $this->assertSame([[self::TARGET]], $this->api->callsTo('regeneratePostCss'), $why . ': the stylesheet is still regenerated once');
+            $this->assertSame($regenerated === null ? ['css_not_regenerated'] : [], array_column($result['warnings'] ?? [], 'code'), $why . ': the cache step adds no warning');
+        }
+
+        // A page with no cache row: nothing to remove, and nothing to report.
+        $this->resetRows();
+        $this->metaDeletes      = [];
+        $this->api->pro         = true;
+        $this->api->regenerated = $empty;
+        $result                 = $doc->save(self::TARGET, self::tree(), self::KIT);
+        $this->assertSame([true, []], [$result['ok'], $result['warnings'] ?? []], 'a page with no cache row');
+
+        // A save that did not store the page, or crashed, clears nothing.
+        $failures = [
+            'builder_save_refused' => static fn (): bool => false,
+            'builder_crashed'      => static function (): bool {
+                throw new \RuntimeException('Elementor failed');
+            },
+        ];
+        foreach ($failures as $code => $onSave) {
+            $this->resetRows();
+            $this->metaDeletes = [];
+            $this->wpdb->addMeta(++$this->metaId, self::TARGET, $cache, 'a:0:{}');
+            $document->onSave = $onSave;
+            $this->assertSame($code, $doc->save(self::TARGET, self::tree(), self::KIT)['code'] ?? null);
+            $this->assertSame([[], [$cache]], [$this->metaDeletes, self::keysOf($this->wpdb->metaRowsOf(self::TARGET), [$cache])], $code . ': the cache is left as it was');
+        }
+        $document->onSave = null;
+
+        // A delete that throws is not a failure of the save: the page is stored.
+        $this->resetRows();
+        $this->wpdb->addMeta(++$this->metaId, self::TARGET, $cache, 'a:0:{}');
+        Functions\when('delete_post_meta')->alias(static function (): bool {
+            throw new \RuntimeException('the database failed');
+        });
+        $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+        $this->assertTrue($result['ok'], 'a delete that throws: ' . json_encode($result));
+        $this->assertSame([], $this->hooks, 'a delete that throws: nothing left installed');
+    }
+
+    public function testElementCacheDeleteIsTheSavesOwnAndOtherWritesTrip(): void
+    {
+        $this->api->addDocument(self::TARGET);
+        $this->api->pro = true;
+        $this->coreDeletePostMeta();
+        $doc    = new ElementorDocument($this->api);
+        $cache  = ElementorDocument::KEY_ELEMENT_CACHE;
+        $name   = self::CACHE . 'local';
+        $other  = ['state' => true, 'meta' => '6ac9bb9c3d4e5'];
+        $before = ['state' => false, 'children' => [self::OTHER => $other]];
+        $own    = ['state' => false, 'children' => [self::OTHER => $other, self::TARGET => self::viewedEntry()]];
+        $theirs = ['state' => false, 'children' => [self::OTHER => ['state' => false], self::TARGET => self::viewedEntry()]];
+
+        $admitted = [
+            'the page\'s own cache row, deleted'          => null,
+            'beside the page\'s own CSS and style cache' => function () use ($name, $before, $own): void {
+                $this->fire('updated_post_meta', 701, self::TARGET, '_elementor_css', ['status' => 'file']);
+                $this->fire('updated_option', $name, $before, $own);
+            },
+        ];
+        foreach ($admitted as $why => $write) {
+            $this->resetRows();
+            $this->metaDeletes = [];
+            $this->wpdb->addMeta(++$this->metaId, self::TARGET, $cache, 'a:0:{}');
+            $this->api->onRegenerate = $write === null ? null : static function () use ($write): void {
+                $write();
+            };
+            $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+            $this->assertSame([true, []], [$result['ok'], $result['scope']['violations'] ?? null], $why . ': ' . json_encode($result));
+            $this->assertSame([[self::TARGET, $cache]], $this->metaDeletes, $why . ': the one delete');
+            $this->assertContains($cache, $result['scope']['target_meta_keys'] ?? [], $why . ': the delete is the page\'s own write, made inside the scope');
+            $this->assertSame([], self::keysOf($this->wpdb->metaRowsOf(self::TARGET), [$cache]), $why . ': the row is gone');
+            $this->assertSame([], $this->hooks, $why . ': nothing left installed');
+        }
+
+        $tripped = [
+            'another post\'s cache row, deleted'    => [fn () => $this->fire('deleted_post_meta', [703], self::OTHER, $cache, ''), 'other_post_meta_written'],
+            'another post\'s CSS row'               => [fn () => $this->fire('updated_post_meta', 702, self::OTHER, '_elementor_css', ['status' => 'file']), 'other_post_meta_written'],
+            'another post\'s style-cache entry'     => [fn () => $this->fire('updated_option', $name, $before, $theirs), 'option_written'],
+            'an option the save has no pattern for' => [fn () => $this->fire('updated_option', 'elementor_unrelated_setting', 'a', 'b'), 'option_written'],
+            'a term change'                         => [fn () => $this->fire('set_object_terms', self::TARGET, [], [5], 'category', false, []), 'term_changed'],
+        ];
+        foreach ($tripped as $why => [$write, $violation]) {
+            $this->resetRows();
+            $this->metaDeletes = [];
+            $this->wpdb->addMeta(++$this->metaId, self::TARGET, $cache, 'a:0:{}');
+            $this->api->onRegenerate = static function () use ($write): void {
+                $write();
+            };
+            $result = $doc->save(self::TARGET, self::tree(), self::KIT);
+            $this->assertSame(['side_effect_detected', [$violation]], [$result['code'] ?? null, $result['scope']['violations'] ?? null], $why . ': ' . json_encode($result));
+            $this->assertSame([[self::TARGET, $cache]], $this->metaDeletes, $why . ': the page\'s own delete is not what trips');
+            $this->assertSame([], $this->hooks, $why . ': nothing left installed');
+        }
+
+        // The delete runs inside the scope, after the regeneration, and the scope is gone after it.
+        $armed = [];
+        $this->resetRows();
+        $this->wpdb->addMeta(++$this->metaId, self::TARGET, $cache, 'a:0:{}');
+        Functions\when('delete_post_meta')->alias(function () use (&$armed): bool {
+            $armed = array_column($this->hooks, 0);
+
+            return true;
+        });
+        $this->api->onRegenerate = null;
+        $doc->save(self::TARGET, self::tree(), self::KIT);
+        $this->assertContains('deleted_post_meta', $armed, 'armed while the cache row is deleted');
+        $this->assertSame([], $this->hooks);
+    }
+
     /**
      * The golden containers tree for two columns.
      *
@@ -803,6 +953,45 @@ final class ElementorDocumentTest extends TestCase
         $this->wpdb->addMeta(++$this->metaId, self::TARGET, ElementorDocument::KEY_TEMPLATE_TYPE, 'wp-page');
         $this->wpdb->addMeta(++$this->metaId, self::TARGET, ElementorDocument::KEY_DATA, $data);
         $this->wpdb->addMeta(++$this->metaId, self::TARGET, '_elementor_version', '3.35.9');
+    }
+
+    /**
+     * delete_post_meta() as core runs it against this table: every row of
+     * the post under the key goes, and deleted_post_meta fires once with the
+     * deleted ids, only when a row was deleted. Each call is recorded.
+     */
+    private function coreDeletePostMeta(): void
+    {
+        Functions\when('delete_post_meta')->alias(function ($postId, $key): bool {
+            $this->metaDeletes[] = [(int) $postId, (string) $key];
+            $ids                 = [];
+            foreach ($this->wpdb->metaRowsOf((int) $postId) as $row) {
+                if ($row['meta_key'] === $key) {
+                    $ids[] = $row['meta_id'];
+                }
+            }
+            if ($ids === []) {
+                return false;
+            }
+            $this->wpdb->delete($this->wpdb->postmeta, ['post_id' => (int) $postId, 'meta_key' => (string) $key]);
+            $this->fire('deleted_post_meta', $ids, (int) $postId, (string) $key, '');
+
+            return true;
+        });
+    }
+
+    /**
+     * Which of $keys the rows hold, in the order $keys lists them.
+     *
+     * @param list<array{meta_id:int,meta_key:string,meta_value:string|null}> $rows Rows of one post.
+     * @param list<string>                                                    $keys Keys to look for.
+     * @return list<string>
+     */
+    private static function keysOf(array $rows, array $keys): array
+    {
+        $held = array_column($rows, 'meta_key');
+
+        return array_values(array_filter($keys, static fn (string $k): bool => in_array($k, $held, true)));
     }
 
     /**

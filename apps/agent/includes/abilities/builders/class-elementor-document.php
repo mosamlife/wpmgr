@@ -82,6 +82,9 @@ final class ElementorDocument
     /** Elementor's document type for the post. */
     public const KEY_TEMPLATE_TYPE = '_elementor_template_type';
 
+    /** The post meta key of the cached element output when Elementor names none. */
+    public const KEY_ELEMENT_CACHE = '_elementor_element_cache';
+
     /** The post meta rows of an Elementor page, as the fingerprint covers them. */
     public const DESCRIPTOR_KEYS = [self::KEY_DATA, self::KEY_EDIT_MODE, self::KEY_PAGE_SETTINGS, self::KEY_TEMPLATE_TYPE];
 
@@ -114,6 +117,9 @@ final class ElementorDocument
 
     /** The marker on a post WPMgr created, holding the request id. */
     public const MARKER_KEY = '_wpmgr_created_by_request';
+
+    /** The rows that are the page itself: never a cache, so never deleted as one. */
+    private const PAGE_ROW_KEYS = [...self::DESCRIPTOR_KEYS, self::KEY_PAGE_TEMPLATE, self::MARKER_KEY];
 
     /** The edit mode of a page Elementor renders. */
     public const EDIT_MODE_BUILDER = 'builder';
@@ -652,8 +658,77 @@ final class ElementorDocument
         if ($problem !== null) {
             $warnings[] = ['code' => self::WARNING_CSS_NOT_REGENERATED, 'detail' => $problem];
         }
+        $this->clearElementCache($postId);
 
         return $warnings;
+    }
+
+    /**
+     * Whether Elementor Pro would serve the page's cached element output in
+     * place of its stored document: Pro is active and the post holds a
+     * non-empty row under the cache's meta key. A pure read of the stored
+     * row; false when it cannot be read.
+     *
+     * @param int $postId The page.
+     * @return bool
+     */
+    public function elementCacheActive(int $postId): bool
+    {
+        $key = $postId > 0 ? $this->elementCacheKey() : null;
+        if ($key === null) {
+            return false;
+        }
+        try {
+            $stored = BuilderDocumentFingerprint::read($postId, [$key]);
+        } catch (\Throwable $e) {
+            return false;
+        }
+        foreach ($stored['rows'][$key] ?? [] as $value) {
+            if ($value !== '') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Delete the post's cached element output, when Elementor Pro is active:
+     * the one row under the cache's meta key, on this post only, through
+     * core's meta API so the write scope sees it as the page's own. Never
+     * throws, and never asks Elementor to clear anything site-wide.
+     *
+     * @param int $postId The stored page.
+     * @return void
+     */
+    private function clearElementCache(int $postId): void
+    {
+        try {
+            $key = $postId > 0 ? $this->elementCacheKey() : null;
+            if ($key !== null) {
+                delete_post_meta($postId, $key);
+            }
+        } catch (\Throwable $e) {
+            // The page is stored; Elementor's cache expires on its own timeout.
+            unset($e);
+        }
+    }
+
+    /**
+     * The meta key of the post's cached element output, or null when Pro is
+     * not active or the key Elementor gave is a row of the page itself, which
+     * is never read as a cache and never deleted as one.
+     *
+     * @return string|null
+     */
+    private function elementCacheKey(): ?string
+    {
+        if (!$this->api->proActive()) {
+            return null;
+        }
+        $key = $this->api->elementCacheKey();
+
+        return $key === '' || in_array($key, self::PAGE_ROW_KEYS, true) ? null : $key;
     }
 
     /**

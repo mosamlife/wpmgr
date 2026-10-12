@@ -110,6 +110,12 @@ final class FakeElementorApi implements ElementorApi
      */
     public ?\Closure $onRegenerate = null;
 
+    /** What proActive() answers: Elementor Pro's version constant is defined. */
+    public bool $pro = false;
+
+    /** What elementCacheKey() answers. */
+    public string $elementCacheKey = '_elementor_element_cache';
+
     /**
      * Every call: [method, arguments].
      *
@@ -292,6 +298,26 @@ final class FakeElementorApi implements ElementorApi
         }
 
         return $this->regenerated;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function proActive(): bool
+    {
+        $this->calls[] = ['proActive', []];
+
+        return $this->pro;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function elementCacheKey(): string
+    {
+        $this->calls[] = ['elementCacheKey', []];
+
+        return $this->elementCacheKey;
     }
 
     /**

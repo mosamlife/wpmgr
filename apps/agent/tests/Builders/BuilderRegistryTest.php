@@ -313,6 +313,11 @@ final class BuilderRegistryTest extends TestCase
             public function afterRestore(int $postId): void
             {
             }
+
+            public function servesCachedRender(int $postId): bool
+            {
+                return false;
+            }
         };
     }
 }

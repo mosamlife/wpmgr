@@ -31,7 +31,14 @@ if (!defined('ABSPATH')) {
  * The answer:
  *
  *   {post_id, builder, builder_version, format, status, editable,
- *    open_state, base_fingerprint, node_count, truncated, nodes}
+ *    open_state, element_cache_active, base_fingerprint, node_count,
+ *    truncated, nodes}
+ *
+ * element_cache_active is true when the builder would serve a cached render
+ * of the page in place of its stored document, so an edit may not show on the
+ * page until that cache is cleared (BuilderAdapter::servesCachedRender()); it
+ * is read for an editable draft and a read-only page alike, from the stored
+ * rows only.
  *
  * builder is the adapter id and builder_version the builder version the
  * adapter reports for the site (null when it cannot be told); format is
@@ -237,14 +244,15 @@ final class BuilderPageStructure
         }
 
         $head = [
-            'post_id'          => $postId,
-            'builder'          => $a->id(),
-            'builder_version'  => self::builderVersion($a),
-            'format'           => self::FORMAT_CLASSIC,
-            'status'           => $status,
-            'editable'         => $editable,
-            'open_state'       => $editable ? self::openState($postId) : null,
-            'base_fingerprint' => $baseFp,
+            'post_id'              => $postId,
+            'builder'              => $a->id(),
+            'builder_version'      => self::builderVersion($a),
+            'format'               => self::FORMAT_CLASSIC,
+            'status'               => $status,
+            'editable'             => $editable,
+            'open_state'           => $editable ? self::openState($postId) : null,
+            'element_cache_active' => $a->servesCachedRender($postId),
+            'base_fingerprint'     => $baseFp,
         ];
         try {
             // The head and the nodes envelope join into one object: the

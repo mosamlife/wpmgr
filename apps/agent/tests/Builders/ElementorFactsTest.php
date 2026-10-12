@@ -13,6 +13,7 @@ namespace WPMgr\Agent\Tests\Builders;
 
 use Brain\Monkey;
 use Brain\Monkey\Functions;
+use WPMgr\Agent\Abilities\Builders\ElementorDocument;
 use WPMgr\Agent\Abilities\Builders\ElementorFacts;
 use WPMgr\Agent\Abilities\Builders\ElementorRuntime;
 use WPMgr\Agent\Abilities\ServicePrincipal;
@@ -702,6 +703,39 @@ final class ElementorFactsTest extends TestCase
         $this->assertNull($this->legacyRuntime()->ksesPostDeep(['a' => '<b>x</b>']));
     }
 
+    public function test_pro_and_the_element_cache_key_are_asked_of_constants(): void
+    {
+        $this->assertFalse(defined('ELEMENTOR_PRO_VERSION'), 'precondition: no Elementor Pro in this process');
+        if (!defined(self::PRO_STANDIN)) {
+            define(self::PRO_STANDIN, '3.35.0');
+        }
+        $this->standInRuntime();
+        $runtime = static fn (string $pro, string $document): ElementorRuntime => new ElementorRuntime(ElementorPluginStandIn::class, ElementorUtilsStandIn::class, self::VERSION_STANDIN, ElementorRuntime::FONTS_CLASS, ElementorRuntime::POST_CSS_CLASS, $pro, $document);
+
+        // Pro is its version constant being defined, the one answer pro_active gives.
+        $this->assertTrue($runtime(self::PRO_STANDIN, ElementorDocumentKeyStandIn::class)->proActive());
+        $this->assertFalse($runtime('WPMGR_TEST_NO_SUCH_PRO_VERSION', ElementorDocumentKeyStandIn::class)->proActive());
+        $this->assertFalse((new ElementorRuntime())->proActive(), 'production asks for ' . ElementorFacts::PRO_VERSION_CONSTANT);
+
+        // The key is Elementor's own spelling where it names a cache, else the default.
+        $default = ElementorDocument::KEY_ELEMENT_CACHE;
+        $plugin  = new ElementorPluginStandIn();
+        $cases   = [
+            'a key Elementor names'                        => [$plugin, ElementorDocumentKeyStandIn::class, '_elementor_element_cache_v2'],
+            'no Elementor instance'                        => [null, ElementorDocumentKeyStandIn::class, $default],
+            'a key that is a page row'                     => [$plugin, ElementorDocumentPageRowStandIn::class, $default],
+            'a key with a character a key never has'       => [$plugin, ElementorDocumentOddKeyStandIn::class, $default],
+            'a key that is not a string'                   => [$plugin, ElementorDocumentIntKeyStandIn::class, $default],
+            'a document class with no such constant'       => [$plugin, \stdClass::class, $default],
+            'no document class'                            => [$plugin, 'Wpmgr_Test_No_Such_Document', $default],
+        ];
+        foreach ($cases as $why => [$instance, $class, $expected]) {
+            ElementorPluginStandIn::$instance = $instance;
+            $this->assertSame($expected, $runtime(self::PRO_STANDIN, $class)->elementCacheKey(), $why);
+        }
+        $this->assertSame($default, (new ElementorRuntime())->elementCacheKey(), 'without Elementor, the default');
+    }
+
     public function test_builder_facts_block_emits_only_reserved_keys(): void
     {
         $this->assertFalse(defined('ELEMENTOR_PRO_VERSION'), 'precondition: no Elementor Pro in this process');
@@ -1183,4 +1217,38 @@ final class ElementorLegacyUtilsStandIn
     {
         return 'example.test';
     }
+}
+
+/**
+ * Stands in for Elementor's base document class, which names the meta key of
+ * a post's cached element output.
+ */
+final class ElementorDocumentKeyStandIn
+{
+    public const CACHE_META_KEY = '_elementor_element_cache_v2';
+}
+
+/**
+ * A document class whose constant names a page row, not a cache.
+ */
+final class ElementorDocumentPageRowStandIn
+{
+    public const CACHE_META_KEY = '_elementor_data';
+}
+
+/**
+ * A document class whose constant holds a character no meta key of
+ * Elementor's has.
+ */
+final class ElementorDocumentOddKeyStandIn
+{
+    public const CACHE_META_KEY = '_elementor_cache%';
+}
+
+/**
+ * A document class whose constant is not a string.
+ */
+final class ElementorDocumentIntKeyStandIn
+{
+    public const CACHE_META_KEY = 7;
 }

@@ -57,7 +57,7 @@ final class BuilderPageStructureTest extends TestCase
     private const TEXT = '6cbe98a';
 
     /** The Elementor calls that reach its document and element API. */
-    private const DOCUMENT_API = ['document', 'createElementInstance', 'elementTypeExists', 'widgetTypeExists', 'ksesPostDeep', 'deletePostCss'];
+    private const DOCUMENT_API = ['document', 'createElementInstance', 'elementTypeExists', 'widgetTypeExists', 'ksesPostDeep', 'deletePostCss', 'regeneratePostCss'];
 
     private FakeBuilderWpdb $wpdb;
 
@@ -144,8 +144,8 @@ final class BuilderPageStructureTest extends TestCase
     {
         $out = $this->structure(self::DRAFT, null, 500, [self::DRAFT]);
 
-        $this->assertSame(['post_id', 'builder', 'builder_version', 'format', 'status', 'editable', 'open_state', 'base_fingerprint', 'node_count', 'truncated', 'nodes'], array_keys($out));
-        $this->assertSame([self::DRAFT, 'elementor', '3.35.9', 'classic', 'draft', true, null, 5, false], [$out['post_id'], $out['builder'], $out['builder_version'], $out['format'], $out['status'], $out['editable'], $out['open_state'], $out['node_count'], $out['truncated']]);
+        $this->assertSame(['post_id', 'builder', 'builder_version', 'format', 'status', 'editable', 'open_state', 'element_cache_active', 'base_fingerprint', 'node_count', 'truncated', 'nodes'], array_keys($out));
+        $this->assertSame([self::DRAFT, 'elementor', '3.35.9', 'classic', 'draft', true, null, false, 5, false], [$out['post_id'], $out['builder'], $out['builder_version'], $out['format'], $out['status'], $out['editable'], $out['open_state'], $out['element_cache_active'], $out['node_count'], $out['truncated']]);
         $this->assertSame(BuilderDocumentFingerprint::ofPost(self::DRAFT, ElementorDocument::DESCRIPTOR_KEYS), $out['base_fingerprint'], 'the page\'s builder_document_v1');
         $this->assertSame(
             json_encode(ElementorClassicMapper::project(self::golden())->toArray(500)['nodes']),
@@ -392,15 +392,60 @@ final class BuilderPageStructureTest extends TestCase
         }
     }
 
+    public function test_element_cache_active_follows_pro_and_a_stored_row(): void
+    {
+        $cache = ElementorDocument::KEY_ELEMENT_CACHE;
+        $newer = '_elementor_element_cache_v2';
+        $row   = serialize(['timeout' => 1760086400, 'value' => '<div>cached</div>']);
+
+        // label => [Pro active, the key Elementor names, the cache rows the page holds, whether a cached render is served]
+        $cases = [
+            'Pro and a cache row'                         => [true, $cache, [$cache => $row], true],
+            'Pro and no cache row'                        => [true, $cache, [], false],
+            'a cache row and no Pro'                      => [false, $cache, [$cache => $row], false],
+            'Pro and an empty cache row'                  => [true, $cache, [$cache => ''], false],
+            'Pro and a row under the key Elementor names' => [true, $newer, [$newer => $row], true],
+            'Pro and a row under the other key only'      => [true, $newer, [$cache => $row], false],
+        ];
+        // Another page's cache row is never taken for the page's own.
+        $this->wpdb->addMeta(++$this->metaId, self::PUBLISHED, $cache, $row);
+        $id = 300;
+        foreach ($cases as $why => [$pro, $key, $rows, $served]) {
+            ++$id;
+            $this->page($id, 'publish', self::golden());
+            foreach ($rows as $name => $value) {
+                $this->wpdb->addMeta(++$this->metaId, $id, $name, $value);
+            }
+            $this->api->pro             = $pro;
+            $this->api->elementCacheKey = $key;
+
+            $out = $this->structure($id, null, 500, []);
+
+            $this->assertSame([false, $served], [$out['editable'], $out['element_cache_active']], $why . ': a published page');
+            $this->assertSame($served, $this->structure($id, self::LEFT, 500, [])['element_cache_active'], $why . ': a subtree read says the same');
+        }
+
+        // An editable draft says it too, and the cache row is not part of the page's fingerprint.
+        $this->api->pro             = true;
+        $this->api->elementCacheKey = $cache;
+        $plain                      = $this->structure(self::DRAFT, null, 500, [self::DRAFT]);
+        $this->wpdb->addMeta(++$this->metaId, self::DRAFT, $cache, $row);
+        $cached = $this->structure(self::DRAFT, null, 500, [self::DRAFT]);
+        $this->assertSame([false, true, true], [$plain['element_cache_active'], $cached['element_cache_active'], $cached['editable']], 'a draft');
+        $this->assertSame($plain['base_fingerprint'], $cached['base_fingerprint'], 'a derived row does not change the page\'s fingerprint');
+    }
+
     public function test_reads_no_elementor_api(): void
     {
+        $this->api->pro = true;
         $this->structure(self::DRAFT, null, 500, [self::DRAFT]);
         $this->structure(self::PUBLISHED, self::LEFT, 500, []);
         BuilderPageStructure::read(self::DRAFT, null, 500, [], $this->adapter);
 
         $asked = array_unique(array_column($this->api->calls, 0));
+        $this->assertContains('proActive', $asked, 'precondition: the cache read ran');
         $this->assertSame([], array_values(array_intersect($asked, self::DOCUMENT_API)), 'Elementor\'s document and element API is never asked');
-        $this->assertSame([], array_values(array_diff($asked, ['loaded', 'version', 'experimentActive', 'activeKitId', 'activeBreakpoints'])), 'only the facts the version comes from');
+        $this->assertSame([], array_values(array_diff($asked, ['loaded', 'version', 'experimentActive', 'activeKitId', 'activeBreakpoints', 'proActive', 'elementCacheKey'])), 'only the facts the version comes from, and whether Pro serves a cache');
         $this->assertNotSame([], $this->wpdb->queries, 'precondition: the rows were read with SQL');
         foreach ($this->wpdb->queries as $query) {
             $this->assertStringStartsWith('SELECT ', $query['sql'], 'the read sends only SELECTs');

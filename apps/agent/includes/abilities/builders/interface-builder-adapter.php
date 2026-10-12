@@ -180,4 +180,15 @@ interface BuilderAdapter
      * @return void
      */
     public function afterRestore(int $postId): void;
+
+    /**
+     * Whether the builder would serve a cached render of the post in place of
+     * the stored document now, so that an edit may not show on the page until
+     * the cache is cleared. A pure read of the post's rows; false when the
+     * builder keeps no such cache or it cannot be told. Never throws.
+     *
+     * @param int $postId Post id.
+     * @return bool
+     */
+    public function servesCachedRender(int $postId): bool;
 }
