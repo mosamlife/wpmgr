@@ -18,6 +18,7 @@ namespace WPMgr\Agent\Tests\Builders;
 
 use Brain\Monkey;
 use Brain\Monkey\Functions;
+use PHPUnit\Framework\Attributes\DataProvider;
 use WPMgr\Agent\Abilities\Builders\LeafPolicy;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
@@ -48,6 +49,28 @@ final class LeafPolicyTest extends TestCase
         'image'       => ['image.id' => 'int', 'image.url' => 'url'],
         'spacer'      => ['space.unit' => 'enum', 'space.size' => 'int', 'space.sizes' => 'enum'],
     ];
+
+    /** Every pin, as the refusal of an unknown one lists them. */
+    private const PIN_OUTSIDE = 'a pin outside html, text, url, int, enum, slider, dimensions, gaps, colour, switcher, image, link';
+
+    /** A pin carrying an argument its pin does not take. */
+    private const PIN_ARGUMENT = 'a pin argument its pin does not take';
+
+    private const NOT_SLIDER = 'not a slider value: exactly unit and size, unit one of px, em, vh, %, size a decimal number written as a string';
+
+    private const NOT_DIMENSIONS = 'not a dimensions value: exactly unit "px", top, right, bottom and left as decimal numbers of 0 or more written as strings, and isLinked true or false';
+
+    private const NOT_GAPS = 'not a gaps value: exactly column and row as decimal numbers of 0 or more written as strings, isLinked true or false, and unit "px"';
+
+    private const NOT_COLOUR = 'not a colour: an upper-case #RRGGBB, transparent, or rgba(r,g,b,a) with no spaces';
+
+    private const NOT_SWITCHER = 'not a switcher value: "yes" or ""';
+
+    private const NOT_IMAGE = 'not an image value: exactly id and url, or id, url and source "library", with id a whole number above 0 written as a string';
+
+    private const NOT_LINK = 'not a link value: exactly url, is_external and nofollow, with is_external and nofollow each "on" or ""';
+
+    private const NOT_LISTED = 'not one of the values this key takes';
 
     /** A WPMgr section container's label, written out here rather than read from the class. */
     private const SECTION = "WPMgr \u{00B7} Section";
@@ -596,9 +619,141 @@ final class LeafPolicyTest extends TestCase
         $odd = self::KEYS;
         $odd['heading']['title'] = 'raw';
         $this->assertSame(
-            ['code' => 'adapter_key_not_allowed', 'detail' => 'elements[0].settings.title: a pin outside html, text, url, int, enum'],
+            ['code' => 'adapter_key_not_allowed', 'detail' => 'elements[0].settings.title: ' . self::PIN_OUTSIDE],
             LeafPolicy::checkTree([$this->widget('h1', 'heading', ['title' => 'Hi'])], $odd, self::RULES)
         );
+    }
+
+    /**
+     * A shape pin takes the whole value at its path in exactly the measured
+     * form and nothing near it: numbers as decimal strings, flags as booleans,
+     * no missing, extra or misspelt member, no unit or colour form beyond the
+     * measured ones, and an enum with a list takes only a listed value.
+     *
+     * @param string                       $pin     Pin of the path "k".
+     * @param mixed                        $value   Value at "k".
+     * @param array{0: string, 1: string}|null $refusal Code and reason, or null when the value is taken.
+     */
+    #[DataProvider('shapeRows')]
+    public function test_shape_pins_take_only_the_measured_forms(string $pin, $value, ?array $refusal): void
+    {
+        $got = LeafPolicy::checkTree([$this->container('c1', ['k' => $value], [])], ['container' => ['k' => $pin]], self::RULES);
+
+        $this->assertSame($refusal === null ? null : ['code' => $refusal[0], 'detail' => 'elements[0].settings.k: ' . $refusal[1]], $got);
+    }
+
+    /**
+     * Taken rows are values of the frozen recipe trees; refused rows are the
+     * near misses Elementor would store and then ignore or misrender.
+     *
+     * @return array<string, array{0: string, 1: mixed, 2: array{0: string, 1: string}|null}>
+     */
+    public static function shapeRows(): array
+    {
+        $u   = 'leaf_unsafe';
+        $k   = 'adapter_key_not_allowed';
+        $pad = ['unit' => 'px', 'top' => '96', 'right' => '24', 'bottom' => '96', 'left' => '24', 'isLinked' => false];
+        $gap = ['column' => '32', 'row' => '32', 'isLinked' => true, 'unit' => 'px'];
+        $img = ['url' => 'https://example.com/wp-content/uploads/2026/10/van-1024x640.png', 'id' => '5', 'source' => 'library'];
+        $lnk = ['url' => 'https://example.com/partner', 'is_external' => 'on', 'nofollow' => 'on'];
+
+        return [
+            'slider px'                       => ['slider', ['unit' => 'px', 'size' => '15'], null],
+            'slider em negative'              => ['slider', ['unit' => 'em', 'size' => '-0.02'], null],
+            'slider em fraction'              => ['slider', ['unit' => 'em', 'size' => '1.05'], null],
+            'slider vh'                       => ['slider', ['unit' => 'vh', 'size' => '80'], null],
+            'slider vh zero'                  => ['slider', ['unit' => 'vh', 'size' => '0'], null],
+            'slider percent'                  => ['slider', ['unit' => '%', 'size' => '55'], null],
+            'slider opacity fraction'         => ['slider', ['unit' => 'px', 'size' => '0.45'], null],
+            'slider members in any order'     => ['slider', ['size' => '18', 'unit' => 'px'], null],
+            'slider narrowed unit'            => ['slider:vh', ['unit' => 'vh', 'size' => '80'], null],
+            'slider two units'                => ['slider:px|em', ['unit' => 'em', 'size' => '1'], null],
+            'slider integer size'             => ['slider', ['unit' => 'px', 'size' => 24], [$u, self::NOT_SLIDER]],
+            'slider float size'               => ['slider', ['unit' => 'px', 'size' => 0.45], [$u, self::NOT_SLIDER]],
+            'slider with sizes'               => ['slider', ['unit' => 'px', 'size' => '24', 'sizes' => []], [$u, self::NOT_SLIDER]],
+            'slider without size'             => ['slider', ['unit' => 'px'], [$u, self::NOT_SLIDER]],
+            'slider rem'                      => ['slider', ['unit' => 'rem', 'size' => '1'], [$u, self::NOT_SLIDER]],
+            'slider custom unit'              => ['slider', ['unit' => 'custom', 'size' => 'clamp(1rem, 2vw, 3rem)'], [$u, self::NOT_SLIDER]],
+            'slider size with unit'           => ['slider', ['unit' => 'px', 'size' => '24px'], [$u, self::NOT_SLIDER]],
+            'slider size newline'             => ['slider', ['unit' => 'px', 'size' => "24\n"], [$u, self::NOT_SLIDER]],
+            'slider size exponent'            => ['slider', ['unit' => 'px', 'size' => '1e3'], [$u, self::NOT_SLIDER]],
+            'slider size empty'               => ['slider', ['unit' => 'px', 'size' => ''], [$u, self::NOT_SLIDER]],
+            'slider size leading zero'        => ['slider', ['unit' => 'px', 'size' => '024'], [$u, self::NOT_SLIDER]],
+            'slider as a string'              => ['slider', '24', [$u, self::NOT_SLIDER]],
+            'slider empty'                    => ['slider', [], [$u, self::NOT_SLIDER]],
+            'slider unit outside the pin'     => ['slider:vh', ['unit' => 'px', 'size' => '80'], [$u, 'not a slider value: exactly unit and size, unit one of vh, size a decimal number written as a string']],
+            'dimensions padding'              => ['dimensions', $pad, null],
+            'dimensions linked fraction'      => ['dimensions', ['unit' => 'px', 'top' => '1.5', 'right' => '1.5', 'bottom' => '1.5', 'left' => '1.5', 'isLinked' => true], null],
+            'dimensions number member'        => ['dimensions', ['top' => 96] + $pad, [$u, self::NOT_DIMENSIONS]],
+            'dimensions flag as empty string' => ['dimensions', ['isLinked' => ''] + $pad, [$u, self::NOT_DIMENSIONS]],
+            'dimensions flag as "1"'          => ['dimensions', ['isLinked' => '1'] + $pad, [$u, self::NOT_DIMENSIONS]],
+            'dimensions em'                   => ['dimensions', ['unit' => 'em'] + $pad, [$u, self::NOT_DIMENSIONS]],
+            'dimensions without left'         => ['dimensions', array_diff_key($pad, ['left' => true]), [$u, self::NOT_DIMENSIONS]],
+            'dimensions misspelt member'      => ['dimensions', ['Top' => '96'] + array_diff_key($pad, ['top' => true]), [$u, self::NOT_DIMENSIONS]],
+            'dimensions extra member'         => ['dimensions', $pad + ['sizes' => []], [$u, self::NOT_DIMENSIONS]],
+            'dimensions negative member'      => ['dimensions', ['left' => '-8'] + $pad, [$u, self::NOT_DIMENSIONS]],
+            'gaps'                            => ['gaps', $gap, null],
+            'gaps as a slider'                => ['gaps', ['unit' => 'px', 'size' => '32'], [$u, self::NOT_GAPS]],
+            'gaps number member'              => ['gaps', ['column' => 32] + $gap, [$u, self::NOT_GAPS]],
+            'gaps flag as a string'           => ['gaps', ['isLinked' => 'yes'] + $gap, [$u, self::NOT_GAPS]],
+            'colour hex'                      => ['colour', '#F6F5F2', null],
+            'colour white'                    => ['colour', '#FFFFFF', null],
+            'colour transparent'              => ['colour', 'transparent', null],
+            'colour rgba'                     => ['colour', 'rgba(246,245,242,0.8)', null],
+            'colour rgba opaque'              => ['colour', 'rgba(21,23,28,1)', null],
+            'colour lower-case hex'           => ['colour', '#f6f5f2', [$u, self::NOT_COLOUR]],
+            'colour short hex'                => ['colour', '#FFF', [$u, self::NOT_COLOUR]],
+            'colour hex with alpha'           => ['colour', '#F6F5F2FF', [$u, self::NOT_COLOUR]],
+            'colour rgba with spaces'         => ['colour', 'rgba(246, 245, 242, 0.8)', [$u, self::NOT_COLOUR]],
+            'colour channel above 255'        => ['colour', 'rgba(256,0,0,1)', [$u, self::NOT_COLOUR]],
+            'colour alpha above 1'            => ['colour', 'rgba(1,2,3,1.5)', [$u, self::NOT_COLOUR]],
+            'colour name'                     => ['colour', 'red', [$u, self::NOT_COLOUR]],
+            'colour variable'                 => ['colour', 'var(--e-global-color-primary)', [$u, self::NOT_COLOUR]],
+            'colour with a declaration'       => ['colour', '#F6F5F2;background:url(x)', [$u, self::NOT_COLOUR]],
+            'colour newline'                  => ['colour', "#F6F5F2\n", [$u, self::NOT_COLOUR]],
+            'colour empty list'               => ['colour', [], [$u, self::NOT_COLOUR]],
+            'switcher on'                     => ['switcher', 'yes', null],
+            'switcher off'                    => ['switcher', '', null],
+            'switcher "on"'                   => ['switcher', 'on', [$u, self::NOT_SWITCHER]],
+            'switcher boolean'                => ['switcher', true, [$u, self::NOT_SWITCHER]],
+            'switcher upper case'             => ['switcher', 'YES', [$u, self::NOT_SWITCHER]],
+            'image background'                => ['image', ['id' => '5', 'url' => 'https://example.com/wp-content/uploads/2026/10/hero-1600x900.jpg'], null],
+            'image library'                   => ['image', $img, null],
+            'image number id'                 => ['image', ['id' => 5] + $img, [$u, self::NOT_IMAGE]],
+            'image zero id'                   => ['image', ['id' => '0'] + $img, [$u, self::NOT_IMAGE]],
+            'image leading zero id'           => ['image', ['id' => '05'] + $img, [$u, self::NOT_IMAGE]],
+            'image other source'              => ['image', ['source' => 'url'] + $img, [$u, self::NOT_IMAGE]],
+            'image without id'                => ['image', array_diff_key($img, ['id' => true]), [$u, self::NOT_IMAGE]],
+            'image extra member'              => ['image', $img + ['alt' => 'Van'], [$u, self::NOT_IMAGE]],
+            'image script address'            => ['image', ['url' => 'javascript:alert(1)'] + $img, [$u, 'not an address the page-create image rule accepts']],
+            'image path address'              => ['image', ['url' => '/wp-content/uploads/van.png'] + $img, [$u, 'not an address the page-create image rule accepts']],
+            'link external nofollow'          => ['link', $lnk, null],
+            'link section anchor'             => ['link', ['url' => '#signup', 'is_external' => '', 'nofollow' => ''], null],
+            'link site path'                  => ['link', ['url' => '/about', 'is_external' => '', 'nofollow' => ''], null],
+            'link without nofollow'           => ['link', array_diff_key($lnk, ['nofollow' => true]), [$u, self::NOT_LINK]],
+            'link nofollow "yes"'             => ['link', ['nofollow' => 'yes'] + $lnk, [$u, self::NOT_LINK]],
+            'link boolean flag'               => ['link', ['is_external' => true] + $lnk, [$u, self::NOT_LINK]],
+            'link custom attributes'          => ['link', $lnk + ['custom_attributes' => 'data-x|1'], [$k, 'key custom_attributes is never written']],
+            'link dynamic member'             => ['link', $lnk + ['__dynamic__' => ['url' => 'x']], [$k, 'key __dynamic__ is never written']],
+            'link script address'             => ['link', ['url' => 'javascript:alert(1)'] + $lnk, [$u, 'not an address the page-create link rule accepts']],
+            'link anchor in upper case'       => ['link', ['url' => '#Signup'] + $lnk, [$u, 'not an address the page-create link rule accepts']],
+            'link with a user'                => ['link', ['url' => 'https://user@example.com/'] + $lnk, [$u, 'not an address the page-create link rule accepts']],
+            'enum listed'                     => ['enum:boxed|full', 'full', null],
+            'enum only empty'                 => ['enum:', '', null],
+            'enum with a space'               => ['enum:center center', 'center center', null],
+            'enum number string'              => ['enum:400|600|700', '600', null],
+            'enum other case'                 => ['enum:boxed|full', 'Boxed', [$u, self::NOT_LISTED]],
+            'enum unlisted'                   => ['enum:boxed|full', 'wide', [$u, self::NOT_LISTED]],
+            'enum boolean'                    => ['enum:boxed|full', true, [$u, self::NOT_LISTED]],
+            'enum empty list'                 => ['enum:boxed|full', [], [$u, self::NOT_LISTED]],
+            'enum empty string unlisted'      => ['enum:boxed|full', '', [$u, self::NOT_LISTED]],
+            'argument on colour'              => ['colour:upper', '#FFFFFF', [$k, self::PIN_ARGUMENT]],
+            'argument on switcher'            => ['switcher:yes', 'yes', [$k, self::PIN_ARGUMENT]],
+            'argument on int'                 => ['int:5', 5, [$k, self::PIN_ARGUMENT]],
+            'slider unit not measured'        => ['slider:rem', ['unit' => 'rem', 'size' => '1'], [$k, self::PIN_ARGUMENT]],
+            'slider empty unit list'          => ['slider:', ['unit' => 'px', 'size' => '1'], [$k, self::PIN_ARGUMENT]],
+            'unknown pin with argument'       => ['raw:x', 'a', [$k, self::PIN_OUTSIDE]],
+        ];
     }
 
     public function test_clean_tree_passes(): void

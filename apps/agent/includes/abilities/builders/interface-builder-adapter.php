@@ -24,8 +24,19 @@ if (!defined('ABSPATH')) {
  */
 interface BuilderAdapter
 {
-    /** How a value at an allowed settings path is checked before it is stored. */
-    public const PINS = ['html', 'text', 'url', 'int', 'enum'];
+    /**
+     * How a value at an allowed settings path is checked before it is stored.
+     *
+     * html, text, url, int and a bare enum check one string or integer at the
+     * end of a dotted path. The shape pins (slider, dimensions, gaps, colour,
+     * switcher, image, link) and an enum with a list check the whole value at
+     * their path, which is never walked into: numbers are decimal strings,
+     * flags are booleans, and a missing, extra or misspelt member refuses it.
+     * A pin may carry an argument after a colon: "enum:a|b" takes only the
+     * listed values ("enum:" takes only ""), and "slider:px|em" narrows the
+     * units a slider takes. LeafPolicy holds the exact forms.
+     */
+    public const PINS = ['html', 'text', 'url', 'int', 'enum', 'slider', 'dimensions', 'gaps', 'colour', 'switcher', 'image', 'link'];
 
     /**
      * The adapter id, one of BuilderRegistry::IDS.

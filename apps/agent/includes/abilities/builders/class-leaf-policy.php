@@ -35,6 +35,9 @@ if (!defined('ABSPATH')) {
  *   name. A WPMgr section container is a container at the top of the tree
  *   whose label is SECTION_LABEL.
  * - L4 pins: the pin of a settings path picks the extra check for its value.
+ *   A shape pin (SHAPE_PINS, or an enum with a list of values) checks the
+ *   whole value at its path in exactly one written form and is never walked
+ *   into; a hard-denied key anywhere inside it is still refused as a key.
  *
  * Nothing is ever stripped or rewritten: a failure refuses the whole call,
  * with leaf_unsafe for a value and adapter_key_not_allowed for a type or a
@@ -101,8 +104,35 @@ final class LeafPolicy
     /** Rounds of character-reference decoding before a stored string must be at a fixed point. */
     public const DECODE_ROUNDS = 3;
 
+    /** Pins that check the whole value at their path; an enum with a list does too. */
+    public const SHAPE_PINS = ['slider', 'dimensions', 'gaps', 'colour', 'switcher', 'image', 'link'];
+
+    /** The units a slider takes; a "slider:" argument names a subset. */
+    public const SLIDER_UNITS = ['px', 'em', 'vh', '%'];
+
     /** The only keys an element node may carry. */
     private const NODE_KEYS = ['id', 'elType', 'widgetType', 'isInner', 'settings', 'elements'];
+
+    /** A decimal number of 0 or more: no sign, no leading zero, up to six whole and four fraction digits. */
+    private const DECIMAL = '(?:0|[1-9][0-9]{0,5})(?:\.[0-9]{1,4})?';
+
+    /** An attachment id: a whole number above 0. */
+    private const ATTACHMENT_ID = '/^[1-9][0-9]{0,18}\z/';
+
+    /** A colour: upper-case #RRGGBB, transparent, or rgba() of three channels 0 to 255 and an alpha 0 to 1, with no spaces. */
+    private const COLOUR = '/^(?:#[0-9A-F]{6}|transparent|rgba\((?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]),){3}(?:0|1|0\.[0-9]{1,2})\))\z/';
+
+    /** Why a value is not its shape pin's form, by pin; the slider reason names its units. */
+    private const SHAPE_REASONS = [
+        'slider'     => 'not a slider value: exactly unit and size, unit one of %s, size a decimal number written as a string',
+        'dimensions' => 'not a dimensions value: exactly unit "px", top, right, bottom and left as decimal numbers of 0 or more written as strings, and isLinked true or false',
+        'gaps'       => 'not a gaps value: exactly column and row as decimal numbers of 0 or more written as strings, isLinked true or false, and unit "px"',
+        'colour'     => 'not a colour: an upper-case #RRGGBB, transparent, or rgba(r,g,b,a) with no spaces',
+        'switcher'   => 'not a switcher value: "yes" or ""',
+        'image'      => 'not an image value: exactly id and url, or id, url and source "library", with id a whole number above 0 written as a string',
+        'link'       => 'not a link value: exactly url, is_external and nofollow, with is_external and nofollow each "on" or ""',
+        'enum'       => 'not one of the values this key takes',
+    ];
 
     /** Deepest element nesting walked. */
     private const MAX_NODE_DEPTH = 32;
@@ -435,6 +465,14 @@ final class LeafPolicy
                 return self::refuse($ruled[0], ($ruled[0] === self::CODE_KEY ? $at : $at . '.' . $path) . ': ' . $ruled[1]);
             }
             $listed = array_key_exists($path, $paths);
+            if ($listed && self::isShapePin((string) $paths[$path])) {
+                // The whole value, object or string, is the pin's to check; it is never walked into.
+                $why = self::pinProblem($value, (string) $paths[$path], $rules);
+                if ($why !== null) {
+                    return self::refuse($why[0], $at . '.' . $path . ': ' . $why[1]);
+                }
+                continue;
+            }
             if (is_array($value) && $value !== []) {
                 if (!self::isAncestor($path, $paths)) {
                     return self::refuse(self::CODE_KEY, $at . ': a settings key not on the adapter allowlist');
@@ -525,23 +563,31 @@ final class LeafPolicy
     /**
      * L4, then L2 for every string: the check a value's pin selects.
      *
-     * @param mixed                                            $value Leaf value.
-     * @param string                                           $pin   One of BuilderAdapter::PINS.
+     * A pin is one of BuilderAdapter::PINS, optionally followed by a colon
+     * and an argument of values separated by "|"; only enum (the values it
+     * takes) and slider (a subset of SLIDER_UNITS) take one.
+     *
+     * @param mixed                                            $value Leaf value, or the whole value of a shape pin.
+     * @param string                                           $pin   Pin, with its argument if any.
      * @param array{refuse_braces?: mixed, forbidden?: mixed}  $rules Leaf rules.
      * @return array{0: string, 1: string}|null Code and reason.
      */
     private static function pinProblem($value, string $pin, array $rules): ?array
     {
-        switch ($pin) {
-            case 'int':
-                return is_int($value) ? null : [self::CODE_UNSAFE, 'int value that is not an integer'];
-            case 'html':
-            case 'text':
-            case 'url':
-            case 'enum':
-                break;
-            default:
-                return [self::CODE_KEY, 'a pin outside ' . implode(', ', BuilderAdapter::PINS)];
+        $parts   = explode(':', $pin, 2);
+        $name    = $parts[0];
+        $choices = isset($parts[1]) ? explode('|', $parts[1]) : null;
+        if (!in_array($name, BuilderAdapter::PINS, true)) {
+            return [self::CODE_KEY, 'a pin outside ' . implode(', ', BuilderAdapter::PINS)];
+        }
+        if ($choices !== null && !self::takesArgument($name, $choices)) {
+            return [self::CODE_KEY, 'a pin argument its pin does not take'];
+        }
+        if (in_array($name, self::SHAPE_PINS, true) || $choices !== null) {
+            return self::shapeProblem($value, $name, $choices, $rules);
+        }
+        if ($name === 'int') {
+            return is_int($value) ? null : [self::CODE_UNSAFE, 'int value that is not an integer'];
         }
         if (!is_string($value)) {
             return [self::CODE_UNSAFE, $pin . ' value that is not a string'];
@@ -555,6 +601,203 @@ final class LeafPolicy
         $why = self::storedProblem($value, $rules);
 
         return $why === null ? null : [self::CODE_UNSAFE, $why];
+    }
+
+    /**
+     * Whether a pin checks the whole value at its path: a shape pin, with or
+     * without an argument, or an enum with a list of values.
+     *
+     * @param string $pin Pin, with its argument if any.
+     * @return bool
+     */
+    private static function isShapePin(string $pin): bool
+    {
+        $parts = explode(':', $pin, 2);
+
+        return in_array($parts[0], self::SHAPE_PINS, true) || ($parts[0] === 'enum' && isset($parts[1]));
+    }
+
+    /**
+     * Whether a pin takes the argument it carries: enum takes any list of
+     * values, slider a list of units from SLIDER_UNITS, every other pin none.
+     *
+     * @param string       $name    Pin name.
+     * @param list<string> $choices The argument's values.
+     * @return bool
+     */
+    private static function takesArgument(string $name, array $choices): bool
+    {
+        if ($name === 'enum') {
+            return true;
+        }
+        if ($name !== 'slider') {
+            return false;
+        }
+        foreach ($choices as $unit) {
+            if (!in_array($unit, self::SLIDER_UNITS, true)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * The check of a shape pin or an enum with a list, over the whole value:
+     * a hard-denied key anywhere inside refuses it as a key, then the value
+     * must be the pin's form exactly, an image or link address must pass the
+     * page-create rule, and every string in it must pass L2.
+     *
+     * @param mixed                                            $value   Whole value.
+     * @param string                                           $name    Pin name.
+     * @param list<string>|null                                $choices The pin's argument: enum values or slider units.
+     * @param array{refuse_braces?: mixed, forbidden?: mixed}  $rules   Leaf rules.
+     * @return array{0: string, 1: string}|null Code and reason.
+     */
+    private static function shapeProblem($value, string $name, ?array $choices, array $rules): ?array
+    {
+        if (is_array($value)) {
+            $denied = self::deniedWithin($value, 1);
+            if ($denied !== null) {
+                return [self::CODE_KEY, 'key ' . $denied . ' is never written'];
+            }
+        }
+        if (!self::hasShape($value, $name, $choices)) {
+            $units = $name === 'slider' ? implode(', ', $choices ?? self::SLIDER_UNITS) : '';
+
+            return [self::CODE_UNSAFE, sprintf(self::SHAPE_REASONS[$name], $units)];
+        }
+        if ($name === 'image' || $name === 'link') {
+            // hasShape() has made the address a string; a link may also be "#" and a section anchor.
+            $url = is_array($value) ? ($value['url'] ?? null) : null;
+            if (!is_string($url) || ($name === 'image' ? PageCreateBuilder::imageUrlProblem($url) : PageCreateBuilder::linkProblem($url, true)) !== null) {
+                return [self::CODE_UNSAFE, 'not an address the page-create ' . $name . ' rule accepts'];
+            }
+        }
+        foreach (is_array($value) ? $value : [$value] as $member) {
+            if (!is_string($member)) {
+                continue;
+            }
+            $why = self::storedProblem($member, $rules);
+            if ($why !== null) {
+                return [self::CODE_UNSAFE, $why];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether a value is exactly its pin's form. Members may come in any
+     * order; none may be missing, extra or spelled differently.
+     *
+     * @param mixed             $value   Whole value.
+     * @param string            $name    Pin name.
+     * @param list<string>|null $choices The pin's argument: enum values or slider units.
+     * @return bool
+     */
+    private static function hasShape($value, string $name, ?array $choices): bool
+    {
+        switch ($name) {
+            case 'enum':
+                return is_string($value) && in_array($value, $choices ?? [], true);
+            case 'colour':
+                return is_string($value) && preg_match(self::COLOUR, $value) === 1;
+            case 'switcher':
+                return $value === 'yes' || $value === '';
+            case 'slider':
+                return self::hasMembers($value, ['unit', 'size'])
+                    && in_array($value['unit'], $choices ?? self::SLIDER_UNITS, true)
+                    && is_string($value['size'])
+                    && preg_match('/^-?' . self::DECIMAL . '\z/', $value['size']) === 1;
+            case 'dimensions':
+                return self::hasMembers($value, ['unit', 'top', 'right', 'bottom', 'left', 'isLinked'])
+                    && $value['unit'] === 'px'
+                    && is_bool($value['isLinked'])
+                    && self::isDecimal($value['top'])
+                    && self::isDecimal($value['right'])
+                    && self::isDecimal($value['bottom'])
+                    && self::isDecimal($value['left']);
+            case 'gaps':
+                return self::hasMembers($value, ['column', 'row', 'isLinked', 'unit'])
+                    && $value['unit'] === 'px'
+                    && is_bool($value['isLinked'])
+                    && self::isDecimal($value['column'])
+                    && self::isDecimal($value['row']);
+            case 'image':
+                $sourced = is_array($value) && array_key_exists('source', $value);
+
+                return self::hasMembers($value, $sourced ? ['id', 'url', 'source'] : ['id', 'url'])
+                    && (!$sourced || $value['source'] === 'library')
+                    && is_string($value['id'])
+                    && preg_match(self::ATTACHMENT_ID, $value['id']) === 1
+                    && is_string($value['url']);
+            case 'link':
+                return self::hasMembers($value, ['url', 'is_external', 'nofollow'])
+                    && is_string($value['url'])
+                    && in_array($value['is_external'], ['on', ''], true)
+                    && in_array($value['nofollow'], ['on', ''], true);
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether a value is an object with exactly these members.
+     *
+     * @param mixed        $value   Value.
+     * @param list<string> $members Member names.
+     * @return bool
+     */
+    private static function hasMembers($value, array $members): bool
+    {
+        if (!is_array($value) || count($value) !== count($members)) {
+            return false;
+        }
+        foreach ($members as $member) {
+            if (!array_key_exists($member, $value)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Whether a value is a decimal number of 0 or more written as a string.
+     *
+     * @param mixed $value Value.
+     * @return bool
+     */
+    private static function isDecimal($value): bool
+    {
+        return is_string($value) && preg_match('/^' . self::DECIMAL . '\z/', $value) === 1;
+    }
+
+    /**
+     * The denylist entry a key anywhere inside a value matches, or null.
+     * Nesting past MAX_SETTINGS_DEPTH is not walked; no shape holds any.
+     *
+     * @param array<mixed> $value Value.
+     * @param int          $depth Nesting depth.
+     * @return string|null
+     */
+    private static function deniedWithin(array $value, int $depth): ?string
+    {
+        foreach ($value as $key => $member) {
+            $denied = self::deniedKey((string) $key);
+            if ($denied !== null) {
+                return $denied;
+            }
+            if (is_array($member) && $depth < self::MAX_SETTINGS_DEPTH) {
+                $inner = self::deniedWithin($member, $depth + 1);
+                if ($inner !== null) {
+                    return $inner;
+                }
+            }
+        }
+
+        return null;
     }
 
     /**
