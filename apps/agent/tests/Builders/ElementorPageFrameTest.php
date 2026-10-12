@@ -40,6 +40,11 @@ final class ElementorPageFrameTest extends TestCase
 {
     private const CONTAINERS = __DIR__ . '/../fixtures/ability-run/elementor-classic-containers.json';
 
+    /** The shared page-create case table, and the rule of its rows about the site's theme. */
+    private const CASES = __DIR__ . '/../fixtures/ability-run/page-create-v3-cases.json';
+
+    private const RULE_FRAME_FITS = 'page_frame_fits_theme';
+
     /** The id the next inserted post gets. */
     private const NEW_ID = 41;
 
@@ -322,13 +327,13 @@ final class ElementorPageFrameTest extends TestCase
         $plain = ['type' => 'section', 'anchor' => 'about', 'children' => [['type' => 'heading', 'level' => 2, 'text' => 'About']]];
         $v3    = ['post_type' => 'page', 'editor' => 'builder:elementor', 'title' => 'T', 'outline_version' => 3];
 
-        $this->assertSame('full_width', BuilderPageCreate::pageFrame($v3 + ['outline' => [$hero, $plain]]));
-        $this->assertSame('full_width', BuilderPageCreate::pageFrame($v3 + ['outline' => json_decode((string) json_encode([$hero]))]), 'decoded objects');
-        $this->assertSame('theme', BuilderPageCreate::pageFrame($v3 + ['outline' => [$plain]]));
-        $this->assertSame('theme', BuilderPageCreate::pageFrame($v3 + ['outline' => [$plain, $hero]]), 'only the opening block can be the hero');
-        $this->assertSame('canvas', BuilderPageCreate::pageFrame($v3 + ['outline' => [$hero], 'page_frame' => 'canvas']));
-        $this->assertSame('theme', BuilderPageCreate::pageFrame($v3 + ['outline' => [$hero], 'page_frame' => 'theme']));
-        $this->assertNull(BuilderPageCreate::pageFrame(['outline' => [$hero]]), 'an outline before version 3 has no frame');
+        $this->assertSame('full_width', BuilderPageCreate::pageFrame($v3 + ['outline' => [$hero, $plain]], false));
+        $this->assertSame('full_width', BuilderPageCreate::pageFrame($v3 + ['outline' => json_decode((string) json_encode([$hero]))], false), 'decoded objects');
+        $this->assertSame('theme', BuilderPageCreate::pageFrame($v3 + ['outline' => [$plain]], false));
+        $this->assertSame('theme', BuilderPageCreate::pageFrame($v3 + ['outline' => [$plain, $hero]], false), 'only the opening block can be the hero');
+        $this->assertSame('canvas', BuilderPageCreate::pageFrame($v3 + ['outline' => [$hero], 'page_frame' => 'canvas'], false));
+        $this->assertSame('theme', BuilderPageCreate::pageFrame($v3 + ['outline' => [$hero], 'page_frame' => 'theme'], false));
+        $this->assertNull(BuilderPageCreate::pageFrame(['outline' => [$hero]], false), 'an outline before version 3 has no frame');
         foreach ([
             'frame without version 3' => ['outline' => [], 'page_frame' => 'canvas'],
             'version 2 named'         => ['outline' => [], 'outline_version' => 2, 'page_frame' => 'canvas'],
@@ -336,7 +341,7 @@ final class ElementorPageFrameTest extends TestCase
             'frame not a string'      => $v3 + ['outline' => [], 'page_frame' => ['canvas']],
             'version as text'         => ['outline' => [], 'outline_version' => '3', 'page_frame' => 'canvas'],
         ] as $name => $spec) {
-            $this->assertFalse(BuilderPageCreate::pageFrame($spec), $name);
+            $this->assertFalse(BuilderPageCreate::pageFrame($spec, false), $name);
         }
 
         $templates = [];
@@ -392,6 +397,149 @@ final class ElementorPageFrameTest extends TestCase
             } else {
                 $this->assertSame(['ok' => false, 'code' => $code, 'post_id' => self::NEW_ID, 'trashed' => true], self::summary($result), $name);
             }
+        }
+    }
+
+    public function testBlockThemeBuildsCanvasOnly(): void
+    {
+        Functions\when('wp_is_block_theme')->justReturn(true);
+        $this->offered = ['page' => self::WITH_ELEMENTOR];
+
+        // Without a page_frame a block theme gives canvas, even to a page that
+        // opens with a hero; a classic theme keeps the hero rule.
+        $hero = ['type' => 'section', 'anchor' => 'top', 'children' => [['type' => 'pattern', 'pattern' => 'hero', 'variant' => 'centered', 'children' => []]]];
+        $v3   = ['post_type' => 'page', 'editor' => 'builder:elementor', 'title' => 'T', 'outline_version' => 3];
+        $this->assertSame('canvas', BuilderPageCreate::pageFrame($v3 + ['outline' => [$hero]], true));
+        $this->assertSame('full_width', BuilderPageCreate::pageFrame($v3 + ['outline' => [$hero]], false));
+        $this->assertSame('theme', BuilderPageCreate::pageFrame($v3 + ['outline' => [$hero], 'page_frame' => 'theme'], true), 'a sent frame is the frame judged');
+        $this->assertFalse(BuilderPageCreate::pageFrame($v3 + ['outline' => [$hero], 'page_frame' => 'wide'], true));
+        $this->assertNull(BuilderPageCreate::pageFrame(['outline' => [$hero]], true), 'an outline before version 3 has no frame');
+        $this->assertSame(['canvas'], BuilderPageCreate::pageFrames(true));
+        $this->assertSame(OutlineV3Schema::PAGE_FRAMES, BuilderPageCreate::pageFrames(false));
+
+        $noFrame = array_diff_key($this->v3Spec('canvas'), ['page_frame' => 1]);
+        foreach (['no page_frame' => $noFrame, 'canvas sent' => $this->v3Spec('canvas')] as $name => $spec) {
+            $built = $this->precheck($spec);
+            $this->assertArrayNotHasKey('refusal', $built, $name . ': ' . (string) json_encode($built['refusal'] ?? null));
+            $this->assertSame('elementor_canvas', $built['doc']->meta[self::TEMPLATE] ?? null, $name);
+            $this->assertSame(['block_theme' => true, 'page_frame' => 'canvas'], $built['builder_facts'] ?? null, $name);
+        }
+
+        // theme or full_width sent: refused before any template list is read.
+        foreach (['theme', 'full_width'] as $frame) {
+            $this->templateReads = [];
+            $built               = $this->precheck($this->v3Spec($frame));
+            $refusal             = $built['refusal'] ?? [];
+            $this->assertSame('page_frame_unavailable', $refusal['code'] ?? null, $frame);
+            $this->assertSame([[
+                'path'    => 'input',
+                'key'     => 'page_frame',
+                'reason'  => BuilderPageCreate::REASON_FRAME_BLOCK_THEME,
+                'allowed' => ['canvas'],
+            ]], $refusal['failures'] ?? null, $frame);
+            $this->assertStringStartsWith('the page frame cannot be built with the site\'s theme.', (string) ($refusal['detail'] ?? ''), $frame);
+            $this->assertNull($built['doc'], $frame);
+            $this->assertSame([], $this->templateReads, $frame);
+        }
+
+        // A version 2 page is unchanged: no frame and no template row.
+        $built = $this->precheck(['post_type' => 'page', 'editor' => 'builder:elementor', 'title' => self::TITLE, 'outline' => self::outline()]);
+        $this->assertArrayNotHasKey('refusal', $built);
+        $this->assertArrayNotHasKey(self::TEMPLATE, $built['doc']->meta);
+        $this->assertSame(['block_theme' => true, 'page_frame' => null], $built['builder_facts'] ?? null);
+        $this->assertSame([], $this->inserts);
+    }
+
+    public function testClassicThemeFramesAreUnchanged(): void
+    {
+        $this->offered = ['page' => self::WITH_ELEMENTOR];
+        foreach (OutlineV3Schema::PAGE_FRAMES as $frame) {
+            $built = $this->precheck($this->v3Spec($frame));
+            $this->assertArrayNotHasKey('refusal', $built, $frame . ': ' . (string) json_encode($built['refusal'] ?? null));
+            $this->assertSame(['block_theme' => false, 'page_frame' => $frame], $built['builder_facts'] ?? null, $frame);
+        }
+        $built = $this->precheck(array_diff_key($this->v3Spec('canvas'), ['page_frame' => 1]));
+        $this->assertSame(['block_theme' => false, 'page_frame' => 'theme'], $built['builder_facts'] ?? null, 'no hero, no frame: theme');
+        $built = $this->precheck(['post_type' => 'page', 'editor' => 'builder:elementor', 'title' => self::TITLE, 'outline' => self::outline()]);
+        $this->assertSame(['block_theme' => false, 'page_frame' => null], $built['builder_facts'] ?? null, 'version 2');
+    }
+
+    public function testFrameThatNoLongerFitsIsRefusedAtExecution(): void
+    {
+        $this->offered = ['page' => self::WITH_ELEMENTOR];
+        $spec          = $this->v3Spec('full_width');
+        $built         = $this->precheck($spec);
+        $this->assertSame(['block_theme' => false, 'page_frame' => 'full_width'], $built['builder_facts'] ?? null);
+
+        // The site moves to a block theme before the write. The write's
+        // pipeline builds again from the same input before any insert.
+        Functions\when('wp_is_block_theme')->justReturn(true);
+        $again = $this->precheck($spec);
+
+        $this->assertSame('page_frame_unavailable', $again['refusal']['code'] ?? null);
+        $this->assertNull($again['doc']);
+        $this->assertSame([], $this->inserts);
+    }
+
+    public function testBlockThemeCanvasSaveScopeAdmitsOwnWritesAndTripsOnOthers(): void
+    {
+        Functions\when('wp_is_block_theme')->justReturn(true);
+        $this->offered = ['page' => self::WITH_ELEMENTOR];
+        $cases         = [
+            'own canvas template'      => [null, function (): void {
+                $this->fire('updated_post_meta', 500, self::NEW_ID, self::TEMPLATE, 'elementor_canvas');
+            }],
+            'another post\'s template' => ['side_effect_detected', function (): void {
+                $this->fire('updated_post_meta', 501, self::OTHER, self::TEMPLATE, 'elementor_canvas');
+            }],
+        ];
+        foreach ($cases as $name => [$code, $during]) {
+            $this->fresh();
+            $spec  = array_diff_key($this->v3Spec('canvas'), ['page_frame' => 1]);
+            $built = $this->precheck($spec);
+            $this->assertSame('canvas', $built['builder_facts']['page_frame'] ?? null, $name);
+            $this->elementorSaves('wp-page', $during);
+
+            $result = $this->write($spec, $built);
+
+            if ($code === null) {
+                $this->assertTrue($result['ok'] ?? null, $name . ': ' . (string) ($result['detail'] ?? ''));
+                $this->assertSame(['elementor_canvas'], $this->stored(self::TEMPLATE), $name);
+            } else {
+                $this->assertSame(['ok' => false, 'code' => $code, 'post_id' => self::NEW_ID, 'trashed' => true], self::summary($result), $name);
+            }
+        }
+    }
+
+    public function testSharedRowsOfTheSiteTheme(): void
+    {
+        $doc   = json_decode((string) file_get_contents(self::CASES), true, 512, JSON_THROW_ON_ERROR);
+        $names = [];
+        foreach ($doc['cases'] as $case) {
+            if ($case['rule'] !== self::RULE_FRAME_FITS) {
+                continue;
+            }
+            $name  = $case['name'];
+            $block = $case['site']['block_theme'] ?? null;
+            $this->assertIsBool($block, $name . ': the row states the site\'s theme');
+            $spec    = json_decode($case['input'], true, 512, JSON_THROW_ON_ERROR);
+            $frame   = BuilderPageCreate::pageFrame($spec, $block);
+            $refusal = is_string($frame) ? BuilderPageCreate::frameRefusal($frame, $block) : null;
+            $this->assertIsString($frame, $name);
+            $this->assertSame($case['agent'], $refusal['code'] ?? 'ok', $name);
+            if ($refusal === null) {
+                $this->assertContains($frame, BuilderPageCreate::pageFrames($block), $name);
+                $this->assertTrue(!$block || $frame === 'canvas', $name . ': a block theme builds canvas');
+            } else {
+                // The precheck answers the row's code before anything is built.
+                Functions\when('wp_is_block_theme')->justReturn($block);
+                $built = $this->precheck($spec);
+                $this->assertSame($case['agent'], $built['refusal']['code'] ?? null, $name);
+            }
+            $names[] = $name;
+        }
+        foreach (['block-theme-without-a-frame', 'block-theme-canvas', 'block-theme-theme-frame', 'block-theme-full-width-frame'] as $must) {
+            $this->assertContains($must, $names, 'the table holds the row ' . $must);
         }
     }
 

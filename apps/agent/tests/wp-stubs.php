@@ -820,3 +820,16 @@ if (!function_exists('rest_validate_value_from_schema')) {
         return true;
     }
 }
+
+if (!function_exists('wp_is_block_theme')) {
+    /**
+     * Whether the active theme is a block theme. The suite's site runs a
+     * classic theme; a test of a block theme redefines this for itself.
+     *
+     * @return bool
+     */
+    function wp_is_block_theme(): bool
+    {
+        return false;
+    }
+}

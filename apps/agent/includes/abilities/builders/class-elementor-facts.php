@@ -103,12 +103,14 @@ final class ElementorFacts
      * created with stands in: it holds that role alone or it is refused.
      * post_types keeps only post type keys; an option that is not a list
      * switches Elementor on for nothing. active_breakpoints is described at
-     * activeBreakpoints().
+     * activeBreakpoints(). block_theme is whether the active theme is a
+     * block theme (see themeIsBlock()); it decides the page frames a
+     * designed page may be built in.
      *
      * @param ElementorApi $api         Elementor.
      * @param int          $principalId The service user's id.
      * @param string       $proConstant Tests only: stands in for Elementor Pro's version constant. Production passes none.
-     * @return array{active: bool, version: string|null, classic_in_range: bool, containers: bool|null, atomic: bool|null, role_excluded: bool, post_types: list<string>, active_kit_id: int, pro_active: bool, active_breakpoints: list<string>|null}
+     * @return array{active: bool, version: string|null, classic_in_range: bool, containers: bool|null, atomic: bool|null, role_excluded: bool, post_types: list<string>, active_kit_id: int, pro_active: bool, active_breakpoints: list<string>|null, block_theme: bool}
      */
     public static function collect(ElementorApi $api, int $principalId, string $proConstant = self::PRO_VERSION_CONSTANT): array
     {
@@ -126,7 +128,22 @@ final class ElementorFacts
             'active_kit_id'      => $kitId,
             'pro_active'         => defined($proConstant),
             'active_breakpoints' => self::activeBreakpoints($api, $kitId),
+            'block_theme'        => self::themeIsBlock(),
         ];
+    }
+
+    /**
+     * Whether $facts say the active theme is a block theme. Only a false
+     * block_theme is a classic theme: a fact that is missing or of another
+     * type reads as a block theme, which admits only canvas, the frame both
+     * kinds of theme show as built.
+     *
+     * @param array<string, mixed> $facts From collect().
+     * @return bool
+     */
+    public static function blockTheme(array $facts): bool
+    {
+        return ($facts['block_theme'] ?? null) !== false;
     }
 
     /**
@@ -207,6 +224,26 @@ final class ElementorFacts
             'service_role_excluded' => ($facts['role_excluded'] ?? null) !== false,
             'pro_active'            => ($facts['pro_active'] ?? null) === true,
         ];
+    }
+
+    /**
+     * Whether the active theme is a block theme, as core answers it. A core
+     * without the function has no block themes. A read that throws counts
+     * as a block theme, so the frames it admits are those either kind of
+     * theme shows as built.
+     *
+     * @return bool
+     */
+    private static function themeIsBlock(): bool
+    {
+        if (!function_exists('wp_is_block_theme')) {
+            return false;
+        }
+        try {
+            return wp_is_block_theme() === true;
+        } catch (\Throwable $e) {
+            return true;
+        }
     }
 
     /**

@@ -1482,6 +1482,9 @@ final class AbilityRunCommand implements CommandInterface
                     'preview_digest'   => $built['preview_digest'],
                     'precheck_digest'  => $this->precheckDigest($entrySha, $inputSha, $built['base_fingerprint'], $built['preview_digest']),
                     'preview'          => $built['preview'],
+                    // The page frame this site builds the input in, and the
+                    // theme fact it follows: beside the preview, not in it.
+                    'builder_facts'    => $built['builder_facts'] ?? null,
                 ];
             });
         }

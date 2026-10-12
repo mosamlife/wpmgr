@@ -79,6 +79,7 @@ final class OutlineV3CasesTest extends TestCase
         'v3_fields_need_version',
         'section_needs_version',
         'page_frame_enum',
+        'page_frame_fits_theme',
         'design_complete',
         'design_values_closed',
         'design_contrast',

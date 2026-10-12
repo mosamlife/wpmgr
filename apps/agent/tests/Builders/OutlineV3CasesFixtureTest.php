@@ -93,6 +93,7 @@ final class OutlineV3CasesFixtureTest extends TestCase
         'font_unknown'               => 'accept',
         'design_contrast_low'        => 'refuse',
         'design_not_ready'           => 'refuse',
+        'page_frame_unavailable'     => 'accept',
     ];
 
     /** The codes a case may answer: the grammar's own, then the new ones. */
@@ -100,10 +101,17 @@ final class OutlineV3CasesFixtureTest extends TestCase
 
     /** The site fact each site-dependent code needs in its case. */
     private const SITE_FACT = [
-        'containers_required'  => 'elementor_containers',
-        'background_not_image' => 'attachment_mimes',
-        'font_unknown'         => 'fonts',
+        'containers_required'    => 'elementor_containers',
+        'background_not_image'   => 'attachment_mimes',
+        'font_unknown'           => 'fonts',
+        'page_frame_unavailable' => 'block_theme',
     ];
+
+    /**
+     * Rules whose accepted rows depend on the site too: the site decides what
+     * is built, so an accepted row states the site it was judged for.
+     */
+    private const SITE_RULES = ['page_frame_fits_theme'];
 
     // -------------------------------------------------------------------------
     // The table
@@ -146,8 +154,16 @@ final class OutlineV3CasesFixtureTest extends TestCase
             }
             if (isset($case['site'])) {
                 $this->assertSame('accept', $case['go'], $name . ': a rule that needs the site is the agent\'s alone');
-                $this->assertContains($case['agent'], array_keys(self::SITE_FACT), $name . ': only a site code carries a site');
-                $this->assertArrayHasKey(self::SITE_FACT[$case['agent']], $case['site'], $name);
+                if ($case['agent'] === 'ok') {
+                    $this->assertContains($case['rule'], self::SITE_RULES, $name . ': an accepted row carries a site only for a rule the site decides');
+                    $this->assertNotSame([], $case['site'], $name);
+                    foreach (array_keys($case['site']) as $fact) {
+                        $this->assertContains($fact, self::SITE_FACT, $name . ': unknown site fact ' . $fact);
+                    }
+                } else {
+                    $this->assertContains($case['agent'], array_keys(self::SITE_FACT), $name . ': only a site code carries a site');
+                    $this->assertArrayHasKey(self::SITE_FACT[$case['agent']], $case['site'], $name);
+                }
             } else {
                 $this->assertNotContains($case['agent'], array_keys(self::SITE_FACT), $name . ': a site code names the site facts it needs');
                 if ($case['agent'] !== 'ok' && $case['agent'] !== 'create_content_invalid') {

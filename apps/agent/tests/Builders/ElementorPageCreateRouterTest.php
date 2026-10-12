@@ -365,6 +365,14 @@ final class ElementorPageCreateRouterTest extends TestCase
             $pre['precheck_digest'],
             'the precheck digest binds the entry, the input bytes, the base and the preview'
         );
+        // The frame and the site fact it is resolved from sit beside the
+        // preview, never in it: the preview's members are a closed set.
+        $this->assertSame(['block_theme' => false, 'page_frame' => null], $pre['builder_facts'] ?? null, 'a version 2 outline has no frame');
+        Functions\when('wp_is_block_theme')->justReturn(true);
+        $block = $this->precheck(self::REQ_GOLDEN, $input);
+        $this->assertSame(['block_theme' => true, 'page_frame' => null], $block['builder_facts'] ?? null);
+        $this->assertSame($pre['preview'], $block['preview'], 'a version 2 page is built the same on a block theme');
+        Functions\when('wp_is_block_theme')->justReturn(false);
 
         // Sections when the site has the container layout off.
         $this->api->experiments['container'] = false;

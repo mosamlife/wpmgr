@@ -210,6 +210,28 @@ final class ElementorFactsTest extends TestCase
         }
     }
 
+    public function test_block_theme_is_reported(): void
+    {
+        $api = new FakeElementorApi();
+        $this->assertFalse($this->collect($api)['block_theme'], 'a classic theme');
+
+        Functions\when('wp_is_block_theme')->justReturn(true);
+        $this->assertTrue($this->collect($api)['block_theme'], 'a block theme');
+
+        // A theme that cannot be read counts as a block theme: canvas, the
+        // one frame either kind of theme shows as built, is all it admits.
+        Functions\when('wp_is_block_theme')->alias(static function (): bool {
+            throw new \RuntimeException('the theme cannot be read');
+        });
+        $this->assertTrue($this->collect($api)['block_theme'], 'a read that throws');
+
+        // The reader: only a false fact is a classic theme.
+        $this->assertFalse(ElementorFacts::blockTheme(['block_theme' => false]));
+        foreach ([[], ['block_theme' => true], ['block_theme' => null], ['block_theme' => 0], ['block_theme' => 'no']] as $facts) {
+            $this->assertTrue(ElementorFacts::blockTheme($facts), (string) json_encode($facts));
+        }
+    }
+
     public function test_unsupported_post_type_refuses(): void
     {
         $api = new FakeElementorApi();
