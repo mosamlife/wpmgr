@@ -460,6 +460,30 @@ final class PageEditValidatorTest extends TestCase
         ], $r['input']['operations'], 'outlines come back in page-create\'s normalised form');
     }
 
+    public function test_a_designed_insert_with_an_ampersand_in_a_link_is_bad_input(): void
+    {
+        $plans = static fn (string $url): array => ['type' => 'pattern', 'pattern' => 'pricing', 'variant' => 'three-plans', 'plans' => [
+            ['name' => 'Team', 'price' => '49', 'features' => ['5 sites'], 'cta' => ['text' => 'Choose', 'url' => $url]],
+        ]];
+        $hero  = static fn (string $url): array => ['type' => 'section', 'anchor' => 'top', 'children' => [
+            ['type' => 'pattern', 'pattern' => 'hero', 'variant' => 'centered', 'children' => [
+                ['type' => 'heading', 'level' => 1, 'text' => 'Title'],
+                ['type' => 'buttons', 'buttons' => [['text' => 'Go', 'url' => $url]]],
+            ]],
+        ]];
+
+        foreach (['the button of a plan' => $plans, 'the button of a hero' => $hero] as $what => $make) {
+            $r = PageEditValidator::parse(self::input([self::insertAt('after', '4d5e6f7', [$make('/signup?plan=pro&seats=5')])]));
+            $this->assertSame('bad_input', $r['code'] ?? null, $what);
+            $this->assertStringStartsWith('operations[0].outline', $r['detail'] ?? '', $what);
+            $this->assertStringContainsString('"&"', $r['detail'] ?? '', $what . ': the refusal names the character');
+            $this->assertStringNotContainsString('seats', $r['detail'] ?? '', $what . ': the refusal never echoes the link');
+
+            $ok = PageEditValidator::parse(self::input([self::insertAt('after', '4d5e6f7', [$make('/signup?plan=pro')])]));
+            $this->assertArrayHasKey('input', $ok, $what . ': ' . ($ok['detail'] ?? ''));
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Version 3 rows (v3_page, v3_cases)
     // -------------------------------------------------------------------------

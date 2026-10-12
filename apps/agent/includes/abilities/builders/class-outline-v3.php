@@ -33,6 +33,10 @@ if (!defined('ABSPATH')) {
  * images (section backgrounds and pattern pictures included), buttons, tables
  * and characters of text.
  *
+ * A link of a button, or of the button of a pricing plan, holds no "&": an
+ * Elementor page cannot keep one, so it is link_invalid here, before anything
+ * is built (PageCreateBuilder::designedLinkProblem()).
+ *
  * The page as a whole has four more rules:
  *   anchors  a section anchor has the shape of ANCHOR_PATTERN, is not one of
  *            RESERVED_ANCHORS and is the anchor of one section only
