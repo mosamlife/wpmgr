@@ -680,9 +680,18 @@ const (
 	hintDesignContrastLow = "Text must be readable on the colour it sits on. ink needs a contrast of at least 4.5 to 1 " +
 		"against both ground and surface, and on_accent at least 4.5 to 1 against accent. The failures name the pair and " +
 		"its measured contrast: change one colour of that pair, then send the whole design again."
-	hintFontUnknown = "A font family of the design is not one that Elementor on this site has. Each failure names the role, " +
-		"heading or body, and lists the closest families the site has: use one of those, spelled as listed, " +
-		"or send system for a role that should set no family. Then send the whole design again."
+	hintFontUnknown = "A font family of the design is not one that Elementor on this site has. This refusal does not say " +
+		"which of the two fonts it is, or which families the site has. Send " + designFontSystem + " for the heading and " +
+		"for the body to use the theme's own fonts, or ask a person which fonts the site has and name only those, " +
+		"spelled exactly as Elementor spells them. Then send the whole design again."
+	hintContainersRequired = "This site's Elementor builds pages with sections and columns, and a designed page (a design, " +
+		"sections and patterns) is built with containers. Ask a person to turn on the Container feature in Elementor's " +
+		"Features settings, then send the same call again. Or leave out outline_version, design, page_frame, sections " +
+		"and patterns: a plain outline is built with sections and columns here."
+	hintBackgroundNotImage = "A section background must be an image: a JPEG, PNG, GIF, WebP or AVIF in this site's media " +
+		"library. One background names an attachment of another kind, a PDF or a video for example, and this refusal " +
+		"does not say which. Check each background's attachment_id with wpmgr/rest-read route wp-v2-media-list, " +
+		"which gives every item's mime_type, and send an image, or leave that background out."
 	hintPageTemplateUnavailable = "The site does not offer the page template that this page frame needs for the post type. " +
 		"Choose a page_frame whose template the site has: " + pageFrameTheme + " uses the theme's own template, and " +
 		pageFrameFullWidth + " and " + pageFrameCanvas + " use Elementor's page templates."
@@ -710,6 +719,8 @@ var precheckRefusalHints = map[string]string{
 	pageDesignFontUnknown:           hintFontUnknown,
 	pageFrameTemplateUnavailable:    hintPageTemplateUnavailable,
 	pageFrameUnavailable:            hintPageFrameUnavailable,
+	pageContainersRequired:          hintContainersRequired,
+	pageBackgroundNotImage:          hintBackgroundNotImage,
 	pageCreateAnchorInvalid:         hintAnchorInvalid,
 	pageCreateAnchorDuplicate:       hintAnchorDuplicate,
 	pageCreateAnchorReserved:        hintAnchorReserved,

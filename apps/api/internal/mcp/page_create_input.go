@@ -1557,11 +1557,15 @@ const (
 // and theme: a font family the design names that the site's font registry
 // does not have, a page frame whose template the theme does not offer, and a
 // page frame the theme cannot show a designed page in (a block theme shows
-// one only as canvas).
+// one only as canvas), a site that builds sections and columns where a
+// designed page needs containers, and a section background whose attachment
+// is not an image.
 const (
 	pageDesignFontUnknown        = "font_unknown"
 	pageFrameTemplateUnavailable = "page_template_unavailable"
 	pageFrameUnavailable         = "page_frame_unavailable"
+	pageContainersRequired       = "containers_required"
+	pageBackgroundNotImage       = "background_not_image"
 )
 
 // designFailure is one problem found in a design object. Path and Key

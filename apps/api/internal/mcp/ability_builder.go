@@ -266,9 +266,9 @@ const (
 	hintNodeNotSupportedByBuilder = "Elementor builds every outline block, with two limits: a button's style is fill " +
 		"(leave style out or send fill), and an image's align is none or center. node names the outline item to change, " +
 		"field its setting, and allowed the values Elementor builds there."
-	hintImageAltFromLibrary = "An image on an Elementor page shows the alt text saved with the image in the media " +
-		"library. Set alt to that text exactly (wpmgr/rest-read route wp-v2-media-list gives it as alt_text), or ask " +
-		"a person to change it in the media library first."
+	hintImageAltFromLibrary = "An image on an Elementor page, a logo of a logos pattern included, shows the alt text " +
+		"saved with the image in the media library. Set alt to that text exactly (wpmgr/rest-read route " +
+		"wp-v2-media-list gives it as alt_text), or ask a person to change it in the media library first."
 	hintElementorAddressParagraph = "On an Elementor page, a paragraph or quote paragraph whose whole text is one web " +
 		"address becomes an embedded player. Add words around the address, or use a button for the link."
 	hintElementorLinkAmpersand = "A button link on an Elementor page cannot contain &. Use a link without one."
