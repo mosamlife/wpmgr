@@ -139,10 +139,12 @@ reviews every change on a path in the routing table's last row, whoever wrote
 it.
 
 - **One job per run**, briefed by the five rules above, except rule 5's push
-  and draft PR: Codex commits in its own clone and never pushes or opens a pull
-  request. The router fetches the job branch, reviews it, pushes it and opens
-  any PR. The brief also names the failing test to start from, the exact
-  commands, and the report to return.
+  and draft PR: Codex leaves its changes uncommitted in its own clone, because
+  the sandbox keeps `.git` read-only even there, and never pushes or opens a
+  pull request. The router reviews the diff, commits it with the job id,
+  fetches the branch, pushes it and opens any PR. The brief also names the
+  failing test to start from, the exact commands, and the report to return,
+  including the commit message to use.
 - **Its own clone, never this repository's `.git`.** Make it with `git clone
   --shared`, so objects are read through this repository and never written to
   it. Install dependencies there, then run `codex exec -C <clone> -s
@@ -176,8 +178,9 @@ in.
   increment that compiles, then run the other checks the brief names and commit
   their fixes. Never a whole-repository run.
 - **Commit** on the branch you were started on, with a message that starts with
-  the job id. Codex never pushes, opens a pull request or creates a branch; the
-  router does.
+  the job id. Codex cannot commit inside its sandbox: it leaves the changes in
+  the working tree and gives the message in its report, and the router commits.
+  Codex never pushes, opens a pull request or creates a branch.
 - **Change only what the brief names.** Never delete or move anything outside
   your worktree, and never open a folder outside this repository unless the
   brief names it.
