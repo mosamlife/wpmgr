@@ -288,7 +288,7 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 The entries below summarize the notable changes since 0.61.25. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
 = 0.61.165 =
-* Added: A connected AI can create a designed Elementor page with sections and ready-made parts: a hero, features, stats, logos, testimonials, pricing, FAQ and a call to action. It uses the site's colours, fonts, spacing and corner style and is saved as a draft. On a block theme, the page fills the screen without the theme's header and footer.
+* Added: A connected AI can create a designed Elementor page with sections and ready-made parts: a hero, features, stats, logos, testimonials, pricing, FAQ and a call to action. It uses the colours, fonts, spacing and corner style the AI chooses for it and is saved as a draft. On a block theme, the page fills the screen without the theme's header and footer.
 * Added: The AI can edit a designed page: change any part's text, add or replace sections in the same design, and undo the change.
 * Changed: Saving a designed page refreshes its stylesheet once and keeps its template and page settings. Undo restores the template and page settings exactly.
 
@@ -464,7 +464,7 @@ The entries below summarize the notable changes since 0.61.25. This project ship
 == Upgrade Notice ==
 
 = 0.61.165 =
-Lets a connected AI create and edit designed Elementor draft pages in the site's style, with ready-made sections and undo. On a block theme, the page fills the screen without the theme's header and footer. Saving refreshes the stylesheet once and keeps the template and page settings; undo restores them exactly.
+Lets a connected AI create and edit designed Elementor draft pages in the colours, fonts, spacing and corner style the AI chooses for them, with ready-made sections and undo. On a block theme, the page fills the screen without the theme's header and footer. Saving refreshes the stylesheet once and keeps the template and page settings; undo restores them exactly.
 
 = 0.61.164 =
 Edits of an Elementor draft that someone has previewed now go through, and an edit or undo refused because the page is open in an editor can be tried again once it is closed. Reading the structure of an Elementor draft the AI can edit also says whether it is open in an editor or has unsaved changes.
