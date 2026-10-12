@@ -1,7 +1,9 @@
 // m157 proofs: the wpmgr/page-create seed exists with its write rules;
 // stamp_wpmgr_ability_entry_hash sets a NULL wpmgr hash exactly once and
-// refuses a second stamp, a vendor row and a malformed hash; and the sites
-// content-editing columns are tenant-isolated and site-scoped.
+// refuses a second stamp, a vendor row and a malformed hash; the release
+// carrying m177 and m178 re-arms the stamp for exactly the two rows it
+// changes, once; and the sites content-editing columns are tenant-isolated
+// and site-scoped.
 //
 // Every transaction goes through the production dispatch and asserts, from
 // inside, that it is wpmgr_app with neither SUPERUSER nor BYPASSRLS. The
@@ -11,6 +13,9 @@ package tests
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -18,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/abilities"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 )
 
@@ -95,13 +101,166 @@ func TestPageCreateSeedAsAppRole(t *testing.T) {
 	}
 }
 
-// TestStampWpmgrAbilityEntryHashAsAppRole proves the stamp sets a NULL wpmgr
-// hash once with a NULL-actor audit row, then refuses a second stamp (55000),
-// a vendor row (42501) and a malformed hash (22023), changing nothing.
+// TestStampWpmgrAbilityEntryHashAsAppRole proves the entry-hash stamp path,
+// each part on a database of its own: m157's guards, then the release that
+// carries m177 and m178.
+func TestStampWpmgrAbilityEntryHashAsAppRole(t *testing.T) {
+	t.Run("m157_guards", m157StampGuards)
+	t.Run("m177_m178_restamp", m177M178Restamp)
+}
+
+// m177M178Names are the two rows the release carrying m177 and m178 changes,
+// sorted.
+var m177M178Names = []string{"wpmgr/page-create", "wpmgr/page-edit"}
+
+// m177M178Catalogue reads every catalogue row as wpmgr_app through the
+// generated query, keyed by name.
+func m177M178Catalogue(t *testing.T, w *e2World) map[string]sqlc.AbilityCatalogue {
+	t.Helper()
+	out := map[string]sqlc.AbilityCatalogue{}
+	if err := w.pool.InTenantTx(context.Background(), w.tenant, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (m177/m178 catalogue)")
+		rows, err := sqlc.New(tx).ListAbilityCatalogue(context.Background())
+		for _, r := range rows {
+			out[r.Name] = r
+		}
+		return err
+	}); err != nil {
+		t.Fatalf("list catalogue: %v", err)
+	}
+	for _, n := range m177M178Names {
+		if _, ok := out[n]; !ok {
+			t.Fatalf("INDETERMINATE: no catalogue row %s among %d rows", n, len(out))
+		}
+	}
+	return out
+}
+
+// m177M178Audit reads an entry's audit rows, newest first, as wpmgr_app.
+func m177M178Audit(t *testing.T, w *e2World, entry uuid.UUID) []sqlc.AbilityCatalogueAudit {
+	t.Helper()
+	const limit = 100
+	var rows []sqlc.AbilityCatalogueAudit
+	if err := w.pool.InTenantTx(context.Background(), w.tenant, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (m177/m178 audit)")
+		var err error
+		rows, err = sqlc.New(tx).ListAbilityCatalogueAudit(context.Background(),
+			sqlc.ListAbilityCatalogueAuditParams{EntryID: entry, RowLimit: limit})
+		return err
+	}); err != nil {
+		t.Fatalf("list audit of %s: %v", entry, err)
+	}
+	if len(rows) >= limit {
+		t.Fatalf("INDETERMINATE: %s has at least %d audit rows; a count is not readable", entry, limit)
+	}
+	return rows
+}
+
+// m177M178Restamp: an install on the release before (page-create on m176's
+// copy, page-edit on m169's usage, both stamped by its boot) takes m177 and
+// m178 in ordinal order. They clear the hash of the two rows they change and
+// of no other row. One boot stamp, through its production dispatch as
+// wpmgr_app, then stamps exactly those two with the sums of their new bytes,
+// each with one NULL-actor audit row from a NULL hash. The stamp then refuses
+// both rows again (55000), and a second boot stamps nothing and writes no
+// audit row.
+//
+// Mutation: dropping the hash clear from m177 or m178 leaves that row on its
+// old hash and fires "NOT CLEARED".
+func m177M178Restamp(t *testing.T) {
+	ctx := context.Background()
+	w := newE2World(t, true)
+
+	oldSum := map[string]string{
+		"wpmgr/page-create": m176Landed(t, w),
+		"wpmgr/page-edit":   m178AssertStamped(t, m178SetUsage(t, w, m169EditUsage)),
+	}
+	before := m177M178Catalogue(t, w)
+	auditBefore := map[string]int{}
+	for _, n := range m177M178Names {
+		auditBefore[n] = len(m177M178Audit(t, w, before[n].EntryID))
+	}
+
+	for _, m := range []struct{ name, body string }{{"m177", m177Body(t)}, {"m178", m178Body(t)}} {
+		if code, warnings := m176Apply(t, w, m.body); code != "" || len(warnings) != 0 {
+			t.Fatalf("%s on the release before: code %q, warnings %q; want neither", m.name, code, warnings)
+		}
+	}
+
+	var cleared []string
+	for name, r := range m177M178Catalogue(t, w) {
+		if b, ok := before[name]; ok && b.EntrySha256 != nil && r.EntrySha256 == nil {
+			cleared = append(cleared, name)
+		}
+	}
+	sort.Strings(cleared)
+	if !reflect.DeepEqual(cleared, m177M178Names) {
+		t.Fatalf("NOT CLEARED: the release cleared the hash of %q, want exactly %q", cleared, m177M178Names)
+	}
+
+	stamped, err := abilities.StampOwnEntryHashes(ctx, w.pool, slog.Default())
+	if err != nil || stamped != len(m177M178Names) {
+		t.Fatalf("one boot after the release stamped %d rows (err %v), want the %d it cleared", stamped, err, len(m177M178Names))
+	}
+	create, edit := m162Row(t, w), m178Row(t, w)
+	m176AssertUsage(t, create, m177Usage)
+	m176AssertUsage(t, edit, m178Usage)
+	if create.Description != m177Description {
+		t.Fatalf("page-create's description is not m177's: %q", create.Description)
+	}
+	rows := map[string]sqlc.AbilityCatalogue{"wpmgr/page-create": create, "wpmgr/page-edit": edit}
+	sum := map[string]string{"wpmgr/page-create": m162AssertStamped(t, create), "wpmgr/page-edit": m178AssertStamped(t, edit)}
+	for _, n := range m177M178Names {
+		if sum[n] == oldSum[n] {
+			t.Fatalf("%s was re-stamped with the old hash %s; the new copy did not reach the entry bytes", n, sum[n])
+		}
+		audit := m177M178Audit(t, w, rows[n].EntryID)
+		if len(audit) != auditBefore[n]+1 {
+			t.Fatalf("%s carries %d audit rows after the boot, want %d", n, len(audit), auditBefore[n]+1)
+		}
+		if a := audit[0]; a.ActorUserID.Valid || a.Action != "update" || a.BeforeEntrySha256 != nil ||
+			a.AfterEntrySha256 == nil || *a.AfterEntrySha256 != sum[n] ||
+			a.BeforeRowSha256 == nil || *a.BeforeRowSha256 == a.AfterRowSha256 {
+			t.Fatalf("%s: the re-stamp's audit row is not a NULL-actor stamp from a NULL hash: %+v", n, a)
+		}
+	}
+
+	other := strings.Repeat("ef", 32)
+	if err := w.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InAgentTx (m177/m178 second stamp)")
+		for _, n := range m177M178Names {
+			for _, sha := range []string{sum[n], other} {
+				if _, code := m157Stamp(t, tx, rows[n].EntryID, sha); code != "55000" {
+					t.Fatalf("SECOND STAMP: %s was not refused a second stamp %s with 55000 (code %q)", n, sha, code)
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("second stamps: %v", err)
+	}
+
+	if again, err := abilities.StampOwnEntryHashes(ctx, w.pool, slog.Default()); err != nil || again != 0 {
+		t.Fatalf("a second boot stamped %d rows (err %v), want 0", again, err)
+	}
+	after := m177M178Catalogue(t, w)
+	for _, n := range m177M178Names {
+		if h := after[n].EntrySha256; h == nil || *h != sum[n] {
+			t.Fatalf("SECOND STAMP: %s's hash moved from %s to %v", n, sum[n], h)
+		}
+		if got := len(m177M178Audit(t, w, rows[n].EntryID)); got != auditBefore[n]+1 {
+			t.Fatalf("%s carries %d audit rows after a second boot, want %d", n, got, auditBefore[n]+1)
+		}
+	}
+}
+
+// m157StampGuards proves the stamp sets a NULL wpmgr hash once with a
+// NULL-actor audit row, then refuses a second stamp (55000), a vendor row
+// (42501) and a malformed hash (22023), changing nothing.
 //
 // Mutation: removing the entry_sha256 IS NULL guard from m157 turns the second
 // stamp into an overwrite and fires "SECOND STAMP".
-func TestStampWpmgrAbilityEntryHashAsAppRole(t *testing.T) {
+func m157StampGuards(t *testing.T) {
 	ctx := context.Background()
 	pool := startPostgres(t)
 	tenant := seedTenant(t, pool, "m157-stamp-"+uuid.NewString()[:8])
