@@ -432,6 +432,12 @@ final class PatternStatsLogosCompileTest extends TestCase
         $trees    = [
             $patterns->stats(new IdSeed(self::REQUEST), self::AT, self::statsNode(self::statItems(3)), 'ground'),
             $patterns->logos(new IdSeed(self::REQUEST), self::AT, self::logosNode([5, 6, 7])),
+            $patterns->testimonials(new IdSeed(self::REQUEST), self::AT, [
+                'type'         => 'pattern',
+                'pattern'      => 'testimonials',
+                'variant'      => 'featured',
+                'testimonials' => [['quote' => 'Good.', 'name' => 'A', 'role' => 'B', 'attachment_id' => 5]],
+            ], 'ground'),
         ];
         $written = [];
         $walk    = static function (array $element) use (&$walk, &$written): void {

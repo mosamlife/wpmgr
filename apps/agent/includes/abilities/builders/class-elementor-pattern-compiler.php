@@ -31,6 +31,14 @@ if (!defined('ABSPATH')) {
  *   stats counters   a columns row of equal columns, one counter widget in each
  *   logos row        one row that wraps, centred, holding the logos' image
  *                    widgets; it does not stack on a phone
+ *   testimonials featured
+ *                    a group of the design's row gap: the first testimonial
+ *                    widget, the featured one, across the full width, then the
+ *                    others in rows of SMALLER_PER_ROW equal columns, one
+ *                    testimonial widget in each; a row of one column is
+ *                    centred, and the rows stack on a phone. The widgets stand
+ *                    in the outline's order, so the k-th testimonial widget in
+ *                    document order is item k
  *
  * The blocks of a hero or a cta arrive built, by the leaf compiler in the tone
  * of the section and in the alignment align() names for the variant: the
@@ -79,6 +87,9 @@ final class ElementorPatternCompiler
     /** The width of a logo, in px. */
     private const LOGO_WIDTH_PX = 140;
 
+    /** The testimonials, after the featured one, that stand in one row. */
+    public const SMALLER_PER_ROW = 2;
+
     /** The refusal of a logo whose alt text is not the library's. */
     public const CODE_ALT_FROM_LIBRARY = 'image_alt_from_library';
 
@@ -88,11 +99,23 @@ final class ElementorPatternCompiler
     /**
      * Every settings key a pattern writes that the mapper's own list does not
      * carry, by element type, with the pin that holds its whole value: a
-     * counter, the rows and columns of a pattern and a wrapping row.
+     * counter, a testimonial, the rows and columns of a pattern and a
+     * wrapping row.
      *
      * @var array<string,array<string,string>>
      */
     public const KEYS = [
+        'testimonial' => [
+            'testimonial_content'        => 'html',
+            'testimonial_image'          => 'image',
+            'testimonial_name'           => 'html',
+            'testimonial_job'            => 'html',
+            'testimonial_image_position' => 'enum:aside',
+            'testimonial_alignment'      => 'enum:left',
+            'content_content_color'      => 'colour',
+            'name_text_color'            => 'colour',
+            'job_text_color'             => 'colour',
+        ],
         'counter'   => [
             'starting_number' => 'enum:0',
             'ending_number'   => 'enum',
@@ -219,12 +242,13 @@ final class ElementorPatternCompiler
     public function compile(IdSeed $ids, string $path, array $pattern, string $tone, array $blocks = []): array
     {
         return match ($pattern['pattern'] ?? null) {
-            'hero'  => $this->hero($ids, $path, $pattern, $blocks),
-            'cta'   => $this->cta($ids, $path, $pattern, $blocks),
-            'stats' => $this->stats($ids, $path, $pattern, $tone),
-            'logos' => $this->logos($ids, $path, $pattern),
-            'features' => $this->features($ids, $path, $pattern, $tone),
-            default => throw new \InvalidArgumentException('this pattern is not one the compiler builds'),
+            'hero'         => $this->hero($ids, $path, $pattern, $blocks),
+            'cta'          => $this->cta($ids, $path, $pattern, $blocks),
+            'stats'        => $this->stats($ids, $path, $pattern, $tone),
+            'logos'        => $this->logos($ids, $path, $pattern),
+            'features'     => $this->features($ids, $path, $pattern, $tone),
+            'testimonials' => $this->testimonials($ids, $path, $pattern, $tone),
+            default        => throw new \InvalidArgumentException('this pattern is not one the compiler builds'),
         };
     }
 
@@ -347,6 +371,49 @@ final class ElementorPatternCompiler
     }
 
     /**
+     * Testimonials, featured: the first across the full width, the others
+     * under it in rows of SMALLER_PER_ROW equal columns.
+     *
+     * Each testimonial is one testimonial widget, a picture beside the text
+     * when the item names one. The quote is in the tone's heading colour, the
+     * name in its accent colour and the role in its body colour. A row left
+     * with one column is centred.
+     *
+     * @param IdSeed              $ids     Node ids for this request.
+     * @param string              $path    The pattern's outline path.
+     * @param array<string,mixed> $pattern The testimonials node.
+     * @param string              $tone    The tone of the section it stands in.
+     * @return array{id:string,elType:string,settings:array<string,mixed>,elements:list<array<string,mixed>>,isInner:bool}
+     * @throws \InvalidArgumentException When the node is not a testimonials pattern the grammar accepts, or names a picture the site did not resolve.
+     */
+    public function testimonials(IdSeed $ids, string $path, array $pattern, string $tone): array
+    {
+        $label   = self::label('testimonials', self::variantOf($pattern, 'testimonials'));
+        $items   = self::itemsOf($pattern, 'testimonials');
+        $colours = $this->tokens->tone($tone);
+        $id      = $ids->next($path);
+        $at      = static fn (int $i): string => $path . '.testimonials[' . $i . ']';
+        $parts   = [$this->testimonial($ids->next($at(0)), $items[0], $colours)];
+        $width   = intdiv(100, self::SMALLER_PER_ROW);
+        foreach (array_chunk(array_slice($items, 1, null, true), self::SMALLER_PER_ROW, true) as $r => $chunk) {
+            $columns = [];
+            foreach ($chunk as $i => $item) {
+                $columnId  = $ids->next($at($i) . '#column');
+                $columns[] = $this->sections->column($columnId, $width, [$this->testimonial($ids->next($at($i)), $item, $colours)]);
+            }
+            $row = $this->sections->row($ids->next($path . '#row' . $r), $columns);
+            if (count($columns) === 1) {
+                $row['settings']['flex_justify_content'] = 'center';
+            }
+            $parts[] = $row;
+        }
+        $group = $this->sections->group($id, $parts);
+        $group['settings'] += $this->sections->gapSettings();
+
+        return self::labelled($group, $label);
+    }
+
+    /**
      * A hero around its built blocks.
      *
      * @param IdSeed                    $ids      Node ids for this request.
@@ -451,24 +518,74 @@ final class ElementorPatternCompiler
      */
     private function logo(string $id, mixed $item): array
     {
-        $attachment = is_array($item) ? ($item['attachment_id'] ?? null) : null;
-        if (!is_int($attachment) || $attachment < 1 || $attachment > PageCreateBuilder::MAX_ATTACHMENT_ID) {
-            throw new \InvalidArgumentException('a logo names its image by a whole number');
-        }
-        $fact = $this->media[$attachment] ?? null;
-        $url  = is_array($fact) ? ($fact['url'] ?? null) : null;
-        if (!is_array($fact) || ($fact['id'] ?? null) !== $attachment || !is_string($url) || PageCreateBuilder::imageUrlProblem($url) !== null
-            || !in_array($fact['mime'] ?? null, PageCreateBuilder::IMAGE_MIMES, true)) {
-            throw new \InvalidArgumentException('a logo is an image the site resolved before the page is compiled');
-        }
         $settings = [
-            'image'      => ['url' => $url, 'id' => (string) $attachment, 'source' => 'library'],
+            'image'      => $this->libraryImage(is_array($item) ? ($item['attachment_id'] ?? null) : null),
             'image_size' => 'medium',
             'align'      => 'center',
             'width'      => ['unit' => 'px', 'size' => (string) self::LOGO_WIDTH_PX],
         ];
 
         return ['id' => $id, 'elType' => 'widget', 'settings' => $settings, 'elements' => [], 'widgetType' => 'image'];
+    }
+
+    /**
+     * An image of the media library as a media control stores it.
+     *
+     * @param mixed $attachment The attachment id the outline names.
+     * @return array{url:string,id:string,source:string}
+     * @throws \InvalidArgumentException When it is not a whole number the grammar accepts, or names an image the site did not resolve before the page is compiled.
+     */
+    private function libraryImage(mixed $attachment): array
+    {
+        if (!is_int($attachment) || $attachment < 1 || $attachment > PageCreateBuilder::MAX_ATTACHMENT_ID) {
+            throw new \InvalidArgumentException('an image is named by a whole number');
+        }
+        $fact = $this->media[$attachment] ?? null;
+        $url  = is_array($fact) ? ($fact['url'] ?? null) : null;
+        if (!is_array($fact) || ($fact['id'] ?? null) !== $attachment || !is_string($url) || PageCreateBuilder::imageUrlProblem($url) !== null
+            || !in_array($fact['mime'] ?? null, PageCreateBuilder::IMAGE_MIMES, true)) {
+            throw new \InvalidArgumentException('an image is one the site resolved before the page is compiled');
+        }
+
+        return ['url' => $url, 'id' => (string) $attachment, 'source' => 'library'];
+    }
+
+    /**
+     * One testimonial, in the key order Elementor returns. The picture and the
+     * role are written only when the item has them.
+     *
+     * @param string               $id      The widget's id.
+     * @param mixed                $item    The testimonials item: quote, name, optional role and optional attachment_id.
+     * @param array<string,string> $colours The tone's colours.
+     * @return array{id:string,elType:string,settings:array<string,mixed>,elements:list<array<string,mixed>>,widgetType:string}
+     * @throws \InvalidArgumentException When the item holds a value the grammar does not accept, or names a picture the site did not resolve.
+     */
+    private function testimonial(string $id, mixed $item, array $colours): array
+    {
+        $quote = is_array($item) ? ($item['quote'] ?? null) : null;
+        $name  = is_array($item) ? ($item['name'] ?? null) : null;
+        $role  = is_array($item) ? ($item['role'] ?? null) : null;
+        if (!is_array($item) || !is_string($quote) || $quote === '' || !is_string($name) || $name === '') {
+            throw new \InvalidArgumentException('a testimonial has a quote and a name of text');
+        }
+        if (array_key_exists('role', $item) && (!is_string($role) || $role === '')) {
+            throw new \InvalidArgumentException('a testimonial role, when it has one, is text');
+        }
+        $settings = ['testimonial_content' => LeafPolicy::htmlText($quote)];
+        if (array_key_exists('attachment_id', $item)) {
+            $settings['testimonial_image'] = $this->libraryImage($item['attachment_id']);
+        }
+        $settings['testimonial_name'] = LeafPolicy::htmlText($name);
+        if ($role !== null) {
+            $settings['testimonial_job'] = LeafPolicy::htmlText($role);
+        }
+        $settings['testimonial_image_position'] = 'aside';
+        $settings['testimonial_alignment']      = 'left';
+        $settings['content_content_color']      = $colours['heading'];
+        $settings['name_text_color']            = $colours['accent'];
+        $settings['job_text_color']             = $colours['body'];
+
+        return ['id' => $id, 'elType' => 'widget', 'settings' => $settings, 'elements' => [], 'widgetType' => 'testimonial'];
     }
 
     /**
