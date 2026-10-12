@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -40,6 +41,45 @@ const (
 	pageCreateHeroMisplaced     = "hero_misplaced"
 	pageCreateH1OutsideHero     = "h1_outside_hero"
 )
+
+// The fixed hints of those codes (precheckRefusalHints): what to change, in
+// WPMgr's words, for a refusal whose failures name where.
+const (
+	hintAnchorInvalid = "Every section needs an anchor, the id its links point at. Write it with 2 to 40 characters: " +
+		"a lower-case letter first, then lower-case letters, digits or hyphens (for example how-it-works). " +
+		"The failure names the section."
+	hintAnchorDuplicate = "Two sections have the same anchor, and a link to an anchor can lead to only one of them. " +
+		"Give each section its own anchor: the failure names the section that repeats one."
+	hintLinkAnchorMissing = "A button points at a section anchor the page does not have. Link with # and the anchor of a section " +
+		"(the failure lists the anchors the page has), or add the section the button should lead to."
+	hintHeroMisplaced = "The hero opens the page: it is the first block of the first section, and a page has one. " +
+		"Move it there, or leave the hero out and start with another block. The failure names where it stands now."
+	hintH1OutsideHero = "A level 1 heading is the title of the page, and a designed page has one, inside its hero. " +
+		"Use level 2 for any heading outside the hero. The failure names the heading."
+)
+
+// hintAnchorReserved and the hints after it list what the grammar accepts,
+// built from the grammar's own lists so that the hint cannot drift from them.
+var (
+	hintAnchorReserved = "These ids belong to a theme or to WordPress and cannot be the anchor of a section: " +
+		strings.Join(pageReservedAnchors, ", ") + ". Choose another anchor for the section the failure names."
+	hintItemsOutOfRange = "A pattern holds more or fewer items than it takes: " + patternItemCapsText() +
+		fmt.Sprintf(", and a pricing plan lists 1 to %d features. ", pageCreateMaxPlanBullets) +
+		"The failure names the list and the object that holds it."
+	hintIconUnknown = "An icon must be the name of one of these: " + strings.Join(pageIcons, ", ") +
+		". The failures name each icon that is not in the list."
+)
+
+// patternItemCapsText is the item counts of the item patterns, in the order
+// a page usually shows them.
+func patternItemCapsText() string {
+	var caps []string
+	for _, name := range []string{"features", "testimonials", "pricing", "faq", "logos", "stats"} {
+		s := patternSpecs[name]
+		caps = append(caps, fmt.Sprintf("%s %d to %d", s.array, s.min, s.max))
+	}
+	return strings.Join(caps, ", ")
+}
 
 // pageAnchorPattern is the shape of a section anchor, and of the slug of a
 // link to one: the agent's OutlineV3Schema::ANCHOR_PATTERN. Go's $ matches at

@@ -623,6 +623,16 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	// object is incomplete, or two of its colours are too close to read.
 	"design_not_ready":    {},
 	"design_contrast_low": {},
+	// The anchors, links, hero place, heading and pattern items of a designed
+	// page: refusals of the outline that name where.
+	"anchor_invalid":             {},
+	"anchor_duplicate":           {},
+	"anchor_reserved":            {},
+	"link_anchor_missing":        {},
+	"hero_misplaced":             {},
+	"h1_outside_hero":            {},
+	"pattern_items_out_of_range": {},
+	"icon_unknown":               {},
 }
 
 var abilityRunCodeRe = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
