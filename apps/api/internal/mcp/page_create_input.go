@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -1050,4 +1051,174 @@ func readPageCardBuilder(raw json.RawMessage) (PageCardBuilder, bool) {
 		return PageCardBuilder{}, false
 	}
 	return b, true
+}
+
+// ---------------------------------------------------------------------------
+// The design object of outline v3
+// ---------------------------------------------------------------------------
+
+// Refusal codes of the design object. A value the design may not hold is the
+// grammar's own bad_input; a field left out and a pair of colours that is too
+// close have their own.
+const (
+	pageDesignNotReady    = "design_not_ready"
+	pageDesignContrastLow = "design_contrast_low"
+)
+
+// designFailure is one problem found in a design object. Path and Key
+// together are the dotted address of the offending field in the input
+// ("design.colors" and "ink"); Reason is WPMgr's own words for the fix;
+// Allowed lists the values or keys that would be accepted there, when the
+// set is closed. code is the refusal code the failure belongs to.
+type designFailure struct {
+	Path    string   `json:"path"`
+	Key     string   `json:"key"`
+	Reason  string   `json:"reason"`
+	Allowed []string `json:"allowed,omitempty"`
+	code    string
+}
+
+// designColours are the six colours of a design, upper case.
+type designColours struct {
+	Ground   string `json:"ground"`
+	Surface  string `json:"surface"`
+	Ink      string `json:"ink"`
+	Muted    string `json:"muted"`
+	Accent   string `json:"accent"`
+	OnAccent string `json:"on_accent"`
+}
+
+// slot is the field that holds a role's colour, nil for a name that is not
+// one of designColourRoles.
+func (c *designColours) slot(role string) *string {
+	switch role {
+	case "ground":
+		return &c.Ground
+	case "surface":
+		return &c.Surface
+	case "ink":
+		return &c.Ink
+	case "muted":
+		return &c.Muted
+	case "accent":
+		return &c.Accent
+	case "on_accent":
+		return &c.OnAccent
+	}
+	return nil
+}
+
+// designColourRoles are the six colours of a design, in the order failures
+// are reported. A design holds exactly these.
+var designColourRoles = []string{"ground", "surface", "ink", "muted", "accent", "on_accent"}
+
+const (
+	// designColourExample is the near-black the failure texts point to.
+	designColourExample = "#15171C"
+	designPureBlack     = "#000000"
+	// designUnknownKeyReports caps how many keys of one object that the
+	// design does not know are reported, and designKeyEchoRunes how much of
+	// such a key (the caller's text) is repeated.
+	designUnknownKeyReports = 3
+	designKeyEchoRunes      = 40
+)
+
+// designColourPattern is the shape of a colour once its letters are upper
+// case. Go's $ matches at the end of the text only, never before a final
+// line feed.
+var designColourPattern = regexp.MustCompile(`^#[0-9A-F]{6}$`)
+
+// parseDesignColours reads the colours of a design. raw is the value of the
+// design's "colors" key, empty when the key is absent. Each role must be a
+// six-digit hex colour in either letter case, which is returned upper case,
+// and never pure black. The failures are every problem found, in role order
+// and then unknown keys; a role that failed is left empty in the result.
+func parseDesignColours(raw json.RawMessage) (designColours, []designFailure) {
+	var out designColours
+	if len(raw) == 0 {
+		return out, []designFailure{{
+			Path: "design", Key: "colors", code: pageDesignNotReady,
+			Reason: "missing; a design needs all six colours", Allowed: slices.Clone(designColourRoles),
+		}}
+	}
+	obj, ok := jsonObjectOf(raw)
+	if !ok {
+		return out, []designFailure{{
+			Path: "design", Key: "colors", code: pageCreateBadInput,
+			Reason: "must be an object holding the six colours", Allowed: slices.Clone(designColourRoles),
+		}}
+	}
+	var fails []designFailure
+	for _, role := range designColourRoles {
+		v, has := obj[role]
+		if !has {
+			fails = append(fails, designFailure{
+				Path: "design.colors", Key: role, code: pageDesignNotReady,
+				Reason: "missing; set it to a six-digit hex colour such as " + designColourExample,
+			})
+			continue
+		}
+		hex, reason := designColour(v)
+		if reason != "" {
+			fails = append(fails, designFailure{Path: "design.colors", Key: role, code: pageCreateBadInput, Reason: reason})
+			continue
+		}
+		if slot := out.slot(role); slot != nil {
+			*slot = hex
+		}
+	}
+	return out, append(fails, designUnknownKeys("design.colors", obj, designColourRoles)...)
+}
+
+// designColour reads one colour: a # and six hex digits in either letter
+// case, returned upper case. The second result is the reason a value is
+// refused, "" when it is not.
+func designColour(raw json.RawMessage) (string, string) {
+	s, ok := jsonStringOf(raw)
+	if !ok {
+		return "", "must be a six-digit hex colour such as " + designColourExample
+	}
+	hex := upperASCII(s)
+	if !designColourPattern.MatchString(hex) {
+		return "", "must be a six-digit hex colour such as " + designColourExample
+	}
+	if hex == designPureBlack {
+		return "", "pure black is not allowed; use a near-black such as " + designColourExample
+	}
+	return hex, ""
+}
+
+// upperASCII upper-cases a to z and leaves every other character alone, so a
+// letter from another script can never become one of A to F.
+func upperASCII(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' {
+			return r - ('a' - 'A')
+		}
+		return r
+	}, s)
+}
+
+// designUnknownKeys reports the keys of obj that are not in allowed: sorted,
+// at most designUnknownKeyReports of them, each cleaned and capped because
+// the key is the caller's text.
+func designUnknownKeys(path string, obj map[string]json.RawMessage, allowed []string) []designFailure {
+	var unknown []string
+	for k := range obj {
+		if !slices.Contains(allowed, k) {
+			unknown = append(unknown, k)
+		}
+	}
+	slices.Sort(unknown)
+	if len(unknown) > designUnknownKeyReports {
+		unknown = unknown[:designUnknownKeyReports]
+	}
+	fails := make([]designFailure, 0, len(unknown))
+	for _, k := range unknown {
+		fails = append(fails, designFailure{
+			Path: path, Key: humantext.CapRunes(humantext.Clean(k), designKeyEchoRunes), code: pageCreateBadInput,
+			Reason: "not a key a design has; send only the keys listed", Allowed: slices.Clone(allowed),
+		})
+	}
+	return fails
 }
