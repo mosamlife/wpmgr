@@ -596,8 +596,9 @@ func TestDesignTokensRefuseWhatTheInputRefuses(t *testing.T) {
 	}
 }
 
-// TestDesignDecimalTextMatchesPHP: rtrim(rtrim(number_format($v, 4, '.', ”),
-// '0'), '.'). The answers were read from the PHP the agent runs.
+// TestDesignDecimalTextMatchesPHP: the number to four decimals with the
+// trailing zeros and point cut off. The answers were read from the PHP the
+// agent runs.
 func TestDesignDecimalTextMatchesPHP(t *testing.T) {
 	cases := []struct {
 		in   float64

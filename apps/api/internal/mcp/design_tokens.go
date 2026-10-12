@@ -455,8 +455,10 @@ func designChannels(hex string) ([3]int, error) {
 }
 
 // designDecimalText is a line height, a letter spacing or a ratio as the
-// compile path writes it: rtrim(rtrim(number_format($v, 4, '.', ”), '0'),
-// '.'). A point for the decimal mark, at most four decimals, no trailing zero.
+// compile path writes it: the number to four decimals with a point and no
+// thousands mark, then the trailing zeros and a trailing point cut off (PHP
+// number_format, then rtrim of "0", then rtrim of "."). A point for the
+// decimal mark, at most four decimals, no trailing zero.
 func designDecimalText(v float64) string {
 	return strings.TrimRight(strings.TrimRight(designRoundedText(v, 4), "0"), ".")
 }
@@ -472,11 +474,11 @@ func designFractionText(v float64) (string, error) {
 	return text, nil
 }
 
-// designRoundedText is number_format($v, $places, '.', ”): v rounded to
-// places decimals, a tie going away from zero, written with exactly that many
-// decimals. The rounding reads the shortest decimal form of v, so a value
-// written with few decimals rounds the way its digits read. A negative that
-// rounds to zero has no sign.
+// designRoundedText is PHP number_format with a point and no thousands mark: v
+// rounded to places decimals, a tie going away from zero, written with exactly
+// that many decimals. The rounding reads the shortest decimal form of v, so a
+// value written with few decimals rounds the way its digits read. A negative
+// that rounds to zero has no sign.
 func designRoundedText(v float64, places int) string {
 	if math.IsNaN(v) || math.IsInf(v, 0) {
 		return strconv.FormatFloat(v, 'f', places, 64)
