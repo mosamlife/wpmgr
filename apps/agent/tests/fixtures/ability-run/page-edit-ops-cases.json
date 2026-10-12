@@ -1,5 +1,5 @@
 {
-    "note": "Hand-authored: the shared accept/refuse table for wpmgr/page-edit operations, read by the agent and the control plane. \"page\" is the projection every case runs against (node refs, kinds, the fields each node offers, one locked node), built with page.builder unless a case names another \"builder\". \"input\" is the exact JSON text. A case with \"generate\" appends generate.append to that text until it is generate.to_bytes bytes long; JSON allows the trailing whitespace, so only the input size limit (65536 bytes) decides those cases. \"agent\" is what the agent answers: \"ok\" or the refusal code. \"go\" is what the control plane validation must answer before precheck: \"accept\" or \"refuse\". A rule that depends on the page (a ref not on it, a field the node does not offer, a locked node, an operation the builder does not declare) is the agent's alone, so its case carries go \"accept\". \"rule\" names the contract rule the case exercises.",
+    "note": "Hand-authored: the shared accept/refuse table for wpmgr/page-edit operations, read by the agent and the control plane. \"page\" is the projection every case runs against (node refs, kinds, the fields each node offers, one locked node), built with page.builder unless a case names another \"builder\". \"input\" is the exact JSON text. A case with \"generate\" appends generate.append to that text until it is generate.to_bytes bytes long; JSON allows the trailing whitespace, so only the input size limit (65536 bytes) decides those cases. \"agent\" is what the agent answers: \"ok\" or the refusal code. \"go\" is what the control plane validation must answer before precheck: \"accept\" or \"refuse\". A rule that depends on the page (a ref not on it, a field the node does not offer, a locked node, an operation the builder does not declare) is the agent's alone, so its case carries go \"accept\". \"rule\" names the contract rule the case exercises. Version 3 rows. \"v3_page\" is the projection of a designed Elementor page (post 512) and \"v3_cases\" the rows that run against it, with the fields of \"cases\". A projection node may also carry \"anchor\" (the anchor of a section) and \"links\" (the #anchor targets the node links to); the agent reads both from the builder's own tree. A pattern node lists in \"editable\" the paths its items offer, such as plans.1.price. The rules these rows pin: set_text names a plain field or a pattern path, matched whole (^(features|testimonials|plans|faq|logos|stats)\\.(0|[1-9][0-9]?)(\\.[a-z0-9_]{1,24}){1,3}$), and the node's editable list decides which it offers; a path takes the rule of its last step (url the link rule, alt the alt rule, cta.text the button text rule, any other the text rule) and a #anchor is a link the link rule accepts; an outline that breaks the page-create grammar, version 3 included, is bad_input; a section is placed at the top level only. Anchors and links are judged on the page as the whole call leaves it, so the order of the operations never changes the answer: a section the call removes or replaces whose anchor a surviving node still links is anchor_in_use, a link left pointing at no anchor is link_anchor_missing, and an anchor on the page twice is anchor_duplicate. Those rules and the editable list need the page, so their rows carry go accept.",
     "page": {
         "post_id": 418,
         "builder": "elementor",
@@ -367,6 +367,454 @@
             "input": "{\"post_id\":418,\"base_fingerprint\":\"7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"d3a4b5c\",\"field\":\"text\",\"text\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}]}",
             "agent": "bad_input",
             "go": "accept"
+        }
+    ],
+    "v3_page": {
+        "post_id": 512,
+        "builder": "elementor",
+        "base_fingerprint": "e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d",
+        "nodes": [
+            {
+                "ref": "e1a0001",
+                "parent": "root",
+                "kind": "section",
+                "editable": [],
+                "anchor": "top"
+            },
+            {
+                "ref": "e1a0002",
+                "parent": "e1a0001",
+                "kind": "heading",
+                "level": 1,
+                "editable": [
+                    "text"
+                ]
+            },
+            {
+                "ref": "e1a0003",
+                "parent": "e1a0001",
+                "kind": "paragraph",
+                "editable": [
+                    "text"
+                ]
+            },
+            {
+                "ref": "e1a0004",
+                "parent": "e1a0001",
+                "kind": "buttons",
+                "editable": [
+                    "text",
+                    "url"
+                ],
+                "links": [
+                    "#pricing"
+                ]
+            },
+            {
+                "ref": "e2b0001",
+                "parent": "root",
+                "kind": "section",
+                "editable": [],
+                "anchor": "features"
+            },
+            {
+                "ref": "e2b0002",
+                "parent": "e2b0001",
+                "kind": "pattern",
+                "pattern": "features",
+                "variant": "grid",
+                "editable": [
+                    "features.0.title",
+                    "features.0.text",
+                    "features.1.title",
+                    "features.1.text",
+                    "features.2.title",
+                    "features.2.text"
+                ]
+            },
+            {
+                "ref": "e3c0001",
+                "parent": "root",
+                "kind": "section",
+                "editable": [],
+                "anchor": "pricing"
+            },
+            {
+                "ref": "e3c0002",
+                "parent": "e3c0001",
+                "kind": "pattern",
+                "pattern": "pricing",
+                "variant": "three-plans",
+                "editable": [
+                    "plans.0.name",
+                    "plans.0.price",
+                    "plans.0.period",
+                    "plans.0.cta.text",
+                    "plans.0.cta.url",
+                    "plans.1.name",
+                    "plans.1.price",
+                    "plans.1.period",
+                    "plans.1.cta.text",
+                    "plans.1.cta.url"
+                ]
+            },
+            {
+                "ref": "e4d0001",
+                "parent": "root",
+                "kind": "section",
+                "editable": [],
+                "anchor": "faq"
+            },
+            {
+                "ref": "e4d0002",
+                "parent": "e4d0001",
+                "kind": "pattern",
+                "pattern": "faq",
+                "variant": "accordion",
+                "editable": [
+                    "faq.0.question",
+                    "faq.0.answer",
+                    "faq.1.question",
+                    "faq.1.answer",
+                    "faq.2.question",
+                    "faq.2.answer",
+                    "faq.3.question",
+                    "faq.3.answer"
+                ]
+            },
+            {
+                "ref": "e5e0001",
+                "parent": "root",
+                "kind": "section",
+                "editable": [],
+                "anchor": "contact"
+            },
+            {
+                "ref": "e5e0002",
+                "parent": "e5e0001",
+                "kind": "heading",
+                "level": 2,
+                "editable": [
+                    "text"
+                ]
+            },
+            {
+                "ref": "e5e0003",
+                "parent": "e5e0001",
+                "kind": "buttons",
+                "editable": [
+                    "text",
+                    "url"
+                ],
+                "links": [
+                    "#faq"
+                ]
+            }
+        ]
+    },
+    "v3_cases": [
+        {
+            "name": "pattern-path-price",
+            "rule": "pattern_path_set_text",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e3c0002\",\"field\":\"plans.1.price\",\"text\":\"49\"}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "pattern-path-faq-answer-and-plan-button",
+            "rule": "pattern_path_set_text",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e4d0002\",\"field\":\"faq.3.answer\",\"text\":\"Yes. Plans can be changed at any time from the billing page.\"},{\"op\":\"set_text\",\"ref\":\"e3c0002\",\"field\":\"plans.0.cta.text\",\"text\":\"Choose Starter\"}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "pattern-path-not-offered-by-the-node",
+            "rule": "pattern_path_in_editable",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e3c0002\",\"field\":\"plans.1.colour\",\"text\":\"red\"}]}",
+            "agent": "node_not_editable",
+            "go": "accept"
+        },
+        {
+            "name": "pattern-path-past-the-last-item",
+            "rule": "pattern_path_in_editable",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e3c0002\",\"field\":\"plans.3.price\",\"text\":\"99\"}]}",
+            "agent": "node_not_editable",
+            "go": "accept"
+        },
+        {
+            "name": "pattern-path-on-a-plain-node",
+            "rule": "pattern_path_in_editable",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e1a0003\",\"field\":\"plans.1.price\",\"text\":\"49\"}]}",
+            "agent": "node_not_editable",
+            "go": "accept"
+        },
+        {
+            "name": "pattern-path-leading-zero",
+            "rule": "pattern_path_syntax",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e3c0002\",\"field\":\"plans.01.price\",\"text\":\"49\"}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "pattern-path-names-the-pattern-not-its-array",
+            "rule": "pattern_path_syntax",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e3c0002\",\"field\":\"pricing.1.price\",\"text\":\"49\"}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "pattern-path-without-a-field",
+            "rule": "pattern_path_syntax",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e3c0002\",\"field\":\"plans.1\",\"text\":\"49\"}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "pattern-path-uppercase",
+            "rule": "pattern_path_syntax",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e3c0002\",\"field\":\"plans.1.Price\",\"text\":\"49\"}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "pattern-path-four-steps-deep",
+            "rule": "pattern_path_syntax",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e3c0002\",\"field\":\"plans.0.a.b.c.d\",\"text\":\"49\"}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "pattern-path-trailing-line-break",
+            "rule": "pattern_path_syntax",
+            "note": "The field names a position in a pattern, so its syntax is the control plane's too: it is matched against the whole value, and a trailing line break is not part of a path.",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e3c0002\",\"field\":\"plans.1.price\\n\",\"text\":\"49\"}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "pattern-path-text-with-markup",
+            "rule": "pattern_path_text_rule",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e3c0002\",\"field\":\"plans.1.price\",\"text\":\"<b>49</b>\"}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "pattern-path-button-text-80-characters",
+            "rule": "pattern_path_button_text_rule",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e3c0002\",\"field\":\"plans.0.cta.text\",\"text\":\"éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\"}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "pattern-path-button-text-81-characters",
+            "rule": "pattern_path_button_text_rule",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e3c0002\",\"field\":\"plans.0.cta.text\",\"text\":\"ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\"}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "pattern-path-link-not-https",
+            "rule": "pattern_path_link_rule",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e3c0002\",\"field\":\"plans.0.cta.url\",\"text\":\"javascript:alert(1)\"}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "pattern-path-link-to-an-anchor-on-the-page",
+            "rule": "link_anchor_resolves_after_call",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e3c0002\",\"field\":\"plans.0.cta.url\",\"text\":\"#contact\"}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "pattern-path-link-to-a-missing-anchor",
+            "rule": "link_anchor_resolves_after_call",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e3c0002\",\"field\":\"plans.0.cta.url\",\"text\":\"#nowhere\"}]}",
+            "agent": "link_anchor_missing",
+            "go": "accept"
+        },
+        {
+            "name": "url-to-an-anchor-on-the-page",
+            "rule": "link_anchor_resolves_after_call",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e1a0004\",\"field\":\"url\",\"text\":\"#faq\"}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "url-to-a-missing-anchor",
+            "rule": "link_anchor_resolves_after_call",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e1a0004\",\"field\":\"url\",\"text\":\"#plans\"}]}",
+            "agent": "link_anchor_missing",
+            "go": "accept"
+        },
+        {
+            "name": "url-anchor-uppercase",
+            "rule": "link_anchor_syntax",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e1a0004\",\"field\":\"url\",\"text\":\"#Pricing\"}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "link-added-before-the-anchor-it-names",
+            "rule": "link_anchor_resolves_after_call",
+            "note": "The link is judged on the page the whole call leaves, so it resolves although its section comes later.",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"insert\",\"into\":\"e5e0001\",\"position\":\"last\",\"outline\":[{\"type\":\"buttons\",\"buttons\":[{\"text\":\"Press kit\",\"url\":\"#press\"}]}]},{\"op\":\"insert\",\"after\":\"e4d0001\",\"outline\":[{\"type\":\"section\",\"anchor\":\"press\",\"children\":[{\"type\":\"paragraph\",\"text\":\"Our press kit.\"}]}]}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "url-set-before-the-section-it-names-is-inserted",
+            "rule": "link_anchor_resolves_after_call",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e1a0004\",\"field\":\"url\",\"text\":\"#press\"},{\"op\":\"insert\",\"after\":\"e4d0001\",\"outline\":[{\"type\":\"section\",\"anchor\":\"press\",\"children\":[{\"type\":\"paragraph\",\"text\":\"Our press kit.\"}]}]}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "url-set-and-a-different-anchor-inserted",
+            "rule": "link_anchor_resolves_after_call",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e1a0004\",\"field\":\"url\",\"text\":\"#press\"},{\"op\":\"insert\",\"after\":\"e4d0001\",\"outline\":[{\"type\":\"section\",\"anchor\":\"gallery\",\"children\":[{\"type\":\"paragraph\",\"text\":\"Our gallery.\"}]}]}]}",
+            "agent": "link_anchor_missing",
+            "go": "accept"
+        },
+        {
+            "name": "link-set-then-its-section-removed",
+            "rule": "anchor_in_use",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e1a0004\",\"field\":\"url\",\"text\":\"#features\"},{\"op\":\"remove\",\"ref\":\"e2b0001\"}]}",
+            "agent": "anchor_in_use",
+            "go": "accept"
+        },
+        {
+            "name": "remove-a-section-whose-anchor-is-linked",
+            "rule": "anchor_in_use",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"remove\",\"ref\":\"e3c0001\"}]}",
+            "agent": "anchor_in_use",
+            "go": "accept"
+        },
+        {
+            "name": "remove-a-section-linked-from-a-later-section",
+            "rule": "anchor_in_use",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"remove\",\"ref\":\"e4d0001\"}]}",
+            "agent": "anchor_in_use",
+            "go": "accept"
+        },
+        {
+            "name": "replace-a-section-dropping-its-anchor",
+            "rule": "anchor_in_use",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"replace\",\"ref\":\"e3c0001\",\"outline\":[{\"type\":\"section\",\"anchor\":\"plans\",\"children\":[{\"type\":\"paragraph\",\"text\":\"Plans.\"}]}]}]}",
+            "agent": "anchor_in_use",
+            "go": "accept"
+        },
+        {
+            "name": "replace-a-section-keeping-its-anchor",
+            "rule": "anchor_in_use",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"replace\",\"ref\":\"e3c0001\",\"outline\":[{\"type\":\"section\",\"anchor\":\"pricing\",\"children\":[{\"type\":\"paragraph\",\"text\":\"Plans.\"}]}]}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "remove-a-section-nothing-links-to",
+            "rule": "anchor_in_use",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"remove\",\"ref\":\"e2b0001\"}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "remove-a-section-and-the-button-that-links-to-it",
+            "rule": "anchor_in_use",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"remove\",\"ref\":\"e4d0001\"},{\"op\":\"remove\",\"ref\":\"e5e0003\"}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "remove-a-section-then-relink-its-button",
+            "rule": "anchor_in_use",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"remove\",\"ref\":\"e3c0001\"},{\"op\":\"set_text\",\"ref\":\"e1a0004\",\"field\":\"url\",\"text\":\"https://example.com/plans\"}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "relink-a-button-then-remove-its-section",
+            "rule": "anchor_in_use",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"e1a0004\",\"field\":\"url\",\"text\":\"https://example.com/plans\"},{\"op\":\"remove\",\"ref\":\"e3c0001\"}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "insert-a-section-with-an-anchor-the-page-has",
+            "rule": "anchor_unique_after_call",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"insert\",\"after\":\"e5e0001\",\"outline\":[{\"type\":\"section\",\"anchor\":\"faq\",\"children\":[{\"type\":\"paragraph\",\"text\":\"More questions.\"}]}]}]}",
+            "agent": "anchor_duplicate",
+            "go": "accept"
+        },
+        {
+            "name": "insert-two-sections-with-one-anchor-in-two-operations",
+            "rule": "anchor_unique_after_call",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"insert\",\"after\":\"e1a0001\",\"outline\":[{\"type\":\"section\",\"anchor\":\"press\",\"children\":[{\"type\":\"paragraph\",\"text\":\"Press.\"}]}]},{\"op\":\"insert\",\"after\":\"e2b0001\",\"outline\":[{\"type\":\"section\",\"anchor\":\"press\",\"children\":[{\"type\":\"paragraph\",\"text\":\"Press again.\"}]}]}]}",
+            "agent": "anchor_duplicate",
+            "go": "accept"
+        },
+        {
+            "name": "insert-a-section-with-the-anchor-of-one-removed-in-the-call",
+            "rule": "anchor_unique_after_call",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"remove\",\"ref\":\"e4d0001\"},{\"op\":\"insert\",\"after\":\"e5e0001\",\"outline\":[{\"type\":\"section\",\"anchor\":\"faq\",\"children\":[{\"type\":\"paragraph\",\"text\":\"Questions, answered.\"}]}]}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "insert-a-section-after-a-section",
+            "rule": "v3_insert_valid",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"insert\",\"after\":\"e5e0001\",\"outline\":[{\"type\":\"section\",\"anchor\":\"press\",\"tone\":\"surface\",\"children\":[{\"type\":\"heading\",\"level\":2,\"text\":\"In the press\"},{\"type\":\"paragraph\",\"text\":\"Where we were mentioned.\"}]}]}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "insert-a-pattern-into-a-section",
+            "rule": "v3_insert_valid",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"insert\",\"into\":\"e2b0001\",\"position\":\"last\",\"outline\":[{\"type\":\"pattern\",\"pattern\":\"features\",\"variant\":\"grid\",\"features\":[{\"icon\":\"bolt\",\"title\":\"Benefit 1\",\"text\":\"What benefit 1 gives you.\"},{\"icon\":\"shield\",\"title\":\"Benefit 2\",\"text\":\"What benefit 2 gives you.\"},{\"icon\":\"chart\",\"title\":\"Benefit 3\",\"text\":\"What benefit 3 gives you.\"}]}]}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "replace-a-pattern-to-add-an-item",
+            "rule": "v3_insert_valid",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"replace\",\"ref\":\"e4d0002\",\"outline\":[{\"type\":\"pattern\",\"pattern\":\"faq\",\"variant\":\"accordion\",\"faq\":[{\"question\":\"Question 1?\",\"answer\":\"The answer to question 1.\"},{\"question\":\"Question 2?\",\"answer\":\"The answer to question 2.\"},{\"question\":\"Question 3?\",\"answer\":\"The answer to question 3.\"},{\"question\":\"Question 4?\",\"answer\":\"The answer to question 4.\"},{\"question\":\"Question 5?\",\"answer\":\"The answer to question 5.\"}]}]}]}",
+            "agent": "ok",
+            "go": "accept"
+        },
+        {
+            "name": "insert-a-section-into-a-section",
+            "rule": "section_at_top_only",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"insert\",\"into\":\"e2b0001\",\"position\":\"last\",\"outline\":[{\"type\":\"section\",\"anchor\":\"press\",\"children\":[{\"type\":\"paragraph\",\"text\":\"Press.\"}]}]}]}",
+            "agent": "node_not_editable",
+            "go": "accept"
+        },
+        {
+            "name": "insert-a-section-with-an-uppercase-anchor",
+            "rule": "v3_grammar_in_outline",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"insert\",\"after\":\"e5e0001\",\"outline\":[{\"type\":\"section\",\"anchor\":\"Press\",\"children\":[{\"type\":\"paragraph\",\"text\":\"Press.\"}]}]}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "insert-a-section-with-a-reserved-anchor",
+            "rule": "v3_grammar_in_outline",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"insert\",\"after\":\"e5e0001\",\"outline\":[{\"type\":\"section\",\"anchor\":\"main\",\"children\":[{\"type\":\"paragraph\",\"text\":\"Press.\"}]}]}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "insert-a-pattern-with-two-features",
+            "rule": "v3_grammar_in_outline",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"insert\",\"into\":\"e2b0001\",\"position\":\"last\",\"outline\":[{\"type\":\"pattern\",\"pattern\":\"features\",\"variant\":\"grid\",\"features\":[{\"icon\":\"bolt\",\"title\":\"Benefit 1\",\"text\":\"What benefit 1 gives you.\"},{\"icon\":\"shield\",\"title\":\"Benefit 2\",\"text\":\"What benefit 2 gives you.\"}]}]}]}",
+            "agent": "bad_input",
+            "go": "refuse"
+        },
+        {
+            "name": "insert-a-pattern-with-an-unknown-icon",
+            "rule": "v3_grammar_in_outline",
+            "input": "{\"post_id\":512,\"base_fingerprint\":\"e8af6be01f4f1753cf09c15da3fd77e079ac9404557e87a9a2e67d6932b24f9d\",\"operations\":[{\"op\":\"insert\",\"into\":\"e2b0001\",\"position\":\"last\",\"outline\":[{\"type\":\"pattern\",\"pattern\":\"features\",\"variant\":\"grid\",\"features\":[{\"icon\":\"unicorn\",\"title\":\"One\",\"text\":\"First.\"},{\"icon\":\"bolt\",\"title\":\"Two\",\"text\":\"Second.\"},{\"icon\":\"shield\",\"title\":\"Three\",\"text\":\"Third.\"}]}]}]}",
+            "agent": "bad_input",
+            "go": "refuse"
         }
     ]
 }

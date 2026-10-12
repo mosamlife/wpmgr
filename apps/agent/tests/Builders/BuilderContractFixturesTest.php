@@ -183,7 +183,7 @@ final class BuilderContractFixturesTest extends TestCase
     public function test_ops_cases_are_well_formed(): void
     {
         $doc = self::opsCases();
-        $this->assertSame(['note', 'page', 'cases'], array_keys($doc));
+        $this->assertSame(['note', 'page', 'cases', 'v3_page', 'v3_cases'], array_keys($doc), 'the version 3 rows are checked by PageEditValidatorTest');
         $this->assertIsString($doc['note']);
         $this->assertNotSame('', $doc['note']);
 

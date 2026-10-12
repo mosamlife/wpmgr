@@ -10,7 +10,9 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Tests\Builders;
 
+use PHPUnit\Framework\Attributes\Group;
 use WPMgr\Agent\Abilities\Builders\BuilderContract;
+use WPMgr\Agent\Abilities\Builders\OutlineV3Schema;
 use WPMgr\Agent\Abilities\Builders\PageEditValidator;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -22,6 +24,44 @@ final class PageEditValidatorTest extends TestCase
     private const FIXTURE = __DIR__ . '/../fixtures/ability-run/page-edit-ops-cases.json';
 
     private const FP = '7787514f2667f5577151c00759c33e4553edc1d75f96e0dc1ddcdc23989a5ea7';
+
+    /**
+     * The group of the tests that replay the version 3 rows. The validator
+     * answers them from the release that edits designed pages; until then they
+     * are red, and `--exclude-group` leaves every other test of this class.
+     */
+    private const V3_GROUP = 'red-until-w4-03';
+
+    /**
+     * Every rule the version 3 rows exercise, with the [agent, go] verdicts
+     * the rows must show. A rule with a refusing verdict shows its accepted
+     * side as well when [ok, accept] is listed.
+     */
+    private const V3_RULES = [
+        'pattern_path_set_text'           => [['ok', 'accept']],
+        'pattern_path_in_editable'        => [['node_not_editable', 'accept']],
+        'pattern_path_syntax'             => [['bad_input', 'refuse']],
+        'pattern_path_text_rule'          => [['bad_input', 'refuse']],
+        'pattern_path_button_text_rule'   => [['ok', 'accept'], ['bad_input', 'refuse']],
+        'pattern_path_link_rule'          => [['bad_input', 'refuse']],
+        'link_anchor_syntax'              => [['bad_input', 'refuse']],
+        'link_anchor_resolves_after_call' => [['ok', 'accept'], ['link_anchor_missing', 'accept']],
+        'anchor_in_use'                   => [['ok', 'accept'], ['anchor_in_use', 'accept']],
+        'anchor_unique_after_call'        => [['ok', 'accept'], ['anchor_duplicate', 'accept']],
+        'v3_insert_valid'                 => [['ok', 'accept']],
+        'section_at_top_only'             => [['node_not_editable', 'accept']],
+        'v3_grammar_in_outline'           => [['bad_input', 'refuse']],
+    ];
+
+    /** The rules judged on the page as the whole call leaves it. */
+    private const V3_AFTER_THE_CALL = ['anchor_in_use', 'anchor_unique_after_call', 'link_anchor_resolves_after_call'];
+
+    private const V3_AGENT_VERDICTS = [
+        'ok', 'bad_input', 'ops_invalid', 'node_not_found', 'node_not_editable', 'op_not_supported_by_builder',
+        'page_too_large', 'anchor_in_use', 'link_anchor_missing', 'anchor_duplicate',
+    ];
+
+    private const V3_CASE_KEYS = ['name', 'rule', 'note', 'input', 'agent', 'go'];
 
     // -------------------------------------------------------------------------
     // The shared cases
@@ -426,6 +466,180 @@ final class PageEditValidatorTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
+    // Version 3 rows (v3_page, v3_cases)
+    // -------------------------------------------------------------------------
+
+    public function test_v3_cases_are_well_formed(): void
+    {
+        $doc = self::opsCases();
+        $this->assertArrayHasKey('v3_page', $doc, 'the version 3 rows are missing');
+        $this->assertArrayHasKey('v3_cases', $doc, 'the version 3 rows are missing');
+        $page = $doc['v3_page'];
+        $this->assertIsInt($page['post_id']);
+        $this->assertSame('elementor', $page['builder']);
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{64}$/D', $page['base_fingerprint']);
+
+        $refs    = [];
+        $anchors = [];
+        $links   = [];
+        foreach ($page['nodes'] as $node) {
+            $ref = $node['ref'];
+            $this->assertMatchesRegularExpression(BuilderContract::RE_REF, $ref);
+            $this->assertNotContains($ref, $refs, 'page refs are unique');
+            $this->assertTrue($node['parent'] === 'root' || in_array($node['parent'], $refs, true), $ref . ': parent precedes the node');
+            $this->assertContains($node['kind'], BuilderContract::KINDS);
+            $this->assertNotSame('locked', $node['kind'], 'the designed page has no locked node');
+            foreach ($node['editable'] as $field) {
+                if ($node['kind'] === 'pattern') {
+                    $this->assertMatchesRegularExpression('/' . OutlineV3Schema::EDIT_PATH_PATTERN . '/D', $field, $ref);
+                } else {
+                    $this->assertContains($field, BuilderContract::FIELDS, $ref);
+                }
+            }
+            if (isset($node['anchor'])) {
+                $this->assertSame('section', $node['kind'], $ref . ': only a section has an anchor');
+                $this->assertSame('root', $node['parent'], $ref . ': a section is at the top level');
+                $this->assertMatchesRegularExpression('/' . OutlineV3Schema::ANCHOR_PATTERN . '/D', $node['anchor']);
+                $this->assertNotContains($node['anchor'], OutlineV3Schema::RESERVED_ANCHORS);
+                $this->assertNotContains($node['anchor'], $anchors, 'page anchors are unique');
+                $anchors[] = $node['anchor'];
+            }
+            foreach ($node['links'] ?? [] as $link) {
+                $this->assertMatchesRegularExpression('/^#[a-z][a-z0-9-]{1,39}$/D', $link, $ref);
+                $links[] = substr($link, 1);
+            }
+            $refs[] = $ref;
+        }
+        $this->assertSame([], array_values(array_diff($links, $anchors)), 'the designed page has no dangling link');
+
+        $names = array_column($doc['cases'], 'name');
+        $seen  = [];
+        $this->assertNotEmpty($doc['v3_cases']);
+        foreach ($doc['v3_cases'] as $case) {
+            $name = (string) ($case['name'] ?? '');
+            $this->assertNotSame('', $name);
+            $this->assertNotContains($name, $names, 'case names are unique');
+            $names[] = $name;
+            $this->assertSame([], array_values(array_diff(array_keys($case), self::V3_CASE_KEYS)), $name . ': unknown case field');
+            $this->assertArrayHasKey($case['rule'], self::V3_RULES, $name . ': unknown rule');
+            $this->assertContains($case['agent'], self::V3_AGENT_VERDICTS, $name);
+            $this->assertContains($case['go'], ['accept', 'refuse'], $name);
+            if (isset($case['note'])) {
+                $this->assertNotSame('', $case['note'], $name . ': a note says what the case shows');
+            }
+            if ($case['agent'] === 'ok') {
+                $this->assertSame('accept', $case['go'], $name . ': what the agent accepts, the control plane accepts');
+            }
+            $seen[$case['rule']][] = [$case['agent'], $case['go']];
+
+            $text = (string) $case['input'];
+            $this->assertLessThanOrEqual(BuilderContract::MAX_INPUT_BYTES, strlen($text), $name);
+            $input = json_decode($text, false, 32);
+            $this->assertIsObject($input, $name . ': input is a JSON object');
+            $this->assertSame(['post_id', 'base_fingerprint', 'operations'], array_keys(get_object_vars($input)), $name);
+            $this->assertSame($page['post_id'], $input->post_id, $name);
+            $this->assertSame($page['base_fingerprint'], $input->base_fingerprint, $name);
+            $this->assertIsArray($input->operations, $name);
+            $this->assertGreaterThanOrEqual(1, count($input->operations), $name);
+            $this->assertLessThanOrEqual(BuilderContract::MAX_OPS, count($input->operations), $name);
+            $targets = [];
+            foreach ($input->operations as $op) {
+                $this->assertContains($op->op, BuilderContract::OPS, $name);
+                foreach (['ref', 'after', 'before', 'into'] as $field) {
+                    if (isset($op->{$field})) {
+                        $this->assertContains($op->{$field}, $refs, $name . ': a case names nodes the page has');
+                        $this->assertNotContains($op->{$field}, $targets, $name . ': a call names each node once');
+                        $targets[] = $op->{$field};
+                    }
+                }
+            }
+        }
+        foreach (self::V3_RULES as $rule => $verdicts) {
+            $this->assertArrayHasKey($rule, $seen, 'no case exercises ' . $rule);
+            foreach ($verdicts as $verdict) {
+                $this->assertContains($verdict, $seen[$rule], $rule . ' has no case answering ' . implode('/', $verdict));
+            }
+        }
+        foreach (self::V3_AFTER_THE_CALL as $rule) {
+            $this->assertGreaterThanOrEqual(
+                2,
+                count(array_filter($doc['v3_cases'], static fn (array $c): bool => $c['rule'] === $rule && count(json_decode((string) $c['input'], true)['operations']) > 1)),
+                $rule . ' needs rows of more than one operation, to show the call is judged as a whole'
+            );
+        }
+    }
+
+    /**
+     * Red until the validator takes pattern paths, version 3 nodes and the
+     * anchor rules (W4-03): every row of v3_cases, with what the agent answers.
+     */
+    #[Group(self::V3_GROUP)]
+    public function test_replays_every_v3_case(): void
+    {
+        $v3    = self::v3Cases();
+        $wrong = [];
+        foreach ($v3['cases'] as $case) {
+            $got = self::agentAnswer((string) $case['input'], $v3['page']['nodes'], $v3['page']['builder']);
+            if ($got !== $case['agent']) {
+                $wrong[$case['name']] = 'wants ' . $case['agent'] . ', answered ' . ($got === '' ? 'nothing' : $got);
+            }
+        }
+        $this->assertSame([], $wrong, count($wrong) . ' of ' . count($v3['cases']) . ' version 3 rows are not answered as the table says');
+    }
+
+    /**
+     * Red until parse() holds the version 3 input rules (W4-03): the rows the
+     * control plane refuses are refused by parse() with the agent's code, and
+     * every other row passes parse().
+     */
+    #[Group(self::V3_GROUP)]
+    public function test_parse_refuses_exactly_the_v3_cases_the_control_plane_refuses(): void
+    {
+        $wrong = [];
+        foreach (self::v3Cases()['cases'] as $case) {
+            $r = PageEditValidator::parse((string) $case['input']);
+            if ($case['go'] === 'refuse') {
+                if (($r['code'] ?? null) !== $case['agent']) {
+                    $wrong[$case['name']] = 'wants ' . $case['agent'] . ' from parse(), got ' . ($r['code'] ?? 'an input');
+                }
+            } elseif (!isset($r['input'])) {
+                $wrong[$case['name']] = 'parse() refused ' . ($r['detail'] ?? '');
+            }
+        }
+        $this->assertSame([], $wrong);
+    }
+
+    /**
+     * Red until the anchor rules are judged on the page the whole call leaves
+     * (W4-03): the order of the operations never changes the answer.
+     */
+    #[Group(self::V3_GROUP)]
+    public function test_anchor_and_link_rules_do_not_depend_on_operation_order(): void
+    {
+        $v3    = self::v3Cases();
+        $wrong = [];
+        $tried = 0;
+        foreach ($v3['cases'] as $case) {
+            if (!in_array($case['rule'], self::V3_AFTER_THE_CALL, true)) {
+                continue;
+            }
+            $input = json_decode((string) $case['input'], true, 32);
+            if (count($input['operations']) < 2) {
+                continue;
+            }
+            ++$tried;
+            $input['operations'] = array_reverse($input['operations']);
+            $text                = json_encode($input, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+            $got                 = self::agentAnswer($text, $v3['page']['nodes'], $v3['page']['builder']);
+            if ($got !== $case['agent']) {
+                $wrong[$case['name']] = 'in reverse order wants ' . $case['agent'] . ', answered ' . ($got === '' ? 'nothing' : $got);
+            }
+        }
+        $this->assertGreaterThanOrEqual(6, $tried, 'the rows of more than one operation');
+        $this->assertSame([], $wrong);
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
 
@@ -548,6 +762,20 @@ final class PageEditValidatorTest extends TestCase
         }
 
         return $text . str_repeat((string) $case['generate']['append'], (int) $case['generate']['to_bytes'] - strlen($text));
+    }
+
+    /**
+     * The designed page's projection and the rows that run against it.
+     *
+     * @return array{page: array<string,mixed>, cases: list<array<string,mixed>>}
+     */
+    private static function v3Cases(): array
+    {
+        $doc = self::opsCases();
+        self::assertArrayHasKey('v3_page', $doc, 'the version 3 rows are missing');
+        self::assertArrayHasKey('v3_cases', $doc, 'the version 3 rows are missing');
+
+        return ['page' => $doc['v3_page'], 'cases' => $doc['v3_cases']];
     }
 
     /**
