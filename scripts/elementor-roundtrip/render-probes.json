@@ -1660,6 +1660,673 @@
           "sel": ".e-con.e-con-full"
         }
       ]
+    },
+    {
+      "name": "style-heading-typography",
+      "about": "A heading's whole text style. title_color is the colour of the title, align is the text alignment of the widget, and the typography group is read only because typography_typography is custom: family, size in px, weight, line-height in em and letter-spacing in em each reach the post CSS on the title as the declaration of the same name.",
+      "trees": {
+        "containers": [
+          {
+            "id": "5e70001",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "5e70002",
+                "elType": "widget",
+                "settings": {
+                  "title": "Designed pages start with a type ramp",
+                  "header_size": "h1",
+                  "align": "left",
+                  "title_color": "#15171C",
+                  "typography_typography": "custom",
+                  "typography_font_family": "Fraunces",
+                  "typography_font_size": {
+                    "unit": "px",
+                    "size": "49"
+                  },
+                  "typography_font_weight": "700",
+                  "typography_line_height": {
+                    "unit": "em",
+                    "size": "1.05"
+                  },
+                  "typography_letter_spacing": {
+                    "unit": "em",
+                    "size": "-0.02"
+                  }
+                },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "5e70002",
+          "sel": ".elementor-heading-title",
+          "media": null,
+          "decl": {
+            "color": "#15171C",
+            "font-family": "\"Fraunces\", Sans-serif",
+            "font-size": "49px",
+            "font-weight": "700",
+            "line-height": "1.05em",
+            "letter-spacing": "-0.02em"
+          }
+        },
+        {
+          "el": "5e70002",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "text-align": "left"
+          }
+        }
+      ],
+      "html_text": [
+        "Designed pages start with a type ramp"
+      ],
+      "html_has": [
+        {
+          "sel": "h1.elementor-heading-title",
+          "text": "Designed pages start with a type ramp"
+        }
+      ],
+      "plants": {
+        "misspell_key": {
+          "el": "5e70002",
+          "key": "title_color"
+        },
+        "drop_activator": {
+          "el": "5e70002",
+          "key": "typography_typography"
+        }
+      }
+    },
+    {
+      "name": "style-heading-fluid-size",
+      "about": "A heading size in the custom unit: typography_font_size {unit custom, size a clamp() expression} is written as that expression in the font-size declaration of the title, next to the family and weight of the same group.",
+      "trees": {
+        "containers": [
+          {
+            "id": "5e70011",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "5e70012",
+                "elType": "widget",
+                "settings": {
+                  "title": "A size that follows the screen",
+                  "header_size": "h1",
+                  "title_color": "#15171C",
+                  "typography_typography": "custom",
+                  "typography_font_family": "Fraunces",
+                  "typography_font_size": {
+                    "unit": "custom",
+                    "size": "clamp(2.25rem, 1.25rem + 3.5vw, 3.05rem)"
+                  },
+                  "typography_font_weight": "700",
+                  "typography_line_height": {
+                    "unit": "em",
+                    "size": "1.05"
+                  },
+                  "typography_letter_spacing": {
+                    "unit": "em",
+                    "size": "-0.02"
+                  }
+                },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "5e70012",
+          "sel": ".elementor-heading-title",
+          "media": null,
+          "decl": {
+            "font-size": "clamp(2.25rem, 1.25rem + 3.5vw, 3.05rem)",
+            "font-family": "\"Fraunces\", Sans-serif",
+            "font-weight": "700",
+            "line-height": "1.05em"
+          }
+        }
+      ],
+      "html_text": [
+        "A size that follows the screen"
+      ]
+    },
+    {
+      "name": "style-heading-responsive-size",
+      "about": "A heading size given per screen: typography_font_size is the desktop size, and the sibling keys typography_font_size_tablet and typography_font_size_mobile are written as the font-size declaration of the title inside the tablet and the mobile media condition.",
+      "trees": {
+        "containers": [
+          {
+            "id": "5e70021",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "5e70022",
+                "elType": "widget",
+                "settings": {
+                  "title": "A size set for each screen",
+                  "header_size": "h1",
+                  "title_color": "#15171C",
+                  "typography_typography": "custom",
+                  "typography_font_family": "Fraunces",
+                  "typography_font_size": {
+                    "unit": "px",
+                    "size": "49"
+                  },
+                  "typography_font_size_tablet": {
+                    "unit": "px",
+                    "size": "40"
+                  },
+                  "typography_font_size_mobile": {
+                    "unit": "px",
+                    "size": "32"
+                  },
+                  "typography_font_weight": "700",
+                  "typography_line_height": {
+                    "unit": "em",
+                    "size": "1.05"
+                  },
+                  "typography_letter_spacing": {
+                    "unit": "em",
+                    "size": "-0.02"
+                  }
+                },
+                "elements": [],
+                "widgetType": "heading"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "5e70022",
+          "sel": ".elementor-heading-title",
+          "media": null,
+          "decl": {
+            "font-size": "49px",
+            "font-family": "\"Fraunces\", Sans-serif",
+            "font-weight": "700"
+          }
+        },
+        {
+          "el": "5e70022",
+          "sel": ".elementor-heading-title",
+          "media": "max-width:1024px",
+          "decl": {
+            "font-size": "40px"
+          }
+        },
+        {
+          "el": "5e70022",
+          "sel": ".elementor-heading-title",
+          "media": "max-width:767px",
+          "decl": {
+            "font-size": "32px"
+          }
+        }
+      ],
+      "html_text": [
+        "A size set for each screen"
+      ]
+    },
+    {
+      "name": "style-text-editor",
+      "about": "Text-editor styles: text_color is the colour of the widget text, including a colour at an alpha written as rgba(r,g,b,a); the typography group is read only because typography_typography is custom: family, size in px, weight, line-height in em, text-transform and letter-spacing in em each reach the post CSS. One widget each for the body, lead and eyebrow styles.",
+      "trees": {
+        "containers": [
+          {
+            "id": "5e70031",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "5e70032",
+                "elType": "widget",
+                "settings": {
+                  "editor": "<p>Every section reads the same way: one idea and one line of proof.</p>",
+                  "text_color": "#5B616B",
+                  "typography_typography": "custom",
+                  "typography_font_family": "Work Sans",
+                  "typography_font_size": {
+                    "unit": "px",
+                    "size": "16"
+                  },
+                  "typography_font_weight": "400",
+                  "typography_line_height": {
+                    "unit": "em",
+                    "size": "1.6"
+                  }
+                },
+                "elements": [],
+                "widgetType": "text-editor"
+              },
+              {
+                "id": "5e70033",
+                "elType": "widget",
+                "settings": {
+                  "editor": "<p>The lead paragraph sits in the inverse tone.</p>",
+                  "text_color": "rgba(246,245,242,0.8)",
+                  "typography_typography": "custom",
+                  "typography_font_family": "Work Sans",
+                  "typography_font_size": {
+                    "unit": "px",
+                    "size": "20"
+                  },
+                  "typography_font_weight": "400",
+                  "typography_line_height": {
+                    "unit": "em",
+                    "size": "1.5"
+                  }
+                },
+                "elements": [],
+                "widgetType": "text-editor"
+              },
+              {
+                "id": "5e70034",
+                "elType": "widget",
+                "settings": {
+                  "editor": "<p>Eyebrow label</p>",
+                  "text_color": "#0D7A63",
+                  "typography_typography": "custom",
+                  "typography_font_family": "Work Sans",
+                  "typography_font_size": {
+                    "unit": "px",
+                    "size": "13"
+                  },
+                  "typography_font_weight": "600",
+                  "typography_text_transform": "uppercase",
+                  "typography_letter_spacing": {
+                    "unit": "em",
+                    "size": "0.08"
+                  }
+                },
+                "elements": [],
+                "widgetType": "text-editor"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "5e70032",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "color": "#5B616B",
+            "font-family": "\"Work Sans\", Sans-serif",
+            "font-size": "16px",
+            "font-weight": "400",
+            "line-height": "1.6em"
+          }
+        },
+        {
+          "el": "5e70033",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "color": "rgba(246,245,242,0.8)",
+            "font-family": "\"Work Sans\", Sans-serif",
+            "font-size": "20px",
+            "font-weight": "400",
+            "line-height": "1.5em"
+          }
+        },
+        {
+          "el": "5e70034",
+          "sel": "",
+          "media": null,
+          "decl": {
+            "color": "#0D7A63",
+            "font-family": "\"Work Sans\", Sans-serif",
+            "font-size": "13px",
+            "font-weight": "600",
+            "text-transform": "uppercase",
+            "letter-spacing": "0.08em"
+          }
+        }
+      ],
+      "html_text": [
+        "one idea and one line of proof",
+        "The lead paragraph sits in the inverse tone.",
+        "Eyebrow label"
+      ],
+      "plants": {
+        "misspell_key": {
+          "el": "5e70032",
+          "key": "text_color"
+        },
+        "drop_activator": {
+          "el": "5e70034",
+          "key": "typography_typography"
+        }
+      }
+    },
+    {
+      "name": "style-button-fill",
+      "about": "A fill button: background_color under its activator background_background, button_text_color, the hover pair button_background_hover_color (under button_background_hover_background) and hover_color, border_radius as a dimensions value, and the button typography group. The hover pair lands on the hover state of the button, the size is a class of the link and the link is its href.",
+      "trees": {
+        "containers": [
+          {
+            "id": "5e70041",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "5e70042",
+                "elType": "widget",
+                "settings": {
+                  "text": "Start free",
+                  "link": {
+                    "url": "#signup",
+                    "is_external": "",
+                    "nofollow": ""
+                  },
+                  "size": "md",
+                  "button_type": "",
+                  "background_background": "classic",
+                  "background_color": "#0D7A63",
+                  "button_text_color": "#FFFFFF",
+                  "button_background_hover_background": "classic",
+                  "button_background_hover_color": "#095545",
+                  "hover_color": "#FFFFFF",
+                  "border_radius": {
+                    "unit": "px",
+                    "top": "12",
+                    "right": "12",
+                    "bottom": "12",
+                    "left": "12",
+                    "isLinked": true
+                  },
+                  "typography_typography": "custom",
+                  "typography_font_family": "Work Sans",
+                  "typography_font_size": {
+                    "unit": "px",
+                    "size": "15"
+                  },
+                  "typography_font_weight": "600",
+                  "typography_line_height": {
+                    "unit": "em",
+                    "size": "1"
+                  }
+                },
+                "elements": [],
+                "widgetType": "button"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "5e70042",
+          "sel": ".elementor-button",
+          "media": null,
+          "decl": {
+            "background-color": "#0D7A63",
+            "color": "#FFFFFF",
+            "border-radius": "12px 12px 12px 12px",
+            "font-family": "\"Work Sans\", Sans-serif",
+            "font-size": "15px",
+            "font-weight": "600",
+            "line-height": "1em"
+          }
+        },
+        {
+          "el": "5e70042",
+          "sel": ".elementor-button:hover",
+          "media": null,
+          "decl": {
+            "background-color": "#095545",
+            "color": "#FFFFFF"
+          }
+        }
+      ],
+      "html_text": [
+        "Start free"
+      ],
+      "html_has": [
+        {
+          "sel": "a.elementor-button.elementor-size-md[href=\"#signup\"]",
+          "text": "Start free"
+        }
+      ],
+      "plants": {
+        "misspell_key": {
+          "el": "5e70042",
+          "key": "button_background_hover_color"
+        },
+        "drop_activator": {
+          "el": "5e70042",
+          "key": "typography_typography"
+        }
+      }
+    },
+    {
+      "name": "style-button-outline",
+      "about": "An outline button: a transparent background_color, button_text_color and border_color in the accent, a border that is drawn only because border_border is solid (border_width is a dimensions value, 1.5 px here), and a hover that fills with the accent and turns the text to the on-accent colour.",
+      "trees": {
+        "containers": [
+          {
+            "id": "5e70051",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "5e70052",
+                "elType": "widget",
+                "settings": {
+                  "text": "See pricing",
+                  "link": {
+                    "url": "#pricing",
+                    "is_external": "",
+                    "nofollow": ""
+                  },
+                  "size": "md",
+                  "button_type": "",
+                  "background_background": "classic",
+                  "background_color": "transparent",
+                  "button_text_color": "#0D7A63",
+                  "border_border": "solid",
+                  "border_width": {
+                    "unit": "px",
+                    "top": "1.5",
+                    "right": "1.5",
+                    "bottom": "1.5",
+                    "left": "1.5",
+                    "isLinked": true
+                  },
+                  "border_color": "#0D7A63",
+                  "button_background_hover_background": "classic",
+                  "button_background_hover_color": "#0D7A63",
+                  "hover_color": "#FFFFFF",
+                  "border_radius": {
+                    "unit": "px",
+                    "top": "12",
+                    "right": "12",
+                    "bottom": "12",
+                    "left": "12",
+                    "isLinked": true
+                  },
+                  "typography_typography": "custom",
+                  "typography_font_family": "Work Sans",
+                  "typography_font_size": {
+                    "unit": "px",
+                    "size": "15"
+                  },
+                  "typography_font_weight": "600",
+                  "typography_line_height": {
+                    "unit": "em",
+                    "size": "1"
+                  }
+                },
+                "elements": [],
+                "widgetType": "button"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "5e70052",
+          "sel": ".elementor-button",
+          "media": null,
+          "decl": {
+            "background-color": "transparent",
+            "color": "#0D7A63",
+            "border-style": "solid",
+            "border-width": "1.5px 1.5px 1.5px 1.5px",
+            "border-color": "#0D7A63",
+            "border-radius": "12px 12px 12px 12px"
+          }
+        },
+        {
+          "el": "5e70052",
+          "sel": ".elementor-button:hover",
+          "media": null,
+          "decl": {
+            "background-color": "#0D7A63",
+            "color": "#FFFFFF"
+          }
+        }
+      ],
+      "html_text": [
+        "See pricing"
+      ],
+      "html_has": [
+        {
+          "sel": "a.elementor-button.elementor-size-md[href=\"#pricing\"]",
+          "text": "See pricing"
+        }
+      ],
+      "plants": {
+        "misspell_key": {
+          "el": "5e70052",
+          "key": "border_color"
+        },
+        "drop_activator": {
+          "el": "5e70052",
+          "key": "border_border"
+        }
+      }
+    },
+    {
+      "name": "style-button-text",
+      "about": "A text button: a transparent background and a transparent hover background so the kit's button fill does not show, the accent as the text colour with the darker accent on hover, and an underline from the typography group (the button has no hover typography). No border is drawn because no border_border is set.",
+      "trees": {
+        "containers": [
+          {
+            "id": "5e70061",
+            "elType": "container",
+            "settings": {},
+            "elements": [
+              {
+                "id": "5e70062",
+                "elType": "widget",
+                "settings": {
+                  "text": "Learn more",
+                  "link": {
+                    "url": "#features",
+                    "is_external": "",
+                    "nofollow": ""
+                  },
+                  "size": "md",
+                  "button_type": "",
+                  "background_background": "classic",
+                  "background_color": "transparent",
+                  "button_text_color": "#0D7A63",
+                  "button_background_hover_background": "classic",
+                  "button_background_hover_color": "transparent",
+                  "hover_color": "#095545",
+                  "border_radius": {
+                    "unit": "px",
+                    "top": "12",
+                    "right": "12",
+                    "bottom": "12",
+                    "left": "12",
+                    "isLinked": true
+                  },
+                  "typography_typography": "custom",
+                  "typography_font_family": "Work Sans",
+                  "typography_font_size": {
+                    "unit": "px",
+                    "size": "15"
+                  },
+                  "typography_font_weight": "600",
+                  "typography_line_height": {
+                    "unit": "em",
+                    "size": "1"
+                  },
+                  "typography_text_decoration": "underline"
+                },
+                "elements": [],
+                "widgetType": "button"
+              }
+            ],
+            "isInner": false
+          }
+        ]
+      },
+      "css": [
+        {
+          "el": "5e70062",
+          "sel": ".elementor-button",
+          "media": null,
+          "decl": {
+            "background-color": "transparent",
+            "color": "#0D7A63",
+            "text-decoration": "underline",
+            "font-size": "15px"
+          }
+        },
+        {
+          "el": "5e70062",
+          "sel": ".elementor-button:hover",
+          "media": null,
+          "decl": {
+            "background-color": "transparent",
+            "color": "#095545"
+          }
+        }
+      ],
+      "css_absent": [
+        {
+          "el": "5e70062",
+          "sel": ".elementor-button",
+          "decl": {
+            "border-style": "solid"
+          }
+        }
+      ],
+      "html_text": [
+        "Learn more"
+      ],
+      "html_has": [
+        {
+          "sel": "a.elementor-button.elementor-size-md[href=\"#features\"]",
+          "text": "Learn more"
+        }
+      ]
     }
   ]
 }

@@ -121,6 +121,7 @@
  * Elementor release a probe applies from; on older pins it is skipped with a note and not counted)
  * and "plants" (the element and setting key the plants misspell_key and drop_activator act on).
  * dump=<probe> prints the stored tree and the rendered page of a probe, to write its expectations.
+ * dumpcss=<probe name, or its first words> prints the rules of the post CSS that are about an element of the probe's tree (media condition, selectors, declarations), to write them.
  *
  * A probe must expect at least one declaration to be present (its positive control),
  * and the phase must run at least one probe on every layout, or it is red. A probe
@@ -2300,6 +2301,61 @@ function &rt_probe_node(array &$nodes, string $id)
 }
 
 /**
+ * The ids of every node of a tree.
+ *
+ * @param array<mixed> $nodes
+ * @return list<string>
+ */
+function rt_probe_ids(array $nodes): array
+{
+    $ids = [];
+    foreach ($nodes as $node) {
+        if (!is_array($node)) {
+            continue;
+        }
+        if (is_string($node['id'] ?? null)) {
+            $ids[] = $node['id'];
+        }
+        if (is_array($node['elements'] ?? null)) {
+            $ids = array_merge($ids, rt_probe_ids($node['elements']));
+        }
+    }
+
+    return $ids;
+}
+
+/**
+ * The rules of a post stylesheet that are about one of the elements, one line each:
+ * the media condition, the selectors and the declarations.
+ *
+ * @param list<array{media:?string,selectors:list<string>,decl:array<string,list<string>>}> $rules
+ * @param list<string> $ids
+ * @return list<string>
+ */
+function rt_probe_dump_rules(array $rules, array $ids): array
+{
+    $lines = [];
+    foreach ($rules as $rule) {
+        $about = false;
+        foreach ($rule['selectors'] as $s) {
+            foreach ($ids as $id) {
+                $about = $about || rt_css_selects($s, $id, '');
+            }
+        }
+        if (!$about) {
+            continue;
+        }
+        $decl = [];
+        foreach ($rule['decl'] as $prop => $values) {
+            $decl[] = $prop . ': ' . implode(' | ', $values);
+        }
+        $lines[] = '[' . ($rule['media'] ?? 'no media') . '] ' . implode(', ', $rule['selectors']) . ' { ' . implode('; ', $decl) . ' }';
+    }
+
+    return $lines;
+}
+
+/**
  * Plant a defect in a probe's tree before it is saved: the setting key the probe names for the plant is
  * misspelt (last two letters swapped) or removed. Null when it was applied, else why it could not be: a
  * plant that changed nothing would prove nothing.
@@ -2677,6 +2733,13 @@ function rt_probe_phase(array $probes, string $layout, string $stored, int $prin
             if ($c->ck('css-file', $css !== '', 'no post CSS file at ' . $path . ', or it is empty')) {
                 $rules = rt_css_rules($css);
                 if ($c->ck('css-rules', $rules !== [], 'the post CSS file holds no rule')) {
+                    // Authoring aid, not a check: dumpcss=<probe name, or its first words> prints each rule of the post CSS that is about an element of the tree.
+                    $dumpCss = (string) ($GLOBALS['rtArgs']['dumpcss'] ?? '');
+                    if ($dumpCss !== '' && strpos($probe['name'], $dumpCss) === 0) {
+                        foreach (rt_probe_dump_rules($rules, rt_probe_ids($tree)) as $dumped) {
+                            rt_out('dumpcss ' . $probe['name'] . ' ' . $dumped);
+                        }
+                    }
                     foreach ($probe['css'] as $n => $exp) {
                         [$ok, $why, $alt] = rt_css_expect($rules, $exp);
                         $c->ck('css', $ok, 'css[' . $n . '] ' . rt_css_label($exp) . ': want ' . $why);
