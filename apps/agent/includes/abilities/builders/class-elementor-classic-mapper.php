@@ -79,6 +79,12 @@ final class ElementorClassicMapper
             'width.unit'            => 'enum',
             'width.size'            => 'enum',
             'width.sizes'           => 'enum',
+            // A designed section: its tag, its anchor and its Navigator label.
+            // LeafPolicy judges the anchor and the label by their own rules, and
+            // only for keys listed here.
+            'html_tag'              => 'enum',
+            '_element_id'           => 'enum',
+            '_title'                => 'enum',
         ],
         'section'     => [
             'structure' => 'enum',
