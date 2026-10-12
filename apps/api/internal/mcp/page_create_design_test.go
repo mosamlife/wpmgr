@@ -217,3 +217,108 @@ func TestDesignColoursRefused(t *testing.T) {
 		}
 	})
 }
+
+// hexOf turns role -> "#RRGGBB" into the raw JSON overrides coloursJSON takes.
+func hexOf(m map[string]string) map[string]string {
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = `"` + v + `"`
+	}
+	return out
+}
+
+func TestDesignContrastLowNamesPair(t *testing.T) {
+	t.Run("ratios follow the WCAG formula", func(t *testing.T) {
+		for _, c := range []struct {
+			a, b string
+			want float64
+		}{
+			{"#000000", "#FFFFFF", 21},
+			{"#FFFFFF", "#000000", 21},
+			{"#FFFFFF", "#FFFFFF", 1},
+			{"#767676", "#FFFFFF", 4.54},
+			{"#777777", "#FFFFFF", 4.48},
+			{"#15171C", "#F6F5F2", 16.45},
+			{"#FFFFFF", "#0D7A63", 5.27},
+		} {
+			if got := designContrast(c.a, c.b); got < c.want-0.01 || got > c.want+0.01 {
+				t.Errorf("contrast of %s and %s is %.4f, want %.2f", c.a, c.b, got, c.want)
+			}
+		}
+	})
+
+	pairNames := []string{"ink on ground", "ink on surface", "on_accent on accent"}
+	for _, c := range []struct {
+		name string
+		set  map[string]string
+		fail []int // indexes into pairNames, in report order
+	}{
+		{"ink on ground alone", map[string]string{"ground": "#6E6E6E"}, []int{0}},
+		{"ink on surface alone", map[string]string{"surface": "#4A4A4A"}, []int{1}},
+		{"on_accent on accent alone", map[string]string{"accent": "#F0F0F0"}, []int{2}},
+		{"ink on both grounds", map[string]string{"ink": "#CCCCCC", "ground": "#FFFFFF", "surface": "#F6F5F2"}, []int{0, 1}},
+		{"all three pairs", map[string]string{"ink": "#CCCCCC", "ground": "#FFFFFF", "surface": "#F6F5F2", "accent": "#FFFFFF"}, []int{0, 1, 2}},
+		{"a colour on itself", map[string]string{"ink": "#F6F5F2"}, []int{0, 1}},
+		{"just under the minimum", map[string]string{"ink": "#777777", "ground": "#FFFFFF"}, []int{0, 1}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, fails := parseDesignColours(coloursJSON(hexOf(c.set)))
+			if len(fails) != len(c.fail) {
+				t.Fatalf("%d failures %+v, want %d (%v)", len(fails), fails, len(c.fail), c.fail)
+			}
+			for i, idx := range c.fail {
+				f := fails[i]
+				if f.code != pageDesignContrastLow || f.Path != "design.colors" {
+					t.Errorf("failure %d: %+v, want code %s at design.colors", i, f, pageDesignContrastLow)
+				}
+				for j, name := range pairNames {
+					if has := strings.Contains(f.Reason, name); has != (j == idx) {
+						t.Errorf("failure %d reason %q: names %q = %v, want %v", i, f.Reason, name, has, j == idx)
+					}
+				}
+				if !strings.Contains(f.Reason, "4.5:1") {
+					t.Errorf("failure %d reason %q does not give the minimum", i, f.Reason)
+				}
+				if want := strings.Fields(pairNames[idx])[0]; f.Key != want {
+					t.Errorf("failure %d key %q, want %q", i, f.Key, want)
+				}
+			}
+			// The colours that were read stay readable, so a caller can show
+			// what was sent.
+			if got.Ink == "" || got.Ground == "" {
+				t.Errorf("a contrast failure empties the colours: %+v", got)
+			}
+		})
+	}
+
+	t.Run("the reason gives the measured ratio, cut not rounded", func(t *testing.T) {
+		_, fails := parseDesignColours(coloursJSON(hexOf(map[string]string{"ink": "#777777", "ground": "#FFFFFF"})))
+		if len(fails) != 2 || !strings.Contains(fails[0].Reason, "4.47:1") || !strings.Contains(fails[1].Reason, "4.47:1") {
+			t.Errorf("got %+v, want both ink pairs at the ratio 4.478 written 4.47:1", fails)
+		}
+	})
+
+	t.Run("at and above the minimum is accepted", func(t *testing.T) {
+		in := coloursJSON(hexOf(map[string]string{"ink": "#767676", "ground": "#FFFFFF", "surface": "#FFFFFF"}))
+		if _, fails := parseDesignColours(in); len(fails) != 0 {
+			t.Errorf("4.54:1 is refused: %+v", fails)
+		}
+		if _, fails := parseDesignColours(coloursJSON(nil)); len(fails) != 0 {
+			t.Errorf("the spec example is refused: %+v", fails)
+		}
+	})
+
+	t.Run("a pair with a colour that failed is not judged twice", func(t *testing.T) {
+		_, fails := parseDesignColours(coloursJSON(map[string]string{"ink": `"nope"`}))
+		if len(fails) != 1 || fails[0].code != pageCreateBadInput || fails[0].Key != "ink" {
+			t.Errorf("got %+v, want only the bad ink", fails)
+		}
+		_, fails = parseDesignColours(coloursJSON(nil, "accent"))
+		if len(fails) != 1 || fails[0].code != pageDesignNotReady {
+			t.Errorf("got %+v, want only accent not ready", fails)
+		}
+		if fails := designContrastFailures(designColours{}); len(fails) != 0 {
+			t.Errorf("empty colours are judged: %+v", fails)
+		}
+	})
+}

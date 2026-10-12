@@ -19,6 +19,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"slices"
 	"strconv"
@@ -1167,7 +1168,8 @@ func parseDesignColours(raw json.RawMessage) (designColours, []designFailure) {
 			*slot = hex
 		}
 	}
-	return out, append(fails, designUnknownKeys("design.colors", obj, designColourRoles)...)
+	fails = append(fails, designUnknownKeys("design.colors", obj, designColourRoles)...)
+	return out, append(fails, designContrastFailures(out)...)
 }
 
 // designColour reads one colour: a # and six hex digits in either letter
@@ -1218,6 +1220,81 @@ func designUnknownKeys(path string, obj map[string]json.RawMessage, allowed []st
 		fails = append(fails, designFailure{
 			Path: path, Key: humantext.CapRunes(humantext.Clean(k), designKeyEchoRunes), code: pageCreateBadInput,
 			Reason: "not a key a design has; send only the keys listed", Allowed: slices.Clone(allowed),
+		})
+	}
+	return fails
+}
+
+// designMinContrast is the least contrast ratio a pair that carries text may
+// have.
+const designMinContrast = 4.5
+
+// designContrastPairs are the pairs a text colour sits on, in report order:
+// the text role, then the role it is set on.
+var designContrastPairs = []struct{ text, on string }{
+	{"ink", "ground"},
+	{"ink", "surface"},
+	{"on_accent", "accent"},
+}
+
+// designContrast is the WCAG contrast ratio of two #RRGGBB colours, 1 to 21,
+// the same whichever is passed first. A colour that is not #RRGGBB counts as
+// black.
+func designContrast(a, b string) float64 {
+	la, lb := designLuminance(a), designLuminance(b)
+	if la < lb {
+		la, lb = lb, la
+	}
+	return (la + 0.05) / (lb + 0.05)
+}
+
+// designLuminance is the WCAG relative luminance of a #RRGGBB colour.
+func designLuminance(hex string) float64 {
+	if len(hex) != 7 || hex[0] != '#' {
+		return 0
+	}
+	var lin [3]float64
+	for i := range lin {
+		v, err := strconv.ParseUint(hex[1+2*i:3+2*i], 16, 8)
+		if err != nil {
+			return 0
+		}
+		c := float64(v) / 255
+		if c <= 0.04045 {
+			lin[i] = c / 12.92
+		} else {
+			lin[i] = math.Pow((c+0.055)/1.055, 2.4)
+		}
+	}
+	return 0.2126*lin[0] + 0.7152*lin[1] + 0.0722*lin[2]
+}
+
+// designContrastFailures judges the three pairs that carry text, each of
+// which needs designMinContrast. A pair with a colour that is not set (its
+// own failure says why) is not judged. The reason names the pair and gives
+// the measured ratio cut, not rounded, to two places, so a ratio just under
+// the minimum is never shown as the minimum.
+func designContrastFailures(c designColours) []designFailure {
+	colour := func(role string) string {
+		if slot := c.slot(role); slot != nil {
+			return *slot
+		}
+		return ""
+	}
+	var fails []designFailure
+	for _, p := range designContrastPairs {
+		text, on := colour(p.text), colour(p.on)
+		if text == "" || on == "" {
+			continue
+		}
+		ratio := designContrast(text, on)
+		if ratio >= designMinContrast {
+			continue
+		}
+		fails = append(fails, designFailure{
+			Path: "design.colors", Key: p.text, code: pageDesignContrastLow,
+			Reason: fmt.Sprintf("%s on %s has a contrast of %.2f:1; at least %g:1 is needed, so change %s or %s",
+				p.text, p.on, math.Floor(ratio*100)/100, designMinContrast, p.text, p.on),
 		})
 	}
 	return fails
