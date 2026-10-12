@@ -106,7 +106,8 @@ func TestNoPlanLiteralsOutsideBilling(t *testing.T) {
 	if len(offenders) > 0 {
 		t.Fatalf("plan-tier literal or comparison found outside internal/billing "+
 			"(single-ownership violation — route this through internal/billing.Entitlements "+
-			"or CheckSiteCreate instead):\n%s", strings.Join(offenders, "\n"))
+			"or CheckSiteCreate instead; the page design object's own scale member is "+
+			"recognised only in the spellings listed on designKeyForms):\n%s", strings.Join(offenders, "\n"))
 	}
 }
 
@@ -137,6 +138,8 @@ func TestNamesPlanTier(t *testing.T) {
 		{"agency field", `Plan: "agency",`},
 		{"design list beside a tier", `d := []string{"colors", "fonts", "scale"}; tier = "scale"`},
 		{"design call beside other tiers", `designFor("agency", "scale")`},
+		{"design call beside a starter literal", `designFor("starter", "scale")`},
+		{"design index beside a comparison", `ok := design["scale"] != nil && plan == "free"`},
 		{"design word in a comment", `Plan: "scale", // design review`},
 	}
 
@@ -151,6 +154,7 @@ func TestNamesPlanTier(t *testing.T) {
 		{"call with the name as an argument", `obj, fails := designGroupObject(raw, "scale", designScaleKeys, "a base size and a ratio")`},
 		// Other spellings of the same member.
 		{"go map member", `"scale": map[string]any{"base_px": 17, "ratio": 1.25},`},
+		{"go map member, interface value", `"scale": map[string]interface{}{"base_px": 17},`},
 		{"member with the ratio first", `"scale":{"ratio":1.25,"base_px":17}`},
 		{"index of a design value", `scaleObj := design["scale"]`},
 		{"list with scale first", `want := []string{"scale", "radius", "density"}`},
