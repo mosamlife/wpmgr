@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
@@ -440,5 +441,29 @@ func TestDraftDesignOf(t *testing.T) {
 		if d := draftDesignOf([]byte(in)); d != nil {
 			t.Errorf("%s: design = %+v, want none", name, d)
 		}
+	}
+}
+
+func TestEligibleClearedDraftKeepsDesign(t *testing.T) {
+	id := uuid.New()
+	post := int64(418)
+	retained := `{"outline_version":3,"design":` + specDesignJSON + `}`
+	q := &fakeEligibleDraftInputQueries{
+		draft: sqlc.GetEligibleCreatedDraftRow{ID: id, CreatedPostID: &post},
+		input: sqlc.GetEligibleCreatedDraftInputRow{ID: id, InputJson: "{}", ContentClearedAt: pgtype.Timestamptz{Valid: true}, RetainedDraft: []byte(retained)},
+	}
+	got, err := eligibleDraftCreateInput(context.Background(), q, uuid.New(), uuid.New(), post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if design := draftDesignOf(got); design == nil || !reflect.DeepEqual(*design, specDesign) {
+		t.Fatalf("cleared draft design = %+v", design)
+	}
+	sent, facts, refusal, err := inheritDesign(t, &fakeDraftCreateInputs{input: got}, designSite(), editOps(opsInsertSection, ""))
+	if err != nil || refusal != nil || facts.design == nil {
+		t.Fatalf("cleared draft edit: err=%v refusal=%v", err, refusal)
+	}
+	if _, code := validatePageEditInput(sent); code != "" {
+		t.Fatalf("cleared draft edit invalid: %s", code)
 	}
 }

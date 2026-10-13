@@ -8068,7 +8068,7 @@ export const AbilityTenantReenableResultSchema = {
 export const AbilityRequestSchema = {
   type: "object",
   description:
-    "One AI site-change request. `site_label`, `site_host`, `grant_label`\nand `title_excerpt` came from a site or an AI connection: render each\nas plain text. `input_json` is the exact input the AI chose, shown in\nfull on the card.\n",
+    "One AI site-change request. `site_label`, `site_host`, `grant_label`\nand `title_excerpt` came from a site or an AI connection: render each\nas plain text. `input_json` is the exact input the AI chose, shown in\nfull on the card until content_cleared_at is set, when input_json is {}.\n",
   required: [
     "id",
     "site_id",
@@ -8101,6 +8101,12 @@ export const AbilityRequestSchema = {
     },
     input_json: {
       type: "string",
+    },
+    content_cleared_at: {
+      type: ["string", "null"],
+      format: "date-time",
+      description:
+        "When request details were cleared after the retention period.",
     },
     title_excerpt: {
       type: "string",
@@ -8258,14 +8264,16 @@ export const AbilityRequestSchema = {
         "The route hash the request was approved against; null otherwise.",
     },
     card_facts: {
-      allOf: [
+      anyOf: [
         {
           $ref: "#/components/schemas/AbilityRequestCardFacts",
         },
+        {
+          type: "null",
+        },
       ],
-      nullable: true,
       description:
-        "The structured card of a wpmgr/rest-write request; null otherwise.",
+        "The structured card of a wpmgr/rest-write request; null for cleared requests and other abilities.",
     },
     page_media: {
       type: "array",
