@@ -14,8 +14,9 @@ if (!defined('ABSPATH')) {
  * document: {widget: string, atomic: false, controls: map<id, control>}.
  * A control has type, optional label/default, options (a list of option keys),
  * units (a list of slider/dimensions units), multiple (select2 boolean),
- * responsive (true, false, or {min?: breakpoint, max?: breakpoint}),
- * group (typography, background, border or box_shadow), and activator
+ * responsive (true, false, or {min?: breakpoint, max?: breakpoint, devices?: list}),
+ * return_value (a nonempty string for switches; switcher defaults to yes),
+ * group (typography, background, border, shadow, stroke or filter), and activator
  * ({key: control id, values: nonempty list<string>}). Repeater fields are a
  * map of row control ids to the same control shape. Group members carry both
  * group and activator; the activator control may carry them too.

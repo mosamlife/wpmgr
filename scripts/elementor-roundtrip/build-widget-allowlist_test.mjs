@@ -10,7 +10,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'widget-allowlist-test-'));
 const versions = ['3.20.4', '3.35.9', '4.3.4'];
 const control = (id, type = 'text', extra = {}) => ({
-  id, type, options: [], default: '', responsive: null, group: null, fields: [], ...extra,
+  id, type, ...(['switcher', 'popover_toggle'].includes(type) ? { return_value: 'yes' } : {}), options: [], default: '', responsive: null, group: null, fields: [], ...extra,
 });
 const widget = (name, controls = [control('title')]) => ({ name, title: name, controls });
 const dump = (version, widgets) => ({ schema_version: 2, elementor_version: version, widgets });
@@ -42,7 +42,7 @@ try {
   const excluded = ['html', 'shortcode', 'template', 'text-path', 'menu-anchor', 'sidebar',
     'wp-widget-search', 'e-heading', 'nested-tabs'];
   files.forEach((file, i) => {
-    const heading = [control('title'), control('align', 'choose', {
+    const heading = [control('enabled', 'switcher', { return_value: i === 0 ? 'yes' : 'enabled' }), control('title_typography', 'popover_toggle', { return_value: 'custom' }), control('title'), control('align', 'choose', {
       options: i === 0 ? ['left'] : ['left', 'right'], default: i === 0 ? 'left' : 'right',
     })];
     if (i === 1) heading.push(control('middle_only'));
@@ -82,6 +82,12 @@ try {
     assert.equal(heading.controls.find(c => c.id === 'font_size').definitions[0].group.activator, 'title_typography');
     assert.equal(data.widgets[1].controls[0].definitions[0].fields[1].type, 'url');
   });
+  test('switch return values survive version definitions', () => {
+    const heading = JSON.parse(fs.readFileSync(output, 'utf8')).widgets[0];
+    assert.equal(heading.controls.find(c => c.id === 'title_typography').definitions[0].return_value, 'custom');
+    assert.deepEqual(heading.controls.find(c => c.id === 'enabled').definitions.map(d => d.return_value).sort(), ['enabled', 'yes']);
+  });
+  rejected('non-string switch return value is refused', () => fs.writeFileSync(files[0], JSON.stringify(dump(versions[0], [widget('heading', [control('enabled', 'switcher', { return_value: true })])]))));
   test('skipped controls retain their source version and never gain that version in the allowlist', () => {
     const heading = JSON.parse(fs.readFileSync(output, 'utf8')).widgets[0];
     assert.deepEqual(heading.controls_skipped, {

@@ -7,6 +7,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -221,7 +222,7 @@ func TestNativeControlDetails(t *testing.T) {
 		{"extra control member", func() { control["unknown"] = true }, func() { delete(control, "unknown") }},
 		{"missing control member", func() { delete(control, "type") }, func() { control["type"] = "text" }},
 		{"bad control id", func() { controls["bad id"] = control }, func() { delete(controls, "bad id") }},
-		{"bad option key", func() { control["options"] = []any{"bad<key"} }, func() { control["options"] = []any{"left"} }},
+		{"non-string option key", func() { control["options"] = []any{false} }, func() { control["options"] = []any{"left"} }},
 		{"extra responsive member", func() { control["responsive"].(map[string]any)["extra"] = true }, func() { delete(control["responsive"].(map[string]any), "extra") }},
 		{"missing group member", func() { delete(control["group"].(map[string]any), "activator") }, func() { control["group"].(map[string]any)["activator"] = "typography_typography" }},
 		{"bad repeater id", func() { control["fields"].(map[string]any)["bad id"] = control["fields"].(map[string]any)["caption"] }, func() { delete(control["fields"].(map[string]any), "bad id") }},
@@ -389,8 +390,8 @@ func TestElementorOptionKeys(t *testing.T) {
 			raw := strings.Replace(nativeControls, `["left"]`, string(mustElementorJSON(t, []string{c.key})), 1)
 			out, bad := fenceElementorRead(AbilityElementorWidgetSchema, []byte(raw), elementorReadMaxBytes)
 			if c.bad {
-				if !bad || string(out) != "null" {
-					t.Errorf("malformed option accepted: %s", out)
+				if bad || !strings.Contains(string(out), `"options":[]`) {
+					t.Errorf("unsupported option key must be omitted: %s", out)
 				}
 				return
 			}
@@ -457,5 +458,21 @@ func TestElementorOptionGuidance(t *testing.T) {
 	raw := mustElementorJSON(t, answer)
 	if len(raw) > abilityDiscoverReservedBytes {
 		t.Errorf("guidance exceeds discover's reserved bytes: %d > %d", len(raw), abilityDiscoverReservedBytes)
+	}
+}
+
+func TestElementorCounterSeparatorsOmitted(t *testing.T) {
+	raw := strings.Replace(nativeControls, `["left"]`, `["."," ","'","comma"]`, 1)
+	out, bad := fenceElementorRead(AbilityElementorWidgetSchema, []byte(raw), elementorReadMaxBytes)
+	if bad {
+		t.Fatalf("counter schema refused: %s", out)
+	}
+	var top map[string]any
+	if err := json.Unmarshal(out, &top); err != nil {
+		t.Fatal(err)
+	}
+	options := top["controls"].(map[string]any)["title"].(map[string]any)["options"]
+	if !reflect.DeepEqual(options, []any{"comma"}) {
+		t.Fatalf("options = %v", options)
 	}
 }

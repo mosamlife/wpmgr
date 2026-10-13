@@ -8,6 +8,8 @@ use Brain\Monkey;
 use Brain\Monkey\Functions;
 use WPMgr\Agent\Abilities\Builders\ElementorFacts;
 use WPMgr\Agent\Abilities\Builders\ElementorWidgetDiscovery;
+use WPMgr\Agent\Abilities\Builders\NativeWidgetPolicy;
+use WPMgr\Agent\Abilities\Builders\NativeSettingsValidator;
 use WPMgr\Agent\Abilities\OwnAbilities;
 use WPMgr\Agent\Autoloader;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
@@ -98,6 +100,70 @@ final class ElementorWidgetDiscoveryTest extends TestCase
         $this->assertSame(['a', 'b'], $fields['kind']['options']);
         $this->assertStringNotContainsString('Human option label', json_encode($out, JSON_THROW_ON_ERROR));
         $this->assertArrayNotHasKey('tabs', $out);
+    }
+
+    public function test_single_control_and_parent_chain_windows(): void
+    {
+        $this->api->activeBreakpoints = ['widescreen', 'laptop', 'tablet', 'mobile'];
+        $this->api->widgetControls['heading'] = [
+            'size' => ['type' => 'slider', 'is_responsive' => true, 'responsive' => []],
+            'desktop_only' => ['type' => 'slider', 'responsive' => ['max' => 'desktop']],
+            'limited' => ['type' => 'slider', 'is_responsive' => true, 'responsive' => ['devices' => ['tablet', 'mobile_extra']]],
+            'align' => ['type' => 'choose', 'responsive' => ['max' => 'desktop']],
+            'align_widescreen' => ['type' => 'choose', 'responsive' => ['min' => 'widescreen'], 'parent' => 'align'],
+            'align_tablet' => ['type' => 'choose', 'responsive' => ['max' => 'tablet'], 'parent' => 'align'],
+            'align_mobile' => ['type' => 'choose', 'responsive' => ['max' => 'mobile'], 'parent' => 'align_tablet'],
+        ];
+        $out = $this->schema(['widget' => 'heading', 'controls' => ['size', 'limited', 'align', 'desktop_only']]);
+        $controls = (array) $out['controls'];
+        $this->assertSame(['widescreen', 'desktop', 'laptop', 'tablet', 'mobile'], $controls['size']['responsive']['devices']);
+        $this->assertSame(['desktop'], $controls['desktop_only']['responsive']['devices']);
+        $this->assertSame(['tablet'], $controls['limited']['responsive']['devices']);
+        $this->assertSame(['widescreen', 'desktop', 'tablet', 'mobile'], $controls['align']['responsive']['devices']);
+        $skeleton = $this->schema(['widget' => 'heading']);
+        $this->assertSame(['size', 'desktop_only', 'limited', 'align'], array_column($skeleton['tabs'][0]['sections'][0]['controls'], 'id'));
+        $r = (new ElementorWidgetDiscovery($this->api))->schema((object) ['widget' => 'heading', 'controls' => ['align_mobile']]);
+        $this->assertSame('control_not_found', $r['refusal']['code']);
+        $this->api->widgetControls['heading']['align_mobile']['parent'] = 'align_mobile';
+        $r = (new ElementorWidgetDiscovery($this->api))->schema((object) ['widget' => 'heading']);
+        $this->assertSame('widget_schema_unreadable', $r['refusal']['code']);
+    }
+
+    public function test_popover_starter_resolves_one_member_family(): void
+    {
+        $this->api->widgetControls['heading'] = [
+            'title_typography' => ['type' => 'popover_toggle', 'groupPrefix' => 'title_', 'return_value' => 'custom'],
+            'title_font_size' => ['type' => 'slider', 'groupPrefix' => 'title_', 'groupType' => 'typography', 'condition' => ['title_typography!' => '']],
+        ];
+        $out = $this->schema(['widget' => 'heading', 'controls' => ['title_typography', 'title_font_size']]);
+        $controls = (array) $out['controls'];
+        $this->assertSame('custom', $controls['title_typography']['return_value']);
+        $this->assertSame($controls['title_font_size']['group'], $controls['title_typography']['group']);
+        $this->assertSame('title_typography', $controls['title_typography']['group']['activator']);
+        $this->api->widgetControls['heading']['title_other'] = ['type' => 'slider', 'groupPrefix' => 'title_', 'groupType' => 'border'];
+        $out = $this->schema(['widget' => 'heading', 'controls' => ['title_typography']]);
+        $this->assertNull(((array) $out['controls'])['title_typography']['group']);
+    }
+
+    public function test_cut_schema_preserves_popover_activation_and_device_list(): void
+    {
+        $this->api->widgetControls['heading'] = [
+            'title_typography' => ['type' => 'popover_toggle', 'groupPrefix' => 'title_', 'return_value' => 'custom'],
+            'title_font_size' => ['type' => 'slider', 'groupPrefix' => 'title_', 'groupType' => 'typography', 'condition' => ['title_typography!' => ''], 'size_units' => ['px'], 'is_responsive' => true, 'responsive' => ['devices' => ['mobile']]],
+        ];
+        $this->api->widgetTypes = ['heading'];
+        $this->api->coreWidgets = ['heading'];
+        $policy = new NativeWidgetPolicy($this->api);
+        $schema = $policy->schema('heading', [], ['title_font_size_mobile'], ['tablet', 'mobile']);
+        $this->assertNotNull($schema);
+        $this->assertSame(['custom'], $schema->document['controls']['title_font_size']['activator']['values']);
+        $this->assertSame(['devices' => ['mobile']], $schema->document['controls']['title_font_size']['responsive']);
+        $patch = ['title_typography' => 'custom', 'title_font_size_mobile' => ['unit' => 'px', 'size' => '24']];
+        $this->assertTrue(NativeSettingsValidator::validateWritten($schema, [], $patch, $patch, ['tablet', 'mobile'])['ok']);
+        $patch['title_typography'] = '';
+        $this->assertFalse(NativeSettingsValidator::validateWritten($schema, [], $patch, $patch, ['tablet', 'mobile'])['ok']);
+        $schema = $policy->schema('heading', [], ['title_typography'], ['mobile']);
+        $this->assertArrayHasKey('title_font_size', $schema->document['controls']);
     }
 
     public function test_big_widget_skeleton_can_be_drilled_down_without_shipping_all_defaults(): void
@@ -295,9 +361,9 @@ final class ElementorWidgetDiscoveryTest extends TestCase
             ]],
             'section_style' => ['type' => 'section', 'tab' => 'style'],
             'typography_typography' => $style + $group + ['type' => 'select', 'options' => ['' => 'Default', 'custom' => 'Custom']],
-            'typography_font_size' => $style + $group + ['type' => 'slider', 'responsive' => ['max' => 'desktop'], 'condition' => ['typography_typography' => 'custom'], 'size_units' => ['px', 'em'], 'range' => ['px' => ['min' => 1, 'max' => 100]]],
-            'align' => $style + ['type' => 'choose', 'responsive' => ['min' => 'mobile', 'max' => 'tablet']],
-            'align_tablet' => $style + ['type' => 'choose', 'responsive' => ['min' => 'tablet', 'max' => 'tablet']],
+            'typography_font_size' => $style + $group + ['type' => 'slider', 'is_responsive' => true, 'responsive' => [], 'condition' => ['typography_typography' => 'custom'], 'size_units' => ['px', 'em'], 'range' => ['px' => ['min' => 1, 'max' => 100]]],
+            'align' => $style + ['type' => 'choose', 'is_responsive' => true, 'responsive' => ['devices' => ['tablet', 'mobile']]],
+            'align_tablet' => $style + ['type' => 'choose', 'is_responsive' => true, 'responsive' => ['devices' => ['tablet']]],
             'ui_heading' => $style + ['type' => 'heading'],
             'custom_css' => $style + ['type' => 'code'],
             'motion_fx_translate' => $style + ['type' => 'slider'],

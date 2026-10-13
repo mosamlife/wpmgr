@@ -121,7 +121,7 @@ type nativePolicyState struct {
 
 var nativeBreakpoints = []string{"mobile", "mobile_extra", "tablet", "tablet_extra", "laptop", "desktop", "widescreen"}
 var nativeUnits = []string{"px", "em", "rem", "%", "vh", "vw", "vmin", "vmax", "ch", "ex"}
-var nativeTypes = []string{"text", "textarea", "wysiwyg", "number", "slider", "dimensions", "color", "select", "select2", "choose", "switcher", "url", "media", "icons", "font", "box_shadow", "repeater"}
+var nativeTypes = []string{"text", "textarea", "wysiwyg", "number", "slider", "dimensions", "color", "select", "select2", "choose", "switcher", "popover_toggle", "url", "media", "icons", "font", "box_shadow", "text_shadow", "repeater"}
 var nativeDeniedKeys = []string{"__globals__", "__dynamic__", "custom_css", "_attributes", "custom_attributes", "_css_classes", "_element_id", "_element_cache"}
 var nativeWidgetPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 var nativeDecimal = regexp.MustCompile(`^-?(?:0|[1-9][0-9]{0,5})(?:\.[0-9]{1,4})?$`)
@@ -420,8 +420,19 @@ func nativeResponsive(window any, b string, active []string) bool {
 		return false
 	}
 	for _, p := range w {
-		if p.key != "min" && p.key != "max" {
+		if p.key != "min" && p.key != "max" && p.key != "devices" {
 			return false
+		}
+	}
+	if nativeHas(w, "devices") {
+		devices, ok := nativeStrings(nativeGet(w, "devices"), true)
+		if !ok || !slices.Contains(devices, b) {
+			return false
+		}
+		for _, d := range devices {
+			if !slices.Contains(nativeBreakpoints, d) {
+				return false
+			}
 		}
 	}
 	min, max := "mobile", "widescreen"
@@ -436,18 +447,8 @@ func nativeResponsive(window any, b string, active []string) bool {
 }
 
 func nativeOwnedResponsive(w *elementornative.Window, b string) bool {
-	if w == nil || !slices.Contains(w.Devices, b) {
-		return false
-	}
-	lo, hi := 0, len(nativeBreakpoints)-1
-	if w.Min != nil {
-		lo = slices.Index(nativeBreakpoints, *w.Min)
-	}
-	if w.Max != nil {
-		hi = slices.Index(nativeBreakpoints, *w.Max)
-	}
-	i := slices.Index(nativeBreakpoints, b)
-	return i >= lo && i <= hi
+	// The dump folds registered device variants into this exact device set.
+	return w != nil && slices.Contains(w.Devices, b)
 }
 
 func nativeUnknownOverride(key string, controls any) bool {
@@ -625,6 +626,23 @@ func (s *nativePolicyState) control(key string, controls any, owned map[string]e
 	if !slices.Contains(nativeTypes, typ) {
 		return nil, "this control type has no supported safe shape"
 	}
+	if typ == "switcher" || typ == "popover_toggle" {
+		liveReturn, valid := nativeSwitchReturn(c)
+		if !valid {
+			return nil, "supply a nonempty switch return value"
+		}
+		if owned != nil {
+			ownedReturn := ""
+			if ceiling.ReturnValue != nil {
+				ownedReturn = *ceiling.ReturnValue
+			} else if typ == "switcher" {
+				ownedReturn = "yes"
+			}
+			if liveReturn != ownedReturn {
+				return nil, "use the owned switch return value"
+			}
+		}
+	}
 	active, _ := nativeStrings(s.active, true)
 	_, chained := nativeSplit(base)
 	if b != "" && (chained != "" || !nativeResponsive(nativeGet(c, "responsive"), b, active) || (owned != nil && !nativeOwnedResponsive(ceiling.Responsive, b))) {
@@ -663,6 +681,17 @@ func (s *nativePolicyState) control(key string, controls any, owned map[string]e
 				return nil, "supply the owned group activating values"
 			}
 			allowed := nativeGroupValues(g.Family)
+			if root, exists := owned[*g.Activator]; exists && root.Type == "popover_toggle" {
+				if root.ReturnValue == nil || *root.ReturnValue == "" {
+					return nil, "supply the owned popover return value"
+				}
+				liveRoot, ok := nativeMap(nativeGet(controls, *g.Activator))
+				liveReturn, valid := nativeSwitchReturn(liveRoot)
+				if !ok || !valid || nativeString(nativeGet(liveRoot, "type")) != root.Type || liveReturn != *root.ReturnValue {
+					return nil, "use the owned group return value"
+				}
+				allowed = []string{*root.ReturnValue}
+			}
 			next := []string{}
 			for _, v := range values {
 				if slices.Contains(allowed, v) {
@@ -683,8 +712,10 @@ func nativeGroupValues(group string) []string {
 		return []string{"classic", "gradient"}
 	case "border":
 		return []string{"solid", "double", "dotted", "dashed", "groove"}
-	case "box_shadow":
+	case "box_shadow", "box-shadow", "text-shadow", "text-stroke":
 		return []string{"yes"}
+	case "css-filter":
+		return []string{"custom"}
 	}
 	return nil
 }
@@ -726,11 +757,22 @@ func (s *nativePolicyState) settings(controls any, owned map[string]elementornat
 		if typ == "box_shadow" && group == "" {
 			group = "box_shadow"
 		}
+		if typ == "text_shadow" && group == "" {
+			group = "text-shadow"
+		}
 		if group != "" {
 			a := nativeGet(c, "activator")
 			key := nativeString(nativeGet(a, "key"))
 			values, ok := nativeStrings(nativeGet(a, "values"), false)
-			if !slices.Contains([]string{"typography", "background", "border", "box_shadow"}, group) || !ok || key == "" || !nativeHas(controls, key) || (base != key && !nativeContainsString(values, nativeGet(context, key))) {
+			root, _ := nativeMap(nativeGet(controls, key))
+			popover := nativeString(nativeGet(root, "type")) == "popover_toggle"
+			ret, validReturn := nativeSwitchReturn(root)
+			activationOK := nativeContainsString(values, nativeGet(context, key))
+			if popover {
+				ok = ok && validReturn && slices.Contains(values, ret)
+				activationOK = nativeGet(context, key) == ret
+			}
+			if !slices.Contains([]string{"typography", "background", "border", "box_shadow", "box-shadow", "text-shadow", "text-stroke", "css-filter"}, group) || !ok || key == "" || !nativeHas(controls, key) || (base != key && !activationOK) {
 				s.fail(path, p.key, "supply this group activator with one of its activating values")
 				continue
 			}
@@ -902,11 +944,12 @@ func (s *nativePolicyState) valueProblem(c phpObject, value any, written, rich b
 			return ""
 		}
 		return "choose one of the offered option keys"
-	case "switcher":
-		if nativeFlag(value, "yes") {
+	case "switcher", "popover_toggle":
+		ret, valid := nativeSwitchReturn(c)
+		if valid && isString && (v == "" || v == ret) {
 			return ""
 		}
-		return "write yes or the empty string"
+		return "write the control return value or the empty string"
 	case "url":
 		if !nativeMembers(value, "url", "is_external", "nofollow") || !nativeFlag(nativeGet(value, "is_external"), "on") || !nativeFlag(nativeGet(value, "nofollow"), "on") {
 			return "write exactly url, is_external and nofollow with on or empty flags"
@@ -940,11 +983,16 @@ func (s *nativePolicyState) valueProblem(c phpObject, value any, written, rich b
 			return ""
 		}
 		return "use a font family of letters, digits and spaces"
-	case "box_shadow":
-		if !nativeMembers(value, "horizontal", "vertical", "blur", "spread", "color") {
-			return "write one shadow with horizontal, vertical, blur, spread and color"
+	case "box_shadow", "text_shadow":
+		offsets := []string{"horizontal", "vertical", "blur"}
+		if typ == "box_shadow" {
+			offsets = append(offsets, "spread")
 		}
-		for _, k := range []string{"horizontal", "vertical", "blur", "spread"} {
+		members := append(slices.Clone(offsets), "color")
+		if !nativeMembers(value, members...) {
+			return "write one shadow with exact offsets and color"
+		}
+		for _, k := range offsets {
 			n, ok := nativeGet(value, k).(string)
 			if !ok || !nativeShadowOffset.MatchString(n) {
 				return "write bounded whole numeric shadow offsets"
@@ -1244,4 +1292,15 @@ func (s *nativePolicyState) validateNode(node any) {
 		settings := nativeGet(node, "settings")
 		s.validateWritten(phpObject{}, settings, settings)
 	}
+}
+
+func nativeSwitchReturn(c phpObject) (string, bool) {
+	if nativeHas(c, "return_value") {
+		v, ok := nativeGet(c, "return_value").(string)
+		return v, ok && v != ""
+	}
+	if nativeString(nativeGet(c, "type")) == "switcher" {
+		return "yes", true
+	}
+	return "", false
 }

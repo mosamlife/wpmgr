@@ -46,7 +46,7 @@ namespace {
     $raw = [
         'header_size' => ['type' => 'select', 'options' => array_fill_keys(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'div', 'span', 'p'], 'Tag')],
         'title_color' => ['type' => 'color'],
-        'typography_typography' => ['type' => 'popover_toggle', 'groupType' => 'typography', 'groupPrefix' => 'typography_'],
+        'typography_typography' => ['type' => 'popover_toggle', 'return_value' => 'custom', 'groupType' => 'typography', 'groupPrefix' => 'typography_'],
         'typography_font_family' => ['type' => 'font', 'groupType' => 'typography', 'groupPrefix' => 'typography_'],
         '_margin' => ['type' => 'dimensions', 'responsive' => ['max' => 'desktop']],
         '_margin_tablet' => ['type' => 'dimensions', 'parent' => '_margin', 'responsive' => ['min' => 'mobile', 'max' => 'tablet']],

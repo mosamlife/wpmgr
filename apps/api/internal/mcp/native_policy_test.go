@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/elementornative"
 )
 
 func nativeTestValue(t *testing.T, raw json.RawMessage) any {
@@ -372,5 +374,46 @@ func TestNativeReadOnlyAndBounds(t *testing.T) {
 		if CheckNativeSettings(i).OK {
 			t.Fatalf("invalid unicode accepted in %s", field)
 		}
+	}
+}
+
+func TestNativeOwnedSwitchReturnValues(t *testing.T) {
+	for _, typ := range []string{"switcher", "popover_toggle"} {
+		for _, tc := range []struct {
+			name, liveReturn, value string
+			ok                      bool
+		}{
+			{"agrees", "enabled", "enabled", true}, {"off", "enabled", "", true},
+			{"wrong value", "enabled", "yes", false}, {"disagrees", "yes", "yes", false},
+			{"disagrees off", "yes", "", false}, {"missing live", "", "enabled", false},
+		} {
+			t.Run(typ+"/"+tc.name, func(t *testing.T) {
+				own := []byte(`{"type":"` + typ + `","return_value":"enabled","options":[],"fields":[]}`)
+				var c elementornative.Control
+				if err := json.Unmarshal(own, &c); err != nil {
+					t.Fatal(err)
+				}
+				live := map[string]any{"type": typ}
+				if tc.liveReturn != "" {
+					live["return_value"] = tc.liveReturn
+				}
+				schema, _ := json.Marshal(map[string]any{"widget": "heading", "atomic": false, "controls": map[string]any{"toggle": live}})
+				patch, _ := json.Marshal(map[string]string{"toggle": tc.value})
+				state := nativePolicyState{schema: nativeTestValue(t, schema), owned: map[string]elementornative.Control{"toggle": c}, active: phpList{}}
+				written := nativeTestValue(t, patch)
+				state.validateWritten(phpObject{}, written, written)
+				if (len(state.failures) == 0) != tc.ok {
+					t.Fatalf("ok=%v want %v: %+v", len(state.failures) == 0, tc.ok, state.failures)
+				}
+			})
+		}
+	}
+}
+
+func TestNativeOwnedRegisteredDeviceWindow(t *testing.T) {
+	desktop := "desktop"
+	w := &elementornative.Window{Max: &desktop, Devices: []string{"desktop", "widescreen", "tablet"}}
+	if !nativeOwnedResponsive(w, "widescreen") || !nativeOwnedResponsive(w, "tablet") || nativeOwnedResponsive(w, "mobile") {
+		t.Fatal("owned responsive window must follow registered devices")
 	}
 }

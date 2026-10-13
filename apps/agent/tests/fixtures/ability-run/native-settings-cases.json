@@ -9007,5 +9007,958 @@
     "breakpoints": [],
     "expected": "ok",
     "operation": "written"
+  },
+  {
+    "name": "N13 typography on size and weight",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "typography_typography": {
+          "type": "popover_toggle",
+          "return_value": "custom",
+          "group": "typography",
+          "activator": {
+            "key": "typography_typography",
+            "values": [
+              "custom"
+            ]
+          }
+        },
+        "typography_font_size": {
+          "type": "slider",
+          "units": [
+            "px"
+          ],
+          "responsive": {
+            "devices": [
+              "tablet",
+              "mobile"
+            ]
+          },
+          "group": "typography",
+          "activator": {
+            "key": "typography_typography",
+            "values": [
+              "custom"
+            ]
+          }
+        },
+        "typography_font_weight": {
+          "type": "select",
+          "options": [
+            "400",
+            "700"
+          ],
+          "group": "typography",
+          "activator": {
+            "key": "typography_typography",
+            "values": [
+              "custom"
+            ]
+          }
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "typography_typography": "custom",
+      "typography_font_size": {
+        "unit": "px",
+        "size": "24"
+      },
+      "typography_font_weight": "700"
+    },
+    "breakpoints": [
+      "tablet",
+      "mobile",
+      "laptop"
+    ],
+    "expected": "ok"
+  },
+  {
+    "name": "N13 typography off size refused",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "typography_typography": {
+          "type": "popover_toggle",
+          "return_value": "custom",
+          "group": "typography",
+          "activator": {
+            "key": "typography_typography",
+            "values": [
+              "custom"
+            ]
+          }
+        },
+        "typography_font_size": {
+          "type": "slider",
+          "units": [
+            "px"
+          ],
+          "responsive": {
+            "devices": [
+              "tablet",
+              "mobile"
+            ]
+          },
+          "group": "typography",
+          "activator": {
+            "key": "typography_typography",
+            "values": [
+              "custom"
+            ]
+          }
+        },
+        "typography_font_weight": {
+          "type": "select",
+          "options": [
+            "400",
+            "700"
+          ],
+          "group": "typography",
+          "activator": {
+            "key": "typography_typography",
+            "values": [
+              "custom"
+            ]
+          }
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "typography_typography": "",
+      "typography_font_size": {
+        "unit": "px",
+        "size": "24"
+      }
+    },
+    "breakpoints": [
+      "tablet",
+      "mobile",
+      "laptop"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "typography_font_size"
+      ]
+    }
+  },
+  {
+    "name": "N13 popover wrong value refused",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "typography_typography": {
+          "type": "popover_toggle",
+          "return_value": "custom",
+          "group": "typography",
+          "activator": {
+            "key": "typography_typography",
+            "values": [
+              "custom"
+            ]
+          }
+        },
+        "typography_font_size": {
+          "type": "slider",
+          "units": [
+            "px"
+          ],
+          "responsive": {
+            "devices": [
+              "tablet",
+              "mobile"
+            ]
+          },
+          "group": "typography",
+          "activator": {
+            "key": "typography_typography",
+            "values": [
+              "custom"
+            ]
+          }
+        },
+        "typography_font_weight": {
+          "type": "select",
+          "options": [
+            "400",
+            "700"
+          ],
+          "group": "typography",
+          "activator": {
+            "key": "typography_typography",
+            "values": [
+              "custom"
+            ]
+          }
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "typography_typography": "yes"
+    },
+    "breakpoints": [
+      "tablet",
+      "mobile",
+      "laptop"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "typography_typography"
+      ]
+    }
+  },
+  {
+    "name": "N13 custom switch enabled",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "enabled": {
+          "type": "switcher",
+          "return_value": "enabled"
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "enabled": "enabled"
+    },
+    "breakpoints": [
+      "tablet",
+      "mobile",
+      "laptop"
+    ],
+    "expected": "ok"
+  },
+  {
+    "name": "N13 custom switch yes",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "enabled": {
+          "type": "switcher",
+          "return_value": "enabled"
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "enabled": "yes"
+    },
+    "breakpoints": [
+      "tablet",
+      "mobile",
+      "laptop"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "enabled"
+      ]
+    }
+  },
+  {
+    "name": "N13 custom switch off",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "enabled": {
+          "type": "switcher",
+          "return_value": "enabled"
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "enabled": ""
+    },
+    "breakpoints": [
+      "tablet",
+      "mobile",
+      "laptop"
+    ],
+    "expected": "ok"
+  },
+  {
+    "name": "N13 popover custom",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "toggle": {
+          "type": "popover_toggle",
+          "return_value": "custom"
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "toggle": "custom"
+    },
+    "breakpoints": [
+      "tablet",
+      "mobile",
+      "laptop"
+    ],
+    "expected": "ok"
+  },
+  {
+    "name": "N13 popover off",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "toggle": {
+          "type": "popover_toggle",
+          "return_value": "custom"
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "toggle": ""
+    },
+    "breakpoints": [
+      "tablet",
+      "mobile",
+      "laptop"
+    ],
+    "expected": "ok"
+  },
+  {
+    "name": "N13 popover yes",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "toggle": {
+          "type": "popover_toggle",
+          "return_value": "custom"
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "toggle": "yes"
+    },
+    "breakpoints": [
+      "tablet",
+      "mobile",
+      "laptop"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "toggle"
+      ]
+    }
+  },
+  {
+    "name": "N13 popover missing return refused",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "toggle": {
+          "type": "popover_toggle"
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "toggle": ""
+    },
+    "breakpoints": [
+      "tablet",
+      "mobile",
+      "laptop"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "toggle"
+      ]
+    }
+  },
+  {
+    "name": "N13 responsive listed",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "typography_typography": {
+          "type": "popover_toggle",
+          "return_value": "custom",
+          "group": "typography",
+          "activator": {
+            "key": "typography_typography",
+            "values": [
+              "custom"
+            ]
+          }
+        },
+        "typography_font_size": {
+          "type": "slider",
+          "units": [
+            "px"
+          ],
+          "responsive": {
+            "devices": [
+              "tablet",
+              "mobile"
+            ]
+          },
+          "group": "typography",
+          "activator": {
+            "key": "typography_typography",
+            "values": [
+              "custom"
+            ]
+          }
+        },
+        "typography_font_weight": {
+          "type": "select",
+          "options": [
+            "400",
+            "700"
+          ],
+          "group": "typography",
+          "activator": {
+            "key": "typography_typography",
+            "values": [
+              "custom"
+            ]
+          }
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "typography_typography": "custom",
+      "typography_font_size_mobile": {
+        "unit": "px",
+        "size": "24"
+      }
+    },
+    "breakpoints": [
+      "tablet",
+      "mobile",
+      "laptop"
+    ],
+    "expected": "ok"
+  },
+  {
+    "name": "N13 responsive unlisted refused",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "typography_typography": {
+          "type": "popover_toggle",
+          "return_value": "custom",
+          "group": "typography",
+          "activator": {
+            "key": "typography_typography",
+            "values": [
+              "custom"
+            ]
+          }
+        },
+        "typography_font_size": {
+          "type": "slider",
+          "units": [
+            "px"
+          ],
+          "responsive": {
+            "devices": [
+              "tablet",
+              "mobile"
+            ]
+          },
+          "group": "typography",
+          "activator": {
+            "key": "typography_typography",
+            "values": [
+              "custom"
+            ]
+          }
+        },
+        "typography_font_weight": {
+          "type": "select",
+          "options": [
+            "400",
+            "700"
+          ],
+          "group": "typography",
+          "activator": {
+            "key": "typography_typography",
+            "values": [
+              "custom"
+            ]
+          }
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "typography_typography": "custom",
+      "typography_font_size_laptop": {
+        "unit": "px",
+        "size": "24"
+      }
+    },
+    "breakpoints": [
+      "tablet",
+      "mobile",
+      "laptop"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "typography_font_size_laptop"
+      ]
+    }
+  },
+  {
+    "name": "N13 box-shadow activation",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "toggle": {
+          "type": "popover_toggle",
+          "return_value": "yes",
+          "group": "box-shadow",
+          "activator": {
+            "key": "toggle",
+            "values": [
+              "yes"
+            ]
+          }
+        },
+        "size": {
+          "type": "slider",
+          "units": [
+            "px"
+          ],
+          "group": "box-shadow",
+          "activator": {
+            "key": "toggle",
+            "values": [
+              "yes"
+            ]
+          }
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "toggle": "yes",
+      "size": {
+        "unit": "px",
+        "size": "2"
+      }
+    },
+    "breakpoints": [
+      "tablet",
+      "mobile",
+      "laptop"
+    ],
+    "expected": "ok"
+  },
+  {
+    "name": "N13 text-shadow activation",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "toggle": {
+          "type": "popover_toggle",
+          "return_value": "yes",
+          "group": "text-shadow",
+          "activator": {
+            "key": "toggle",
+            "values": [
+              "yes"
+            ]
+          }
+        },
+        "size": {
+          "type": "slider",
+          "units": [
+            "px"
+          ],
+          "group": "text-shadow",
+          "activator": {
+            "key": "toggle",
+            "values": [
+              "yes"
+            ]
+          }
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "toggle": "yes",
+      "size": {
+        "unit": "px",
+        "size": "2"
+      }
+    },
+    "breakpoints": [
+      "tablet",
+      "mobile",
+      "laptop"
+    ],
+    "expected": "ok"
+  },
+  {
+    "name": "N13 text-stroke activation",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "toggle": {
+          "type": "popover_toggle",
+          "return_value": "yes",
+          "group": "text-stroke",
+          "activator": {
+            "key": "toggle",
+            "values": [
+              "yes"
+            ]
+          }
+        },
+        "size": {
+          "type": "slider",
+          "units": [
+            "px"
+          ],
+          "group": "text-stroke",
+          "activator": {
+            "key": "toggle",
+            "values": [
+              "yes"
+            ]
+          }
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "toggle": "yes",
+      "size": {
+        "unit": "px",
+        "size": "2"
+      }
+    },
+    "breakpoints": [
+      "tablet",
+      "mobile",
+      "laptop"
+    ],
+    "expected": "ok"
+  },
+  {
+    "name": "N13 css-filter activation",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "toggle": {
+          "type": "popover_toggle",
+          "return_value": "custom",
+          "group": "css-filter",
+          "activator": {
+            "key": "toggle",
+            "values": [
+              "custom"
+            ]
+          }
+        },
+        "size": {
+          "type": "slider",
+          "units": [
+            "px"
+          ],
+          "group": "css-filter",
+          "activator": {
+            "key": "toggle",
+            "values": [
+              "custom"
+            ]
+          }
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "toggle": "custom",
+      "size": {
+        "unit": "px",
+        "size": "2"
+      }
+    },
+    "breakpoints": [
+      "tablet",
+      "mobile",
+      "laptop"
+    ],
+    "expected": "ok"
+  },
+  {
+    "name": "N13 text shadow on",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "toggle": {
+          "type": "popover_toggle",
+          "return_value": "yes",
+          "group": "text-shadow",
+          "activator": {
+            "key": "toggle",
+            "values": [
+              "yes"
+            ]
+          }
+        },
+        "shadow": {
+          "type": "text_shadow",
+          "group": "text-shadow",
+          "activator": {
+            "key": "toggle",
+            "values": [
+              "yes"
+            ]
+          }
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "toggle": "yes",
+      "shadow": {
+        "horizontal": "1",
+        "vertical": "2",
+        "blur": "3",
+        "color": "#AABBCC"
+      }
+    },
+    "breakpoints": [
+      "mobile"
+    ],
+    "expected": "ok"
+  },
+  {
+    "name": "N13 text shadow off",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "toggle": {
+          "type": "popover_toggle",
+          "return_value": "yes",
+          "group": "text-shadow",
+          "activator": {
+            "key": "toggle",
+            "values": [
+              "yes"
+            ]
+          }
+        },
+        "shadow": {
+          "type": "text_shadow",
+          "group": "text-shadow",
+          "activator": {
+            "key": "toggle",
+            "values": [
+              "yes"
+            ]
+          }
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "toggle": "",
+      "shadow": {
+        "horizontal": "1",
+        "vertical": "2",
+        "blur": "3",
+        "color": "#AABBCC"
+      }
+    },
+    "breakpoints": [
+      "mobile"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "shadow"
+      ]
+    }
+  },
+  {
+    "name": "N13 text shadow extra spread",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "toggle": {
+          "type": "popover_toggle",
+          "return_value": "yes",
+          "group": "text-shadow",
+          "activator": {
+            "key": "toggle",
+            "values": [
+              "yes"
+            ]
+          }
+        },
+        "shadow": {
+          "type": "text_shadow",
+          "group": "text-shadow",
+          "activator": {
+            "key": "toggle",
+            "values": [
+              "yes"
+            ]
+          }
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "toggle": "yes",
+      "shadow": {
+        "horizontal": "1",
+        "vertical": "2",
+        "blur": "3",
+        "spread": "4",
+        "color": "#AABBCC"
+      }
+    },
+    "breakpoints": [
+      "mobile"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "shadow"
+      ]
+    }
+  },
+  {
+    "name": "N13 text shadow negative blur",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "toggle": {
+          "type": "popover_toggle",
+          "return_value": "yes",
+          "group": "text-shadow",
+          "activator": {
+            "key": "toggle",
+            "values": [
+              "yes"
+            ]
+          }
+        },
+        "shadow": {
+          "type": "text_shadow",
+          "group": "text-shadow",
+          "activator": {
+            "key": "toggle",
+            "values": [
+              "yes"
+            ]
+          }
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "toggle": "yes",
+      "shadow": {
+        "horizontal": "1",
+        "vertical": "2",
+        "blur": "-3",
+        "color": "#AABBCC"
+      }
+    },
+    "breakpoints": [
+      "mobile"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "shadow"
+      ]
+    }
+  },
+  {
+    "name": "N13 text shadow without group refused",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "shadow": {
+          "type": "text_shadow"
+        }
+      }
+    },
+    "operation": "written",
+    "before": {},
+    "settings": {
+      "shadow": {
+        "horizontal": "1",
+        "vertical": "2",
+        "blur": "3",
+        "color": "#AABBCC"
+      }
+    },
+    "breakpoints": [
+      "mobile"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "shadow"
+      ]
+    }
   }
 ]

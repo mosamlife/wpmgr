@@ -39,7 +39,9 @@ function controls(list, at) {
       && (group.activator === null || token(group.activator))), `${at}.${control.id}: invalid group`);
     const fields = controls(control.fields, `${at}.${control.id}.fields`);
     demand(control.type === 'repeater' || fields.length === 0, `${at}.${control.id}: only repeaters have fields`);
-    return { id: control.id, type: control.type, options: [...control.options].sort(),
+    const switchType = ['switcher', 'popover_toggle'].includes(control.type);
+    demand(!switchType || (typeof control.return_value === 'string' && control.return_value !== ''), `${at}.${control.id}: invalid return_value`);
+    return { ...(switchType ? { return_value: control.return_value } : {}), id: control.id, type: control.type, options: [...control.options].sort(),
       responsive: responsive === null ? null : {
         min: responsive.min, max: responsive.max, devices: [...responsive.devices].sort(),
       }, group: group === null ? null : { family: group.family, activator: group.activator }, fields };

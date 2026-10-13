@@ -21,9 +21,9 @@ final class NativeSettingsValidator
 
     private const MAX_DEPTH = 8;
     private const MAX_SETTINGS_BYTES = 65536;
-    private const GROUPS = ['typography', 'background', 'border', 'box_shadow'];
+    private const GROUPS = ['typography', 'background', 'border', 'box_shadow', 'box-shadow', 'text-shadow', 'text-stroke', 'css-filter'];
     private const CONTROL_TYPES = ['text', 'textarea', 'wysiwyg', 'number', 'slider', 'dimensions', 'color',
-        'select', 'select2', 'choose', 'switcher', 'url', 'media', 'icons', 'font', 'box_shadow', 'repeater'];
+        'select', 'select2', 'choose', 'switcher', 'popover_toggle', 'url', 'media', 'icons', 'font', 'box_shadow', 'text_shadow', 'repeater'];
 
     /** Font icon libraries and their exact CSS class shapes; SVG is not a font icon. */
     private const ICONS = [
@@ -309,12 +309,21 @@ final class NativeSettingsValidator
             if ($control['type'] === 'box_shadow' && $group === null) {
                 $group = 'box_shadow';
             }
+            if ($control['type'] === 'text_shadow' && $group === null) {
+                $group = 'text-shadow';
+            }
             if ($group !== null) {
                 $activator = $control['activator'] ?? null;
+                $root = is_array($activator) && is_string($activator['key'] ?? null) ? ($controls[$activator['key']] ?? []) : [];
+                $popover = ($root['type'] ?? null) === 'popover_toggle';
+                $return = $root['return_value'] ?? null;
                 if (!in_array($group, self::GROUPS, true) || !self::map($activator)
                     || !is_string($activator['key'] ?? null) || !self::strings($activator['values'] ?? null, false)
                     || !isset($controls[$activator['key']])
-                    || ($base !== $activator['key'] && !in_array(($context ?? $settings)[$activator['key']] ?? null, $activator['values'], true))) {
+                    || ($popover && (!is_string($return) || $return === '' || !in_array($return, $activator['values'], true)))
+                    || ($base !== $activator['key'] && ($popover
+                        ? (($context ?? $settings)[$activator['key']] ?? null) !== $return
+                        : !in_array(($context ?? $settings)[$activator['key']] ?? null, $activator['values'], true)))) {
                     self::failure($failures, $path, $key, 'supply this group activator with one of its activating values');
                     continue;
                 }
@@ -384,7 +393,10 @@ final class NativeSettingsValidator
                 }
                 return LeafPolicy::shapeMatches($value, 'enum', $control['options']) ? null : 'choose one of the offered option keys';
             case 'switcher':
-                return LeafPolicy::shapeMatches($value, 'switcher') ? null : 'write yes or the empty string';
+            case 'popover_toggle':
+                $return = array_key_exists('return_value', $control) ? $control['return_value'] : ($control['type'] === 'switcher' ? 'yes' : null);
+                return is_string($return) && $return !== '' && is_string($value) && ($value === '' || $value === $return)
+                    ? null : 'write the control return value or the empty string';
             case 'url':
                 if (!LeafPolicy::shapeMatches($value, 'link')) {
                     return 'write exactly url, is_external and nofollow with on or empty flags';
@@ -410,10 +422,12 @@ final class NativeSettingsValidator
                 return is_string($value) && preg_match('/' . OutlineV3Schema::FONT_PATTERN . '/D', $value) === 1
                     ? null : 'use a font family of letters, digits and spaces';
             case 'box_shadow':
-                if (!self::members($value, ['horizontal', 'vertical', 'blur', 'spread', 'color'])) {
-                    return 'write one shadow with horizontal, vertical, blur, spread and color';
+            case 'text_shadow':
+                $offsets = $control['type'] === 'box_shadow' ? ['horizontal', 'vertical', 'blur', 'spread'] : ['horizontal', 'vertical', 'blur'];
+                if (!self::members($value, array_merge($offsets, ['color']))) {
+                    return 'write one shadow with exact offsets and color';
                 }
-                foreach (['horizontal', 'vertical', 'blur', 'spread'] as $offset) {
+                foreach ($offsets as $offset) {
                     if (!LeafPolicy::shapeMatches($value[$offset], 'shadow-offset')
                         || ($offset === 'blur' && (int) $value[$offset] < 0)) {
                         return 'write shadow offsets as bounded whole numeric strings and a nonnegative blur';
@@ -542,7 +556,10 @@ final class NativeSettingsValidator
         if ($window === true) {
             return true;
         }
-        if (!self::map($window) || $window === [] || array_diff(array_keys($window), ['min', 'max']) !== []) {
+        if (!self::map($window) || $window === [] || array_diff(array_keys($window), ['min', 'max', 'devices']) !== []) {
+            return false;
+        }
+        if (array_key_exists('devices', $window) && (!self::strings($window['devices'], true) || array_diff($window['devices'], self::BREAKPOINTS) !== [] || !in_array($breakpoint, $window['devices'], true))) {
             return false;
         }
         $min = $window['min'] ?? 'mobile';

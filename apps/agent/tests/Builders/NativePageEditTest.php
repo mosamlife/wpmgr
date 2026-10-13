@@ -430,7 +430,7 @@ final class NativePageEditTest extends TestCase
     public function test_live_groups_responsive_windows_lists_and_carry_identity(): void
     {
         $this->api->widgetControls['counter']['typography_typography'] = ['type' => 'select', 'options' => ['' => 'Default', 'custom' => 'Custom'], 'groupType' => 'typography', 'groupPrefix' => 'typography_'];
-        $this->api->widgetControls['counter']['typography_font_size'] = ['type' => 'slider', 'size_units' => ['px'], 'responsive' => ['max' => 'tablet'], 'groupType' => 'typography', 'groupPrefix' => 'typography_', 'condition' => ['typography_typography' => 'custom']];
+        $this->api->widgetControls['counter']['typography_font_size'] = ['type' => 'slider', 'size_units' => ['px'], 'is_responsive' => true, 'responsive' => ['devices' => ['tablet', 'mobile']], 'groupType' => 'typography', 'groupPrefix' => 'typography_', 'condition' => ['typography_typography' => 'custom']];
         $settings = ['typography_typography' => 'custom', 'typography_font_size_mobile' => ['unit' => 'px', 'size' => '24']];
         $r = $this->apply([['op' => 'set_native', 'ref' => 'aaaaaaa', 'settings' => $settings]]);
         $this->assertArrayHasKey('tree', $r, json_encode($r));

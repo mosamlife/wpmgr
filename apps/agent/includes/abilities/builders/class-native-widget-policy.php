@@ -95,6 +95,7 @@ final class NativeWidgetPolicy
             return null;
         }
         try {
+            $raw = ElementorWidgetDiscovery::baseControls($raw);
             $selected = $keys === null ? array_fill_keys(array_keys($raw), true) : [];
             foreach ($keys ?? [] as $key) {
                 $base = self::baseControl($key);
@@ -181,10 +182,7 @@ final class NativeWidgetPolicy
     private static function validationControl(array $control, array $raw, array $source): array
     {
         $window = $control['responsive'] ?? null;
-        $control['responsive'] = is_array($window) ? array_filter(['min' => $window['min'], 'max' => $window['max']], static fn ($v) => $v !== null) : false;
-        if (is_array($window) && $control['responsive'] === []) {
-            $control['responsive'] = true;
-        }
+        $control['responsive'] = is_array($window) ? ['devices' => $window['devices']] : false;
         if (isset($control['size_units'])) {
             $control['units'] = $control['size_units'];
         }
@@ -192,10 +190,11 @@ final class NativeWidgetPolicy
         if (is_array($group)) {
             $key = $group['activator'];
             $control['group'] = $group['family'];
-            $values = is_string($key) ? ($control['condition'][$key] ?? null) : null;
+            $root = is_string($key) ? ($raw[$key] ?? []) : [];
+            $values = ($root['type'] ?? null) === 'popover_toggle' ? [$root['return_value'] ?? null] : (is_string($key) ? ($control['condition'][$key] ?? null) : null);
             if ($values === null && is_string($key)) {
                 $root = $raw[$key] ?? [];
-                $values = isset($root['return_value']) ? [$root['return_value']] : array_values(array_filter(array_map('strval', array_keys($root['options'] ?? [])), static fn ($v) => $v !== ''));
+                $values = ($root['type'] ?? null) === 'switcher' ? [$root['return_value'] ?? 'yes'] : array_values(array_filter(array_map('strval', array_keys($root['options'] ?? [])), static fn ($v) => $v !== ''));
             }
             $control['activator'] = ['key' => $key, 'values' => is_array($values) ? array_values($values) : (is_string($values) ? [$values] : [])];
         }

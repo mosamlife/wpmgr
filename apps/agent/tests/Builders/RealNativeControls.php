@@ -28,7 +28,8 @@ final class RealNativeControls
             $raw[$id] = ['name' => $id, 'type' => $control['type'], 'label' => str_repeat('L', 30),
                 'options' => array_fill_keys($control['options'], 'Option')];
             if ($control['responsive'] !== null) {
-                $raw[$id]['responsive'] = array_intersect_key($control['responsive'], ['min' => true, 'max' => true]);
+                $raw[$id]['is_responsive'] = true;
+                $raw[$id]['responsive'] = ['devices' => $control['responsive']['devices']];
             }
             if ($control['group'] !== null) {
                 $group = $control['group'];

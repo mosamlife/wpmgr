@@ -33,9 +33,11 @@ namespace {
                 'section' => ['type' => 'section'],
                 'title' => ['type' => 'text', 'default' => 'Heading'],
                 'align' => ['type' => 'choose', 'options' => ['left' => ['title' => 'Left'], 'right' => ['title' => 'Right']]],
+                'enabled' => ['type' => 'switcher', 'return_value' => 'enabled'],
+                'default_switch' => ['type' => 'switcher'],
                 'tag' => ['type' => 'select', 'options' => ['h2' => 'H2', 'h3' => 'H3'], 'default' => 'h2'],
                 'tags' => ['type' => 'select2', 'options' => [1 => 'First', 'other' => 'Other'], 'default' => []],
-                'title_typography' => ['type' => 'popover_toggle', 'groupType' => 'typography', 'groupPrefix' => 'title_', 'default' => ''],
+                'title_typography' => ['type' => 'popover_toggle', 'groupPrefix' => 'title_', 'return_value' => 'custom', 'default' => ''],
                 'title_font_size' => ['type' => 'slider', 'groupType' => 'typography', 'groupPrefix' => 'title_',
                     'responsive' => ['max' => 'desktop'], 'condition' => ['title_typography' => 'custom']],
                 'title_font_size_mobile' => ['type' => 'slider', 'groupType' => 'typography', 'groupPrefix' => 'title_',
@@ -44,7 +46,7 @@ namespace {
                     'responsive' => ['min' => 'mobile', 'max' => 'tablet'], 'parent' => 'title_font_size'],
                 'border_border' => ['type' => 'select', 'options' => ['none' => 'None', 'solid' => 'Solid'], 'groupType' => 'border', 'groupPrefix' => 'border_'],
                 'border_width' => ['type' => 'dimensions', 'groupType' => 'border', 'groupPrefix' => 'border_', 'condition' => ['border_border!' => 'none']],
-                'shadow_box_shadow_type' => ['type' => 'popover_toggle', 'groupType' => 'box-shadow', 'groupPrefix' => 'shadow_'],
+                'shadow_box_shadow_type' => ['type' => 'popover_toggle', 'groupPrefix' => 'shadow_', 'return_value' => 'yes'],
                 'shadow_box_shadow' => ['type' => 'box_shadow', 'groupType' => 'box-shadow', 'groupPrefix' => 'shadow_',
                     'conditions' => ['terms' => [['name' => 'shadow_box_shadow_type', 'value' => 'yes']]]],
                 '_box_shadow_box_shadow_type' => ['type' => 'popover_toggle', 'groupPrefix' => '_box_shadow_'],
@@ -171,6 +173,8 @@ namespace {
             ['id' => '_box_shadow_box_shadow_type', 'reason' => 'incomplete_group_metadata'],
             ['id' => 'section', 'reason' => 'ui_only_type'],
         ], 'incomplete group metadata is omitted and recorded without inference');
+        $check(($controls['title_typography']['return_value'] ?? null) === 'custom' && ($controls['title_typography']['group']['activator'] ?? null) === 'title_typography', 'popover starter resolves its sole member family and return value');
+        $check(($controls['enabled']['return_value'] ?? null) === 'enabled' && ($controls['default_switch']['return_value'] ?? null) === 'yes', 'switchers export custom and default return values');
         $check($controls['title']['type'] === 'text' && !isset($controls['section']) && !array_key_exists('default', $controls['title']), 'stored-value controls remain while UI and defaults are omitted');
         $check($controls['align']['options'] === ['left', 'right'] && $controls['tag']['options'] === ['h2', 'h3']
             && $controls['tags']['options'] === ['1', 'other'], 'select choose and select2 report only option keys');

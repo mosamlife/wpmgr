@@ -81,7 +81,7 @@ func elementorReadInputBad(name string, input []byte) bool {
 	return false
 }
 
-// readShape rejects an entire answer when any member breaks the contract.
+// readShape rejects malformed answers and omits unsupported string option keys.
 // Map keys exposed as identifiers are validated; free metadata is fenced.
 type readShape struct {
 	fields   map[string]*readShape
@@ -182,13 +182,18 @@ func (s *readShape) project(v any) (any, bool) {
 		if !ok {
 			return nil, false
 		}
-		out := make([]any, len(a))
-		for i, value := range a {
+		out := make([]any, 0, len(a))
+		for _, value := range a {
+			if s.items == readOptionKey {
+				if key, ok := value.(string); ok && !elementorOptionKey.MatchString(key) {
+					continue
+				}
+			}
 			p, ok := s.items.project(value)
 			if !ok {
 				return nil, false
 			}
-			out[i] = p
+			out = append(out, p)
 		}
 		return out, true
 	}

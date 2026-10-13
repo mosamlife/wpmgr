@@ -246,6 +246,11 @@ final class ElementorWidgetDiscovery
         if ($raw === null) {
             return self::refuse('widget_schema_unreadable', 'the widget controls could not be read');
         }
+        try {
+            $raw = self::baseControls($raw);
+        } catch (\UnexpectedValueException $e) {
+            return self::refuse('widget_schema_unreadable', 'the widget control schema could not be read');
+        }
         $ids   = $props['controls'] ?? [];
         $named = $ids !== [];
         $out   = $this->head() + ['widget' => $widget['name'], 'atomic' => false, 'usable' => true, 'mode' => $named ? 'controls' : 'skeleton'];
@@ -377,7 +382,7 @@ final class ElementorWidgetDiscovery
             'type' => $control['type'],
             'options' => array_map('strval', array_keys(is_array($control['options'] ?? null) ? $control['options'] : [])),
             'default' => $control['default'] ?? null,
-            'responsive' => self::responsive($control['responsive'] ?? null, $active),
+            'responsive' => self::responsive($control['responsive'] ?? null, $active, ($control['is_responsive'] ?? false) === true),
             'group' => self::group($control, $raw),
         ];
         foreach (['condition', 'conditions', 'return_value', 'size_units', 'range', 'multiple'] as $key) {
@@ -397,6 +402,7 @@ final class ElementorWidgetDiscovery
                 }
                 $fields[$id] = $field;
             }
+            $fields = self::baseControls($fields);
             $compact = [];
             foreach ($fields as $id => $field) {
                 if (self::valueControl($id, $field)) {
@@ -409,40 +415,91 @@ final class ElementorWidgetDiscovery
         return $out;
     }
 
+    /** Fold device variants into their root; stored overrides use root_device keys. */
+    public static function baseControls(array $raw): array
+    {
+        $out = $raw;
+        $devices = [];
+        foreach ($raw as $id => $control) {
+            if (!isset($control['parent'])) {
+                continue;
+            }
+            $root = $id;
+            $path = [];
+            while (isset($raw[$root]['parent'])) {
+                $parent = $raw[$root]['parent'];
+                if (isset($path[$root]) || count($path) >= 64 || !is_string($parent) || !isset($raw[$parent])) {
+                    throw new \UnexpectedValueException('invalid responsive parent');
+                }
+                $path[$root] = true;
+                $root = $parent;
+            }
+            if (($raw[$root]['is_responsive'] ?? false) === true || ($raw[$root]['responsive']['max'] ?? null) !== 'desktop') {
+                throw new \UnexpectedValueException('invalid responsive root');
+            }
+            $devices[$root]['desktop'] = true;
+            foreach ($path as $variant => $_) {
+                $window = $raw[$variant]['responsive'] ?? null;
+                $device = is_array($window) ? ($window['max'] ?? $window['min'] ?? null) : null;
+                if (!is_string($device) || !in_array($device, self::DEVICES, true) || $variant !== $root . '_' . $device
+                    || ($raw[$variant]['type'] ?? null) !== ($raw[$root]['type'] ?? null)
+                    || ($raw[$variant]['is_responsive'] ?? false) === true) {
+                    throw new \UnexpectedValueException('invalid responsive variant');
+                }
+                foreach (['options', 'return_value', 'groupType', 'groupPrefix', 'fields'] as $key) {
+                    if (($raw[$variant][$key] ?? null) !== ($raw[$root][$key] ?? null)) {
+                        throw new \UnexpectedValueException('responsive variant differs from root');
+                    }
+                }
+                $devices[$root][$device] = true;
+            }
+            unset($out[$id]);
+        }
+        foreach ($devices as $root => $window) {
+            $out[$root]['is_responsive'] = true;
+            $out[$root]['responsive'] = ['devices' => array_keys($window)];
+        }
+        return $out;
+    }
+
     /**
      * @param mixed             $window Control's responsive metadata.
      * @param list<string>|null $active Active breakpoint names.
      * @return array{devices: list<string>, min: string|null, max: string|null}|null
      */
-    private static function responsive(mixed $window, ?array $active): ?array
+    private static function responsive(mixed $window, ?array $active, bool $single): ?array
     {
-        if ($window === null || $window === false || $window === []) {
+        if (!$single && ($window === null || $window === false || $window === [])) {
             return null;
+        }
+        if ($single && $window === null) {
+            $window = [];
         }
         if ($active === null || array_diff($active, self::DEVICES) !== [] || (!is_array($window) && $window !== true)) {
             throw new \UnexpectedValueException('responsive devices unavailable');
         }
         $min = is_array($window) ? ($window['min'] ?? null) : null;
         $max = is_array($window) ? ($window['max'] ?? null) : null;
-        // A base responsive control's desktop-only maximum is Elementor's
-        // marker for the unsuffixed copy, rather than a restricted window.
-        if ($max === 'desktop' && $min === null) {
-            $max = null;
-        }
         if (($min !== null && (!is_string($min) || !in_array($min, self::DEVICES, true)))
             || ($max !== null && (!is_string($max) || !in_array($max, self::DEVICES, true)))) {
             throw new \UnexpectedValueException('unknown responsive bound');
         }
-        $low  = $max === null ? 0 : array_search($max, self::DEVICES, true);
-        $high = $min === null ? count(self::DEVICES) - 1 : array_search($min, self::DEVICES, true);
-        $devices = [];
-        foreach (self::DEVICES as $i => $device) {
-            if ($i >= $low && $i <= $high && ($device === 'desktop' || in_array($device, $active, true))) {
-                $devices[] = $device;
+        if ($single) {
+            if (!is_array($window)) {
+                throw new \UnexpectedValueException('invalid single-control responsive window');
             }
+            $declared = array_key_exists('devices', $window) ? $window['devices'] : self::DEVICES;
+        } elseif (is_array($window)) {
+            $declared = [$max ?? $min];
+        } else {
+            $declared = self::DEVICES;
         }
+        if (!is_array($declared) || $declared === [] || array_filter($declared, 'is_string') !== $declared || array_diff($declared, self::DEVICES) !== []) {
+            throw new \UnexpectedValueException('unknown responsive devices');
+        }
+        $devices = array_values(array_filter(self::DEVICES, static fn ($device) => in_array($device, $declared, true) && ($device === 'desktop' || in_array($device, $active, true))));
 
-        return ['devices' => $devices, 'min' => $min, 'max' => $max];
+        return ['devices' => $devices, 'min' => null, 'max' => null];
     }
 
     /**
@@ -458,8 +515,26 @@ final class ElementorWidgetDiscovery
     {
         $family = $control['groupType'] ?? null;
         $prefix = $control['groupPrefix'] ?? null;
+        if (($control['type'] ?? null) === 'popover_toggle' && $family === null && is_string($prefix) && $prefix !== '') {
+            $families = [];
+            foreach ($raw as $member) {
+                if (($member['groupPrefix'] ?? null) === $prefix && is_string($member['groupType'] ?? null) && $member['groupType'] !== '') {
+                    $families[$member['groupType']] = true;
+                }
+            }
+            $family = count($families) === 1 ? array_key_first($families) : null;
+        }
         if (!is_string($family) || !is_string($prefix) || $prefix === '') {
             return null;
+        }
+        $popovers = [];
+        foreach ($raw as $id => $member) {
+            if (($member['groupPrefix'] ?? null) === $prefix && ($member['type'] ?? null) === 'popover_toggle' && self::valueControl($id, $member)) {
+                $popovers[$id] = true;
+            }
+        }
+        if ($popovers !== []) {
+            return ['family' => $family, 'prefix' => $prefix, 'activator' => count($popovers) === 1 ? array_key_first($popovers) : null];
         }
         $roots = [];
         foreach ($raw as $member) {

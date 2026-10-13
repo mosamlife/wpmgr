@@ -101,7 +101,7 @@ function rt_widget_group_activator(string $family, string $prefix, array $contro
     }
     $candidates = [];
     foreach ($controls as $id => $control) {
-        if (($control['groupPrefix'] ?? null) !== $prefix || ($control['groupType'] ?? null) !== $family) {
+        if (($control['groupPrefix'] ?? null) !== $prefix || (isset($control['groupType']) && $control['groupType'] !== $family)) {
             continue;
         }
         if (($control['type'] ?? null) === 'popover_toggle') {
@@ -247,6 +247,15 @@ function rt_widget_dump_controls(array $controls, $manager, array $devices): arr
             if (($family !== null && !is_string($family)) || ($prefix !== null && !is_string($prefix))) {
                 throw new RuntimeException('control ' . $id . ' has invalid group metadata');
             }
+            if ($type === 'popover_toggle' && $family === null && is_string($prefix) && $prefix !== '') {
+                $families = [];
+                foreach ($named as $member) {
+                    if (($member['groupPrefix'] ?? null) === $prefix && is_string($member['groupType'] ?? null) && $member['groupType'] !== '') {
+                        $families[$member['groupType']] = true;
+                    }
+                }
+                $family = count($families) === 1 ? array_key_first($families) : null;
+            }
             $incompleteGroup = $family === null || $prefix === null || $family === '' || $prefix === '';
             if (!$incompleteGroup) {
                 $key = $family . ':' . $prefix;
@@ -264,6 +273,13 @@ function rt_widget_dump_controls(array $controls, $manager, array $devices): arr
         }
         $out[$id] = ['id' => $id, 'type' => $type, 'options' => $options,
             'responsive' => $responsive, 'group' => $group, 'fields' => $fields];
+        if (in_array($type, ['switcher', 'popover_toggle'], true)) {
+            $return = $control['return_value'] ?? ($type === 'switcher' ? 'yes' : null);
+            if (!is_string($return) || $return === '') {
+                throw new RuntimeException('control ' . $id . ' has invalid return_value');
+            }
+            $out[$id]['return_value'] = $return;
+        }
     }
     $roots = [];
     foreach ($named as $id => $control) {
@@ -283,7 +299,8 @@ function rt_widget_dump_controls(array $controls, $manager, array $devices): arr
         }
         if ($out[$id]['type'] !== $out[$root]['type']
             || $out[$id]['options'] !== $out[$root]['options'] || $out[$id]['group'] !== $out[$root]['group']
-            || $out[$id]['fields'] !== $out[$root]['fields']) {
+            || $out[$id]['fields'] !== $out[$root]['fields']
+            || ($out[$id]['return_value'] ?? null) !== ($out[$root]['return_value'] ?? null)) {
             throw new RuntimeException('control ' . $id . ' differs from its responsive base');
         }
         $out[$root]['responsive']['devices'][] = $windows[$id]['devices'][0];

@@ -19,13 +19,33 @@ var embeddedAllowlist []byte
 // Control is an owned definition; a site's live definition may only narrow it.
 // Units use the policy's closed grammar because the dump does not export units.
 type Control struct {
-	ID         string    `json:"id,omitempty"`
-	Type       string    `json:"type"`
-	Options    []string  `json:"options"`
-	Responsive *Window   `json:"responsive"`
-	Group      *Group    `json:"group"`
-	Fields     []Control `json:"fields"`
-	Versions   []string  `json:"versions,omitempty"`
+	ID          string    `json:"id,omitempty"`
+	Type        string    `json:"type"`
+	ReturnValue *string   `json:"return_value,omitempty"`
+	Options     []string  `json:"options"`
+	Responsive  *Window   `json:"responsive"`
+	Group       *Group    `json:"group"`
+	Fields      []Control `json:"fields"`
+	Versions    []string  `json:"versions,omitempty"`
+}
+
+func (c *Control) UnmarshalJSON(raw []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	if value, ok := fields["return_value"]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return fmt.Errorf("null return_value")
+	}
+	type plain Control
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var parsed plain
+	if err := dec.Decode(&parsed); err != nil {
+		return err
+	}
+	*c = Control(parsed)
+	return nil
 }
 
 type Window struct {
@@ -133,6 +153,10 @@ func Lookup(name, siteVersion string) map[string]Control {
 }
 
 func cloneControl(c Control) Control {
+	if c.ReturnValue != nil {
+		v := *c.ReturnValue
+		c.ReturnValue = &v
+	}
 	c.Options = slices.Clone(c.Options)
 	c.Versions = slices.Clone(c.Versions)
 	if c.Responsive != nil {
@@ -294,6 +318,9 @@ func loadAllowlist(raw []byte) (*allowlist, error) {
 
 func validControl(c Control, depth int) bool {
 	if depth > 8 || !controlToken.MatchString(c.Type) || c.Options == nil || c.Fields == nil {
+		return false
+	}
+	if c.ReturnValue != nil && (*c.ReturnValue == "" || (c.Type != "switcher" && c.Type != "popover_toggle")) {
 		return false
 	}
 	seen := map[string]bool{}

@@ -1,8 +1,10 @@
 package elementornative
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -73,6 +75,25 @@ func TestNativeMalformedAllowlist(t *testing.T) {
 		}
 		if _, err := loadAllowlist(raw); err == nil {
 			t.Fatal("malformed embedded relationships accepted")
+		}
+	}
+}
+
+func TestNativeReturnValueDefinitions(t *testing.T) {
+	for _, typ := range []string{"switcher", "popover_toggle"} {
+		raw := []byte(`{"schema_version":2,"elementor_versions":["3.35.9"],"shared_controls":{},"widgets":[{"name":"heading","versions":["3.35.9"],"controls":[{"id":"toggle","versions":["3.35.9"],"definitions":[{"type":"` + typ + `","return_value":"enabled","options":[],"responsive":null,"group":null,"fields":[],"versions":["3.35.9"]}]}]}]}`)
+		a, err := loadAllowlist(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(cloneControl(a.byVersion["3.35.9"]["heading"]["toggle"]))
+		if err != nil || !strings.Contains(string(encoded), `"return_value":"enabled"`) {
+			t.Fatalf("return value lost: %s %v", encoded, err)
+		}
+		for _, invalid := range []string{`""`, `true`, `null`} {
+			if _, err := loadAllowlist(bytes.ReplaceAll(raw, []byte(`"enabled"`), []byte(invalid))); err == nil {
+				t.Fatalf("invalid return value accepted: %s", invalid)
+			}
 		}
 	}
 }
