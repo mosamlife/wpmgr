@@ -134,6 +134,16 @@ func TestNativeRefusalHints(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeControlsUnavailableHint(t *testing.T) {
+	if _, ok := agentcmd.AbilityRunRefusalCodes["elementor_controls_unavailable"]; !ok {
+		t.Error("controls unavailable code not admitted")
+	}
+	hint := precheckRefusalHint("elementor_controls_unavailable")
+	if !strings.Contains(hint, "newer Elementor") || !strings.Contains(hint, "non-native") {
+		t.Fatalf("controls unavailable hint has no remedy: %q", hint)
+	}
+}
 func TestNativeReadsRun(t *testing.T) {
 	for _, c := range []struct{ name, raw string }{{"wpmgr/elementor-widgets", nativeCatalogue}, {"wpmgr/elementor-widget-schema", nativeControls}} {
 		for _, scenario := range []string{"valid", "malformed", "oversized", "old agent", "smaller entry limit"} {

@@ -148,6 +148,12 @@ final class LayoutOps
         $schemas = [];
         $nativeNodes = [];
         $hasNative = NativeWidgetPolicy::isNativeCall($ops, $projected);
+        if ($hasNative && $native !== null) {
+            $unavailable = $native->availabilityProblem($tree, $ops);
+            if ($unavailable !== null) {
+                return $unavailable;
+            }
+        }
         foreach (array_values($ops) as $i => $op) {
             $r = is_array($op)
                 ? self::one($tree, $op, $i, $facts, $ids, $mediaById, $containers, $design, $native, $breakpoints)

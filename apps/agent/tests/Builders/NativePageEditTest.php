@@ -114,6 +114,25 @@ final class NativePageEditTest extends TestCase
         $this->assertSame(['ending_number', 'title'], array_keys($r['schemas']['counter']['controls']));
     }
 
+    public function test_native_ops_refuse_stripped_settings_stacks_before_validation(): void
+    {
+        foreach (['3.20.4', '4.3.4'] as $version) {
+            $this->api->version = $version;
+            $this->api->widgetControls['counter']['size'] = ['type' => 'slider'];
+            $this->api->widgetControls['heading']['tag'] = ['type' => 'select'];
+            foreach ([
+                ['op' => 'set_native', 'ref' => 'aaaaaaa', 'settings' => ['title' => 'Edited']],
+                ['op' => 'add_native', 'into' => '2222222', 'widget' => 'counter', 'settings' => ['title' => 'Added']],
+                ['op' => 'duplicate', 'ref' => 'aaaaaaa', 'into' => '2222222'],
+                ['op' => 'move', 'ref' => 'aaaaaaa', 'into' => '2222222'],
+                ['op' => 'remove', 'ref' => 'aaaaaaa'],
+            ] as $op) {
+                $this->assertSame('elementor_controls_unavailable', $this->apply([$op])['code'] ?? null, $version . ' ' . $op['op']);
+            }
+            $this->assertArrayHasKey('tree', $this->apply([['op' => 'set_text', 'ref' => 'bbbbbbb', 'field' => 'text', 'text' => 'Legacy heading']]));
+        }
+    }
+
     public function test_set_native_preserves_envelope_and_refuses_inner_flag(): void
     {
         $tree = self::tree();

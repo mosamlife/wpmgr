@@ -21,6 +21,8 @@ if (!defined('ABSPATH')) {
 final class ElementorWidgetDiscovery
 {
     public const MAX_BYTES = 32768;
+    public const CODE_CONTROLS_UNAVAILABLE = 'elementor_controls_unavailable';
+    public const DETAIL_CONTROLS_UNAVAILABLE = 'this Elementor version builds widget settings only in the editor; native edits need a newer Elementor';
     private const MAX_CONTROLS = 128;
     private const MAX_DEPTH = 8;
     private const RE_ID = '/^[a-zA-Z_][a-zA-Z0-9_-]{0,127}$/D';
@@ -246,6 +248,10 @@ final class ElementorWidgetDiscovery
         if ($raw === null) {
             return self::refuse('widget_schema_unreadable', 'the widget controls could not be read');
         }
+        $unavailable = self::availabilityProblem($raw);
+        if ($unavailable !== null) {
+            return ['refusal' => $unavailable];
+        }
         try {
             $raw = self::baseControls($raw);
         } catch (\UnexpectedValueException $e) {
@@ -318,6 +324,35 @@ final class ElementorWidgetDiscovery
     }
 
     /**
+     * A stack with choice or slider controls needs their settings metadata.
+     * No surviving choice or unit definitions means native controls are unavailable.
+     * Text-only stacks and explicitly populated settings are independent of version.
+     *
+     * @param array<string,array<string,mixed>> $controls Live controls.
+     * @return array{code:string,detail:string}|null
+     */
+    public static function availabilityProblem(array $controls): ?array
+    {
+        $needsMetadata = false;
+        foreach ($controls as $control) {
+            if (!is_array($control)) {
+                continue;
+            }
+            $type = $control['type'] ?? null;
+            $key = in_array($type, ['select', 'select2', 'choose'], true) ? 'options' : ($type === 'slider' ? 'size_units' : null);
+            if ($key === null) {
+                continue;
+            }
+            $needsMetadata = true;
+            if (is_array($control[$key] ?? null) && $control[$key] !== []) {
+                return null;
+            }
+        }
+
+        return $needsMetadata ? ['code' => self::CODE_CONTROLS_UNAVAILABLE, 'detail' => self::DETAIL_CONTROLS_UNAVAILABLE] : null;
+    }
+
+    /**
      * @param string       $name     Widget or control id.
      * @param list<string> $names    Denied exact names.
      * @param list<string> $prefixes Denied prefixes.
@@ -380,7 +415,8 @@ final class ElementorWidgetDiscovery
         }
         $out = [
             'type' => $control['type'],
-            'options' => array_map('strval', array_keys(is_array($control['options'] ?? null) ? $control['options'] : [])),
+            'options' => in_array($control['type'], ['select', 'select2', 'choose', 'visual_choice'], true)
+                ? array_map('strval', array_keys(is_array($control['options'] ?? null) ? $control['options'] : [])) : [],
             'default' => $control['default'] ?? null,
             'responsive' => self::responsive($control['responsive'] ?? null, $active, ($control['is_responsive'] ?? false) === true),
             'group' => self::group($control, $raw),

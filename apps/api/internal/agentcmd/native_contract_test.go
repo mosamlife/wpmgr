@@ -13,3 +13,10 @@ func TestNativeRefusalDecode(t *testing.T) {
 		t.Errorf("unknown code decoded as %s", got.Code)
 	}
 }
+
+func TestNativeControlsUnavailableRefusalDecode(t *testing.T) {
+	got := abilityRunRefusalOf(AbilityRunResponse{Code: "elementor_controls_unavailable"})
+	if got.Code != "elementor_controls_unavailable" {
+		t.Fatalf("controls unavailable decoded as %s", got.Code)
+	}
+}

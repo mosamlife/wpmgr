@@ -216,9 +216,24 @@ function rt_widget_dump_controls(array $controls, $manager, array $devices): arr
             continue;
         }
         $options = [];
-        if (in_array($type, ['select', 'select2', 'choose'], true)) {
-            if (!is_array($control['options'] ?? [])) {
+        // These controls store option keys; URL options and other feature settings are not choices.
+        if (in_array($type, ['select', 'select2', 'choose', 'visual_choice'], true) && array_key_exists('options', $control)) {
+            if (!is_array($control['options'])) {
                 throw new RuntimeException('control ' . $id . ' has non-data options');
+            }
+            foreach ($control['options'] as $key => $label) {
+                if ((!is_int($key) && !is_string($key))
+                    || (!is_scalar($label) && !(is_array($label) && in_array($type, ['choose', 'visual_choice'], true)))) {
+                    throw new RuntimeException('control ' . $id . ' has non-data options');
+                }
+                // Visual controls carry title/icon/image metadata instead of a scalar display label.
+                if (is_array($label)) {
+                    try {
+                        rt_widget_plain($label);
+                    } catch (RuntimeException $e) {
+                        throw new RuntimeException('control ' . $id . ' has non-data options', 0, $e);
+                    }
+                }
             }
             $options = array_map('strval', array_keys($control['options'] ?? []));
             sort($options, SORT_STRING);

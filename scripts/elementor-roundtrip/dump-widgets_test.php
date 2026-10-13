@@ -147,6 +147,34 @@ namespace {
     };
     try {
         rt_widget_dump_prepare($plugin);
+        foreach (['select', 'select2'] as $type) {
+            $slides = rt_widget_dump_controls(['slides_to_show' => ['type' => $type, 'options' => [
+                '' => 'Default', 1 => 1, 2 => 2.5, 3 => false, 4 => true,
+            ]]], $manager, ['desktop', 'tablet', 'mobile']);
+            $check($slides['controls'][0]['options'] === ['', '1', '2', '3', '4'], $type . ' exports numeric option keys as strings and accepts scalar labels');
+        }
+        $nonChoices = rt_widget_dump_controls([
+            'external_url' => ['type' => 'url', 'options' => false],
+            'link' => ['type' => 'url', 'options' => ['is_external', 'nofollow', 'custom_attributes']],
+            'decoration' => ['type' => 'text', 'options' => ['feature' => 'Feature']],
+        ], $manager, ['desktop', 'tablet', 'mobile']);
+        $check(array_column($nonChoices['controls'], 'options') === [[], [], []], 'URL feature lists and non-choice options are omitted');
+        $mask = rt_widget_dump_controls(['_mask_shape' => ['type' => 'visual_choice', 'options' => [
+            'blob' => ['title' => 'Blob', 'image' => 'blob.svg'], 'circle' => ['title' => 'Circle'], 'custom' => ['title' => 'Custom'],
+        ]]], $manager, ['desktop', 'tablet', 'mobile']);
+        $check($mask['controls'][0]['options'] === ['blob', 'circle', 'custom'], 'custom choice types retain their option keys in the oracle');
+        foreach (['select', 'select2', 'choose', 'visual_choice'] as $type) {
+            $invalid = [false, 'invalid', ['bad' => null], ['bad' => new stdClass()], ['bad' => static fn () => 'label']];
+            if (in_array($type, ['select', 'select2'], true)) $invalid[] = ['bad' => ['label']];
+            foreach ($invalid as $options) {
+                try {
+                    rt_widget_dump_controls(['bad' => ['type' => $type, 'options' => $options]], $manager, ['desktop', 'tablet', 'mobile']);
+                    throw new LogicException('malformed ' . $type . ' options accepted');
+                } catch (RuntimeException $error) {
+                    $check(str_contains($error->getMessage(), 'non-data options'), 'malformed ' . $type . ' option map fails');
+                }
+            }
+        }
         $check($kitSettings === ['site_title' => 'Example', 'active_breakpoints' => ['viewport_mobile', 'viewport_tablet', 'viewport_laptop']],
             'dump preparation activates all offered breakpoints and preserves kit settings');
         $dump = rt_widget_dump_inventory($plugin, __DIR__, '3.20.4');

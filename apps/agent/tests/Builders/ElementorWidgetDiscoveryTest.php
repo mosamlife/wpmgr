@@ -17,6 +17,27 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 /** @covers \WPMgr\Agent\Abilities\Builders\ElementorWidgetDiscovery */
 final class ElementorWidgetDiscoveryTest extends TestCase
 {
+    public function test_only_stored_choice_values_are_exported_as_option_keys(): void
+    {
+        $this->api->widgetControls['heading'] = [
+            'tag' => ['type' => 'select', 'options' => ['h2' => 'Heading']],
+            'external_url' => ['type' => 'url', 'options' => false],
+            'link' => ['type' => 'url', 'options' => ['is_external', 'nofollow']],
+            'decoration' => ['type' => 'text', 'options' => ['feature' => 'Feature']],
+            '_mask_shape' => ['type' => 'visual_choice', 'options' => ['blob' => ['title' => 'Blob'], 'custom' => ['title' => 'Custom']]],
+        ];
+        $answer = (new ElementorWidgetDiscovery($this->api))->schema((object) [
+            'widget' => 'heading', 'controls' => array_keys($this->api->widgetControls['heading']),
+        ]);
+        self::assertArrayHasKey('output', $answer);
+        $controls = (array) $answer['output']['controls'];
+        self::assertSame(['h2'], $controls['tag']['options']);
+        self::assertSame(['blob', 'custom'], $controls['_mask_shape']['options']);
+        foreach (['external_url', 'link', 'decoration'] as $id) {
+            self::assertSame([], $controls[$id]['options'], $id);
+        }
+    }
+
     private const CATALOGUE = 'wpmgr/elementor-widgets';
     private const SCHEMA = 'wpmgr/elementor-widget-schema';
 
@@ -79,6 +100,26 @@ final class ElementorWidgetDiscoveryTest extends TestCase
         $this->assertArrayNotHasKey('controls', $out);
     }
 
+    public function test_stripped_stacks_refuse_schema_reads_without_version_gating(): void
+    {
+        foreach (['3.20.4', '3.35.9', '4.3.4'] as $version) {
+            $this->api->version = $version;
+            $controls = self::controls();
+            foreach ($controls as &$control) {
+                unset($control['options'], $control['size_units'], $control['range'], $control['label']);
+            }
+            unset($control);
+            $this->api->widgetControls['heading'] = $controls;
+            foreach ([[], ['title'], ['typography_font_size'], ['align']] as $ids) {
+                $result = (new ElementorWidgetDiscovery($this->api))->schema((object) (['widget' => 'heading'] + ($ids === [] ? [] : ['controls' => $ids])));
+                $this->assertSame('elementor_controls_unavailable', $result['refusal']['code'] ?? null, $version . ' ' . json_encode($ids));
+                $this->assertSame('this Elementor version builds widget settings only in the editor; native edits need a newer Elementor', $result['refusal']['detail']);
+            }
+            $this->api->widgetControls['heading'] = self::controls();
+            $this->assertArrayHasKey('output', (new ElementorWidgetDiscovery($this->api))->schema((object) ['widget' => 'heading', 'controls' => ['title']]));
+        }
+    }
+
     public function test_named_schema_keeps_options_defaults_devices_groups_and_repeater_fields(): void
     {
         $out = $this->schema(['widget' => 'heading', 'controls' => ['title', 'size', 'typography_font_size', 'align', 'align_tablet', 'items']]);
@@ -106,7 +147,7 @@ final class ElementorWidgetDiscoveryTest extends TestCase
     {
         $this->api->activeBreakpoints = ['widescreen', 'laptop', 'tablet', 'mobile'];
         $this->api->widgetControls['heading'] = [
-            'size' => ['type' => 'slider', 'is_responsive' => true, 'responsive' => []],
+            'size' => ['type' => 'slider', 'size_units' => ['px'], 'is_responsive' => true, 'responsive' => []],
             'desktop_only' => ['type' => 'slider', 'responsive' => ['max' => 'desktop']],
             'limited' => ['type' => 'slider', 'is_responsive' => true, 'responsive' => ['devices' => ['tablet', 'mobile_extra']]],
             'align' => ['type' => 'choose', 'responsive' => ['max' => 'desktop']],
@@ -133,7 +174,7 @@ final class ElementorWidgetDiscoveryTest extends TestCase
     {
         $this->api->widgetControls['heading'] = [
             'title_typography' => ['type' => 'popover_toggle', 'groupPrefix' => 'title_', 'return_value' => 'custom'],
-            'title_font_size' => ['type' => 'slider', 'groupPrefix' => 'title_', 'groupType' => 'typography', 'condition' => ['title_typography!' => '']],
+            'title_font_size' => ['type' => 'slider', 'size_units' => ['px'], 'groupPrefix' => 'title_', 'groupType' => 'typography', 'condition' => ['title_typography!' => '']],
         ];
         $out = $this->schema(['widget' => 'heading', 'controls' => ['title_typography', 'title_font_size']]);
         $controls = (array) $out['controls'];
@@ -247,7 +288,7 @@ final class ElementorWidgetDiscoveryTest extends TestCase
         $group = ['groupType' => 'border', 'groupPrefix' => 'frame_'];
         $fields = [
             'frame_enable' => $group + ['type' => 'switcher', 'return_value' => 'yes'],
-            'frame_width' => $group + ['type' => 'slider', 'condition' => ['frame_enable!' => '']],
+            'frame_width' => $group + ['type' => 'slider', 'size_units' => ['px'], 'condition' => ['frame_enable!' => '']],
         ];
         $this->api->widgetControls['heading'] = $fields + ['items' => ['type' => 'repeater', 'fields' => $fields]];
         $out = $this->schema(['widget' => 'heading', 'controls' => ['frame_enable', 'frame_width', 'items']]);

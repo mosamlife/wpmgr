@@ -65,6 +65,8 @@ trap 'rm -rf "$tmp"' EXIT
 unset RT_NPX RT_NODE RT_PINS_FILE RT_BLUEPRINT RT_VERSIONS RT_FIXTURES_DIR RT_AGENT_INCLUDES
 unset RT_PLANT RT_HARNESS_ARGS RT_TIMEOUT RT_TEST_KILL_SETTLE RT_ALLOW_FILE_URLS RT_LAYOUTS FAKE_MODE FAKE_ARGS_FILE FAKE_FAIL_VERSION FAKE_FAIL_LAYOUT
 unset RT_PLANTS_FILE FAKE_CALLS_FILE FAKE_PLANT_LAYOUTS FAKE_PLANT_IGNORED_VERSION
+unset RT_NATIVE_INVENTORY FAKE_NATIVE_FIELD
+unset FAKE_CONTEXT_FILE
 real_cache="${RT_CACHE:-}"
 unset RT_CACHE
 
@@ -116,6 +118,53 @@ sha256_of() {
 real_wp_url="https://downloads.wordpress.org/release/wordpress-6.8.zip"
 grep -q "\"$real_wp_url\"" "$here/elementor-roundtrip/blueprint.json" || { echo "FAIL setup: blueprint.json no longer names $real_wp_url"; exit 1; }
 
+# Native comparator, adaptive batching, bytes and render checks run offline.
+native_php="$(command -v php || true)"
+[ -n "$native_php" ] || { echo "FAIL setup: php not found for native self-tests"; exit 1; }
+if "$native_php" "$here/elementor-roundtrip/native_test.php"; then
+  ok "native phase offline self-tests"
+else
+  bad "native phase offline self-tests"
+fi
+for kind in declaration text rejection; do
+  native_plant_out="$("$native_php" "$here/elementor-roundtrip/native_test.php" "plant=$kind" 2>&1)"
+  native_plant_rc=$?
+  case "$native_plant_out" in
+    *'FAIL [offline native]'*)
+      if [ "$native_plant_rc" -eq 1 ]; then ok "native $kind plant prints a failure and exits red"
+      else bad "native $kind plant returned $native_plant_rc"; fi ;;
+    *) bad "native $kind plant printed no failing check" ;;
+  esac
+done
+for kind in native_css_missing native_text_missing native_rejected_edit; do
+  native_plant_out="$("$native_php" "$here/elementor-roundtrip/native_test.php" "plant=$kind@set-title" 2>&1)"
+  native_plant_rc=$?
+  case "$native_plant_out" in
+    *'FAIL [offline native]'*)
+      if [ "$native_plant_rc" -eq 1 ]; then ok "native RT_PLANT token plant=$kind@set-title parses and reaches its red check"
+      else bad "native RT_PLANT token $kind returned $native_plant_rc"; fi ;;
+    *) bad "native RT_PLANT token $kind reached no phase check" ;;
+  esac
+done
+for failures in 0 1; do
+  native_finish_out="$("$native_php" "$here/elementor-roundtrip/native_test.php" "finish-unavailable=$failures" 2>&1)"
+  native_finish_rc=$?
+  if [ "$native_finish_rc" -eq "$failures" ] && [[ "$native_finish_out" == *'rt: RESULT '* ]] \
+    && [[ "$native_finish_out" != *'returned to legacy setup'* ]]; then
+    ok "the unavailable native phase exits with its own verdict for failed=$failures"
+  else
+    bad "the unavailable native phase falls through or has the wrong verdict for failed=$failures"
+  fi
+done
+native_plant_out="$("$native_php" "$here/elementor-roundtrip/native_test.php" native_css_missing@set-title 2>&1)"
+native_plant_rc=$?
+case "$native_plant_out" in
+  *'BROKEN argument is not key=value'*)
+    if [ "$native_plant_rc" -eq 2 ]; then ok "a native plant without plant= is an argument error"
+    else bad "a bare native plant returned $native_plant_rc"; fi ;;
+  *) bad "a bare native plant reached no argument error" ;;
+esac
+
 # ---------------------------------------------------------------------------------
 # Group 1: run.sh against a stand-in for npx and file:// pins
 # ---------------------------------------------------------------------------------
@@ -151,6 +200,7 @@ out="${FAKE_ARGS_FILE:-/dev/null}"
 printf '%s\n' "$@" >"$out"
 ver=""
 layout=""
+phase="legacy"
 bp=""
 zipsdir=""
 plant=""
@@ -158,7 +208,10 @@ for a in "$@"; do
   case "$a" in
     elementor=*) ver="${a#elementor=}" ;;
     layout=*) layout="${a#layout=}" ;;
+    native=1) phase="native" ;;
+    native=0) phase="legacy" ;;
     plant=*) plant="${plant:+$plant }$a" ;;
+    native_*@*) plant="${plant:+$plant }$a" ;;
     --blueprint=*) bp="${a#--blueprint=}" ;;
     --mount=*:/rt/zips) zipsdir="${a#--mount=}"; zipsdir="${zipsdir%:/rt/zips}" ;;
   esac
@@ -180,7 +233,69 @@ good="rt: SUMMARY elementor=$ver layout=$layout $tail_ok failed=0"
 if [ -n "${FAKE_CALLS_FILE:-}" ]; then
   printf '%s %s%s\n' "$ver" "$layout" "${plant:+ $plant}" >>"$FAKE_CALLS_FILE"
 fi
+if [ -n "${FAKE_CONTEXT_FILE:-}" ]; then
+  node -e '
+    const fs = require("fs");
+    const args = process.argv.slice(5);
+    const record = { phase: process.argv[1], blueprint: JSON.parse(fs.readFileSync(process.argv[2], "utf8")),
+      boot: process.argv[3], args: args.slice(args.indexOf("--") + 1) };
+    fs.appendFileSync(process.argv[4], JSON.stringify(record) + "\n");
+  ' "$phase" "$bp" "$zipsdir" "$FAKE_CONTEXT_FILE" "$@"
+fi
 case "${FAKE_MODE:-ok}" in
+  nativeplant)
+    plant_output="$(php "$FAKE_NATIVE_TEST" "$plant" 2>&1)"
+    plant_rc=$?
+    printf '%s\n' "$plant_output" | sed "s/^FAIL \[offline native\]/rt: FAIL [$ver $layout native-set-title]/"
+    [ "$plant_rc" -eq 1 ] || exit 2
+    echo "rt: NATIVE_SUMMARY elementor=$ver layout=$layout widgets=25 controls=200 edits=8 ops=add_native,duplicate,move,remove,set_native css=9 texts=8 refused=1 registration_checks=50 failed=1"
+    echo 'rt: RESULT FAIL'
+    exit 1 ;;
+  nativeunavailable | nativeunavailablealone | nativeunavailablepartial | nativeunavailablenotally | nativeunavailablenolegacytext | nativeunavailablenolegacyagent | nativeunavailablenolegacycss | nativeunavailablenorefusal | nativeunavailablelegacyfail | nativeunavailableshared | nativeunavailablelegacyhang)
+    native_summary="rt: NATIVE_SUMMARY elementor=$ver layout=$layout mode=unavailable widgets=25 controls=0 unavailable=25 edits=8 ops=- css=0 texts=0 refused=16 registration_checks=50 failed=0"
+    legacy="$good"
+    case "$FAKE_MODE" in
+      nativeunavailablepartial) native_summary="${native_summary/unavailable=25/unavailable=24}" ;;
+      nativeunavailablenotally) native_summary="${native_summary/ unavailable=25/}" ;;
+      nativeunavailablenolegacytext) legacy="${legacy/texts=2/texts=0}" ;;
+      nativeunavailablenolegacyagent) legacy="${legacy/agent=2/agent=0}" ;;
+      nativeunavailablenolegacycss) legacy="${legacy/probes=4/probes=0}" ;;
+      nativeunavailablenorefusal) native_summary="${native_summary/refused=16/refused=0}" ;;
+      nativeunavailablelegacyfail) legacy="${legacy/ probes_failed=0 failed=0/ probes_failed=1 failed=1}" ;;
+    esac
+    if [ "$phase" = native ]; then
+      echo "$native_summary"
+      [ "$FAKE_MODE" != nativeunavailableshared ] || echo "$legacy"
+    else
+      [ "$FAKE_MODE" != nativeunavailablelegacyhang ] || sleep 30
+      [ "$FAKE_MODE" != nativeunavailablealone ] || exit 0
+      echo "$legacy"
+      if [ "$FAKE_MODE" = nativeunavailablelegacyfail ]; then
+        echo "rt: FAIL [$ver $layout probe-heading] css: missing declaration"
+        echo 'rt: RESULT FAIL'; exit 1
+      fi
+    fi
+    echo 'rt: RESULT OK'; exit 0 ;;
+  nativeok | nativezero | nativemissing | nativewrongversion | nativewronglayout | nativeops | nativeredok | nativenotally | nativefail | nativeduplicate | nativecrash | nativefailok)
+    native_summary="rt: NATIVE_SUMMARY elementor=$ver layout=$layout widgets=25 controls=200 edits=8 ops=add_native,duplicate,move,remove,set_native css=9 texts=8 refused=1 registration_checks=50 failed=0"
+    case "$FAKE_MODE" in
+      nativezero) native_summary="$(printf '%s\n' "$native_summary" | sed "s/ ${FAKE_NATIVE_FIELD}=[0-9][0-9]*/ ${FAKE_NATIVE_FIELD}=0/")" ;;
+      nativemissing) native_summary="$(printf '%s\n' "$native_summary" | sed "s/ ${FAKE_NATIVE_FIELD}=[0-9][0-9]*//")" ;;
+      nativewrongversion) native_summary="${native_summary/elementor=$ver/elementor=0.0.1}" ;;
+      nativewronglayout) native_summary="${native_summary/layout=$layout/layout=sections}" ;;
+      nativeops) native_summary="${native_summary/ops=add_native,duplicate,move,remove,set_native/ops=set_native}" ;;
+      nativeredok | nativefail | nativefailok) native_summary="${native_summary/failed=0/failed=1}" ;;
+      nativenotally) native_summary="${native_summary/ failed=0/}" ;;
+    esac
+    if [ "$FAKE_MODE" = nativefail ] || [ "$FAKE_MODE" = nativefailok ]; then
+      echo "rt: FAIL [$ver $layout native-set-title] write: builder_save_refused"
+    fi
+    echo "$native_summary"
+    [ "$FAKE_MODE" != nativeduplicate ] || echo "$native_summary"
+    if [ "$FAKE_MODE" = nativefail ]; then echo 'rt: RESULT FAIL'; exit 1; fi
+    echo 'rt: RESULT OK'
+    [ "$FAKE_MODE" != nativecrash ] || exit 1
+    exit 0 ;;
   dumpwidgets | dumpwidgetsbadjson | dumpwidgetswrongversion | dumpwidgetsempty | dumpwidgetsduplicate | dumpwidgetscrash)
     dump_ver="$ver"
     [ "$FAKE_MODE" != dumpwidgetswrongversion ] || dump_ver="0.0.1"
@@ -293,6 +408,78 @@ expect "dumpwidgets has a closed argument value" 2 "${offline[@]}" "RT_CACHE=$tm
 expect "dumpwidgets=0 restores normal case validation" 0 "${offline[@]}" "RT_CACHE=$tmp/widget-dump" "RT_HARNESS_ARGS=dumpwidgets=1 dumpwidgets=0"
 
 # --- must not over-fire ---------------------------------------------------------------
+native_run=("${offline[@]}" "RT_CACHE=$tmp/native" "RT_HARNESS_ARGS=native=1")
+expect "an honest native phase passes" 0 "${native_run[@]}" "FAKE_MODE=nativeok" "FAKE_ARGS_FILE=$tmp/native-args"
+said "native phase uses a separate verdict gate" "native OK"
+said "native phase defaults to containers" "1 layout(s)"
+case "$(cat "$tmp/native-args")" in *"native=1"*) ok "native selection reaches the harness" ;; *) bad "native selection lost" ;; esac
+if "$widget_node" -e '
+  const bp = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const prep = bp.steps.find(s => s.step === "runPHP" && s.code.includes("rt_widget_dump_prepare"));
+  if (!prep || prep.code.indexOf("rt_native_boot_context") >= prep.code.indexOf("wp-load.php")
+    || !bp.steps.some(s => s.options?.["elementor_experiment-additional_custom_breakpoints"] === "active")) process.exit(1);
+  require("fs").writeFileSync(process.argv[2], prep.code);
+' "$tmp/native-args.blueprint.containers" "$tmp/native-prepare.php" && "$native_php" -l "$tmp/native-prepare.php"; then
+  ok "native blueprint prepares every breakpoint under early REST context"
+else
+  bad "native blueprint does not prepare REST context and breakpoints"
+fi
+for field in widgets controls edits css texts refused registration_checks; do
+  expect "native phase with zero $field is red" 2 "${native_run[@]}" "FAKE_MODE=nativezero" "FAKE_NATIVE_FIELD=$field"
+  said "zero $field has no usable native verdict" "gave no usable native verdict"
+  expect "native phase without $field is red" 2 "${native_run[@]}" "FAKE_MODE=nativemissing" "FAKE_NATIVE_FIELD=$field"
+done
+for mode in nativewrongversion nativewronglayout nativeops nativeredok nativenotally nativeduplicate nativecrash nativefailok; do
+  expect "native $mode cannot pass" 2 "${native_run[@]}" "FAKE_MODE=$mode"
+  said "native $mode has no usable verdict" "gave no usable native verdict"
+done
+expect "an Elementor rejected edit makes native phase red" 1 "${native_run[@]}" "FAKE_MODE=nativefail"
+said "rejected edit is reported as native failure" "native FAILED"
+said "the rejection reason survives" "builder_save_refused"
+for kind in native_css_missing native_text_missing native_rejected_edit; do
+  expect "the exact $kind command reaches the native phase and turns it red" 1 "${native_run[@]}" "RT_VERSIONS=4.3.4" "FAKE_MODE=nativeplant" "RT_PLANT=plant=$kind@set-title" "FAKE_NATIVE_TEST=$here/elementor-roundtrip/native_test.php" "FAKE_ARGS_FILE=$tmp/$kind.args"
+  said "the $kind command reports the native case failure" "native-set-title]"
+  case "$(cat "$tmp/$kind.args")" in
+    *"plant=$kind@set-title"*) ok "run.sh passes the complete $kind token" ;;
+    *) bad "run.sh lost the $kind plant token" ;;
+  esac
+done
+expect "the former bare native plant command is not a usable verdict" 2 "${native_run[@]}" "RT_VERSIONS=4.3.4" "FAKE_MODE=nativeplant" "RT_PLANT=native_css_missing@set-title" "FAKE_NATIVE_TEST=$here/elementor-roundtrip/native_test.php"
+said "the bare command reports the real parser error" "argument is not key=value"
+expect "normal SUMMARY cannot satisfy native phase" 2 "${native_run[@]}" "FAKE_MODE=ok"
+expect "native has a closed argument value" 2 "${offline[@]}" "RT_CACHE=$tmp/native" "RT_HARNESS_ARGS=native=yes"
+expect "native cannot run sections" 2 "${native_run[@]}" "RT_LAYOUTS=sections"
+expect "native and dump cannot run together" 2 "${native_run[@]}" "RT_HARNESS_ARGS=native=1 dumpwidgets=1"
+expect "missing native inventory is red" 2 "${native_run[@]}" "RT_NATIVE_INVENTORY=$tmp/missing"
+expect "native=0 restores normal validation" 0 "${offline[@]}" "RT_CACHE=$tmp/native" "RT_HARNESS_ARGS=native=1 native=0"
+unsupported_run=("${native_run[@]}" "RT_VERSIONS=3.20.4")
+expect "an ordinary legacy boot records its context" 0 "${offline[@]}" "RT_CACHE=$tmp/native" "RT_VERSIONS=3.20.4" "RT_LAYOUTS=containers" "FAKE_MODE=ok" "FAKE_CONTEXT_FILE=$tmp/ordinary-context.jsonl"
+expect "legacy REST refusals plus every non-native phase pass in fresh boots" 0 "${unsupported_run[@]}" "FAKE_MODE=nativeunavailable" "FAKE_CONTEXT_FILE=$tmp/native-context.jsonl"
+said "expected refusal still requires legacy phases" "native unavailable; non-native OK"
+said "the runner counts the separate ordinary boot" "2 boot(s), 1 version(s) x 1 layout(s)"
+if node -e '
+  const fs = require("fs"), assert = require("assert");
+  const read = path => fs.readFileSync(path, "utf8").trim().split("\n").map(JSON.parse);
+  const [normal] = read(process.argv[1]), records = read(process.argv[2]);
+  assert.deepStrictEqual(records.map(row => row.phase), ["native", "legacy"]);
+  assert.notStrictEqual(records[0].boot, records[1].boot);
+  assert.deepStrictEqual(records[1].blueprint, normal.blueprint);
+  assert.deepStrictEqual(records[1].args, normal.args);
+' "$tmp/ordinary-context.jsonl" "$tmp/native-context.jsonl" >"$tmp/context-check.log" 2>&1; then
+  ok "the legacy continuation has its own boot and the exact ordinary blueprint and arguments"
+else
+  bad "the native context leaks into legacy checks"
+  cat "$tmp/context-check.log"
+fi
+expect "a legacy SUMMARY from the native boot cannot satisfy legacy coverage" 2 "${unsupported_run[@]}" "FAKE_MODE=nativeunavailableshared"
+for mode in nativeunavailablealone nativeunavailablepartial nativeunavailablenotally nativeunavailablenolegacytext nativeunavailablenolegacyagent nativeunavailablenolegacycss nativeunavailablenorefusal; do
+  expect "legacy native refusal $mode cannot skip proof" 2 "${unsupported_run[@]}" "FAKE_MODE=$mode"
+done
+expect "modern pins cannot pass as native unavailable" 2 "${native_run[@]}" "RT_VERSIONS=4.3.4" "FAKE_MODE=nativeunavailable"
+expect "a legacy phase failure remains red after native refusal" 1 "${unsupported_run[@]}" "FAKE_MODE=nativeunavailablelegacyfail"
+expect "the ordinary continuation has a bounded deadline" 2 "${unsupported_run[@]}" "FAKE_MODE=nativeunavailablelegacyhang" "RT_TIMEOUT=2"
+said "a continuation timeout cannot produce an OK" "gave no usable legacy verdict"
+
 expect "an honest run passes" 0 "${offline[@]}" "RT_CACHE=$tmp/c1" "FAKE_ARGS_FILE=$tmp/args1"
 said "a green run says which versions and layouts ran" "4 boot(s), 2 version(s) x 2 layout(s)"
 said "a green run says every version passed" "every version passed"

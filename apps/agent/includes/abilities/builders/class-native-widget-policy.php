@@ -91,7 +91,7 @@ final class NativeWidgetPolicy
             return null;
         }
         $raw = $this->api->widgetControls($type);
-        if ($raw === null) {
+        if ($raw === null || ElementorWidgetDiscovery::availabilityProblem($raw) !== null) {
             return null;
         }
         try {
@@ -143,6 +143,38 @@ final class NativeWidgetPolicy
         } catch (\Throwable $e) {
             return null;
         }
+    }
+
+    /** Native calls require available controls for the page's core widgets and new widget types. */
+    public function availabilityProblem(array $tree, array $ops): ?array
+    {
+        $types = [];
+        $walk = static function (array $nodes) use (&$walk, &$types): void {
+            foreach ($nodes as $node) {
+                if (($node['elType'] ?? null) === 'widget' && is_string($node['widgetType'] ?? null)) {
+                    $types[$node['widgetType']] = true;
+                }
+                $walk($node['elements'] ?? []);
+            }
+        };
+        $walk($tree);
+        foreach ($ops as $op) {
+            if (($op['op'] ?? null) === 'add_native' && is_string($op['widget'] ?? null)) {
+                $types[$op['widget']] = true;
+            }
+        }
+        foreach (array_keys($types) as $type) {
+            if (!$this->eligible($type)) {
+                continue;
+            }
+            $controls = $this->api->widgetControls($type);
+            $problem = $controls === null ? null : ElementorWidgetDiscovery::availabilityProblem($controls);
+            if ($problem !== null) {
+                return $problem;
+            }
+        }
+
+        return null;
     }
 
     private static function baseControl(string $key): string
