@@ -41,6 +41,8 @@ export interface DestructiveConfirmProps {
   cancelLabel: string;
   /** When true: confirm button shows a spinner and both buttons disable. */
   isPending?: boolean;
+  /** Optional visible action label while the request is pending. */
+  pendingLabel?: string;
   /** Optional inline error message, rendered above the input. */
   errorMessage?: string | null;
 }
@@ -55,6 +57,7 @@ export function DestructiveConfirm({
   confirmLabel,
   cancelLabel,
   isPending = false,
+  pendingLabel,
   errorMessage,
 }: DestructiveConfirmProps) {
   const titleId = useId();
@@ -146,7 +149,9 @@ export function DestructiveConfirm({
             {isPending ? (
               <>
                 <Loader2 aria-hidden="true" className="animate-spin" />
-                <span className="sr-only">{confirmLabel}</span>
+                <span className={pendingLabel ? undefined : "sr-only"}>
+                  {pendingLabel ?? confirmLabel}
+                </span>
               </>
             ) : (
               confirmLabel

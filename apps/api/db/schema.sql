@@ -2155,6 +2155,8 @@ CREATE INDEX backup_schedule_runs_status_for_idx
     ON backup_schedule_runs (status, scheduled_for);
 CREATE INDEX backup_schedule_runs_schedule_id_idx
     ON backup_schedule_runs (schedule_id);
+CREATE INDEX backup_schedule_runs_snapshot_id_idx
+    ON backup_schedule_runs (snapshot_id);
 CREATE UNIQUE INDEX backup_schedule_runs_schedule_for_key
     ON backup_schedule_runs (schedule_id, scheduled_for);
 
@@ -3625,6 +3627,8 @@ CREATE INDEX media_optimization_jobs_site_state_idx
     ON media_optimization_jobs (site_id, state);
 CREATE INDEX media_optimization_jobs_tenant_created_idx
     ON media_optimization_jobs (tenant_id, created_at DESC);
+CREATE INDEX media_optimization_jobs_asset_id_idx
+    ON media_optimization_jobs (asset_id);
 
 COMMENT ON COLUMN media_optimization_jobs.encode_river_job_id IS
     'River river_jobs.id for the media_encode job enqueued at encode-ready time. NULL for non-optimize jobs and for rows created before m51. Used by the cancel path to cancel the River job proactively.';
@@ -4216,6 +4220,7 @@ CREATE TABLE rucss_jobs (
 
 CREATE INDEX idx_rucss_jobs_site_state ON rucss_jobs (site_id, state);
 CREATE INDEX rucss_jobs_tenant_idx ON rucss_jobs (tenant_id);
+CREATE INDEX rucss_jobs_result_id_idx ON rucss_jobs (result_id);
 
 ALTER TABLE rucss_jobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE rucss_jobs FORCE ROW LEVEL SECURITY;
@@ -5243,6 +5248,8 @@ CREATE TABLE generated_reports (
 -- Keyset cursor index. List queries use composite predicate (created_at,id)<.
 CREATE INDEX generated_reports_list_idx
     ON generated_reports (tenant_id, client_id, created_at DESC, id DESC);
+CREATE INDEX generated_reports_schedule_id_idx
+    ON generated_reports (schedule_id);
 
 ALTER TABLE generated_reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE generated_reports FORCE ROW LEVEL SECURITY;
