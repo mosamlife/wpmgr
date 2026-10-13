@@ -813,8 +813,8 @@ CREATE INDEX api_keys_tenant_id_idx ON api_keys (tenant_id);
 -- ---------------------------------------------------------------------------
 -- Append-only, hash-chained audit trail. Each row's hash chains to the previous
 -- row's hash for the same tenant, so any tampering breaks the chain. UPDATE and
--- DELETE are revoked from the app role (see grants in the migration); the table
--- is insert-only at the privilege level, not just by convention.
+-- direct DELETE are blocked for the app role. The owner retains DELETE for
+-- the tenant cascade; a restrictive policy blocks direct deletion.
 CREATE TABLE audit_log (
     id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id   uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
@@ -882,51 +882,13 @@ CREATE POLICY audit_log_tenant_isolation ON audit_log
 -- audit_log/sites/memberships) across ALL tenants in one query — mirrors
 -- memberships_agent/sites_agent exactly. SELECT-only: no cross-tenant writes,
 -- and this policy grants no bypass of the append-only privilege revocation
--- (UPDATE/DELETE remain revoked from wpmgr_app regardless of RLS).
+-- (UPDATE remains revoked and direct DELETE is blocked by a restrictive policy).
 CREATE POLICY audit_log_agent ON audit_log
     FOR SELECT
     USING (current_setting('app.agent', true) = 'on');
 
--- admin_delete_empty_tenant (m35): SECURITY DEFINER helper for the superadmin
--- orphaned-org cleanup. Verified prod failure (Cloud SQL log): a direct
--- "DELETE FROM tenants" by wpmgr_app cascades to the RI delete
--- 'DELETE FROM ONLY public.audit_log WHERE $1 = tenant_id' and fails with
--- "permission denied for table audit_log" (42501), because audit_log is
--- insert-only for wpmgr_app (m1 revokes UPDATE/DELETE/TRUNCATE — it is
--- tamper-evident) and that cascade is privilege-checked against the caller.
---
--- This function runs as its OWNER (the migration role, which retains DELETE on
--- audit_log) and removes the tenant's audit rows EXPLICITLY first, so the tenant
--- delete's ON DELETE CASCADE never has to touch audit_log — making the delete
--- correct regardless of whether the FK cascade is privilege-checked against the
--- caller or the owner, and WITHOUT granting wpmgr_app any standing delete on
--- audit_log. app.agent='on' (set in-body, NOT via a function SET clause — that
--- would require superuser ownership or GRANT SET ON PARAMETER and abort the
--- migration under the prod non-superuser owner) lets the emptiness checks see
--- rows across tenants under FORCE RLS (memberships_agent + sites_agent);
--- app.tenant_id is scoped locally around the audit_log delete so
--- the audit_log_tenant_isolation USING clause matches the target rows when the
--- owner is itself subject to FORCE RLS. search_path is pinned. EXECUTE is granted
--- only to wpmgr_app (in the migration). Note: deleting an orphaned org also
--- discards any pending invitations to it (invitations cascades from tenants) —
--- acceptable, since the org's only member was just deleted. Guards: removes a
--- tenant ONLY when it has zero memberships and zero sites. Returns whether a
--- tenant row was deleted.
---
--- Security review Finding A (m91): the original body set app.agent='on' and
--- returned on either branch WITHOUT restoring it — set_config(...,true) is
--- NOT rolled back at function exit, so 'on' leaked into the rest of the
--- caller's transaction for every call, disabling that transaction's
--- tenant-isolation RLS check on every statement afterward. v_prev_agent now
--- captures the caller's prior app.agent value and both branches fall through
--- to a single RETURN that restores it first. (m35 already ran in prod before
--- this fix existed; the corrected body is re-issued via CREATE OR REPLACE in
--- m91 so prod actually receives it on next boot — see m91's migration file.)
---
--- GH #408 (m116): the body also records a tenant_object_reclaim row, in the
--- same transaction and only when the tenant row was really deleted, because
--- the cascade destroys backup_chunks, the only inventory naming the tenant's
--- stored chunks. The body below is m116's, verbatim.
+-- Empty-tenant cleanup uses the tenant cascade, retains its emptiness guard,
+-- and records object reclamation in the deletion's transaction.
 CREATE OR REPLACE FUNCTION admin_delete_empty_tenant(p_tenant_id uuid)
 RETURNS boolean
 LANGUAGE plpgsql
@@ -943,21 +905,11 @@ BEGIN
         EXISTS (SELECT 1 FROM memberships m WHERE m.tenant_id = p_tenant_id)
         OR EXISTS (SELECT 1 FROM sites s WHERE s.tenant_id = p_tenant_id)
     ) THEN
-        PERFORM set_config('app.tenant_id', p_tenant_id::text, true);
-        DELETE FROM audit_log WHERE tenant_id = p_tenant_id;
-        PERFORM set_config('app.tenant_id', '', true);
         DELETE FROM tenants t WHERE t.id = p_tenant_id;
         GET DIAGNOSTICS v_count = ROW_COUNT;
         v_result := v_count > 0;
 
-        -- GH #408. The cascade above has just destroyed backup_chunks for this
-        -- tenant, which was the only inventory naming chunks/<tenant_id>/, and
-        -- this statement frees no object storage whatsoever. This row is now the
-        -- only surviving name for that storage. It is written HERE, in the same
-        -- transaction and gated on the delete having actually happened, so it
-        -- exists if and only if the tenant row is really gone. A failure here
-        -- aborts the delete on purpose: a committed delete with no record is the
-        -- bug, and is unrecoverable; a failed request is not.
+        -- Reclamation is recorded in the same transaction only after deletion.
         IF v_result THEN
             INSERT INTO tenant_object_reclaim (tenant_id)
             VALUES (p_tenant_id)
@@ -1046,40 +998,8 @@ CREATE TABLE install_owner (
 GRANT SELECT, INSERT ON install_owner TO wpmgr_app;
 REVOKE UPDATE, DELETE, TRUNCATE ON install_owner FROM wpmgr_app;
 
--- admin_purge_tenant (M93): SECURITY DEFINER helper for internal/org.PurgeWorker
--- — the grace-window destructive purge of a POPULATED tenant (Lane B). Modeled
--- on admin_delete_empty_tenant above but WITHOUT the emptiness guard: it is
--- called only after an owner already confirmed deletion via
--- DELETE /api/v1/orgs/{orgId} and the grace window has elapsed. Like
--- admin_delete_empty_tenant it explicitly clears audit_log first (wpmgr_app
--- has no DELETE grant on the append-only trail — see that function's comment
--- for the full 42501 story), as the function OWNER, before the tenant delete;
--- every other row cascades from that single DELETE FROM tenants.
---
--- GUC handling is DELIBERATELY DIFFERENT from admin_delete_empty_tenant, and
--- the difference matters: that function only ever purges an EMPTY tenant (its
--- guard proves zero memberships/sites), so it is safe for it to blank
--- app.tenant_id back to '' before its own tenant delete — no child-table
--- cascade rows exist there to protect. This function purges a POPULATED
--- tenant: every tenant-scoped table's baseline permissive
--- "<table>_tenant_isolation" policy (USING tenant_id = app.tenant_id) must see
--- p_tenant_id for the ENTIRE cascade the final DELETE triggers — exactly as it
--- would if ordinary application code ran the same cascade under InTenantTx
--- (itself just a transaction-scoped SET of this same GUC). So app.tenant_id is
--- set ONCE at the top and is NEVER blanked before the tenants delete — only
--- restored, once, on the single return path (M91 Finding A GUC-leak lesson:
--- set_config(...,true) is NOT rolled back at function exit — the "true"/
--- is_local flag scopes the change to the CALLER's transaction, not the
--- function invocation — so an unrestored value would leak into every
--- statement the caller's transaction runs afterward). Blanking it early here,
--- as admin_delete_empty_tenant safely does for its always-empty target, would
--- make every cascaded child-table DELETE see zero visible rows under FORCE
--- ROW LEVEL SECURITY — silently leaving every one of that tenant's rows
--- behind (an orphan leak, not a hard failure) while `tenants` itself still
--- gets removed. No app.agent is needed here at all (unlike
--- admin_delete_empty_tenant, which uses it for its own cross-tenant emptiness
--- EXISTS checks) — this function only ever touches rows scoped to the single
--- p_tenant_id it is given.
+-- Tenant purge removes its dependent rows through their foreign keys and
+-- restores the caller's tenant setting. EXECUTE is restricted to wpmgr_app.
 CREATE OR REPLACE FUNCTION admin_purge_tenant(p_tenant_id uuid)
 RETURNS boolean
 LANGUAGE plpgsql
@@ -1090,22 +1010,9 @@ DECLARE
     v_count integer;
     v_prev_tenant text := current_setting('app.tenant_id', true);
 BEGIN
-    -- Set for the WHOLE function body (see the top-of-file rationale): every
-    -- tenant-scoped table's tenant_isolation policy must see p_tenant_id for
-    -- the cascade the final DELETE triggers.
     PERFORM set_config('app.tenant_id', p_tenant_id::text, true);
-
-    -- audit_log is insert-only for wpmgr_app (m1 revokes UPDATE/DELETE/
-    -- TRUNCATE), so it is cleared explicitly here, as the function OWNER
-    -- (which retains DELETE) — mirrors admin_delete_empty_tenant exactly.
-    DELETE FROM audit_log WHERE tenant_id = p_tenant_id;
-
-    -- Every other row the tenant owns cascades from this single statement.
     DELETE FROM tenants t WHERE t.id = p_tenant_id;
     GET DIAGNOSTICS v_count = ROW_COUNT;
-
-    -- Single return path: restore the caller's prior app.tenant_id exactly
-    -- once (M91 Finding A GUC-leak lesson).
     PERFORM set_config('app.tenant_id', coalesce(v_prev_tenant, ''), true);
     RETURN v_count > 0;
 END;
@@ -12324,3 +12231,50 @@ $$;
 
 REVOKE ALL ON FUNCTION set_ability_change_class(uuid, text, text, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION set_ability_change_class(uuid, text, text, text) TO wpmgr_app;
+
+-- The owner keeps DELETE for referential actions; direct app deletes are denied.
+CREATE POLICY audit_log_no_direct_delete ON audit_log
+    AS RESTRICTIVE FOR DELETE TO wpmgr_app USING (false);
+CREATE POLICY org_context_versions_no_direct_delete ON org_context_versions
+    AS RESTRICTIVE FOR DELETE TO wpmgr_app USING (false);
+CREATE POLICY site_context_versions_no_direct_delete ON site_context_versions
+    AS RESTRICTIVE FOR DELETE TO wpmgr_app USING (false);
+CREATE POLICY assistant_update_proposals_no_direct_delete ON assistant_update_proposals
+    AS RESTRICTIVE FOR DELETE TO wpmgr_app USING (false);
+CREATE POLICY assistant_cache_purge_requests_no_direct_delete ON assistant_cache_purge_requests
+    AS RESTRICTIVE FOR DELETE TO wpmgr_app USING (false);
+CREATE POLICY site_content_inventory_runs_no_direct_delete ON site_content_inventory_runs
+    AS RESTRICTIVE FOR DELETE TO wpmgr_app USING (false);
+CREATE POLICY site_ability_inventory_runs_no_direct_delete ON site_ability_inventory_runs
+    AS RESTRICTIVE FOR DELETE TO wpmgr_app USING (false);
+CREATE POLICY assistant_ability_requests_no_direct_delete ON assistant_ability_requests
+    AS RESTRICTIVE FOR DELETE TO wpmgr_app USING (false);
+CREATE POLICY ability_tenant_disables_no_direct_delete ON ability_tenant_disables
+    AS RESTRICTIVE FOR DELETE TO wpmgr_app USING (false);
+
+DO $$
+DECLARE
+    v_table text;
+    v_owner text;
+BEGIN
+    FOREACH v_table IN ARRAY ARRAY[
+        'audit_log',
+        'org_context_versions',
+        'site_context_versions',
+        'assistant_update_proposals',
+        'assistant_cache_purge_requests',
+        'site_content_inventory_runs',
+        'site_ability_inventory_runs',
+        'assistant_ability_requests',
+        'ability_tenant_disables'
+    ] LOOP
+        SELECT pg_get_userbyid(c.relowner) INTO STRICT v_owner
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relname = v_table
+          AND c.relrowsecurity AND c.relforcerowsecurity;
+
+        EXECUTE format('GRANT DELETE ON TABLE public.%I TO %I', v_table, v_owner);
+    END LOOP;
+END;
+$$;
