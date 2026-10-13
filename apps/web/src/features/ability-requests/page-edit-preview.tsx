@@ -2,7 +2,7 @@ import { useId, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 
-import { OutlineFragmentView, OutlineNodeView } from "./layout-preview";
+import { NativeOutlineNode, OutlineFragmentView, OutlineNodeView } from "./layout-preview";
 import { DesignedSections } from "./designed-sections";
 import { patternWords } from "./design-model";
 import { PatternBody } from "./pattern-body";
@@ -10,6 +10,7 @@ import { type OutlineNode, type PageDesign } from "./outline-model";
 import {
   EDIT_TOO_LARGE_COPY,
   editFieldWords,
+  nativeWidgetWords,
   type AfterNode,
   type AfterView,
   type ChangeLine,
@@ -17,6 +18,7 @@ import {
   type Mark,
   type PageEditView,
   type Seg,
+  type NativeValue,
 } from "./page-edit-model";
 
 // The changes of an AI page edit and the page after them, as text. Every
@@ -115,6 +117,7 @@ function ChangeItem({
         </p>
         {line.fromSite ? <FromTheSite /> : null}
       </div>
+      {line.native ? <NativeChange line={line} /> : null}
       {line.op === "set_text" ? (
         <div className="space-y-0.5 pl-6">
           <p className="break-words">
@@ -156,6 +159,59 @@ function ChangeItem({
       {line.note ? <p className="pl-6 text-xs text-muted-foreground">{line.note}</p> : null}
     </li>
   );
+}
+
+function valueText(value: NativeValue): string {
+  return typeof value === "string" ? (value === "" ? '""' : value) : JSON.stringify(value, null, 2);
+}
+
+function NativeChange({ line }: { line: ChangeLine }) {
+  const native = line.native!;
+  return <div className="space-y-2 pl-6">
+    {native.widget && line.op !== "set_native" && line.op !== "add_native"
+      ? <p>{`${nativeWidgetWords(native.widget)} widget`}</p> : null}
+    {native.keys ? <div className="overflow-x-auto">
+      <table aria-label="Widget settings" className="w-full table-fixed border-collapse text-left">
+        <thead><tr>
+          <th scope="col" className="p-2">Setting</th>
+          <th scope="col" className="p-2">Before <FromTheSite /></th>
+          <th scope="col" className="p-2">After <Label>Chosen by the AI</Label></th>
+        </tr></thead>
+        <tbody>{native.keys.map((key) => <tr key={key.key} className="border-t border-border">
+          <th scope="row" className="break-words p-2 align-top font-medium">
+            {key.key.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase())}
+          </th>
+          <td className="whitespace-pre-wrap break-words p-2 align-top">
+            {key.from_the_site ? <Txt testId="native-before">{valueText(key.from_the_site.before)}</Txt> : <Label>Not set</Label>}
+          </td>
+          <td className="whitespace-pre-wrap break-words p-2 align-top">
+            {key.removed ? <span>Removed</span> : <Txt>{valueText(key.after!)}</Txt>}
+            {key.links ? <ul aria-label="Links" className="mt-1 space-y-1">
+              {key.links.map((link, i) => <li key={i}>
+                <Txt>{link.text}</Txt>{link.external_domain ? <Label>{` · Another website: ${link.external_domain}`}</Label> : null}
+              </li>)}
+            </ul> : null}
+          </td>
+        </tr>)}</tbody>
+      </table>
+    </div> : line.op === "set_native" || line.op === "add_native" ? <p>No settings change.</p> : null}
+    {line.newRefs ? <p className="break-words"><Label>New element IDs: </Label><Txt>{line.newRefs.join(", ")}</Txt></p> : null}
+    {native.removed_count !== undefined ? <>
+      <p>{`${native.removed_count} ${native.removed_count === 1 ? "element" : "elements"} removed`}</p>
+      <ol aria-label="Removed elements" className="space-y-1">
+        {native.removed_outline!.map((node) => <li key={node.ref} className="break-words">
+          {node.widget ? <NativeOutlineNode widget={node.widget} /> : <Label>{node.kind === "container" ? "Section" : nativeWidgetWords(node.kind)}</Label>}
+          {" · "}<Txt>{node.ref}</Txt>
+        </li>)}
+      </ol>
+    </> : null}
+    {native.from ? <p className="break-words"><Label>From: </Label>
+      <Txt>{native.from.parent === "root" ? "page root" : `parent ${native.from.parent}`}</Txt>{`, position ${native.from.index + 1}`}
+    </p> : null}
+    {native.to ? <p className="break-words"><Label>To: </Label>
+      <Txt>{native.to.parent === "root" ? "page root" : `parent ${native.to.parent}`}</Txt>{`, position ${native.to.index + 1}`}
+    </p> : null}
+  </div>;
 }
 
 const MARK_TEXT: Record<Mark, string> = { changed: "changed", new: "new", moved: "moved" };
@@ -237,7 +293,7 @@ function AfterNodeView({ node }: { node: AfterNode }) {
   return (
     <div data-ref={node.ref}>
       <p className="break-words">
-        <Label>{node.label}</Label>
+        {node.kind === "native" ? <NativeOutlineNode widget={node.widget!} summary={node.summary} /> : <Label>{node.label}</Label>}
         {node.kind === "locked" ? <span className="text-muted-foreground"> (WPMgr does not edit this)</span> : null}
         {node.texts.map((t) => (
           <span key={t.field}>

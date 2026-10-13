@@ -146,6 +146,14 @@ export function Label({ children }: { children: ReactNode }) {
   return <span className="text-xs font-medium text-muted-foreground">{children}</span>;
 }
 
+/** Native structure nodes carry a widget token and the site's summary as text. */
+export function NativeOutlineNode({ widget, summary }: { widget: string; summary?: string }) {
+  return <span className="break-words">
+    <Label>{`Elementor ${widget} widget`}</Label>
+    {summary !== undefined ? <> <Txt>{summary}</Txt></> : null}
+  </span>;
+}
+
 function Nodes({ nodes, ctx }: { nodes: readonly ViewNode[]; ctx: Ctx }) {
   return (
     <div className="space-y-2">
