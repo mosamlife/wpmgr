@@ -38,10 +38,12 @@ if (!defined('ABSPATH')) {
  *     beside its own source; target refs remain once per call; otherwise
  *     a ref is named at most once in the whole call, as a target or as an
  *     anchor (ops_invalid).
+ *   - widget operations and text or outline operations use separate calls (ops_invalid).
  * Every other refusal of parse() is bad_input.
  *
  * againstPage() holds the rules that need the page, checked operation by
  * operation on the page as the earlier operations leave it:
+ *   - remove and move target kinds complete the mixed-call check (ops_invalid);
  *   - the adapter declares the operation (op_not_supported_by_builder);
  *   - every ref names a node on the page before the call (node_not_found),
  *     and not one inside a subtree an earlier operation removed or replaced
@@ -70,6 +72,9 @@ if (!defined('ABSPATH')) {
  */
 final class PageEditValidator
 {
+    /** Plain next step for a call that crosses the widget and outline contracts. */
+    public const MIXED_HINT = 'Send widget operations and text or outline operations in separate edits.';
+
     /** Decode depth of the input text, as for every ability input. */
     private const MAX_DEPTH = 32;
 
@@ -160,12 +165,34 @@ final class PageEditValidator
             $clean[] = $r['op'];
         }
 
+        if (self::mixedOperations($clean)) {
+            return ['code' => 'ops_invalid', 'detail' => self::MIXED_HINT];
+        }
+
         $input = ['post_id' => $postId, 'base_fingerprint' => $fingerprint, 'operations' => $clean];
         if ($design !== null) {
             $input['design'] = $design;
         }
 
         return ['input' => $input];
+    }
+
+    /** Explicit operations are classified at parse time; remove/move use the page's kinds. */
+    private static function mixedOperations(array $ops, array $kinds = []): bool
+    {
+        $native = false;
+        $outline = false;
+        foreach ($ops as $op) {
+            $name = $op['op'];
+            $native = $native || in_array($name, ['add_native', 'set_native', 'duplicate'], true);
+            $outline = $outline || in_array($name, ['set_text', 'insert', 'replace'], true);
+            if (in_array($name, ['remove', 'move'], true)) {
+                $kind = $kinds[$op['ref']] ?? null;
+                $native = $native || $kind === 'native';
+                $outline = $outline || ($kind !== null && !in_array($kind, ['native', 'locked'], true));
+            }
+        }
+        return $native && $outline;
     }
 
     /**
@@ -224,6 +251,10 @@ final class PageEditValidator
             if ($k === 'heading' && ($node['level'] ?? null) === 1) {
                 $page->h1s[] = $ref;
             }
+        }
+
+        if (self::mixedOperations($input['operations'], $kind)) {
+            return self::refuse('ops_invalid', self::MIXED_HINT, null);
         }
 
         $removed   = [];

@@ -75,7 +75,11 @@ func pageEditRefusalOf(r pageCreateRefusal) *toolRefusal {
 		}
 		return ref
 	}
-	details := map[string]any{"argument": "input", "code": code, "hint": precheckRefusalHint(code), "retryable": false}
+	hint := r.Hint
+	if hint == "" {
+		hint = precheckRefusalHint(code)
+	}
+	details := map[string]any{"argument": "input", "code": code, "hint": hint, "retryable": false}
 	if len(failures) > 0 {
 		details["failures"] = failures
 	}

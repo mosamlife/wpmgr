@@ -76,6 +76,10 @@ func verifyPageEditNativePrecheck(resp agentcmd.AbilityRunResponse, entrySum str
 	if !ok {
 		return fail()
 	}
+	kinds, good := nativeEditOperationKinds(before, original, pv.BuilderVersion)
+	if !good || pageEditMixedOperations(f.ops, kinds) {
+		return fail()
+	}
 	final, ok := indexTree(tree)
 	if !ok {
 		return fail()
@@ -388,12 +392,32 @@ func nativeLeafWidget(node any) bool {
 func nativeDesignedAncestor(e *treeElement, index map[string]*treeElement) bool {
 	for e != nil {
 		label, _ := phpStringAt(nativeGet(e.node, "settings"), "_title")
-		if strings.HasPrefix(label, "WPMgr ") {
+		if strings.HasPrefix(label, "WPMgr · ") {
 			return true
 		}
 		e = index[e.parent]
 	}
 	return false
+}
+
+// Classify remove/move targets from the verified source tree, never an echoed outline.
+func nativeEditOperationKinds(tree any, index map[string]*treeElement, version string) (map[string]string, bool) {
+	proj, err := elementorProject(tree)
+	if err != nil {
+		return nil, false
+	}
+	kinds := make(map[string]string, len(proj.nodes))
+	for _, n := range proj.nodes {
+		kind := n.kind
+		if n.locked() && n.label != elementorLabelDynamic {
+			e := index[n.ref]
+			if e != nil && e.elType == "widget" && len(elementornative.Lookup(nativeString(nativeGet(e.node, "widgetType")), version)) > 0 {
+				kind = "native"
+			}
+		}
+		kinds[n.ref] = kind
+	}
+	return kinds, true
 }
 
 func nativeEditBreakpoints(v any) ([]string, bool) {
@@ -712,7 +736,7 @@ func nativePlaceNode(tree any, op pageEditOp, node any, index map[string]*treeEl
 	}
 	typ := nativeString(nativeGet(node, "elType"))
 	if widgetOnly || typ == "widget" {
-		if host == nil || (host.elType != "container" && host.elType != "column") || elementorHoldsDynamicKey(nativeGet(host.node, "settings"), 1) || !nativeLeafFlag(node) {
+		if host == nil || (host.elType != "container" && host.elType != "column") || elementorHoldsDynamicKey(nativeGet(host.node, "settings"), 1) || nativeDesignedAncestor(host, index) || !nativeLeafFlag(node) {
 			return nil, false
 		}
 	} else if host == nil {
@@ -771,7 +795,7 @@ func nativeCopySafe(node any, version string) bool {
 			return nativeStoredTextProblem(x) == ""
 		case phpObject:
 			for _, p := range x {
-				if nativeDeniedKey(p.key) || p.key == "_element_id" || (p.key == "library" && p.value == "svg") || !safe(p.value) {
+				if nativeDeniedKey(p.key) || (p.key == "library" && p.value == "svg") || !safe(p.value) {
 					return false
 				}
 			}

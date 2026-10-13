@@ -276,6 +276,15 @@ final class NativeWidgetPolicy
         }
     }
 
+    /** HTML-id controls and their responsive variants are reserved for designed anchors. */
+    public static function htmlIdKey(string $key): bool
+    {
+        $key = strtolower($key);
+        $base = self::baseControl($key);
+        return $key === LeafPolicy::ANCHOR_KEY || $base === LeafPolicy::ANCHOR_KEY
+            || str_ends_with($key, '_css_id') || str_ends_with($base, '_css_id');
+    }
+
     /** HTML-id controls are reserved for the designed anchor path. */
     public static function settingsProblem(NativeControlSchema $schema, array $written): ?array
     {
@@ -283,7 +292,7 @@ final class NativeWidgetPolicy
         $controls = [];
         foreach ($written as $key => $value) {
             $base = self::baseControl($key);
-            if ($base === LeafPolicy::ANCHOR_KEY || str_ends_with($base, '_css_id')) {
+            if (self::htmlIdKey($key)) {
                 $failures[] = ['path' => 'settings', 'key' => $key, 'reason' => 'HTML id controls cannot be written natively'];
                 if (isset($schema->document['controls'][$base])) {
                     $controls[$base] = $schema->document['controls'][$base];
@@ -365,7 +374,7 @@ final class NativeWidgetPolicy
         }
         foreach ($node as $key => $value) {
             $prefixes = array_merge(LeafPolicy::DENIED_KEY_PREFIXES, array_map(static fn ($denied) => $denied . '_', LeafPolicy::DENIED_KEYS), ['_motion_', 'motion_', '_sticky']);
-            if ($key === LeafPolicy::ANCHOR_KEY || self::denied((string) $key, LeafPolicy::DENIED_KEYS, $prefixes)) {
+            if (self::htmlIdKey((string) $key) || self::denied((string) $key, LeafPolicy::DENIED_KEYS, $prefixes)) {
                 return true;
             }
             if (in_array($key, ['elType', 'widgetType'], true) && is_string($value)

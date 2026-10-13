@@ -39,6 +39,7 @@ use WPMgr\Agent\Abilities\Builders\IdSeed;
 use WPMgr\Agent\Abilities\Builders\LeafPolicy;
 use WPMgr\Agent\Abilities\Builders\NativeDocument;
 use WPMgr\Agent\Abilities\Builders\OutlineV3;
+use WPMgr\Agent\Abilities\Builders\PageEditValidator;
 use WPMgr\Agent\Abilities\OwnAbilities;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -368,7 +369,7 @@ final class BuilderPageEditTest extends TestCase
         $this->assertSame('native_settings_invalid', $plan['refusal']['code'] ?? null);
     }
 
-    public function test_media_resolver_preserves_outline_order_then_sorts_native_ids(): void
+    public function test_media_resolver_preserves_outline_order_and_sorts_native_ids_in_separate_edits(): void
     {
         $asked = [];
         $resolve = static function (array $ids) use (&$asked): array {
@@ -384,12 +385,17 @@ final class BuilderPageEditTest extends TestCase
         $this->assertSame([9, 7], $asked);
         $this->nativeCatalogue();
         $this->api->widgetControls['counter']['second_image'] = ['type' => 'media'];
-        $ops[] = ['op' => 'add_native', 'into' => self::RIGHT, 'widget' => 'counter', 'settings' => [
+        $nativeOps = [['op' => 'add_native', 'into' => self::RIGHT, 'widget' => 'counter', 'settings' => [
             'image' => ['id' => '4', 'url' => 'https://example.com/4.jpg'],
-            'second_image' => ['id' => '2', 'url' => 'https://example.com/2.jpg']]];
-        $plan = BuilderPageEdit::plan($this->input($ops), $this->entry(), [self::TARGET], self::EDIT, $resolve, $this->seam());
+            'second_image' => ['id' => '2', 'url' => 'https://example.com/2.jpg']]]];
+        $plan = BuilderPageEdit::plan($this->input($nativeOps), $this->entry(), [self::TARGET], self::EDIT, $resolve, $this->seam());
         $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
-        $this->assertSame([9, 7, 2, 4], $asked);
+        $this->assertSame([2, 4], $asked);
+        $asked = [];
+        $plan = BuilderPageEdit::plan($this->input(array_merge($ops, $nativeOps)), $this->entry(), [self::TARGET], self::EDIT, $resolve, $this->seam());
+        $this->assertSame('ops_invalid', $plan['refusal']['code'] ?? null);
+        $this->assertSame(PageEditValidator::MIXED_HINT, $plan['refusal']['detail'] ?? null);
+        $this->assertSame([], $asked);
     }
 
     public function test_invalid_utf8_title_refuses_precheck_answer(): void

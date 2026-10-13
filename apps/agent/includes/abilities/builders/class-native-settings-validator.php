@@ -576,7 +576,7 @@ final class NativeSettingsValidator
     {
         $suffixes = array_map(static fn(string $denied): string => $denied . '_', LeafPolicy::DENIED_KEYS);
 
-        return self::denied($key, LeafPolicy::DENIED_KEYS, array_merge(LeafPolicy::DENIED_KEY_PREFIXES, $suffixes, ['_motion_', 'motion_', '_sticky']));
+        return NativeWidgetPolicy::htmlIdKey($key) || self::denied($key, LeafPolicy::DENIED_KEYS, array_merge(LeafPolicy::DENIED_KEY_PREFIXES, $suffixes, ['_motion_', 'motion_', '_sticky']));
     }
 
     /** @param array<string,mixed> $controls Known base controls. */

@@ -365,6 +365,10 @@ func nativeDuplicate(v any, path string) *NativePolicyFailure {
 
 func nativeDeniedKey(k string) bool {
 	k = strings.ToLower(k)
+	base, _ := nativeSplit(k)
+	if strings.HasSuffix(k, "_css_id") || strings.HasSuffix(base, "_css_id") {
+		return true
+	}
 	for _, d := range nativeDeniedKeys {
 		if k == d || strings.HasPrefix(k, d+"_") {
 			return true

@@ -190,6 +190,7 @@ type pageLink struct {
 // (the post type, the editor, the title) names a code only. The zero value is
 // an input that was accepted.
 type pageCreateRefusal struct {
+	Hint     string
 	Code     string
 	Failures []refusalFailure
 	Outline  bool

@@ -31,6 +31,7 @@ package mcp
 //     (ops_invalid).
 //
 // Duplicate raw keys and invalid native scalar shapes are native_settings_invalid;
+// widget and outline operations mixed in one call are ops_invalid;
 // every other refusal is bad_input. The rules that need the page (a ref on
 // it, a field a node offers, a locked node, an operation the builder
 // declares, the node counts) are the agent's alone. The shared case table
@@ -70,6 +71,7 @@ const (
 	pageEditMaxAltChars     = 300
 	// pageEditMaxButtonTextChars is the length of a button's text: page-create's.
 	pageEditMaxButtonTextChars = 80
+	pageEditMixedHint          = "Send widget operations and text or outline operations in separate edits."
 	pageEditOpsInvalid         = "ops_invalid"
 	pageEditOpSetText          = "set_text"
 	pageEditOpInsert           = "insert"
@@ -242,7 +244,31 @@ func checkPageEditInput(input []byte) (pageEditFacts, pageCreateRefusal) {
 		}
 		f.ops = append(f.ops, op)
 	}
+	if pageEditMixedOperations(f.ops, nil) {
+		return pageEditFacts{}, pageCreateRefusal{Code: pageEditOpsInvalid, Hint: pageEditMixedHint}
+	}
 	return f, pageCreateRefusal{}
+}
+
+// Explicit operations are classified at parse time; remove/move use the page's kinds.
+func pageEditMixedOperations(ops []pageEditOp, kinds map[string]string) bool {
+	native, outline := false, false
+	for _, op := range ops {
+		switch op.Op {
+		case "add_native", "set_native", "duplicate":
+			native = true
+		case pageEditOpSetText, pageEditOpInsert, pageEditOpReplace:
+			outline = true
+		case pageEditOpRemove, pageEditOpMove:
+			kind := kinds[op.Ref]
+			if kind == "native" {
+				native = true
+			} else if kind != "" && kind != "locked" {
+				outline = true
+			}
+		}
+	}
+	return native && outline
 }
 
 // pageEditOperation is one operation in its normalised form, or ok=false.

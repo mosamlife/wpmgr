@@ -82,6 +82,82 @@ final class NativePageEditTest extends TestCase
         return LayoutOps::apply($tree, $parsed['input']['operations'], new IdSeed('native-edit'), $media, true, null, $policy, ['mobile', 'tablet']);
     }
 
+    private static function policyCases(): array
+    {
+        $cases = json_decode(file_get_contents(__DIR__ . '/../fixtures/ability-run/native-edit-policy-cases.json'), true, 512, JSON_THROW_ON_ERROR);
+        foreach (['html_ids', 'batches', 'destinations'] as $field) {
+            if (!is_array($cases[$field] ?? null) || $cases[$field] === []) {
+                throw new \RuntimeException('shared native edit policy cases missing: ' . $field);
+            }
+        }
+        return $cases;
+    }
+
+    public function test_shared_html_id_policy(): void
+    {
+        RealNativeControls::install($this->api);
+        foreach (self::policyCases()['html_ids'] as $case) {
+            $key = $case['key'];
+            $tree = self::tree();
+            $tree[0]['elements'][0] = self::widget('button', [$key => 'Value']);
+            $r = $this->apply([['op' => 'duplicate', 'ref' => 'aaaaaaa', 'into' => '2222222']], $tree);
+            $this->assertSame($case['denied'] ? 'native_duplicate_refused' : null, $r['code'] ?? null, $key);
+            foreach (['set_native', 'add_native'] as $name) {
+                $op = ['op' => $name, 'settings' => [$key => 'Value']];
+                $op += $name === 'set_native' ? ['ref' => 'aaaaaaa'] : ['into' => '2222222', 'widget' => 'button'];
+                $tree[0]['elements'][0]['settings'] = ['text' => 'Original'];
+                $r = $this->apply([$op], $tree);
+                $this->assertSame($case['denied'] ? 'native_settings_invalid' : null, $r['code'] ?? null, $name . ' ' . $key);
+            }
+            if ($case['denied']) {
+                $tree[0]['elements'][0]['settings'] = ['text' => 'Original', $key => 'existing'];
+                $r = $this->apply([['op' => 'set_native', 'ref' => 'aaaaaaa', 'settings' => ['text' => 'Updated']]], $tree);
+                $this->assertArrayHasKey('tree', $r, $key);
+                $this->assertSame('existing', $r['tree'][0]['elements'][0]['settings'][$key]);
+            }
+        }
+    }
+
+    public function test_shared_mixed_batch_policy(): void
+    {
+        foreach (self::policyCases()['batches'] as $case) {
+            $r = self::parse($case['operations']);
+            $this->assertSame($case['parse_code'], $r['code'] ?? '', $case['name']);
+            if (isset($r['input'])) {
+                $nodes = ElementorClassicMapper::project(self::tree(), new NativeWidgetPolicy($this->api))->nodes();
+                $rule = PageEditValidator::againstPage($r['input'], $nodes, ['operations' => BuilderContract::OPS]);
+                $this->assertSame($case['page_code'] ?? '', $rule['code'] ?? '', $case['name']);
+                if (($case['page_code'] ?? '') === 'ops_invalid') {
+                    $this->assertSame(PageEditValidator::MIXED_HINT, $rule['detail']);
+                }
+            }
+            if ($case['parse_code'] === 'ops_invalid') {
+                $this->assertSame('Send widget operations and text or outline operations in separate edits.', $r['detail']);
+            }
+        }
+    }
+
+    public function test_shared_designed_destination_policy(): void
+    {
+        foreach (self::policyCases()['destinations'] as $case) {
+            foreach ([false, true] as $descendant) {
+                foreach (['add_native', 'duplicate', 'move'] as $name) {
+                    foreach (['into', 'before', 'after'] as $anchor) {
+                        $tree = self::tree();
+                        $tree[1]['settings']['_title'] = $case['label'];
+                        $tree[1]['elements'][] = ['id' => '3333333', 'elType' => 'container', 'settings' => [], 'elements' => [self::widget('heading', ['title' => 'Destination'], 'ccccccc')]];
+                        $host = $descendant ? '3333333' : '2222222';
+                        $beside = $descendant ? 'ccccccc' : '3333333';
+                        $op = ['op' => $name, $anchor => $anchor === 'into' ? $host : $beside];
+                        $op += $name === 'add_native' ? ['widget' => 'counter', 'settings' => ['title' => 'New']] : ['ref' => 'aaaaaaa'];
+                        $r = $this->apply([$op], $tree);
+                        $this->assertSame($case['denied'] ? 'native_designed_node' : null, $r['code'] ?? null, json_encode([$case, $op, $descendant, $r]));
+                    }
+                }
+            }
+        }
+    }
+
     public function test_real_size_controls_use_only_operation_documents(): void
     {
         RealNativeControls::install($this->api);
@@ -428,7 +504,7 @@ final class NativePageEditTest extends TestCase
         $copy['id'] = 'aaaaaaa';
         $this->assertSame(self::tree()[0]['elements'][0], $copy);
         $this->assertSame([$id], $r['results'][0]['new_ids']);
-        foreach (['_element_id', 'custom_css', '__dynamic__', 'motion_fx_x', 'sticky_x'] as $key) {
+        foreach (['_element_id', 'button_css_id', 'custom_css_id', 'custom_css', '__dynamic__', 'motion_fx_x', 'sticky_x'] as $key) {
             $tree = self::tree();
             $tree[0]['elements'][0]['elements'] = [self::widget('heading', ['nested' => [$key => 'x']], 'ccccccc')];
             $this->assertArrayNotHasKey('tree', $this->apply([$op], $tree), $key);
@@ -443,6 +519,9 @@ final class NativePageEditTest extends TestCase
         $this->assertSame(['bbbbbbb'], array_column($r['tree'][0]['elements'] ?? [], 'id'));
         $this->assertSame('node_not_editable', $this->apply([['op' => 'move', 'ref' => '1111111', 'into' => 'aaaaaaa']])['code'] ?? null);
         $parsed = self::parse([['op' => 'remove', 'ref' => '1111111'], ['op' => 'set_native', 'ref' => 'aaaaaaa', 'settings' => []]]);
+        $rule = PageEditValidator::againstPage($parsed['input'], ElementorClassicMapper::project(self::tree(), new NativeWidgetPolicy($this->api))->nodes(), ['operations' => BuilderContract::OPS]);
+        $this->assertSame(PageEditValidator::MIXED_HINT, $rule['detail'] ?? null);
+        $parsed = self::parse([['op' => 'remove', 'ref' => '1111111'], ['op' => 'set_text', 'ref' => 'bbbbbbb', 'field' => 'text', 'text' => 'New']]);
         $rule = PageEditValidator::againstPage($parsed['input'], ElementorClassicMapper::project(self::tree(), new NativeWidgetPolicy($this->api))->nodes(), ['operations' => BuilderContract::OPS]);
         $this->assertSame('ref_gone', $rule['detail'] ?? null);
         $tree = self::tree();
