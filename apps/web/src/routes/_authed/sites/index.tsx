@@ -698,6 +698,7 @@ function SitesPage() {
   const deleteSite = useDeleteSite();
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
 
   const [disconnectTarget, setDisconnectTarget] = useState<Site | null>(null);
   const [removeTarget, setRemoveTarget] = useState<Site | null>(null);
@@ -1089,6 +1090,7 @@ function SitesPage() {
 
   const handleBulkDelete = useCallback(() => {
     if (selection.count === 0) return;
+    setBulkDeleteError(null);
     setBulkDeleteOpen(true);
   }, [selection.count]);
 
@@ -1099,19 +1101,36 @@ function SitesPage() {
       return;
     }
     setBulkDeleting(true);
+    setBulkDeleteError(null);
     const results = await Promise.allSettled(
       ids.map((id) => deleteSite.mutateAsync(id)),
     );
-    const failed = results.filter((r) => r.status === "rejected").length;
-    const ok = ids.length - failed;
+    const failedIds = ids.filter((_, index) => {
+      const result = results[index];
+      return result !== undefined && result.status === "rejected";
+    });
+    const ok = ids.length - failedIds.length;
     setBulkDeleting(false);
+    if (ok > 0) {
+      toast.success(ok === 1 ? "Site deleted" : `${ok} sites deleted`);
+    }
+    if (failedIds.length > 0) {
+      selection.replace(failedIds);
+      const failure = results.find((result) => result.status === "rejected");
+      const message =
+        failure?.status === "rejected" && failure.reason instanceof Error
+          ? failure.reason.message
+          : "Request failed";
+      const subject = failedIds.length === 1 ? "The site" : "These sites";
+      setBulkDeleteError(
+        message === "internal server error" || message === "Request failed"
+          ? `${subject} could not be deleted. Please try again.`
+          : `${subject} could not be deleted. ${message}`,
+      );
+      return;
+    }
     setBulkDeleteOpen(false);
     selection.replace([]);
-    if (failed > 0) {
-      toast.error(`Deleted ${ok} of ${ids.length} sites; ${failed} failed`);
-    } else {
-      toast.success(`Deleted ${ok} ${ok === 1 ? "site" : "sites"}`);
-    }
   }, [selection, deleteSite]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -1450,8 +1469,13 @@ function SitesPage() {
           confirmLabel={`Delete ${selection.count === 1 ? "site" : "sites"}`}
           cancelLabel="Keep sites"
           isPending={bulkDeleting}
+          pendingLabel="Deleting…"
+          errorMessage={bulkDeleteError}
           consequencesBody={
             <div className="space-y-2">
+              {bulkDeleting ? (
+                <p role="status">This can take a few seconds.</p>
+              ) : null}
               <p>
                 This permanently removes{" "}
                 {selection.count === 1

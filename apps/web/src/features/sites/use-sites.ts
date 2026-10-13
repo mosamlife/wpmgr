@@ -255,7 +255,11 @@ export function useDeleteSite(): UseMutationResult<void, Error, string> {
       if (response?.status === 404) throw new NotFoundError("Site not found");
       if (error) throw toError(error);
     },
-    onSuccess: () => {
+    onSuccess: (_data, siteId) => {
+      queryClient.setQueriesData<Site[]>(
+        { queryKey: sitesKeys.lists() },
+        (current) => current?.filter((site) => site.id !== siteId),
+      );
       void queryClient.invalidateQueries({ queryKey: sitesKeys.all });
     },
   });
