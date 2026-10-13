@@ -106,3 +106,15 @@ func sitePrecheckRefusal(ability string, refusal *agentcmd.AbilityRunRefusal) *t
 		meta:   map[string]any{"code": code},
 	}
 }
+
+// nativeRefusalHints give a next step without relaying site-supplied details.
+var nativeRefusalHints = map[string]string{
+	"widget_registry_unreadable": "Ask the person to check the site's widget registry, then read wpmgr/elementor-widgets again.",
+	"widget_not_found":           "Read wpmgr/elementor-widgets and choose a widget name present in that catalogue.",
+	"atomic_not_supported":       "Read wpmgr/elementor-widgets and choose a usable classic widget; atomic widgets cannot be edited yet.",
+	"widget_not_usable":          "Read wpmgr/elementor-widgets and choose a widget marked usable.",
+	"widget_schema_unreadable":   "Ask the person to check this widget on the site, then read wpmgr/elementor-widget-schema again.",
+	"control_not_found":          "Read the widget's skeleton with wpmgr/elementor-widget-schema, then request only the control ids it lists.",
+	"native_settings_invalid":    "Read the widget's schema with wpmgr/elementor-widget-schema in controls mode for the failing keys, then send the stored shapes it describes.",
+	"native_designed_node":       "Read wpmgr/page-structure and edit this designed node through its design or patterns rather than native settings or duplication.",
+}

@@ -425,11 +425,14 @@ type dispatchPlan struct {
 // with a page builder the builder floor, and a designed page the
 // designed-pages floor). The same holds for wpmgr/page-edit: an edit that
 // carries a design, a section, a pattern or a pattern path needs the
-// designed-pages floor. A site whose
+// designed-pages floor; add_native, set_native and duplicate need the native
+// edit floor. A site whose
 // plugin went below it after approval closes not_sent/agent_outdated and is
 // never sent a write it cannot build.
 func agentFloorFor(r sqlc.AssistantAbilityRequest) string {
 	switch r.AbilityName {
+	case mcp.AbilityElementorWidgets, mcp.AbilityElementorWidgetSchema:
+		return agentcmd.MinAgentVersionForNativeEdit
 	case mcp.AbilityRestWrite:
 		return agentcmd.MinAgentVersionForRestCall
 	case mcp.AbilityPageCreate:

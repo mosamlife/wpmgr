@@ -767,6 +767,9 @@ func pageCreateFloorRefusal(agentVersion string, input []byte) *toolRefusal {
 // precheckRefusalHint maps an input-related refusal code to a fixed hint,
 // or "" for a code that is not about the input.
 func precheckRefusalHint(code string) string {
+	if hint := nativeRefusalHints[code]; hint != "" {
+		return hint
+	}
 	return precheckRefusalHints[code]
 }
 

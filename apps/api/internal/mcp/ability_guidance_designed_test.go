@@ -114,7 +114,7 @@ func TestDiscoverGuidanceNamesDesignedPages(t *testing.T) {
 			strings.Join(problems, "\n  - "), guidance)
 	}
 
-	// discoverSiteAbilities counts 2048 bytes for the answer outside its
+	// discoverSiteAbilities reserves space for the answer outside its
 	// abilities; the answer without them must fit.
 	answer.Abilities = []discoverAbility{}
 	b, err := json.Marshal(answer)

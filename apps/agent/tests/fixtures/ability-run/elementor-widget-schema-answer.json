@@ -1,0 +1,137 @@
+{
+    "builder": "elementor",
+    "builder_version": "3.35.9",
+    "truncated": false,
+    "widget": "heading",
+    "atomic": false,
+    "usable": true,
+    "mode": "controls",
+    "controls": {
+        "title": {
+            "type": "text",
+            "options": [],
+            "default": "",
+            "responsive": null,
+            "group": null
+        },
+        "size": {
+            "type": "select",
+            "options": [
+                "h1",
+                "h2",
+                "0"
+            ],
+            "default": "h2",
+            "responsive": null,
+            "group": null
+        },
+        "typography_typography": {
+            "type": "select",
+            "options": [
+                "",
+                "custom"
+            ],
+            "default": null,
+            "responsive": null,
+            "group": {
+                "family": "typography",
+                "prefix": "typography_",
+                "activator": "typography_typography"
+            }
+        },
+        "typography_font_size": {
+            "type": "slider",
+            "options": [],
+            "default": null,
+            "responsive": {
+                "devices": [
+                    "desktop",
+                    "tablet",
+                    "mobile"
+                ],
+                "min": null,
+                "max": null
+            },
+            "group": {
+                "family": "typography",
+                "prefix": "typography_",
+                "activator": "typography_typography"
+            },
+            "condition": {
+                "typography_typography": "custom"
+            },
+            "size_units": [
+                "px",
+                "em"
+            ],
+            "range": {
+                "px": {
+                    "min": 1,
+                    "max": 100
+                }
+            }
+        },
+        "align": {
+            "type": "choose",
+            "options": [],
+            "default": null,
+            "responsive": {
+                "devices": [
+                    "tablet",
+                    "mobile"
+                ],
+                "min": "mobile",
+                "max": "tablet"
+            },
+            "group": null
+        },
+        "align_tablet": {
+            "type": "choose",
+            "options": [],
+            "default": null,
+            "responsive": {
+                "devices": [
+                    "tablet"
+                ],
+                "min": "tablet",
+                "max": "tablet"
+            },
+            "group": null
+        },
+        "items": {
+            "type": "repeater",
+            "options": [],
+            "default": null,
+            "responsive": null,
+            "group": null,
+            "fields": {
+                "text": {
+                    "type": "text",
+                    "options": [],
+                    "default": "",
+                    "responsive": null,
+                    "group": null
+                },
+                "link": {
+                    "type": "url",
+                    "options": [],
+                    "default": {
+                        "url": ""
+                    },
+                    "responsive": null,
+                    "group": null
+                },
+                "kind": {
+                    "type": "select",
+                    "options": [
+                        "a",
+                        "b"
+                    ],
+                    "default": null,
+                    "responsive": null,
+                    "group": null
+                }
+            }
+        }
+    }
+}
