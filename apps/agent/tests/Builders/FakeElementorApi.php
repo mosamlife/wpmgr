@@ -75,6 +75,12 @@ final class FakeElementorApi implements ElementorApi
      */
     public array $widgetTypes = ['heading', 'text-editor', 'button', 'image', 'divider', 'spacer'];
 
+    /** @var list<array{name: string, title: string, categories: list<string>, pro: bool, atomic: bool}>|null */
+    public ?array $widgetCatalogue = [];
+
+    /** @var array<string, array<string, array<string, mixed>>|null> */
+    public array $widgetControls = [];
+
     /**
      * Builds the element instance for a node whose type is registered. Null
      * gives an instance whose get_data_for_save() returns the node unchanged.
@@ -253,6 +259,26 @@ final class FakeElementorApi implements ElementorApi
         $this->calls[] = ['widgetTypeExists', [$type]];
 
         return $this->loaded && in_array($type, $this->widgetTypes, true);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function widgetCatalogue(): ?array
+    {
+        $this->calls[] = ['widgetCatalogue', []];
+
+        return $this->loaded ? $this->widgetCatalogue : null;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function widgetControls(string $name): ?array
+    {
+        $this->calls[] = ['widgetControls', [$name]];
+
+        return $this->loaded ? ($this->widgetControls[$name] ?? null) : null;
     }
 
     /**

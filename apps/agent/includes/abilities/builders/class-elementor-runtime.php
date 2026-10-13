@@ -282,6 +282,76 @@ final class ElementorRuntime implements ElementorApi
 
     /**
      * {@inheritDoc}
+     */
+    public function widgetCatalogue(): ?array
+    {
+        try {
+            $widgets = $this->call('widgets_manager', 'get_widget_types', []);
+            if (!is_array($widgets)) {
+                return null;
+            }
+            $rows = [];
+            foreach ($widgets as $widget) {
+                if (!is_object($widget)) {
+                    return null;
+                }
+                $name       = $widget->get_name();
+                $title      = $widget->get_title();
+                $categories = $widget->get_categories();
+                if (!is_string($name) || $name === '' || !is_string($title) || !is_array($categories)) {
+                    return null;
+                }
+                foreach ($categories as $category) {
+                    if (!is_string($category)) {
+                        return null;
+                    }
+                }
+                $rows[] = [
+                    'name'       => $name,
+                    'title'      => $title,
+                    'categories' => array_values($categories),
+                    'pro'        => str_starts_with(get_class($widget), 'ElementorPro\\'),
+                    'atomic'     => method_exists($widget, 'get_props_schema'),
+                ];
+            }
+
+            return $rows;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function widgetControls(string $name): ?array
+    {
+        if ($name === '') {
+            return null;
+        }
+        try {
+            $widget = $this->call('widgets_manager', 'get_widget_types', [$name]);
+            if (!is_object($widget)) {
+                return null;
+            }
+            $controls = $widget->get_controls();
+            if (!is_array($controls)) {
+                return null;
+            }
+            foreach ($controls as $id => $control) {
+                if (!is_string($id) || !is_array($control)) {
+                    return null;
+                }
+            }
+
+            return $controls;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
+     * {@inheritDoc}
      *
      * Elementor's own Utils::kses_post_deep() is used where the running
      * Elementor has it. Where it does not, every string goes through
