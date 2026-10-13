@@ -319,6 +319,27 @@ final class LeafPolicy
             return 'changed by the HTML sanitiser';
         }
 
+        return self::decodedProblem($stored, $rules);
+    }
+
+    /**
+     * The UTF-8, decoding and forbidden-sequence part of storedProblem,
+     * independent of WordPress's HTML sanitiser. Parsed policies supply
+     * their own closed markup grammar before accepting a string.
+     *
+     * @param string $stored String to check.
+     * @param array<string,mixed> $rules Adapter leaf rules.
+     */
+    public static function decodedProblem(string $stored, array $rules): ?string
+    {
+        $forbidden = self::adapterForbidden($rules);
+        if ($forbidden === null) {
+            return 'the adapter leaf rules are malformed';
+        }
+        if (preg_match('//u', $stored) !== 1) {
+            return 'not valid UTF-8';
+        }
+
         $forms   = [$stored];
         $current = $stored;
         for ($round = 0; $round < self::DECODE_ROUNDS; $round++) {
@@ -981,6 +1002,41 @@ final class LeafPolicy
         }
 
         return false;
+    }
+
+    /**
+     * Pure shape pins, without stored-string sanitisation or WordPress calls.
+     * Callers also check addresses, library membership and their own denylist.
+     *
+     * @param mixed             $value   Value to check.
+     * @param string            $name    Shape pin name.
+     * @param list<string>|null $choices Enum keys or slider units.
+     */
+    public static function shapeMatches($value, string $name, ?array $choices = null): bool
+    {
+        return self::hasShape($value, $name, $choices);
+    }
+
+    /**
+     * Plain text in every decoded form, with the existing text and sequence
+     * rules. Pure: no HTML sanitiser or WordPress environment is needed.
+     */
+    public static function plainTextProblem(string $raw): ?string
+    {
+        $form = $raw;
+        for ($round = 0; $round <= self::DECODE_ROUNDS; $round++) {
+            $why = self::textProblem($form, 'text') ?? self::sequenceProblem($form, true, []);
+            if ($why !== null) {
+                return $why;
+            }
+            $next = html_entity_decode($form, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            if ($next === $form) {
+                return null;
+            }
+            $form = $next;
+        }
+
+        return 'character references nested too deeply';
     }
 
     /**
