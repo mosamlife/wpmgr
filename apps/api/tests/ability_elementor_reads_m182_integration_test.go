@@ -18,29 +18,29 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/migrations"
 )
 
-const m179MigrationVersion = "20261013000000_m179_elementor_read_abilities"
+const m182MigrationVersion = "20261013040000_m182_elementor_read_abilities"
 
-var m179Names = []string{"wpmgr/elementor-widgets", "wpmgr/elementor-widget-schema"}
+var m182Names = []string{"wpmgr/elementor-widgets", "wpmgr/elementor-widget-schema"}
 
-func m179Body(t *testing.T) string {
+func m182Body(t *testing.T) string {
 	t.Helper()
-	b, err := fs.ReadFile(migrations.FS, m179MigrationVersion+".sql")
+	b, err := fs.ReadFile(migrations.FS, m182MigrationVersion+".sql")
 	if err != nil {
-		t.Fatalf("read m179 migration body: %v", err)
+		t.Fatalf("read m182 migration body: %v", err)
 	}
 	return string(b)
 }
 
 // Seed copy is part of the declarative mirror, which the schema catalog check
 // does not compare. This proof needs no database.
-func TestM179MigrationSeedsMatchSchema(t *testing.T) {
-	body := m179Body(t)
+func TestM182MigrationSeedsMatchSchema(t *testing.T) {
+	body := m182Body(t)
 	schema, err := os.ReadFile("../db/schema.sql")
 	if err != nil {
 		t.Fatalf("read schema mirror: %v", err)
 	}
 	seeds := strings.Split(body, `INSERT INTO "public"."ability_catalogue"`)
-	if len(seeds) != len(m179Names)+1 {
+	if len(seeds) != len(m182Names)+1 {
 		t.Fatalf("want one seed per ability, found %d", len(seeds)-1)
 	}
 	for _, seed := range seeds[1:] {
@@ -55,18 +55,18 @@ func TestM179MigrationSeedsMatchSchema(t *testing.T) {
 	}
 }
 
-func m179Read(t *testing.T, pool *db.Pool, tenant uuid.UUID) map[string]sqlc.AbilityCatalogue {
+func m182Read(t *testing.T, pool *db.Pool, tenant uuid.UUID) map[string]sqlc.AbilityCatalogue {
 	t.Helper()
 	ctx := context.Background()
 	entries := make(map[string]sqlc.AbilityCatalogue)
 	if err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
-		mcpAssertAndReportRole(t, tx, "InTenantTx (m179 catalogue read)")
+		mcpAssertAndReportRole(t, tx, "InTenantTx (m182 catalogue read)")
 		rows, err := sqlc.New(tx).ListAbilityCatalogue(ctx)
 		if err != nil {
 			return err
 		}
 		for _, row := range rows {
-			if row.Name != m179Names[0] && row.Name != m179Names[1] {
+			if row.Name != m182Names[0] && row.Name != m182Names[1] {
 				continue
 			}
 			if _, exists := entries[row.Name]; exists {
@@ -76,17 +76,17 @@ func m179Read(t *testing.T, pool *db.Pool, tenant uuid.UUID) map[string]sqlc.Abi
 		}
 		return nil
 	}); err != nil {
-		t.Fatalf("read m179 entries: %v", err)
+		t.Fatalf("read m182 entries: %v", err)
 	}
-	if len(entries) != len(m179Names) {
-		t.Fatalf("want both m179 entries, got %v", entries)
+	if len(entries) != len(m182Names) {
+		t.Fatalf("want both m182 entries, got %v", entries)
 	}
 	return entries
 }
 
-func m179AssertSeeds(t *testing.T, entries map[string]sqlc.AbilityCatalogue) {
+func m182AssertSeeds(t *testing.T, entries map[string]sqlc.AbilityCatalogue) {
 	t.Helper()
-	for _, name := range m179Names {
+	for _, name := range m182Names {
 		r := entries[name]
 		if r.Source != "wpmgr" || r.Class != "read" || r.Status != "admitted" || !r.Enabled ||
 			r.ApprovalMode != "none" || r.Snapshot != "none" || r.EffectCopy != "none" ||
@@ -103,12 +103,12 @@ func m179AssertSeeds(t *testing.T, entries map[string]sqlc.AbilityCatalogue) {
 			t.Fatalf("%s plain copy is incomplete: %+v", name, r)
 		}
 	}
-	widgets := entries[m179Names[0]]
+	widgets := entries[m182Names[0]]
 	if widgets.Title != "List Elementor widgets" || !strings.Contains(*widgets.Usage, "name, title, categories, pro and atomic") {
 		t.Fatalf("widget catalogue copy: %+v", widgets)
 	}
 	m169Limits(t, widgets.Limits, map[string]any{"builders_enabled": []any{"elementor"}})
-	schema := entries[m179Names[1]]
+	schema := entries[m182Names[1]]
 	if schema.Title != "Read an Elementor widget's controls" {
 		t.Fatalf("widget schema title: %q", schema.Title)
 	}
@@ -123,21 +123,21 @@ func m179AssertSeeds(t *testing.T, entries map[string]sqlc.AbilityCatalogue) {
 // Production migrates as wpmgr_owner; the app reads and stamps through its
 // transaction helpers. To exercise the INSERT body as wpmgr_app too, the test
 // grants INSERT with a policy restricted to these seed names, then removes it.
-func TestM179SeedsStampAndRerunAsAppRole(t *testing.T) {
-	body := m179Body(t)
+func TestM182SeedsStampAndRerunAsAppRole(t *testing.T) {
+	body := m182Body(t)
 	ctx := context.Background()
 	pool := startPostgres(t)
-	tenant := seedTenant(t, pool, "m179-seed-"+uuid.NewString()[:8])
-	m179AssertSeeds(t, m179Read(t, pool, tenant))
+	tenant := seedTenant(t, pool, "m182-seed-"+uuid.NewString()[:8])
+	m182AssertSeeds(t, m182Read(t, pool, tenant))
 
 	apply := func() error {
 		return pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
-			mcpAssertAndReportRole(t, tx, "InTenantTx (m179 migration body)")
+			mcpAssertAndReportRole(t, tx, "InTenantTx (m182 migration body)")
 			_, err := tx.Exec(ctx, body)
 			return err
 		})
 	}
-	if err := apply(); m179SQLState(err) != "42501" {
+	if err := apply(); m182SQLState(err) != "42501" {
 		t.Fatalf("without migration-time INSERT permission: got %v, want 42501", err)
 	}
 
@@ -146,17 +146,17 @@ func TestM179SeedsStampAndRerunAsAppRole(t *testing.T) {
 	revoke := func() {
 		t.Helper()
 		if _, err := owner.Exec(ctx, `REVOKE INSERT ON ability_catalogue FROM wpmgr_app;
-			DROP POLICY IF EXISTS m179_test_seed_insert ON ability_catalogue`); err != nil {
+			DROP POLICY IF EXISTS m182_test_seed_insert ON ability_catalogue`); err != nil {
 			t.Fatalf("remove test seed permission: %v", err)
 		}
 	}
 	defer revoke()
 	if err := pgx.BeginFunc(ctx, owner.Pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `DELETE FROM ability_catalogue WHERE name = ANY($1)`, m179Names); err != nil {
+		if _, err := tx.Exec(ctx, `DELETE FROM ability_catalogue WHERE name = ANY($1)`, m182Names); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `GRANT INSERT ON ability_catalogue TO wpmgr_app;
-			CREATE POLICY m179_test_seed_insert ON ability_catalogue FOR INSERT TO wpmgr_app
+			CREATE POLICY m182_test_seed_insert ON ability_catalogue FOR INSERT TO wpmgr_app
 			WITH CHECK (name IN ('wpmgr/elementor-widgets', 'wpmgr/elementor-widget-schema')
 			            AND source = 'wpmgr' AND class = 'read')`)
 		return err
@@ -164,13 +164,13 @@ func TestM179SeedsStampAndRerunAsAppRole(t *testing.T) {
 		t.Fatalf("arrange app-role migration seed: %v", err)
 	}
 	if err := apply(); err != nil {
-		t.Fatalf("apply m179 as wpmgr_app: %v", err)
+		t.Fatalf("apply m182 as wpmgr_app: %v", err)
 	}
-	m179AssertSeeds(t, m179Read(t, pool, tenant))
+	m182AssertSeeds(t, m182Read(t, pool, tenant))
 	if _, err := abilities.StampOwnEntryHashes(ctx, pool, slog.Default()); err != nil {
 		t.Fatalf("boot stamp: %v", err)
 	}
-	stamped := m179Read(t, pool, tenant)
+	stamped := m182Read(t, pool, tenant)
 	for _, r := range stamped {
 		_, sum, err := abilities.EntryBytes(r)
 		if err != nil || r.EntrySha256 == nil || *r.EntrySha256 != sum {
@@ -178,18 +178,18 @@ func TestM179SeedsStampAndRerunAsAppRole(t *testing.T) {
 		}
 	}
 	if err := apply(); err != nil {
-		t.Fatalf("rerun m179 as wpmgr_app: %v", err)
+		t.Fatalf("rerun m182 as wpmgr_app: %v", err)
 	}
-	if again := m179Read(t, pool, tenant); !reflect.DeepEqual(stamped, again) {
+	if again := m182Read(t, pool, tenant); !reflect.DeepEqual(stamped, again) {
 		t.Fatalf("rerun changed seeded rows:\nbefore %+v\nafter %+v", stamped, again)
 	}
 	revoke()
-	if err := apply(); m179SQLState(err) != "42501" {
+	if err := apply(); m182SQLState(err) != "42501" {
 		t.Fatalf("after removing test permission: got %v, want 42501", err)
 	}
 }
 
-func m179SQLState(err error) string {
+func m182SQLState(err error) string {
 	code, _ := m169Refusal(err)
 	return code
 }

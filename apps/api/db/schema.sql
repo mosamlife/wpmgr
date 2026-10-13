@@ -9913,7 +9913,7 @@ WHERE NOT EXISTS (
     SELECT 1 FROM ability_catalogue c WHERE c.name = 'wpmgr/page-structure'
 );
 
--- m179: the Elementor widget catalogue and compact widget control schema.
+-- m182: the Elementor widget catalogue and compact widget control schema.
 INSERT INTO "public"."ability_catalogue" (
     "name", "source", "class", "status", "enabled", "approval_mode",
     "snapshot", "min_agent_version", "limits",
