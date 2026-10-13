@@ -27,7 +27,7 @@ func (ContentRetentionArgs) InsertOpts() river.InsertOpts {
 }
 
 type contentRetentionQueries interface {
-	ClearAbilityRequestContent(context.Context, int32) (int32, error)
+	ClearAbilityRequestContent(context.Context, int32) (sqlc.ClearAbilityRequestContentRow, error)
 }
 
 // ContentRetentionWorker clears bounded batches and resumes when its work
@@ -53,26 +53,30 @@ func (w *ContentRetentionWorker) Timeout(*river.Job[ContentRetentionArgs]) time.
 }
 
 func (w *ContentRetentionWorker) Work(ctx context.Context, _ *river.Job[ContentRetentionArgs]) error {
-	var total int64
+	var total, failed int64
 	defer func() {
 		if w.logger != nil {
-			w.logger.InfoContext(ctx, "ability request content retention", "cleared", total)
+			w.logger.InfoContext(ctx, "ability request content retention", "cleared", total, "failed", failed)
 		}
 	}()
 	for batch := 0; batch < contentRetentionMaxBatches; batch++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		n, err := w.queries.ClearAbilityRequestContent(ctx, contentRetentionBatchSize)
+		counts, err := w.queries.ClearAbilityRequestContent(ctx, contentRetentionBatchSize)
 		// Database diagnostics can contain row values; the job records no content.
 		if err != nil {
 			return errors.New("ability request content retention batch failed")
 		}
-		if n < 0 || n > contentRetentionBatchSize {
+		if counts.Cleared < 0 || counts.Failed < 0 || int64(counts.Cleared)+int64(counts.Failed) > int64(contentRetentionBatchSize) {
 			return errors.New("invalid ability request content retention count")
 		}
-		total += int64(n)
-		if n < contentRetentionBatchSize {
+		total += int64(counts.Cleared)
+		failed += int64(counts.Failed)
+		if counts.Failed > 0 {
+			return errors.New("ability request content retention rows failed")
+		}
+		if counts.Cleared < contentRetentionBatchSize {
 			return nil
 		}
 	}

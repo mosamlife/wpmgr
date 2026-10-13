@@ -131,15 +131,20 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION public.clear_ability_request_content(p_limit integer)
-RETURNS integer
+DROP FUNCTION IF EXISTS public.clear_ability_request_content(integer);
+CREATE FUNCTION public.clear_ability_request_content(p_limit integer)
+RETURNS TABLE (cleared integer, failed integer)
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
 AS $$
 DECLARE
     v_count integer := 0;
+    v_failed integer := 0;
     v_updated integer;
     v_candidate record;
+    v_candidates jsonb;
+    v_after_finished timestamptz := '-infinity';
+    v_after_id uuid := '00000000-0000-0000-0000-000000000000';
     v_prev_agent text := current_setting('app.agent', true);
     v_prev_tenant text := current_setting('app.tenant_id', true);
     v_prev_site_scope text := current_setting('app.site_scope', true);
@@ -150,58 +155,75 @@ BEGIN
     PERFORM set_config('app.site_scope', 'off', true);
     PERFORM set_config('app.agent', 'on', true);
 
-    -- Discovery uses the SELECT-only agent policy. Locking and clearing use
-    -- the candidate's tenant policy, with the caller's site scope suspended.
-    FOR v_candidate IN
-        SELECT id, tenant_id
-        FROM public.assistant_ability_requests
-        WHERE content_cleared_at IS NULL
-          AND (state IN ('done','failed','not_sent','declined','expired','withdrawn')
-               OR (state = 'outcome_unknown' AND outcome IS NOT NULL))
-          AND undo_state IS DISTINCT FROM 'in_progress'
-          AND public.ability_request_finished_at(state, outcome_at, decided_at, expires_at, withdrawn_at)
-              < statement_timestamp() - interval '15 days'
-        ORDER BY tenant_id,
-                 public.ability_request_finished_at(state, outcome_at, decided_at, expires_at, withdrawn_at), id
+    -- Discovery pages follow the retention index under the SELECT-only agent
+    -- policy. Each page is bounded; only that page is grouped by tenant.
     LOOP
-        PERFORM set_config('app.tenant_id', v_candidate.tenant_id::text, true);
-        PERFORM set_config('app.agent', 'off', true);
-        -- Each candidate has its own rollback scope. A row that cannot be
-        -- cleared stays intact while the remaining candidates are processed.
-        BEGIN
-            WITH eligible AS (
-                SELECT r.id
-                FROM public.assistant_ability_requests r
-                WHERE r.id = v_candidate.id
-                  AND r.tenant_id = v_candidate.tenant_id
-                  AND r.content_cleared_at IS NULL
-                  AND (r.state IN ('done','failed','not_sent','declined','expired','withdrawn')
-                       OR (r.state = 'outcome_unknown' AND r.outcome IS NOT NULL))
-                  AND r.undo_state IS DISTINCT FROM 'in_progress'
-                  AND public.ability_request_finished_at(r.state, r.outcome_at, r.decided_at, r.expires_at, r.withdrawn_at)
-                      < statement_timestamp() - interval '15 days'
-                FOR UPDATE SKIP LOCKED
-            )
-            UPDATE public.assistant_ability_requests r
-            SET retained_draft = public.ability_request_retained_draft(r.ability_name, r.input_json),
-                input_json = '{}', card_facts = NULL, content_cleared_at = statement_timestamp()
-            FROM eligible e
-            WHERE r.id = e.id AND r.tenant_id = v_candidate.tenant_id;
-            GET DIAGNOSTICS v_updated = ROW_COUNT;
-        EXCEPTION WHEN OTHERS THEN
-            v_updated := 0;
-        END;
-        v_count := v_count + v_updated;
+        SELECT coalesce(jsonb_agg(to_jsonb(d) ORDER BY d.finished_at, d.id), '[]'::jsonb)
+        INTO v_candidates
+        FROM (
+            SELECT id, tenant_id,
+                   public.ability_request_finished_at(state, outcome_at, decided_at, expires_at, withdrawn_at) AS finished_at
+            FROM public.assistant_ability_requests
+            WHERE content_cleared_at IS NULL
+              AND (state IN ('done','failed','not_sent','declined','expired','withdrawn')
+                   OR (state = 'outcome_unknown' AND outcome IS NOT NULL))
+              AND undo_state IS DISTINCT FROM 'in_progress'
+              AND public.ability_request_finished_at(state, outcome_at, decided_at, expires_at, withdrawn_at)
+                  < statement_timestamp() - interval '15 days'
+              AND (public.ability_request_finished_at(state, outcome_at, decided_at, expires_at, withdrawn_at), id)
+                  > (v_after_finished, v_after_id)
+            ORDER BY public.ability_request_finished_at(state, outcome_at, decided_at, expires_at, withdrawn_at), id
+            LIMIT p_limit - v_count - v_failed
+        ) d;
+        EXIT WHEN jsonb_array_length(v_candidates) = 0;
+        v_after_finished := (v_candidates -> -1 ->> 'finished_at')::timestamptz;
+        v_after_id := (v_candidates -> -1 ->> 'id')::uuid;
 
-        -- Resume the discovery cursor under its read scope. Only rows actually
-        -- cleared consume the limit; locked or changed candidates do not.
-        PERFORM set_config('app.agent', 'on', true);
-        EXIT WHEN v_count >= p_limit;
+        FOR v_candidate IN
+            SELECT id, tenant_id
+            FROM jsonb_to_recordset(v_candidates) AS c(id uuid, tenant_id uuid)
+            ORDER BY tenant_id, id
+        LOOP
+            PERFORM set_config('app.tenant_id', v_candidate.tenant_id::text, true);
+            PERFORM set_config('app.agent', 'off', true);
+            -- Each candidate has its own rollback scope. A row that cannot be
+            -- cleared stays intact while the remaining candidates are processed.
+            BEGIN
+                WITH eligible AS (
+                    SELECT r.id
+                    FROM public.assistant_ability_requests r
+                    WHERE r.id = v_candidate.id
+                      AND r.tenant_id = v_candidate.tenant_id
+                      AND r.content_cleared_at IS NULL
+                      AND (r.state IN ('done','failed','not_sent','declined','expired','withdrawn')
+                           OR (r.state = 'outcome_unknown' AND r.outcome IS NOT NULL))
+                      AND r.undo_state IS DISTINCT FROM 'in_progress'
+                      AND public.ability_request_finished_at(r.state, r.outcome_at, r.decided_at, r.expires_at, r.withdrawn_at)
+                          < statement_timestamp() - interval '15 days'
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE public.assistant_ability_requests r
+                SET retained_draft = public.ability_request_retained_draft(r.ability_name, r.input_json),
+                    input_json = '{}', card_facts = NULL, content_cleared_at = statement_timestamp()
+                FROM eligible e
+                WHERE r.id = e.id AND r.tenant_id = v_candidate.tenant_id;
+                GET DIAGNOSTICS v_updated = ROW_COUNT;
+            EXCEPTION WHEN OTHERS THEN
+                v_updated := 0;
+                v_failed := v_failed + 1;
+            END;
+            v_count := v_count + v_updated;
+
+            -- Locking and updates use the candidate's tenant policy. Locked
+            -- or changed rows consume neither count; failures consume the budget.
+            PERFORM set_config('app.agent', 'on', true);
+        END LOOP;
+        EXIT WHEN v_count + v_failed >= p_limit;
     END LOOP;
     PERFORM set_config('app.agent', coalesce(v_prev_agent, ''), true);
     PERFORM set_config('app.tenant_id', coalesce(v_prev_tenant, ''), true);
     PERFORM set_config('app.site_scope', coalesce(v_prev_site_scope, ''), true);
-    RETURN v_count;
+    RETURN QUERY SELECT v_count, v_failed;
 EXCEPTION WHEN OTHERS THEN
     PERFORM set_config('app.agent', coalesce(v_prev_agent, ''), true);
     PERFORM set_config('app.tenant_id', coalesce(v_prev_tenant, ''), true);

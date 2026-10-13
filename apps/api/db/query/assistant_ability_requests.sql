@@ -765,4 +765,5 @@ ORDER BY created_at DESC, id DESC
 LIMIT 1;
 
 -- name: ClearAbilityRequestContent :one
-SELECT public.clear_ability_request_content(sqlc.arg(batch_size)::integer)::integer;
+SELECT cleared::integer, failed::integer
+FROM public.clear_ability_request_content(sqlc.arg(batch_size)::integer);

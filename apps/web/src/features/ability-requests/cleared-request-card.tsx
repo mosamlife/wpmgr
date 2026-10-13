@@ -3,13 +3,14 @@ import { cn } from "@/lib/utils";
 import { useDeepLinkFocus } from "@/features/ai-requests/use-deep-link";
 
 import type { AbilityRequestCardProps } from "./ability-request-card";
-import { abilityStatus, isPostRequest } from "./ability-card-model";
+import { abilityStatus, draftLinks, isPostRequest } from "./ability-card-model";
 import { AutoApprovalRows } from "./auto-approval";
 import { isPageEdit, pageEditStatus } from "./page-edit-model";
 import { isRestWrite, restWriteStatus } from "./rest-card-model";
 
 export function ClearedRequestCard({
   request,
+  siteUrl,
   onUndo,
   undoPending = false,
   deepLinked = false,
@@ -31,6 +32,10 @@ export function ClearedRequestCard({
       ? restWriteStatus(request)
       : abilityStatus(request, laterEdits);
   const title = `${kind} · ${request.site_label}`;
+  const links =
+    isPageEdit(request) || isRestWrite(request)
+      ? []
+      : draftLinks(request, abilityStatus(request, laterEdits), siteUrl);
   const asked = new Date(request.created_at);
   const when = Number.isNaN(asked.getTime())
     ? "Time not recorded"
@@ -73,6 +78,21 @@ export function ClearedRequestCard({
       <p className="text-sm text-muted-foreground">
         Details cleared 15 days after this request finished.
       </p>
+      {links.length > 0 ? (
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
+          {links.map((link) => (
+            <a
+              key={link.label}
+              href={link.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm font-medium text-primary underline underline-offset-2 hover:opacity-80"
+            >
+              {link.label}
+            </a>
+          ))}
+        </div>
+      ) : null}
       {notice ? (
         <p role="alert" className="text-sm text-destructive">
           {notice}

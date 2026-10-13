@@ -455,7 +455,7 @@ type Querier interface {
 	// back and the next tick finds the run still 'scheduled'. Committing the claim
 	// separately from the enqueue is what strands a run permanently.
 	ClaimUpdateRunForDispatch(ctx context.Context, arg ClaimUpdateRunForDispatchParams) (UpdateRun, error)
-	ClearAbilityRequestContent(ctx context.Context, batchSize int32) (int32, error)
+	ClearAbilityRequestContent(ctx context.Context, batchSize int32) (ClearAbilityRequestContentRow, error)
 	// Clear the in-flight db_clean watchdog columns on completion or failure.
 	ClearActiveDBCleanJob(ctx context.Context, siteID uuid.UUID) error
 	// Clear the in-flight db_scan watchdog columns on completion or failure.

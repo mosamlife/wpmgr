@@ -392,14 +392,20 @@ func (q *Queries) BeginAbilityRequestUndo(ctx context.Context, arg BeginAbilityR
 }
 
 const clearAbilityRequestContent = `-- name: ClearAbilityRequestContent :one
-SELECT public.clear_ability_request_content($1::integer)::integer
+SELECT cleared::integer, failed::integer
+FROM public.clear_ability_request_content($1::integer)
 `
 
-func (q *Queries) ClearAbilityRequestContent(ctx context.Context, batchSize int32) (int32, error) {
+type ClearAbilityRequestContentRow struct {
+	Cleared int32 `json:"cleared"`
+	Failed  int32 `json:"failed"`
+}
+
+func (q *Queries) ClearAbilityRequestContent(ctx context.Context, batchSize int32) (ClearAbilityRequestContentRow, error) {
 	row := q.db.QueryRow(ctx, clearAbilityRequestContent, batchSize)
-	var column_1 int32
-	err := row.Scan(&column_1)
-	return column_1, err
+	var i ClearAbilityRequestContentRow
+	err := row.Scan(&i.Cleared, &i.Failed)
+	return i, err
 }
 
 const closeAbilityRequestPastDeadline = `-- name: CloseAbilityRequestPastDeadline :execrows

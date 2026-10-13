@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 )
@@ -21,25 +22,40 @@ type retentionBatchStub struct {
 	calls  int
 	err    error
 	full   bool
+	failed int32
 }
 
-func (s *retentionBatchStub) ClearAbilityRequestContent(_ context.Context, limit int32) (int32, error) {
+func (s *retentionBatchStub) ClearAbilityRequestContent(_ context.Context, limit int32) (sqlc.ClearAbilityRequestContentRow, error) {
 	s.calls++
 	if limit != contentRetentionBatchSize {
-		return 0, errors.New("wrong batch size")
+		return sqlc.ClearAbilityRequestContentRow{}, errors.New("wrong batch size")
 	}
 	if s.err != nil {
-		return 0, s.err
+		return sqlc.ClearAbilityRequestContentRow{}, s.err
 	}
 	if s.full {
-		return limit, nil
+		return sqlc.ClearAbilityRequestContentRow{Cleared: limit}, nil
 	}
 	if len(s.counts) == 0 {
-		return 0, errors.New("unexpected batch")
+		return sqlc.ClearAbilityRequestContentRow{}, errors.New("unexpected batch")
 	}
 	n := s.counts[0]
 	s.counts = s.counts[1:]
-	return n, nil
+	return sqlc.ClearAbilityRequestContentRow{Cleared: n, Failed: s.failed}, nil
+}
+
+func TestContentRetentionWorkerReportsRowFailures(t *testing.T) {
+	for _, cleared := range []int32{0, 3} {
+		var log bytes.Buffer
+		q := &retentionBatchStub{counts: []int32{cleared}, failed: 2}
+		w := &ContentRetentionWorker{queries: q, logger: slog.New(slog.NewJSONHandler(&log, nil))}
+		if err := w.Work(context.Background(), nil); err == nil || q.calls != 1 {
+			t.Fatalf("row failure did not fail the job: calls=%d err=%v", q.calls, err)
+		}
+		if !strings.Contains(log.String(), `"cleared":`+strconv.Itoa(int(cleared))) || !strings.Contains(log.String(), `"failed":2`) {
+			t.Fatalf("missing batch counts: %s", log.String())
+		}
+	}
 }
 
 func TestContentRetentionWorkerBatches(t *testing.T) {
@@ -59,6 +75,9 @@ func TestContentRetentionWorkerBatches(t *testing.T) {
 		}
 		if !strings.Contains(log.String(), `"cleared":`+strconv.Itoa(int(want))) {
 			t.Fatalf("count log = %s", log.String())
+		}
+		if !strings.Contains(log.String(), `"failed":0`) {
+			t.Fatalf("missing failed count in log = %s", log.String())
 		}
 	}
 }
