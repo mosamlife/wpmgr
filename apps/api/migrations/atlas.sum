@@ -1,4 +1,4 @@
-h1:3rduRgNrbNqSqywzv0xJK/zEzt6vXg+t6DCvWUTzw8k=
+h1:L9ryp+V+nxjFqcHgIrEA5VoYbSEntqjAQmEGpb8+hMI=
 20260527115454_initial.sql h1:WfgbwGaDre3ilGSUpQWqeGW9gLACxOAIXvyRENhSX6w=
 20260527130000_auth_multitenancy.sql h1:dbQRjlWWYbkuHrqKHqZTPt1Z8Txoo58fe/Mr9HW/Plk=
 20260527172114_m2_site_registry.sql h1:RxL0mxr9jcC85gh8pcYnG0ge3IXy4+sGpLHS8YHMDDw=
@@ -174,4 +174,4 @@ h1:3rduRgNrbNqSqywzv0xJK/zEzt6vXg+t6DCvWUTzw8k=
 20261012000000_m177_page_create_designed_usage.sql h1:URMMwGnp5MRnOWj3i7N7NJOpfhJUu8fmeh7h9Tkv/JM=
 20261012010000_m178_page_edit_designed_usage.sql h1:Zyz0+dOdl39MTm+51RwZAsa7wrv6XHQ4InAfUW5VN04=
 20261013010000_m179_delete_lifecycle_privileges.sql h1:mH6hfHkPy0MGNYQAEPc6W9PBMWP/BkAuGN+kEKhXMtE=
-20261013020000_m180_ability_request_content_retention.sql h1:wiH6rkK6qHmQbey+m3McR+i1IrjElfBZyYy2PM4b3n8=
+20261013020000_m180_ability_request_content_retention.sql h1:KQeeWBYB9uwJsRqA5IzJff95S5CPpaPkAu2n77wvKPY=

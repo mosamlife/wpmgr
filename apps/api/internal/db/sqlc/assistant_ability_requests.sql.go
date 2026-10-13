@@ -392,19 +392,38 @@ func (q *Queries) BeginAbilityRequestUndo(ctx context.Context, arg BeginAbilityR
 }
 
 const clearAbilityRequestContent = `-- name: ClearAbilityRequestContent :one
-SELECT cleared::integer, failed::integer
-FROM public.clear_ability_request_content($1::integer)
+SELECT cleared::integer, failed::integer, examined::integer,
+       coalesce(after_finished, 'epoch'::timestamptz)::timestamptz AS after_finished,
+       coalesce(after_id, '00000000-0000-0000-0000-000000000000'::uuid)::uuid AS after_id
+FROM public.clear_ability_request_content($1::integer,
+     $2::timestamptz, $3::uuid)
 `
 
-type ClearAbilityRequestContentRow struct {
-	Cleared int32 `json:"cleared"`
-	Failed  int32 `json:"failed"`
+type ClearAbilityRequestContentParams struct {
+	BatchSize     int32              `json:"batch_size"`
+	AfterFinished pgtype.Timestamptz `json:"after_finished"`
+	AfterID       pgtype.UUID        `json:"after_id"`
 }
 
-func (q *Queries) ClearAbilityRequestContent(ctx context.Context, batchSize int32) (ClearAbilityRequestContentRow, error) {
-	row := q.db.QueryRow(ctx, clearAbilityRequestContent, batchSize)
+type ClearAbilityRequestContentRow struct {
+	Cleared       int32     `json:"cleared"`
+	Failed        int32     `json:"failed"`
+	Examined      int32     `json:"examined"`
+	AfterFinished time.Time `json:"after_finished"`
+	AfterID       uuid.UUID `json:"after_id"`
+}
+
+// Empty batches have no cursor; these inert values are ignored when examined is zero.
+func (q *Queries) ClearAbilityRequestContent(ctx context.Context, arg ClearAbilityRequestContentParams) (ClearAbilityRequestContentRow, error) {
+	row := q.db.QueryRow(ctx, clearAbilityRequestContent, arg.BatchSize, arg.AfterFinished, arg.AfterID)
 	var i ClearAbilityRequestContentRow
-	err := row.Scan(&i.Cleared, &i.Failed)
+	err := row.Scan(
+		&i.Cleared,
+		&i.Failed,
+		&i.Examined,
+		&i.AfterFinished,
+		&i.AfterID,
+	)
 	return i, err
 }
 

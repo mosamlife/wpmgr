@@ -132,25 +132,32 @@ END;
 $$;
 
 DROP FUNCTION IF EXISTS public.clear_ability_request_content(integer);
-CREATE FUNCTION public.clear_ability_request_content(p_limit integer)
-RETURNS TABLE (cleared integer, failed integer)
+DROP FUNCTION IF EXISTS public.clear_ability_request_content(integer, timestamptz, uuid);
+CREATE FUNCTION public.clear_ability_request_content(
+    p_limit integer, p_after_finished timestamptz DEFAULT NULL, p_after_id uuid DEFAULT NULL)
+RETURNS TABLE (cleared integer, failed integer, examined integer,
+               after_finished timestamptz, after_id uuid)
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
 AS $$
 DECLARE
     v_count integer := 0;
     v_failed integer := 0;
+    v_examined integer := 0;
     v_updated integer;
     v_candidate record;
     v_candidates jsonb;
-    v_after_finished timestamptz := '-infinity';
-    v_after_id uuid := '00000000-0000-0000-0000-000000000000';
+    v_after_finished timestamptz := coalesce(p_after_finished, '-infinity'::timestamptz);
+    v_after_id uuid := coalesce(p_after_id, '00000000-0000-0000-0000-000000000000'::uuid);
     v_prev_agent text := current_setting('app.agent', true);
     v_prev_tenant text := current_setting('app.tenant_id', true);
     v_prev_site_scope text := current_setting('app.site_scope', true);
 BEGIN
     IF p_limit IS NULL OR p_limit < 1 OR p_limit > 1000 THEN
         RAISE EXCEPTION 'retention batch limit must be between 1 and 1000' USING ERRCODE = '22023';
+    END IF;
+    IF (p_after_finished IS NULL) <> (p_after_id IS NULL) THEN
+        RAISE EXCEPTION 'retention cursor requires both its timestamp and id' USING ERRCODE = '22023';
     END IF;
     PERFORM set_config('app.site_scope', 'off', true);
     PERFORM set_config('app.agent', 'on', true);
@@ -176,6 +183,7 @@ BEGIN
             LIMIT p_limit - v_count - v_failed
         ) d;
         EXIT WHEN jsonb_array_length(v_candidates) = 0;
+        v_examined := v_examined + jsonb_array_length(v_candidates);
         v_after_finished := (v_candidates -> -1 ->> 'finished_at')::timestamptz;
         v_after_id := (v_candidates -> -1 ->> 'id')::uuid;
 
@@ -223,7 +231,11 @@ BEGIN
     PERFORM set_config('app.agent', coalesce(v_prev_agent, ''), true);
     PERFORM set_config('app.tenant_id', coalesce(v_prev_tenant, ''), true);
     PERFORM set_config('app.site_scope', coalesce(v_prev_site_scope, ''), true);
-    RETURN QUERY SELECT v_count, v_failed;
+    -- The cursor covers every discovered row, including failures and skipped
+    -- locks. An empty batch has no cursor; a new sweep starts with NULLs.
+    RETURN QUERY SELECT v_count, v_failed, v_examined,
+        CASE WHEN v_examined > 0 THEN v_after_finished END,
+        CASE WHEN v_examined > 0 THEN v_after_id END;
 EXCEPTION WHEN OTHERS THEN
     PERFORM set_config('app.agent', coalesce(v_prev_agent, ''), true);
     PERFORM set_config('app.tenant_id', coalesce(v_prev_tenant, ''), true);
@@ -231,8 +243,8 @@ EXCEPTION WHEN OTHERS THEN
     RAISE;
 END;
 $$;
-REVOKE ALL ON FUNCTION public.clear_ability_request_content(integer) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.clear_ability_request_content(integer) TO wpmgr_app;
+REVOKE ALL ON FUNCTION public.clear_ability_request_content(integer, timestamptz, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.clear_ability_request_content(integer, timestamptz, uuid) TO wpmgr_app;
 
 -- Agent scope permits cross-tenant reads only. Retention writes use the
 -- existing tenant isolation policy under the target tenant's own scope.

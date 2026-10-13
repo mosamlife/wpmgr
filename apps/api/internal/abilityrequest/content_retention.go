@@ -1,11 +1,13 @@
 package abilityrequest
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
@@ -14,7 +16,6 @@ import (
 )
 
 const contentRetentionBatchSize int32 = 500
-const contentRetentionMaxBatches = 100
 
 type ContentRetentionArgs struct{}
 
@@ -27,15 +28,17 @@ func (ContentRetentionArgs) InsertOpts() river.InsertOpts {
 }
 
 type contentRetentionQueries interface {
-	ClearAbilityRequestContent(context.Context, int32) (sqlc.ClearAbilityRequestContentRow, error)
+	ClearAbilityRequestContent(context.Context, sqlc.ClearAbilityRequestContentParams) (sqlc.ClearAbilityRequestContentRow, error)
 }
 
-// ContentRetentionWorker clears bounded batches and resumes when its work
-// budget is reached. Each database call commits independently.
+// ContentRetentionWorker visits the backlog in bounded batches within its
+// timeout. Each call commits independently; every run starts at the beginning.
 type ContentRetentionWorker struct {
 	river.WorkerDefaults[ContentRetentionArgs]
-	queries contentRetentionQueries
-	logger  *slog.Logger
+	// BatchSize defaults to contentRetentionBatchSize when zero.
+	BatchSize int32
+	queries   contentRetentionQueries
+	logger    *slog.Logger
 }
 
 func NewContentRetentionWorker(pool *db.Pool, logger *slog.Logger) *ContentRetentionWorker {
@@ -53,32 +56,48 @@ func (w *ContentRetentionWorker) Timeout(*river.Job[ContentRetentionArgs]) time.
 }
 
 func (w *ContentRetentionWorker) Work(ctx context.Context, _ *river.Job[ContentRetentionArgs]) error {
+	limit := w.BatchSize
+	if limit == 0 {
+		limit = contentRetentionBatchSize
+	}
+	if limit < 1 || limit > 1000 {
+		return errors.New("invalid ability request content retention batch size")
+	}
+	params := sqlc.ClearAbilityRequestContentParams{BatchSize: limit}
 	var total, failed int64
 	defer func() {
 		if w.logger != nil {
 			w.logger.InfoContext(ctx, "ability request content retention", "cleared", total, "failed", failed)
 		}
 	}()
-	for batch := 0; batch < contentRetentionMaxBatches; batch++ {
+	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		counts, err := w.queries.ClearAbilityRequestContent(ctx, contentRetentionBatchSize)
+		counts, err := w.queries.ClearAbilityRequestContent(ctx, params)
 		// Database diagnostics can contain row values; the job records no content.
 		if err != nil {
 			return errors.New("ability request content retention batch failed")
 		}
-		if counts.Cleared < 0 || counts.Failed < 0 || int64(counts.Cleared)+int64(counts.Failed) > int64(contentRetentionBatchSize) {
+		processed := int64(counts.Cleared) + int64(counts.Failed)
+		if counts.Cleared < 0 || counts.Failed < 0 || counts.Examined < 0 || processed > int64(limit) || processed > int64(counts.Examined) {
 			return errors.New("invalid ability request content retention count")
+		}
+		if counts.Examined > 0 && params.AfterFinished.Valid &&
+			(counts.AfterFinished.Before(params.AfterFinished.Time) ||
+				(counts.AfterFinished.Equal(params.AfterFinished.Time) && bytes.Compare(counts.AfterID[:], params.AfterID.Bytes[:]) <= 0)) {
+			return errors.New("invalid ability request content retention cursor")
 		}
 		total += int64(counts.Cleared)
 		failed += int64(counts.Failed)
-		if counts.Failed > 0 {
-			return errors.New("ability request content retention rows failed")
+		if counts.Examined < limit {
+			break
 		}
-		if counts.Cleared < contentRetentionBatchSize {
-			return nil
-		}
+		params.AfterFinished = pgtype.Timestamptz{Time: counts.AfterFinished, Valid: true}
+		params.AfterID = pgtype.UUID{Bytes: counts.AfterID, Valid: true}
 	}
-	return river.JobSnooze(time.Minute)
+	if failed > 0 {
+		return errors.New("ability request content retention rows failed")
+	}
+	return nil
 }

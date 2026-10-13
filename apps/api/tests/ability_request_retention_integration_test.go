@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/mosamlife/wpmgr/apps/api/internal/abilityrequest"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
@@ -33,9 +35,13 @@ func r01Request(t *testing.T, app *db.Pool, tenant, site uuid.UUID, state string
 
 func r01RequestWithInput(t *testing.T, app *db.Pool, tenant, site uuid.UUID, state string, age time.Duration, undo bool, ability string, post int64, input string) uuid.UUID {
 	t.Helper()
+	return r01RequestAt(t, app, tenant, site, state, time.Now().Add(-age), undo, ability, post, input)
+}
+
+func r01RequestAt(t *testing.T, app *db.Pool, tenant, site uuid.UUID, state string, finished time.Time, undo bool, ability string, post int64, input string) uuid.UUID {
+	t.Helper()
 	ctx := context.Background()
 	id, user := uuid.New(), uuid.New()
-	finished := time.Now().Add(-age)
 	err := app.InTenantTxAsUser(ctx, tenant, user, func(tx pgx.Tx) error {
 		mcpAssertAndReportRole(t, tx, "R-01 fixture")
 		_, err := tx.Exec(ctx, `INSERT INTO assistant_ability_requests (
@@ -225,7 +231,7 @@ func TestR01AbilityRequestRetention(t *testing.T) {
 				}
 			}
 			// A batch returns its actual count and cannot exceed its requested size.
-			n, err := sqlc.New(app.Pool).ClearAbilityRequestContent(ctx, 1)
+			n, err := sqlc.New(app.Pool).ClearAbilityRequestContent(ctx, sqlc.ClearAbilityRequestContentParams{BatchSize: 1})
 			if err != nil || n.Cleared != 1 || n.Failed != 0 {
 				t.Fatalf("bounded first batch: counts=%+v err=%v", n, err)
 			}
@@ -277,14 +283,31 @@ func TestR01AbilityRequestRetention(t *testing.T) {
 				t.Fatalf("cleared draft input = %s", got)
 			}
 
-			n, err = sqlc.New(app.Pool).ClearAbilityRequestContent(ctx, 1)
+			n, err = sqlc.New(app.Pool).ClearAbilityRequestContent(ctx, sqlc.ClearAbilityRequestContentParams{BatchSize: 1})
 			if err != nil || n.Cleared != 0 || n.Failed != 0 {
 				t.Fatalf("repeat batch: counts=%+v err=%v", n, err)
 			}
 			for _, limit := range []int32{0, -1, 1001} {
-				if _, err := sqlc.New(app.Pool).ClearAbilityRequestContent(ctx, limit); err == nil {
+				if _, err := sqlc.New(app.Pool).ClearAbilityRequestContent(ctx, sqlc.ClearAbilityRequestContentParams{BatchSize: limit}); err == nil {
 					t.Fatalf("invalid batch limit %d accepted", limit)
 				}
+			}
+			for _, cursor := range []sqlc.ClearAbilityRequestContentParams{
+				{BatchSize: 1, AfterFinished: pgtype.Timestamptz{Time: time.Now(), Valid: true}},
+				{BatchSize: 1, AfterID: pgtype.UUID{Bytes: uuid.New(), Valid: true}},
+			} {
+				_, err := sqlc.New(app.Pool).ClearAbilityRequestContent(ctx, cursor)
+				var pgErr *pgconn.PgError
+				if !errors.As(err, &pgErr) || pgErr.Code != "22023" {
+					t.Fatalf("incomplete cursor accepted: %v", err)
+				}
+			}
+			var afterFinished pgtype.Timestamptz
+			var afterID pgtype.UUID
+			if err := app.Pool.QueryRow(ctx, `SELECT after_finished, after_id
+                FROM public.clear_ability_request_content($1::integer, $2::timestamptz, $3::uuid)`,
+				int32(1), nil, nil).Scan(&afterFinished, &afterID); err != nil || afterFinished.Valid || afterID.Valid {
+				t.Fatalf("empty batch cursor must be NULL: time=%+v id=%+v err=%v", afterFinished, afterID, err)
 			}
 			for _, f := range fixtures {
 				if !f.cleared {
@@ -306,7 +329,7 @@ func TestR01AbilityRequestRetention(t *testing.T) {
 				if err := tx.QueryRow(ctx, `SELECT coalesce(current_setting('app.agent',true),'')`).Scan(&before); err != nil {
 					return err
 				}
-				n, err := sqlc.New(tx).ClearAbilityRequestContent(ctx, 1)
+				n, err := sqlc.New(tx).ClearAbilityRequestContent(ctx, sqlc.ClearAbilityRequestContentParams{BatchSize: 1})
 				if err != nil || n.Cleared != 0 || n.Failed != 0 {
 					return fmt.Errorf("empty scoped batch: counts=%+v err=%v", n, err)
 				}
@@ -398,7 +421,7 @@ func TestR01RetentionTenantScopes(t *testing.T) {
 					if before[2] != "on" {
 						t.Fatal("caller has no restrictive site scope")
 					}
-					n, err := sqlc.New(tx).ClearAbilityRequestContent(ctx, limit)
+					n, err := sqlc.New(tx).ClearAbilityRequestContent(ctx, sqlc.ClearAbilityRequestContentParams{BatchSize: limit})
 					if err != nil {
 						return err
 					}
@@ -443,7 +466,7 @@ func TestR01RetentionTenantScopes(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if n, err := sqlc.New(app.Pool).ClearAbilityRequestContent(ctx, 1); err != nil || n.Cleared != 1 || n.Failed != 0 {
+			if n, err := sqlc.New(app.Pool).ClearAbilityRequestContent(ctx, sqlc.ClearAbilityRequestContentParams{BatchSize: 1}); err != nil || n.Cleared != 1 || n.Failed != 0 {
 				t.Fatalf("unlocked candidate: counts=%+v err=%v", n, err)
 			}
 			first = r01Request(t, app, tenant, site, "done", 16*24*time.Hour, false, "wpmgr/page-create", 603)
@@ -477,7 +500,7 @@ func TestR01RetentionTenantScopes(t *testing.T) {
 					return err
 				}
 				before := readSettings(tx)
-				n, err := sqlc.New(tx).ClearAbilityRequestContent(ctx, 2)
+				n, err := sqlc.New(tx).ClearAbilityRequestContent(ctx, sqlc.ClearAbilityRequestContentParams{BatchSize: 2})
 				if err != nil {
 					return err
 				}
@@ -529,7 +552,7 @@ func TestR01RetentionUnusableJSON(t *testing.T) {
 					targets = append(targets, target{tenant: tenant, site: site, id: r01Request(t, app, tenant, site, "expired", 17*24*time.Hour, false, "wpmgr/page-create", 702)})
 				}
 			}
-			n, err := sqlc.New(app.Pool).ClearAbilityRequestContent(ctx, int32(len(targets)))
+			n, err := sqlc.New(app.Pool).ClearAbilityRequestContent(ctx, sqlc.ClearAbilityRequestContentParams{BatchSize: int32(len(targets))})
 			if err != nil || n.Cleared != int32(len(targets)) || n.Failed != 0 {
 				t.Fatalf("unusable JSON batch: counts=%+v want=%d err=%v", n, len(targets), err)
 			}
@@ -584,7 +607,7 @@ func TestR01RetentionSkipsFailedRow(t *testing.T) {
 				t.Fatal(err)
 			}
 			good := []struct{ tenant, site, id uuid.UUID }{{tenant, site, before}, {tenant, site, after}, {otherTenant, otherSite, other}}
-			n, err := sqlc.New(app.Pool).ClearAbilityRequestContent(ctx, int32(len(good)+1))
+			n, err := sqlc.New(app.Pool).ClearAbilityRequestContent(ctx, sqlc.ClearAbilityRequestContentParams{BatchSize: int32(len(good) + 1)})
 			if err != nil || n.Cleared != int32(len(good)) || n.Failed != 1 {
 				t.Fatalf("isolated row failure: counts=%+v want=%d err=%v", n, len(good), err)
 			}
@@ -639,7 +662,7 @@ func TestR01RetentionBoundedDiscovery(t *testing.T) {
 					return err
 				}
 				var definition string
-				if err := tx.QueryRow(ctx, `SELECT pg_get_functiondef('public.clear_ability_request_content(integer)'::regprocedure)`).Scan(&definition); err != nil {
+				if err := tx.QueryRow(ctx, `SELECT pg_get_functiondef('public.clear_ability_request_content(integer,timestamptz,uuid)'::regprocedure)`).Scan(&definition); err != nil {
 					return err
 				}
 				// Explain the discovery statement from the installed function under
@@ -691,7 +714,7 @@ func TestR01RetentionBoundedDiscovery(t *testing.T) {
 				FOR EACH ROW EXECUTE FUNCTION public.r01_retention_bounded_failure()`, failed)); err != nil {
 				t.Fatal(err)
 			}
-			counts, err := sqlc.New(app.Pool).ClearAbilityRequestContent(ctx, 2)
+			counts, err := sqlc.New(app.Pool).ClearAbilityRequestContent(ctx, sqlc.ClearAbilityRequestContentParams{BatchSize: 2})
 			if err != nil || counts.Cleared != 1 || counts.Failed != 1 {
 				t.Fatalf("bounded discovery counts=%+v err=%v", counts, err)
 			}
@@ -707,6 +730,82 @@ func TestR01RetentionBoundedDiscovery(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
+			}
+		})
+	}
+}
+
+func TestR01RetentionWorkerPassesFailedPrefix(t *testing.T) {
+	for _, single := range []bool{true, false} {
+		t.Run(fmt.Sprintf("single_role_%t", single), func(t *testing.T) {
+			app, owner := ds01Postgres(t, single, false)
+			ctx := context.Background()
+			type target struct{ tenant, site, id uuid.UUID }
+			var prefix, healthy []target
+			finished := time.Now().Add(-20 * 24 * time.Hour)
+			for i := range 3 {
+				tenant, site := ds01Seed(t, app)
+				// Equal finish times exercise the id part of the keyset cursor.
+				id := r01RequestAt(t, app, tenant, site, "expired", finished, false, "wpmgr/page-create", int64(730+i), r01Input)
+				prefix = append(prefix, target{tenant, site, id})
+				if i < 2 {
+					id = r01RequestAt(t, app, tenant, site, "expired", finished.Add(24*time.Hour), false, "wpmgr/page-create", int64(740+i), r01Input)
+					healthy = append(healthy, target{tenant, site, id})
+				}
+			}
+			if _, err := owner.Exec(ctx, fmt.Sprintf(`CREATE FUNCTION public.r01_retention_prefix_failure() RETURNS trigger
+				LANGUAGE plpgsql AS $$ BEGIN
+					IF NEW.id IN ('%s'::uuid, '%s'::uuid, '%s'::uuid) THEN
+						RAISE EXCEPTION 'private retention fixture content' USING ERRCODE='P0001';
+					END IF;
+					RETURN NEW;
+				END $$;
+				CREATE TRIGGER r01_retention_prefix_failure BEFORE UPDATE OF content_cleared_at ON public.assistant_ability_requests
+				FOR EACH ROW EXECUTE FUNCTION public.r01_retention_prefix_failure()`, prefix[0].id, prefix[1].id, prefix[2].id)); err != nil {
+				t.Fatal(err)
+			}
+			first, err := sqlc.New(app.Pool).ClearAbilityRequestContent(ctx, sqlc.ClearAbilityRequestContentParams{BatchSize: 2})
+			if err != nil || first.Cleared != 0 || first.Failed != 2 || first.Examined != 2 || !first.AfterFinished.Equal(finished.Truncate(time.Microsecond)) {
+				t.Fatalf("failed prefix cursor: %+v err=%v", first, err)
+			}
+			// The boundary is the second id in finish/id order, regardless of
+			// the tenant order used when applying the retention transitions.
+			var ordered []uuid.UUID
+			for _, row := range prefix {
+				ordered = append(ordered, row.id)
+			}
+			slices.SortFunc(ordered, func(a, b uuid.UUID) int { return bytes.Compare(a[:], b[:]) })
+			if first.AfterID != ordered[1] {
+				t.Fatalf("failed prefix boundary id=%s want=%s", first.AfterID, ordered[1])
+			}
+
+			var log bytes.Buffer
+			worker := abilityrequest.NewContentRetentionWorker(app, slog.New(slog.NewJSONHandler(&log, nil)))
+			worker.BatchSize = 2
+			if err := worker.Work(ctx, nil); err == nil || strings.Contains(err.Error(), "private") {
+				t.Fatalf("failed sweep must report a content-free error: %v", err)
+			}
+			if !strings.Contains(log.String(), `"cleared":2`) || !strings.Contains(log.String(), `"failed":3`) || strings.Contains(log.String(), "private") {
+				t.Fatalf("failed prefix sweep counts: %s", log.String())
+			}
+			for _, row := range append(prefix, healthy...) {
+				if err := app.InTenantTx(ctx, row.tenant, func(tx pgx.Tx) error {
+					mcpAssertAndReportRole(t, tx, "R-01 failed prefix record")
+					got, err := sqlc.New(tx).GetAbilityRequestForSite(ctx, sqlc.GetAbilityRequestForSiteParams{TenantID: row.tenant, SiteID: row.site, ID: row.id})
+					if err == nil && got.ContentClearedAt.Valid != (row.id == healthy[0].id || row.id == healthy[1].id) {
+						t.Fatalf("failed prefix blocked or changed request %s", row.id)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			log.Reset()
+			if err := worker.Work(ctx, nil); err == nil {
+				t.Fatal("next sweep did not retry the failed prefix")
+			}
+			if !strings.Contains(log.String(), `"cleared":0`) || !strings.Contains(log.String(), `"failed":3`) {
+				t.Fatalf("retry must start at the beginning: %s", log.String())
 			}
 		})
 	}

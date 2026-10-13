@@ -765,5 +765,9 @@ ORDER BY created_at DESC, id DESC
 LIMIT 1;
 
 -- name: ClearAbilityRequestContent :one
-SELECT cleared::integer, failed::integer
-FROM public.clear_ability_request_content(sqlc.arg(batch_size)::integer);
+-- Empty batches have no cursor; these inert values are ignored when examined is zero.
+SELECT cleared::integer, failed::integer, examined::integer,
+       coalesce(after_finished, 'epoch'::timestamptz)::timestamptz AS after_finished,
+       coalesce(after_id, '00000000-0000-0000-0000-000000000000'::uuid)::uuid AS after_id
+FROM public.clear_ability_request_content(sqlc.arg(batch_size)::integer,
+     sqlc.narg(after_finished)::timestamptz, sqlc.narg(after_id)::uuid);
