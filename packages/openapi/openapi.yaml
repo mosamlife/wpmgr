@@ -20834,7 +20834,7 @@ components:
         One AI site-change request. `site_label`, `site_host`, `grant_label`
         and `title_excerpt` came from a site or an AI connection: render each
         as plain text. `input_json` is the exact input the AI chose, shown in
-        full on the card.
+        full on the card until content_cleared_at is set, when input_json is {}.
       required:
         - id
         - site_id
@@ -20857,6 +20857,10 @@ components:
         site_id: { type: string, format: uuid }
         ability_name: { type: string }
         input_json: { type: string }
+        content_cleared_at:
+          type: [string, "null"]
+          format: date-time
+          description: When request details were cleared after the retention period.
         title_excerpt: { type: string, nullable: true }
         editor: { type: string, nullable: true }
         post_type: { type: string, nullable: true }
@@ -20955,10 +20959,10 @@ components:
           nullable: true
           description: The route hash the request was approved against; null otherwise.
         card_facts:
-          allOf:
+          anyOf:
             - $ref: "#/components/schemas/AbilityRequestCardFacts"
-          nullable: true
-          description: The structured card of a wpmgr/rest-write request; null otherwise.
+            - type: "null"
+          description: The structured card of a wpmgr/rest-write request; null for cleared requests and other abilities.
         page_media:
           type: array
           nullable: true

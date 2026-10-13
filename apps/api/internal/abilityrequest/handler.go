@@ -78,30 +78,31 @@ func (h *Handler) undo(c *gin.Context) {
 
 // RequestDTO is one ability request on the wire. site_label, site_host,
 // grant_label and title_excerpt are text to render as text nodes. input_json
-// is the exact input the AI chose, which the card shows in full.
+// is the exact input until ContentClearedAt is set, then it is {}.
 type RequestDTO struct {
-	ID              uuid.UUID  `json:"id"`
-	SiteID          uuid.UUID  `json:"site_id"`
-	AbilityName     string     `json:"ability_name"`
-	InputJSON       string     `json:"input_json"`
-	TitleExcerpt    *string    `json:"title_excerpt"`
-	Editor          *string    `json:"editor"`
-	PostType        *string    `json:"post_type"`
-	EffectCopy      string     `json:"effect_copy"`
-	Snapshot        string     `json:"snapshot"`
-	SiteLabel       string     `json:"site_label"`
-	SiteHost        string     `json:"site_host"`
-	GrantLabel      string     `json:"grant_label"`
-	GrantVia        string     `json:"grant_via"`
-	SetupClient     *string    `json:"setup_client"`
-	CardCopyVersion int32      `json:"card_copy_version"`
-	PresentedDigest *string    `json:"presented_digest,omitempty"`
-	State           string     `json:"state"`
-	CreatedAt       time.Time  `json:"created_at"`
-	ExpiresAt       time.Time  `json:"expires_at"`
-	DecidedAt       *time.Time `json:"decided_at"`
-	Outcome         *string    `json:"outcome"`
-	OutcomeCode     *string    `json:"outcome_code"`
+	ContentClearedAt *time.Time `json:"content_cleared_at"`
+	ID               uuid.UUID  `json:"id"`
+	SiteID           uuid.UUID  `json:"site_id"`
+	AbilityName      string     `json:"ability_name"`
+	InputJSON        string     `json:"input_json"`
+	TitleExcerpt     *string    `json:"title_excerpt"`
+	Editor           *string    `json:"editor"`
+	PostType         *string    `json:"post_type"`
+	EffectCopy       string     `json:"effect_copy"`
+	Snapshot         string     `json:"snapshot"`
+	SiteLabel        string     `json:"site_label"`
+	SiteHost         string     `json:"site_host"`
+	GrantLabel       string     `json:"grant_label"`
+	GrantVia         string     `json:"grant_via"`
+	SetupClient      *string    `json:"setup_client"`
+	CardCopyVersion  int32      `json:"card_copy_version"`
+	PresentedDigest  *string    `json:"presented_digest,omitempty"`
+	State            string     `json:"state"`
+	CreatedAt        time.Time  `json:"created_at"`
+	ExpiresAt        time.Time  `json:"expires_at"`
+	DecidedAt        *time.Time `json:"decided_at"`
+	Outcome          *string    `json:"outcome"`
+	OutcomeCode      *string    `json:"outcome_code"`
 	// OutcomeDetail says which conflict refused a wpmgr/page-edit:
 	// changed_since_read, editor_open or autosave_pending (outcomeDetailFor).
 	// Null for every other row. Never the site's own words.
@@ -285,7 +286,8 @@ func ts(t pgtype.Timestamptz) *time.Time {
 // the setters an approval by a site's setting names (Service.readSetterNames).
 func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string, newestEdit bool, names setterNames) RequestDTO {
 	out := RequestDTO{
-		ID: r.ID, SiteID: r.SiteID, AbilityName: r.AbilityName, InputJSON: r.InputJson,
+		ContentClearedAt: ts(r.ContentClearedAt),
+		ID:               r.ID, SiteID: r.SiteID, AbilityName: r.AbilityName, InputJSON: r.InputJson,
 		TitleExcerpt: r.TitleExcerpt, Editor: r.Editor, PostType: r.PostType,
 		EffectCopy: r.EffectCopy, Snapshot: r.Snapshot,
 		SiteLabel: r.SiteLabel, SiteHost: r.SiteHost, GrantLabel: r.GrantLabel, GrantVia: r.GrantVia,

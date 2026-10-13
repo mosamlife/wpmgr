@@ -813,8 +813,8 @@ CREATE INDEX api_keys_tenant_id_idx ON api_keys (tenant_id);
 -- ---------------------------------------------------------------------------
 -- Append-only, hash-chained audit trail. Each row's hash chains to the previous
 -- row's hash for the same tenant, so any tampering breaks the chain. UPDATE and
--- DELETE are revoked from the app role (see grants in the migration); the table
--- is insert-only at the privilege level, not just by convention.
+-- direct DELETE are blocked for the app role. The owner retains DELETE for
+-- the tenant cascade; a restrictive policy blocks direct deletion.
 CREATE TABLE audit_log (
     id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id   uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
@@ -882,51 +882,13 @@ CREATE POLICY audit_log_tenant_isolation ON audit_log
 -- audit_log/sites/memberships) across ALL tenants in one query — mirrors
 -- memberships_agent/sites_agent exactly. SELECT-only: no cross-tenant writes,
 -- and this policy grants no bypass of the append-only privilege revocation
--- (UPDATE/DELETE remain revoked from wpmgr_app regardless of RLS).
+-- (UPDATE remains revoked and direct DELETE is blocked by a restrictive policy).
 CREATE POLICY audit_log_agent ON audit_log
     FOR SELECT
     USING (current_setting('app.agent', true) = 'on');
 
--- admin_delete_empty_tenant (m35): SECURITY DEFINER helper for the superadmin
--- orphaned-org cleanup. Verified prod failure (Cloud SQL log): a direct
--- "DELETE FROM tenants" by wpmgr_app cascades to the RI delete
--- 'DELETE FROM ONLY public.audit_log WHERE $1 = tenant_id' and fails with
--- "permission denied for table audit_log" (42501), because audit_log is
--- insert-only for wpmgr_app (m1 revokes UPDATE/DELETE/TRUNCATE — it is
--- tamper-evident) and that cascade is privilege-checked against the caller.
---
--- This function runs as its OWNER (the migration role, which retains DELETE on
--- audit_log) and removes the tenant's audit rows EXPLICITLY first, so the tenant
--- delete's ON DELETE CASCADE never has to touch audit_log — making the delete
--- correct regardless of whether the FK cascade is privilege-checked against the
--- caller or the owner, and WITHOUT granting wpmgr_app any standing delete on
--- audit_log. app.agent='on' (set in-body, NOT via a function SET clause — that
--- would require superuser ownership or GRANT SET ON PARAMETER and abort the
--- migration under the prod non-superuser owner) lets the emptiness checks see
--- rows across tenants under FORCE RLS (memberships_agent + sites_agent);
--- app.tenant_id is scoped locally around the audit_log delete so
--- the audit_log_tenant_isolation USING clause matches the target rows when the
--- owner is itself subject to FORCE RLS. search_path is pinned. EXECUTE is granted
--- only to wpmgr_app (in the migration). Note: deleting an orphaned org also
--- discards any pending invitations to it (invitations cascades from tenants) —
--- acceptable, since the org's only member was just deleted. Guards: removes a
--- tenant ONLY when it has zero memberships and zero sites. Returns whether a
--- tenant row was deleted.
---
--- Security review Finding A (m91): the original body set app.agent='on' and
--- returned on either branch WITHOUT restoring it — set_config(...,true) is
--- NOT rolled back at function exit, so 'on' leaked into the rest of the
--- caller's transaction for every call, disabling that transaction's
--- tenant-isolation RLS check on every statement afterward. v_prev_agent now
--- captures the caller's prior app.agent value and both branches fall through
--- to a single RETURN that restores it first. (m35 already ran in prod before
--- this fix existed; the corrected body is re-issued via CREATE OR REPLACE in
--- m91 so prod actually receives it on next boot — see m91's migration file.)
---
--- GH #408 (m116): the body also records a tenant_object_reclaim row, in the
--- same transaction and only when the tenant row was really deleted, because
--- the cascade destroys backup_chunks, the only inventory naming the tenant's
--- stored chunks. The body below is m116's, verbatim.
+-- Empty-tenant cleanup uses the tenant cascade, retains its emptiness guard,
+-- and records object reclamation in the deletion's transaction.
 CREATE OR REPLACE FUNCTION admin_delete_empty_tenant(p_tenant_id uuid)
 RETURNS boolean
 LANGUAGE plpgsql
@@ -943,21 +905,11 @@ BEGIN
         EXISTS (SELECT 1 FROM memberships m WHERE m.tenant_id = p_tenant_id)
         OR EXISTS (SELECT 1 FROM sites s WHERE s.tenant_id = p_tenant_id)
     ) THEN
-        PERFORM set_config('app.tenant_id', p_tenant_id::text, true);
-        DELETE FROM audit_log WHERE tenant_id = p_tenant_id;
-        PERFORM set_config('app.tenant_id', '', true);
         DELETE FROM tenants t WHERE t.id = p_tenant_id;
         GET DIAGNOSTICS v_count = ROW_COUNT;
         v_result := v_count > 0;
 
-        -- GH #408. The cascade above has just destroyed backup_chunks for this
-        -- tenant, which was the only inventory naming chunks/<tenant_id>/, and
-        -- this statement frees no object storage whatsoever. This row is now the
-        -- only surviving name for that storage. It is written HERE, in the same
-        -- transaction and gated on the delete having actually happened, so it
-        -- exists if and only if the tenant row is really gone. A failure here
-        -- aborts the delete on purpose: a committed delete with no record is the
-        -- bug, and is unrecoverable; a failed request is not.
+        -- Reclamation is recorded in the same transaction only after deletion.
         IF v_result THEN
             INSERT INTO tenant_object_reclaim (tenant_id)
             VALUES (p_tenant_id)
@@ -1046,40 +998,8 @@ CREATE TABLE install_owner (
 GRANT SELECT, INSERT ON install_owner TO wpmgr_app;
 REVOKE UPDATE, DELETE, TRUNCATE ON install_owner FROM wpmgr_app;
 
--- admin_purge_tenant (M93): SECURITY DEFINER helper for internal/org.PurgeWorker
--- — the grace-window destructive purge of a POPULATED tenant (Lane B). Modeled
--- on admin_delete_empty_tenant above but WITHOUT the emptiness guard: it is
--- called only after an owner already confirmed deletion via
--- DELETE /api/v1/orgs/{orgId} and the grace window has elapsed. Like
--- admin_delete_empty_tenant it explicitly clears audit_log first (wpmgr_app
--- has no DELETE grant on the append-only trail — see that function's comment
--- for the full 42501 story), as the function OWNER, before the tenant delete;
--- every other row cascades from that single DELETE FROM tenants.
---
--- GUC handling is DELIBERATELY DIFFERENT from admin_delete_empty_tenant, and
--- the difference matters: that function only ever purges an EMPTY tenant (its
--- guard proves zero memberships/sites), so it is safe for it to blank
--- app.tenant_id back to '' before its own tenant delete — no child-table
--- cascade rows exist there to protect. This function purges a POPULATED
--- tenant: every tenant-scoped table's baseline permissive
--- "<table>_tenant_isolation" policy (USING tenant_id = app.tenant_id) must see
--- p_tenant_id for the ENTIRE cascade the final DELETE triggers — exactly as it
--- would if ordinary application code ran the same cascade under InTenantTx
--- (itself just a transaction-scoped SET of this same GUC). So app.tenant_id is
--- set ONCE at the top and is NEVER blanked before the tenants delete — only
--- restored, once, on the single return path (M91 Finding A GUC-leak lesson:
--- set_config(...,true) is NOT rolled back at function exit — the "true"/
--- is_local flag scopes the change to the CALLER's transaction, not the
--- function invocation — so an unrestored value would leak into every
--- statement the caller's transaction runs afterward). Blanking it early here,
--- as admin_delete_empty_tenant safely does for its always-empty target, would
--- make every cascaded child-table DELETE see zero visible rows under FORCE
--- ROW LEVEL SECURITY — silently leaving every one of that tenant's rows
--- behind (an orphan leak, not a hard failure) while `tenants` itself still
--- gets removed. No app.agent is needed here at all (unlike
--- admin_delete_empty_tenant, which uses it for its own cross-tenant emptiness
--- EXISTS checks) — this function only ever touches rows scoped to the single
--- p_tenant_id it is given.
+-- Tenant purge removes its dependent rows through their foreign keys and
+-- restores the caller's tenant setting. EXECUTE is restricted to wpmgr_app.
 CREATE OR REPLACE FUNCTION admin_purge_tenant(p_tenant_id uuid)
 RETURNS boolean
 LANGUAGE plpgsql
@@ -1090,22 +1010,9 @@ DECLARE
     v_count integer;
     v_prev_tenant text := current_setting('app.tenant_id', true);
 BEGIN
-    -- Set for the WHOLE function body (see the top-of-file rationale): every
-    -- tenant-scoped table's tenant_isolation policy must see p_tenant_id for
-    -- the cascade the final DELETE triggers.
     PERFORM set_config('app.tenant_id', p_tenant_id::text, true);
-
-    -- audit_log is insert-only for wpmgr_app (m1 revokes UPDATE/DELETE/
-    -- TRUNCATE), so it is cleared explicitly here, as the function OWNER
-    -- (which retains DELETE) — mirrors admin_delete_empty_tenant exactly.
-    DELETE FROM audit_log WHERE tenant_id = p_tenant_id;
-
-    -- Every other row the tenant owns cascades from this single statement.
     DELETE FROM tenants t WHERE t.id = p_tenant_id;
     GET DIAGNOSTICS v_count = ROW_COUNT;
-
-    -- Single return path: restore the caller's prior app.tenant_id exactly
-    -- once (M91 Finding A GUC-leak lesson).
     PERFORM set_config('app.tenant_id', coalesce(v_prev_tenant, ''), true);
     RETURN v_count > 0;
 END;
@@ -2248,6 +2155,8 @@ CREATE INDEX backup_schedule_runs_status_for_idx
     ON backup_schedule_runs (status, scheduled_for);
 CREATE INDEX backup_schedule_runs_schedule_id_idx
     ON backup_schedule_runs (schedule_id);
+CREATE INDEX backup_schedule_runs_snapshot_id_idx
+    ON backup_schedule_runs (snapshot_id);
 CREATE UNIQUE INDEX backup_schedule_runs_schedule_for_key
     ON backup_schedule_runs (schedule_id, scheduled_for);
 
@@ -3718,6 +3627,8 @@ CREATE INDEX media_optimization_jobs_site_state_idx
     ON media_optimization_jobs (site_id, state);
 CREATE INDEX media_optimization_jobs_tenant_created_idx
     ON media_optimization_jobs (tenant_id, created_at DESC);
+CREATE INDEX media_optimization_jobs_asset_id_idx
+    ON media_optimization_jobs (asset_id);
 
 COMMENT ON COLUMN media_optimization_jobs.encode_river_job_id IS
     'River river_jobs.id for the media_encode job enqueued at encode-ready time. NULL for non-optimize jobs and for rows created before m51. Used by the cancel path to cancel the River job proactively.';
@@ -4309,6 +4220,7 @@ CREATE TABLE rucss_jobs (
 
 CREATE INDEX idx_rucss_jobs_site_state ON rucss_jobs (site_id, state);
 CREATE INDEX rucss_jobs_tenant_idx ON rucss_jobs (tenant_id);
+CREATE INDEX rucss_jobs_result_id_idx ON rucss_jobs (result_id);
 
 ALTER TABLE rucss_jobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE rucss_jobs FORCE ROW LEVEL SECURITY;
@@ -5336,6 +5248,8 @@ CREATE TABLE generated_reports (
 -- Keyset cursor index. List queries use composite predicate (created_at,id)<.
 CREATE INDEX generated_reports_list_idx
     ON generated_reports (tenant_id, client_id, created_at DESC, id DESC);
+CREATE INDEX generated_reports_schedule_id_idx
+    ON generated_reports (schedule_id);
 
 ALTER TABLE generated_reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE generated_reports FORCE ROW LEVEL SECURITY;
@@ -12362,3 +12276,305 @@ $$;
 
 REVOKE ALL ON FUNCTION set_ability_change_class(uuid, text, text, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION set_ability_change_class(uuid, text, text, text) TO wpmgr_app;
+
+-- The owner keeps DELETE for referential actions; direct app deletes are denied.
+CREATE POLICY audit_log_no_direct_delete ON audit_log
+    AS RESTRICTIVE FOR DELETE TO wpmgr_app USING (false);
+CREATE POLICY org_context_versions_no_direct_delete ON org_context_versions
+    AS RESTRICTIVE FOR DELETE TO wpmgr_app USING (false);
+CREATE POLICY site_context_versions_no_direct_delete ON site_context_versions
+    AS RESTRICTIVE FOR DELETE TO wpmgr_app USING (false);
+CREATE POLICY assistant_update_proposals_no_direct_delete ON assistant_update_proposals
+    AS RESTRICTIVE FOR DELETE TO wpmgr_app USING (false);
+CREATE POLICY assistant_cache_purge_requests_no_direct_delete ON assistant_cache_purge_requests
+    AS RESTRICTIVE FOR DELETE TO wpmgr_app USING (false);
+CREATE POLICY site_content_inventory_runs_no_direct_delete ON site_content_inventory_runs
+    AS RESTRICTIVE FOR DELETE TO wpmgr_app USING (false);
+CREATE POLICY site_ability_inventory_runs_no_direct_delete ON site_ability_inventory_runs
+    AS RESTRICTIVE FOR DELETE TO wpmgr_app USING (false);
+CREATE POLICY assistant_ability_requests_no_direct_delete ON assistant_ability_requests
+    AS RESTRICTIVE FOR DELETE TO wpmgr_app USING (false);
+CREATE POLICY ability_tenant_disables_no_direct_delete ON ability_tenant_disables
+    AS RESTRICTIVE FOR DELETE TO wpmgr_app USING (false);
+
+DO $$
+DECLARE
+    v_table text;
+    v_owner text;
+BEGIN
+    FOREACH v_table IN ARRAY ARRAY[
+        'audit_log',
+        'org_context_versions',
+        'site_context_versions',
+        'assistant_update_proposals',
+        'assistant_cache_purge_requests',
+        'site_content_inventory_runs',
+        'site_ability_inventory_runs',
+        'assistant_ability_requests',
+        'ability_tenant_disables'
+    ] LOOP
+        SELECT pg_get_userbyid(c.relowner) INTO STRICT v_owner
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relname = v_table
+          AND c.relrowsecurity AND c.relforcerowsecurity;
+
+        EXECUTE format('GRANT DELETE ON TABLE public.%I TO %I', v_table, v_owner);
+    END LOOP;
+END;
+$$;
+
+-- Request content is cleared after its own final timestamp has aged fifteen
+-- days. The record and original input hash remain; draft edits keep only the
+-- outline version and design needed to compile additions to a created page.
+ALTER TABLE public.assistant_ability_requests
+    ADD COLUMN IF NOT EXISTS content_cleared_at timestamptz,
+    ADD COLUMN IF NOT EXISTS retained_draft jsonb;
+
+ALTER TABLE public.assistant_ability_requests
+    DROP CONSTRAINT IF EXISTS assistant_ability_requests_input_sha256_matches_check,
+    DROP CONSTRAINT IF EXISTS assistant_ability_requests_rest_write_card_check,
+    DROP CONSTRAINT IF EXISTS assistant_ability_requests_page_edit_card_check,
+    DROP CONSTRAINT IF EXISTS assistant_ability_requests_cleared_content_check;
+ALTER TABLE public.assistant_ability_requests
+    ADD CONSTRAINT assistant_ability_requests_input_sha256_matches_check
+        CHECK (content_cleared_at IS NOT NULL
+               OR input_sha256 = encode(sha256(convert_to(input_json, 'UTF8')), 'hex')),
+    ADD CONSTRAINT assistant_ability_requests_rest_write_card_check
+        CHECK (content_cleared_at IS NOT NULL
+               OR ability_name <> 'wpmgr/rest-write' OR card_facts IS NOT NULL),
+    ADD CONSTRAINT assistant_ability_requests_page_edit_card_check
+        CHECK (content_cleared_at IS NOT NULL
+               OR ability_name <> 'wpmgr/page-edit'
+               OR coalesce(card_facts ->> 'kind' = 'builder_edit', false)),
+    ADD CONSTRAINT assistant_ability_requests_cleared_content_check
+        CHECK ((content_cleared_at IS NULL AND retained_draft IS NULL)
+               OR (content_cleared_at IS NOT NULL AND input_json = '{}' AND card_facts IS NULL));
+
+-- Resolving unknown outcomes have no outcome timestamp; give-up stamps it.
+CREATE OR REPLACE FUNCTION public.ability_request_finished_at(
+    p_state text, p_outcome_at timestamptz, p_decided_at timestamptz,
+    p_expires_at timestamptz, p_withdrawn_at timestamptz)
+RETURNS timestamptz
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+    SELECT CASE p_state
+        WHEN 'done' THEN p_outcome_at
+        WHEN 'failed' THEN p_outcome_at
+        WHEN 'not_sent' THEN p_outcome_at
+        WHEN 'outcome_unknown' THEN p_outcome_at
+        WHEN 'declined' THEN p_decided_at
+        WHEN 'expired' THEN p_expires_at
+        WHEN 'withdrawn' THEN p_withdrawn_at
+        ELSE NULL
+    END
+$$;
+
+CREATE OR REPLACE FUNCTION public.ability_request_retained_draft(p_ability text, p_input text)
+RETURNS jsonb
+LANGUAGE plpgsql IMMUTABLE
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+DECLARE
+    v_input jsonb;
+BEGIN
+    IF p_ability <> 'wpmgr/page-create' THEN
+        RETURN NULL;
+    END IF;
+    v_input := p_input::jsonb;
+    RETURN jsonb_build_object('outline_version', v_input -> 'outline_version',
+                              'design', v_input -> 'design');
+EXCEPTION WHEN data_exception THEN
+    RETURN jsonb_build_object('outline_version', NULL, 'design', NULL);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.ability_request_content_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+DECLARE
+    v_finished timestamptz;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.content_cleared_at IS NOT NULL OR NEW.retained_draft IS NOT NULL THEN
+            RAISE EXCEPTION 'request content is present at creation' USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF NEW.input_sha256 IS DISTINCT FROM OLD.input_sha256 THEN
+        RAISE EXCEPTION 'the original input hash is immutable' USING ERRCODE = '55000';
+    END IF;
+    v_finished := public.ability_request_finished_at(OLD.state, OLD.outcome_at,
+                    OLD.decided_at, OLD.expires_at, OLD.withdrawn_at);
+    IF OLD.content_cleared_at IS NOT NULL
+       OR NEW.content_cleared_at IS NULL
+       OR NEW.content_cleared_at > statement_timestamp()
+       OR NEW.input_json IS DISTINCT FROM '{}'
+       OR NEW.card_facts IS NOT NULL
+       OR v_finished IS NULL
+       OR v_finished >= statement_timestamp() - interval '15 days'
+       OR OLD.undo_state IS NOT DISTINCT FROM 'in_progress'
+       OR NEW.retained_draft IS DISTINCT FROM
+          public.ability_request_retained_draft(OLD.ability_name, OLD.input_json)
+       OR (to_jsonb(NEW) - ARRAY['input_json','card_facts','retained_draft','content_cleared_at','target_key'])
+          IS DISTINCT FROM
+          (to_jsonb(OLD) - ARRAY['input_json','card_facts','retained_draft','content_cleared_at','target_key']) THEN
+        RAISE EXCEPTION 'request content changes only in its final retention transition'
+            USING ERRCODE = '55000';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+REVOKE ALL ON FUNCTION public.ability_request_content_guard() FROM PUBLIC;
+DROP TRIGGER IF EXISTS assistant_ability_requests_content_guard ON public.assistant_ability_requests;
+CREATE TRIGGER assistant_ability_requests_content_guard
+    BEFORE INSERT OR UPDATE OF input_json, input_sha256, card_facts, retained_draft, content_cleared_at
+    ON public.assistant_ability_requests
+    FOR EACH ROW EXECUTE FUNCTION public.ability_request_content_guard();
+
+CREATE INDEX IF NOT EXISTS assistant_ability_requests_content_retention_idx
+    ON public.assistant_ability_requests
+       (public.ability_request_finished_at(state, outcome_at, decided_at, expires_at, withdrawn_at), id)
+    WHERE content_cleared_at IS NULL
+      AND (state IN ('done','failed','not_sent','declined','expired','withdrawn')
+           OR (state = 'outcome_unknown' AND outcome IS NOT NULL))
+      AND undo_state IS DISTINCT FROM 'in_progress';
+
+-- The table owner needs the definer's column privileges in both role layouts.
+-- The trigger constrains that owner, including when it is also wpmgr_app.
+DO $$
+DECLARE
+    v_owner text;
+BEGIN
+    SELECT pg_get_userbyid(relowner) INTO STRICT v_owner
+    FROM pg_class WHERE oid = 'public.assistant_ability_requests'::regclass;
+    EXECUTE format('GRANT SELECT ON public.assistant_ability_requests TO %I', v_owner);
+    EXECUTE format('GRANT UPDATE (input_json, card_facts, retained_draft, content_cleared_at) ON public.assistant_ability_requests TO %I', v_owner);
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.clear_ability_request_content(integer);
+DROP FUNCTION IF EXISTS public.clear_ability_request_content(integer, timestamptz, uuid);
+CREATE FUNCTION public.clear_ability_request_content(
+    p_limit integer, p_after_finished timestamptz DEFAULT NULL, p_after_id uuid DEFAULT NULL)
+RETURNS TABLE (cleared integer, failed integer, examined integer,
+               after_finished timestamptz, after_id uuid)
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+DECLARE
+    v_count integer := 0;
+    v_failed integer := 0;
+    v_examined integer := 0;
+    v_updated integer;
+    v_candidate record;
+    v_candidates jsonb;
+    v_after_finished timestamptz := coalesce(p_after_finished, '-infinity'::timestamptz);
+    v_after_id uuid := coalesce(p_after_id, '00000000-0000-0000-0000-000000000000'::uuid);
+    v_prev_agent text := current_setting('app.agent', true);
+    v_prev_tenant text := current_setting('app.tenant_id', true);
+    v_prev_site_scope text := current_setting('app.site_scope', true);
+BEGIN
+    IF p_limit IS NULL OR p_limit < 1 OR p_limit > 1000 THEN
+        RAISE EXCEPTION 'retention batch limit must be between 1 and 1000' USING ERRCODE = '22023';
+    END IF;
+    IF (p_after_finished IS NULL) <> (p_after_id IS NULL) THEN
+        RAISE EXCEPTION 'retention cursor requires both its timestamp and id' USING ERRCODE = '22023';
+    END IF;
+    PERFORM set_config('app.site_scope', 'off', true);
+    PERFORM set_config('app.agent', 'on', true);
+
+    -- Discovery pages follow the retention index under the SELECT-only agent
+    -- policy. Each page is bounded; only that page is grouped by tenant.
+    LOOP
+        SELECT coalesce(jsonb_agg(to_jsonb(d) ORDER BY d.finished_at, d.id), '[]'::jsonb)
+        INTO v_candidates
+        FROM (
+            SELECT id, tenant_id,
+                   public.ability_request_finished_at(state, outcome_at, decided_at, expires_at, withdrawn_at) AS finished_at
+            FROM public.assistant_ability_requests
+            WHERE content_cleared_at IS NULL
+              AND (state IN ('done','failed','not_sent','declined','expired','withdrawn')
+                   OR (state = 'outcome_unknown' AND outcome IS NOT NULL))
+              AND undo_state IS DISTINCT FROM 'in_progress'
+              AND public.ability_request_finished_at(state, outcome_at, decided_at, expires_at, withdrawn_at)
+                  < statement_timestamp() - interval '15 days'
+              AND (public.ability_request_finished_at(state, outcome_at, decided_at, expires_at, withdrawn_at), id)
+                  > (v_after_finished, v_after_id)
+            ORDER BY public.ability_request_finished_at(state, outcome_at, decided_at, expires_at, withdrawn_at), id
+            LIMIT p_limit - v_count - v_failed
+        ) d;
+        EXIT WHEN jsonb_array_length(v_candidates) = 0;
+        v_examined := v_examined + jsonb_array_length(v_candidates);
+        v_after_finished := (v_candidates -> -1 ->> 'finished_at')::timestamptz;
+        v_after_id := (v_candidates -> -1 ->> 'id')::uuid;
+
+        FOR v_candidate IN
+            SELECT id, tenant_id
+            FROM jsonb_to_recordset(v_candidates) AS c(id uuid, tenant_id uuid)
+            ORDER BY tenant_id, id
+        LOOP
+            PERFORM set_config('app.tenant_id', v_candidate.tenant_id::text, true);
+            PERFORM set_config('app.agent', 'off', true);
+            -- Each candidate has its own rollback scope. A row that cannot be
+            -- cleared stays intact while the remaining candidates are processed.
+            BEGIN
+                WITH eligible AS (
+                    SELECT r.id
+                    FROM public.assistant_ability_requests r
+                    WHERE r.id = v_candidate.id
+                      AND r.tenant_id = v_candidate.tenant_id
+                      AND r.content_cleared_at IS NULL
+                      AND (r.state IN ('done','failed','not_sent','declined','expired','withdrawn')
+                           OR (r.state = 'outcome_unknown' AND r.outcome IS NOT NULL))
+                      AND r.undo_state IS DISTINCT FROM 'in_progress'
+                      AND public.ability_request_finished_at(r.state, r.outcome_at, r.decided_at, r.expires_at, r.withdrawn_at)
+                          < statement_timestamp() - interval '15 days'
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE public.assistant_ability_requests r
+                SET retained_draft = public.ability_request_retained_draft(r.ability_name, r.input_json),
+                    input_json = '{}', card_facts = NULL, content_cleared_at = statement_timestamp()
+                FROM eligible e
+                WHERE r.id = e.id AND r.tenant_id = v_candidate.tenant_id;
+                GET DIAGNOSTICS v_updated = ROW_COUNT;
+            EXCEPTION WHEN OTHERS THEN
+                v_updated := 0;
+                v_failed := v_failed + 1;
+            END;
+            v_count := v_count + v_updated;
+
+            -- Locking and updates use the candidate's tenant policy. Locked
+            -- or changed rows consume neither count; failures consume the budget.
+            PERFORM set_config('app.agent', 'on', true);
+        END LOOP;
+        EXIT WHEN v_count + v_failed >= p_limit;
+    END LOOP;
+    PERFORM set_config('app.agent', coalesce(v_prev_agent, ''), true);
+    PERFORM set_config('app.tenant_id', coalesce(v_prev_tenant, ''), true);
+    PERFORM set_config('app.site_scope', coalesce(v_prev_site_scope, ''), true);
+    -- The cursor covers every discovered row, including failures and skipped
+    -- locks. An empty batch has no cursor; a new sweep starts with NULLs.
+    RETURN QUERY SELECT v_count, v_failed, v_examined,
+        CASE WHEN v_examined > 0 THEN v_after_finished END,
+        CASE WHEN v_examined > 0 THEN v_after_id END;
+EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('app.agent', coalesce(v_prev_agent, ''), true);
+    PERFORM set_config('app.tenant_id', coalesce(v_prev_tenant, ''), true);
+    PERFORM set_config('app.site_scope', coalesce(v_prev_site_scope, ''), true);
+    RAISE;
+END;
+$$;
+REVOKE ALL ON FUNCTION public.clear_ability_request_content(integer, timestamptz, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.clear_ability_request_content(integer, timestamptz, uuid) TO wpmgr_app;
+
+-- Agent scope permits cross-tenant reads only. Retention writes use the
+-- existing tenant isolation policy under the target tenant's own scope.
+DROP POLICY IF EXISTS assistant_ability_requests_agent ON public.assistant_ability_requests;
+CREATE POLICY assistant_ability_requests_agent ON public.assistant_ability_requests
+    FOR SELECT
+    USING (current_setting('app.agent', true) = 'on');

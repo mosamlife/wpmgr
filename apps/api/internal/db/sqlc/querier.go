@@ -455,6 +455,8 @@ type Querier interface {
 	// back and the next tick finds the run still 'scheduled'. Committing the claim
 	// separately from the enqueue is what strands a run permanently.
 	ClaimUpdateRunForDispatch(ctx context.Context, arg ClaimUpdateRunForDispatchParams) (UpdateRun, error)
+	// Empty batches have no cursor; these inert values are ignored when examined is zero.
+	ClearAbilityRequestContent(ctx context.Context, arg ClearAbilityRequestContentParams) (ClearAbilityRequestContentRow, error)
 	// Clear the in-flight db_clean watchdog columns on completion or failure.
 	ClearActiveDBCleanJob(ctx context.Context, siteID uuid.UUID) error
 	// Clear the in-flight db_scan watchdog columns on completion or failure.
@@ -1636,11 +1638,10 @@ type Querier interface {
 	// draft for this post. The agent checks the post itself before it reads or
 	// changes it.
 	GetEligibleCreatedDraft(ctx context.Context, arg GetEligibleCreatedDraftParams) (GetEligibleCreatedDraftRow, error)
-	// The exact input_json of the request GetEligibleCreatedDraft names: the
-	// same predicates and the same order, so both name one request, and id is
-	// returned so a caller can check that they did. pgx.ErrNoRows: no eligible
-	// draft for this post. A page edit reads the design its draft was created
-	// with from this input.
+	// The creation request GetEligibleCreatedDraft names, with the same
+	// predicates and order. Its id binds both reads to one request. Page edits
+	// use input_json before content is cleared and retained_draft afterwards.
+	// pgx.ErrNoRows means no eligible draft for this post.
 	GetEligibleCreatedDraftInput(ctx context.Context, arg GetEligibleCreatedDraftInputParams) (GetEligibleCreatedDraftInputRow, error)
 	// m61: resolve a config row by its webhook_route_token_hash for the public
 	// webhook dispatcher.  Runs under InAgentTx (webhook path, no tenant GUC).

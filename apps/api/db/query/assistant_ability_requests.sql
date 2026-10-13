@@ -715,12 +715,11 @@ ORDER BY created_at DESC, id DESC
 LIMIT 1;
 
 -- name: GetEligibleCreatedDraftInput :one
--- The exact input_json of the request GetEligibleCreatedDraft names: the
--- same predicates and the same order, so both name one request, and id is
--- returned so a caller can check that they did. pgx.ErrNoRows: no eligible
--- draft for this post. A page edit reads the design its draft was created
--- with from this input.
-SELECT id, input_json
+-- The creation request GetEligibleCreatedDraft names, with the same
+-- predicates and order. Its id binds both reads to one request. Page edits
+-- use input_json before content is cleared and retained_draft afterwards.
+-- pgx.ErrNoRows means no eligible draft for this post.
+SELECT id, input_json, content_cleared_at, retained_draft
 FROM assistant_ability_requests
 WHERE tenant_id = @tenant_id
   AND site_id = @site_id
@@ -764,3 +763,11 @@ WHERE tenant_id = @tenant_id
   AND undo_state IS DISTINCT FROM 'undone'
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
+
+-- name: ClearAbilityRequestContent :one
+-- Empty batches have no cursor; these inert values are ignored when examined is zero.
+SELECT cleared::integer, failed::integer, examined::integer,
+       coalesce(after_finished, 'epoch'::timestamptz)::timestamptz AS after_finished,
+       coalesce(after_id, '00000000-0000-0000-0000-000000000000'::uuid)::uuid AS after_id
+FROM public.clear_ability_request_content(sqlc.arg(batch_size)::integer,
+     sqlc.narg(after_finished)::timestamptz, sqlc.narg(after_id)::uuid);

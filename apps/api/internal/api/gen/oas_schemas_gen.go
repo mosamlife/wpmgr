@@ -3325,31 +3325,33 @@ func (s *AbilityCatalogueInputStatus) UnmarshalText(data []byte) error {
 
 // One AI site-change request. `site_label`, `site_host`, `grant_label` and `title_excerpt` came from a
 // site or an AI connection: render each as plain text. `input_json` is the exact input the AI chose,
-// shown in full on the card.
+// shown in full on the card until content_cleared_at is set, when input_json is {}.
 // Ref: #/components/schemas/AbilityRequest
 type AbilityRequest struct {
-	ID              uuid.UUID                `json:"id"`
-	SiteID          uuid.UUID                `json:"site_id"`
-	AbilityName     string                   `json:"ability_name"`
-	InputJSON       string                   `json:"input_json"`
-	TitleExcerpt    OptNilString             `json:"title_excerpt"`
-	Editor          OptNilString             `json:"editor"`
-	PostType        OptNilString             `json:"post_type"`
-	EffectCopy      AbilityRequestEffectCopy `json:"effect_copy"`
-	Snapshot        string                   `json:"snapshot"`
-	SiteLabel       string                   `json:"site_label"`
-	SiteHost        string                   `json:"site_host"`
-	GrantLabel      string                   `json:"grant_label"`
-	GrantVia        string                   `json:"grant_via"`
-	SetupClient     OptNilString             `json:"setup_client"`
-	CardCopyVersion int32                    `json:"card_copy_version"`
-	PresentedDigest OptString                `json:"presented_digest"`
-	State           AbilityRequestState      `json:"state"`
-	CreatedAt       time.Time                `json:"created_at"`
-	ExpiresAt       time.Time                `json:"expires_at"`
-	DecidedAt       OptNilDateTime           `json:"decided_at"`
-	Outcome         OptNilString             `json:"outcome"`
-	OutcomeCode     OptNilString             `json:"outcome_code"`
+	ID          uuid.UUID `json:"id"`
+	SiteID      uuid.UUID `json:"site_id"`
+	AbilityName string    `json:"ability_name"`
+	InputJSON   string    `json:"input_json"`
+	// When request details were cleared after the retention period.
+	ContentClearedAt OptNilDateTime           `json:"content_cleared_at"`
+	TitleExcerpt     OptNilString             `json:"title_excerpt"`
+	Editor           OptNilString             `json:"editor"`
+	PostType         OptNilString             `json:"post_type"`
+	EffectCopy       AbilityRequestEffectCopy `json:"effect_copy"`
+	Snapshot         string                   `json:"snapshot"`
+	SiteLabel        string                   `json:"site_label"`
+	SiteHost         string                   `json:"site_host"`
+	GrantLabel       string                   `json:"grant_label"`
+	GrantVia         string                   `json:"grant_via"`
+	SetupClient      OptNilString             `json:"setup_client"`
+	CardCopyVersion  int32                    `json:"card_copy_version"`
+	PresentedDigest  OptString                `json:"presented_digest"`
+	State            AbilityRequestState      `json:"state"`
+	CreatedAt        time.Time                `json:"created_at"`
+	ExpiresAt        time.Time                `json:"expires_at"`
+	DecidedAt        OptNilDateTime           `json:"decided_at"`
+	Outcome          OptNilString             `json:"outcome"`
+	OutcomeCode      OptNilString             `json:"outcome_code"`
 	// Which conflict refused a wpmgr/page-edit (`outcome_code` conflict): the page changed after the AI
 	// read it (changed_since_read), someone has it open in Elementor (editor_open), or someone has unsaved
 	// Elementor changes on it (autosave_pending). Null for every other request. A closed value, never the
@@ -3390,7 +3392,7 @@ type AbilityRequest struct {
 	RouteID OptNilString `json:"route_id"`
 	// The route hash the request was approved against; null otherwise.
 	RouteSHA256 OptNilString `json:"route_sha256"`
-	// The structured card of a wpmgr/rest-write request; null otherwise.
+	// The structured card of a wpmgr/rest-write request; null for cleared requests and other abilities.
 	CardFacts OptNilAbilityRequestCardFacts `json:"card_facts"`
 	// The images a wpmgr/page-create request places, in outline order, as the site described them when
 	// WPMgr checked the request. Null when the outline has no image, and for every other ability. A card
@@ -3437,6 +3439,11 @@ func (s *AbilityRequest) GetAbilityName() string {
 // GetInputJSON returns the value of InputJSON.
 func (s *AbilityRequest) GetInputJSON() string {
 	return s.InputJSON
+}
+
+// GetContentClearedAt returns the value of ContentClearedAt.
+func (s *AbilityRequest) GetContentClearedAt() OptNilDateTime {
+	return s.ContentClearedAt
 }
 
 // GetTitleExcerpt returns the value of TitleExcerpt.
@@ -3652,6 +3659,11 @@ func (s *AbilityRequest) SetAbilityName(val string) {
 // SetInputJSON sets the value of InputJSON.
 func (s *AbilityRequest) SetInputJSON(val string) {
 	s.InputJSON = val
+}
+
+// SetContentClearedAt sets the value of ContentClearedAt.
+func (s *AbilityRequest) SetContentClearedAt(val OptNilDateTime) {
+	s.ContentClearedAt = val
 }
 
 // SetTitleExcerpt sets the value of TitleExcerpt.
