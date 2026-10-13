@@ -143,7 +143,28 @@ func ds01Seed(t *testing.T, app *db.Pool) (tenant, siteID uuid.UUID) {
 	}
 	m133InsertPending(t, app, tenant, siteID, uuid.New(), "ds01")
 	acprInsert(t, app, acprOrgPrincipal(tenant), acprParams(tenant, siteID, uuid.New(), "ds01"))
-	aarInsert(t, app, acprOrgPrincipal(tenant), aarParams(tenant, siteID, uuid.New(), "ds01"))
+	// DS-01 request seeds use the m156 column set, which is valid at m178.
+	requestInput := `{"post_type":"page","title":"Spring sale ds01","content_html":"<p>Hi</p>"}`
+	if err := app.RunTenantTx(ctx, acprOrgPrincipal(tenant), func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "RunTenantTx (DS-01 request seed)")
+		_, err := tx.Exec(ctx, `INSERT INTO assistant_ability_requests (
+			tenant_id, site_id, proposed_by_grant_id, entry_id, entry_sha256,
+			ability_name, operator_permission, input_json, input_sha256,
+			precheck_digest, base_fingerprint, site_label, site_host, grant_label,
+			grant_via, effect_copy, snapshot, card_copy_version, digest_nonce,
+			presented_digest, state, expires_at
+		) VALUES (
+			$1::uuid, $2::uuid, $3::uuid, $4::uuid, repeat('a',64),
+			'wpmgr/page-create', 'site.content.edit', $5::text,
+			encode(sha256(convert_to($5::text,'UTF8')),'hex'),
+			repeat('b',64), 'new:seed', 'Shop', 'shop.example.com', 'Laptop',
+			'token', 'draft', 'created_post_trash', 1, repeat('c',64),
+			repeat('d',64), 'pending', now() + interval '24 hours'
+		)`, tenant, siteID, uuid.New(), uuid.New(), requestInput)
+		return err
+	}); err != nil {
+		t.Fatalf("seed ability request for site %s: %v", siteID, err)
+	}
 	root := uuid.New()
 	if _, err := app.Exec(ctx, `INSERT INTO users (id, email, is_superadmin) VALUES ($1, $2, true)`,
 		root, root.String()+"@example.test"); err != nil {

@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
@@ -93,4 +95,21 @@ func TestContentRetentionJobUniqueness(t *testing.T) {
 	if !slices.Contains(opts.UniqueOpts.ByState, rivertype.JobStateRunning) {
 		t.Fatal("running sweep is not unique")
 	}
+}
+
+func TestContentRetentionPeriodicSchedule(t *testing.T) {
+	job := reflect.ValueOf(NewContentRetentionPeriodicJob()).Elem()
+	// River's configuration fields are private; read the constructed options
+	// and schedule so the test checks what the scheduler actually receives.
+	t.Run("runs when the scheduler starts", func(t *testing.T) {
+		if !job.FieldByName("opts").Elem().FieldByName("RunOnStart").Bool() {
+			t.Fatal("retention periodic job has RunOnStart false")
+		}
+	})
+	t.Run("runs hourly", func(t *testing.T) {
+		interval := time.Duration(job.FieldByName("scheduleFunc").Elem().Elem().FieldByName("interval").Int())
+		if interval != time.Hour {
+			t.Fatalf("retention periodic interval=%v, want %v", interval, time.Hour)
+		}
+	})
 }

@@ -3762,9 +3762,6 @@ type riverDeps struct {
 // update tenant shard's concurrent workers so one tenant cannot starve others.
 func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d riverDeps) (*river.Client[pgx.Tx], error) {
 	workers := river.NewWorkers()
-	if d.abilityReqContentRetentionWorker != nil {
-		river.AddWorker(workers, d.abilityReqContentRetentionWorker)
-	}
 	river.AddWorker(workers, site.NewHealthCheckWorker(d.healthChecker))
 	river.AddWorker(workers, d.updateWorker)
 	if d.updateReaperWorker != nil {
@@ -4231,10 +4228,11 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 		)
 	}
 
-	// Ability requests (E2): same cadence as the AI cache clears.
 	if d.abilityReqContentRetentionWorker != nil {
-		periodics = append(periodics, abilityrequest.NewContentRetentionPeriodicJob())
+		periodics = registerAbilityRequestContentRetentionWorker(workers, periodics, d.abilityReqContentRetentionWorker)
 	}
+
+	// Ability requests (E2): same cadence as the AI cache clears.
 	if d.abilityReqScanWorker != nil && d.abilityReqDispatchWorker != nil &&
 		d.abilityReqSweepWorker != nil && d.abilityReqReconcileWorker != nil &&
 		d.abilityReqUndoReconcileWorker != nil {
@@ -4707,4 +4705,11 @@ func checkMCPCursorKey(key string) error {
 		return nil
 	}
 	return errors.New("WPMGR_MCP_ABILITY_TOOLS=on needs WPMGR_MCP_CURSOR_KEY: set WPMGR_MCP_CURSOR_KEY to at least 32 random characters, e.g. `openssl rand -hex 32`, or set WPMGR_MCP_ABILITY_TOOLS=off")
+}
+
+// registerAbilityRequestContentRetentionWorker installs the worker and its
+// startup and hourly sweep in the same River client.
+func registerAbilityRequestContentRetentionWorker(workers *river.Workers, periodics []*river.PeriodicJob, w *abilityrequest.ContentRetentionWorker) []*river.PeriodicJob {
+	river.AddWorker(workers, w)
+	return append(periodics, abilityrequest.NewContentRetentionPeriodicJob())
 }

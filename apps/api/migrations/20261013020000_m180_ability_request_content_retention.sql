@@ -25,6 +25,7 @@ ALTER TABLE public.assistant_ability_requests
         CHECK ((content_cleared_at IS NULL AND retained_draft IS NULL)
                OR (content_cleared_at IS NOT NULL AND input_json = '{}' AND card_facts IS NULL));
 
+-- Resolving unknown outcomes have no outcome timestamp; give-up stamps it.
 CREATE OR REPLACE FUNCTION public.ability_request_finished_at(
     p_state text, p_outcome_at timestamptz, p_decided_at timestamptz,
     p_expires_at timestamptz, p_withdrawn_at timestamptz)
@@ -36,6 +37,7 @@ AS $$
         WHEN 'done' THEN p_outcome_at
         WHEN 'failed' THEN p_outcome_at
         WHEN 'not_sent' THEN p_outcome_at
+        WHEN 'outcome_unknown' THEN p_outcome_at
         WHEN 'declined' THEN p_decided_at
         WHEN 'expired' THEN p_expires_at
         WHEN 'withdrawn' THEN p_withdrawn_at
@@ -57,7 +59,7 @@ BEGIN
     v_input := p_input::jsonb;
     RETURN jsonb_build_object('outline_version', v_input -> 'outline_version',
                               'design', v_input -> 'design');
-EXCEPTION WHEN invalid_text_representation THEN
+EXCEPTION WHEN data_exception THEN
     RETURN jsonb_build_object('outline_version', NULL, 'design', NULL);
 END;
 $$;
@@ -112,7 +114,8 @@ CREATE INDEX IF NOT EXISTS assistant_ability_requests_content_retention_idx
     ON public.assistant_ability_requests
        (public.ability_request_finished_at(state, outcome_at, decided_at, expires_at, withdrawn_at), id)
     WHERE content_cleared_at IS NULL
-      AND state IN ('done','failed','not_sent','declined','expired','withdrawn')
+      AND (state IN ('done','failed','not_sent','declined','expired','withdrawn')
+           OR (state = 'outcome_unknown' AND outcome IS NOT NULL))
       AND undo_state IS DISTINCT FROM 'in_progress';
 
 -- The table owner needs the definer's column privileges in both role layouts.
@@ -153,7 +156,8 @@ BEGIN
         SELECT id, tenant_id
         FROM public.assistant_ability_requests
         WHERE content_cleared_at IS NULL
-          AND state IN ('done','failed','not_sent','declined','expired','withdrawn')
+          AND (state IN ('done','failed','not_sent','declined','expired','withdrawn')
+               OR (state = 'outcome_unknown' AND outcome IS NOT NULL))
           AND undo_state IS DISTINCT FROM 'in_progress'
           AND public.ability_request_finished_at(state, outcome_at, decided_at, expires_at, withdrawn_at)
               < statement_timestamp() - interval '15 days'
@@ -162,24 +166,31 @@ BEGIN
     LOOP
         PERFORM set_config('app.tenant_id', v_candidate.tenant_id::text, true);
         PERFORM set_config('app.agent', 'off', true);
-        WITH eligible AS (
-            SELECT r.id
-            FROM public.assistant_ability_requests r
-            WHERE r.id = v_candidate.id
-              AND r.tenant_id = v_candidate.tenant_id
-              AND r.content_cleared_at IS NULL
-              AND r.state IN ('done','failed','not_sent','declined','expired','withdrawn')
-              AND r.undo_state IS DISTINCT FROM 'in_progress'
-              AND public.ability_request_finished_at(r.state, r.outcome_at, r.decided_at, r.expires_at, r.withdrawn_at)
-                  < statement_timestamp() - interval '15 days'
-            FOR UPDATE SKIP LOCKED
-        )
-        UPDATE public.assistant_ability_requests r
-        SET retained_draft = public.ability_request_retained_draft(r.ability_name, r.input_json),
-            input_json = '{}', card_facts = NULL, content_cleared_at = statement_timestamp()
-        FROM eligible e
-        WHERE r.id = e.id AND r.tenant_id = v_candidate.tenant_id;
-        GET DIAGNOSTICS v_updated = ROW_COUNT;
+        -- Each candidate has its own rollback scope. A row that cannot be
+        -- cleared stays intact while the remaining candidates are processed.
+        BEGIN
+            WITH eligible AS (
+                SELECT r.id
+                FROM public.assistant_ability_requests r
+                WHERE r.id = v_candidate.id
+                  AND r.tenant_id = v_candidate.tenant_id
+                  AND r.content_cleared_at IS NULL
+                  AND (r.state IN ('done','failed','not_sent','declined','expired','withdrawn')
+                       OR (r.state = 'outcome_unknown' AND r.outcome IS NOT NULL))
+                  AND r.undo_state IS DISTINCT FROM 'in_progress'
+                  AND public.ability_request_finished_at(r.state, r.outcome_at, r.decided_at, r.expires_at, r.withdrawn_at)
+                      < statement_timestamp() - interval '15 days'
+                FOR UPDATE SKIP LOCKED
+            )
+            UPDATE public.assistant_ability_requests r
+            SET retained_draft = public.ability_request_retained_draft(r.ability_name, r.input_json),
+                input_json = '{}', card_facts = NULL, content_cleared_at = statement_timestamp()
+            FROM eligible e
+            WHERE r.id = e.id AND r.tenant_id = v_candidate.tenant_id;
+            GET DIAGNOSTICS v_updated = ROW_COUNT;
+        EXCEPTION WHEN OTHERS THEN
+            v_updated := 0;
+        END;
         v_count := v_count + v_updated;
 
         -- Resume the discovery cursor under its read scope. Only rows actually

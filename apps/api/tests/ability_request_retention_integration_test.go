@@ -26,6 +26,11 @@ const r01Input = `{"outline_version":3,"design":{"colors":{"ground":"#F6F5F2","s
 // Fixtures enter pending, then use the application's role and approval context.
 func r01Request(t *testing.T, app *db.Pool, tenant, site uuid.UUID, state string, age time.Duration, undo bool, ability string, post int64) uuid.UUID {
 	t.Helper()
+	return r01RequestWithInput(t, app, tenant, site, state, age, undo, ability, post, r01Input)
+}
+
+func r01RequestWithInput(t *testing.T, app *db.Pool, tenant, site uuid.UUID, state string, age time.Duration, undo bool, ability string, post int64, input string) uuid.UUID {
+	t.Helper()
 	ctx := context.Background()
 	id, user := uuid.New(), uuid.New()
 	finished := time.Now().Add(-age)
@@ -44,7 +49,7 @@ func r01Request(t *testing.T, app *db.Pool, tenant, site uuid.UUID, state string
    '{"kind":"builder_edit"}'::jsonb,
    CASE WHEN $8::text = 'wpmgr/rest-write' THEN 'post' END,
    CASE WHEN $8::text = 'wpmgr/rest-write' THEN repeat('e',64) END,
-   CASE WHEN $8::text = 'wpmgr/page-edit' THEN 418 END)`, id, tenant, site, uuid.New(), uuid.New(), r01Input, finished, ability)
+   CASE WHEN $8::text = 'wpmgr/page-edit' THEN 418 END)`, id, tenant, site, uuid.New(), uuid.New(), input, finished, ability)
 		if err != nil || state == "pending" {
 			return err
 		}
@@ -74,11 +79,16 @@ func r01Request(t *testing.T, app *db.Pool, tenant, site uuid.UUID, state string
 			if state == "outcome_unknown" {
 				outcome = "outcome_unknown"
 			}
-			_, err = tx.Exec(ctx, `UPDATE assistant_ability_requests SET state=$2::text, outcome=$3::text, outcome_at=$4::timestamptz,
+			var result *string = &outcome
+			if state == "reconciling" {
+				state, result = "outcome_unknown", nil
+			}
+			_, err = tx.Exec(ctx, `UPDATE assistant_ability_requests SET state=$2::text, outcome=$3::text,
+    outcome_at=CASE WHEN $3::text IS NOT NULL THEN $4::timestamptz END,
     claimed_at=CASE WHEN $2::text <> 'not_sent' THEN $4::timestamptz END,
     not_sent_reason=CASE WHEN $2::text='not_sent' THEN 'dispatch_deadline_passed' END,
     unknown_since=CASE WHEN $2::text='outcome_unknown' THEN $4::timestamptz END,
-    created_post_id=CASE WHEN $2::text IN ('done','failed','outcome_unknown') THEN $5::bigint END WHERE id=$1::uuid`, id, state, outcome, finished, post)
+    created_post_id=CASE WHEN $2::text IN ('done','failed','outcome_unknown') THEN $5::bigint END WHERE id=$1::uuid`, id, state, result, finished, post)
 		}
 		if err != nil || !undo {
 			return err
@@ -152,11 +162,21 @@ func TestR01AbilityRequestRetention(t *testing.T) {
 				{name: "pending", state: "pending", ability: "wpmgr/page-create", age: 20 * 24 * time.Hour},
 				{name: "recent", state: "done", ability: "wpmgr/page-create", age: 14 * 24 * time.Hour},
 				{name: "undo running", state: "done", ability: "wpmgr/page-create", age: 20 * 24 * time.Hour, undo: true},
-				{name: "unknown", state: "outcome_unknown", ability: "wpmgr/page-create", age: 20 * 24 * time.Hour},
+				{name: "given up", state: "outcome_unknown", ability: "wpmgr/page-create", age: 20 * 24 * time.Hour, cleared: true},
+				{name: "recent give up", state: "outcome_unknown", ability: "wpmgr/page-create", age: 14 * 24 * time.Hour},
+				{name: "still reconciling", state: "reconciling", ability: "wpmgr/page-create", age: 20 * 24 * time.Hour},
 			}
 			for i := range fixtures {
 				f := &fixtures[i]
 				f.id = r01Request(t, app, tenant, site, f.state, f.age, f.undo, f.ability, int64(418+i))
+				if f.name == "recent give up" {
+					if err := app.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+						_, err := tx.Exec(ctx, `UPDATE assistant_ability_requests SET unknown_since=now()-interval '40 days' WHERE id=$1::uuid`, f.id)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			for _, f := range fixtures {
 				statements := []string{
@@ -443,7 +463,7 @@ func TestR01RetentionTenantScopes(t *testing.T) {
 				t.Fatalf("batch limit applied across tenants: cleared=%d", cleared)
 			}
 
-			// A failing retention update leaves the caller's scope intact.
+			// Skipped row failures and invalid calls leave the caller's scope intact.
 			if _, err := owner.Exec(ctx, `CREATE FUNCTION public.r01_retention_scope_failure() RETURNS trigger
 				LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'retention scope test failure' USING ERRCODE='P0001'; END $$;
 				CREATE TRIGGER r01_retention_scope_failure BEFORE UPDATE OF content_cleared_at
@@ -455,13 +475,23 @@ func TestR01RetentionTenantScopes(t *testing.T) {
 					return err
 				}
 				before := readSettings(tx)
+				n, err := sqlc.New(tx).ClearAbilityRequestContent(ctx, 2)
+				if err != nil {
+					return err
+				}
+				if n != 0 {
+					t.Fatalf("failing rows were counted as cleared: %d", n)
+				}
+				if after := readSettings(tx); before != after {
+					t.Fatalf("skipped retention changed caller settings: %v -> %v", before, after)
+				}
 				if _, err := tx.Exec(ctx, `DO $$ BEGIN
-					BEGIN
-						PERFORM public.clear_ability_request_content(2);
-						RAISE EXCEPTION 'retention did not reach the failing update' USING ERRCODE='XX000';
-					EXCEPTION WHEN SQLSTATE 'P0001' THEN NULL;
-					END;
-				END $$`); err != nil {
+                    BEGIN
+                        PERFORM public.clear_ability_request_content(0);
+                        RAISE EXCEPTION 'invalid retention limit was accepted' USING ERRCODE='XX000';
+                    EXCEPTION WHEN SQLSTATE '22023' THEN NULL;
+                    END;
+                END $$`); err != nil {
 					return err
 				}
 				if after := readSettings(tx); before != after {
@@ -470,6 +500,108 @@ func TestR01RetentionTenantScopes(t *testing.T) {
 				return nil
 			}); err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestR01RetentionUnusableJSON(t *testing.T) {
+	for _, single := range []bool{true, false} {
+		t.Run(fmt.Sprintf("single_role_%t", single), func(t *testing.T) {
+			app, _ := ds01Postgres(t, single, false)
+			ctx := context.Background()
+			type target struct {
+				tenant, site, id uuid.UUID
+				nullDesign       bool
+			}
+			var targets []target
+			for _, name := range []string{"A", "B", "C"} {
+				tenant, site := ds01Seed(t, app)
+				targets = append(targets, target{tenant: tenant, site: site, id: r01Request(t, app, tenant, site, "expired", 19*24*time.Hour, false, "wpmgr/page-create", 700)})
+				if name == "B" {
+					input := `{"post_type":"page","title":"A\u0000B","outline":[{"type":"paragraph","text":"Hi"}]}`
+					if !json.Valid([]byte(input)) {
+						t.Fatal("unusable jsonb fixture is not valid JSON")
+					}
+					targets = append(targets, target{tenant: tenant, site: site, id: r01RequestWithInput(t, app, tenant, site, "expired", 18*24*time.Hour, false, "wpmgr/page-create", 701, input), nullDesign: true})
+					targets = append(targets, target{tenant: tenant, site: site, id: r01Request(t, app, tenant, site, "expired", 17*24*time.Hour, false, "wpmgr/page-create", 702)})
+				}
+			}
+			n, err := sqlc.New(app.Pool).ClearAbilityRequestContent(ctx, int32(len(targets)))
+			if err != nil || n != int32(len(targets)) {
+				t.Fatalf("unusable JSON batch: cleared=%d want=%d err=%v", n, len(targets), err)
+			}
+			for _, target := range targets {
+				if err := app.InTenantTx(ctx, target.tenant, func(tx pgx.Tx) error {
+					mcpAssertAndReportRole(t, tx, "R-01 unusable JSON record")
+					row, err := sqlc.New(tx).GetAbilityRequestForSite(ctx, sqlc.GetAbilityRequestForSiteParams{TenantID: target.tenant, SiteID: target.site, ID: target.id})
+					if err != nil {
+						return err
+					}
+					if !row.ContentClearedAt.Valid || row.InputJson != "{}" || len(row.CardFacts) != 0 {
+						t.Fatalf("request %s was not cleared", target.id)
+					}
+					if target.nullDesign {
+						var draft map[string]any
+						if err := json.Unmarshal(row.RetainedDraft, &draft); err != nil {
+							return err
+						}
+						version, hasVersion := draft["outline_version"]
+						design, hasDesign := draft["design"]
+						if len(draft) != 2 || !hasVersion || !hasDesign || version != nil || design != nil {
+							t.Fatalf("unusable JSON design=%s", row.RetainedDraft)
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestR01RetentionSkipsFailedRow(t *testing.T) {
+	for _, single := range []bool{true, false} {
+		t.Run(fmt.Sprintf("single_role_%t", single), func(t *testing.T) {
+			app, owner := ds01Postgres(t, single, false)
+			ctx := context.Background()
+			tenant, site := ds01Seed(t, app)
+			failed := r01Request(t, app, tenant, site, "expired", 18*24*time.Hour, false, "wpmgr/page-create", 710)
+			before := r01Request(t, app, tenant, site, "expired", 19*24*time.Hour, false, "wpmgr/page-create", 711)
+			after := r01Request(t, app, tenant, site, "expired", 17*24*time.Hour, false, "wpmgr/page-create", 712)
+			otherTenant, otherSite := ds01Seed(t, app)
+			other := r01Request(t, app, otherTenant, otherSite, "expired", 17*24*time.Hour, false, "wpmgr/page-create", 713)
+			if _, err := owner.Exec(ctx, fmt.Sprintf(`CREATE FUNCTION public.r01_retention_one_failure() RETURNS trigger
+				LANGUAGE plpgsql AS $$ BEGIN
+					IF NEW.id='%s'::uuid THEN RAISE EXCEPTION 'retention row test failure' USING ERRCODE='P0001'; END IF;
+					RETURN NEW;
+				END $$;
+				CREATE TRIGGER r01_retention_one_failure BEFORE UPDATE OF content_cleared_at ON public.assistant_ability_requests
+				FOR EACH ROW EXECUTE FUNCTION public.r01_retention_one_failure()`, failed)); err != nil {
+				t.Fatal(err)
+			}
+			good := []struct{ tenant, site, id uuid.UUID }{{tenant, site, before}, {tenant, site, after}, {otherTenant, otherSite, other}}
+			n, err := sqlc.New(app.Pool).ClearAbilityRequestContent(ctx, int32(len(good)+1))
+			if err != nil || n != int32(len(good)) {
+				t.Fatalf("isolated row failure: cleared=%d want=%d err=%v", n, len(good), err)
+			}
+			for _, target := range append(good, struct{ tenant, site, id uuid.UUID }{tenant, site, failed}) {
+				if err := app.InTenantTx(ctx, target.tenant, func(tx pgx.Tx) error {
+					row, err := sqlc.New(tx).GetAbilityRequestForSite(ctx, sqlc.GetAbilityRequestForSiteParams{TenantID: target.tenant, SiteID: target.site, ID: target.id})
+					if err != nil {
+						return err
+					}
+					if row.ContentClearedAt.Valid != (target.id != failed) {
+						t.Fatalf("request %s cleared=%t", target.id, row.ContentClearedAt.Valid)
+					}
+					if target.id == failed && row.InputJson != r01Input {
+						t.Fatal("failed row partially cleared")
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
 			}
 		})
 	}

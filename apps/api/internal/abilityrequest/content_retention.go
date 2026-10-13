@@ -43,9 +43,9 @@ func NewContentRetentionWorker(pool *db.Pool, logger *slog.Logger) *ContentReten
 }
 
 func NewContentRetentionPeriodicJob() *river.PeriodicJob {
-	return river.NewPeriodicJob(river.PeriodicInterval(24*time.Hour), func() (river.JobArgs, *river.InsertOpts) {
+	return river.NewPeriodicJob(river.PeriodicInterval(time.Hour), func() (river.JobArgs, *river.InsertOpts) {
 		return ContentRetentionArgs{}, nil
-	}, &river.PeriodicJobOpts{RunOnStart: false})
+	}, &river.PeriodicJobOpts{RunOnStart: true})
 }
 
 func (w *ContentRetentionWorker) Timeout(*river.Job[ContentRetentionArgs]) time.Duration {
