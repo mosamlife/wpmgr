@@ -135,6 +135,7 @@ type checkedPageEdit struct {
 	builderVersion  string
 	format          string
 	changes         []pageEditChange
+	nativeChanges   []PageEditCardChange
 	afterOutline    map[string]any
 }
 
@@ -198,6 +199,9 @@ func pageEditPreviewDigest(builder, version string, postID int64, baseFP string,
 // verifyPageEditPrecheck checks the site's page-edit precheck answer
 // against the input this control plane sent (R2).
 func verifyPageEditPrecheck(resp agentcmd.AbilityRunResponse, entrySum string, input []byte, f pageEditFacts) (checkedPageEdit, bool) {
+	if pageEditNativeAnswer(resp.Preview) {
+		return verifyPageEditNativePrecheck(resp, entrySum, input, f)
+	}
 	if !precheckDigestsWellFormed(resp) || resp.BaseFingerprint != f.baseFingerprint {
 		return checkedPageEdit{}, false
 	}
@@ -632,15 +636,16 @@ type PageEditCardBuilder struct {
 
 // PageEditCardChange is one operation as the card shows it.
 type PageEditCardChange struct {
-	Op          string                  `json:"op"`
-	Ref         string                  `json:"ref,omitempty"`
-	Kind        string                  `json:"kind,omitempty"`
-	Level       *int64                  `json:"level,omitempty"`
-	Field       string                  `json:"field,omitempty"`
-	After       *string                 `json:"after,omitempty"`
-	NewRefs     []string                `json:"new_refs,omitempty"`
-	Anchor      *PageEditCardAnchor     `json:"anchor,omitempty"`
-	FromTheSite *PageEditCardChangeSite `json:"from_the_site,omitempty"`
+	Op          string                    `json:"op"`
+	Ref         string                    `json:"ref,omitempty"`
+	Kind        string                    `json:"kind,omitempty"`
+	Level       *int64                    `json:"level,omitempty"`
+	Field       string                    `json:"field,omitempty"`
+	After       *string                   `json:"after,omitempty"`
+	NewRefs     []string                  `json:"new_refs,omitempty"`
+	Anchor      *PageEditCardAnchor       `json:"anchor,omitempty"`
+	FromTheSite *PageEditCardChangeSite   `json:"from_the_site,omitempty"`
+	Native      *PageEditNativeCardChange `json:"native,omitempty"`
 }
 
 // PageEditCardAnchor is where an insert or move puts its nodes. Label is
@@ -691,6 +696,10 @@ func buildPageEditCardFacts(pc checkedPageEdit, now time.Time) ([]byte, error) {
 		}
 		card.Changes = append(card.Changes, out)
 	}
+	if pc.nativeChanges != nil {
+		card.Changes = pc.nativeChanges
+		card.Post.FromTheSite.Title = fenceSiteText(pc.title)
+	}
 	outline, err := json.Marshal(pc.afterOutline)
 	if err != nil {
 		return nil, fmt.Errorf("encode the outline after the edit: %w", err)
@@ -699,6 +708,16 @@ func buildPageEditCardFacts(pc checkedPageEdit, now time.Time) ([]byte, error) {
 	b, err := json.Marshal(card)
 	if err != nil {
 		return nil, fmt.Errorf("encode card facts: %w", err)
+	}
+	if pc.nativeChanges != nil {
+		size, err := pageEditJSONBTextSize(b)
+		if err != nil {
+			return nil, err
+		}
+		if size > pageEditCardMaxBytes {
+			return nil, errPageEditCardTooLarge
+		}
+		return b, nil
 	}
 	if len(b) <= pageEditCardMaxBytes {
 		return b, nil

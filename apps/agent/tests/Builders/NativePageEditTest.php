@@ -350,7 +350,11 @@ final class NativePageEditTest extends TestCase
 
     public function test_settings_refusals_preserve_sp14(): void
     {
-        foreach ([['number' => 123], ['title' => '<script>x</script>'], ['missing' => 'x'], ['color_laptop' => '#ABCDEF'], ['icon' => ['library' => 'svg', 'value' => 'x']]] as $settings) {
+        $scalar = self::parse([['op' => 'set_native', 'ref' => 'aaaaaaa', 'settings' => ['number' => 123]]]);
+        $this->assertSame('native_settings_invalid', $scalar['code'] ?? null);
+        $this->assertNotEmpty($scalar['failures']);
+        $this->assertArrayHasKey('schema', $scalar);
+        foreach ([['title' => '<script>x</script>'], ['missing' => 'x'], ['color_laptop' => '#ABCDEF'], ['icon' => ['library' => 'svg', 'value' => 'x']]] as $settings) {
             $r = $this->apply([['op' => 'set_native', 'ref' => 'aaaaaaa', 'settings' => $settings]]);
             $this->assertSame('native_settings_invalid', $r['code'] ?? null, json_encode($r));
             $this->assertNotEmpty($r['failures']);

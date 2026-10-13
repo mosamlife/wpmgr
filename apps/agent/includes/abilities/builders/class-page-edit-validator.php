@@ -24,8 +24,8 @@ if (!defined('ABSPATH')) {
  *     the listed fields, 1..25 operations, one anchor per insert or move, a
  *     position only with into, refs matching RE_REF;
  *   - raw duplicate-key detection over the whole input before decoding;
- *     native operation settings retain their parsed scalar and collection
- *     shapes for NativeSettingsValidator; move and native placement also
+ *     native operation settings keep their parsed collection shapes,
+ *     accept string scalars, and use top-level null only to delete a key; move and native placement also
  *     offer into with an optional first/last position;
  *   - set_text text through wpmgr/page-create's own rule for its field:
  *     "text" the paragraph text rule (at most 5000 characters), "caption" the
@@ -700,7 +700,7 @@ final class PageEditValidator
         }
     }
 
-    /** Settings retain every parsed scalar and collection until native validation. */
+    /** Native settings keep collection shapes and string scalar values. */
     private static function nativeSettings($value, string $at): array
     {
         if (!is_object($value) && $value !== []) {
@@ -709,26 +709,32 @@ final class PageEditValidator
         try {
             return ['settings' => self::nativeArrays($value, true)];
         } catch (\InvalidArgumentException $e) {
-            return Refusal::make(NativeSettingsValidator::CODE, 'native settings must retain their parsed collection shapes', [[
-                'path' => $at, 'key' => 'settings', 'reason' => 'use JSON objects for control maps and JSON lists for repeater rows; only top-level empty settings may encode as []',
+            return Refusal::make(NativeSettingsValidator::CODE, 'native settings must use stored collection shapes and string scalars', [[
+                'path' => $at, 'key' => 'settings', 'reason' => 'use JSON objects for control maps and JSON lists for repeater rows; scalars must be strings, with null only for top-level deletion',
             ]]) + ['schema' => ['widget' => '', 'atomic' => false, 'controls' => []]];
         }
     }
 
     /** @return mixed */
-    private static function nativeArrays($value, bool $top = false)
+    private static function nativeArrays($value, bool $top = false, bool $delete = false)
     {
         if (is_object($value)) {
             $map = (array) $value;
             if ((!$top && $map === []) || ($map !== [] && ArrayShape::isList($map))) {
                 throw new \InvalidArgumentException('a JSON object must retain object encoding');
             }
-            return array_map([self::class, 'nativeArrays'], $map);
+            foreach ($map as $key => $child) {
+                $map[$key] = self::nativeArrays($child, false, $top);
+            }
+            return $map;
         }
         if (is_array($value)) {
-            return array_map([self::class, 'nativeArrays'], $value);
+            return array_map(static fn ($child) => self::nativeArrays($child), $value);
         }
-        return $value;
+        if (is_string($value) || ($delete && $value === null)) {
+            return $value;
+        }
+        throw new \InvalidArgumentException('native settings scalars must be strings');
     }
 
     /**

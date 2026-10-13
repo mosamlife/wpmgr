@@ -614,6 +614,10 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"control_not_found":          {},
 	"native_settings_invalid":    {},
 	"native_designed_node":       {},
+	"native_node_shape":          {},
+	"native_duplicate_refused":   {},
+	"native_preview_too_large":   {},
+	"preview_unreadable":         {},
 	// wpmgr/page-structure and wpmgr/page-edit (MinAgentVersionForBuilderEdit).
 	"ops_invalid":                 {},
 	"node_not_found":              {},

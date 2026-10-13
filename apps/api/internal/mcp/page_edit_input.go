@@ -12,7 +12,7 @@ package mcp
 //     (page-create's design object, judged as page-create judges it), and
 //     nothing else;
 //   - each operation in the published schema's shape: one anchor per insert
-//     or move, position only on an insert into a node, refs of 1..32
+//     or move, position only with into, refs of 1..32
 //     letters, digits, "_" or "-";
 //   - set_text's field a plain field or a pattern path ("plans.1.price"),
 //     matched whole, and its text through wpmgr/page-create's rule for the
@@ -30,7 +30,8 @@ package mcp
 //   - a ref named at most once in the whole call, as a target or an anchor
 //     (ops_invalid).
 //
-// Every other refusal is bad_input. The rules that need the page (a ref on
+// Duplicate raw keys and invalid native scalar shapes are native_settings_invalid;
+// every other refusal is bad_input. The rules that need the page (a ref on
 // it, a field a node offers, a locked node, an operation the builder
 // declares, the node counts) are the agent's alone. The shared case table
 // (apps/agent/tests/fixtures/ability-run/page-edit-ops-cases.json) pins this
@@ -122,6 +123,9 @@ type pageEditOp struct {
 	AnchorRef string
 	Position  string
 	Outline   []json.RawMessage
+	Widget    string
+	Settings  json.RawMessage
+	Parsed    any
 }
 
 // refs is every ref the operation names: its target, then its anchor.
@@ -175,6 +179,13 @@ func checkPageEditInput(input []byte) (pageEditFacts, pageCreateRefusal) {
 		jsonHasLoneSurrogate(input) {
 		return pageEditFacts{}, bad
 	}
+	decoded, valid := phpDecodeDocument(input, pageEditMaxDepth, true)
+	if !valid {
+		return pageEditFacts{}, bad
+	}
+	if nativeDuplicate(decoded, "input") != nil {
+		return pageEditFacts{}, pageCreateRefusal{Code: "native_settings_invalid"}
+	}
 	top, ok := jsonObjectOf(input)
 	if !ok || !keysExactly(top, []string{"post_id", "base_fingerprint", "operations", "design"},
 		"post_id", "base_fingerprint", "operations") {
@@ -202,11 +213,28 @@ func checkPageEditInput(input []byte) (pageEditFacts, pageCreateRefusal) {
 	named := make(map[string]struct{}, len(ops)*2)
 	f.ops = make([]pageEditOp, 0, len(ops))
 	for _, raw := range ops {
+		if item, valid := jsonObjectOf(raw); valid {
+			name, _ := jsonStringOf(item["op"])
+			if name == "set_native" || name == "add_native" {
+				if settings, has := item["settings"]; has {
+					if _, failure := nativeParseSettings(settings); failure == nil && !pageEditNativeInputSettings(settings) {
+						return pageEditFacts{}, pageCreateRefusal{Code: "native_settings_invalid"}
+					}
+				}
+			}
+		}
 		op, ok := pageEditOperation(raw)
 		if !ok {
 			return pageEditFacts{}, bad
 		}
-		for _, ref := range op.refs() {
+		refs := op.refs()
+		if op.Op == "add_native" {
+			refs = nil
+		}
+		if op.Op == "duplicate" {
+			refs = []string{op.Ref}
+		}
+		for _, ref := range refs {
 			if _, twice := named[ref]; twice {
 				return pageEditFacts{}, pageCreateRefusal{Code: pageEditOpsInvalid}
 			}
@@ -227,7 +255,11 @@ func pageEditOperation(raw json.RawMessage) (pageEditOp, bool) {
 	if !ok {
 		return pageEditOp{}, false
 	}
-	op := pageEditOp{Op: name}
+	parsed, valid := phpDecodeDocument(raw, pageEditMaxDepth, true)
+	if !valid {
+		return pageEditOp{}, false
+	}
+	op := pageEditOp{Op: name, Parsed: parsed}
 	switch name {
 	case pageEditOpSetText:
 		if !keysExactly(o, []string{"op", "ref", "field", "text"}, "op", "ref", "field", "text") {
@@ -293,18 +325,58 @@ func pageEditOperation(raw json.RawMessage) (pageEditOp, bool) {
 			return pageEditOp{}, false
 		}
 		return op, true
-	case pageEditOpMove:
-		if op.Anchor, ok = pageEditAnchor(o, "after", "before"); !ok {
-			return pageEditOp{}, false
-		}
-		if !keysExactly(o, []string{"op", "ref", op.Anchor}, "op", "ref", op.Anchor) {
+	case "set_native":
+		if !keysExactly(o, []string{"op", "ref", "settings"}, "op", "ref", "settings") {
 			return pageEditOp{}, false
 		}
 		if op.Ref, ok = pageEditRef(o["ref"]); !ok {
 			return pageEditOp{}, false
 		}
+		op.Settings = o["settings"]
+		if !pageEditNativeInputSettings(op.Settings) {
+			return pageEditOp{}, false
+		}
+		return op, true
+	case pageEditOpMove, "duplicate", "add_native":
+		if op.Anchor, ok = pageEditAnchor(o, "after", "before", "into"); !ok {
+			return pageEditOp{}, false
+		}
+		allowed := []string{"op", op.Anchor}
+		required := []string{"op", op.Anchor}
+		if op.Anchor == "into" {
+			allowed = append(allowed, "position")
+		}
+		if name == "add_native" {
+			allowed = append(allowed, "widget", "settings")
+			required = append(required, "widget", "settings")
+		} else {
+			allowed = append(allowed, "ref")
+			required = append(required, "ref")
+		}
+		if !keysExactly(o, allowed, required...) {
+			return pageEditOp{}, false
+		}
+		if name != "add_native" {
+			if op.Ref, ok = pageEditRef(o["ref"]); !ok {
+				return pageEditOp{}, false
+			}
+		}
 		if op.AnchorRef, ok = pageEditRef(o[op.Anchor]); !ok {
 			return pageEditOp{}, false
+		}
+		if raw, has := o["position"]; has {
+			if op.Position, ok = jsonStringOf(raw); !ok || (op.Position != "first" && op.Position != "last") {
+				return pageEditOp{}, false
+			}
+		}
+		if name == "add_native" {
+			if op.Widget, ok = jsonStringOf(o["widget"]); !ok || !regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`).MatchString(op.Widget) {
+				return pageEditOp{}, false
+			}
+			op.Settings = o["settings"]
+			if !pageEditNativeInputSettings(op.Settings) {
+				return pageEditOp{}, false
+			}
 		}
 		return op, true
 	}
@@ -555,4 +627,54 @@ func jsonHex4(raw []byte, at int) (int, bool) {
 		v = v*16 + d
 	}
 	return v, true
+}
+
+// Native settings keep string scalars and collection identity. Null is a top-level deletion.
+func pageEditNativeInputSettings(raw []byte) bool {
+	v, failure := nativeParseSettings(raw)
+	if failure != nil {
+		return false
+	}
+	m, ok := nativeMap(v)
+	if !ok {
+		return false
+	}
+	var walk func(any, bool) bool
+	walk = func(v any, deletion bool) bool {
+		switch x := v.(type) {
+		case string:
+			return true
+		case nil:
+			return deletion
+		case phpList:
+			for _, child := range x {
+				if !walk(child, false) {
+					return false
+				}
+			}
+			return true
+		case phpObject:
+			if len(x) == 0 {
+				return false
+			}
+			numeric := true
+			for i, p := range x {
+				if p.key != fmt.Sprint(i) {
+					numeric = false
+				}
+				if !walk(p.value, false) {
+					return false
+				}
+			}
+			return !numeric
+		default:
+			return false
+		}
+	}
+	for _, p := range m {
+		if !walk(p.value, true) {
+			return false
+		}
+	}
+	return true
 }

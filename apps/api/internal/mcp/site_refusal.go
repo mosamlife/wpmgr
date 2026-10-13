@@ -117,4 +117,8 @@ var nativeRefusalHints = map[string]string{
 	"control_not_found":          "Read the widget's skeleton with wpmgr/elementor-widget-schema, then request only the control ids it lists.",
 	"native_settings_invalid":    "Read the widget's schema with wpmgr/elementor-widget-schema in controls mode for the failing keys, then send the stored shapes it describes.",
 	"native_designed_node":       "Read wpmgr/page-structure and edit this designed node through its design or patterns rather than native settings or duplication.",
+	"native_node_shape":          "Read wpmgr/page-structure again; this widget has a stored shape native editing cannot safely change.",
+	"native_duplicate_refused":   "Choose a widget subtree without protected content, or add a new widget instead.",
+	"native_preview_too_large":   "Use a smaller edit or reduce the page before trying again.",
+	"preview_unreadable":         "Read the page again and retry; the site could not produce a readable preview.",
 }

@@ -62,12 +62,24 @@ final class BuilderContractFixturesTest extends TestCase
         'set_text_alt_rule'                   => ['bad_input', 'refuse'],
         'set_text_caption_rule'               => ['bad_input', 'refuse'],
         'set_text_button_text_rule'           => ['bad_input', 'accept'],
+        'set_native'                          => ['bad_input', 'refuse'],
+        'add_native'                          => ['bad_input', 'refuse'],
+        'duplicate'                           => ['bad_input', 'refuse'],
+        'move_into'                           => ['bad_input', 'refuse'],
+        'remove_native'                       => ['bad_input', 'refuse'],
+        'native_anchor_reused'                => ['ops_invalid', 'accept'],
+        'native_target_unique'                => ['ops_invalid', 'refuse'],
+        'native_scalar_string'                => ['native_settings_invalid', 'refuse'],
+        'native_duplicate_key'                => ['native_settings_invalid', 'refuse'],
+        'native_exact_shape'                  => ['bad_input', 'refuse'],
     ];
 
     /** Rules whose cases must also show the accepted side of the boundary. */
-    private const BOUNDARY_RULES = ['input_at_most_64_kib', 'set_text_caption_rule', 'set_text_button_text_rule'];
+    private const BOUNDARY_RULES = ['input_at_most_64_kib', 'set_text_caption_rule', 'set_text_button_text_rule',
+        'set_native', 'add_native', 'duplicate', 'move_into', 'remove_native', 'native_anchor_reused',
+        'native_target_unique', 'native_scalar_string', 'native_duplicate_key', 'native_exact_shape'];
 
-    private const AGENT_VERDICTS = ['ok', 'bad_input', 'ops_invalid', 'node_not_found', 'node_not_editable', 'op_not_supported_by_builder', 'page_too_large'];
+    private const AGENT_VERDICTS = ['ok', 'bad_input', 'ops_invalid', 'node_not_found', 'node_not_editable', 'op_not_supported_by_builder', 'page_too_large', 'native_settings_invalid'];
 
     private const GO_VERDICTS = ['accept', 'refuse'];
 

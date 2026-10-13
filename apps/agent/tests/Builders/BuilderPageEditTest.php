@@ -231,6 +231,48 @@ final class BuilderPageEditTest extends TestCase
         }
     }
 
+    /** Real plan/precheck answers are the cross-language verifier oracle. */
+    public function test_native_precheck_answers_golden(): void
+    {
+        $tree = $this->pageWithNativeCounter();
+        RealNativeControls::install($this->api);
+        $cases = [
+            'set_native' => [['op' => 'set_native', 'ref' => 'ccccccc', 'settings' => ['title' => 'New counter']]],
+            'add_native' => [['op' => 'add_native', 'into' => self::RIGHT, 'widget' => 'button', 'settings' => ['text' => 'New button']]],
+            'duplicate' => [['op' => 'duplicate', 'ref' => 'ccccccc', 'after' => 'ccccccc']],
+            'remove' => [['op' => 'remove', 'ref' => 'ccccccc']],
+            'move' => [['op' => 'move', 'ref' => 'ccccccc', 'into' => $tree[0]['elements'][0]['id'], 'position' => 'first']],
+            'no_native_op' => [['op' => 'set_text', 'ref' => self::HEADING, 'field' => 'text', 'text' => 'Legacy title']],
+            'merge_delete' => [['op' => 'set_native', 'ref' => 'ccccccc', 'settings' => ['title' => null, 'ending_number' => '25']]],
+            'mapped_set_native' => [['op' => 'set_native', 'ref' => self::HEADING, 'settings' => ['title' => 'Native heading']]],
+            'reused_anchor' => [
+                ['op' => 'add_native', 'after' => 'ccccccc', 'widget' => 'counter', 'settings' => ['title' => 'First']],
+                ['op' => 'add_native', 'after' => 'ccccccc', 'widget' => 'counter', 'settings' => ['title' => 'Second']],
+            ],
+            'remove_ancestor' => [['op' => 'remove', 'ref' => self::RIGHT]],
+        ];
+        $rows = [];
+        foreach ($cases as $name => $ops) {
+            $this->storePage($tree);
+            $input = $this->input($ops);
+            $plan = $this->plan($input);
+            $this->assertArrayNotHasKey('refusal', $plan, $name . ': ' . json_encode($plan['refusal'] ?? null));
+            $answer = BuilderPageEdit::precheckAnswer($plan, self::EDIT, $this->digest($input)($plan['base_fingerprint'], $plan['preview_digest']));
+            $this->assertTrue($answer['ok'], $name);
+            $rows[] = ['name' => $name, 'request_id' => self::EDIT, 'entry_sha256' => self::ENTRY_SHA, 'input' => $input,
+                'base_fingerprint' => $answer['base_fingerprint'], 'preview' => $answer['preview'],
+                'tree_json' => json_encode($plan['preview']['tree'], JSON_THROW_ON_ERROR),
+                'preview_digest' => $answer['preview_digest'], 'precheck_digest' => $answer['precheck_digest']];
+        }
+        $bytes = json_encode($rows, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR) . "\n";
+        $path = __DIR__ . '/../fixtures/ability-run/native-precheck-answers.json';
+        if (getenv('WPMGR_WRITE_FIXTURES') === '1') {
+            $this->assertSame(strlen($bytes), file_put_contents($path, $bytes));
+        }
+        $this->assertFileExists($path, 'Generate with WPMGR_WRITE_FIXTURES=1');
+        $this->assertSame(file_get_contents($path), $bytes);
+    }
+
     public function test_native_stored_shape_matches_elementor_factory(): void
     {
         RealNativeControls::install($this->api);
