@@ -370,7 +370,6 @@ final class PageEditValidatorTest extends TestCase
             '{"post_id":418,"base_fingerprint":"' . self::FP . '","operations":[' . $op . '],"editor":"builder:elementor"}',
             '{"post_id":418,"base_fingerprint":"' . self::FP . '","operations":[{"op":"remove","ref":"6f7a8b9","at":"x"}]}',
             '{"post_id":418,"base_fingerprint":"' . self::FP . '","operations":[{"op":"move","ref":"6f7a8b9","after":"3c4d5e6","before":"4d5e6f7"}]}',
-            '{"post_id":418,"base_fingerprint":"' . self::FP . '","operations":[{"op":"move","ref":"6f7a8b9","into":"2b3c4d5"}]}',
         ];
         foreach ($texts as $text) {
             $this->assertSame('bad_input', PageEditValidator::parse($text)['code'] ?? null, $text);

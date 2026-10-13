@@ -303,7 +303,7 @@ final class ElementorWidgetDiscovery
      * @param array<string, mixed> $control Control definition.
      * @return bool
      */
-    private static function valueControl(string $id, array $control): bool
+    public static function valueControl(string $id, array $control): bool
     {
         $type = $control['type'] ?? null;
 
@@ -368,7 +368,7 @@ final class ElementorWidgetDiscovery
      * @param int                                 $depth   Repeater nesting depth.
      * @return array<string, mixed>
      */
-    private static function compact(array $control, array $raw, ?array $active, int $depth): array
+    public static function compact(array $control, array $raw, ?array $active, int $depth): array
     {
         if ($depth > self::MAX_DEPTH) {
             throw new \UnexpectedValueException('repeater nesting limit');

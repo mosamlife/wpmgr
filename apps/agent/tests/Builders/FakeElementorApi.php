@@ -78,6 +78,9 @@ final class FakeElementorApi implements ElementorApi
     /** @var list<array{name: string, title: string, categories: list<string>, pro: bool, atomic: bool}>|null */
     public ?array $widgetCatalogue = [];
 
+    /** @var list<string> Registered classes whose source is in Elementor core. */
+    public array $coreWidgets = [];
+
     /** @var array<string, array<string, array<string, mixed>>|null> */
     public array $widgetControls = [];
 
@@ -269,6 +272,12 @@ final class FakeElementorApi implements ElementorApi
         $this->calls[] = ['widgetCatalogue', []];
 
         return $this->loaded ? $this->widgetCatalogue : null;
+    }
+
+    public function widgetIsCore(string $type): bool
+    {
+        $this->calls[] = ['widgetIsCore', [$type]];
+        return $this->loaded && in_array($type, $this->coreWidgets, true);
     }
 
     /**

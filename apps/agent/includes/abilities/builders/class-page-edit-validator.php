@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Abilities\Builders;
 
 use WPMgr\Agent\Abilities\PageCreateBuilder;
+use WPMgr\Agent\Support\ArrayShape;
 
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
@@ -21,7 +22,11 @@ if (!defined('ABSPATH')) {
  *     objects, so "{}" and "[]" never stand for each other;
  *   - BuilderContract::pageEditInputSchema(), enforced here in code: exactly
  *     the listed fields, 1..25 operations, one anchor per insert or move, a
- *     position only on an insert into a node, refs matching RE_REF;
+ *     position only with into, refs matching RE_REF;
+ *   - raw duplicate-key detection over the whole input before decoding;
+ *     native operation settings retain their parsed scalar and collection
+ *     shapes for NativeSettingsValidator; move and native placement also
+ *     offer into with an optional first/last position;
  *   - set_text text through wpmgr/page-create's own rule for its field:
  *     "text" the paragraph text rule (at most 5000 characters), "caption" the
  *     image caption rule (500), "alt" the image alt rule (300; no square
@@ -29,7 +34,9 @@ if (!defined('ABSPATH')) {
  *   - each outline through PageCreateBuilder::validate() as the outline of a
  *     page of its own, so its grammar is page-create's, unchanged, and it
  *     comes back in page-create's normalised form;
- *   - a ref is named at most once in the whole call, as a target or as an
+ *   - native add/duplicate anchors may be reused, including a duplicate
+ *     beside its own source; target refs remain once per call; otherwise
+ *     a ref is named at most once in the whole call, as a target or as an
  *     anchor (ops_invalid).
  * Every other refusal of parse() is bad_input.
  *
@@ -95,6 +102,14 @@ final class PageEditValidator
         if (strlen($inputText) > BuilderContract::MAX_INPUT_BYTES) {
             return self::bad('the input is longer than ' . BuilderContract::MAX_INPUT_BYTES . ' bytes');
         }
+        $raw = NativeSettingsJson::validateDocument($inputText);
+        if (!$raw['ok']) {
+            if (!str_starts_with($raw['failure']['reason'], 'object keys must be unique')) {
+                return self::bad('the input must be the JSON text of an object');
+            }
+            return Refusal::make(NativeSettingsValidator::CODE, 'the raw page-edit JSON is invalid', [$raw['failure']])
+                + ['schema' => ['widget' => '', 'atomic' => false, 'controls' => []]];
+        }
         $input = json_decode($inputText, false, self::MAX_DEPTH);
         if (!is_object($input)) {
             return self::bad('the input must be the JSON text of an object');
@@ -134,7 +149,9 @@ final class PageEditValidator
             if (!isset($r['op'])) {
                 return $r;
             }
-            foreach (self::refsOf($r['op']) as $ref) {
+            $references = in_array($r['op']['op'], ['add_native', 'duplicate'], true)
+                ? (isset($r['op']['ref']) ? [$r['op']['ref']] : []) : self::refsOf($r['op']);
+            foreach ($references as $ref) {
                 if (isset($named[$ref])) {
                     return ['code' => 'ops_invalid', 'detail' => $at . ' names ' . $ref . ' again; a call names each node at most once'];
                 }
@@ -236,6 +253,16 @@ final class PageEditValidator
             }
 
             switch ($name) {
+                case 'set_native':
+                    break;
+                case 'add_native':
+                case 'duplicate':
+                    $anchor = (string) ($op['after'] ?? $op['before'] ?? $op['into']);
+                    $home = isset($op['into']) ? $anchor : $parent[$anchor];
+                    if ($home === null || !in_array($kind[$home], self::TAKES_CHILDREN, true)) {
+                        return self::refuse('layout_invalid', 'native_widget_parent', $i);
+                    }
+                    break;
                 case 'set_text':
                     $field = (string) $op['field'];
                     if ($target === null || !in_array($field, $editable[$target], true)) {
@@ -292,11 +319,11 @@ final class PageEditValidator
                     }
                     break;
                 case 'move':
-                    $anchor = (string) ($op['after'] ?? $op['before']);
+                    $anchor = (string) ($op['after'] ?? $op['before'] ?? $op['into']);
                     if ($target === null || self::isWithin($anchor, $target, $parent)) {
                         return self::refuse('node_not_editable', 'into_own_subtree', $i);
                     }
-                    $parent[$target] = $parent[$anchor];
+                    $parent[$target] = isset($op['into']) ? $anchor : $parent[$anchor];
                     break;
             }
         }
@@ -516,6 +543,54 @@ final class PageEditValidator
         }
 
         switch ($name) {
+            case 'set_native':
+                $bad = self::keys($o, ['op', 'ref', 'settings'], ['op', 'ref', 'settings'], $at);
+                if ($bad !== null) {
+                    return $bad;
+                }
+                $ref = self::ref($o['ref'], $at . '.ref');
+                if (is_array($ref)) {
+                    return $ref;
+                }
+                $settings = self::nativeSettings($o['settings'], $at);
+                return isset($settings['code']) ? $settings : ['op' => ['op' => $name, 'ref' => $ref, 'settings' => $settings['settings']]];
+            case 'add_native':
+            case 'duplicate':
+                $anchor = self::anchor($o, ['after', 'before', 'into'], $at);
+                if (is_array($anchor)) {
+                    return $anchor;
+                }
+                $required = $name === 'add_native' ? ['widget', 'settings'] : ['ref'];
+                $bad = self::keys($o, array_merge(['op', $anchor], $anchor === 'into' ? ['position'] : [], $required), array_merge(['op', $anchor], $required), $at);
+                if ($bad !== null) {
+                    return $bad;
+                }
+                $clean = ['op' => $name];
+                foreach ($name === 'duplicate' ? ['ref', $anchor] : [$anchor] as $key) {
+                    $ref = self::ref($o[$key], $at . '.' . $key);
+                    if (is_array($ref)) {
+                        return $ref;
+                    }
+                    $clean[$key] = $ref;
+                }
+                if (array_key_exists('position', $o)) {
+                    if (!in_array($o['position'], BuilderContract::POSITIONS, true)) {
+                        return self::bad($at . '.position must be first or last');
+                    }
+                    $clean['position'] = $o['position'];
+                }
+                if ($name === 'add_native') {
+                    if (!is_string($o['widget']) || preg_match('/^[a-z][a-z0-9-]{0,63}$/D', $o['widget']) !== 1) {
+                        return self::bad($at . '.widget must be a classic widget name');
+                    }
+                    $settings = self::nativeSettings($o['settings'], $at);
+                    if (isset($settings['code'])) {
+                        return $settings;
+                    }
+                    $clean['widget'] = $o['widget'];
+                    $clean['settings'] = $settings['settings'];
+                }
+                return ['op' => $clean];
             case 'set_text':
                 $bad = self::keys($o, ['op', 'ref', 'field', 'text'], ['op', 'ref', 'field', 'text'], $at);
                 if ($bad !== null) {
@@ -597,11 +672,11 @@ final class PageEditValidator
 
                 return ['op' => ['op' => $name, 'ref' => $ref]];
             default:
-                $anchor = self::anchor($o, ['after', 'before'], $at);
+                $anchor = self::anchor($o, ['after', 'before', 'into'], $at);
                 if (is_array($anchor)) {
                     return $anchor;
                 }
-                $bad = self::keys($o, ['op', 'ref', $anchor], ['op', 'ref', $anchor], $at);
+                $bad = self::keys($o, array_merge(['op', 'ref', $anchor], $anchor === 'into' ? ['position'] : []), ['op', 'ref', $anchor], $at);
                 if ($bad !== null) {
                     return $bad;
                 }
@@ -614,8 +689,46 @@ final class PageEditValidator
                     return $to;
                 }
 
-                return ['op' => ['op' => $name, 'ref' => $ref, $anchor => $to]];
+                $clean = ['op' => $name, 'ref' => $ref, $anchor => $to];
+                if (array_key_exists('position', $o)) {
+                    if (!in_array($o['position'], BuilderContract::POSITIONS, true)) {
+                        return self::bad($at . '.position must be first or last');
+                    }
+                    $clean['position'] = $o['position'];
+                }
+                return ['op' => $clean];
         }
+    }
+
+    /** Settings retain every parsed scalar and collection until native validation. */
+    private static function nativeSettings($value, string $at): array
+    {
+        if (!is_object($value) && $value !== []) {
+            return self::bad($at . '.settings must be an object or empty list');
+        }
+        try {
+            return ['settings' => self::nativeArrays($value, true)];
+        } catch (\InvalidArgumentException $e) {
+            return Refusal::make(NativeSettingsValidator::CODE, 'native settings must retain their parsed collection shapes', [[
+                'path' => $at, 'key' => 'settings', 'reason' => 'use JSON objects for control maps and JSON lists for repeater rows; only top-level empty settings may encode as []',
+            ]]) + ['schema' => ['widget' => '', 'atomic' => false, 'controls' => []]];
+        }
+    }
+
+    /** @return mixed */
+    private static function nativeArrays($value, bool $top = false)
+    {
+        if (is_object($value)) {
+            $map = (array) $value;
+            if ((!$top && $map === []) || ($map !== [] && ArrayShape::isList($map))) {
+                throw new \InvalidArgumentException('a JSON object must retain object encoding');
+            }
+            return array_map([self::class, 'nativeArrays'], $map);
+        }
+        if (is_array($value)) {
+            return array_map([self::class, 'nativeArrays'], $value);
+        }
+        return $value;
     }
 
     /**

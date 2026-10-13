@@ -39,6 +39,11 @@ if (!defined('ABSPATH')) {
  *   columns holds only its columns, so no new node goes straight into one
  *   (layout_invalid). An insert into a node without a position goes last.
  * - remove: the node and everything inside it.
+ * - Native edits use live core classic eligibility and N-02 validation.
+ *   set_native retains untouched settings and applies the replace-and-delete
+ *   merge; add_native creates one widget in a container or column; duplicate
+ *   copies widget subtrees with fresh element ids and no other changes.
+ *   Designed marks, anchors, denied keys and denied types cannot be copied.
  * - move: the node, unchanged, beside its anchor. A node moves only among
  *   the nodes of its own place: the top of the page, the columns of a row or
  *   section, or what a group or column holds; a layout element moves only
@@ -108,17 +113,21 @@ final class LayoutOps
      * @param array<mixed>                $mediaById  Media facts by attachment id, for new images.
      * @param bool                        $containers Whether the site has Elementor containers on.
      * @param ElementorSectionCompiler|null $design   The compiler of the page's design, when the edit carries one: new sections, patterns and groups compile in its look.
+     * @param NativeWidgetPolicy|null $native Live widget catalogue and compact schema access.
+     * @param list<string>|null $breakpoints Site's active breakpoint names.
      * @return array{tree?: array<mixed>, changes?: list<array<string, mixed>>, touched?: list<string>, new_count?: int, code?: string, detail?: string, op_index?: int|null}
      */
-    public static function apply(array $tree, array $ops, IdSeed $ids, array $mediaById, bool $containers, ?ElementorSectionCompiler $design = null): array
+    public static function apply(array $tree, array $ops, IdSeed $ids, array $mediaById, bool $containers, ?ElementorSectionCompiler $design = null, ?NativeWidgetPolicy $native = null, ?array $breakpoints = null): array
     {
-        $pageIds = [];
-        if (!self::walkIds($tree, 1, $pageIds)) {
-            return self::refuse(self::CODE_UNREADABLE, 'the stored page is not a list of elements at every level', null);
+        $problem = self::storedProblem($tree);
+        if ($problem !== null) {
+            return $problem;
         }
+        $pageIds = [];
+        self::walkIds($tree, 1, $pageIds);
         $ids->reserve($pageIds);
         try {
-            $projected = ElementorClassicMapper::project($tree)->nodes();
+            $projected = ElementorClassicMapper::project($tree, $native)->nodes();
         } catch (\InvalidArgumentException $e) {
             return self::refuse(self::CODE_UNREADABLE, 'an element of the stored page has no usable id', null);
         }
@@ -127,18 +136,34 @@ final class LayoutOps
             $facts[(string) $node['ref']] = $node;
         }
 
+        $designed = NativeWidgetPolicy::designedProblem($tree, $ops, $projected);
+        if ($designed !== null) {
+            return $designed;
+        }
+
         $changes = [];
         $touched = [];
         $made    = 0;
+        $results = [];
+        $schemas = [];
+        $nativeNodes = [];
+        $hasNative = NativeWidgetPolicy::isNativeCall($ops, $projected);
         foreach (array_values($ops) as $i => $op) {
             $r = is_array($op)
-                ? self::one($tree, $op, $i, $facts, $ids, $mediaById, $containers, $design)
+                ? self::one($tree, $op, $i, $facts, $ids, $mediaById, $containers, $design, $native, $breakpoints)
                 : self::refuse('bad_input', 'operations[' . $i . ']: not an operation', $i);
             if (!isset($r['tree'])) {
                 return $r;
             }
             $tree      = $r['tree'];
             $changes[] = $r['change'];
+            $results[] = ['op' => $op] + ($r['result'] ?? []);
+            foreach ($r['schemas'] ?? [] as $type => $document) {
+                $schemas[$type] = NativeWidgetPolicy::union($schemas[$type] ?? [], $document);
+            }
+            $nativeNodes = array_replace($nativeNodes, $r['native_nodes'] ?? []);
+            $hasNative = $hasNative || in_array($op['op'], ['set_native', 'add_native', 'duplicate'], true)
+                || (($facts[$op['ref'] ?? '']['kind'] ?? null) === 'native');
             array_push($touched, ...$r['touched']);
             $made += $r['made'];
             if ($made > BuilderContract::MAX_NEW_NODES) {
@@ -156,7 +181,21 @@ final class LayoutOps
             return self::refuse('page_too_large', 'document_bytes', null);
         }
 
-        return ['tree' => $tree, 'changes' => $changes, 'touched' => $touched, 'new_count' => $made];
+        return ['tree' => $tree, 'changes' => $changes, 'touched' => $touched, 'new_count' => $made,
+            'results' => $results, 'schemas' => $schemas, 'native_nodes' => $nativeNodes, 'has_native' => $hasNative];
+    }
+
+    /** Stored identity is checked through opaque native and locked children before projection. */
+    public static function storedProblem(array $tree): ?array
+    {
+        $ids = [];
+        if (!self::walkIds($tree, 1, $ids)) {
+            return self::refuse(self::CODE_UNREADABLE, 'the stored page is not a list of elements at every level', null);
+        }
+        if (count(array_unique($ids, SORT_STRING)) !== count($ids)) {
+            return self::refuse(self::CODE_UNREADABLE, 'an element id appears more than once on the page', null);
+        }
+        return null;
     }
 
     /**
@@ -171,14 +210,22 @@ final class LayoutOps
      * @param bool                               $containers The site's layout for top-level nodes.
      * @return array<string, mixed> tree, change, touched and made; or a refusal.
      */
-    private static function one(array $tree, array $op, int $i, array $facts, IdSeed $ids, array $media, bool $containers, ?ElementorSectionCompiler $design = null): array
+    private static function one(array $tree, array $op, int $i, array $facts, IdSeed $ids, array $media, bool $containers, ?ElementorSectionCompiler $design = null, ?NativeWidgetPolicy $native = null, ?array $breakpoints = null): array
     {
+        $designed = NativeWidgetPolicy::designedProblem($tree, [$op], array_values($facts));
+        if ($designed !== null) {
+            $designed['op_index'] = $i;
+            return $designed;
+        }
         $at   = 'operations[' . $i . ']';
         $name = $op['op'] ?? null;
         if ($name === 'insert') {
             return self::insert($tree, $op, $i, $facts, $ids, $media, $containers, $design);
         }
-        if (!in_array($name, ['set_text', 'replace', 'remove', 'move'], true)) {
+        if ($name === 'add_native') {
+            return self::addNative($tree, $op, $i, $facts, $ids, $media, $native, $breakpoints);
+        }
+        if (!in_array($name, ['set_text', 'replace', 'remove', 'move', 'set_native', 'duplicate'], true)) {
             return self::refuse('bad_input', $at . '.op: not an operation', $i);
         }
         $ref   = is_string($op['ref'] ?? null) ? $op['ref'] : '';
@@ -198,6 +245,42 @@ final class LayoutOps
         $index      = $path[count($path) - 1];
         $change     = self::described($name, $fact);
         $siteText   = self::siteText($fact);
+
+        if ($name === 'set_native' || $name === 'duplicate') {
+            $node = self::nodeAt($tree, $path);
+            if (NativeWidgetPolicy::designed($node)) {
+                return self::refuse('native_designed_node', 'use the designed edit operations for this node', $i);
+            }
+            if (($node['elType'] ?? null) !== 'widget' || $native === null || !$native->eligible((string) ($node['widgetType'] ?? ''))) {
+                return self::refuse('widget_not_usable', 'use a registered core classic widget', $i);
+            }
+            if ($name === 'duplicate') {
+                return self::duplicate($tree, $node, $op, $i, $facts, $ids, $native, $media, $breakpoints);
+            }
+            $schema = $native->schema($node['widgetType'], self::libraryImages($media), array_keys($op['settings']), $breakpoints);
+            if ($schema === null) {
+                return self::refuse('widget_schema_unreadable', 'the compact live schema could not be read', $i);
+            }
+            $idProblem = NativeWidgetPolicy::settingsProblem($schema, $op['settings']);
+            if ($idProblem !== null) {
+                return $idProblem + ['op_index' => $i];
+            }
+            $before = $node['settings'] ?? [];
+            $written = $op['settings'];
+            if (($node['elements'] ?? []) !== [] || (array_key_exists('isInner', $node) && !in_array($node['isInner'], [false, ''], true))) {
+                return self::refuse('native_node_shape', 'set_native requires a classic leaf widget with no inner flag', $i);
+            }
+            // Only settings changes; the stored node's other keys and their order are retained.
+            $node['settings'] = NativeSettingsValidator::mergeSettings($before, $written);
+            $checked = NativeSettingsValidator::validateWritten($schema, $before, $written, $node['settings'], $breakpoints);
+            if (!$checked['ok']) {
+                return $checked + ['op_index' => $i];
+            }
+            $change['before_settings'] = $before;
+            $change['settings'] = $node['settings'];
+            return self::done(self::splice($tree, $parentPath, $index, 1, [$node]), $change, [$ref], [])
+                + ['result' => ['result_node' => $node, 'before_settings' => $before], 'schemas' => [$node['widgetType'] => $schema->document], 'native_nodes' => [$ref => $node]];
+        }
 
         switch ($name) {
             case 'set_text':
@@ -245,6 +328,140 @@ final class LayoutOps
         }
 
         return self::move($tree, $op, $i, $facts, $containers, $path, $change, $siteText);
+    }
+
+    /** Site media facts are converted only in this trusted inventory, never in settings. */
+    private static function libraryImages(array $media): array
+    {
+        $images = [];
+        foreach ($media as $id => $fact) {
+            if (is_string($fact['url'] ?? null)) {
+                $images[] = ['id' => (string) $id, 'url' => $fact['url']];
+            }
+        }
+        return $images;
+    }
+
+    /** One widget is inserted only into content held by a container or column. */
+    private static function nativePlace(array $tree, array $op, array $facts, int $i): array
+    {
+        $how = isset($op['into']) ? 'into' : (isset($op['after']) ? 'after' : 'before');
+        $found = self::locate($tree, (string) ($op[$how] ?? ''), $facts, $i);
+        if (!isset($found['path'])) {
+            return $found;
+        }
+        $path = $found['path'];
+        $parent = $how === 'into' ? $path : array_slice($path, 0, -1);
+        if ($parent === []) {
+            return self::refuse(self::CODE_PLACEMENT, 'native_widget_parent', $i);
+        }
+        $host = self::nodeAt($tree, $parent);
+        if (!in_array($host['elType'] ?? null, ['container', 'column'], true)
+            || ($facts[$host['id'] ?? '']['kind'] ?? null) === 'locked') {
+            return self::refuse(self::CODE_PLACEMENT, 'native_widget_parent', $i);
+        }
+        $index = $how === 'into' ? (($op['position'] ?? 'last') === 'first' ? 0 : count($host['elements'] ?? []))
+            : $path[count($path) - 1] + ($how === 'after' ? 1 : 0);
+        return ['parent' => $parent, 'index' => $index, 'how' => $how];
+    }
+
+    private static function addNative(array $tree, array $op, int $i, array $facts, IdSeed $ids, array $media, ?NativeWidgetPolicy $native, ?array $breakpoints): array
+    {
+        $place = self::nativePlace($tree, $op, $facts, $i);
+        if (!isset($place['parent'])) {
+            return $place;
+        }
+        $type = $op['widget'];
+        if ($native === null || !$native->eligible($type)) {
+            return self::refuse('widget_not_usable', 'use a registered core classic widget', $i);
+        }
+        $schema = $native->schema($type, self::libraryImages($media), array_keys($op['settings']), $breakpoints);
+        if ($schema === null) {
+            return self::refuse('widget_schema_unreadable', 'the compact live schema could not be read', $i);
+        }
+        $idProblem = NativeWidgetPolicy::settingsProblem($schema, $op['settings']);
+        if ($idProblem !== null) {
+            return $idProblem + ['op_index' => $i];
+        }
+        $check = NativeSettingsValidator::validateWritten($schema, [], $op['settings'], $op['settings'], $breakpoints);
+        if (!$check['ok']) {
+            return $check + ['op_index' => $i];
+        }
+        // Widget_Base stores no isInner and appends widgetType after the base element data.
+        $node = ['id' => $ids->next('operations[' . $i . ']'), 'elType' => 'widget',
+            'settings' => $op['settings'], 'elements' => [], 'widgetType' => $type];
+        $made = [$node['id']];
+        return self::done(self::splice($tree, $place['parent'], $place['index'], 0, [$node]), ['op' => 'add_native', 'new_refs' => $made, 'widget' => $type, 'settings' => $node['settings']], $made, $made)
+            + ['result' => ['result_node' => $node, 'new_ids' => $made], 'schemas' => [$type => $schema->document], 'native_nodes' => [$node['id'] => $node]];
+    }
+
+    private static function duplicate(array $tree, array $source, array $op, int $i, array $facts, IdSeed $ids, NativeWidgetPolicy $native, array $media, ?array $breakpoints): array
+    {
+        if (NativeWidgetPolicy::duplicateProblem($source)) {
+            return self::refuse('native_duplicate_refused', 'duplicate only a subtree without anchors, denied keys or denied types', $i);
+        }
+        $place = self::nativePlace($tree, $op, $facts, $i);
+        if (!isset($place['parent'])) {
+            return $place;
+        }
+        $copy = self::copyIds($source, $ids, 'operations[' . $i . ']', $native);
+        if ($copy === null) {
+            return self::refuse('native_duplicate_refused', 'duplicate only registered core classic widget subtrees', $i);
+        }
+        $made = self::idsOf([$copy]);
+        $nativeNodes = [];
+        self::indexNodes([$copy], $nativeNodes);
+        $schemas = [];
+        foreach ($nativeNodes as $node) {
+            $type = $node['widgetType'];
+            $schema = new NativeControlSchema(['widget' => $type, 'atomic' => false, 'controls' => []], self::libraryImages($media));
+            if ($schema === null) {
+                return self::refuse('widget_schema_unreadable', 'the compact live schema could not be read', $i);
+            }
+            $mediaCheck = $native->duplicateMedia($schema, $node['settings'] ?? [], $breakpoints);
+            if ($mediaCheck !== null) {
+                return $mediaCheck + ['op_index' => $i];
+            }
+            // Copied leaves have no AI-written controls to add to the digest union.
+        }
+        return self::done(self::splice($tree, $place['parent'], $place['index'], 0, [$copy]), ['op' => 'duplicate', 'ref' => $op['ref'], 'new_refs' => $made], $made, $made)
+            + ['result' => ['new_ids' => $made], 'native_nodes' => $nativeNodes, 'schemas' => $schemas];
+    }
+
+    /** Duplicate regenerates element ids only; settings and all other fields retain their bytes. */
+    private static function copyIds(array $node, IdSeed $ids, string $path, NativeWidgetPolicy $native): ?array
+    {
+        if (($node['elType'] ?? null) !== 'widget' || !$native->eligible((string) ($node['widgetType'] ?? ''))) {
+            return null;
+        }
+        $node['id'] = $ids->next($path);
+        foreach ($node['elements'] ?? [] as $i => $child) {
+            $copy = is_array($child) ? self::copyIds($child, $ids, $path . '.elements[' . $i . ']', $native) : null;
+            if ($copy === null) {
+                return null;
+            }
+            $node['elements'][$i] = $copy;
+        }
+        return $node;
+    }
+
+    private static function indexNodes(array $tree, array &$nodes): void
+    {
+        foreach ($tree as $node) {
+            $nodes[$node['id']] = $node;
+            self::indexNodes($node['elements'] ?? [], $nodes);
+        }
+    }
+
+    /** The native projection nodes affected with their ancestor by a structural operation. */
+    private static function nativeSources(array $node, array $facts, array &$sources): void
+    {
+        if (($facts[$node['id'] ?? '']['kind'] ?? '') === 'native') {
+            $sources[] = $node;
+        }
+        foreach ($node['elements'] ?? [] as $child) {
+            self::nativeSources($child, $facts, $sources);
+        }
     }
 
     /**
@@ -322,7 +539,7 @@ final class LayoutOps
     private static function move(array $tree, array $op, int $i, array $facts, bool $containers, array $path, array $change, array $siteText): array
     {
         $at  = 'operations[' . $i . ']';
-        $how = isset($op['after']) ? 'after' : 'before';
+        $how = isset($op['into']) ? 'into' : (isset($op['after']) ? 'after' : 'before');
         if (!is_string($op[$how] ?? null)) {
             return self::refuse('bad_input', $at . ': a move names one anchor', $i);
         }
@@ -337,8 +554,9 @@ final class LayoutOps
         }
         $moved = self::nodeAt($tree, $path);
         $from  = array_slice($path, 0, -1);
-        $to    = array_slice($anchorPath, 0, -1);
-        if (self::slot($tree, $from, $facts) !== self::slot($tree, $to, $facts) || !self::fits($tree, $to, $moved, $facts, $containers)) {
+        $to    = $how === 'into' ? $anchorPath : array_slice($anchorPath, 0, -1);
+        $nativeWidget = ($moved['elType'] ?? '') === 'widget' && (($facts[$moved['id']]['kind'] ?? '') === 'native' || $how === 'into');
+        if ((!$nativeWidget && self::slot($tree, $from, $facts) !== self::slot($tree, $to, $facts)) || !self::fits($tree, $to, $moved, $facts, $containers, $nativeWidget)) {
             return self::refuse(self::CODE_PLACEMENT, $at . ': a node moves only among the nodes of its own place (the top of the page, the columns of one row or section, or what a group or column holds) and only where its layout may stand', $i);
         }
 
@@ -347,13 +565,15 @@ final class LayoutOps
         if ($newPlace === null) {
             return self::refuse('ops_invalid', 'ref_gone', $i);
         }
-        $index = $newPlace[count($newPlace) - 1] + ($how === 'after' ? 1 : 0);
+        $newParent = $how === 'into' ? $newPlace : array_slice($newPlace, 0, -1);
+        $index = $how === 'into' ? (($op['position'] ?? 'last') === 'first' ? 0 : count(self::nodeAt($tree, $newPlace)['elements'] ?? []))
+            : $newPlace[count($newPlace) - 1] + ($how === 'after' ? 1 : 0);
         if ($siteText !== []) {
             $change['before'] = $siteText;
         }
-        $change['anchor'] = self::anchor($facts[$anchorRef], $how, null);
+        $change['anchor'] = self::anchor($facts[$anchorRef], $how, $how === 'into' ? ($op['position'] ?? 'last') : null);
 
-        return self::done(self::splice($tree, array_slice($newPlace, 0, -1), $index, 0, [$moved]), $change, [], []);
+        return self::done(self::splice($tree, $newParent, $index, 0, [$moved]), $change, [], []);
     }
 
     /**
@@ -451,7 +671,7 @@ final class LayoutOps
      * @param bool                               $containers The site's layout for top-level nodes.
      * @return bool
      */
-    private static function fits(array $tree, array $to, array $moved, array $facts, bool $containers): bool
+    private static function fits(array $tree, array $to, array $moved, array $facts, bool $containers, bool $nativeWidget = false): bool
     {
         $elType = $moved['elType'] ?? null;
         if ($to === []) {
@@ -459,11 +679,26 @@ final class LayoutOps
         }
         $parent     = self::nodeAt($tree, $to);
         $parentType = $parent['elType'] ?? null;
-        if (self::holdsColumns($parent, $facts)) {
-            return $parentType === 'section' ? $elType === 'column' : $elType === 'container';
+        if ($nativeWidget) {
+            // Elementor classic widgets use isInner=false under both containers and columns.
+            // Legacy widgets without the flag or with the stored empty-string flag are equivalent.
+            // Moves change only parent and index, so a true inner flag is refused here.
+            return in_array($moved['isInner'] ?? false, [false, ''], true) && in_array($parentType, ['container', 'column'], true)
+                && ($facts[$parent['id'] ?? '']['kind'] ?? null) !== 'locked';
         }
-        if (!in_array($elType, self::LAYOUT_TYPES, true)) {
-            return true;
+        if (self::holdsColumns($parent, $facts)) {
+            if ($parentType === 'section') {
+                // Elementor columns inherit isInner from their section: outer section false, inner section true.
+                // Moves retain bytes, including the stored legacy flags ("" false and "1" true).
+                $inner = static fn ($value) => $value === '' ? false : ($value === '1' ? true : $value);
+                return $elType === 'column' && is_bool($inner($moved['isInner'] ?? false))
+                    && $inner($moved['isInner'] ?? false) === $inner($parent['isInner'] ?? false);
+            }
+            return $elType === 'container';
+        }
+        if ($elType === 'widget') {
+            return in_array($parentType, ['container', 'column'], true)
+                && ($facts[$parent['id'] ?? '']['kind'] ?? null) !== 'locked';
         }
         $place = self::place($tree, $to, $facts, $containers, '', 0);
 

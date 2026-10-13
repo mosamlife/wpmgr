@@ -52,8 +52,8 @@ final class NativeSettingsValidator
             || self::denied($widget, LeafPolicy::DENIED_TYPES, LeafPolicy::DENIED_TYPE_PREFIXES)
             || ($doc['atomic'] ?? null) !== false) {
             self::failure($failures, 'schema', 'widget', 'use a known classic widget from the live catalogue');
-        } elseif (!self::map($doc['controls'] ?? null) || !self::bounded($doc, NativeControlSchema::MAX_BYTES)) {
-            self::failure($failures, 'schema', 'controls', 'supply a compact live control map within the schema limit');
+        } elseif (!self::map($doc['controls'] ?? null)) {
+            self::failure($failures, 'schema', 'controls', 'supply a live control map');
         } elseif (!self::strings($breakpoints) || array_diff($breakpoints, self::BREAKPOINTS) !== []) {
             self::failure($failures, 'site', 'breakpoints', 'supply the site active breakpoint names', self::BREAKPOINTS);
         } elseif (!self::map($settings) || !self::bounded($settings, self::MAX_SETTINGS_BYTES)) {

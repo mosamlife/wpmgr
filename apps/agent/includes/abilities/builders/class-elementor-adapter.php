@@ -47,6 +47,9 @@ final class ElementorAdapter implements BuilderAdapter
     /** @var array<string, mixed>|null */
     private ?array $facts = null;
 
+    /** Native nodes validated by this adapter's most recent edit plan. */
+    private array $nativeNodes = [];
+
     /**
      * @param ElementorApi|null $api         Elementor; the one loaded on this request when null.
      * @param int|null          $principalId The service user's id; read when the facts are first needed when null.
@@ -77,6 +80,12 @@ final class ElementorAdapter implements BuilderAdapter
         }
 
         return $this->facts;
+    }
+
+    /** Each precheck and write plan reads the current version and site facts anew. */
+    public function refreshEditFacts(): void
+    {
+        $this->facts = null;
     }
 
     /**
@@ -242,7 +251,7 @@ final class ElementorAdapter implements BuilderAdapter
      */
     public function project(array $tree): Projection
     {
-        return ElementorClassicMapper::project($tree);
+        return ElementorClassicMapper::project($tree, new NativeWidgetPolicy($this->api));
     }
 
     /**
@@ -258,6 +267,7 @@ final class ElementorAdapter implements BuilderAdapter
      */
     public function planEdit(int $postId, array $ops, IdSeed $ids, array $mediaById, ?array $design = null): array
     {
+        $this->nativeNodes = [];
         if ($postId < 1) {
             return ['code' => LayoutOps::CODE_UNREADABLE, 'detail' => 'not a post', 'op_index' => null];
         }
@@ -275,6 +285,12 @@ final class ElementorAdapter implements BuilderAdapter
             return ['code' => LayoutOps::CODE_UNREADABLE, 'detail' => 'the Elementor document is not a list of elements', 'op_index' => null];
         }
 
+        $identity = LayoutOps::storedProblem($tree);
+        if ($identity !== null) {
+            return $identity;
+        }
+        $active = $this->activeBreakpoints();
+
         // The design the edit carries compiles its new sections, patterns and groups.
         $compiler = null;
         if ($design !== null) {
@@ -283,12 +299,14 @@ final class ElementorAdapter implements BuilderAdapter
             } catch (\InvalidArgumentException $e) {
                 return ['code' => 'bad_input', 'detail' => 'design: the design could not be read', 'op_index' => null];
             }
-            $active   = $this->facts()['active_breakpoints'] ?? null;
             $compiler = new ElementorSectionCompiler($tokens, is_array($active) ? array_values($active) : null, $mediaById);
         }
-        $planned = LayoutOps::apply($tree, $ops, $ids, $mediaById, ($this->facts()['containers'] ?? null) === true, $compiler);
+        $native = new NativeWidgetPolicy($this->api);
+        $nativeCall = NativeWidgetPolicy::isNativeCall($ops, ElementorClassicMapper::project($tree, $native)->nodes());
+        $planned = LayoutOps::apply($tree, $ops, $ids, $mediaById, ($this->facts()['containers'] ?? null) === true, $compiler, $nativeCall ? $native : null, $active);
         if (!isset($planned['tree'], $planned['changes'], $planned['touched'], $planned['new_count'])) {
-            return ['code' => $planned['code'] ?? 'bad_input', 'detail' => $planned['detail'] ?? 'the operations could not be applied', 'op_index' => $planned['op_index'] ?? null];
+            return ['code' => $planned['code'] ?? 'bad_input', 'detail' => $planned['detail'] ?? 'the operations could not be applied', 'op_index' => $planned['op_index'] ?? null]
+                + array_intersect_key($planned, ['failures' => true, 'schema' => true]);
         }
         try {
             $doc = new NativeDocument($planned['tree']);
@@ -296,7 +314,9 @@ final class ElementorAdapter implements BuilderAdapter
             return ['code' => LayoutOps::CODE_UNREADABLE, 'detail' => 'the edited page could not be encoded', 'op_index' => null];
         }
 
-        return ['doc' => $doc, 'changes' => $planned['changes'], 'touched' => $planned['touched'], 'new_count' => $planned['new_count']];
+        $this->nativeNodes = $planned['native_nodes'];
+        return ['doc' => $doc, 'changes' => $planned['changes'], 'touched' => $planned['touched'], 'new_count' => $planned['new_count'],
+            'results' => $planned['results'], 'schemas' => $planned['schemas'], 'has_native' => $planned['has_native'], 'active_breakpoints' => $active];
     }
 
     /**
@@ -356,7 +376,7 @@ final class ElementorAdapter implements BuilderAdapter
             $allowed = LeafPolicy::forBreakpoints(ElementorClassicMapper::designedKeys(), is_array($active) ? array_values($active) : []);
         }
 
-        return $this->document->verifyEdited($postId, $doc->tree, $before, is_array($pageSettings) ? $pageSettings : null, is_string($template) ? $template : null, $allowed);
+        return $this->document->verifyEdited($postId, $doc->tree, $before, is_array($pageSettings) ? $pageSettings : null, is_string($template) ? $template : null, $allowed, $this->nativeNodes);
     }
 
     /**

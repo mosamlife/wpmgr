@@ -14,7 +14,7 @@ final class NativeSettingsJson
     private int $offset = 0;
     private ?array $failure = null;
 
-    private function __construct(private string $text)
+    private function __construct(private string $text, private int $maxDepth = 16)
     {
     }
 
@@ -22,6 +22,20 @@ final class NativeSettingsJson
     public static function parse(string $text): array
     {
         $parser = new self($text);
+        return $parser->parseObject();
+    }
+
+    /** Check the complete page-edit input before json_decode can discard duplicate keys. */
+    public static function validateDocument(string $text): array
+    {
+        return (new self($text, 32))->parseObject();
+    }
+
+    /** @return array<string,mixed> */
+    private function parseObject(): array
+    {
+        $parser = $this;
+        $text = $this->text;
         try {
             if (strlen($text) > 65536) {
                 throw new \InvalidArgumentException('settings JSON exceeds the input limit');
@@ -43,7 +57,7 @@ final class NativeSettingsJson
     /** @return mixed */
     private function value(string $path, int $depth)
     {
-        if ($depth > 16) {
+        if ($depth > $this->maxDepth) {
             throw new \InvalidArgumentException('JSON nesting exceeds the limit');
         }
         $this->space();
@@ -107,13 +121,21 @@ final class NativeSettingsJson
     /** Decode a JSON string token once, including escaped property names. */
     private function string(): string
     {
-        if (preg_match('/\G"(?:[^"\\\\\x00-\x1F]|\\\\(?:["\\\\\/bfnrt]|u[0-9A-Fa-f]{4}))*"/', $this->text, $match, 0, $this->offset) !== 1) {
+        $start = $this->offset;
+        if (($this->text[$start] ?? '') !== '"') {
             throw new \InvalidArgumentException('invalid JSON string');
         }
-        $value = json_decode($match[0], true, 2, JSON_THROW_ON_ERROR);
-        $this->offset += strlen($match[0]);
-
-        return $value;
+        $length = strlen($this->text);
+        for ($end = $start + 1; $end < $length; $end++) {
+            if ($this->text[$end] === '\\') {
+                $end++;
+            } elseif ($this->text[$end] === '"') {
+                $value = json_decode(substr($this->text, $start, $end - $start + 1), true, 2, JSON_THROW_ON_ERROR);
+                $this->offset = $end + 1;
+                return $value;
+            }
+        }
+        throw new \InvalidArgumentException('unterminated JSON string');
     }
 
     private function space(): void

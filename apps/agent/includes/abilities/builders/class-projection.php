@@ -17,11 +17,12 @@ if (!defined('ABSPATH')) {
  *   {ref, parent, kind, level?, editable: [field…], from_the_site: {field: text…}}
  *   {ref, parent, kind: "pattern", variant, editable: [path…], from_the_site: {path: text…}}
  *   {ref, parent, kind: "locked", label}
+ *   {ref, parent, kind: "native", widget, summary}
  *
  * - ref     the node's id on the page, matching BuilderContract::RE_REF and
  *           unique; parent is ROOT or a node added before it.
- * - kind    one of BuilderContract::KINDS. "locked" is every node the adapter
- *           does not classify, added only through addLocked().
+ * - kind    one of BuilderContract::KINDS. addLocked() adds fixed labels;
+ *           addNative() adds a registered widget and its plain summary.
  * - label   WPMgr's words from the adapter's label map, never the site's:
  *           a key the map does not carry gets the map's FALLBACK_LABEL text.
  * - editable, from_the_site  fields from BuilderContract::FIELDS. Site text
@@ -112,8 +113,8 @@ final class Projection
     public function add(string $ref, string $parent, string $kind, ?int $level, array $editable, array $fromTheSite): void
     {
         $this->checkPlace($ref, $parent);
-        if ($kind === self::LOCKED || $kind === self::PATTERN || !in_array($kind, BuilderContract::KINDS, true)) {
-            throw new \InvalidArgumentException('a node kind must be a projection kind other than locked and pattern');
+        if ($kind === self::LOCKED || $kind === self::PATTERN || $kind === 'native' || !in_array($kind, BuilderContract::KINDS, true)) {
+            throw new \InvalidArgumentException('a node kind must be a projection kind other than locked, pattern and native');
         }
         if ($level !== null && ($level < 1 || $level > 6)) {
             throw new \InvalidArgumentException('a heading level must be 1 to 6');
@@ -192,6 +193,18 @@ final class Projection
         $label = $this->labels[$labelKey] ?? $this->labels[self::FALLBACK_LABEL];
 
         $this->nodes[]    = ['ref' => $ref, 'parent' => $parent, 'kind' => self::LOCKED, 'label' => $label];
+        $this->refs[$ref] = true;
+    }
+
+    /** A registered core classic widget, opaque to the outline mapper. */
+    public function addNative(string $ref, string $parent, string $widget, string $summary): void
+    {
+        $this->checkPlace($ref, $parent);
+        if (preg_match('/^[a-z][a-z0-9-]{0,63}$/D', $widget) !== 1 || preg_match('/^.{0,120}$/usD', $summary) !== 1
+            || preg_match('/[<>\x00-\x1F\x7F]/', $summary) === 1) {
+            throw new \InvalidArgumentException('a native node needs a widget name and a bounded plain summary');
+        }
+        $this->nodes[] = ['ref' => $ref, 'parent' => $parent, 'kind' => 'native', 'widget' => $widget, 'summary' => $summary];
         $this->refs[$ref] = true;
     }
 

@@ -103,7 +103,7 @@ final class BuilderContractFixturesTest extends TestCase
         $this->assertSame(4194304, BuilderContract::MAX_SNAPSHOT_BYTES);
         $this->assertSame(500, BuilderContract::MAX_STRUCTURE_NODES);
         $this->assertSame(65536, BuilderContract::MAX_STRUCTURE_BYTES);
-        $this->assertSame(['set_text', 'insert', 'replace', 'remove', 'move'], BuilderContract::OPS);
+        $this->assertSame(['set_text', 'insert', 'replace', 'remove', 'move', 'set_native', 'add_native', 'duplicate'], BuilderContract::OPS);
 
         $edit = BuilderContract::pageEditInputSchema();
         $this->assertSame(['post_id', 'base_fingerprint', 'operations'], $edit['required']);
@@ -143,13 +143,21 @@ final class BuilderContractFixturesTest extends TestCase
         }
         sort($variants);
         $this->assertSame([
+            'add_native(after,settings,widget)',
+            'add_native(before,settings,widget)',
+            'add_native(into,position,settings,widget)',
+            'duplicate(after,ref)',
+            'duplicate(before,ref)',
+            'duplicate(into,position,ref)',
             'insert(after,outline)',
             'insert(before,outline)',
             'insert(into,outline,position)',
             'move(after,ref)',
             'move(before,ref)',
+            'move(into,position,ref)',
             'remove(ref)',
             'replace(outline,ref)',
+            'set_native(ref,settings)',
             'set_text(field,ref,text)',
         ], $variants, 'one variant per operation shape: an insert names one anchor, only into takes a position');
 
@@ -168,7 +176,7 @@ final class BuilderContractFixturesTest extends TestCase
         $this->assertNotEmpty($outline);
 
         $builderOnly = array_values(array_diff(BuilderContract::KINDS, $outline));
-        $this->assertSame(['column', 'locked'], $builderOnly, 'section and pattern are outline kinds of version 3 as well as builder kinds');
+        $this->assertSame(['column', 'locked', 'native'], $builderOnly, 'section and pattern are outline kinds of version 3 as well as builder kinds');
         $this->assertContains('section', $outline);
         $this->assertContains('pattern', $outline);
         $this->assertSame([], array_values(array_diff($outline, BuilderContract::KINDS)), 'every outline kind is a page kind');

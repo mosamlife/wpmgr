@@ -64,6 +64,41 @@ if (!defined('ABSPATH')) {
  *   preview_digest = sha256(json_encode([DIGEST_DOMAIN, builder,
  *                    builder_version, post_id, base_fingerprint, tree_json]))
  *
+ * Native calls add preview.before_tree (the decoded stored tree), its
+ * before_tree_sha256, results (one {op: parsed_operation, result_node?,
+ * before_settings?, new_ids?} per operation, in order), and digest_inputs.
+ * result_node is supplied for add_native and set_native; before_settings
+ * for set_native; new_ids for add_native and duplicate.
+ * A native target, or a remove/replace covering native nodes, also uses this
+ * contract. Moving an ancestor retains the legacy projection and digest.
+ *
+ * Native digest contract, exactly:
+ *   sha256(json_encode(["wpmgr.page_edit.native.v1", builder,
+ *     builder_version, post_id, base_fingerprint, tree_json,
+ *     json_encode(digest_inputs)]))
+ * All json_encode calls use default flags. tree_json is the canonical
+ * edited tree string. digest_inputs is an object in this key order:
+ * {before_tree_sha256, widgets, active_breakpoints, builder_version, media}.
+ * before_tree_sha256 = sha256(json_encode(before_tree)). For each widget type
+ * T used by a set_native or add_native operation, start C = []; in operation
+ * order set C = array_replace(C, cut_document[T]["controls"]). Then:
+ *   widgets[T] = sha256(json_encode(canonical([
+ *     "widget" => T, "atomic" => false, "controls" => C])))
+ * Each cut contains written base controls, their group dependencies and full
+ * repeater fields. canonical recursively sorts maps with SORT_STRING,
+ * preserves list order and empty PHP arrays as [], and sorts stdClass maps
+ * while preserving their object encoding. All JSON uses default PHP flags.
+ * Widget type keys are sorted with SORT_STRING; empty widgets is {}.
+ * Copies and structural operations have no AI-written control document.
+ * active_breakpoints is captured once in planEdit from refreshed
+ * ElementorFacts: the active kit's saved list, falling back to the
+ * breakpoints manager get_active_breakpoints() names when unsaved. Names
+ * follow ElementorFacts::BREAKPOINTS order. Validation and digest_inputs
+ * share this value. Unavailable facts give null: native validation refuses
+ * it, while structural previews retain null. media is in numeric id order,
+ * each verified fact in {id, url, filename, mime, width, height, modified_gmt}
+ * order, with id a numeric string. Empty widgets is {}, empty media is [].
+ *
  * json_encode with default flags; tree_json is the edited tree's canonical
  * bytes. The same request, input and stored page give the same bytes, so a
  * write's re-plan matches the approved precheck.
@@ -105,6 +140,11 @@ final class BuilderPageEdit
 {
     /** First member of the preview digest's array. */
     public const DIGEST_DOMAIN = 'wpmgr.page_edit.v1';
+
+    public const NATIVE_DIGEST_DOMAIN = 'wpmgr.page_edit.native.v1';
+
+    /** Maximum encoded native answer, matching the control plane's agent response cap. */
+    public const MAX_NATIVE_ANSWER_BYTES = 4194304;
 
     /** The refusal for a post outside what the edit covers. */
     public const CODE_NOT_ELIGIBLE = 'target_not_eligible';
@@ -167,7 +207,7 @@ final class BuilderPageEdit
     {
         $parsed = PageEditValidator::parse($inputText);
         if (!isset($parsed['input'])) {
-            return self::refused((string) ($parsed['code'] ?? 'bad_input'), (string) ($parsed['detail'] ?? 'the input is not a page-edit input'));
+            return ['refusal' => self::fail((string) ($parsed['code'] ?? 'bad_input'), (string) ($parsed['detail'] ?? 'the input is not a page-edit input'), ($parsed['code'] ?? '') === NativeSettingsValidator::CODE ? array_intersect_key($parsed, ['failures' => true, 'schema' => true]) : [])];
         }
         $input  = $parsed['input'];
         $postId = $input['post_id'];
@@ -185,6 +225,7 @@ final class BuilderPageEdit
         if (!$a instanceof ElementorAdapter) {
             return self::refused(AdapterStatus::CODE, 'not_compiled');
         }
+        $a->refreshEditFacts();
         $status = $a->status();
         $usable = $status->refusal();
         if ($usable !== null) {
@@ -228,8 +269,20 @@ final class BuilderPageEdit
             return self::refused(LayoutOps::CODE_UNREADABLE, 'the page\'s builder document could not be read');
         }
 
+        $identity = LayoutOps::storedProblem($tree);
+        if ($identity !== null) {
+            return self::refused($identity['code'], $identity['detail']);
+        }
+
         try {
             $nodes = $a->project($tree)->nodes();
+            $designed = NativeWidgetPolicy::designedProblem($tree, $input['operations'], $nodes);
+            if ($designed !== null) {
+                return ['refusal' => self::fail($designed['code'], $designed['detail'], ['op_index' => $designed['op_index']])];
+            }
+            if (!NativeWidgetPolicy::isNativeCall($input['operations'], $nodes)) {
+                $nodes = ElementorClassicMapper::project($tree)->nodes();
+            }
             $rule  = PageEditValidator::againstPage($input, $nodes, $a->capabilities());
         } catch (\InvalidArgumentException $e) {
             return self::refused(LayoutOps::CODE_UNREADABLE, 'the page\'s builder document could not be read');
@@ -249,7 +302,7 @@ final class BuilderPageEdit
             return ['refusal' => $background];
         }
 
-        $mediaById = self::media($input['operations'], $media);
+        $mediaById = self::media($input['operations'], $media, $tree);
         if (isset($mediaById['refusal'])) {
             return ['refusal' => $mediaById['refusal']];
         }
@@ -267,7 +320,7 @@ final class BuilderPageEdit
         }
         $doc = $planned['doc'] ?? null;
         if (!$doc instanceof NativeDocument || !isset($planned['changes'], $planned['touched'])) {
-            return ['refusal' => self::fail((string) ($planned['code'] ?? 'bad_input'), (string) ($planned['detail'] ?? 'the operations could not be applied'), ['op_index' => $planned['op_index'] ?? null])];
+            return ['refusal' => self::fail((string) ($planned['code'] ?? 'bad_input'), (string) ($planned['detail'] ?? 'the operations could not be applied'), ['op_index' => $planned['op_index'] ?? null] + array_intersect_key($planned, ['failures' => true, 'schema' => true]))];
         }
         $problem = $a->document()->precheckEditTree($tree, $doc->tree, $planned['touched']);
         if ($problem !== null) {
@@ -275,13 +328,34 @@ final class BuilderPageEdit
         }
 
         try {
-            $after  = $a->project($doc->tree)->toArray(BuilderContract::MAX_STRUCTURE_NODES);
-            $digest = self::previewDigest($a->id(), $version, $postId, $baseFp, $doc->canonicalBytes);
+            $after = (($planned['has_native'] ?? false) ? $a->project($doc->tree) : ElementorClassicMapper::project($doc->tree))->toArray(BuilderContract::MAX_STRUCTURE_NODES);
+            $nativePreview = [];
+            $digestInputs = null;
+            if ($planned['has_native'] ?? false) {
+                $beforeHash = hash('sha256', json_encode($tree, JSON_THROW_ON_ERROR));
+                $widgets = [];
+                foreach ($planned['schemas'] as $widget => $schema) {
+                    $widgets[$widget] = hash('sha256', json_encode($schema, JSON_THROW_ON_ERROR));
+                }
+                ksort($widgets, SORT_STRING);
+                $verified = [];
+                $verifiedById = $mediaById['by_id'];
+                ksort($verifiedById, SORT_NUMERIC);
+                foreach ($verifiedById as $fact) {
+                    unset($fact['alt']);
+                    $fact['id'] = (string) $fact['id'];
+                    $verified[] = $fact;
+                }
+                $digestInputs = ['before_tree_sha256' => $beforeHash, 'widgets' => (object) $widgets,
+                    'active_breakpoints' => $planned['active_breakpoints'], 'builder_version' => $version, 'media' => $verified];
+                $nativePreview = ['before_tree' => $tree, 'before_tree_sha256' => $beforeHash, 'results' => $planned['results'], 'digest_inputs' => $digestInputs];
+            }
+            $digest = self::previewDigest($a->id(), $version, $postId, $baseFp, $doc->canonicalBytes, $digestInputs);
         } catch (\InvalidArgumentException | \JsonException $e) {
             return self::refused(LayoutOps::CODE_UNREADABLE, 'the edited page could not be encoded');
         }
 
-        return [
+        $plan = [
             'post_id'          => $postId,
             'adapter'          => $a,
             'base_fingerprint' => $baseFp,
@@ -296,13 +370,18 @@ final class BuilderPageEdit
                 'after_outline'   => $after,
                 'tree_sha256'     => hash('sha256', $doc->canonicalBytes),
                 'tree'            => $doc->tree,
-            ],
+            ] + $nativePreview,
             'preview_digest'   => $digest,
             'doc'              => $doc,
             'changes'          => $planned['changes'],
             'touched'          => $planned['touched'],
             'builder_facts'    => $a->editFacts($tree, $doc->tree),
         ];
+        $answer = self::precheckAnswer($plan, $requestId, str_repeat('0', 64));
+        if (!$answer['ok']) {
+            return ['refusal' => $answer];
+        }
+        return $plan;
     }
 
     /**
@@ -334,6 +413,14 @@ final class BuilderPageEdit
         if (is_array($plan['builder_facts'] ?? null)) {
             $answer['builder_facts'] = $plan['builder_facts'];
         }
+        try {
+            $bytes = json_encode($answer, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            return self::fail('preview_unreadable', 'the precheck answer contains text that cannot be encoded as UTF-8');
+        }
+        if (isset($plan['preview']['digest_inputs']) && strlen($bytes) > self::MAX_NATIVE_ANSWER_BYTES) {
+            return self::fail('native_preview_too_large', 'the native preview exceeds the agent answer byte limit');
+        }
 
         return $answer;
     }
@@ -361,7 +448,7 @@ final class BuilderPageEdit
     {
         $parsed = PageEditValidator::parse($inputText);
         if (!isset($parsed['input'])) {
-            return self::fail((string) ($parsed['code'] ?? 'bad_input'), (string) ($parsed['detail'] ?? 'the input is not a page-edit input'));
+            return self::fail((string) ($parsed['code'] ?? 'bad_input'), (string) ($parsed['detail'] ?? 'the input is not a page-edit input'), ($parsed['code'] ?? '') === NativeSettingsValidator::CODE ? array_intersect_key($parsed, ['failures' => true, 'schema' => true]) : []);
         }
         $postId = $parsed['input']['post_id'];
         if (!AbilityLedger::claimTarget($postId)) {
@@ -415,8 +502,11 @@ final class BuilderPageEdit
      * @return string
      * @throws \JsonException When a value is not valid UTF-8.
      */
-    public static function previewDigest(string $builder, string $version, int $postId, string $baseFp, string $treeJson): string
+    public static function previewDigest(string $builder, string $version, int $postId, string $baseFp, string $treeJson, ?array $digestInputs = null): string
     {
+        if ($digestInputs !== null) {
+            return hash('sha256', json_encode([self::NATIVE_DIGEST_DOMAIN, $builder, $version, $postId, $baseFp, $treeJson, json_encode($digestInputs, JSON_THROW_ON_ERROR)], JSON_THROW_ON_ERROR));
+        }
         return hash('sha256', json_encode([self::DIGEST_DOMAIN, $builder, $version, $postId, $baseFp, $treeJson], JSON_THROW_ON_ERROR));
     }
 
@@ -848,7 +938,7 @@ final class BuilderPageEdit
      * @param callable(list<int>): array<string,mixed> $media The resolver.
      * @return array{by_id: array<int, array<string, mixed>>, refusal?: array<string, mixed>}
      */
-    private static function media(array $ops, callable $media): array
+    private static function media(array $ops, callable $media, array $tree = []): array
     {
         $outline = [];
         foreach ($ops as $op) {
@@ -857,6 +947,29 @@ final class BuilderPageEdit
             }
         }
         $ids = PageCreateBuilder::mediaIds(['outline' => $outline]);
+        $nativeValues = [];
+        foreach ($ops as $op) {
+            if (isset($op['settings']) && in_array($op['op'], ['set_native', 'add_native'], true)) {
+                self::nativeMedia($op['settings'], $nativeValues);
+            }
+            if ($op['op'] === 'duplicate') {
+                $source = self::nodeByRef($tree, $op['ref']);
+                if ($source !== null) {
+                    self::nativeMedia($source, $nativeValues);
+                }
+            }
+        }
+        $nativeIds = [];
+        foreach ($nativeValues as $value) {
+            $id = $value['id'];
+            $id = is_int($id) ? (string) $id : $id;
+            if (!is_string($id) || preg_match('/^[1-9][0-9]{0,9}$/D', $id) !== 1 || (int) $id > PageCreateBuilder::MAX_ATTACHMENT_ID) {
+                continue; // The native settings validator supplies the concrete shape failure.
+            }
+            $nativeIds[] = (int) $id;
+        }
+        sort($nativeIds, SORT_NUMERIC);
+        $ids = array_values(array_unique(array_merge($ids, $nativeIds)));
         if ($ids === []) {
             return ['by_id' => []];
         }
@@ -880,6 +993,33 @@ final class BuilderPageEdit
         }
 
         return ['by_id' => $byId];
+    }
+
+    /** Media settings, including repeater values, are resolved before native validation. */
+    private static function nativeMedia(array $settings, array &$values): void
+    {
+        if (array_key_exists('id', $settings) && array_key_exists('url', $settings)) {
+            $values[] = ['id' => $settings['id'], 'url' => $settings['url']];
+        }
+        foreach ($settings as $value) {
+            if (is_array($value)) {
+                self::nativeMedia($value, $values);
+            }
+        }
+    }
+
+    private static function nodeByRef(array $tree, string $ref): ?array
+    {
+        foreach ($tree as $node) {
+            if (($node['id'] ?? null) === $ref) {
+                return $node;
+            }
+            $found = self::nodeByRef($node['elements'] ?? [], $ref);
+            if ($found !== null) {
+                return $found;
+            }
+        }
+        return null;
     }
 
     /**

@@ -1088,7 +1088,9 @@ final class ElementorDocument
      * stored-string rules (leaf_policy): a node the edit made, whole; a node
      * it changed, the settings it changed, since the rest of the node carries
      * what a person set. A node equal to the node of its id in the snapshot
-     * was not written.
+     * was not written. Native nodes already validated by the edit plan are
+     * accepted only when the planned node still equals that validated node;
+     * the whole-page read-back comparison applies to them as well.
      *
      * @param int                  $postId  The edited post.
      * @param array<mixed>         $newTree The tree that was saved.
@@ -1105,9 +1107,10 @@ final class ElementorDocument
      *                                       (ElementorClassicMapper::ALLOWED_KEYS),
      *                                       the designed one for a designed
      *                                       page's.
+     * @param array<string,array<mixed>> $nativeNodes Exact native results validated by this adapter's edit plan.
      * @return string|null
      */
-    public function verifyEdited(int $postId, array $newTree, array $before, ?array $pageSettings = null, ?string $pageTemplate = null, ?array $allowed = null): ?string
+    public function verifyEdited(int $postId, array $newTree, array $before, ?array $pageSettings = null, ?string $pageTemplate = null, ?array $allowed = null, array $nativeNodes = []): ?string
     {
         if ($postId < 1) {
             return 'post_missing';
@@ -1172,7 +1175,7 @@ final class ElementorDocument
         if (!self::indexOwn($snapshot['tree'], 1, $earlier)) {
             return 'snapshot_unreadable';
         }
-        if (self::writtenProblem($newTree, $earlier, 1, $allowed ?? ElementorClassicMapper::ALLOWED_KEYS) !== null) {
+        if (self::writtenProblem($newTree, $earlier, 1, $allowed ?? ElementorClassicMapper::ALLOWED_KEYS, $nativeNodes) !== null) {
             return 'leaf_policy';
         }
 
@@ -1400,9 +1403,10 @@ final class ElementorDocument
      * @param array<string, list<array<mixed>>>   $earlier The nodes before the edit, by id.
      * @param int                                  $depth   Nesting depth of $nodes.
      * @param array<string, array<string, string>> $allowed Element type, then settings path, then pin.
+     * @param array<string,array<mixed>> $nativeNodes Exact validated native results from the plan.
      * @return array{code: string, detail: string}|null
      */
-    private static function writtenProblem(array $nodes, array $earlier, int $depth, array $allowed): ?array
+    private static function writtenProblem(array $nodes, array $earlier, int $depth, array $allowed, array $nativeNodes = []): ?array
     {
         if ($depth > self::MAX_DEPTH) {
             return ['code' => LeafPolicy::CODE_KEY, 'detail' => 'elements nested too deep'];
@@ -1414,14 +1418,17 @@ final class ElementorDocument
             $own = $node;
             unset($own['elements']);
             $versions = is_string($own['id'] ?? null) ? ($earlier[$own['id']] ?? []) : [];
-            if (!in_array($own, $versions, true)) {
+            // A native result was checked against its live schema and exact merge in the plan.
+            // Read-back still compares the entire page, including every carried-over leaf.
+            $validated = $nativeNodes[$node['id'] ?? ''] ?? null;
+            if (!in_array($own, $versions, true) && $validated !== $node) {
                 $problem = LeafPolicy::checkTree([self::writtenPart($own, $versions, $allowed)], $allowed, ElementorClassicMapper::LEAF_RULES);
                 if ($problem !== null) {
                     return $problem;
                 }
             }
             $children = $node['elements'] ?? [];
-            $inner    = is_array($children) ? self::writtenProblem($children, $earlier, $depth + 1, $allowed) : null;
+            $inner    = is_array($children) ? self::writtenProblem($children, $earlier, $depth + 1, $allowed, $nativeNodes) : null;
             if ($inner !== null) {
                 return $inner;
             }

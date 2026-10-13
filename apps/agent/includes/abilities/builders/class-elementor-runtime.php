@@ -321,6 +321,24 @@ final class ElementorRuntime implements ElementorApi
         }
     }
 
+    /** {@inheritDoc} */
+    public function widgetIsCore(string $type): bool
+    {
+        try {
+            $widget = $this->call('widgets_manager', 'get_widget_types', [$type]);
+            if (!is_object($widget) || !defined('ELEMENTOR_PATH')) {
+                return false;
+            }
+            $class = new \ReflectionClass($widget);
+            $file = $class->getFileName();
+            $root = realpath(ELEMENTOR_PATH . 'includes/widgets');
+            $source = is_string($file) ? realpath($file) : false;
+            return is_string($root) && is_string($source) && str_starts_with($source, $root . DIRECTORY_SEPARATOR);
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
     /**
      * {@inheritDoc}
      */

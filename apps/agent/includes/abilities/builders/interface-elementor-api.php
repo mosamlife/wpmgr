@@ -110,6 +110,9 @@ interface ElementorApi
      */
     public function widgetTypeExists(string $type): bool;
 
+    /** Whether the registered widget class is shipped in Elementor's core widget directory. */
+    public function widgetIsCore(string $type): bool;
+
     /**
      * The live widget registry, with metadata from each widget object.
      * Pro is determined by the ElementorPro namespace; atomic by the prop
