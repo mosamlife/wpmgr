@@ -144,6 +144,11 @@ func verifyPageEditNativePrecheck(resp agentcmd.AbilityRunResponse, entrySum str
 		}
 		source := elements[op.Ref]
 		card := PageEditCardChange{Op: op.Op, Ref: op.Ref}
+		if (op.Op == "move" || op.Op == "remove") && source != nil && source.elType == "widget" &&
+			len(elementornative.Lookup(nativeString(nativeGet(source.node, "widgetType")), pv.BuilderVersion)) > 0 &&
+			(nativeDesignedAncestor(original[op.Ref], original) || nativeDesignedAncestor(source, elements)) {
+			return fail()
+		}
 		nativeCard := &PageEditNativeCardChange{}
 		card.Native = nativeCard
 		var next any
@@ -588,6 +593,9 @@ func nativeOwnedSchema(widget, version string, written any) ([]byte, bool) {
 			}
 		}
 		o := phpObject{{"type", c.Type}, {"options", nativeStringList(c.Options)}, {"responsive", responsive}, {"units", nativeStringList(nativeUnits)}}
+		if c.RawCSSValue {
+			o = append(o, phpPair{"raw_css_value", true})
+		}
 		if c.Group != nil && c.Group.Activator != nil {
 			o = append(o, phpPair{"group", c.Group.Family}, phpPair{"activator", phpObject{{"key", *c.Group.Activator}, {"values", nativeStringList(nativeGroupValues(c.Group.Family))}}})
 		}

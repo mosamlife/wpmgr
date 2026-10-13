@@ -276,6 +276,18 @@ final class NativeWidgetPolicy
         }
     }
 
+    /** Reserved grid controls and every device variant cannot be written natively. */
+    public static function deniedCssKey(string $key): bool
+    {
+        $key = strtolower($key);
+        foreach (['_grid_column_custom', '_grid_row_custom'] as $base) {
+            if ($key === $base || str_starts_with($key, $base . '_')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** HTML-id controls and their responsive variants are reserved for designed anchors. */
     public static function htmlIdKey(string $key): bool
     {
@@ -285,15 +297,15 @@ final class NativeWidgetPolicy
             || str_ends_with($key, '_css_id') || str_ends_with($base, '_css_id');
     }
 
-    /** HTML-id controls are reserved for the designed anchor path. */
+    /** Reserved controls cannot be written through native settings. */
     public static function settingsProblem(NativeControlSchema $schema, array $written): ?array
     {
         $failures = [];
         $controls = [];
         foreach ($written as $key => $value) {
             $base = self::baseControl($key);
-            if (self::htmlIdKey($key)) {
-                $failures[] = ['path' => 'settings', 'key' => $key, 'reason' => 'HTML id controls cannot be written natively'];
+            if (self::htmlIdKey($key) || self::deniedCssKey($key)) {
+                $failures[] = ['path' => 'settings', 'key' => $key, 'reason' => self::htmlIdKey($key) ? 'HTML id controls cannot be written natively' : 'reserved grid controls cannot be written natively'];
                 if (isset($schema->document['controls'][$base])) {
                     $controls[$base] = $schema->document['controls'][$base];
                 }
@@ -321,7 +333,9 @@ final class NativeWidgetPolicy
         $parents = [];
         self::storedIndex($tree, null, $nodes, $parents);
         $nativeRefs = [];
+        $visibleRefs = [];
         foreach ($projection as $node) {
+            $visibleRefs[$node['ref']] = true;
             if ($node['kind'] === 'native') {
                 $nativeRefs[$node['ref']] = true;
             }
@@ -330,10 +344,13 @@ final class NativeWidgetPolicy
             $name = $op['op'];
             $ref = $op['ref'] ?? null;
             $checks = [];
-            if (in_array($name, ['set_native', 'duplicate'], true)) {
+            $nativeSource = isset($nativeRefs[$ref ?? '']) || (!isset($visibleRefs[$ref ?? ''])
+                && ($nodes[$ref ?? '']['elType'] ?? null) === 'widget');
+            if (in_array($name, ['set_native', 'duplicate'], true)
+                || (in_array($name, ['move', 'remove'], true) && $nativeSource)) {
                 $checks[] = $ref;
             }
-            $nativeMove = $name === 'move' && (isset($nativeRefs[$ref ?? ''])
+            $nativeMove = $name === 'move' && ($nativeSource
                 || (isset($op['into']) && ($nodes[$ref ?? '']['elType'] ?? null) === 'widget'));
             if (in_array($name, ['add_native', 'duplicate'], true) || $nativeMove) {
                 $anchor = $op['into'] ?? $op['after'] ?? $op['before'] ?? null;
@@ -374,7 +391,7 @@ final class NativeWidgetPolicy
         }
         foreach ($node as $key => $value) {
             $prefixes = array_merge(LeafPolicy::DENIED_KEY_PREFIXES, array_map(static fn ($denied) => $denied . '_', LeafPolicy::DENIED_KEYS), ['_motion_', 'motion_', '_sticky']);
-            if (self::htmlIdKey((string) $key) || self::denied((string) $key, LeafPolicy::DENIED_KEYS, $prefixes)) {
+            if (self::htmlIdKey((string) $key) || self::deniedCssKey((string) $key) || self::denied((string) $key, LeafPolicy::DENIED_KEYS, $prefixes)) {
                 return true;
             }
             if (in_array($key, ['elType', 'widgetType'], true) && is_string($value)

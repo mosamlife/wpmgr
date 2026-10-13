@@ -85,7 +85,7 @@ final class NativePageEditTest extends TestCase
     private static function policyCases(): array
     {
         $cases = json_decode(file_get_contents(__DIR__ . '/../fixtures/ability-run/native-edit-policy-cases.json'), true, 512, JSON_THROW_ON_ERROR);
-        foreach (['html_ids', 'batches', 'destinations'] as $field) {
+        foreach (['html_ids', 'batches', 'destinations', 'sources'] as $field) {
             if (!is_array($cases[$field] ?? null) || $cases[$field] === []) {
                 throw new \RuntimeException('shared native edit policy cases missing: ' . $field);
             }
@@ -153,6 +153,80 @@ final class NativePageEditTest extends TestCase
                         $r = $this->apply([$op], $tree);
                         $this->assertSame($case['denied'] ? 'native_designed_node' : null, $r['code'] ?? null, json_encode([$case, $op, $descendant, $r]));
                     }
+                }
+            }
+        }
+    }
+
+    public function test_reserved_grid_controls_refused_for_native_writes(): void
+    {
+        RealNativeControls::install($this->api);
+        $payload = 'span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover';
+        foreach (['3.35.9', '4.3.4'] as $version) {
+            $this->api->version = $version;
+            foreach (['_grid_column_custom', '_grid_row_custom'] as $base) {
+                foreach (['', '_desktop', '_tablet', '_mobile'] as $suffix) {
+                    $key = $base . $suffix;
+                    foreach (['set_native', 'add_native'] as $name) {
+                        $op = ['op' => $name, 'settings' => [$key => $payload]];
+                        $op += $name === 'set_native' ? ['ref' => 'aaaaaaa'] : ['into' => '2222222', 'widget' => 'counter'];
+                        $r = $this->apply([$op]);
+                        $this->assertSame('native_settings_invalid', $r['code'] ?? null, $version . ' ' . $name . ' ' . $key);
+                        $this->assertSame($key, $r['failures'][0]['key']);
+                    }
+                }
+            }
+        }
+    }
+
+    public function test_live_raw_css_controls_use_plain_tokens(): void
+    {
+        $this->api->widgetControls['counter']['token'] = ['type' => 'text', 'selectors' => ['{{WRAPPER}}' => 'grid-column: {{VALUE}};'], 'responsive' => true, 'condition' => ['grid' => 'custom']];
+        foreach (['span 2 / 3.5%' => true, 'span 2; position: fixed' => false] as $value => $ok) {
+            $r = $this->apply([['op' => 'set_native', 'ref' => 'aaaaaaa', 'settings' => ['token_tablet' => $value]]]);
+            $this->assertSame($ok, isset($r['tree']), $value);
+        }
+        $this->api->widgetControls['counter']['token']['selectors'] = ['{{WRAPPER}}' => 'content: {{value}};'];
+        $r = $this->apply([['op' => 'add_native', 'into' => '2222222', 'widget' => 'counter', 'settings' => ['token' => 'a:b']]]);
+        $this->assertSame('native_settings_invalid', $r['code'] ?? null);
+    }
+
+    public function test_responsive_and_repeater_raw_css_flags_are_retained(): void
+    {
+        $this->api->widgetControls['counter']['token'] = ['type' => 'text', 'responsive' => ['max' => 'desktop']];
+        $this->api->widgetControls['counter']['token_tablet'] = ['type' => 'text', 'parent' => 'token', 'responsive' => ['max' => 'tablet'], 'selectors' => ['{{WRAPPER}}' => 'grid-row: {{value}};']];
+        $this->api->widgetControls['counter']['rows']['fields'] = [['name' => 'text', 'type' => 'text', 'selectors' => ['{{WRAPPER}}' => 'content: {{VALUE}};']]];
+        $policy = new NativeWidgetPolicy($this->api);
+        $schema = $policy->schema('counter', [], ['token', 'rows'], ['tablet', 'mobile']);
+        $this->assertNotNull($schema);
+        $this->assertTrue($schema->document['controls']['token']['raw_css_value']);
+        $this->assertTrue($schema->document['controls']['rows']['fields']['text']['raw_css_value']);
+        foreach ([['token_tablet' => 'a:b'], ['rows' => [['_id' => 'ccccccc', 'text' => 'a:b']]]] as $settings) {
+            $r = $this->apply([['op' => 'set_native', 'ref' => 'aaaaaaa', 'settings' => $settings]]);
+            $this->assertSame('native_settings_invalid', $r['code'] ?? null, json_encode($r));
+        }
+    }
+
+    public function test_native_move_remove_sources_reserve_designed_ancestry(): void
+    {
+        foreach (self::policyCases()['sources'] as $case) {
+            foreach ([false, true] as $descendant) {
+                foreach (['remove', 'move'] as $name) {
+                    $tree = self::tree();
+                    $tree[0]['settings']['_title'] = $case['label'];
+                    if ($descendant) {
+                        $tree[0]['elements'][0] = ['id' => '3333333', 'elType' => 'container', 'settings' => [], 'elements' => [$tree[0]['elements'][0]]];
+                    }
+                    $op = ['op' => $name, 'ref' => 'aaaaaaa'];
+                    if ($name === 'move') {
+                        $op['into'] = '2222222';
+                    }
+                    $nodes = ElementorClassicMapper::project($tree, new NativeWidgetPolicy($this->api))->nodes();
+                    $r = NativeWidgetPolicy::designedProblem($tree, [$op], $nodes);
+                    if (!$case['denied']) {
+                        $this->assertArrayHasKey('tree', $this->apply([$op], $tree));
+                    }
+                    $this->assertSame($case['denied'] ? 'native_designed_node' : null, $r['code'] ?? null, json_encode([$case, $op, $descendant]));
                 }
             }
         }

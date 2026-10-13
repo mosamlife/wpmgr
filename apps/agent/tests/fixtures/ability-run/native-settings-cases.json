@@ -9960,5 +9960,1372 @@
         "shadow"
       ]
     }
+  },
+  {
+    "name": "reserved css _grid_column_custom",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "_grid_column_custom": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "_grid_column_custom": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet",
+      "laptop",
+      "widescreen",
+      "tablet_extra",
+      "mobile_extra"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "_grid_column_custom"
+      ]
+    }
+  },
+  {
+    "name": "reserved css _grid_column_custom_desktop",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "_grid_column_custom": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "_grid_column_custom_desktop": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet",
+      "laptop",
+      "widescreen",
+      "tablet_extra",
+      "mobile_extra"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "_grid_column_custom_desktop"
+      ]
+    }
+  },
+  {
+    "name": "reserved css _grid_column_custom_tablet",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "_grid_column_custom": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "_grid_column_custom_tablet": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet",
+      "laptop",
+      "widescreen",
+      "tablet_extra",
+      "mobile_extra"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "_grid_column_custom_tablet"
+      ]
+    }
+  },
+  {
+    "name": "reserved css _grid_column_custom_mobile",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "_grid_column_custom": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "_grid_column_custom_mobile": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet",
+      "laptop",
+      "widescreen",
+      "tablet_extra",
+      "mobile_extra"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "_grid_column_custom_mobile"
+      ]
+    }
+  },
+  {
+    "name": "reserved css _grid_column_custom_widescreen",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "_grid_column_custom": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "_grid_column_custom_widescreen": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet",
+      "laptop",
+      "widescreen",
+      "tablet_extra",
+      "mobile_extra"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "_grid_column_custom_widescreen"
+      ]
+    }
+  },
+  {
+    "name": "reserved css _grid_column_custom_laptop",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "_grid_column_custom": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "_grid_column_custom_laptop": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet",
+      "laptop",
+      "widescreen",
+      "tablet_extra",
+      "mobile_extra"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "_grid_column_custom_laptop"
+      ]
+    }
+  },
+  {
+    "name": "reserved css _grid_column_custom_tablet_extra",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "_grid_column_custom": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "_grid_column_custom_tablet_extra": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet",
+      "laptop",
+      "widescreen",
+      "tablet_extra",
+      "mobile_extra"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "_grid_column_custom_tablet_extra"
+      ]
+    }
+  },
+  {
+    "name": "reserved css _grid_column_custom_mobile_extra",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "_grid_column_custom": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "_grid_column_custom_mobile_extra": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet",
+      "laptop",
+      "widescreen",
+      "tablet_extra",
+      "mobile_extra"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "_grid_column_custom_mobile_extra"
+      ]
+    }
+  },
+  {
+    "name": "reserved css _grid_row_custom",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "_grid_row_custom": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "_grid_row_custom": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet",
+      "laptop",
+      "widescreen",
+      "tablet_extra",
+      "mobile_extra"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "_grid_row_custom"
+      ]
+    }
+  },
+  {
+    "name": "reserved css _grid_row_custom_desktop",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "_grid_row_custom": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "_grid_row_custom_desktop": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet",
+      "laptop",
+      "widescreen",
+      "tablet_extra",
+      "mobile_extra"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "_grid_row_custom_desktop"
+      ]
+    }
+  },
+  {
+    "name": "reserved css _grid_row_custom_tablet",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "_grid_row_custom": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "_grid_row_custom_tablet": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet",
+      "laptop",
+      "widescreen",
+      "tablet_extra",
+      "mobile_extra"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "_grid_row_custom_tablet"
+      ]
+    }
+  },
+  {
+    "name": "reserved css _grid_row_custom_mobile",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "_grid_row_custom": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "_grid_row_custom_mobile": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet",
+      "laptop",
+      "widescreen",
+      "tablet_extra",
+      "mobile_extra"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "_grid_row_custom_mobile"
+      ]
+    }
+  },
+  {
+    "name": "reserved css _grid_row_custom_widescreen",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "_grid_row_custom": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "_grid_row_custom_widescreen": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet",
+      "laptop",
+      "widescreen",
+      "tablet_extra",
+      "mobile_extra"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "_grid_row_custom_widescreen"
+      ]
+    }
+  },
+  {
+    "name": "reserved css _grid_row_custom_laptop",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "_grid_row_custom": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "_grid_row_custom_laptop": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet",
+      "laptop",
+      "widescreen",
+      "tablet_extra",
+      "mobile_extra"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "_grid_row_custom_laptop"
+      ]
+    }
+  },
+  {
+    "name": "reserved css _grid_row_custom_tablet_extra",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "_grid_row_custom": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "_grid_row_custom_tablet_extra": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet",
+      "laptop",
+      "widescreen",
+      "tablet_extra",
+      "mobile_extra"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "_grid_row_custom_tablet_extra"
+      ]
+    }
+  },
+  {
+    "name": "reserved css _grid_row_custom_mobile_extra",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "_grid_row_custom": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "_grid_row_custom_mobile_extra": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet",
+      "laptop",
+      "widescreen",
+      "tablet_extra",
+      "mobile_extra"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "_grid_row_custom_mobile_extra"
+      ]
+    }
+  },
+  {
+    "name": "css tokens text 0",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "text",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens text 1",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "text",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "span 2 / 3.5%"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": "ok"
+  },
+  {
+    "name": "css tokens text 2",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "text",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": ""
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": "ok"
+  },
+  {
+    "name": "css tokens text 3",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "text",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": "ok"
+  },
+  {
+    "name": "css tokens text 4",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "text",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens text 5",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "text",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "a,b"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens text 6",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "text",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "a:b"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens text 7",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "text",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "a(b)"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens text 8",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "text",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "a\"b"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens text 9",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "text",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "a'b"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens text 10",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "text",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "a\\b"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens text 11",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "text",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "é"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens text 12",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "text",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "a\nb"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens text 13",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "text",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "a_b"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens textarea 0",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "textarea",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens textarea 1",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "textarea",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "span 2 / 3.5%"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": "ok"
+  },
+  {
+    "name": "css tokens textarea 2",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "textarea",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": ""
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": "ok"
+  },
+  {
+    "name": "css tokens textarea 3",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "textarea",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": "ok"
+  },
+  {
+    "name": "css tokens textarea 4",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "textarea",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens textarea 5",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "textarea",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "a,b"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens textarea 6",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "textarea",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "a:b"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens textarea 7",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "textarea",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "a(b)"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens textarea 8",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "textarea",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "a\"b"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens textarea 9",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "textarea",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "a'b"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens textarea 10",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "textarea",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "a\\b"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens textarea 11",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "textarea",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "é"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens textarea 12",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "textarea",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "a\nb"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens textarea 13",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "textarea",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "a_b"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens number 0",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "number",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": {
+      "code": "native_settings_invalid",
+      "keys": [
+        "token_mobile"
+      ]
+    }
+  },
+  {
+    "name": "css tokens number 1",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "number",
+          "raw_css_value": true,
+          "responsive": true
+        }
+      }
+    },
+    "settings": {
+      "token_mobile": "-12.5"
+    },
+    "before": {},
+    "breakpoints": [
+      "mobile",
+      "tablet"
+    ],
+    "expected": "ok"
+  },
+  {
+    "name": "plain text punctuation is retained",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "token": {
+          "type": "text",
+          "raw_css_value": false
+        }
+      }
+    },
+    "settings": {
+      "token": "A sentence: (one, two); / words"
+    },
+    "before": {},
+    "breakpoints": [],
+    "expected": "ok"
   }
 ]

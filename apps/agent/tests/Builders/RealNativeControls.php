@@ -27,6 +27,9 @@ final class RealNativeControls
             $id = $control['id'];
             $raw[$id] = ['name' => $id, 'type' => $control['type'], 'label' => str_repeat('L', 30),
                 'options' => array_fill_keys($control['options'], 'Option')];
+            if (($control['raw_css_value'] ?? false) === true) {
+                $raw[$id]['selectors'] = ['{{WRAPPER}}' => 'value: {{VALUE}};'];
+            }
             if ($control['responsive'] !== null) {
                 $raw[$id]['is_responsive'] = true;
                 $raw[$id]['responsive'] = ['devices' => $control['responsive']['devices']];

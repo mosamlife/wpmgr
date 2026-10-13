@@ -25,6 +25,10 @@ type nativeEditPolicyCases struct {
 		Label  string `json:"label"`
 		Denied bool   `json:"denied"`
 	} `json:"destinations"`
+	Sources []struct {
+		Label  string `json:"label"`
+		Denied bool   `json:"denied"`
+	} `json:"sources"`
 }
 
 func loadNativeEditPolicyCases(t *testing.T) nativeEditPolicyCases {
@@ -37,7 +41,7 @@ func loadNativeEditPolicyCases(t *testing.T) nativeEditPolicyCases {
 	if err := json.Unmarshal(raw, &cases); err != nil {
 		t.Fatal(err)
 	}
-	if len(cases.HTMLIDs) == 0 || len(cases.Batches) == 0 || len(cases.Destinations) == 0 {
+	if len(cases.HTMLIDs) == 0 || len(cases.Batches) == 0 || len(cases.Destinations) == 0 || len(cases.Sources) == 0 {
 		t.Fatal("shared native edit policy cases missing")
 	}
 	return cases
@@ -322,5 +326,151 @@ func TestNativeEditMixedBatchSiteHint(t *testing.T) {
 	ordinary := sitePrecheckRefusal(AbilityPageEdit, &agentcmd.AbilityRunRefusal{Code: pageEditOpsInvalid, Detail: "untrusted text"})
 	if ordinary.err.Details["hint"] == pageEditMixedHint {
 		t.Fatal("untrusted detail selected the mixed batch hint")
+	}
+}
+
+func TestNativeReservedGridControls(t *testing.T) {
+	payload := "span 2; position: fixed; inset: 0; z-index: 2147483647; background: url(https://evil.example/x.png) center/cover"
+	for _, version := range []string{"3.35.9", "4.3.4"} {
+		for _, base := range []string{"_grid_column_custom", "_grid_row_custom"} {
+			for _, suffix := range []string{"", "_desktop", "_tablet", "_mobile"} {
+				t.Run(version+"/"+base+suffix, func(t *testing.T) {
+					for _, before := range []json.RawMessage{json.RawMessage(`[]`), json.RawMessage(`{"title":"Original"}`)} {
+						settings, _ := phpEncodeBytes(phpObject{{base + suffix, payload}})
+						schema, _ := phpEncodeBytes(phpObject{{"widget", "heading"}, {"atomic", false}, {"controls", phpObject{{base, phpObject{{"type", "text"}, {"responsive", true}}}}}})
+						got := CheckNativeSettings(NativePolicyInput{Widget: "heading", ElementorVersion: version, Schema: schema, Settings: settings, Before: before, Breakpoints: []string{"mobile", "tablet"}})
+						if got.OK {
+							t.Fatalf("reserved CSS control accepted: %s", base+suffix)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestNativeDesignedSourceReboundAnswers(t *testing.T) {
+	for _, name := range []string{"move", "remove"} {
+		for _, c := range loadNativeEditPolicyCases(t).Sources {
+			for _, descendant := range []bool{false, true} {
+				t.Run(name+"/"+c.Label+map[bool]string{true: "/descendant", false: "/direct"}[descendant], func(t *testing.T) {
+					fx := nativeGoldenByName(t, name)
+					facts := fixtureFacts(t, fx)
+					var pv pageEditNativePreview
+					if err := json.Unmarshal(fx.Preview, &pv); err != nil {
+						t.Fatal(err)
+					}
+					before, _ := phpDecodeDocument(pv.BeforeTree, pageEditTreeMaxDepth, true)
+					tree, _ := phpDecodeDocument(pv.Tree, pageEditTreeMaxDepth, true)
+					if descendant {
+						index, _ := indexTree(before)
+						source := index["ccccccc"]
+						wrapper := phpObject{{"id", "fffffff"}, {"elType", "container"}, {"settings", phpList{}}, {"elements", phpList{source.node}}}
+						var ok bool
+						before, ok = nativeReplaceNode(before, source.path, wrapper)
+						if !ok {
+							t.Fatal("wrap source failed")
+						}
+						index, _ = indexTree(tree)
+						host := index["3d3406f"]
+						wrapper = nativeSet(wrapper, "elements", phpList{})
+						tree, ok = nativeSplice(tree, host.path, 1, 0, phpList{wrapper})
+						if !ok {
+							t.Fatal("wrap result failed")
+						}
+					}
+					mark := func(v any) any {
+						index, _ := indexTree(v)
+						host := index["3d3406f"]
+						settings := nativeSet(nativeGet(host.node, "settings").(phpObject), "_title", c.Label)
+						out, ok := nativeReplaceNode(v, host.path, nativeSet(host.node.(phpObject), "settings", settings))
+						if !ok {
+							t.Fatal("mark source failed")
+						}
+						return out
+					}
+					before = mark(before)
+					tree = mark(tree)
+					pv.BeforeTree, _ = phpEncodeBytes(before)
+					pv.BeforeTreeSHA256 = sha256Hex(pv.BeforeTree)
+					pv.Tree, _ = phpEncodeBytes(tree)
+					pv.AfterOutline = nativePolicyTestOutline(t, tree, pv.BuilderVersion)
+					inputs, _ := phpDecodeDocument(pv.DigestInputs, 32, true)
+					inputs = nativeSet(inputs.(phpObject), "before_tree_sha256", pv.BeforeTreeSHA256)
+					pv.DigestInputs, _ = nativeDigestInputsBytes(inputs)
+					resp := nativeGoldenResponse(t, fx, pv, true)
+					_, ok := verifyPageEditPrecheck(resp, fx.EntrySHA256, []byte(fx.Input), facts)
+					if ok == c.Denied {
+						t.Fatalf("designed source accepted=%v, denied=%v", ok, c.Denied)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestNativeDesignedSourceRemainsReservedAcrossBatch(t *testing.T) {
+	fx := nativeGoldenByName(t, "move")
+	var pv pageEditNativePreview
+	if err := json.Unmarshal(fx.Preview, &pv); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := phpDecodeDocument(pv.BeforeTree, pageEditTreeMaxDepth, true)
+	index, _ := indexTree(before)
+	source := index["ccccccc"]
+	wrapper := phpObject{{"id", "fffffff"}, {"elType", "container"}, {"settings", phpList{}}, {"elements", phpList{source.node}}}
+	var ok bool
+	before, ok = nativeReplaceNode(before, source.path, wrapper)
+	if !ok {
+		t.Fatal("wrap failed")
+	}
+	index, _ = indexTree(before)
+	host := index["3d3406f"]
+	settings := nativeSet(nativeGet(host.node, "settings").(phpObject), "_title", "WPMgr · Stats counters")
+	before, ok = nativeReplaceNode(before, host.path, nativeSet(host.node.(phpObject), "settings", settings))
+	if !ok {
+		t.Fatal("mark failed")
+	}
+	move := pageEditOp{Op: "move", Ref: "fffffff", Anchor: "into", AnchorRef: "c87900b"}
+	remove := pageEditOp{Op: "remove", Ref: "ccccccc"}
+	operations := phpList{nativeParsedOperation(move), nativeParsedOperation(remove)}
+	input := phpObject{{"post_id", json.Number("41")}, {"base_fingerprint", fx.BaseFingerprint}, {"operations", operations}}
+	raw, _ := phpEncodeBytes(input)
+	fx.Input = string(raw)
+	facts := fixtureFacts(t, fx)
+	results := []pageEditNativeResult{}
+	for _, operation := range operations {
+		raw, _ := phpEncodeBytes(operation)
+		results = append(results, pageEditNativeResult{Op: raw})
+	}
+	pv.Results = mustNativeJSON(t, results)
+	index, _ = indexTree(before)
+	source = index["fffffff"]
+	tree, ok := nativeSplice(before, source.path[:len(source.path)-1], source.path[len(source.path)-1], 1, nil)
+	if !ok {
+		t.Fatal("move source failed")
+	}
+	index, _ = indexTree(tree)
+	host = index["c87900b"]
+	tree, ok = nativeSplice(tree, host.path, len(phpValues(nativeGet(host.node, "elements"))), 0, phpList{wrapper})
+	if !ok {
+		t.Fatal("move destination failed")
+	}
+	index, _ = indexTree(tree)
+	source = index["ccccccc"]
+	tree, ok = nativeSplice(tree, source.path[:len(source.path)-1], source.path[len(source.path)-1], 1, nil)
+	if !ok {
+		t.Fatal("remove failed")
+	}
+	pv.BeforeTree, _ = phpEncodeBytes(before)
+	pv.BeforeTreeSHA256 = sha256Hex(pv.BeforeTree)
+	pv.Tree, _ = phpEncodeBytes(tree)
+	pv.AfterOutline = nativePolicyTestOutline(t, tree, pv.BuilderVersion)
+	inputs, _ := phpDecodeDocument(pv.DigestInputs, 32, true)
+	inputs = nativeSet(inputs.(phpObject), "before_tree_sha256", pv.BeforeTreeSHA256)
+	pv.DigestInputs, _ = nativeDigestInputsBytes(inputs)
+	resp := nativeGoldenResponse(t, fx, pv, true)
+	if _, ok := verifyPageEditPrecheck(resp, fx.EntrySHA256, []byte(fx.Input), facts); ok {
+		t.Fatal("designed source ancestry was not reserved for the entire batch")
 	}
 }

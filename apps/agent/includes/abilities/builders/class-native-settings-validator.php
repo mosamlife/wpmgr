@@ -337,6 +337,16 @@ final class NativeSettingsValidator
                 self::repeater($control, $value, $active, $schema, $path, $key, $depth, $failures, $written);
                 continue;
             }
+            if (array_key_exists('raw_css_value', $control) && !is_bool($control['raw_css_value'])) {
+                self::failure($failures, $path, $key, 'supply boolean CSS selector metadata');
+                continue;
+            }
+            // Free-text values that Elementor writes into CSS must be plain tokens.
+            if ($written && ($control['raw_css_value'] ?? false) === true
+                && (!is_string($value) || preg_match('/^[A-Za-z0-9 .\/%-]{0,64}$/D', $value) !== 1)) {
+                self::failure($failures, $path, $key, 'free-text CSS values must be plain tokens of at most 64 characters');
+                continue;
+            }
             $rich = NativeStringPolicy::richKey($schema->document['widget'], $base, $path);
             $why = $written ? NativeStringPolicy::leafProblem($value, $control['type'], $rich, $base) : null;
             if ($why === null) {
@@ -576,7 +586,7 @@ final class NativeSettingsValidator
     {
         $suffixes = array_map(static fn(string $denied): string => $denied . '_', LeafPolicy::DENIED_KEYS);
 
-        return NativeWidgetPolicy::htmlIdKey($key) || self::denied($key, LeafPolicy::DENIED_KEYS, array_merge(LeafPolicy::DENIED_KEY_PREFIXES, $suffixes, ['_motion_', 'motion_', '_sticky']));
+        return NativeWidgetPolicy::htmlIdKey($key) || NativeWidgetPolicy::deniedCssKey($key) || self::denied($key, LeafPolicy::DENIED_KEYS, array_merge(LeafPolicy::DENIED_KEY_PREFIXES, $suffixes, ['_motion_', 'motion_', '_sticky']));
     }
 
     /** @param array<string,mixed> $controls Known base controls. */

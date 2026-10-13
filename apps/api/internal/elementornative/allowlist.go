@@ -19,6 +19,7 @@ var embeddedAllowlist []byte
 // Control is an owned definition; a site's live definition may only narrow it.
 // Units use the policy's closed grammar because the dump does not export units.
 type Control struct {
+	RawCSSValue bool      `json:"raw_css_value,omitempty"`
 	ID          string    `json:"id,omitempty"`
 	Type        string    `json:"type"`
 	ReturnValue *string   `json:"return_value,omitempty"`
@@ -33,6 +34,9 @@ func (c *Control) UnmarshalJSON(raw []byte) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return err
+	}
+	if value, ok := fields["raw_css_value"]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return fmt.Errorf("null raw_css_value")
 	}
 	if value, ok := fields["return_value"]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 		return fmt.Errorf("null return_value")

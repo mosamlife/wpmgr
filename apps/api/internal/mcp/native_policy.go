@@ -122,8 +122,9 @@ type nativePolicyState struct {
 var nativeBreakpoints = []string{"mobile", "mobile_extra", "tablet", "tablet_extra", "laptop", "desktop", "widescreen"}
 var nativeUnits = []string{"px", "em", "rem", "%", "vh", "vw", "vmin", "vmax", "ch", "ex"}
 var nativeTypes = []string{"text", "textarea", "wysiwyg", "number", "slider", "dimensions", "color", "select", "select2", "choose", "switcher", "popover_toggle", "url", "media", "icons", "font", "box_shadow", "text_shadow", "repeater"}
-var nativeDeniedKeys = []string{"__globals__", "__dynamic__", "custom_css", "_attributes", "custom_attributes", "_css_classes", "_element_id", "_element_cache"}
+var nativeDeniedKeys = []string{"__globals__", "__dynamic__", "custom_css", "_attributes", "custom_attributes", "_css_classes", "_element_id", "_element_cache", "_grid_column_custom", "_grid_row_custom"}
 var nativeWidgetPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+var nativeCSSTokens = regexp.MustCompile(`^[A-Za-z0-9 ./%-]{0,64}$`)
 var nativeDecimal = regexp.MustCompile(`^-?(?:0|[1-9][0-9]{0,5})(?:\.[0-9]{1,4})?$`)
 var nativeColour = regexp.MustCompile(`^(?:#[0-9A-F]{6}|transparent|rgba\((?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]),){3}(?:0|1|0\.[0-9]{1,2})\))$`)
 var nativeRowID = regexp.MustCompile(`^[0-9a-f]{7}$`)
@@ -627,6 +628,14 @@ func (s *nativePolicyState) control(key string, controls any, owned map[string]e
 			return nil, "use a control with the owned key and type"
 		}
 	}
+	if nativeHas(c, "raw_css_value") {
+		if _, valid := nativeGet(c, "raw_css_value").(bool); !valid {
+			return nil, "supply boolean CSS selector metadata"
+		}
+	}
+	if ceiling.RawCSSValue {
+		c = nativeSet(c, "raw_css_value", true)
+	}
 	if !slices.Contains(nativeTypes, typ) {
 		return nil, "this control type has no supported safe shape"
 	}
@@ -804,6 +813,14 @@ func (s *nativePolicyState) settings(controls any, owned map[string]elementornat
 			}
 			s.repeater(c, fields, p.value, path, p.key, depth, written)
 			continue
+		}
+		// Free-text values that Elementor writes into CSS must be plain tokens.
+		if written && nativeGet(c, "raw_css_value") == true {
+			value, good := p.value.(string)
+			if !good || !nativeCSSTokens.MatchString(value) {
+				s.fail(path, p.key, "free-text CSS values must be plain tokens of at most 64 characters")
+				continue
+			}
 		}
 		rich := path == "settings" && nativeString(nativeGet(s.schema, "widget")) == "text-editor" && base == "editor"
 		if written {

@@ -118,6 +118,7 @@ final class ElementorWidgetDiscovery
             'condition' => ['type' => 'object'],
             'conditions' => ['type' => 'object'],
             'return_value' => $string,
+            'raw_css_value' => ['type' => 'boolean'],
             'size_units' => $list,
             'range' => ['type' => 'object'],
             'multiple' => ['type' => 'boolean'],
@@ -421,6 +422,9 @@ final class ElementorWidgetDiscovery
             'responsive' => self::responsive($control['responsive'] ?? null, $active, ($control['is_responsive'] ?? false) === true),
             'group' => self::group($control, $raw),
         ];
+        if (self::rawCssValue($control)) {
+            $out['raw_css_value'] = true;
+        }
         foreach (['condition', 'conditions', 'return_value', 'size_units', 'range', 'multiple'] as $key) {
             if (array_key_exists($key, $control)) {
                 $out[$key] = $control[$key];
@@ -449,6 +453,27 @@ final class ElementorWidgetDiscovery
         }
 
         return $out;
+    }
+
+    /** Identify free-entry controls whose selectors use a raw value token. */
+    public static function rawCssValue(array $control): bool
+    {
+        if (!in_array($control['type'] ?? null, ['text', 'textarea', 'number', 'slider', 'dimensions'], true)) {
+            return false;
+        }
+        $flag = array_key_exists('raw_css_value', $control) ? $control['raw_css_value'] : false;
+        if (!is_bool($flag) || (isset($control['selectors']) && !is_array($control['selectors']))) {
+            throw new \UnexpectedValueException('invalid CSS selector metadata');
+        }
+        foreach ($control['selectors'] ?? [] as $selector => $rule) {
+            if (!is_string($selector) || !is_string($rule)) {
+                throw new \UnexpectedValueException('invalid CSS selector metadata');
+            }
+            if (str_contains($selector . $rule, '{{VALUE}}') || str_contains($selector . $rule, '{{value}}')) {
+                $flag = true;
+            }
+        }
+        return $flag;
     }
 
     /** Fold device variants into their root; stored overrides use root_device keys. */
@@ -486,6 +511,9 @@ final class ElementorWidgetDiscovery
                     if (($raw[$variant][$key] ?? null) !== ($raw[$root][$key] ?? null)) {
                         throw new \UnexpectedValueException('responsive variant differs from root');
                     }
+                }
+                if (self::rawCssValue($raw[$variant]) || self::rawCssValue($out[$root])) {
+                    $out[$root]['raw_css_value'] = true;
                 }
                 $devices[$root][$device] = true;
             }

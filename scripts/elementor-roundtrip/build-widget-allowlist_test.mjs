@@ -10,7 +10,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'widget-allowlist-test-'));
 const versions = ['3.20.4', '3.35.9', '4.3.4'];
 const control = (id, type = 'text', extra = {}) => ({
-  id, type, ...(['switcher', 'popover_toggle'].includes(type) ? { return_value: 'yes' } : {}), options: [], default: '', responsive: null, group: null, fields: [], ...extra,
+  id, type, raw_css_value: false, ...(['switcher', 'popover_toggle'].includes(type) ? { return_value: 'yes' } : {}), options: [], default: '', responsive: null, group: null, fields: [], ...extra,
 });
 const widget = (name, controls = [control('title')]) => ({ name, title: name, controls });
 const dump = (version, widgets) => ({ schema_version: 2, elementor_version: version, widgets });
@@ -87,6 +87,25 @@ try {
     assert.equal(heading.controls.find(c => c.id === 'title_typography').definitions[0].return_value, 'custom');
     assert.deepEqual(heading.controls.find(c => c.id === 'enabled').definitions.map(d => d.return_value).sort(), ['enabled', 'yes']);
   });
+  test('raw CSS metadata survives shared and repeater definitions', () => {
+    const originals = files.map(file => fs.readFileSync(file, 'utf8'));
+    try {
+      files.forEach((file, i) => fs.writeFileSync(file, JSON.stringify(dump(versions[i], [
+        widget('alpha', [control('token', 'text', {raw_css_value: true}), control('rows', 'repeater', {fields: [control('field', 'textarea', {raw_css_value: true})]})]),
+        widget('beta', [control('token', 'text', {raw_css_value: true})]),
+      ]))));
+      const result = run();
+      assert.equal(result.status, 0, result.stderr);
+      const data = JSON.parse(fs.readFileSync(output, 'utf8'));
+      assert.equal(data.shared_controls.token.definitions[0].raw_css_value, true);
+      assert.equal(data.widgets[0].controls[0].definitions[0].fields[0].raw_css_value, true);
+    } finally { files.forEach((file, i) => fs.writeFileSync(file, originals[i])); assert.equal(run().status, 0); }
+  });
+  rejected('missing raw CSS metadata is refused', () => {
+    const c = control('title'); delete c.raw_css_value;
+    fs.writeFileSync(files[0], JSON.stringify(dump(versions[0], [widget('heading', [c])])));
+  });
+  rejected('non-boolean raw CSS metadata is refused', () => fs.writeFileSync(files[0], JSON.stringify(dump(versions[0], [widget('heading', [control('title', 'text', {raw_css_value: 'yes'})])]))));
   rejected('non-string switch return value is refused', () => fs.writeFileSync(files[0], JSON.stringify(dump(versions[0], [widget('heading', [control('enabled', 'switcher', { return_value: true })])]))));
   test('skipped controls retain their source version and never gain that version in the allowlist', () => {
     const heading = JSON.parse(fs.readFileSync(output, 'utf8')).widgets[0];
@@ -179,7 +198,7 @@ try {
       assert.ok(data.shared_controls, 'missing shared control table');
       assert.equal(data.shared_controls._margin.definitions.length, 1, 'defaults must not split policy definitions');
       assert.equal(data.shared_controls.choice.definitions.length, 2, 'different options must retain separate definitions');
-      const project = ({ id, type, options, responsive, group, fields }) => ({ id, type,
+      const project = ({ id, type, raw_css_value, options, responsive, group, fields }) => ({ id, type, raw_css_value,
         options: [...options].sort(), responsive, group: group === null ? null : { family: group.family, activator: group.activator },
         fields: fields.map(project).sort((a, b) => a.id.localeCompare(b.id, 'en')) });
       for (let i = 0; i < versions.length; i++) {

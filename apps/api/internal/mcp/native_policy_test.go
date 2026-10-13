@@ -417,3 +417,20 @@ func TestNativeOwnedRegisteredDeviceWindow(t *testing.T) {
 		t.Fatal("owned responsive window must follow registered devices")
 	}
 }
+
+func TestNativeRawCSSOwnedCeiling(t *testing.T) {
+	for _, liveFlag := range []string{"", `,"raw_css_value":false`, `,"raw_css_value":true`} {
+		schema := nativeTestValue(t, json.RawMessage(`{"widget":"heading","atomic":false,"controls":{"token":{"type":"text"`+liveFlag+`}}}`))
+		for _, tc := range []struct {
+			value string
+			ok    bool
+		}{{"span 2 / 3.5%", true}, {"span 2; position: fixed", false}} {
+			state := nativePolicyState{schema: schema, active: phpList{}, owned: map[string]elementornative.Control{"token": {Type: "text", RawCSSValue: true}}}
+			settings := phpObject{{"token", tc.value}}
+			state.validateWritten(phpObject{}, settings, nativeMerge(phpObject{}, settings))
+			if (len(state.failures) == 0) != tc.ok {
+				t.Fatalf("flag=%s value=%s failures=%+v", liveFlag, tc.value, state.failures)
+			}
+		}
+	}
+}

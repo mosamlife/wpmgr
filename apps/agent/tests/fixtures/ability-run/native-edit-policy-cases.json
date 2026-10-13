@@ -711,5 +711,31 @@
         "aaaaaaa": "native",
         "bbbbbbb": "heading",
         "2222222": "group"
-    }
+    },
+    "sources": [
+        {
+            "label": "WPMgr · Section",
+            "denied": true
+        },
+        {
+            "label": "WPMgr · Pattern: features",
+            "denied": true
+        },
+        {
+            "label": "WPMgr custom title",
+            "denied": false
+        },
+        {
+            "label": "Ordinary section",
+            "denied": false
+        },
+        {
+            "label": "",
+            "denied": false
+        },
+        {
+            "label": "WPMgr · Stats counters",
+            "denied": true
+        }
+    ]
 }

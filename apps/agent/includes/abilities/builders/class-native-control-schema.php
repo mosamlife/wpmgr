@@ -16,6 +16,7 @@ if (!defined('ABSPATH')) {
  * units (a list of slider/dimensions units), multiple (select2 boolean),
  * responsive (true, false, or {min?: breakpoint, max?: breakpoint, devices?: list}),
  * return_value (a nonempty string for switches; switcher defaults to yes),
+ * raw_css_value (free-text CSS values must be plain tokens of at most 64 characters),
  * group (typography, background, border, shadow, stroke or filter), and activator
  * ({key: control id, values: nonempty list<string>}). Repeater fields are a
  * map of row control ids to the same control shape. Group members carry both

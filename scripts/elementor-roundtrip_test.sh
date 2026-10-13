@@ -299,7 +299,7 @@ case "${FAKE_MODE:-ok}" in
   dumpwidgets | dumpwidgetsbadjson | dumpwidgetswrongversion | dumpwidgetsempty | dumpwidgetsduplicate | dumpwidgetscrash)
     dump_ver="$ver"
     [ "$FAKE_MODE" != dumpwidgetswrongversion ] || dump_ver="0.0.1"
-    json="{\"schema_version\":2,\"elementor_version\":\"$dump_ver\",\"widgets\":[{\"name\":\"heading\",\"title\":\"Heading\",\"controls\":[{\"id\":\"title\",\"type\":\"text\",\"options\":[],\"default\":\"\",\"responsive\":null,\"group\":null,\"fields\":[]}]}]}"
+    json="{\"schema_version\":2,\"elementor_version\":\"$dump_ver\",\"widgets\":[{\"name\":\"heading\",\"title\":\"Heading\",\"controls\":[{\"id\":\"title\",\"type\":\"text\",\"raw_css_value\":false,\"options\":[],\"default\":\"\",\"responsive\":null,\"group\":null,\"fields\":[]}]}]}"
     [ "$FAKE_MODE" != dumpwidgetsbadjson ] || json="{"
     [ "$FAKE_MODE" != dumpwidgetsempty ] || json="{\"schema_version\":2,\"elementor_version\":\"$ver\",\"widgets\":[]}"
     echo 'rt: WIDGETS_JSON_START'; echo "$json"; echo 'rt: WIDGETS_JSON_END'

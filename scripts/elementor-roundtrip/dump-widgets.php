@@ -188,6 +188,27 @@ function rt_widget_responsive_root(string $id, array $named, array $windows): st
     return $root;
 }
 
+/** Identify free-entry controls whose selectors use a raw value token. */
+function rt_widget_raw_css_value(array $control): bool
+{
+    if (!in_array($control['type'] ?? null, ['text', 'textarea', 'number', 'slider', 'dimensions'], true)) {
+        return false;
+    }
+    if (isset($control['selectors']) && !is_array($control['selectors'])) {
+        throw new RuntimeException('invalid CSS selector metadata');
+    }
+    $raw = false;
+    foreach ($control['selectors'] ?? [] as $selector => $rule) {
+        if (!is_string($selector) || !is_string($rule)) {
+            throw new RuntimeException('invalid CSS selector metadata');
+        }
+        if (str_contains($selector . $rule, '{{VALUE}}') || str_contains($selector . $rule, '{{value}}')) {
+            $raw = true;
+        }
+    }
+    return $raw;
+}
+
 /** Dump complete control definitions and separately report omitted control ids. */
 function rt_widget_dump_controls(array $controls, $manager, array $devices): array
 {
@@ -286,7 +307,7 @@ function rt_widget_dump_controls(array $controls, $manager, array $devices): arr
             $skipped[] = ['id' => $id, 'reason' => 'incomplete_group_metadata'];
             continue;
         }
-        $out[$id] = ['id' => $id, 'type' => $type, 'options' => $options,
+        $out[$id] = ['id' => $id, 'type' => $type, 'raw_css_value' => rt_widget_raw_css_value($control), 'options' => $options,
             'responsive' => $responsive, 'group' => $group, 'fields' => $fields];
         if (in_array($type, ['switcher', 'popover_toggle'], true)) {
             $return = $control['return_value'] ?? ($type === 'switcher' ? 'yes' : null);
@@ -318,6 +339,7 @@ function rt_widget_dump_controls(array $controls, $manager, array $devices): arr
             || ($out[$id]['return_value'] ?? null) !== ($out[$root]['return_value'] ?? null)) {
             throw new RuntimeException('control ' . $id . ' differs from its responsive base');
         }
+        $out[$root]['raw_css_value'] = $out[$root]['raw_css_value'] || $out[$id]['raw_css_value'];
         $out[$root]['responsive']['devices'][] = $windows[$id]['devices'][0];
         unset($out[$id]);
     }

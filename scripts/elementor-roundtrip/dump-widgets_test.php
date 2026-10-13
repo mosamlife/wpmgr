@@ -278,6 +278,22 @@ namespace {
         } catch (RuntimeException $error) {
             $check(strpos($error->getMessage(), 'no widgets') !== false, 'empty widget registry fails loudly');
         }
+        foreach (['text', 'textarea', 'number', 'slider', 'dimensions'] as $type) {
+            foreach (['{{VALUE}}', '{{value}}'] as $token) {
+                $schema = rt_widget_dump_controls(['token' => ['type' => $type, 'selectors' => ['{{WRAPPER}}' => 'grid-column: ' . $token . ';']]], $manager, ['desktop', 'tablet', 'mobile']);
+                $check(($schema['controls'][0]['raw_css_value'] ?? null) === true, $type . ' exports raw CSS value metadata ' . $token);
+            }
+        }
+        $schema = rt_widget_dump_controls(['token' => ['type' => 'text', 'selectors' => ['{{WRAPPER}}' => 'width: {{SIZE}}{{UNIT}};']]], $manager, ['desktop', 'tablet', 'mobile']);
+        $check(($schema['controls'][0]['raw_css_value'] ?? null) === false, 'non-raw selectors export false');
+        $schema = rt_widget_dump_controls([
+            'token' => ['type' => 'text', 'responsive' => ['max' => 'desktop']],
+            'token_tablet' => ['type' => 'text', 'parent' => 'token', 'responsive' => ['max' => 'tablet'], 'selectors' => ['{{WRAPPER}}' => 'grid-column: {{VALUE}};']],
+            'rows' => ['type' => 'repeater', 'fields' => [['name' => 'text', 'type' => 'textarea', 'selectors' => ['{{WRAPPER}}' => 'content: {{value}};']]]],
+        ], $manager, ['desktop', 'tablet', 'mobile']);
+        $controls = array_column($schema['controls'], null, 'id');
+        $check($controls['token']['raw_css_value'] === true, 'responsive roots retain any variant raw CSS metadata');
+        $check($controls['rows']['fields'][0]['raw_css_value'] === true, 'repeater fields retain raw CSS metadata');
         echo 'widget-dump_test: ' . $passed . " passed\n";
     } catch (Throwable $error) {
         fwrite(STDERR, 'FAIL widget-dump_test: ' . $error->getMessage() . "\n");

@@ -97,3 +97,24 @@ func TestNativeReturnValueDefinitions(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeRawCSSValueDefinitions(t *testing.T) {
+	raw := []byte(`{"schema_version":2,"elementor_versions":["3.35.9"],"shared_controls":{},"widgets":[{"name":"heading","versions":["3.35.9"],"controls":[{"id":"token","versions":["3.35.9"],"definitions":[{"type":"text","raw_css_value":true,"options":[],"responsive":null,"group":null,"fields":[],"versions":["3.35.9"]}]}]}]}`)
+	a, err := loadAllowlist(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := cloneControl(a.byVersion["3.35.9"]["heading"]["token"])
+	if !c.RawCSSValue {
+		t.Fatal("raw CSS flag lost")
+	}
+	encoded, err := json.Marshal(c)
+	if err != nil || !bytes.Contains(encoded, []byte(`"raw_css_value":true`)) {
+		t.Fatalf("flag encoding=%s, error=%v", encoded, err)
+	}
+	for _, invalid := range []string{`null`, `"true"`, `1`} {
+		if _, err := loadAllowlist(bytes.Replace(raw, []byte(`"raw_css_value":true`), []byte(`"raw_css_value":`+invalid), 1)); err == nil {
+			t.Fatalf("invalid raw CSS flag accepted: %s", invalid)
+		}
+	}
+}

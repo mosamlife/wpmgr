@@ -120,7 +120,7 @@ func readControlShape(depth int) *readShape {
 		"type": readText, "options": readList(readOptionKey), "default": readAny,
 		"responsive": readObject(map[string]*readShape{"devices": readList(readText), "min": readNullableText, "max": readNullableText}),
 		"group":      readObject(map[string]*readShape{"family": readText, "prefix": readText, "activator": readNullableID}),
-		"condition":  readMap, "conditions": readMap, "return_value": readText, "size_units": readList(readText), "range": readMap, "multiple": readBool,
+		"condition":  readMap, "conditions": readMap, "return_value": readText, "size_units": readList(readText), "range": readMap, "multiple": readBool, "raw_css_value": readBool,
 	}
 	fields["responsive"].nullable = true
 	fields["group"].nullable = true
