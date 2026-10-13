@@ -52,6 +52,8 @@
 #   RT_PLANT            space separated plant=<kind>@<case> tokens for the harness
 #   RT_HARNESS_ARGS     space separated key=value tokens appended to the harness's
 #                       arguments; a later token overrides an earlier one
+#                       dumpwidgets=1 exports a core classic widget JSON document;
+#                       use one RT_VERSIONS and RT_LAYOUTS=containers per dump file
 #   RT_TIMEOUT          seconds one boot may take (default 600)
 #   RT_TEST_KILL_SETTLE seconds to wait between sending the kill at the timeout and
 #                       reading the boot's status (default 0), so a test can make the
@@ -238,9 +240,18 @@ derive_blueprint() {
     const fs = require("fs");
     const bp = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
     const state = process.argv[2] === "containers" ? "active" : "inactive";
-    bp.steps = (bp.steps || []).concat([{ step: "setSiteOptions", options: { "elementor_experiment-container": state } }]);
+    const options = { "elementor_experiment-container": state };
+    if (process.argv[4] === "1") options["elementor_experiment-additional_custom_breakpoints"] = "active";
+    bp.steps = (bp.steps || []).concat([{ step: "setSiteOptions", options }]);
+    if (process.argv[4] === "1") {
+      bp.steps.push({ step: "runPHP", code: `<?php
+        require "/wordpress/wp-load.php";
+        require "/rt/harness/dump-widgets.php";
+        rt_widget_dump_prepare(\\Elementor\\Plugin::$instance);
+      ` });
+    }
     fs.writeFileSync(process.argv[3], JSON.stringify(bp, null, 2) + "\n");
-  ' "$blueprint" "$1" "$2"
+  ' "$blueprint" "$1" "$2" "$dump_widgets"
 }
 
 # --- inputs on disk ------------------------------------------------------------------
@@ -332,6 +343,14 @@ extra_args=()
 if [ -n "${RT_HARNESS_ARGS-}" ]; then
   read -r -a extra_args <<<"$RT_HARNESS_ARGS" || true
 fi
+dump_widgets=0
+for arg in ${extra_args[@]+"${extra_args[@]}"}; do
+  case "$arg" in
+    dumpwidgets=0) dump_widgets=0 ;;
+    dumpwidgets=1) dump_widgets=1 ;;
+    dumpwidgets=*) die "dumpwidgets= must be 0 or 1" ;;
+  esac
+done
 
 # --- one boot per version and layout ------------------------------------------------------
 bad=0     # a boot found a defect
@@ -411,6 +430,16 @@ for v in "${selected[@]}"; do
     # that looked at nothing on the agent's path is not a pass.
     ok_lines="$(grep -c '^rt: RESULT OK$' "$log" || true)"
     fail_lines="$(grep -c '^rt: RESULT FAIL$' "$log" || true)"
+    if [ "$dump_widgets" -eq 1 ]; then
+      if [ "$rc" -eq 0 ] && [ "$ok_lines" -eq 1 ] && [ "$fail_lines" -eq 0 ] \
+        && "$NODE" "$here/build-widget-allowlist.mjs" --check-dump "$log" "$v"; then
+        echo "elementor-roundtrip: Elementor $v ($layout) widget dump OK"
+      else
+        echo "elementor-roundtrip: Elementor $v ($layout) gave no usable widget dump (exit $rc)" >&2
+        broken=1
+      fi
+      continue
+    fi
     summary="$(grep '^rt: SUMMARY ' "$log" | tail -n 1 || true)"
     cases="$(printf '%s\n' "$summary" | sed -n 's/.* cases=\([0-9][0-9]*\) .*/\1/p')"
     agent="$(printf '%s\n' "$summary" | sed -n 's/.* agent=\([0-9][0-9]*\) .*/\1/p')"

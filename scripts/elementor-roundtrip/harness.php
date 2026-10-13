@@ -141,6 +141,8 @@
  * and "plants" (the element and setting key the plants misspell_key and drop_activator act on).
  * dump=<probe> prints the stored tree and the rendered page of a probe, to write its expectations.
  * dumpcss=<probe name, or its first words; several, comma separated> prints the rules of the post CSS that are about an element of the probe's tree (media condition, selectors, declarations), to write them.
+ * dumpwidgets=1 prints core classic widgets and their controls as one JSON document
+ * between rt: WIDGETS_JSON_START and rt: WIDGETS_JSON_END, then exits without running cases.
  *
  * A probe must expect at least one declaration to be present (its positive control),
  * and the phase must run at least one probe on every layout, or it is red. A probe
@@ -3285,6 +3287,9 @@ if (!in_array($rtArgs['stored'], ['as_given', 'strings'], true)) {
 if (!in_array($rtArgs['layout'], ['containers', 'sections'], true)) {
     rt_broken('layout= must be containers or sections: ' . rt_brief($rtArgs['layout']));
 }
+if (isset($rtArgs['dumpwidgets']) && !in_array($rtArgs['dumpwidgets'], ['0', '1'], true)) {
+    rt_broken('dumpwidgets= must be 0 or 1');
+}
 
 // ---------------------------------------------------------------------------
 // The site: PHP, WordPress, the pinned Elementor, the agent's own code
@@ -3300,6 +3305,15 @@ $_SERVER['SERVER_NAME']     = $_SERVER['SERVER_NAME'] ?? '127.0.0.1';
 $_SERVER['REQUEST_URI']     = $_SERVER['REQUEST_URI'] ?? '/';
 $_SERVER['REQUEST_METHOD']  = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $_SERVER['SERVER_PROTOCOL'] = $_SERVER['SERVER_PROTOCOL'] ?? 'HTTP/1.1';
+
+if (($rtArgs['dumpwidgets'] ?? '0') === '1') {
+    try {
+        require_once __DIR__ . '/dump-widgets.php';
+        rt_widget_dump_boot_context();
+    } catch (Throwable $e) {
+        rt_broken('widget dump context failed: ' . $e->getMessage());
+    }
+}
 
 require '/wordpress/wp-load.php';
 require_once ABSPATH . 'wp-admin/includes/plugin.php';
@@ -3328,6 +3342,26 @@ if (!class_exists(Plugin::class) || !isset(Plugin::$instance)) {
 $zipHash = is_file('/rt/zips/elementor.zip') ? hash_file('sha256', '/rt/zips/elementor.zip') : false;
 if ($zipHash !== $rtArgs['zip_sha256']) {
     rt_broken('the mounted Elementor zip is not the pinned file (sha256 ' . (is_string($zipHash) ? $zipHash : 'unreadable') . ')');
+}
+if (($rtArgs['dumpwidgets'] ?? '0') === '1') {
+    try {
+        require_once __DIR__ . '/dump-widgets.php';
+        $offered = array_diff(array_keys(Plugin::$instance->breakpoints->get_breakpoints()), ['desktop']);
+        $active = array_keys(Plugin::$instance->breakpoints->get_active_breakpoints());
+        if (array_diff($offered, $active) !== []) {
+            throw new RuntimeException('widget dump requires all offered breakpoints to be active');
+        }
+        $dump = rt_widget_dump(Plugin::$instance, ELEMENTOR_PATH, ELEMENTOR_VERSION);
+        $json = json_encode($dump, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    } catch (Throwable $e) {
+        rt_broken('widget dump failed: ' . $e->getMessage());
+    }
+    rt_out('WIDGETS_JSON_START');
+    echo $json . "\n";
+    rt_out('WIDGETS_JSON_END');
+    rt_out('WIDGETS_NAMES elementor=' . ELEMENTOR_VERSION . ' names=' . implode(', ', array_column($dump['widgets'], 'name')));
+    rt_out('RESULT OK');
+    exit(0);
 }
 if (!class_exists(DOMDocument::class)) {
     rt_broken('DOMDocument is not available in this PHP');

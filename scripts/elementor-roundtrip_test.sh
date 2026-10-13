@@ -181,6 +181,19 @@ if [ -n "${FAKE_CALLS_FILE:-}" ]; then
   printf '%s %s%s\n' "$ver" "$layout" "${plant:+ $plant}" >>"$FAKE_CALLS_FILE"
 fi
 case "${FAKE_MODE:-ok}" in
+  dumpwidgets | dumpwidgetsbadjson | dumpwidgetswrongversion | dumpwidgetsempty | dumpwidgetsduplicate | dumpwidgetscrash)
+    dump_ver="$ver"
+    [ "$FAKE_MODE" != dumpwidgetswrongversion ] || dump_ver="0.0.1"
+    json="{\"schema_version\":2,\"elementor_version\":\"$dump_ver\",\"widgets\":[{\"name\":\"heading\",\"title\":\"Heading\",\"controls\":[{\"id\":\"title\",\"type\":\"text\",\"options\":[],\"default\":\"\",\"responsive\":null,\"group\":null,\"fields\":[]}]}]}"
+    [ "$FAKE_MODE" != dumpwidgetsbadjson ] || json="{"
+    [ "$FAKE_MODE" != dumpwidgetsempty ] || json="{\"schema_version\":2,\"elementor_version\":\"$ver\",\"widgets\":[]}"
+    echo 'rt: WIDGETS_JSON_START'; echo "$json"; echo 'rt: WIDGETS_JSON_END'
+    if [ "$FAKE_MODE" = dumpwidgetsduplicate ]; then
+      echo 'rt: WIDGETS_JSON_START'; echo "$json"; echo 'rt: WIDGETS_JSON_END'
+    fi
+    echo 'rt: RESULT OK'
+    [ "$FAKE_MODE" != dumpwidgetscrash ] || exit 1
+    exit 0 ;;
   # The planted defects. A plant reaches the harness as plant=<kind>@<probe>, and the modes below say what the
   # harness does with it. FAKE_PLANT_LAYOUTS names the layouts the probe has a tree for (default containers): on
   # another layout the probe is skipped and the plant changes nothing. FAKE_PLANT_IGNORED_VERSION names a release
@@ -247,6 +260,37 @@ FAKE
 chmod +x "$tmp/fake-npx"
 
 offline=(RT_ALLOW_FILE_URLS=1 "RT_PINS_FILE=$tmp/pins-good.txt" "RT_BLUEPRINT=$tmp/blueprint-good.json" "RT_NPX=$tmp/fake-npx")
+
+widget_dump=("${offline[@]}" "RT_CACHE=$tmp/widget-dump" "RT_VERSIONS=4.3.4" "RT_LAYOUTS=containers" "RT_HARNESS_ARGS=dumpwidgets=1")
+expect "a widget dump passes without running page cases" 0 "${widget_dump[@]}" "FAKE_MODE=dumpwidgets" "FAKE_ARGS_FILE=$tmp/widget-args"
+said "  and the dump was validated" "widget dump OK"
+if grep -qx 'dumpwidgets=1' "$tmp/widget-args"; then
+  ok "dumpwidgets reaches the harness"
+else
+  bad "dumpwidgets does not reach the harness"
+fi
+widget_node="$(command -v node || true)"
+[ -n "$widget_node" ] || { echo "FAIL setup: node not found"; exit 1; }
+if "$widget_node" -e '
+  const bp = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const prepared = bp.steps.some(s => s.step === "runPHP" && s.code.includes("rt_widget_dump_prepare"));
+  const enabled = bp.steps.some(s => s.options?.["elementor_experiment-additional_custom_breakpoints"] === "active");
+  if (!prepared || !enabled) process.exit(1);
+' "$tmp/widget-args.blueprint.containers"; then
+  ok "widget dumps prepare every offered breakpoint before the harness request"
+else
+  bad "widget dumps did not prepare every offered breakpoint"
+fi
+expect "a widget dump with invalid JSON is red" 2 "${widget_dump[@]}" "FAKE_MODE=dumpwidgetsbadjson"
+said "  and the dump is unusable" "gave no usable widget dump"
+expect "a widget dump for another version is red" 2 "${widget_dump[@]}" "FAKE_MODE=dumpwidgetswrongversion"
+said "  and the version disagreement is named" "widget dump version does not match the boot"
+expect "an empty widget dump is red" 2 "${widget_dump[@]}" "FAKE_MODE=dumpwidgetsempty"
+expect "multiple widget dump blocks are red" 2 "${widget_dump[@]}" "FAKE_MODE=dumpwidgetsduplicate"
+expect "a crashed widget dump cannot say OK" 2 "${widget_dump[@]}" "FAKE_MODE=dumpwidgetscrash"
+expect "a widget dump without markers or JSON is red" 2 "${widget_dump[@]}" "FAKE_MODE=ok"
+expect "dumpwidgets has a closed argument value" 2 "${offline[@]}" "RT_CACHE=$tmp/widget-dump" "RT_HARNESS_ARGS=dumpwidgets=yes"
+expect "dumpwidgets=0 restores normal case validation" 0 "${offline[@]}" "RT_CACHE=$tmp/widget-dump" "RT_HARNESS_ARGS=dumpwidgets=1 dumpwidgets=0"
 
 # --- must not over-fire ---------------------------------------------------------------
 expect "an honest run passes" 0 "${offline[@]}" "RT_CACHE=$tmp/c1" "FAKE_ARGS_FILE=$tmp/args1"
