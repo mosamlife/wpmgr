@@ -1869,6 +1869,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	abilityReqSweepWorker := abilityrequest.NewSweepWorker(abilityReqSvc)
 	abilityReqReconcileWorker := abilityrequest.NewReconcileWorker(abilityReqSvc)
 	abilityReqUndoReconcileWorker := abilityrequest.NewUndoReconcileWorker(abilityReqSvc)
+	abilityReqContentRetentionWorker := abilityrequest.NewContentRetentionWorker(pool, logger)
 	abilityReqH := abilityrequest.NewHandler(abilityReqSvc)
 	// AI trust settings (ADR-065): a site's mode, a connection's switch and
 	// usage, and the activity feed. Setter validity uses the session
@@ -2192,11 +2193,12 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		assistantReqSweepWorker:     assistantReqSweepWorker,
 		assistantReqReconcileWorker: assistantReqReconcileWorker,
 		// Ability requests (E2), always wired.
-		abilityReqScanWorker:          abilityReqScanWorker,
-		abilityReqDispatchWorker:      abilityReqDispatchWorker,
-		abilityReqSweepWorker:         abilityReqSweepWorker,
-		abilityReqReconcileWorker:     abilityReqReconcileWorker,
-		abilityReqUndoReconcileWorker: abilityReqUndoReconcileWorker,
+		abilityReqScanWorker:             abilityReqScanWorker,
+		abilityReqDispatchWorker:         abilityReqDispatchWorker,
+		abilityReqSweepWorker:            abilityReqSweepWorker,
+		abilityReqReconcileWorker:        abilityReqReconcileWorker,
+		abilityReqUndoReconcileWorker:    abilityReqUndoReconcileWorker,
+		abilityReqContentRetentionWorker: abilityReqContentRetentionWorker,
 		// m59 Phase 3 — email log retention GC (always wired).
 		emailLogGCWorker: emailLogGCWorker,
 		// GH #461 — webhook dedup GC (always wired; 7-day retention).
@@ -3690,11 +3692,12 @@ type riverDeps struct {
 	assistantReqSweepWorker     *assistantrequest.SweepWorker
 	assistantReqReconcileWorker *assistantrequest.ReconcileWorker
 	// Ability requests (E2): scan, dispatch, sweeper, reconciler.
-	abilityReqScanWorker          *abilityrequest.ScanWorker
-	abilityReqDispatchWorker      *abilityrequest.DispatchWorker
-	abilityReqSweepWorker         *abilityrequest.SweepWorker
-	abilityReqReconcileWorker     *abilityrequest.ReconcileWorker
-	abilityReqUndoReconcileWorker *abilityrequest.UndoReconcileWorker
+	abilityReqScanWorker             *abilityrequest.ScanWorker
+	abilityReqDispatchWorker         *abilityrequest.DispatchWorker
+	abilityReqSweepWorker            *abilityrequest.SweepWorker
+	abilityReqReconcileWorker        *abilityrequest.ReconcileWorker
+	abilityReqUndoReconcileWorker    *abilityrequest.UndoReconcileWorker
+	abilityReqContentRetentionWorker *abilityrequest.ContentRetentionWorker
 	// m59 Phase 3 — email log retention GC (always wired).
 	emailLogGCWorker *email.EmailLogGCWorker
 	// GH #461 — webhook dedup GC (always wired; 7-day retention).
@@ -3759,6 +3762,9 @@ type riverDeps struct {
 // update tenant shard's concurrent workers so one tenant cannot starve others.
 func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d riverDeps) (*river.Client[pgx.Tx], error) {
 	workers := river.NewWorkers()
+	if d.abilityReqContentRetentionWorker != nil {
+		river.AddWorker(workers, d.abilityReqContentRetentionWorker)
+	}
 	river.AddWorker(workers, site.NewHealthCheckWorker(d.healthChecker))
 	river.AddWorker(workers, d.updateWorker)
 	if d.updateReaperWorker != nil {
@@ -4226,6 +4232,9 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	}
 
 	// Ability requests (E2): same cadence as the AI cache clears.
+	if d.abilityReqContentRetentionWorker != nil {
+		periodics = append(periodics, abilityrequest.NewContentRetentionPeriodicJob())
+	}
 	if d.abilityReqScanWorker != nil && d.abilityReqDispatchWorker != nil &&
 		d.abilityReqSweepWorker != nil && d.abilityReqReconcileWorker != nil &&
 		d.abilityReqUndoReconcileWorker != nil {

@@ -31,7 +31,7 @@ import (
 
 // eligibleDraftInputQueries are the two statements eligibleDraftCreateInput
 // runs: the one that names the eligible draft, and the one that returns the
-// input of the request it names.
+// input or retained design of the request it names.
 type eligibleDraftInputQueries interface {
 	GetEligibleCreatedDraft(ctx context.Context, arg sqlc.GetEligibleCreatedDraftParams) (sqlc.GetEligibleCreatedDraftRow, error)
 	GetEligibleCreatedDraftInput(ctx context.Context, arg sqlc.GetEligibleCreatedDraftInputParams) (sqlc.GetEligibleCreatedDraftInputRow, error)
@@ -44,7 +44,8 @@ var _ eligibleDraftInputQueries = (*sqlc.Queries)(nil)
 var errDraftInputNamesAnotherRequest = errors.New("mcp: the draft and its creation input name different requests")
 
 // eligibleDraftCreateInput is the input of the request that made the eligible
-// draft for postID, or nil when the control plane names no draft for it. Both
+// draft for postID, or its retained design after content clearing. It is nil
+// when the control plane names no draft for it. Both
 // statements carry the tenant, the site and the post, and the id each returns
 // must be the same request's.
 func eligibleDraftCreateInput(ctx context.Context, q eligibleDraftInputQueries, tenantID, siteID uuid.UUID, postID int64) ([]byte, error) {
@@ -74,6 +75,9 @@ func eligibleDraftCreateInput(ctx context.Context, q eligibleDraftInputQueries, 
 	}
 	if created.ID != draft.ID {
 		return nil, errDraftInputNamesAnotherRequest
+	}
+	if created.ContentClearedAt.Valid {
+		return created.RetainedDraft, nil
 	}
 	return []byte(created.InputJson), nil
 }

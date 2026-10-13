@@ -287,6 +287,8 @@ type AssistantAbilityRequest struct {
 	CheckedTargetStatus  *string            `json:"checked_target_status"`
 	SnapshotSha256       *string            `json:"snapshot_sha256"`
 	UndoCode             *string            `json:"undo_code"`
+	ContentClearedAt     pgtype.Timestamptz `json:"content_cleared_at"`
+	RetainedDraft        []byte             `json:"retained_draft"`
 }
 
 type AssistantCachePurgeRequest struct {

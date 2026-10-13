@@ -5348,6 +5348,12 @@ func (s *AbilityRequest) encodeFields(e *jx.Encoder) {
 		e.Str(s.InputJSON)
 	}
 	{
+		if s.ContentClearedAt.Set {
+			e.FieldStart("content_cleared_at")
+			s.ContentClearedAt.Encode(e, json.EncodeDateTime)
+		}
+	}
+	{
 		if s.TitleExcerpt.Set {
 			e.FieldStart("title_excerpt")
 			s.TitleExcerpt.Encode(e)
@@ -5559,50 +5565,51 @@ func (s *AbilityRequest) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAbilityRequest = [43]string{
+var jsonFieldsNameOfAbilityRequest = [44]string{
 	0:  "id",
 	1:  "site_id",
 	2:  "ability_name",
 	3:  "input_json",
-	4:  "title_excerpt",
-	5:  "editor",
-	6:  "post_type",
-	7:  "effect_copy",
-	8:  "snapshot",
-	9:  "site_label",
-	10: "site_host",
-	11: "grant_label",
-	12: "grant_via",
-	13: "setup_client",
-	14: "card_copy_version",
-	15: "presented_digest",
-	16: "state",
-	17: "created_at",
-	18: "expires_at",
-	19: "decided_at",
-	20: "outcome",
-	21: "outcome_code",
-	22: "outcome_detail",
-	23: "outside_change",
-	24: "not_sent_reason",
-	25: "created_post_id",
-	26: "trashed",
-	27: "restored",
-	28: "undo_state",
-	29: "undo_code",
-	30: "undo_available_until",
-	31: "undo_offered",
-	32: "resolve_gave_up",
-	33: "route_id",
-	34: "route_sha256",
-	35: "card_facts",
-	36: "page_media",
-	37: "approval",
-	38: "change_class",
-	39: "change_kind_name",
-	40: "ask_reason",
-	41: "page_builder",
-	42: "page_edit",
+	4:  "content_cleared_at",
+	5:  "title_excerpt",
+	6:  "editor",
+	7:  "post_type",
+	8:  "effect_copy",
+	9:  "snapshot",
+	10: "site_label",
+	11: "site_host",
+	12: "grant_label",
+	13: "grant_via",
+	14: "setup_client",
+	15: "card_copy_version",
+	16: "presented_digest",
+	17: "state",
+	18: "created_at",
+	19: "expires_at",
+	20: "decided_at",
+	21: "outcome",
+	22: "outcome_code",
+	23: "outcome_detail",
+	24: "outside_change",
+	25: "not_sent_reason",
+	26: "created_post_id",
+	27: "trashed",
+	28: "restored",
+	29: "undo_state",
+	30: "undo_code",
+	31: "undo_available_until",
+	32: "undo_offered",
+	33: "resolve_gave_up",
+	34: "route_id",
+	35: "route_sha256",
+	36: "card_facts",
+	37: "page_media",
+	38: "approval",
+	39: "change_class",
+	40: "change_kind_name",
+	41: "ask_reason",
+	42: "page_builder",
+	43: "page_edit",
 }
 
 // Decode decodes AbilityRequest from json.
@@ -5662,6 +5669,16 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"input_json\"")
 			}
+		case "content_cleared_at":
+			if err := func() error {
+				s.ContentClearedAt.Reset()
+				if err := s.ContentClearedAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"content_cleared_at\"")
+			}
 		case "title_excerpt":
 			if err := func() error {
 				s.TitleExcerpt.Reset()
@@ -5693,7 +5710,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"post_type\"")
 			}
 		case "effect_copy":
-			requiredBitSet[0] |= 1 << 7
+			requiredBitSet[1] |= 1 << 0
 			if err := func() error {
 				if err := s.EffectCopy.Decode(d); err != nil {
 					return err
@@ -5703,7 +5720,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"effect_copy\"")
 			}
 		case "snapshot":
-			requiredBitSet[1] |= 1 << 0
+			requiredBitSet[1] |= 1 << 1
 			if err := func() error {
 				v, err := d.Str()
 				s.Snapshot = string(v)
@@ -5715,7 +5732,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"snapshot\"")
 			}
 		case "site_label":
-			requiredBitSet[1] |= 1 << 1
+			requiredBitSet[1] |= 1 << 2
 			if err := func() error {
 				v, err := d.Str()
 				s.SiteLabel = string(v)
@@ -5727,7 +5744,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"site_label\"")
 			}
 		case "site_host":
-			requiredBitSet[1] |= 1 << 2
+			requiredBitSet[1] |= 1 << 3
 			if err := func() error {
 				v, err := d.Str()
 				s.SiteHost = string(v)
@@ -5739,7 +5756,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"site_host\"")
 			}
 		case "grant_label":
-			requiredBitSet[1] |= 1 << 3
+			requiredBitSet[1] |= 1 << 4
 			if err := func() error {
 				v, err := d.Str()
 				s.GrantLabel = string(v)
@@ -5751,7 +5768,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"grant_label\"")
 			}
 		case "grant_via":
-			requiredBitSet[1] |= 1 << 4
+			requiredBitSet[1] |= 1 << 5
 			if err := func() error {
 				v, err := d.Str()
 				s.GrantVia = string(v)
@@ -5773,7 +5790,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"setup_client\"")
 			}
 		case "card_copy_version":
-			requiredBitSet[1] |= 1 << 6
+			requiredBitSet[1] |= 1 << 7
 			if err := func() error {
 				v, err := d.Int32()
 				s.CardCopyVersion = int32(v)
@@ -5795,7 +5812,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"presented_digest\"")
 			}
 		case "state":
-			requiredBitSet[2] |= 1 << 0
+			requiredBitSet[2] |= 1 << 1
 			if err := func() error {
 				if err := s.State.Decode(d); err != nil {
 					return err
@@ -5805,7 +5822,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"state\"")
 			}
 		case "created_at":
-			requiredBitSet[2] |= 1 << 1
+			requiredBitSet[2] |= 1 << 2
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.CreatedAt = v
@@ -5817,7 +5834,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"created_at\"")
 			}
 		case "expires_at":
-			requiredBitSet[2] |= 1 << 2
+			requiredBitSet[2] |= 1 << 3
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.ExpiresAt = v
@@ -5949,7 +5966,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"undo_available_until\"")
 			}
 		case "undo_offered":
-			requiredBitSet[3] |= 1 << 7
+			requiredBitSet[4] |= 1 << 0
 			if err := func() error {
 				v, err := d.Bool()
 				s.UndoOffered = bool(v)
@@ -5961,7 +5978,7 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"undo_offered\"")
 			}
 		case "resolve_gave_up":
-			requiredBitSet[4] |= 1 << 0
+			requiredBitSet[4] |= 1 << 1
 			if err := func() error {
 				v, err := d.Bool()
 				s.ResolveGaveUp = bool(v)
@@ -6082,11 +6099,11 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [6]uint8{
-		0b10001111,
-		0b01011111,
-		0b00000111,
-		0b10000000,
-		0b00000001,
+		0b00001111,
+		0b10111111,
+		0b00001110,
+		0b00000000,
+		0b00000011,
 		0b00000000,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {

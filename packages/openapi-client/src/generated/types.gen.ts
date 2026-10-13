@@ -4692,7 +4692,7 @@ export type AbilityTenantReenableResult = {
  * One AI site-change request. `site_label`, `site_host`, `grant_label`
  * and `title_excerpt` came from a site or an AI connection: render each
  * as plain text. `input_json` is the exact input the AI chose, shown in
- * full on the card.
+ * full on the card until content_cleared_at is set, when input_json is {}.
  *
  */
 export type AbilityRequest = {
@@ -4700,6 +4700,10 @@ export type AbilityRequest = {
   site_id: string;
   ability_name: string;
   input_json: string;
+  /**
+   * When request details were cleared after the retention period.
+   */
+  content_cleared_at?: string | null;
   title_excerpt?: string;
   editor?: string;
   post_type?: string;
@@ -4818,9 +4822,9 @@ export type AbilityRequest = {
    */
   route_sha256?: string;
   /**
-   * The structured card of a wpmgr/rest-write request; null otherwise.
+   * The structured card of a wpmgr/rest-write request; null for cleared requests and other abilities.
    */
-  card_facts?: AbilityRequestCardFacts;
+  card_facts?: AbilityRequestCardFacts | null;
   /**
    * The images a wpmgr/page-create request places, in outline order, as
    * the site described them when WPMgr checked the request. Null when

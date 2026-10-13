@@ -8,6 +8,7 @@ import { useDeepLinkFocus } from "@/features/ai-requests/use-deep-link";
 import { UNDO_WINDOW_OVER_LINE, ranAutomatically } from "@/features/ai-trust/ai-trust-copy";
 
 import { AutoApprovalRows, RanAutomaticallyChip, WaitingBecauseRow } from "./auto-approval";
+import { ClearedRequestCard } from "./cleared-request-card";
 import { DesignedSections } from "./designed-sections";
 import { DesignSummary } from "./design-summary";
 import { LayoutPreview } from "./layout-preview";
@@ -69,6 +70,7 @@ export interface AbilityRequestCardProps {
 
 export function AbilityRequestCard(props: AbilityRequestCardProps) {
   const canUndo = useUndoWindowOpen(props.request.undo_offered, props.request.undo_available_until);
+  if (props.request.content_cleared_at) return <ClearedRequestCard {...props} canUndo={canUndo} />;
   if (isRestWrite(props.request)) return <StructuredAbilityCard {...props} canUndo={canUndo} />;
   if (isPageEdit(props.request)) return <PageEditCard {...props} />;
   return <PageCreateCard {...props} canUndo={canUndo} />;
