@@ -333,6 +333,39 @@ final class BuilderDocumentRestoreTest extends TestCase
         $this->assertSame([[self::POST_ID]], $this->api->callsTo('deletePostCss'));
     }
 
+    public function test_scoped_native_edit_and_later_refusal_preserve_global_row_order(): void
+    {
+        $this->seedCorpus();
+        $before = $this->rows();
+        $snapshot = $this->snapshot();
+        $fp = $this->fp();
+        $data = $this->rowsWithIds('_elementor_data')[0];
+        $this->db->update('wp_postmeta', ['meta_value' => '[{"id":"edited"}]'], ['meta_id' => $data['meta_id'], 'post_id' => self::POST_ID]);
+        $changed = BuilderDocumentRestore::changes(self::POST_ID, $snapshot, ['_elementor_data', '_elementor_version']);
+        $this->assertNull(BuilderDocumentRestore::scoped(self::POST_ID, $snapshot, $changed['changed_keys'], $changed['changed_fields'], $this->descriptor, $this->adapter));
+        $this->assertSame($fp, $this->fp());
+        $this->assertSame($before, $this->rows(), 'native undo must keep preserved row order, including unchanged written keys');
+
+        $nextSnapshot = $this->snapshot();
+        $this->failedSave();
+        $this->assertNull(BuilderDocumentRestore::full(self::POST_ID, $nextSnapshot, $this->descriptor, $this->adapter, $fp));
+        $this->assertSame($before, $this->rows(), 'a later refused write must return to the original row bytes and order');
+    }
+
+    public function test_scoped_in_place_row_updates_roll_back_on_failure(): void
+    {
+        $this->seedCorpus();
+        $snapshot = $this->snapshot();
+        $data = $this->rowsWithIds('_elementor_data')[0];
+        $this->db->update('wp_postmeta', ['meta_value' => '[{"id":"edited"}]'], ['meta_id' => $data['meta_id'], 'post_id' => self::POST_ID]);
+        $changed = BuilderDocumentRestore::changes(self::POST_ID, $snapshot, ['_elementor_data']);
+        $before = $this->db->metaRowsOf(self::POST_ID);
+        $this->db->failOnStatement = 'UPDATE wp_postmeta';
+        $result = BuilderDocumentRestore::scoped(self::POST_ID, $snapshot, $changed['changed_keys'], $changed['changed_fields'], $this->descriptor, $this->adapter);
+        $this->assertSame(BuilderDocumentRestore::DETAIL_WRITE_FAILED, $result['detail'] ?? null);
+        $this->assertSame($before, $this->db->metaRowsOf(self::POST_ID));
+    }
+
     public function test_scoped_guard_refuses_when_a_key_moved_on(): void
     {
         $cases = [

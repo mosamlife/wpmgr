@@ -531,6 +531,20 @@ final class FakeBuilderWpdb
     public function update(string $table, array $data, array $where, $format = null, $whereFormat = null)
     {
         $this->record('UPDATE ' . $table, [$data, $where]);
+        if ($table === $this->postmeta && array_keys($data) === ['meta_value'] && array_keys($where) === ['meta_id', 'post_id']) {
+            if ($this->fails('postmeta', 'UPDATE ' . $table)) {
+                return false;
+            }
+            foreach ($this->metaRows as &$row) {
+                if ($row['meta_id'] === (int) $where['meta_id'] && $row['post_id'] === (int) $where['post_id']) {
+                    $value = $data['meta_value'] === null ? null : (string) $data['meta_value'];
+                    $changed = $row['meta_value'] !== $value;
+                    $row['meta_value'] = $value;
+                    return $changed ? 1 : 0;
+                }
+            }
+            return 0;
+        }
         if ($table !== $this->posts || array_keys($where) !== ['ID'] || $data === []) {
             throw new \LogicException('update: posts columns by ID only');
         }

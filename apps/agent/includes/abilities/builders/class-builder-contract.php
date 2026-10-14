@@ -30,14 +30,20 @@ if (!defined('ABSPATH')) {
  *     {"op":"remove","ref":REF}
  *     {"op":"move","ref":REF,"after":REF}
  *     {"op":"move","ref":REF,"before":REF}
+ *     {"op":"move","ref":REF,"into":REF,"position"?:"first"|"last"}
+ *     {"op":"set_native","ref":REF,"settings":SETTINGS}
+ *     {"op":"add_native","after"|"before"|"into":REF,"position"?:"first"|"last","widget":WIDGET,"settings":SETTINGS}
+ *     {"op":"duplicate","ref":REF,"after"|"before"|"into":REF,"position"?:"first"|"last"}
  *   REF      a node reference read from wpmgr/page-structure, matching RE_REF
  *   FIELD    one of FIELDS, or a pattern path such as plans.1.price; the
  *            node's own editable list decides
  *   OUTLINE  1..50 wpmgr/page-create outline nodes, the same grammar, with
  *            version 3 sections and pattern nodes as well
  *
- * An insert names exactly one anchor, and only an insert into a node takes a
- * position. Anything outside the grammar is refused, never stripped. Rules
+ * Anchored operations name exactly one anchor; position is offered only
+ * with into. Native settings are an object, or [] for empty settings; their
+ * scalars and collection shapes are retained until native validation.
+ * Anything outside the grammar is refused, never stripped. Rules
  * that depend on the page (a reference that is not on it, a field the node
  * does not offer, a locked node, an operation the page's builder does not
  * declare) belong to the agent's precheck, not to the schema.
@@ -86,11 +92,12 @@ final class BuilderContract
     public const MAX_STRUCTURE_BYTES = 65536;
 
     /** The page-edit operations. Each adapter declares which of these it supports. */
-    public const OPS = ['set_text', 'insert', 'replace', 'remove', 'move'];
+    public const OPS = ['set_text', 'insert', 'replace', 'remove', 'move', 'set_native', 'add_native', 'duplicate'];
 
     /**
      * The node kinds of a page projection: the page-create outline kinds, then
-     * the builder kinds. "locked" is every node an adapter does not classify.
+     * the builder kinds. Native widgets carry their widget type and summary;
+     * locked nodes carry only the adapter's fixed label.
      */
     public const KINDS = [
         'heading',
@@ -108,6 +115,7 @@ final class BuilderContract
         'pattern',
         'column',
         'locked',
+        'native',
     ];
 
     /** The plain fields set_text may name. A node's editable list is a subset; a pattern also offers paths. */
@@ -156,6 +164,18 @@ final class BuilderContract
             self::opSchema('move', ['ref' => $ref, 'after' => $ref], ['ref', 'after']),
             self::opSchema('move', ['ref' => $ref, 'before' => $ref], ['ref', 'before']),
         ];
+        $settings = ['oneOf' => [['type' => 'object'], ['type' => 'array', 'maxItems' => 0]]];
+        $operations[] = self::opSchema('set_native', ['ref' => $ref, 'settings' => $settings], ['ref', 'settings']);
+        foreach (['after', 'before', 'into'] as $anchor) {
+            $position = $anchor === 'into' ? ['position' => ['type' => 'string', 'enum' => self::POSITIONS]] : [];
+            $operations[] = self::opSchema('add_native', [$anchor => $ref] + $position + [
+                'widget' => ['type' => 'string', 'pattern' => '^[a-z][a-z0-9_-]{0,63}$'],
+                'settings' => $settings,
+            ], [$anchor, 'widget', 'settings']);
+            $operations[] = self::opSchema('duplicate', ['ref' => $ref, $anchor => $ref] + $position, ['ref', $anchor]);
+        }
+        $operations[] = self::opSchema('move', ['ref' => $ref, 'into' => $ref,
+            'position' => ['type' => 'string', 'enum' => self::POSITIONS]], ['ref', 'into']);
 
         return [
             'type'                 => 'object',

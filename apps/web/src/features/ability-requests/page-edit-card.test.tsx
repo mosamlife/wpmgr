@@ -4,6 +4,7 @@ import type { AbilityRequest } from "@wpmgr/api";
 
 import { designedEditRow, draftDesign, goldenEditCases, goldenEditRow, readEditInput } from "@/test/designed-page-edit";
 import { renderWithProviders } from "@/test/render";
+import { nativeCardCase, nativeCardCases, nativeEditRow, nativeLinkCase } from "@/test/native-page-edit";
 import {
   defaultEditOps,
   editFacts,
@@ -68,6 +69,140 @@ async function openCard(): Promise<HTMLElement> {
 
 const NOT_SHOWABLE =
   "WPMgr cannot show this request in full, so it cannot be approved here. Decline it and ask the AI again.";
+
+describe("native widget approval cards", () => {
+  it.each(nativeCardCases)("renders production card $name with every operation and approval", async (c) => {
+    renderTab([nativeEditRow(c)]);
+    const card = await openCard();
+    expect(within(card).queryByText(NOT_SHOWABLE)).toBeNull();
+    expect(within(card).getAllByTestId("change-line")).toHaveLength(c.facts.changes.length);
+    expect(within(card).getByRole("button", { name: "Approve" })).toBeEnabled();
+    for (const node of c.facts.after_outline.nodes.filter((n) => n.kind === "native")) {
+      const drawn = card.querySelector(`[data-ref="${node.ref}"]`)!;
+      expect(drawn).toHaveTextContent(`Elementor ${node.widget} widget`);
+      expect(drawn.querySelector("bdi")?.textContent).toBe(node.summary);
+    }
+  });
+
+  it("shows a Heading change with before values isolated and labelled as site text", async () => {
+    renderTab([nativeEditRow(nativeCardCase("mapped_set_native"))]);
+    const card = await openCard();
+    expect(titles(card)).toEqual(["Change the Heading widget"]);
+    const table = within(card).getByRole("table", { name: "Widget settings" });
+    expect(within(table).getByRole("columnheader", { name: /Before.*From the site/ })).toBeInTheDocument();
+    const before = within(table).getByTestId("native-before");
+    expect(before.tagName).toBe("BDI");
+    expect(before).toHaveTextContent("[site-supplied] Left column");
+    expect(within(table).getByRole("rowheader", { name: "Title" })).toBeInTheDocument();
+    expect(table).toHaveTextContent("Native heading");
+    expect(card.querySelector('[data-ref="52982f9"] [data-mark="changed"]')).toHaveTextContent("changed");
+  });
+
+  it("shows an added Button and its new element IDs", async () => {
+    const c = nativeCardCase("add_native");
+    renderTab([nativeEditRow(c)]);
+    const card = await openCard();
+    expect(titles(card)).toEqual(["Add a Button widget"]);
+    const settings = within(card).getByRole("table");
+    expect(within(settings).getByRole("rowheader", { name: "Text" })).toBeInTheDocument();
+    expect(within(settings).getByRole("cell", { name: "Not set" })).toBeInTheDocument();
+    expect(within(settings).getByRole("cell", { name: "New button" })).toBeInTheDocument();
+    expect(card).toHaveTextContent(`New element IDs: ${c.facts.changes[0]!.new_refs!.join(", ")}`);
+    expect(card.querySelector(`[data-ref="${c.facts.changes[0]!.new_refs![0]}"] [data-mark="new"]`)).toHaveTextContent("new");
+  });
+
+  it("shows duplication and every new element ID", async () => {
+    const c = nativeCardCase("duplicate");
+    renderTab([nativeEditRow(c)]);
+    const card = await openCard();
+    expect(titles(card)).toEqual(["Duplicate a widget"]);
+    const line = within(card).getByTestId("change-line");
+    expect(line).toHaveTextContent("Counter widget");
+    for (const ref of c.facts.changes[0]!.new_refs!) expect(line).toHaveTextContent(ref);
+  });
+
+  it("marks a removed setting in the after column beside its site value", async () => {
+    renderTab([nativeEditRow(nativeCardCase("merge_delete"))]);
+    const card = await openCard();
+    const table = within(card).getByRole("table");
+    const removed = within(table).getByRole("rowheader", { name: "Title" }).parentElement!;
+    expect(within(removed).getByText("Removed")).toBeInTheDocument();
+    expect(within(removed).getByTestId("native-before")).toHaveTextContent("[site-supplied] Counter");
+    const number = within(table).getByRole("rowheader", { name: "Ending number" }).parentElement!;
+    expect(number).toHaveTextContent("25");
+    expect(within(number).queryByText("Removed")).toBeNull();
+  });
+
+  it.each(["remove", "remove_ancestor"])("shows the removal count and complete removed outline for %s", async (name) => {
+    const c = nativeCardCase(name);
+    renderTab([nativeEditRow(c)]);
+    const card = await openCard();
+    expect(titles(card)).toEqual([name === "remove" ? "Remove a widget" : "Remove a section"]);
+    const n = c.facts.changes[0]!.native!;
+    expect(card).toHaveTextContent(`${n.removed_count} ${n.removed_count === 1 ? "element" : "elements"} removed`);
+    const outline = within(card).getByRole("list", { name: "Removed elements" });
+    const elements = within(outline).getAllByRole("listitem");
+    expect(elements).toHaveLength(n.removed_outline!.length);
+    for (const [i, node] of n.removed_outline!.entries()) {
+      expect(elements[i]).toHaveTextContent(node.ref);
+      if (node.widget) expect(elements[i]).toHaveTextContent(`Elementor ${node.widget} widget`);
+    }
+  });
+
+  it("shows where a widget moves from and to as positions people count", async () => {
+    const c = nativeCardCase("move");
+    renderTab([nativeEditRow(c)]);
+    const card = await openCard();
+    expect(titles(card)).toEqual(["Move a widget"]);
+    const n = c.facts.changes[0]!.native!;
+    expect(card).toHaveTextContent(`From: parent ${n.from!.parent}, position ${n.from!.index + 1}`);
+    expect(card).toHaveTextContent(`To: parent ${n.to!.parent}, position ${n.to!.index + 1}`);
+    expect(card.querySelector('[data-ref="ccccccc"] [data-mark="moved"]')).toHaveTextContent("moved");
+  });
+
+  it("shows the complete link as text with its external domain beside it", async () => {
+    const c = nativeLinkCase();
+    renderTab([nativeEditRow(c)]);
+    const card = await openCard();
+    const links = within(card).getByRole("list", { name: "Links" });
+    expect(links).toHaveTextContent("https://outside.example/read?full=yes");
+    expect(links).toHaveTextContent("Another website: outside.example");
+    expect(links.querySelector("a")).toBeNull();
+    expect(within(links).getByText("https://outside.example/read?full=yes").tagName).toBe("BDI");
+  });
+
+  it("shows nested settings and long text in full without creating markup", async () => {
+    const c = nativeCardCase("set_native");
+    const text = '<script>site text & directions</script> ' + "Complete value ".repeat(250);
+    const input = JSON.parse(c.input) as { operations: Array<{ settings: unknown }> };
+    const after = [{ title: "First item", value: "Second leaf" }, { title: "Last item", value: text }];
+    input.operations[0]!.settings = { items: after };
+    c.input = JSON.stringify(input);
+    c.facts.changes[0]!.native!.keys = [{ key: "items", from_the_site: { before: { nested: text } }, after }];
+    renderTab([nativeEditRow(c)]);
+    const card = await openCard();
+    const table = within(card).getByRole("table");
+    expect(table).toHaveTextContent("Last item");
+    expect(within(table).getByTestId("native-before").textContent).toBe(JSON.stringify({ nested: text }, null, 2));
+    expect(table.textContent).toContain(JSON.stringify(after, null, 2));
+    expect(table.querySelector("script")).toBeNull();
+    expect(table.querySelector("img")).toBeNull();
+  });
+
+  it.each(["extra member", "missing after", "missing move to", "missing link domain"])("blocks approval for %s", async (defect) => {
+    const c = defect === "missing link domain" ? nativeLinkCase() : nativeCardCase(defect === "missing move to" ? "move" : "set_native");
+    const n = c.facts.changes[0]!.native!;
+    if (defect === "extra member") Reflect.set(n, "extra", "unshown");
+    else if (defect === "missing after") delete n.keys![0]!.after;
+    else if (defect === "missing move to") delete n.to;
+    else delete n.keys![1]!.links![0]!.external_domain;
+    renderTab([nativeEditRow(c)]);
+    const card = await openCard();
+    expect(within(card).getByText(NOT_SHOWABLE)).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Approve" })).toBeDisabled();
+    expect(within(card).queryByTestId("page-edit-preview")).toBeNull();
+  });
+});
 
 const flat = (el: Element | null | undefined) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
 

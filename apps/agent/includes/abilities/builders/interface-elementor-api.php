@@ -110,6 +110,27 @@ interface ElementorApi
      */
     public function widgetTypeExists(string $type): bool;
 
+    /** Whether the registered widget class is shipped in Elementor's core widget directory. */
+    public function widgetIsCore(string $type): bool;
+
+    /**
+     * The live widget registry, with metadata from each widget object.
+     * Pro is determined by the ElementorPro namespace; atomic by the prop
+     * schema API. Null when the manager or its metadata cannot be read.
+     *
+     * @return list<array{name: string, title: string, categories: list<string>, pro: bool, atomic: bool}>|null
+     */
+    public function widgetCatalogue(): ?array;
+
+    /**
+     * One registered widget's expanded controls, read fresh with
+     * get_controls(). Null when the widget is missing or cannot be read.
+     *
+     * @param string $name Widget name.
+     * @return array<string, array<string, mixed>>|null
+     */
+    public function widgetControls(string $name): ?array;
+
     /**
      * $data with every string passed through wp_kses_post(), which is what
      * Elementor's document save does to the strings of a document saved by a

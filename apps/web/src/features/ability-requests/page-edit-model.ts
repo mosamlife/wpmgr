@@ -68,6 +68,21 @@ function isPatternField(field: string): boolean {
 }
 const fieldSchema = z.union([z.enum(FIELDS), z.string().refine(isPatternField)]);
 const positionSchema = z.enum(["first", "last"]);
+const widgetSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
+const parentSchema = z.union([z.literal("root"), refSchema]);
+const nativeValueSchema = z.json();
+export type NativeValue = z.infer<typeof nativeValueSchema>;
+type StoredValue = string | StoredValue[] | { [key: string]: StoredValue };
+const storedValueSchema: z.ZodType<StoredValue> = z.lazy(() => z.union([
+  z.string(), z.array(storedValueSchema),
+  z.record(z.string(), storedValueSchema).refine((v) => Object.keys(v).length > 0
+    && !Object.keys(v).every((key, i) => key === String(i))),
+]));
+const settingsSchema = z.union([
+  z.record(z.string(), z.union([storedValueSchema, z.null()])), z.tuple([]),
+]);
+const nativeAddFields = { op: z.literal("add_native"), widget: widgetSchema, settings: settingsSchema };
+const nativeDuplicateFields = { op: z.literal("duplicate"), ref: refSchema };
 
 export type EditField = z.infer<typeof fieldSchema>;
 export type HowAnchor = "after" | "before" | "into";
@@ -82,6 +97,14 @@ const operationSchema = z.union([
   z.strictObject({ op: z.literal("remove"), ref: refSchema }),
   z.strictObject({ op: z.literal("move"), ref: refSchema, after: refSchema }),
   z.strictObject({ op: z.literal("move"), ref: refSchema, before: refSchema }),
+  z.strictObject({ op: z.literal("move"), ref: refSchema, into: refSchema, position: positionSchema.optional() }),
+  z.strictObject({ op: z.literal("set_native"), ref: refSchema, settings: settingsSchema }),
+  z.strictObject({ ...nativeAddFields, after: refSchema }),
+  z.strictObject({ ...nativeAddFields, before: refSchema }),
+  z.strictObject({ ...nativeAddFields, into: refSchema, position: positionSchema.optional() }),
+  z.strictObject({ ...nativeDuplicateFields, after: refSchema }),
+  z.strictObject({ ...nativeDuplicateFields, before: refSchema }),
+  z.strictObject({ ...nativeDuplicateFields, into: refSchema, position: positionSchema.optional() }),
 ]);
 const inputSchema = z.strictObject({
   post_id: z.number().int().min(1),
@@ -102,7 +125,10 @@ export type EditOp =
     }
   | { readonly op: "replace"; readonly ref: string; readonly outline: readonly EditNode[] }
   | { readonly op: "remove"; readonly ref: string }
-  | { readonly op: "move"; readonly ref: string; readonly how: "after" | "before"; readonly anchor: string };
+  | { readonly op: "move" | "duplicate"; readonly ref: string; readonly how: HowAnchor; readonly anchor: string; readonly position?: "first" | "last" }
+  | { readonly op: "set_native"; readonly ref: string; readonly settings: Record<string, StoredValue | null> }
+  | { readonly op: "add_native"; readonly widget: string; readonly settings: Record<string, StoredValue | null>;
+      readonly how: HowAnchor; readonly anchor: string; readonly position?: "first" | "last" };
 
 interface EditInput {
   readonly postId: number;
@@ -129,9 +155,16 @@ function normalise(o: z.infer<typeof operationSchema>, designed: boolean): EditO
     case "remove":
       return { op: "remove", ref: o.ref };
     case "move":
-      return "after" in o
-        ? { op: "move", ref: o.ref, how: "after", anchor: o.after }
-        : { op: "move", ref: o.ref, how: "before", anchor: o.before };
+    case "duplicate":
+    case "add_native": {
+      const placed = "after" in o ? { how: "after" as const, anchor: o.after }
+        : "before" in o ? { how: "before" as const, anchor: o.before }
+        : { how: "into" as const, anchor: o.into, position: o.position };
+      if (o.op === "add_native") return { op: o.op, widget: o.widget, settings: Array.isArray(o.settings) ? {} : o.settings, ...placed };
+      return { op: o.op, ref: o.ref, ...placed };
+    }
+    case "set_native":
+      return { op: o.op, ref: o.ref, settings: Array.isArray(o.settings) ? {} : o.settings };
   }
 }
 
@@ -168,10 +201,11 @@ const KINDS = [
   "pattern",
   "column",
   "locked",
+  "native",
 ] as const;
 export type NodeKind = (typeof KINDS)[number];
 
-const kindSchema = z.enum(KINDS);
+const kindSchema = z.enum(KINDS.filter((kind) => kind !== "native"));
 const levelSchema = z.number().int().min(1).max(6);
 const siteTextSchema = z.record(fieldSchema, z.string());
 type SiteText = z.infer<typeof siteTextSchema>;
@@ -184,8 +218,40 @@ const anchorSchema = z.strictObject({
   level: levelSchema.optional(),
   label: z.string().min(1).optional(),
 });
+const nativeKeySchema = z.strictObject({
+  key: z.string().min(1),
+  from_the_site: z.strictObject({ before: nativeValueSchema }).optional(),
+  after: nativeValueSchema.optional(),
+  removed: z.literal(true).optional(),
+  links: z.array(z.strictObject({ text: z.string().min(1), external_domain: z.string().min(1).optional() })).min(1).optional(),
+}).refine((k) => k.removed === true
+  ? k.after === undefined && k.from_the_site !== undefined && k.links === undefined
+  : k.after !== undefined && k.after !== null);
+const nativePlaceSchema = z.strictObject({ parent: parentSchema, index: z.number().int().min(0) });
+const removedNodeSchema = z.strictObject({
+  ref: refSchema, kind: z.enum(["widget", "container", "section", "column"]), widget: widgetSchema.optional(),
+}).refine((n) => (n.kind === "widget") === (n.widget !== undefined));
+const nativeDetailsSchema = z.strictObject({
+  widget: widgetSchema.optional(), keys: z.array(nativeKeySchema).min(1).optional(),
+  removed_count: z.number().int().min(1).optional(), removed_outline: z.array(removedNodeSchema).min(1).optional(),
+  from: nativePlaceSchema.optional(), to: nativePlaceSchema.optional(),
+});
+const nativeChangeSchema = z.union([
+  z.strictObject({ op: z.literal("set_native"), ref: refSchema,
+    native: z.strictObject({ widget: widgetSchema, keys: z.array(nativeKeySchema).min(1).optional() }) }),
+  z.strictObject({ op: z.literal("add_native"), new_refs: z.array(refSchema).length(1),
+    native: z.strictObject({ widget: widgetSchema, keys: z.array(nativeKeySchema).min(1).optional() }) }),
+  z.strictObject({ op: z.literal("duplicate"), ref: refSchema, new_refs: z.array(refSchema).min(1),
+    native: z.strictObject({ widget: widgetSchema }) }),
+  z.strictObject({ op: z.literal("remove"), ref: refSchema,
+    native: nativeDetailsSchema.pick({ widget: true, removed_count: true, removed_outline: true })
+      .required({ removed_count: true, removed_outline: true })
+      .refine((n) => n.removed_count === n.removed_outline.length) }),
+  z.strictObject({ op: z.literal("move"), ref: refSchema,
+    native: nativeDetailsSchema.pick({ widget: true, from: true, to: true }).required({ from: true, to: true }) }),
+]);
 const changeSchema = z.strictObject({
-  op: z.enum(["set_text", "insert", "replace", "remove", "move"]),
+  op: z.enum(["set_text", "insert", "replace", "remove", "move", "set_native", "add_native", "duplicate"]),
   ref: refSchema.optional(),
   kind: kindSchema.optional(),
   level: levelSchema.optional(),
@@ -194,17 +260,25 @@ const changeSchema = z.strictObject({
   new_refs: z.array(refSchema).optional(),
   anchor: anchorSchema.optional(),
   from_the_site: z.strictObject({ before: siteTextSchema }).optional(),
+  native: nativeDetailsSchema.optional(),
+}).refine((c) => c.native !== undefined ? nativeChangeSchema.safeParse(c).success
+  : !["set_native", "add_native", "duplicate"].includes(c.op));
+const nativeOutlineNodeSchema = z.strictObject({
+  ref: refSchema, parent: parentSchema, kind: z.literal("native"), widget: widgetSchema, summary: z.string(),
 });
 const outlineNodeSchema = z.strictObject({
   ref: refSchema,
   parent: z.string().regex(/^(root|[A-Za-z0-9_-]{1,32})$/),
-  kind: kindSchema,
+  kind: z.enum(KINDS),
   level: levelSchema.optional(),
   editable: z.array(fieldSchema).optional(),
   from_the_site: siteTextSchema.optional(),
   label: z.string().min(1).optional(),
   variant: patternVariantSchema.optional(),
-});
+  widget: widgetSchema.optional(),
+  summary: z.string().optional(),
+}).refine((n) => n.kind === "native" ? nativeOutlineNodeSchema.safeParse(n).success
+  : n.widget === undefined && n.summary === undefined);
 const afterOutlineSchema = z.strictObject({
   node_count: z.number().int().min(0),
   truncated: z.boolean(),
@@ -244,7 +318,7 @@ export interface Seg {
 const ours = (s: string): Seg => ({ site: false, s });
 const fromSite = (s: string): Seg => ({ site: true, s });
 
-const KIND_LABELS: Record<Exclude<NodeKind, "heading" | "locked">, string> = {
+const KIND_LABELS: Record<Exclude<NodeKind, "heading" | "locked" | "native">, string> = {
   paragraph: "Paragraph",
   list: "List",
   image: "Image",
@@ -267,6 +341,7 @@ export const LOCKED_FALLBACK_LABEL = "Element WPMgr does not edit";
  * label the card carries for it, which is WPMgr's own wording for the node.
  */
 export function kindLabel(kind: NodeKind, level: number | undefined, label: string | undefined): string {
+  if (kind === "native") return "Elementor widget";
   if (kind === "locked") return label !== undefined ? label : LOCKED_FALLBACK_LABEL;
   if (kind === "heading") return level === undefined ? "Heading" : `Heading ${level}`;
   return KIND_LABELS[kind];
@@ -313,6 +388,8 @@ export interface ChangeLine {
   readonly note?: string;
   /** The line shows text that came from the site. */
   readonly fromSite: boolean;
+  readonly native?: z.infer<typeof nativeDetailsSchema>;
+  readonly newRefs?: readonly string[];
 }
 
 export type Mark = "changed" | "new" | "moved";
@@ -327,6 +404,8 @@ export interface AfterNode {
   readonly texts: ReadonlyArray<{ readonly field: EditField; readonly text: string }>;
   readonly mark: Mark | null;
   readonly children: readonly AfterNode[];
+  readonly summary?: string;
+  readonly widget?: string;
 }
 
 export interface AfterView {
@@ -373,13 +452,14 @@ function sameAnchor(change: Change, op: EditOp): boolean {
   if (op.op !== "insert" && op.op !== "move") return a === undefined;
   if (a === undefined || a.ref !== op.anchor || a.how !== op.how) return false;
   // An insert into a node always says where among its children; the default is the end.
-  if (op.op === "insert" && op.how === "into") return a.position === (op.position ?? "last");
+  if (op.how === "into") return a.position === (op.position ?? "last");
   return a.position === undefined;
 }
 
 /** True when the card's change is the AI's operation, field for field. */
 function agrees(change: Change, op: EditOp): boolean {
   if (change.op !== op.op) return false;
+  if (change.native !== undefined) return nativeAgrees(change, op);
   switch (op.op) {
     case "set_text":
       return (
@@ -423,10 +503,82 @@ function agrees(change: Change, op: EditOp): boolean {
         sameAnchor(change, op) &&
         change.kind !== undefined
       );
+    case "set_native":
+    case "add_native":
+    case "duplicate":
+      return false;
   }
 }
 
+function sameValue(a: NativeValue, b: NativeValue): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b)
+    && a.length === b.length && a.every((v, i) => sameValue(v, b[i]!));
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((k) => Object.hasOwn(b, k) && sameValue(a[k]!, b[k]!));
+}
+
+/** Links remain data; their domain is shown beside the complete address. */
+function nativeLinks(value: NativeValue): Array<{ text: string; external_domain: string }> {
+  if (typeof value === "string") {
+    try {
+      const u = new URL(value);
+      return (u.protocol === "https:" || u.protocol === "http:") && u.hostname !== ""
+        ? [{ text: value, external_domain: u.hostname }] : [];
+    } catch { return []; }
+  }
+  if (value !== null && typeof value === "object") return Object.values(value).flatMap(nativeLinks);
+  return [];
+}
+
+function nativeLinksAgree(key: z.infer<typeof nativeKeySchema>): boolean {
+  const sortLinks = (links: Array<{ text: string; external_domain?: string }>) => links
+    .map((link) => ({ text: link.text, external_domain: link.external_domain?.toLowerCase() ?? "" }))
+    .sort((a, b) => a.text.localeCompare(b.text));
+  return sameValue(sortLinks(key.links ?? []), sortLinks(key.after === undefined ? [] : nativeLinks(key.after)));
+}
+
+function nativeAgrees(change: Change, op: EditOp): boolean {
+  const n = change.native!;
+  if (op.op !== "add_native" && ("ref" in op ? change.ref !== op.ref : true)) return false;
+  if (op.op === "set_native" || op.op === "add_native") {
+    if (op.op === "add_native" && n.widget !== op.widget) return false;
+    const keys = n.keys ?? [];
+    if (new Set(keys.map((k) => k.key)).size !== keys.length) return false;
+    if (op.op === "add_native" && keys.length !== Object.values(op.settings).filter((v) => v !== null).length) return false;
+    return keys.every((k) => Object.hasOwn(op.settings, k.key) && (k.removed === true
+      ? op.settings[k.key] === null
+      : sameValue(k.after!, op.settings[k.key]!))
+      && nativeLinksAgree(k));
+  }
+  if (op.op === "duplicate") return new Set(change.new_refs).size === change.new_refs!.length;
+  if (op.op === "remove") return n.removed_outline?.[0]?.ref === op.ref
+    && new Set(n.removed_outline.map((node) => node.ref)).size === n.removed_count
+    && n.widget === n.removed_outline[0]?.widget;
+  if (op.op === "move") {
+    // Into placement names the destination parent and the first position explicitly.
+    return op.how !== "into" || (n.to?.parent === op.anchor && (op.position !== "first" || n.to.index === 0));
+  }
+  return false;
+}
+
+export function nativeWidgetWords(widget: string): string {
+  return widget.split("-").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+}
+
 function lineFor(change: Change, op: EditOp, textOf: (ref: string) => SiteText | undefined): ChangeLine {
+  if (change.native !== undefined) {
+    const native = change.native;
+    const widget = native.widget === undefined ? "" : nativeWidgetWords(native.widget);
+    const title = op.op === "set_native" ? `Change the ${widget} widget`
+      : op.op === "add_native" ? `Add a ${widget} widget`
+      : op.op === "duplicate" ? "Duplicate a widget"
+      : op.op === "remove" ? (native.widget === undefined ? "Remove a section" : "Remove a widget")
+      : "Move a widget";
+    return { op: op.op, title: [ours(title)], native, newRefs: change.new_refs,
+      fromSite: op.op !== "add_native" };
+  }
   const before = siteTextOf(change.from_the_site?.before);
   const kind = change.kind;
   const named = kind === undefined ? "" : kindLabel(kind, change.level, undefined);
@@ -476,6 +628,10 @@ function lineFor(change: Change, op: EditOp, textOf: (ref: string) => SiteText |
         fromSite: detail.length > 0 || anchorText !== undefined,
       };
     }
+    case "set_native":
+    case "add_native":
+    case "duplicate":
+      throw new Error("Native operations require native card facts");
   }
 }
 
@@ -517,7 +673,10 @@ function afterView(facts: Facts, marks: ReadonlyMap<string, Mark>): AfterView | 
     ref: d.node.ref,
     kind: d.node.kind,
     label: d.node.kind === "pattern" && d.node.variant !== undefined
-      ? `Pattern · ${d.node.variant.replace(/-/g, " ")}` : kindLabel(d.node.kind, d.node.level, d.node.label),
+      ? `Pattern · ${d.node.variant.replace(/-/g, " ")}` : d.node.kind === "native"
+        ? `Elementor ${d.node.widget} widget` : kindLabel(d.node.kind, d.node.level, d.node.label),
+    summary: d.node.summary,
+    widget: d.node.widget,
     texts: textsOf(d.node),
     mark: marks.get(d.node.ref) ?? null,
     children: d.children.map(build),
@@ -553,7 +712,7 @@ export function parsePageEdit(r: AbilityRequest): PageEditView | null {
     const op = input.ops[i]!;
     const change = facts.changes[i]!;
     if (!agrees(change, op)) return null;
-    if (op.op === "set_text") marks.set(op.ref, "changed");
+    if (op.op === "set_text" || op.op === "set_native") marks.set(op.ref, "changed");
     if (op.op === "move") marks.set(op.ref, "moved");
     for (const ref of change.new_refs ?? []) marks.set(ref, "new");
     lines.push(lineFor(change, op, textOf));

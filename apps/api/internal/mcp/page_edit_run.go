@@ -75,7 +75,11 @@ func pageEditRefusalOf(r pageCreateRefusal) *toolRefusal {
 		}
 		return ref
 	}
-	details := map[string]any{"argument": "input", "code": code, "hint": precheckRefusalHint(code), "retryable": false}
+	hint := r.Hint
+	if hint == "" {
+		hint = precheckRefusalHint(code)
+	}
+	details := map[string]any{"argument": "input", "code": code, "hint": hint, "retryable": false}
 	if len(failures) > 0 {
 		details["failures"] = failures
 	}
@@ -144,6 +148,12 @@ func (s *Service) runPageEdit(ctx context.Context, auth AuthorizedRequest, eng *
 }
 
 func (s *Service) runPageEditChecked(ctx context.Context, auth AuthorizedRequest, eng *abilityEngine, site abilitySite, e *sqlc.AbilityCatalogue, host string, input []byte) (string, error) {
+	// Native operations enforce their floor before the operation grammar.
+	if PageEditAgentFloor(input) == agentcmd.MinAgentVersionForNativeEdit {
+		if fr := pageEditFloorRefusal(site.row.AgentVersion, input); fr != nil {
+			return "", fr
+		}
+	}
 	facts, r := pageEditPreInputRefusal(input)
 	if r != nil {
 		return "", r
@@ -268,7 +278,8 @@ const msgPageEditDesignedOutdated = "Editing a page with a design, a section or 
 	agentcmd.MinAgentVersionForDesignedPages + " or later on this site. Nothing was asked."
 
 // PageEditAgentFloor is the first agent release that runs this wpmgr/page-edit
-// input: MinAgentVersionForDesignedPages when it carries a design, when an
+// input: MinAgentVersionForNativeEdit when it holds add_native, set_native or
+// duplicate; MinAgentVersionForDesignedPages when it carries a design, when an
 // operation puts a section or a pattern on the page (at any depth of its
 // outline), or when set_text names a pattern path;
 // MinAgentVersionForBuilderEdit otherwise. It reads only those members, so the
@@ -279,6 +290,18 @@ func PageEditAgentFloor(input []byte) string {
 	top, ok := jsonObjectOf(input)
 	if !ok {
 		return agentcmd.MinAgentVersionForDesignedPages
+	}
+	if ops, ok := jsonArrayOf(top["operations"]); ok {
+		for _, rawOp := range ops {
+			op, ok := jsonObjectOf(rawOp)
+			if !ok {
+				continue
+			}
+			kind, _ := jsonStringOf(op["op"])
+			if kind == "add_native" || kind == "set_native" || kind == "duplicate" {
+				return agentcmd.MinAgentVersionForNativeEdit
+			}
+		}
 	}
 	if _, has := top["design"]; has {
 		return agentcmd.MinAgentVersionForDesignedPages
@@ -325,8 +348,12 @@ func pageEditFloorRefusal(agentVersion string, input []byte) *toolRefusal {
 	if floor == agentcmd.MinAgentVersionForBuilderEdit || abilityAgentMeetsFloor(agentVersion, &floor) {
 		return nil
 	}
+	msg := msgPageEditDesignedOutdated
+	if floor == agentcmd.MinAgentVersionForNativeEdit {
+		msg = msgNativeEditOutdated
+	}
 	return refuse(reasonAgentOutdated, domain.Conflict(ErrCodeSiteAgentOutdated,
-		msgPageEditDesignedOutdated).WithDetails(map[string]any{
+		msg).WithDetails(map[string]any{
 		"min_agent_version": floor, "retryable": false,
 	}))
 }

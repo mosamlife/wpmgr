@@ -364,23 +364,36 @@ final class BuilderDocumentRestore
                 }
 
                 $delete = [];
+                $slots = [];
                 foreach ($rows as $row) {
-                    if (in_array($row['key'], $names, true) || in_array($row['key'], $derived, true)) {
+                    if (in_array($row['key'], $derived, true)) {
                         $delete[] = $row['id'];
+                    } elseif (in_array($row['key'], $names, true)) {
+                        $slots[$row['key']][] = $row['id'];
                     }
                 }
                 $insert = [];
+                $update = [];
                 foreach ($snap['meta'] as $pair) {
                     if (in_array($pair[0], $names, true)) {
-                        $insert[] = $pair;
+                        // Existing rows keep their positions among keys the undo leaves alone.
+                        $id = empty($slots[$pair[0]]) ? null : array_shift($slots[$pair[0]]);
+                        if ($id === null) {
+                            $insert[] = $pair;
+                        } else {
+                            $update[] = ['id' => $id, 'value' => $pair[1]];
+                        }
                     }
+                }
+                foreach ($slots as $ids) {
+                    array_push($delete, ...$ids);
                 }
                 $columns = [];
                 foreach ($fields as $f) {
                     $columns[$f['field']] = $snap['post'][$f['field']];
                 }
 
-                return ['delete' => $delete, 'insert' => $insert, 'post' => $columns];
+                return ['delete' => $delete, 'insert' => $insert, 'update' => $update, 'post' => $columns];
             }
         );
         if ($failed !== null) {
@@ -571,6 +584,10 @@ final class BuilderDocumentRestore
             foreach ($writes['insert'] as [$key, $value]) {
                 $inserted = $wpdb->insert($wpdb->postmeta, ['post_id' => $postId, 'meta_key' => $key, 'meta_value' => $value], ['%d', '%s', '%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.SlowDBQuery.slow_db_query_meta_key,WordPress.DB.SlowDBQuery.slow_db_query_meta_value -- the stored bytes, never unslashed or serialized by the meta API; a null value is stored as NULL
                 self::assertWritten($wpdb, $inserted === 1);
+            }
+            foreach ($writes['update'] ?? [] as $row) {
+                $updated = $wpdb->update($wpdb->postmeta, ['meta_value' => $row['value']], ['meta_id' => $row['id'], 'post_id' => $postId], ['%s'], ['%d', '%d']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.SlowDBQuery.slow_db_query_meta_value -- primary-key update of the locked row, keeping its position and bytes without meta hooks; null remains NULL
+                self::assertWritten($wpdb, $updated !== false);
             }
             if ($writes['post'] !== []) {
                 $data    = [];

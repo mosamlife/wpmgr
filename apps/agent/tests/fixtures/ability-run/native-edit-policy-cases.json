@@ -1,0 +1,867 @@
+{
+    "html_ids": [
+        {
+            "key": "_element_id",
+            "denied": true
+        },
+        {
+            "key": "button_css_id",
+            "denied": true
+        },
+        {
+            "key": "custom_css_id",
+            "denied": true
+        },
+        {
+            "key": "button_css_id_mobile",
+            "denied": true
+        },
+        {
+            "key": "BUTTON_CSS_ID",
+            "denied": true
+        },
+        {
+            "key": "text",
+            "denied": false
+        }
+    ],
+    "batches": [
+        {
+            "name": "set_native set_text",
+            "operations": [
+                {
+                    "op": "set_native",
+                    "ref": "aaaaaaa",
+                    "settings": {
+                        "title": "New"
+                    }
+                },
+                {
+                    "op": "set_text",
+                    "ref": "bbbbbbb",
+                    "field": "text",
+                    "text": "New"
+                }
+            ],
+            "parse_code": "ops_invalid"
+        },
+        {
+            "name": "set_native set_text reverse",
+            "operations": [
+                {
+                    "op": "set_text",
+                    "ref": "bbbbbbb",
+                    "field": "text",
+                    "text": "New"
+                },
+                {
+                    "op": "set_native",
+                    "ref": "aaaaaaa",
+                    "settings": {
+                        "title": "New"
+                    }
+                }
+            ],
+            "parse_code": "ops_invalid"
+        },
+        {
+            "name": "set_native insert",
+            "operations": [
+                {
+                    "op": "set_native",
+                    "ref": "aaaaaaa",
+                    "settings": {
+                        "title": "New"
+                    }
+                },
+                {
+                    "op": "insert",
+                    "into": "2222222",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                }
+            ],
+            "parse_code": "ops_invalid"
+        },
+        {
+            "name": "set_native insert reverse",
+            "operations": [
+                {
+                    "op": "insert",
+                    "into": "2222222",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                },
+                {
+                    "op": "set_native",
+                    "ref": "aaaaaaa",
+                    "settings": {
+                        "title": "New"
+                    }
+                }
+            ],
+            "parse_code": "ops_invalid"
+        },
+        {
+            "name": "set_native replace",
+            "operations": [
+                {
+                    "op": "set_native",
+                    "ref": "aaaaaaa",
+                    "settings": {
+                        "title": "New"
+                    }
+                },
+                {
+                    "op": "replace",
+                    "ref": "bbbbbbb",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                }
+            ],
+            "parse_code": "ops_invalid"
+        },
+        {
+            "name": "set_native replace reverse",
+            "operations": [
+                {
+                    "op": "replace",
+                    "ref": "bbbbbbb",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                },
+                {
+                    "op": "set_native",
+                    "ref": "aaaaaaa",
+                    "settings": {
+                        "title": "New"
+                    }
+                }
+            ],
+            "parse_code": "ops_invalid"
+        },
+        {
+            "name": "add_native set_text",
+            "operations": [
+                {
+                    "op": "add_native",
+                    "into": "2222222",
+                    "widget": "counter",
+                    "settings": {
+                        "title": "New"
+                    }
+                },
+                {
+                    "op": "set_text",
+                    "ref": "bbbbbbb",
+                    "field": "text",
+                    "text": "New"
+                }
+            ],
+            "parse_code": "ops_invalid"
+        },
+        {
+            "name": "add_native set_text reverse",
+            "operations": [
+                {
+                    "op": "set_text",
+                    "ref": "bbbbbbb",
+                    "field": "text",
+                    "text": "New"
+                },
+                {
+                    "op": "add_native",
+                    "into": "2222222",
+                    "widget": "counter",
+                    "settings": {
+                        "title": "New"
+                    }
+                }
+            ],
+            "parse_code": "ops_invalid"
+        },
+        {
+            "name": "add_native insert",
+            "operations": [
+                {
+                    "op": "add_native",
+                    "into": "2222222",
+                    "widget": "counter",
+                    "settings": {
+                        "title": "New"
+                    }
+                },
+                {
+                    "op": "insert",
+                    "into": "2222222",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                }
+            ],
+            "parse_code": "ops_invalid"
+        },
+        {
+            "name": "add_native insert reverse",
+            "operations": [
+                {
+                    "op": "insert",
+                    "into": "2222222",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                },
+                {
+                    "op": "add_native",
+                    "into": "2222222",
+                    "widget": "counter",
+                    "settings": {
+                        "title": "New"
+                    }
+                }
+            ],
+            "parse_code": "ops_invalid"
+        },
+        {
+            "name": "add_native replace",
+            "operations": [
+                {
+                    "op": "add_native",
+                    "into": "2222222",
+                    "widget": "counter",
+                    "settings": {
+                        "title": "New"
+                    }
+                },
+                {
+                    "op": "replace",
+                    "ref": "bbbbbbb",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                }
+            ],
+            "parse_code": "ops_invalid"
+        },
+        {
+            "name": "add_native replace reverse",
+            "operations": [
+                {
+                    "op": "replace",
+                    "ref": "bbbbbbb",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                },
+                {
+                    "op": "add_native",
+                    "into": "2222222",
+                    "widget": "counter",
+                    "settings": {
+                        "title": "New"
+                    }
+                }
+            ],
+            "parse_code": "ops_invalid"
+        },
+        {
+            "name": "duplicate set_text",
+            "operations": [
+                {
+                    "op": "duplicate",
+                    "ref": "aaaaaaa",
+                    "into": "2222222"
+                },
+                {
+                    "op": "set_text",
+                    "ref": "bbbbbbb",
+                    "field": "text",
+                    "text": "New"
+                }
+            ],
+            "parse_code": "ops_invalid"
+        },
+        {
+            "name": "duplicate set_text reverse",
+            "operations": [
+                {
+                    "op": "set_text",
+                    "ref": "bbbbbbb",
+                    "field": "text",
+                    "text": "New"
+                },
+                {
+                    "op": "duplicate",
+                    "ref": "aaaaaaa",
+                    "into": "2222222"
+                }
+            ],
+            "parse_code": "ops_invalid"
+        },
+        {
+            "name": "duplicate insert",
+            "operations": [
+                {
+                    "op": "duplicate",
+                    "ref": "aaaaaaa",
+                    "into": "2222222"
+                },
+                {
+                    "op": "insert",
+                    "into": "2222222",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                }
+            ],
+            "parse_code": "ops_invalid"
+        },
+        {
+            "name": "duplicate insert reverse",
+            "operations": [
+                {
+                    "op": "insert",
+                    "into": "2222222",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                },
+                {
+                    "op": "duplicate",
+                    "ref": "aaaaaaa",
+                    "into": "2222222"
+                }
+            ],
+            "parse_code": "ops_invalid"
+        },
+        {
+            "name": "duplicate replace",
+            "operations": [
+                {
+                    "op": "duplicate",
+                    "ref": "aaaaaaa",
+                    "into": "2222222"
+                },
+                {
+                    "op": "replace",
+                    "ref": "bbbbbbb",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                }
+            ],
+            "parse_code": "ops_invalid"
+        },
+        {
+            "name": "duplicate replace reverse",
+            "operations": [
+                {
+                    "op": "replace",
+                    "ref": "bbbbbbb",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                },
+                {
+                    "op": "duplicate",
+                    "ref": "aaaaaaa",
+                    "into": "2222222"
+                }
+            ],
+            "parse_code": "ops_invalid"
+        },
+        {
+            "name": "native only",
+            "operations": [
+                {
+                    "op": "set_native",
+                    "ref": "aaaaaaa",
+                    "settings": {
+                        "title": "New"
+                    }
+                },
+                {
+                    "op": "add_native",
+                    "into": "2222222",
+                    "widget": "counter",
+                    "settings": {
+                        "title": "New"
+                    }
+                }
+            ],
+            "parse_code": ""
+        },
+        {
+            "name": "outline only",
+            "operations": [
+                {
+                    "op": "set_text",
+                    "ref": "bbbbbbb",
+                    "field": "text",
+                    "text": "New"
+                },
+                {
+                    "op": "insert",
+                    "into": "2222222",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                }
+            ],
+            "parse_code": ""
+        },
+        {
+            "name": "remove native",
+            "operations": [
+                {
+                    "op": "remove",
+                    "ref": "aaaaaaa"
+                },
+                {
+                    "op": "set_text",
+                    "ref": "bbbbbbb",
+                    "field": "text",
+                    "text": "New"
+                }
+            ],
+            "parse_code": "",
+            "page_code": "ops_invalid"
+        },
+        {
+            "name": "remove native reverse",
+            "operations": [
+                {
+                    "op": "set_text",
+                    "ref": "bbbbbbb",
+                    "field": "text",
+                    "text": "New"
+                },
+                {
+                    "op": "remove",
+                    "ref": "aaaaaaa"
+                }
+            ],
+            "parse_code": "",
+            "page_code": "ops_invalid"
+        },
+        {
+            "name": "remove heading",
+            "operations": [
+                {
+                    "op": "remove",
+                    "ref": "bbbbbbb"
+                },
+                {
+                    "op": "add_native",
+                    "into": "2222222",
+                    "widget": "counter",
+                    "settings": {
+                        "title": "New"
+                    }
+                }
+            ],
+            "parse_code": "",
+            "page_code": "ops_invalid"
+        },
+        {
+            "name": "remove heading reverse",
+            "operations": [
+                {
+                    "op": "add_native",
+                    "into": "2222222",
+                    "widget": "counter",
+                    "settings": {
+                        "title": "New"
+                    }
+                },
+                {
+                    "op": "remove",
+                    "ref": "bbbbbbb"
+                }
+            ],
+            "parse_code": "",
+            "page_code": "ops_invalid"
+        },
+        {
+            "name": "remove homogeneous native",
+            "operations": [
+                {
+                    "op": "remove",
+                    "ref": "aaaaaaa"
+                },
+                {
+                    "op": "add_native",
+                    "into": "2222222",
+                    "widget": "counter",
+                    "settings": {
+                        "title": "New"
+                    }
+                }
+            ],
+            "parse_code": "",
+            "page_code": ""
+        },
+        {
+            "name": "remove homogeneous heading",
+            "operations": [
+                {
+                    "op": "remove",
+                    "ref": "bbbbbbb"
+                },
+                {
+                    "op": "insert",
+                    "into": "1111111",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                }
+            ],
+            "parse_code": "",
+            "page_code": ""
+        },
+        {
+            "name": "move native",
+            "operations": [
+                {
+                    "op": "move",
+                    "ref": "aaaaaaa",
+                    "into": "2222222"
+                },
+                {
+                    "op": "set_text",
+                    "ref": "bbbbbbb",
+                    "field": "text",
+                    "text": "New"
+                }
+            ],
+            "parse_code": "",
+            "page_code": "ops_invalid"
+        },
+        {
+            "name": "move native reverse",
+            "operations": [
+                {
+                    "op": "set_text",
+                    "ref": "bbbbbbb",
+                    "field": "text",
+                    "text": "New"
+                },
+                {
+                    "op": "move",
+                    "ref": "aaaaaaa",
+                    "into": "2222222"
+                }
+            ],
+            "parse_code": "",
+            "page_code": "ops_invalid"
+        },
+        {
+            "name": "move heading",
+            "operations": [
+                {
+                    "op": "move",
+                    "ref": "bbbbbbb",
+                    "into": "2222222"
+                },
+                {
+                    "op": "add_native",
+                    "into": "2222222",
+                    "widget": "counter",
+                    "settings": {
+                        "title": "New"
+                    }
+                }
+            ],
+            "parse_code": "",
+            "page_code": "ops_invalid"
+        },
+        {
+            "name": "move heading reverse",
+            "operations": [
+                {
+                    "op": "add_native",
+                    "into": "2222222",
+                    "widget": "counter",
+                    "settings": {
+                        "title": "New"
+                    }
+                },
+                {
+                    "op": "move",
+                    "ref": "bbbbbbb",
+                    "into": "2222222"
+                }
+            ],
+            "parse_code": "",
+            "page_code": "ops_invalid"
+        },
+        {
+            "name": "move homogeneous native",
+            "operations": [
+                {
+                    "op": "move",
+                    "ref": "aaaaaaa",
+                    "into": "2222222"
+                },
+                {
+                    "op": "add_native",
+                    "into": "2222222",
+                    "widget": "counter",
+                    "settings": {
+                        "title": "New"
+                    }
+                }
+            ],
+            "parse_code": "",
+            "page_code": ""
+        },
+        {
+            "name": "move homogeneous heading",
+            "operations": [
+                {
+                    "op": "move",
+                    "ref": "bbbbbbb",
+                    "into": "2222222"
+                },
+                {
+                    "op": "insert",
+                    "into": "1111111",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                }
+            ],
+            "parse_code": "",
+            "page_code": ""
+        },
+        {
+            "name": "replace native section",
+            "operations": [
+                {
+                    "op": "replace",
+                    "ref": "1111111",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                }
+            ],
+            "parse_code": "",
+            "page_code": "ops_invalid",
+            "hint": "This section holds Elementor widgets: remove it and add widgets with widget operations, or edit its text with set_text in a separate edit."
+        },
+        {
+            "name": "text then remove native section",
+            "operations": [
+                {
+                    "op": "set_text",
+                    "ref": "bbbbbbb",
+                    "field": "text",
+                    "text": "New"
+                },
+                {
+                    "op": "remove",
+                    "ref": "1111111"
+                }
+            ],
+            "parse_code": "",
+            "page_code": "ops_invalid",
+            "hint": "This section holds Elementor widgets: remove it and add widgets with widget operations, or edit its text with set_text in a separate edit."
+        },
+        {
+            "name": "remove native section then text",
+            "operations": [
+                {
+                    "op": "remove",
+                    "ref": "1111111"
+                },
+                {
+                    "op": "set_text",
+                    "ref": "bbbbbbb",
+                    "field": "text",
+                    "text": "New"
+                }
+            ],
+            "parse_code": "",
+            "page_code": "ops_invalid",
+            "hint": "This section holds Elementor widgets: remove it and add widgets with widget operations, or edit its text with set_text in a separate edit."
+        },
+        {
+            "name": "insert then remove native section",
+            "operations": [
+                {
+                    "op": "insert",
+                    "into": "2222222",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                },
+                {
+                    "op": "remove",
+                    "ref": "1111111"
+                }
+            ],
+            "parse_code": "",
+            "page_code": "ops_invalid",
+            "hint": "This section holds Elementor widgets: remove it and add widgets with widget operations, or edit its text with set_text in a separate edit."
+        },
+        {
+            "name": "remove native section then insert",
+            "operations": [
+                {
+                    "op": "remove",
+                    "ref": "1111111"
+                },
+                {
+                    "op": "insert",
+                    "into": "2222222",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                }
+            ],
+            "parse_code": "",
+            "page_code": "ops_invalid",
+            "hint": "This section holds Elementor widgets: remove it and add widgets with widget operations, or edit its text with set_text in a separate edit."
+        },
+        {
+            "name": "remove native section alone",
+            "operations": [
+                {
+                    "op": "remove",
+                    "ref": "1111111"
+                }
+            ],
+            "parse_code": "",
+            "page_code": ""
+        },
+        {
+            "name": "replace ordinary heading",
+            "operations": [
+                {
+                    "op": "replace",
+                    "ref": "bbbbbbb",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                }
+            ],
+            "parse_code": "",
+            "page_code": ""
+        }
+    ],
+    "destinations": [
+        {
+            "label": "WPMgr · Section",
+            "denied": true
+        },
+        {
+            "label": "WPMgr · Pattern: features",
+            "denied": true
+        },
+        {
+            "label": "WPMgr custom title",
+            "denied": false
+        },
+        {
+            "label": "Ordinary section",
+            "denied": false
+        },
+        {
+            "label": "",
+            "denied": false
+        }
+    ],
+    "kinds": {
+        "1111111": "group",
+        "aaaaaaa": "native",
+        "bbbbbbb": "heading",
+        "2222222": "group"
+    },
+    "sources": [
+        {
+            "label": "WPMgr · Section",
+            "denied": true
+        },
+        {
+            "label": "WPMgr · Pattern: features",
+            "denied": true
+        },
+        {
+            "label": "WPMgr custom title",
+            "denied": false
+        },
+        {
+            "label": "Ordinary section",
+            "denied": false
+        },
+        {
+            "label": "",
+            "denied": false
+        },
+        {
+            "label": "WPMgr · Stats counters",
+            "denied": true
+        }
+    ]
+}

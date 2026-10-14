@@ -6,6 +6,7 @@ namespace WPMgr\Agent\Abilities;
 
 use WPMgr\Agent\Abilities\Builders\BuilderContract;
 use WPMgr\Agent\Abilities\Builders\BuilderPageStructure;
+use WPMgr\Agent\Abilities\Builders\ElementorWidgetDiscovery;
 use WPMgr\Agent\Support\ArrayShape;
 
 // Direct-file-access guard: keep above the docblock.
@@ -46,6 +47,8 @@ final class OwnAbilities
     public const NAME_REST_WRITE  = RestCall::NAME_WRITE;
     public const NAME_PAGE_STRUCTURE = 'wpmgr/page-structure';
     public const NAME_PAGE_EDIT      = 'wpmgr/page-edit';
+    public const NAME_ELEMENTOR_WIDGETS = 'wpmgr/elementor-widgets';
+    public const NAME_ELEMENTOR_WIDGET_SCHEMA = 'wpmgr/elementor-widget-schema';
 
     private const CATEGORY = 'wpmgr';
 
@@ -79,7 +82,7 @@ final class OwnAbilities
      */
     public static function names(): array
     {
-        return [self::NAME_INVENTORY, self::NAME_FACTS, self::NAME_CONTENT, self::NAME_PAGE_CREATE, self::NAME_REST_READ, self::NAME_REST_WRITE, self::NAME_PAGE_STRUCTURE, self::NAME_PAGE_EDIT];
+        return [self::NAME_INVENTORY, self::NAME_FACTS, self::NAME_CONTENT, self::NAME_PAGE_CREATE, self::NAME_REST_READ, self::NAME_REST_WRITE, self::NAME_PAGE_STRUCTURE, self::NAME_PAGE_EDIT, self::NAME_ELEMENTOR_WIDGETS, self::NAME_ELEMENTOR_WIDGET_SCHEMA];
     }
 
     /**
@@ -89,7 +92,7 @@ final class OwnAbilities
      */
     public static function readNames(): array
     {
-        return [self::NAME_INVENTORY, self::NAME_FACTS, self::NAME_CONTENT];
+        return [self::NAME_INVENTORY, self::NAME_FACTS, self::NAME_CONTENT, self::NAME_ELEMENTOR_WIDGETS, self::NAME_ELEMENTOR_WIDGET_SCHEMA];
     }
 
     /**
@@ -152,6 +155,9 @@ final class OwnAbilities
                 return BuilderContract::pageStructureInputSchema();
             case self::NAME_PAGE_EDIT:
                 return BuilderContract::pageEditInputSchema();
+            case self::NAME_ELEMENTOR_WIDGETS:
+            case self::NAME_ELEMENTOR_WIDGET_SCHEMA:
+                return ElementorWidgetDiscovery::inputSchema($name === self::NAME_ELEMENTOR_WIDGET_SCHEMA);
             default:
                 return ['type' => 'object', 'properties' => new \stdClass(), 'additionalProperties' => false];
         }
@@ -193,6 +199,9 @@ final class OwnAbilities
 
         if ($name === self::NAME_PAGE_STRUCTURE) {
             return BuilderPageStructure::inputProblem($props);
+        }
+        if ($name === self::NAME_ELEMENTOR_WIDGETS || $name === self::NAME_ELEMENTOR_WIDGET_SCHEMA) {
+            return ElementorWidgetDiscovery::inputProblem($name === self::NAME_ELEMENTOR_WIDGET_SCHEMA, $props);
         }
 
         if ($name === self::NAME_CONTENT) {
@@ -269,6 +278,10 @@ final class OwnAbilities
                 return self::contentRead($input);
             case self::NAME_PAGE_STRUCTURE:
                 return ['refusal' => ['code' => 'mode_not_available', 'detail' => 'wpmgr/page-structure runs only through the engine']];
+            case self::NAME_ELEMENTOR_WIDGETS:
+                return (new ElementorWidgetDiscovery())->catalogue($input);
+            case self::NAME_ELEMENTOR_WIDGET_SCHEMA:
+                return (new ElementorWidgetDiscovery())->schema($input);
             default:
                 return ['refusal' => ['code' => 'ability_unknown', 'detail' => 'not an ability this agent implements']];
         }
@@ -303,13 +316,19 @@ final class OwnAbilities
             self::NAME_INVENTORY => ['Ability inventory', 'Lists the abilities registered on this site.'],
             self::NAME_FACTS     => ['Site facts', 'WordPress and PHP versions, the active theme and builder hints.'],
             self::NAME_CONTENT   => ['Read a page', 'Reads the text of one published page or post.'],
+            self::NAME_ELEMENTOR_WIDGETS => ['Elementor widgets', 'Lists the live Elementor widget catalogue with optional category and search filters.'],
+            self::NAME_ELEMENTOR_WIDGET_SCHEMA => ['Elementor widget schema', 'Reads a widget control skeleton, or compact details for named controls.'],
         ];
         foreach (self::readNames() as $name) {
             $registered = strtolower($name);
             if ($registered === '' || $registered === '0') {
                 continue;
             }
-            wp_register_ability($registered, [
+            $outputSchema = [];
+            if ($name === self::NAME_ELEMENTOR_WIDGETS || $name === self::NAME_ELEMENTOR_WIDGET_SCHEMA) {
+                $outputSchema = ['output_schema' => ElementorWidgetDiscovery::outputSchema($name === self::NAME_ELEMENTOR_WIDGET_SCHEMA)];
+            }
+            wp_register_ability($registered, $outputSchema + [
                 'label'               => $copy[$name][0],
                 'description'         => $copy[$name][1],
                 'category'            => self::CATEGORY,

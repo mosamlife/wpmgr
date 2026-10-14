@@ -326,7 +326,7 @@ final class ElementorPatternReader
         if ($elType === 'widget') {
             $type = $node['widgetType'] ?? null;
 
-            return is_string($type) && $children === [] && preg_match('/^[a-z][a-z0-9_-]{0,39}$/D', $type) === 1 ? $type : '?';
+            return is_string($type) && $children === [] && preg_match('/^[a-z][a-z0-9_-]{0,63}$/D', $type) === 1 ? $type : '?';
         }
         $direction = $settings['flex_direction'] ?? 'column';
         if ($elType !== 'container' || ($direction !== 'row' && $direction !== 'column')) {

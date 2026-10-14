@@ -1,0 +1,950 @@
+[
+  {
+    "name": "set_native",
+    "input": "{\"post_id\":41,\"base_fingerprint\":\"a47e469b0de0606ecbb20c87734056a2892b163fda8362cf2fe09f4ce24d6ad0\",\"operations\":[{\"op\":\"set_native\",\"ref\":\"ccccccc\",\"settings\":{\"title\":\"New counter\"}}]}",
+    "facts": {
+      "kind": "builder_edit",
+      "post": {
+        "id": 41,
+        "from_the_site": {
+          "title": "[site-supplied] Spring"
+        }
+      },
+      "builder": {
+        "id": "elementor",
+        "version": "3.35.9",
+        "format": "classic"
+      },
+      "changes": [
+        {
+          "op": "set_native",
+          "ref": "ccccccc",
+          "native": {
+            "widget": "counter",
+            "keys": [
+              {
+                "key": "title",
+                "from_the_site": {
+                  "before": "[site-supplied] Counter"
+                },
+                "after": "New counter"
+              }
+            ]
+          }
+        }
+      ],
+      "after_outline": {
+        "node_count": 6,
+        "nodes": [
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "columns",
+            "parent": "root",
+            "ref": "605cdc2"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "c87900b"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "[site-supplied] Left column"
+            },
+            "kind": "heading",
+            "level": 3,
+            "parent": "c87900b",
+            "ref": "52982f9"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "3d3406f"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "[site-supplied] Right column"
+            },
+            "kind": "paragraph",
+            "parent": "3d3406f",
+            "ref": "6cbe98a"
+          },
+          {
+            "kind": "native",
+            "parent": "3d3406f",
+            "ref": "ccccccc",
+            "summary": "[site-supplied] New counter",
+            "widget": "counter"
+          }
+        ],
+        "truncated": false
+      },
+      "checked_at": "2026-10-13T09:52:00Z"
+    }
+  },
+  {
+    "name": "add_native",
+    "input": "{\"post_id\":41,\"base_fingerprint\":\"a47e469b0de0606ecbb20c87734056a2892b163fda8362cf2fe09f4ce24d6ad0\",\"operations\":[{\"op\":\"add_native\",\"into\":\"3d3406f\",\"widget\":\"button\",\"settings\":{\"text\":\"New button\"}}]}",
+    "facts": {
+      "kind": "builder_edit",
+      "post": {
+        "id": 41,
+        "from_the_site": {
+          "title": "[site-supplied] Spring"
+        }
+      },
+      "builder": {
+        "id": "elementor",
+        "version": "3.35.9",
+        "format": "classic"
+      },
+      "changes": [
+        {
+          "op": "add_native",
+          "new_refs": [
+            "2d87517"
+          ],
+          "native": {
+            "widget": "button",
+            "keys": [
+              {
+                "key": "text",
+                "after": "New button"
+              }
+            ]
+          }
+        }
+      ],
+      "after_outline": {
+        "node_count": 7,
+        "nodes": [
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "columns",
+            "parent": "root",
+            "ref": "605cdc2"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "c87900b"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "[site-supplied] Left column"
+            },
+            "kind": "heading",
+            "level": 3,
+            "parent": "c87900b",
+            "ref": "52982f9"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "3d3406f"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "[site-supplied] Right column"
+            },
+            "kind": "paragraph",
+            "parent": "3d3406f",
+            "ref": "6cbe98a"
+          },
+          {
+            "kind": "native",
+            "parent": "3d3406f",
+            "ref": "ccccccc",
+            "summary": "[site-supplied] Counter",
+            "widget": "counter"
+          },
+          {
+            "kind": "native",
+            "parent": "3d3406f",
+            "ref": "2d87517",
+            "summary": "[site-supplied] New button",
+            "widget": "button"
+          }
+        ],
+        "truncated": false
+      },
+      "checked_at": "2026-10-13T09:52:00Z"
+    }
+  },
+  {
+    "name": "duplicate",
+    "input": "{\"post_id\":41,\"base_fingerprint\":\"a47e469b0de0606ecbb20c87734056a2892b163fda8362cf2fe09f4ce24d6ad0\",\"operations\":[{\"op\":\"duplicate\",\"ref\":\"ccccccc\",\"after\":\"ccccccc\"}]}",
+    "facts": {
+      "kind": "builder_edit",
+      "post": {
+        "id": 41,
+        "from_the_site": {
+          "title": "[site-supplied] Spring"
+        }
+      },
+      "builder": {
+        "id": "elementor",
+        "version": "3.35.9",
+        "format": "classic"
+      },
+      "changes": [
+        {
+          "op": "duplicate",
+          "ref": "ccccccc",
+          "new_refs": [
+            "2d87517"
+          ],
+          "native": {
+            "widget": "counter"
+          }
+        }
+      ],
+      "after_outline": {
+        "node_count": 7,
+        "nodes": [
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "columns",
+            "parent": "root",
+            "ref": "605cdc2"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "c87900b"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "[site-supplied] Left column"
+            },
+            "kind": "heading",
+            "level": 3,
+            "parent": "c87900b",
+            "ref": "52982f9"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "3d3406f"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "[site-supplied] Right column"
+            },
+            "kind": "paragraph",
+            "parent": "3d3406f",
+            "ref": "6cbe98a"
+          },
+          {
+            "kind": "native",
+            "parent": "3d3406f",
+            "ref": "ccccccc",
+            "summary": "[site-supplied] Counter",
+            "widget": "counter"
+          },
+          {
+            "kind": "native",
+            "parent": "3d3406f",
+            "ref": "2d87517",
+            "summary": "[site-supplied] Counter",
+            "widget": "counter"
+          }
+        ],
+        "truncated": false
+      },
+      "checked_at": "2026-10-13T09:52:00Z"
+    }
+  },
+  {
+    "name": "remove",
+    "input": "{\"post_id\":41,\"base_fingerprint\":\"a47e469b0de0606ecbb20c87734056a2892b163fda8362cf2fe09f4ce24d6ad0\",\"operations\":[{\"op\":\"remove\",\"ref\":\"ccccccc\"}]}",
+    "facts": {
+      "kind": "builder_edit",
+      "post": {
+        "id": 41,
+        "from_the_site": {
+          "title": "[site-supplied] Spring"
+        }
+      },
+      "builder": {
+        "id": "elementor",
+        "version": "3.35.9",
+        "format": "classic"
+      },
+      "changes": [
+        {
+          "op": "remove",
+          "ref": "ccccccc",
+          "native": {
+            "widget": "counter",
+            "removed_count": 1,
+            "removed_outline": [
+              {
+                "kind": "widget",
+                "ref": "ccccccc",
+                "widget": "counter"
+              }
+            ]
+          }
+        }
+      ],
+      "after_outline": {
+        "node_count": 5,
+        "nodes": [
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "columns",
+            "parent": "root",
+            "ref": "605cdc2"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "c87900b"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "[site-supplied] Left column"
+            },
+            "kind": "heading",
+            "level": 3,
+            "parent": "c87900b",
+            "ref": "52982f9"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "3d3406f"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "[site-supplied] Right column"
+            },
+            "kind": "paragraph",
+            "parent": "3d3406f",
+            "ref": "6cbe98a"
+          }
+        ],
+        "truncated": false
+      },
+      "checked_at": "2026-10-13T09:52:00Z"
+    }
+  },
+  {
+    "name": "move",
+    "input": "{\"post_id\":41,\"base_fingerprint\":\"a47e469b0de0606ecbb20c87734056a2892b163fda8362cf2fe09f4ce24d6ad0\",\"operations\":[{\"op\":\"move\",\"ref\":\"ccccccc\",\"into\":\"c87900b\",\"position\":\"first\"}]}",
+    "facts": {
+      "kind": "builder_edit",
+      "post": {
+        "id": 41,
+        "from_the_site": {
+          "title": "[site-supplied] Spring"
+        }
+      },
+      "builder": {
+        "id": "elementor",
+        "version": "3.35.9",
+        "format": "classic"
+      },
+      "changes": [
+        {
+          "op": "move",
+          "ref": "ccccccc",
+          "native": {
+            "widget": "counter",
+            "from": {
+              "parent": "3d3406f",
+              "index": 1
+            },
+            "to": {
+              "parent": "c87900b",
+              "index": 0
+            }
+          }
+        }
+      ],
+      "after_outline": {
+        "node_count": 6,
+        "nodes": [
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "columns",
+            "parent": "root",
+            "ref": "605cdc2"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "c87900b"
+          },
+          {
+            "kind": "native",
+            "parent": "c87900b",
+            "ref": "ccccccc",
+            "summary": "[site-supplied] Counter",
+            "widget": "counter"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "[site-supplied] Left column"
+            },
+            "kind": "heading",
+            "level": 3,
+            "parent": "c87900b",
+            "ref": "52982f9"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "3d3406f"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "[site-supplied] Right column"
+            },
+            "kind": "paragraph",
+            "parent": "3d3406f",
+            "ref": "6cbe98a"
+          }
+        ],
+        "truncated": false
+      },
+      "checked_at": "2026-10-13T09:52:00Z"
+    }
+  },
+  {
+    "name": "no_native_op",
+    "input": "{\"post_id\":41,\"base_fingerprint\":\"a47e469b0de0606ecbb20c87734056a2892b163fda8362cf2fe09f4ce24d6ad0\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"52982f9\",\"field\":\"text\",\"text\":\"Legacy title\"}]}",
+    "facts": {
+      "kind": "builder_edit",
+      "post": {
+        "id": 41,
+        "from_the_site": {
+          "title": "Spring"
+        }
+      },
+      "builder": {
+        "id": "elementor",
+        "version": "3.35.9",
+        "format": "classic"
+      },
+      "changes": [
+        {
+          "op": "set_text",
+          "ref": "52982f9",
+          "kind": "heading",
+          "level": 3,
+          "field": "text",
+          "after": "Legacy title",
+          "from_the_site": {
+            "before": {
+              "text": "Left column"
+            }
+          }
+        }
+      ],
+      "after_outline": {
+        "node_count": 6,
+        "nodes": [
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "columns",
+            "parent": "root",
+            "ref": "605cdc2"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "c87900b"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "Legacy title"
+            },
+            "kind": "heading",
+            "level": 3,
+            "parent": "c87900b",
+            "ref": "52982f9"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "3d3406f"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "Right column"
+            },
+            "kind": "paragraph",
+            "parent": "3d3406f",
+            "ref": "6cbe98a"
+          },
+          {
+            "kind": "locked",
+            "label": "Elementor counter",
+            "parent": "3d3406f",
+            "ref": "ccccccc"
+          }
+        ],
+        "truncated": false
+      },
+      "checked_at": "2026-10-13T09:52:00Z"
+    }
+  },
+  {
+    "name": "merge_delete",
+    "input": "{\"post_id\":41,\"base_fingerprint\":\"a47e469b0de0606ecbb20c87734056a2892b163fda8362cf2fe09f4ce24d6ad0\",\"operations\":[{\"op\":\"set_native\",\"ref\":\"ccccccc\",\"settings\":{\"title\":null,\"ending_number\":\"25\"}}]}",
+    "facts": {
+      "kind": "builder_edit",
+      "post": {
+        "id": 41,
+        "from_the_site": {
+          "title": "[site-supplied] Spring"
+        }
+      },
+      "builder": {
+        "id": "elementor",
+        "version": "3.35.9",
+        "format": "classic"
+      },
+      "changes": [
+        {
+          "op": "set_native",
+          "ref": "ccccccc",
+          "native": {
+            "widget": "counter",
+            "keys": [
+              {
+                "key": "title",
+                "from_the_site": {
+                  "before": "[site-supplied] Counter"
+                },
+                "removed": true
+              },
+              {
+                "key": "ending_number",
+                "after": "25"
+              }
+            ]
+          }
+        }
+      ],
+      "after_outline": {
+        "node_count": 6,
+        "nodes": [
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "columns",
+            "parent": "root",
+            "ref": "605cdc2"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "c87900b"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "[site-supplied] Left column"
+            },
+            "kind": "heading",
+            "level": 3,
+            "parent": "c87900b",
+            "ref": "52982f9"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "3d3406f"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "[site-supplied] Right column"
+            },
+            "kind": "paragraph",
+            "parent": "3d3406f",
+            "ref": "6cbe98a"
+          },
+          {
+            "kind": "native",
+            "parent": "3d3406f",
+            "ref": "ccccccc",
+            "summary": "",
+            "widget": "counter"
+          }
+        ],
+        "truncated": false
+      },
+      "checked_at": "2026-10-13T09:52:00Z"
+    }
+  },
+  {
+    "name": "mapped_set_native",
+    "input": "{\"post_id\":41,\"base_fingerprint\":\"a47e469b0de0606ecbb20c87734056a2892b163fda8362cf2fe09f4ce24d6ad0\",\"operations\":[{\"op\":\"set_native\",\"ref\":\"52982f9\",\"settings\":{\"title\":\"Native heading\"}}]}",
+    "facts": {
+      "kind": "builder_edit",
+      "post": {
+        "id": 41,
+        "from_the_site": {
+          "title": "[site-supplied] Spring"
+        }
+      },
+      "builder": {
+        "id": "elementor",
+        "version": "3.35.9",
+        "format": "classic"
+      },
+      "changes": [
+        {
+          "op": "set_native",
+          "ref": "52982f9",
+          "native": {
+            "widget": "heading",
+            "keys": [
+              {
+                "key": "title",
+                "from_the_site": {
+                  "before": "[site-supplied] Left column"
+                },
+                "after": "Native heading"
+              }
+            ]
+          }
+        }
+      ],
+      "after_outline": {
+        "node_count": 6,
+        "nodes": [
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "columns",
+            "parent": "root",
+            "ref": "605cdc2"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "c87900b"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "[site-supplied] Native heading"
+            },
+            "kind": "heading",
+            "level": 3,
+            "parent": "c87900b",
+            "ref": "52982f9"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "3d3406f"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "[site-supplied] Right column"
+            },
+            "kind": "paragraph",
+            "parent": "3d3406f",
+            "ref": "6cbe98a"
+          },
+          {
+            "kind": "native",
+            "parent": "3d3406f",
+            "ref": "ccccccc",
+            "summary": "[site-supplied] Counter",
+            "widget": "counter"
+          }
+        ],
+        "truncated": false
+      },
+      "checked_at": "2026-10-13T09:52:00Z"
+    }
+  },
+  {
+    "name": "reused_anchor",
+    "input": "{\"post_id\":41,\"base_fingerprint\":\"a47e469b0de0606ecbb20c87734056a2892b163fda8362cf2fe09f4ce24d6ad0\",\"operations\":[{\"op\":\"add_native\",\"after\":\"ccccccc\",\"widget\":\"counter\",\"settings\":{\"title\":\"First\"}},{\"op\":\"add_native\",\"after\":\"ccccccc\",\"widget\":\"counter\",\"settings\":{\"title\":\"Second\"}}]}",
+    "facts": {
+      "kind": "builder_edit",
+      "post": {
+        "id": 41,
+        "from_the_site": {
+          "title": "[site-supplied] Spring"
+        }
+      },
+      "builder": {
+        "id": "elementor",
+        "version": "3.35.9",
+        "format": "classic"
+      },
+      "changes": [
+        {
+          "op": "add_native",
+          "new_refs": [
+            "2d87517"
+          ],
+          "native": {
+            "widget": "counter",
+            "keys": [
+              {
+                "key": "title",
+                "after": "First"
+              }
+            ]
+          }
+        },
+        {
+          "op": "add_native",
+          "new_refs": [
+            "46c7c78"
+          ],
+          "native": {
+            "widget": "counter",
+            "keys": [
+              {
+                "key": "title",
+                "after": "Second"
+              }
+            ]
+          }
+        }
+      ],
+      "after_outline": {
+        "node_count": 8,
+        "nodes": [
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "columns",
+            "parent": "root",
+            "ref": "605cdc2"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "c87900b"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "[site-supplied] Left column"
+            },
+            "kind": "heading",
+            "level": 3,
+            "parent": "c87900b",
+            "ref": "52982f9"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "3d3406f"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "[site-supplied] Right column"
+            },
+            "kind": "paragraph",
+            "parent": "3d3406f",
+            "ref": "6cbe98a"
+          },
+          {
+            "kind": "native",
+            "parent": "3d3406f",
+            "ref": "ccccccc",
+            "summary": "[site-supplied] Counter",
+            "widget": "counter"
+          },
+          {
+            "kind": "native",
+            "parent": "3d3406f",
+            "ref": "46c7c78",
+            "summary": "[site-supplied] Second",
+            "widget": "counter"
+          },
+          {
+            "kind": "native",
+            "parent": "3d3406f",
+            "ref": "2d87517",
+            "summary": "[site-supplied] First",
+            "widget": "counter"
+          }
+        ],
+        "truncated": false
+      },
+      "checked_at": "2026-10-13T09:52:00Z"
+    }
+  },
+  {
+    "name": "remove_ancestor",
+    "input": "{\"post_id\":41,\"base_fingerprint\":\"a47e469b0de0606ecbb20c87734056a2892b163fda8362cf2fe09f4ce24d6ad0\",\"operations\":[{\"op\":\"remove\",\"ref\":\"3d3406f\"}]}",
+    "facts": {
+      "kind": "builder_edit",
+      "post": {
+        "id": 41,
+        "from_the_site": {
+          "title": "[site-supplied] Spring"
+        }
+      },
+      "builder": {
+        "id": "elementor",
+        "version": "3.35.9",
+        "format": "classic"
+      },
+      "changes": [
+        {
+          "op": "remove",
+          "ref": "3d3406f",
+          "native": {
+            "removed_count": 3,
+            "removed_outline": [
+              {
+                "kind": "container",
+                "ref": "3d3406f"
+              },
+              {
+                "kind": "widget",
+                "ref": "6cbe98a",
+                "widget": "text-editor"
+              },
+              {
+                "kind": "widget",
+                "ref": "ccccccc",
+                "widget": "counter"
+              }
+            ]
+          }
+        }
+      ],
+      "after_outline": {
+        "node_count": 3,
+        "nodes": [
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "columns",
+            "parent": "root",
+            "ref": "605cdc2"
+          },
+          {
+            "editable": [],
+            "from_the_site": {},
+            "kind": "column",
+            "parent": "605cdc2",
+            "ref": "c87900b"
+          },
+          {
+            "editable": [
+              "text"
+            ],
+            "from_the_site": {
+              "text": "[site-supplied] Left column"
+            },
+            "kind": "heading",
+            "level": 3,
+            "parent": "c87900b",
+            "ref": "52982f9"
+          }
+        ],
+        "truncated": false
+      },
+      "checked_at": "2026-10-13T09:52:00Z"
+    }
+  }
+]

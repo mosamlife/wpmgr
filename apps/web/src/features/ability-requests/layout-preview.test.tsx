@@ -4,7 +4,7 @@ import { screen } from "@testing-library/react";
 import { renderWithProviders } from "@/test/render";
 import { mediaFact } from "@/test/ability-request-rows";
 
-import { LayoutPreview, type LayoutPreviewProps } from "./layout-preview";
+import { LayoutPreview, NativeOutlineNode, type LayoutPreviewProps } from "./layout-preview";
 import { parsePagePreview } from "./outline-model";
 
 // The alt line of an image row is the block editor's unless the caller says the
@@ -60,5 +60,17 @@ describe("LayoutPreview alt lines", () => {
   it("say they come from the media library when altFromLibrary is true", () => {
     renderPreview({ ...base, altFromLibrary: true });
     expect(altLines()).toEqual(['Alt text (from the media library): "A van"', "No alt text in the media library"]);
+  });
+});
+
+describe("native structure outlines", () => {
+  it("names a native widget and shows its complete summary as isolated site text", () => {
+    const summary = "[site-supplied] <b>Every word stays visible</b>";
+    renderWithProviders(<NativeOutlineNode widget="counter" summary={summary} />);
+    expect(screen.getByText("Elementor counter widget")).toBeInTheDocument();
+    const text = screen.getByText(summary);
+    expect(text.tagName).toBe("BDI");
+    expect(text.textContent).toBe(summary);
+    expect(text.querySelector("b")).toBeNull();
   });
 });

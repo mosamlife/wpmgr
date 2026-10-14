@@ -52,6 +52,13 @@
 #   RT_PLANT            space separated plant=<kind>@<case> tokens for the harness
 #   RT_HARNESS_ARGS     space separated key=value tokens appended to the harness's
 #                       arguments; a later token overrides an earlier one
+#                       dumpwidgets=1 exports a core classic widget JSON document;
+#                       use one RT_VERSIONS and RT_LAYOUTS=containers per dump file
+#                       native=1 runs discovery and native page edits under REST context;
+#                       defaults to containers and requires that layout when explicit
+#                       the legacy REST pin proves native refusals, then runs every
+#                       non-native phase in a fresh ordinary boot
+#   RT_NATIVE_INVENTORY the pinned core widget inventory (default core_widgets.json)
 #   RT_TIMEOUT          seconds one boot may take (default 600)
 #   RT_TEST_KILL_SETTLE seconds to wait between sending the kill at the timeout and
 #                       reading the boot's status (default 0), so a test can make the
@@ -180,6 +187,27 @@ else
   selected=("${all_versions[@]}")
 fi
 
+# --- phase selection before deriving the layout or boot blueprint ---------------------
+extra_args=()
+if [ -n "${RT_HARNESS_ARGS-}" ]; then
+  read -r -a extra_args <<<"$RT_HARNESS_ARGS" || true
+fi
+dump_widgets=0
+native=0
+for arg in ${extra_args[@]+"${extra_args[@]}"}; do
+  case "$arg" in
+    dumpwidgets=0) dump_widgets=0 ;;
+    dumpwidgets=1) dump_widgets=1 ;;
+    dumpwidgets=*) die "dumpwidgets= must be 0 or 1" ;;
+    native=0) native=0 ;;
+    native=1) native=1 ;;
+    native=*) die "native= must be 0 or 1" ;;
+  esac
+done
+if [ "$native" -eq 1 ] && [ "$dump_widgets" -eq 1 ]; then
+  die "native=1 cannot combine with dumpwidgets=1"
+fi
+
 # --- which layouts to run ------------------------------------------------------------
 layouts=()
 if [ -n "${RT_LAYOUTS+x}" ]; then
@@ -188,8 +216,13 @@ if [ -n "${RT_LAYOUTS+x}" ]; then
   for l in "${layouts[@]}"; do
     case "$l" in containers | sections) ;; *) die "RT_LAYOUTS: '$l' is not containers or sections" ;; esac
   done
+elif [ "$native" -eq 1 ]; then
+  layouts=(containers)
 else
   layouts=(containers sections)
+fi
+if [ "$native" -eq 1 ] && [ "${layouts[*]}" != containers ]; then
+  die "native=1 requires RT_LAYOUTS=containers"
 fi
 
 # pin_of <name> <version> <field: sha|url|form>
@@ -234,13 +267,25 @@ bp_wp_url="${bp_facts#* }"
 # container experiment for the layout, written to <dest>. A site is set up this way
 # before it boots; nothing in the running request changes it.
 derive_blueprint() {
+  # shellcheck disable=SC2016 # These interpolations belong to JavaScript template literals.
   "$NODE" -e '
     const fs = require("fs");
     const bp = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
     const state = process.argv[2] === "containers" ? "active" : "inactive";
-    bp.steps = (bp.steps || []).concat([{ step: "setSiteOptions", options: { "elementor_experiment-container": state } }]);
+    const options = { "elementor_experiment-container": state };
+    const full = process.argv[4] === "1" || process.argv[5] === "1";
+    if (full) options["elementor_experiment-additional_custom_breakpoints"] = "active";
+    bp.steps = (bp.steps || []).concat([{ step: "setSiteOptions", options }]);
+    if (full) {
+      bp.steps.push({ step: "runPHP", code: `<?php
+        ${process.argv[5] === "1" ? `require "/rt/harness/native.php"; rt_native_boot_context();` : ""}
+        require "/wordpress/wp-load.php";
+        require "/rt/harness/dump-widgets.php";
+        rt_widget_dump_prepare(\\Elementor\\Plugin::$instance);
+      ` });
+    }
     fs.writeFileSync(process.argv[3], JSON.stringify(bp, null, 2) + "\n");
-  ' "$blueprint" "$1" "$2"
+  ' "$blueprint" "$1" "$2" "$dump_widgets" "$native"
 }
 
 # --- inputs on disk ------------------------------------------------------------------
@@ -253,6 +298,11 @@ for fx in elementor-classic-containers.json elementor-classic-sections.json; do
 done
 [ -s "$here/harness.php" ] || die "harness missing: $here/harness.php"
 [ -s "$here/cases-extra.json" ] || die "extra cases missing: $here/cases-extra.json"
+native_inventory="${RT_NATIVE_INVENTORY:-$repo/apps/api/internal/elementornative/core_widgets.json}"
+if [ "$native" -eq 1 ]; then
+  [ -s "$here/native.php" ] || die "native phase missing: $here/native.php"
+  [ -s "$native_inventory" ] || die "native core inventory missing or empty: $native_inventory"
+fi
 
 timeout_s="${RT_TIMEOUT-600}"
 case "$timeout_s" in '' | *[!0-9]* | 0) die "RT_TIMEOUT must be a whole number of seconds, 1 or more: '$timeout_s'" ;; esac
@@ -285,6 +335,33 @@ trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+# Wait for either a Playground process or an ordinary-run subprocess under the same bounded deadline.
+await_child() {
+  waited=0
+  timed_out=0
+  while kill -0 "$child" 2>/dev/null; do
+    if [ "$waited" -ge "$timeout_s" ]; then
+      timed_out=1
+      pkill -P "$child" 2>/dev/null || true
+      kill "$child" 2>/dev/null || true
+      [ "$kill_settle" -eq 0 ] || sleep "$kill_settle"
+      break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  set +e
+  if [ "$timed_out" -eq 1 ]; then
+    wait "$child" 2>/dev/null
+    rc=124
+  else
+    wait "$child"
+    rc=$?
+  fi
+  set -e
+  child=""
+}
 
 # --- verified downloads ---------------------------------------------------------------
 # fetch <label> <sha256> <url>   leaves $cache/zips/<sha256>.zip, a file whose sha256 is the pin.
@@ -328,11 +405,6 @@ plants=()
 if [ -n "${RT_PLANT-}" ]; then
   read -r -a plants <<<"$RT_PLANT" || true
 fi
-extra_args=()
-if [ -n "${RT_HARNESS_ARGS-}" ]; then
-  read -r -a extra_args <<<"$RT_HARNESS_ARGS" || true
-fi
-
 # --- one boot per version and layout ------------------------------------------------------
 bad=0     # a boot found a defect
 broken=0  # a boot could not give a verdict
@@ -345,6 +417,12 @@ for v in "${selected[@]}"; do
     boot="$run_dir/boot-$v-$layout"
     mkdir -p "$boot/zips" "$boot/tmp"
     cp "$cache/zips/$sha.zip" "$boot/zips/elementor.zip" || die "cannot stage the Elementor $v zip"
+    phase_mounts=()
+    if [ "$native" -eq 1 ]; then
+      mkdir -p "$boot/native-catalogue"
+      cp "$native_inventory" "$boot/native-catalogue/core_widgets.json" || die "cannot stage native core inventory"
+      phase_mounts+=("--mount=$boot/native-catalogue:/rt/native-catalogue")
+    fi
     derive_blueprint "$layout" "$boot/blueprint.json" || die "cannot write the $layout blueprint"
     log="$boot/out.log"
     export TMPDIR="$boot/tmp"
@@ -359,6 +437,7 @@ for v in "${selected[@]}"; do
       --mount="$agent_includes:/rt/agent/includes" \
       --mount="$fixtures_dir:/rt/fixtures" \
       --mount="$here:/rt/harness" \
+      ${phase_mounts[@]+"${phase_mounts[@]}"} \
       --verbosity=quiet \
       -- /rt/harness/harness.php "elementor=$v" "wp=$wp_ver" "php=$php_ver" "zip_sha256=$sha" "stored=$form" "layout=$layout" ${plants[@]+"${plants[@]}"} ${extra_args[@]+"${extra_args[@]}"} \
       >"$log" 2>&1 &
@@ -367,29 +446,7 @@ for v in "${selected[@]}"; do
     # The timeout is decided from the clock, recorded before the kill is sent, and the status
     # comes from that record: a boot that is reaped the moment it is stopped has no process
     # left to look at, and looking would turn a timeout into a missing verdict.
-    waited=0
-    timed_out=0
-    while kill -0 "$child" 2>/dev/null; do
-      if [ "$waited" -ge "$timeout_s" ]; then
-        timed_out=1
-        pkill -P "$child" 2>/dev/null || true
-        kill "$child" 2>/dev/null || true
-        [ "$kill_settle" -eq 0 ] || sleep "$kill_settle"
-        break
-      fi
-      sleep 1
-      waited=$((waited + 1))
-    done
-    set +e
-    if [ "$timed_out" -eq 1 ]; then
-      wait "$child" 2>/dev/null
-      rc=124
-    else
-      wait "$child"
-      rc=$?
-    fi
-    set -e
-    child=""
+    await_child
     wall=$(($(date +%s) - start))
     ran=$((ran + 1))
     cat "$log"
@@ -411,6 +468,101 @@ for v in "${selected[@]}"; do
     # that looked at nothing on the agent's path is not a pass.
     ok_lines="$(grep -c '^rt: RESULT OK$' "$log" || true)"
     fail_lines="$(grep -c '^rt: RESULT FAIL$' "$log" || true)"
+    if [ "$dump_widgets" -eq 1 ]; then
+      if [ "$rc" -eq 0 ] && [ "$ok_lines" -eq 1 ] && [ "$fail_lines" -eq 0 ] \
+        && "$NODE" "$here/build-widget-allowlist.mjs" --check-dump "$log" "$v"; then
+        echo "elementor-roundtrip: Elementor $v ($layout) widget dump OK"
+      else
+        echo "elementor-roundtrip: Elementor $v ($layout) gave no usable widget dump (exit $rc)" >&2
+        broken=1
+      fi
+      continue
+    fi
+    if [ "$native" -eq 1 ]; then
+      summary="$(grep '^rt: NATIVE_SUMMARY ' "$log" || true)"
+      summaries="$(grep -c '^rt: NATIVE_SUMMARY ' "$log" || true)"
+      native_ok=1
+      native_kind="native"
+      case "$summary" in *" elementor=$v layout=containers "*) ;; *) native_ok=0 ;; esac
+      # Legacy evidence is accepted only from a separate ordinary boot.
+      [ "$(grep -c '^rt: SUMMARY ' "$log" || true)" -eq 0 ] || native_ok=0
+      positive_fields="widgets controls edits css texts refused registration_checks"
+      case "$summary" in
+        *" mode=unavailable "*)
+          native_kind="native unavailable; non-native"
+          positive_fields="widgets edits refused registration_checks"
+          [ "$v" = 3.20.4 ] || native_ok=0
+          widgets="$(printf '%s\n' "$summary" | sed -n 's/.* widgets=\([0-9][0-9]*\) .*/\1/p')"
+          unavailable="$(printf '%s\n' "$summary" | sed -n 's/.* unavailable=\([0-9][0-9]*\) .*/\1/p')"
+          [ -n "$unavailable" ] && [ "$unavailable" = "$widgets" ] || native_ok=0
+          case "$summary" in *" controls=0 "*" ops=- css=0 texts=0 "*) ;; *) native_ok=0 ;; esac
+          ;;
+        *) case "$summary" in *" ops=add_native,duplicate,move,remove,set_native "*) ;; *) native_ok=0 ;; esac ;;
+      esac
+      for field in $positive_fields; do
+        value="$(printf '%s\n' "$summary" | sed -n "s/.* $field=\([0-9][0-9]*\) .*/\1/p")"
+        if [ -z "$value" ] || [ "$value" -le 0 ]; then native_ok=0; fi
+      done
+      native_failed="$(printf '%s\n' "$summary" | sed -n 's/.* failed=\([0-9][0-9]*\)$/\1/p')"
+      check_fails="$(grep -c '^rt: FAIL ' "$log" || true)"
+      if [ "$rc" -eq 0 ] && [ "$ok_lines" -eq 1 ] && [ "$fail_lines" -eq 0 ] && [ "$summaries" -eq 1 ] \
+        && [ "$native_ok" -eq 1 ] && [ "$native_failed" = 0 ] && [ "$check_fails" -eq 0 ]; then
+        if [ "$native_kind" != native ]; then
+          legacy_args=()
+          for arg in ${extra_args[@]+"${extra_args[@]}"}; do
+            case "$arg" in native=*) ;; *) legacy_args+=("$arg") ;; esac
+          done
+          legacy_log="$boot/legacy.log"
+          echo "elementor-roundtrip: Elementor $v ($layout) native controls unavailable; starting a fresh ordinary boot"
+          set +e
+          env RT_CACHE="$cache" RT_VERSIONS="$v" RT_LAYOUTS="$layout" RT_PLANT='' \
+            RT_HARNESS_ARGS="${legacy_args[*]-}" "$here/run.sh" >"$legacy_log" 2>&1 &
+          child=$!
+          set -e
+          await_child
+          legacy_rc=$rc
+          cat "$legacy_log"
+          legacy_boots="$(grep -c '^== Elementor ' "$legacy_log" || true)"
+          ran=$((ran + legacy_boots))
+          legacy="$(grep '^rt: SUMMARY ' "$legacy_log" || true)"
+          legacy_ok=1
+          [ "$(grep -c '^rt: SUMMARY ' "$legacy_log" || true)" -eq 1 ] || legacy_ok=0
+          case "$legacy" in *" elementor=$v layout=containers "*) ;; *) legacy_ok=0 ;; esac
+          for field in cases agent refused designed probes texts; do
+            value="$(printf '%s\n' "$legacy" | sed -n "s/.* $field=\([0-9][0-9]*\) .*/\1/p")"
+            if [ -z "$value" ] || [ "$value" -le 0 ]; then legacy_ok=0; fi
+          done
+          case "$legacy" in *" probes_failed=0 failed=0") ;; *) legacy_ok=0 ;; esac
+          legacy_ok_lines="$(grep -c '^rt: RESULT OK$' "$legacy_log" || true)"
+          legacy_fail_lines="$(grep -c '^rt: RESULT FAIL$' "$legacy_log" || true)"
+          legacy_check_fails="$(grep -c '^rt: FAIL ' "$legacy_log" || true)"
+          legacy_failed="$(printf '%s\n' "$legacy" | sed -n 's/.* failed=\([0-9][0-9]*\)$/\1/p')"
+          case "$legacy_failed" in '' | *[!0-9]*) legacy_failed=0 ;; esac
+          wall=$(($(date +%s) - start))
+          if [ "$legacy_rc" -eq 0 ] && [ "$legacy_ok" -eq 1 ] && [ "$legacy_ok_lines" -eq 1 ] \
+            && [ "$legacy_fail_lines" -eq 0 ] && [ "$legacy_check_fails" -eq 0 ]; then
+            echo "elementor-roundtrip: Elementor $v ($layout) $native_kind OK in ${wall}s ($summary)"
+          elif [ "$legacy_rc" -eq 1 ] && [ "$legacy_fail_lines" -eq 1 ] && [ "$legacy_ok_lines" -eq 0 ] \
+            && [ "$legacy_failed" -gt 0 ] && [ "$legacy_check_fails" -gt 0 ]; then
+            echo "elementor-roundtrip: Elementor $v ($layout) $native_kind FAILED in ${wall}s ($legacy)" >&2
+            bad=1
+          else
+            echo "elementor-roundtrip: Elementor $v ($layout) gave no usable legacy verdict from the fresh ordinary boot (exit $legacy_rc)" >&2
+            broken=1
+          fi
+          continue
+        fi
+        echo "elementor-roundtrip: Elementor $v ($layout) $native_kind OK in ${wall}s ($summary)"
+      elif [ "$rc" -eq 1 ] && [ "$fail_lines" -eq 1 ] && [ "$ok_lines" -eq 0 ] && [ "$summaries" -eq 1 ] \
+        && [ -n "$native_failed" ] && [ "$native_failed" -gt 0 ] && [ "$check_fails" -gt 0 ]; then
+        echo "elementor-roundtrip: Elementor $v ($layout) native FAILED in ${wall}s ($summary)" >&2
+        bad=1
+      else
+        echo "elementor-roundtrip: Elementor $v ($layout) gave no usable native verdict (exit $rc, summary='$summary')" >&2
+        broken=1
+      fi
+      continue
+    fi
     summary="$(grep '^rt: SUMMARY ' "$log" | tail -n 1 || true)"
     cases="$(printf '%s\n' "$summary" | sed -n 's/.* cases=\([0-9][0-9]*\) .*/\1/p')"
     agent="$(printf '%s\n' "$summary" | sed -n 's/.* agent=\([0-9][0-9]*\) .*/\1/p')"

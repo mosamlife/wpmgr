@@ -96,6 +96,11 @@ const MinAgentVersionForBuilderEdit = "0.61.163"
 // release ships as.
 const MinAgentVersionForDesignedPages = "0.61.165"
 
+// MinAgentVersionForNativeEdit is the first agent release that ships the
+// widget catalogue, compact control schemas and native widget edit operations.
+// Page edits without native operations retain their existing per-input floor.
+const MinAgentVersionForNativeEdit = "0.61.166"
+
 // AbilityRunMaxAllowedDraftIDs bounds p.allowed_draft_ids: the control plane
 // names at most the one post an input is about, so p stays far under
 // AbilityRunMaxPBytes however many drafts WPMgr created on the site.
@@ -600,6 +605,20 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"builder_would_change_layout":   {},
 	"builder_save_refused":          {},
 	"builder_crashed":               {},
+	// Widget discovery and native settings (MinAgentVersionForNativeEdit).
+	"widget_registry_unreadable":     {},
+	"widget_not_found":               {},
+	"atomic_not_supported":           {},
+	"widget_not_usable":              {},
+	"widget_schema_unreadable":       {},
+	"elementor_controls_unavailable": {},
+	"control_not_found":              {},
+	"native_settings_invalid":        {},
+	"native_designed_node":           {},
+	"native_node_shape":              {},
+	"native_duplicate_refused":       {},
+	"native_preview_too_large":       {},
+	"preview_unreadable":             {},
 	// wpmgr/page-structure and wpmgr/page-edit (MinAgentVersionForBuilderEdit).
 	"ops_invalid":                 {},
 	"node_not_found":              {},

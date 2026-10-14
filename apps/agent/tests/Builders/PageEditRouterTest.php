@@ -303,6 +303,33 @@ final class PageEditRouterTest extends TestCase
         $this->assertCount(1, $this->api->documents[self::DRAFT]->saves, 'one save');
     }
 
+    public function test_native_precheck_write_undo_and_raw_refusal_through_signed_router(): void
+    {
+        $this->enable();
+        $decoded = json_decode($this->input(), true);
+        $ref = $decoded['operations'][0]['ref'];
+        $this->api->coreWidgets = ['heading'];
+        $this->api->widgetCatalogue = [['name' => 'heading', 'title' => 'Heading', 'categories' => ['basic'], 'pro' => false, 'atomic' => false]];
+        $this->api->widgetControls['heading'] = ['title' => ['type' => 'text']];
+        $decoded['operations'] = [['op' => 'set_native', 'ref' => $ref, 'settings' => ['title' => 'Native signed edit']]];
+        $input = json_encode($decoded);
+        $before = BuilderDocumentFingerprint::ofPost(self::DRAFT, ElementorDocument::DESCRIPTOR_KEYS);
+        $pre = $this->callP($this->p('precheck', $input, [self::DRAFT]));
+        $this->assertTrue($pre['ok'] ?? false, json_encode($pre));
+        $this->assertArrayHasKey('digest_inputs', $pre['preview']);
+        $write = $this->callP($this->p('write', $input, [self::DRAFT], $pre));
+        $this->assertTrue($write['ok'] ?? false, json_encode($write));
+        $undoParams = json_decode($this->p('revert', '{}', [self::DRAFT]), true);
+        $undoParams['revert'] = ['snapshot_sha256' => $write['snapshot_sha256']];
+        $undo = $this->callP(json_encode($undoParams));
+        $this->assertTrue($undo['ok'] ?? false, json_encode($undo));
+        $this->assertSame($before, BuilderDocumentFingerprint::ofPost(self::DRAFT, ElementorDocument::DESCRIPTOR_KEYS));
+        $bad = str_replace('"title":"Native signed edit"', '"title":"First","title":"Second"', $input);
+        $refusal = $this->callP($this->p('precheck', $bad, [self::DRAFT]));
+        $this->assertSame('native_settings_invalid', $refusal['code'] ?? null, json_encode($refusal));
+        $this->assertNotEmpty($refusal['failures']);
+    }
+
     public function test_a_write_schedules_the_hourly_sweep_of_expired_copies(): void
     {
         $events = [];

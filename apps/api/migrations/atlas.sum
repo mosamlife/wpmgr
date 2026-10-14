@@ -1,4 +1,4 @@
-h1:t7+TlMy+JnNXNA/CwDKKBAbeKFbnVG8R1PL5HI+0a/8=
+h1:nuS/Dq2fDJ9GvKuh6Ya0YNQKNf5d0/QFWDcDF2FLZDs=
 20260527115454_initial.sql h1:WfgbwGaDre3ilGSUpQWqeGW9gLACxOAIXvyRENhSX6w=
 20260527130000_auth_multitenancy.sql h1:dbQRjlWWYbkuHrqKHqZTPt1Z8Txoo58fe/Mr9HW/Plk=
 20260527172114_m2_site_registry.sql h1:RxL0mxr9jcC85gh8pcYnG0ge3IXy4+sGpLHS8YHMDDw=
@@ -176,3 +176,4 @@ h1:t7+TlMy+JnNXNA/CwDKKBAbeKFbnVG8R1PL5HI+0a/8=
 20261013010000_m179_delete_lifecycle_privileges.sql h1:mH6hfHkPy0MGNYQAEPc6W9PBMWP/BkAuGN+kEKhXMtE=
 20261013020000_m180_ability_request_content_retention.sql h1:KQeeWBYB9uwJsRqA5IzJff95S5CPpaPkAu2n77wvKPY=
 20261013030000_m181_delete_per_parent_fk_indexes.sql h1:VxnMcz4h8k24OXgyCJzgxkpzdc+SQP7YBOYnU0rjjz4=
+20261013040000_m182_elementor_read_abilities.sql h1:P9TO03wZKN4D67aQv+QV9HZ00r9KXaZnC/ttKhPoaiQ=

@@ -39,6 +39,7 @@ use WPMgr\Agent\Abilities\Builders\IdSeed;
 use WPMgr\Agent\Abilities\Builders\LeafPolicy;
 use WPMgr\Agent\Abilities\Builders\NativeDocument;
 use WPMgr\Agent\Abilities\Builders\OutlineV3;
+use WPMgr\Agent\Abilities\Builders\PageEditValidator;
 use WPMgr\Agent\Abilities\OwnAbilities;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -219,6 +220,417 @@ final class BuilderPageEditTest extends TestCase
         $other = BuilderPageEdit::plan($input, $this->entry(), [self::TARGET], '33333333-3333-4444-8555-888888888888', self::noMedia(), $this->seam());
         $this->assertNotSame($one['preview_digest'], $other['preview_digest'] ?? null);
         $this->assertSame([], $this->rows->optionRows(), 'a precheck stores nothing');
+    }
+
+    private function nativeCatalogue(): void
+    {
+        $this->api->coreWidgets = ['heading', 'counter'];
+        $this->api->widgetTypes[] = 'counter';
+        foreach ($this->api->coreWidgets as $type) {
+            $this->api->widgetCatalogue[] = ['name' => $type, 'title' => ucfirst($type), 'categories' => ['basic'], 'pro' => false, 'atomic' => false];
+            $this->api->widgetControls[$type] = ['title' => ['type' => 'text', 'label' => 'Title'], 'image' => ['type' => 'media']];
+        }
+    }
+
+    /** Real plan/precheck answers are the cross-language verifier oracle. */
+    public function test_native_precheck_answers_golden(): void
+    {
+        $tree = $this->pageWithNativeCounter();
+        RealNativeControls::install($this->api);
+        $cases = [
+            'set_native' => [['op' => 'set_native', 'ref' => 'ccccccc', 'settings' => ['title' => 'New counter']]],
+            'add_native' => [['op' => 'add_native', 'into' => self::RIGHT, 'widget' => 'button', 'settings' => ['text' => 'New button']]],
+            'duplicate' => [['op' => 'duplicate', 'ref' => 'ccccccc', 'after' => 'ccccccc']],
+            'remove' => [['op' => 'remove', 'ref' => 'ccccccc']],
+            'move' => [['op' => 'move', 'ref' => 'ccccccc', 'into' => $tree[0]['elements'][0]['id'], 'position' => 'first']],
+            'no_native_op' => [['op' => 'set_text', 'ref' => self::HEADING, 'field' => 'text', 'text' => 'Legacy title']],
+            'merge_delete' => [['op' => 'set_native', 'ref' => 'ccccccc', 'settings' => ['title' => null, 'ending_number' => '25']]],
+            'mapped_set_native' => [['op' => 'set_native', 'ref' => self::HEADING, 'settings' => ['title' => 'Native heading']]],
+            'reused_anchor' => [
+                ['op' => 'add_native', 'after' => 'ccccccc', 'widget' => 'counter', 'settings' => ['title' => 'First']],
+                ['op' => 'add_native', 'after' => 'ccccccc', 'widget' => 'counter', 'settings' => ['title' => 'Second']],
+            ],
+            'remove_ancestor' => [['op' => 'remove', 'ref' => self::RIGHT]],
+        ];
+        $rows = [];
+        foreach ($cases as $name => $ops) {
+            $this->storePage($tree);
+            $input = $this->input($ops);
+            $plan = $this->plan($input);
+            $this->assertArrayNotHasKey('refusal', $plan, $name . ': ' . json_encode($plan['refusal'] ?? null));
+            $answer = BuilderPageEdit::precheckAnswer($plan, self::EDIT, $this->digest($input)($plan['base_fingerprint'], $plan['preview_digest']));
+            $this->assertTrue($answer['ok'], $name);
+            $rows[] = ['name' => $name, 'request_id' => self::EDIT, 'entry_sha256' => self::ENTRY_SHA, 'input' => $input,
+                'base_fingerprint' => $answer['base_fingerprint'], 'preview' => $answer['preview'],
+                'tree_json' => json_encode($plan['preview']['tree'], JSON_THROW_ON_ERROR),
+                'preview_digest' => $answer['preview_digest'], 'precheck_digest' => $answer['precheck_digest']];
+        }
+        $bytes = json_encode($rows, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR) . "\n";
+        $path = __DIR__ . '/../fixtures/ability-run/native-precheck-answers.json';
+        if (getenv('WPMGR_WRITE_FIXTURES') === '1') {
+            $this->assertSame(strlen($bytes), file_put_contents($path, $bytes));
+        }
+        $this->assertFileExists($path, 'Generate with WPMGR_WRITE_FIXTURES=1');
+        $this->assertSame(file_get_contents($path), $bytes);
+    }
+
+    public function test_native_stored_shape_matches_elementor_factory(): void
+    {
+        RealNativeControls::install($this->api);
+        $normalise = static function (array $node) use (&$normalise): array {
+            foreach ($node['elements'] ?? [] as $i => $child) {
+                $node['elements'][$i] = $normalise($child);
+            }
+            if (($node['elType'] ?? '') === 'widget') {
+                $type = $node['widgetType'];
+                unset($node['isInner'], $node['widgetType']);
+                $node['widgetType'] = $type;
+            }
+            return $node;
+        };
+        $this->api->elementFactory = static fn ($node) => new class ($normalise($node)) {
+            public function __construct(private array $node) {}
+            public function get_data_for_save(): array { return $this->node; }
+        };
+        $input = $this->input([
+            ['op' => 'set_native', 'ref' => self::HEADING, 'settings' => ['title' => 'Native title']],
+            ['op' => 'add_native', 'into' => self::RIGHT, 'widget' => 'button', 'settings' => ['text' => 'New button']],
+        ]);
+        $plan = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+        $added = $plan['preview']['results'][1]['result_node'];
+        $this->assertSame(['id', 'elType', 'settings', 'elements', 'widgetType'], array_keys($added));
+        $this->assertSame($added, $plan['preview']['tree'][0]['elements'][1]['elements'][1]);
+        $set = $plan['preview']['results'][0]['result_node'];
+        $expected = self::page()[0]['elements'][0]['elements'][0];
+        $expected['settings']['title'] = 'Native title';
+        $this->assertSame($expected, $set);
+        $this->api->storingDocument(self::TARGET, $this->rows);
+        $r = $this->write($input, $this->digest($input)($plan['base_fingerprint'], $plan['preview_digest']), $plan['preview_digest']);
+        $this->assertTrue($r['ok'] ?? false, json_encode($r));
+    }
+
+    public function test_native_designed_ancestor_and_host_rules_use_compiler_shapes(): void
+    {
+        $this->storeDesigned();
+        $tree = self::designedPage();
+        RealNativeControls::install($this->api);
+        $this->api->coreWidgets[] = 'text-editor';
+        $this->api->widgetControls['text-editor'] = ['editor' => ['type' => 'wysiwyg']];
+        $this->api->widgetCatalogue[] = ['name' => 'text-editor', 'title' => 'Text', 'categories' => ['basic'], 'pro' => false, 'atomic' => false];
+        $plain = ['id' => 'eeeeeee', 'elType' => 'container', 'settings' => [], 'elements' => [
+            ['id' => 'fffffff', 'elType' => 'widget', 'settings' => ['title' => 'Outside'], 'elements' => [], 'widgetType' => 'counter']]];
+        $tree[] = $plain;
+        $this->storePage($tree);
+        $section = $tree[0]['id'];
+        $source = $tree[0]['elements'][0]['id'];
+        $pattern = $tree[1]['elements'][0];
+        $findWidget = static function (array $node) use (&$findWidget): ?string {
+            if ($node['elType'] === 'widget') { return $node['id']; }
+            foreach ($node['elements'] as $child) {
+                $id = $findWidget($child);
+                if ($id !== null) { return $id; }
+            }
+            return null;
+        };
+        $patternSource = $findWidget($pattern);
+        foreach ([
+            ['op' => 'set_native', 'ref' => $source, 'settings' => ['editor' => 'Changed']],
+            ['op' => 'duplicate', 'ref' => $source, 'into' => 'eeeeeee'],
+            ['op' => 'duplicate', 'ref' => $patternSource, 'into' => 'eeeeeee'],
+            ['op' => 'add_native', 'into' => $section, 'widget' => 'counter', 'settings' => []],
+            ['op' => 'add_native', 'into' => $pattern['id'], 'widget' => 'counter', 'settings' => []],
+            ['op' => 'duplicate', 'ref' => 'fffffff', 'into' => $section],
+            ['op' => 'move', 'ref' => 'fffffff', 'into' => $section],
+            ['op' => 'move', 'ref' => 'fffffff', 'into' => $pattern['id']],
+        ] as $op) {
+            $plan = $this->plan($this->input([$op]));
+            $this->assertSame('native_designed_node', $plan['refusal']['code'] ?? null, json_encode($plan));
+        }
+        $plan = $this->plan($this->input([['op' => 'set_native', 'ref' => 'fffffff', 'settings' => ['title' => 'Outside edit']]]));
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan));
+    }
+
+    public function test_native_plan_reads_one_breakpoint_list_for_validation_and_digest(): void
+    {
+        $this->nativeCatalogue();
+        $this->api->widgetControls['heading']['color'] = ['type' => 'color', 'responsive' => true];
+        $this->api->activeBreakpoints = ['tablet', 'mobile'];
+        $this->api->calls = [];
+        $input = $this->input([['op' => 'set_native', 'ref' => self::HEADING, 'settings' => ['color_tablet' => '#ABCDEF']]]);
+        $plan = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+        $calls = array_filter($this->api->calls, static fn ($call) => $call[0] === 'activeBreakpoints');
+        $this->assertCount(1, $calls);
+        $this->assertSame(['mobile', 'tablet'], $plan['preview']['digest_inputs']['active_breakpoints']);
+        $this->api->activeBreakpoints = null;
+        $input = $this->input([['op' => 'set_native', 'ref' => self::HEADING, 'settings' => ['title' => 'New']]]);
+        $plan = $this->plan($input);
+        $this->assertSame('native_settings_invalid', $plan['refusal']['code'] ?? null);
+    }
+
+    public function test_media_resolver_preserves_outline_order_and_sorts_native_ids_in_separate_edits(): void
+    {
+        $asked = [];
+        $resolve = static function (array $ids) use (&$asked): array {
+            $asked = $ids;
+            return ['facts' => array_map(static fn ($id) => ['id' => $id, 'url' => 'https://example.com/' . $id . '.jpg',
+                'filename' => $id . '.jpg', 'mime' => 'image/jpeg', 'width' => 100, 'height' => 100, 'modified_gmt' => '2026-10-13 00:00:00'], $ids)];
+        };
+        $ops = [['op' => 'insert', 'after' => self::TEXT, 'outline' => [
+            ['type' => 'image', 'attachment_id' => 9, 'alt' => ''],
+            ['type' => 'image', 'attachment_id' => 7, 'alt' => '']]]];
+        $plan = BuilderPageEdit::plan($this->input($ops), $this->entry(), [self::TARGET], self::EDIT, $resolve, $this->seam());
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+        $this->assertSame([9, 7], $asked);
+        $this->nativeCatalogue();
+        $this->api->widgetControls['counter']['second_image'] = ['type' => 'media'];
+        $nativeOps = [['op' => 'add_native', 'into' => self::RIGHT, 'widget' => 'counter', 'settings' => [
+            'image' => ['id' => '4', 'url' => 'https://example.com/4.jpg'],
+            'second_image' => ['id' => '2', 'url' => 'https://example.com/2.jpg']]]];
+        $plan = BuilderPageEdit::plan($this->input($nativeOps), $this->entry(), [self::TARGET], self::EDIT, $resolve, $this->seam());
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+        $this->assertSame([2, 4], $asked);
+        $asked = [];
+        $plan = BuilderPageEdit::plan($this->input(array_merge($ops, $nativeOps)), $this->entry(), [self::TARGET], self::EDIT, $resolve, $this->seam());
+        $this->assertSame('ops_invalid', $plan['refusal']['code'] ?? null);
+        $this->assertSame(PageEditValidator::MIXED_HINT, $plan['refusal']['detail'] ?? null);
+        $this->assertSame([], $asked);
+    }
+
+    public function test_invalid_utf8_title_refuses_precheck_answer(): void
+    {
+        $this->nativeCatalogue();
+        $this->rows->update($this->rows->posts, ['post_title' => "\xB1"], ['ID' => self::TARGET]);
+        foreach ([[['op' => 'set_native', 'ref' => self::HEADING, 'settings' => ['title' => 'Native']]], self::ops()] as $ops) {
+            $plan = $this->plan($this->input($ops));
+            $this->assertSame('preview_unreadable', $plan['refusal']['code'] ?? null);
+            $this->assertStringContainsString('UTF-8', $plan['refusal']['detail']);
+        }
+    }
+
+    public function test_repeated_id_precheck_reports_the_page_identity_problem(): void
+    {
+        $tree = self::page();
+        $tree[0]['elements'][1]['elements'][0]['id'] = self::HEADING;
+        $this->storePage($tree);
+        $plan = $this->plan($this->input([['op' => 'set_text', 'ref' => self::HEADING, 'field' => 'text', 'text' => 'New']]));
+        $this->assertSame('data_unreadable', $plan['refusal']['code'] ?? null);
+        $this->assertSame('an element id appears more than once on the page', $plan['refusal']['detail'] ?? null);
+    }
+
+    public function test_invalid_core_type_projects_locked_and_other_text_prechecks(): void
+    {
+        $tree = self::page();
+        foreach (['bad.name', 'Bad-name', str_repeat('a', 65)] as $i => $type) {
+            $this->api->widgetTypes[] = $type;
+            $this->api->coreWidgets[] = $type;
+            $this->api->widgetCatalogue[] = ['name' => $type, 'title' => 'Core', 'categories' => ['basic'], 'pro' => false, 'atomic' => false];
+            $tree[0]['elements'][1]['elements'][] = ['id' => 'ffffff' . $i, 'elType' => 'widget', 'settings' => [], 'elements' => [], 'widgetType' => $type];
+        }
+        $this->storePage($tree);
+        $nodes = (new ElementorAdapter($this->api))->project($tree)->nodes();
+        foreach (array_slice($nodes, -3) as $node) { $this->assertSame('locked', $node['kind']); }
+        $plan = $this->plan($this->input([['op' => 'set_text', 'ref' => self::HEADING, 'field' => 'text', 'text' => 'New']]));
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+    }
+
+    public function test_real_size_counter_and_button_native_operations_precheck_and_write(): void
+    {
+        RealNativeControls::install($this->api);
+        $normalise = static function (array $node) use (&$normalise): array {
+            foreach ($node['elements'] ?? [] as $i => $child) { $node['elements'][$i] = $normalise($child); }
+            if ($node['elType'] === 'widget') {
+                $type = $node['widgetType']; unset($node['isInner'], $node['widgetType']); $node['widgetType'] = $type;
+            }
+            return $node;
+        };
+        $this->api->elementFactory = static fn ($node) => new class ($normalise($node)) {
+            public function __construct(private array $node) {}
+            public function get_data_for_save(): array { return $this->node; }
+        };
+        foreach (['counter' => 'title', 'button' => 'text'] as $type => $key) {
+            foreach ([['op' => 'set_native', 'ref' => 'ccccccc', 'settings' => [$key => 'New']],
+                ['op' => 'add_native', 'into' => self::RIGHT, 'widget' => $type, 'settings' => [$key => 'New']],
+                ['op' => 'duplicate', 'ref' => 'ccccccc', 'into' => self::RIGHT]] as $op) {
+                $tree = self::page();
+                $tree[0]['elements'][0]['elements'][] = ['id' => 'ccccccc', 'elType' => 'widget', 'settings' => [$key => 'Stored'], 'elements' => [], 'widgetType' => $type];
+                $this->storePage($tree);
+                $input = $this->input([$op]);
+                $plan = $this->plan($input);
+                $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+                $this->api->storingDocument(self::TARGET, $this->rows);
+                $r = $this->write($input, $this->digest($input)($plan['base_fingerprint'], $plan['preview_digest']), $plan['preview_digest']);
+                $this->assertTrue($r['ok'] ?? false, json_encode($r));
+            }
+        }
+    }
+
+    public function test_native_preview_binds_live_schema_and_write_uses_existing_snapshot_path(): void
+    {
+        $this->nativeCatalogue();
+        $ops = [['op' => 'set_native', 'ref' => self::HEADING, 'settings' => ['title' => 'Native title']],
+            ['op' => 'add_native', 'into' => self::RIGHT, 'widget' => 'counter', 'settings' => ['title' => 'Counter']]];
+        $input = $this->input($ops);
+        $plan = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+        $preview = $plan['preview'];
+        $this->assertSame(self::page(), $preview['before_tree']);
+        $this->assertSame(hash('sha256', json_encode(self::page())), $preview['before_tree_sha256']);
+        $this->assertSame($ops, array_column($preview['results'], 'op'));
+        $this->assertSame(['before_tree_sha256', 'widgets', 'active_breakpoints', 'builder_version', 'media'], array_keys($preview['digest_inputs']));
+        $this->assertSame($preview['before_tree_sha256'], $preview['digest_inputs']['before_tree_sha256']);
+        $this->assertSame(hash('sha256', json_encode(['wpmgr.page_edit.native.v1', 'elementor', '3.35.9', self::TARGET, $this->currentFp(), json_encode($preview['tree']), json_encode($preview['digest_inputs'])])), $plan['preview_digest']);
+        $this->assertSame($plan['preview_digest'], $this->plan($input)['preview_digest']);
+        $this->api->storingDocument(self::TARGET, $this->rows);
+        $r = $this->write($input, $this->digest($input)($plan['base_fingerprint'], $plan['preview_digest']), $plan['preview_digest']);
+        $this->assertTrue($r['ok'] ?? false, json_encode($r));
+        $this->assertArrayHasKey('snapshot_sha256', $r);
+        $this->assertSame([], $this->wpdb->claims);
+    }
+
+    public function test_native_schema_change_refuses_approved_write(): void
+    {
+        $this->nativeCatalogue();
+        $input = $this->input([['op' => 'set_native', 'ref' => self::HEADING, 'settings' => ['title' => 'Native title']]]);
+        $plan = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan));
+        $this->api->widgetControls['heading']['title']['default'] = 'Changed default';
+        $this->api->storingDocument(self::TARGET, $this->rows);
+        $r = $this->write($input, $this->digest($input)($plan['base_fingerprint'], $plan['preview_digest']), $plan['preview_digest']);
+        $this->assertSame('preview_changed', $r['code'] ?? null);
+        $this->assertSame([], $this->api->documents[self::TARGET]->saves);
+        $this->assertSame([], $this->rows->optionRows());
+    }
+
+    public function test_native_media_resolution_and_exact_site_url(): void
+    {
+        $this->nativeCatalogue();
+        $fact = ['id' => 7, 'url' => 'https://example.com/uploads/a.jpg', 'filename' => 'a.jpg', 'mime' => 'image/jpeg', 'width' => 100, 'height' => 100, 'modified_gmt' => '2026-10-13 00:00:00'];
+        $resolve = static fn (array $ids): array => ['facts' => $ids === [7] ? [$fact] : []];
+        $ops = [['op' => 'set_native', 'ref' => self::HEADING, 'settings' => ['image' => ['id' => '7', 'url' => $fact['url']]]]];
+        $input = $this->input($ops);
+        $plan = BuilderPageEdit::plan($input, $this->entry(), [self::TARGET], self::EDIT, $resolve, $this->seam());
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+        $this->assertSame('7', $plan['preview']['digest_inputs']['media'][0]['id']);
+        $this->assertSame($fact['url'], $plan['preview']['digest_inputs']['media'][0]['url']);
+        $ops[0]['settings']['image']['url'] = 'https://example.com/uploads/wrong.jpg';
+        $r = BuilderPageEdit::plan($this->input($ops), $this->entry(), [self::TARGET], self::EDIT, $resolve, $this->seam());
+        $this->assertSame('native_settings_invalid', $r['refusal']['code'] ?? null);
+        $this->assertNotEmpty($r['refusal']['failures']);
+        $this->assertArrayHasKey('schema', $r['refusal']);
+    }
+
+    public function test_native_precheck_answer_size_cap(): void
+    {
+        $plan = ['base_fingerprint' => str_repeat('a', 64), 'preview_digest' => str_repeat('b', 64), 'builder_facts' => null,
+            'preview' => ['digest_inputs' => [], 'title' => str_repeat('x', 4194304)]];
+        $r = BuilderPageEdit::precheckAnswer($plan, self::EDIT, str_repeat('c', 64));
+        $this->assertSame('native_preview_too_large', $r['code'] ?? null);
+    }
+
+    public function test_native_write_detects_changed_carry_over_and_restores(): void
+    {
+        $this->nativeCatalogue();
+        $input = $this->input([['op' => 'set_native', 'ref' => self::HEADING, 'settings' => ['title' => 'Native title']]]);
+        $before = $this->currentFp();
+        $r = $this->approvedWrite($input, static function (array $tree): array {
+            $tree[0]['elements'][0]['elements'][0]['settings']['title_color'] = '#000000';
+            return $tree;
+        });
+        $this->assertSame(['verify_mismatch', true], [$r['code'] ?? null, $r['restored'] ?? null], json_encode($r));
+        $this->assertSame($before, $this->currentFp());
+    }
+
+    public function test_native_breakpoint_change_on_reused_adapter_changes_digest(): void
+    {
+        $this->nativeCatalogue();
+        $seam = $this->seam();
+        $input = $this->input([['op' => 'set_native', 'ref' => self::HEADING, 'settings' => ['title' => 'Native title']]]);
+        $first = BuilderPageEdit::plan($input, $this->entry(), [self::TARGET], self::EDIT, self::noMedia(), $seam);
+        $this->assertArrayNotHasKey('refusal', $first, json_encode($first['refusal'] ?? null));
+        $this->api->activeBreakpoints = ['mobile'];
+        $second = BuilderPageEdit::plan($input, $this->entry(), [self::TARGET], self::EDIT, self::noMedia(), $seam);
+        $this->assertSame(['mobile'], $second['preview']['digest_inputs']['active_breakpoints'] ?? null);
+        $this->assertNotSame($first['preview_digest'], $second['preview_digest'] ?? null);
+    }
+
+    public function test_native_duplicate_media_is_resolved_and_must_match_the_site(): void
+    {
+        $this->nativeCatalogue();
+        $fact = ['id' => 7, 'url' => 'https://example.com/uploads/a.jpg', 'filename' => 'a.jpg', 'mime' => 'image/jpeg', 'width' => 100, 'height' => 100, 'modified_gmt' => '2026-10-13 00:00:00'];
+        $asked = [];
+        $resolve = static function (array $ids) use ($fact, &$asked): array {
+            $asked = $ids;
+            return ['facts' => [$fact]];
+        };
+        $tree = self::page();
+        $tree[0]['elements'][0]['elements'][0]['settings']['image'] = ['id' => 7, 'url' => $fact['url'], 'alt' => 'Stored alt', 'source' => 'library', 'size' => 'large'];
+        $this->storePage($tree);
+        $ops = [['op' => 'duplicate', 'ref' => self::HEADING, 'into' => self::RIGHT]];
+        $r = BuilderPageEdit::plan($this->input($ops), $this->entry(), [self::TARGET], self::EDIT, $resolve, $this->seam());
+        $this->assertArrayNotHasKey('refusal', $r, json_encode($r['refusal'] ?? null));
+        $this->assertSame([7], $asked);
+        $this->assertSame($tree[0]['elements'][0]['elements'][0]['settings']['image'], $r['preview']['tree'][0]['elements'][1]['elements'][1]['settings']['image']);
+        $tree[0]['elements'][0]['elements'][0]['settings']['image']['url'] = 'https://example.com/wrong.jpg';
+        $this->storePage($tree);
+        $r = BuilderPageEdit::plan($this->input($ops), $this->entry(), [self::TARGET], self::EDIT, $resolve, $this->seam());
+        $this->assertSame('native_settings_invalid', $r['refusal']['code'] ?? null);
+        $this->assertSame('media', $r['refusal']['schema']['controls']['image']['type'] ?? null);
+    }
+
+    private function pageWithNativeCounter(): array
+    {
+        $this->nativeCatalogue();
+        $tree = self::page();
+        $tree[0]['elements'][1]['elements'][] = ['id' => 'ccccccc', 'elType' => 'widget', 'widgetType' => 'counter', 'isInner' => false, 'settings' => ['title' => 'Counter'], 'elements' => []];
+        $this->storePage($tree);
+        return $tree;
+    }
+
+    public function test_ancestor_move_keeps_base_commit_legacy_golden(): void
+    {
+        $tree = $this->pageWithNativeCounter();
+        RealNativeControls::install($this->api);
+        $input = $this->input([
+            ['op' => 'set_text', 'ref' => self::HEADING, 'field' => 'text', 'text' => 'Golden title'],
+            ['op' => 'insert', 'after' => self::TEXT, 'outline' => [['type' => 'paragraph', 'text' => 'Golden paragraph']]],
+            ['op' => 'move', 'ref' => self::RIGHT, 'before' => $tree[0]['elements'][0]['id']],
+        ]);
+        $plan = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+        $answer = BuilderPageEdit::precheckAnswer($plan, self::EDIT, str_repeat('f', 64));
+        $bytes = json_encode($answer, JSON_THROW_ON_ERROR);
+        $path = __DIR__ . '/../fixtures/ability-run/native-legacy-precheck.json';
+        if (getenv('WPMGR_RECORD_BASE_GOLDEN') === '1') {
+            file_put_contents($path, $bytes . "\n");
+        }
+        $this->assertSame(trim(file_get_contents($path)), $bytes);
+        $this->assertArrayNotHasKey('digest_inputs', $answer['preview']);
+    }
+
+    public function test_non_native_calls_keep_legacy_answer_with_native_nodes_as_anchors(): void
+    {
+        $tree = $this->pageWithNativeCounter();
+        $ops = [['op' => 'insert', 'after' => 'ccccccc', 'outline' => [['type' => 'paragraph', 'text' => 'Legacy insert']]]];
+        $input = $this->input($ops);
+        $plan = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+        $parsed = \WPMgr\Agent\Abilities\Builders\PageEditValidator::parse($input);
+        $legacy = \WPMgr\Agent\Abilities\Builders\LayoutOps::apply($tree, $parsed['input']['operations'], new IdSeed(self::EDIT), [], true);
+        $this->assertSame($legacy['changes'], $plan['preview']['changes']);
+        $this->assertSame(json_encode(ElementorClassicMapper::project($legacy['tree'])->toArray(500)), json_encode($plan['preview']['after_outline']));
+        $this->assertSame(BuilderPageEdit::previewDigest('elementor', '3.35.9', self::TARGET, $this->currentFp(), json_encode($legacy['tree'])), $plan['preview_digest']);
+        $this->assertArrayNotHasKey('digest_inputs', $plan['preview']);
+    }
+
+    public function test_structural_native_subtree_changes_include_before_tree_without_schema(): void
+    {
+        $tree = $this->pageWithNativeCounter();
+        $plan = $this->plan($this->input([['op' => 'remove', 'ref' => self::RIGHT]]));
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+        $this->assertSame($tree, $plan['preview']['before_tree'] ?? null);
+        $this->assertSame([], (array) $plan['preview']['digest_inputs']['widgets']);
     }
 
     public function test_write_digest_matches_precheck(): void

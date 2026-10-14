@@ -141,6 +141,27 @@
  * and "plants" (the element and setting key the plants misspell_key and drop_activator act on).
  * dump=<probe> prints the stored tree and the rendered page of a probe, to write its expectations.
  * dumpcss=<probe name, or its first words; several, comma separated> prints the rules of the post CSS that are about an element of the probe's tree (media condition, selectors, declarations), to write them.
+ * dumpwidgets=1 prints core classic widgets and their controls as one JSON document
+ * between rt: WIDGETS_JSON_START and rt: WIDGETS_JSON_END, then exits without running cases.
+ * native=1 runs a separate containers phase under REST_REQUEST set before wp-load.php.
+ * It reads the agent's catalogue and controls-mode schemas for the pinned core inventory,
+ * splitting truncated batches, and compares them with the dumpwidgets projection of the
+ * same live controls. Every difference is printed as NATIVE_DIFF; native.php documents
+ * the short exception list. NATIVE_REGISTRATION records Performance's optimisation flag
+ * around stack reads. Then real heading, button, library image, counter and icon-box widgets
+ * go through the agent's page-edit precheck, write and undo: title, activated typography,
+ * desktop/tablet size, weight, colour, tablet alignment, added button link, image duplication,
+ * move and removal. Raw SQL tree bytes must equal planned JSON; CSS and visible text must
+ * hold on every edit; undo restores raw tree, preserved metadata and post-column bytes.
+ * Native library images use WordPress's returned ids; native boots do not prepare legacy fixtures.
+ * The seed is viewed before its original rows are captured, including render migration metadata.
+ * NATIVE_SEED_RENDER and NATIVE_RENDER report metadata changed by the frontend, without exclusions.
+ * A rewrite must be refused and restored. The native_rejected_edit plant makes Elementor's
+ * save throw and must turn the phase red. NATIVE_SUMMARY is gated independently of SUMMARY.
+ * On the legacy REST pin, every widget schema and native precheck/write must instead answer
+ * elementor_controls_unavailable without changing the page. The runner then boots all non-native
+ * checks in their ordinary context on a fresh site and requires both verdicts.
+ * Preserved metadata failures name differing keys, byte hashes and the expected/actual order.
  *
  * A probe must expect at least one declaration to be present (its positive control),
  * and the phase must run at least one probe on every layout, or it is red. A probe
@@ -160,6 +181,8 @@
  *                       disagrees. A containers site runs every golden source,
  *                       a sections site only the sections ones, because a
  *                       container element is not registered there.
+ *   native=1            native checks; run.sh boots ordinary legacy checks separately when needed
+ *                       (containers layout required).
  *   plant=<kind>@<case> a deliberate defect on one case, used only by the
  *                       self-test (scripts/elementor-roundtrip_test.sh) to
  *                       prove each check can fail; kinds: PLANTS below
@@ -192,6 +215,12 @@ use WPMgr\Agent\Commands\AbilityRunCommand;
 
 /** Deliberate defects the self-test can request, by kind. */
 const RT_PLANTS = [
+    'native_discovery_drift',
+    'native_css_missing',
+    'native_text_missing',
+    'native_stored_drift',
+    'native_undo_drift',
+    'native_rejected_edit',
     // A widget type Elementor does not know is added to the tree before it is saved; Elementor drops it silently.
     'unregistered_widget',
     // The mapper's output no longer equals the golden tree.
@@ -1992,6 +2021,12 @@ function rt_edit_after_view(AbilityRunCommand $cmd, array $createEntry, array $e
     return [$c, $made];
 }
 
+/** The legacy phase requires its edit operations; the native phase proves native operations separately. */
+function rt_edit_missing_ops(array $ops): array
+{
+    return array_values(array_diff(['set_text', 'insert', 'replace', 'remove', 'move'], $ops));
+}
+
 /**
  * Run the agent's edit path on this site: every edit case that names the layout
  * of this boot, then the full restore and the edit after a view. See the steps 8
@@ -3285,6 +3320,15 @@ if (!in_array($rtArgs['stored'], ['as_given', 'strings'], true)) {
 if (!in_array($rtArgs['layout'], ['containers', 'sections'], true)) {
     rt_broken('layout= must be containers or sections: ' . rt_brief($rtArgs['layout']));
 }
+if (isset($rtArgs['dumpwidgets']) && !in_array($rtArgs['dumpwidgets'], ['0', '1'], true)) {
+    rt_broken('dumpwidgets= must be 0 or 1');
+}
+if (isset($rtArgs['native']) && !in_array($rtArgs['native'], ['0', '1'], true)) {
+    rt_broken('native= must be 0 or 1');
+}
+if (($rtArgs['native'] ?? '0') === '1' && (($rtArgs['dumpwidgets'] ?? '0') === '1' || $rtArgs['layout'] !== 'containers')) {
+    rt_broken('native=1 requires containers and cannot combine with dumpwidgets=1');
+}
 
 // ---------------------------------------------------------------------------
 // The site: PHP, WordPress, the pinned Elementor, the agent's own code
@@ -3300,6 +3344,24 @@ $_SERVER['SERVER_NAME']     = $_SERVER['SERVER_NAME'] ?? '127.0.0.1';
 $_SERVER['REQUEST_URI']     = $_SERVER['REQUEST_URI'] ?? '/';
 $_SERVER['REQUEST_METHOD']  = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $_SERVER['SERVER_PROTOCOL'] = $_SERVER['SERVER_PROTOCOL'] ?? 'HTTP/1.1';
+
+if (($rtArgs['native'] ?? '0') === '1') {
+    try {
+        require_once __DIR__ . '/native.php';
+        require_once __DIR__ . '/dump-widgets.php';
+        rt_native_boot_context();
+    } catch (Throwable $e) {
+        rt_broken('native context failed: ' . $e->getMessage());
+    }
+}
+if (($rtArgs['dumpwidgets'] ?? '0') === '1') {
+    try {
+        require_once __DIR__ . '/dump-widgets.php';
+        rt_widget_dump_boot_context();
+    } catch (Throwable $e) {
+        rt_broken('widget dump context failed: ' . $e->getMessage());
+    }
+}
 
 require '/wordpress/wp-load.php';
 require_once ABSPATH . 'wp-admin/includes/plugin.php';
@@ -3328,6 +3390,26 @@ if (!class_exists(Plugin::class) || !isset(Plugin::$instance)) {
 $zipHash = is_file('/rt/zips/elementor.zip') ? hash_file('sha256', '/rt/zips/elementor.zip') : false;
 if ($zipHash !== $rtArgs['zip_sha256']) {
     rt_broken('the mounted Elementor zip is not the pinned file (sha256 ' . (is_string($zipHash) ? $zipHash : 'unreadable') . ')');
+}
+if (($rtArgs['dumpwidgets'] ?? '0') === '1') {
+    try {
+        require_once __DIR__ . '/dump-widgets.php';
+        $offered = array_diff(array_keys(Plugin::$instance->breakpoints->get_breakpoints()), ['desktop']);
+        $active = array_keys(Plugin::$instance->breakpoints->get_active_breakpoints());
+        if (array_diff($offered, $active) !== []) {
+            throw new RuntimeException('widget dump requires all offered breakpoints to be active');
+        }
+        $dump = rt_widget_dump(Plugin::$instance, ELEMENTOR_PATH, ELEMENTOR_VERSION);
+        $json = json_encode($dump, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    } catch (Throwable $e) {
+        rt_broken('widget dump failed: ' . $e->getMessage());
+    }
+    rt_out('WIDGETS_JSON_START');
+    echo $json . "\n";
+    rt_out('WIDGETS_JSON_END');
+    rt_out('WIDGETS_NAMES elementor=' . ELEMENTOR_VERSION . ' names=' . implode(', ', array_column($dump['widgets'], 'name')));
+    rt_out('RESULT OK');
+    exit(0);
 }
 if (!class_exists(DOMDocument::class)) {
     rt_broken('DOMDocument is not available in this PHP');
@@ -3377,6 +3459,10 @@ rt_out(sprintf(
     $principal,
     $rtContainersOn ? 'active' : 'inactive'
 ));
+
+if (($rtArgs['native'] ?? '0') === '1') {
+    rt_native_phase($principal, '/rt/native-catalogue/core_widgets.json', $rtPlants);
+}
 
 // The render probes are read and checked before anything runs: a probe file that cannot be used is no verdict.
 $rtProbeSet = rt_probe_load();
@@ -3732,7 +3818,7 @@ if ($rtEdit['cases'] < 1) {
     ++$rtFailed;
     rt_out('FAIL the edit path ran no case');
 }
-foreach (array_diff(BuilderContract::OPS, $rtEdit['ops']) as $missing) {
+foreach (rt_edit_missing_ops($rtEdit['ops']) as $missing) {
     ++$rtFailed;
     rt_out('FAIL the edit path applied no ' . $missing . ' operation');
 }

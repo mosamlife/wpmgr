@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Abilities\Builders;
 
 use WPMgr\Agent\Abilities\PageCreateBuilder;
+use WPMgr\Agent\Support\ArrayShape;
 
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
@@ -21,7 +22,11 @@ if (!defined('ABSPATH')) {
  *     objects, so "{}" and "[]" never stand for each other;
  *   - BuilderContract::pageEditInputSchema(), enforced here in code: exactly
  *     the listed fields, 1..25 operations, one anchor per insert or move, a
- *     position only on an insert into a node, refs matching RE_REF;
+ *     position only with into, refs matching RE_REF;
+ *   - raw duplicate-key detection over the whole input before decoding;
+ *     native operation settings keep their parsed collection shapes,
+ *     accept string scalars, and use top-level null only to delete a key; move and native placement also
+ *     offer into with an optional first/last position;
  *   - set_text text through wpmgr/page-create's own rule for its field:
  *     "text" the paragraph text rule (at most 5000 characters), "caption" the
  *     image caption rule (500), "alt" the image alt rule (300; no square
@@ -29,12 +34,16 @@ if (!defined('ABSPATH')) {
  *   - each outline through PageCreateBuilder::validate() as the outline of a
  *     page of its own, so its grammar is page-create's, unchanged, and it
  *     comes back in page-create's normalised form;
- *   - a ref is named at most once in the whole call, as a target or as an
+ *   - native add/duplicate anchors may be reused, including a duplicate
+ *     beside its own source; target refs remain once per call; otherwise
+ *     a ref is named at most once in the whole call, as a target or as an
  *     anchor (ops_invalid).
+ *   - widget operations and text or outline operations use separate calls (ops_invalid).
  * Every other refusal of parse() is bad_input.
  *
  * againstPage() holds the rules that need the page, checked operation by
  * operation on the page as the earlier operations leave it:
+ *   - remove and move target kinds complete the mixed-call check (ops_invalid);
  *   - the adapter declares the operation (op_not_supported_by_builder);
  *   - every ref names a node on the page before the call (node_not_found),
  *     and not one inside a subtree an earlier operation removed or replaced
@@ -63,6 +72,12 @@ if (!defined('ABSPATH')) {
  */
 final class PageEditValidator
 {
+    /** Plain next step for outline edits covering native widgets. */
+    public const NATIVE_SECTION_HINT = 'This section holds Elementor widgets: remove it and add widgets with widget operations, or edit its text with set_text in a separate edit.';
+
+    /** Plain next step for a call that crosses the widget and outline contracts. */
+    public const MIXED_HINT = 'Send widget operations and text or outline operations in separate edits.';
+
     /** Decode depth of the input text, as for every ability input. */
     private const MAX_DEPTH = 32;
 
@@ -94,6 +109,14 @@ final class PageEditValidator
     {
         if (strlen($inputText) > BuilderContract::MAX_INPUT_BYTES) {
             return self::bad('the input is longer than ' . BuilderContract::MAX_INPUT_BYTES . ' bytes');
+        }
+        $raw = NativeSettingsJson::validateDocument($inputText);
+        if (!$raw['ok']) {
+            if (!str_starts_with($raw['failure']['reason'], 'object keys must be unique')) {
+                return self::bad('the input must be the JSON text of an object');
+            }
+            return Refusal::make(NativeSettingsValidator::CODE, 'the raw page-edit JSON is invalid', [$raw['failure']])
+                + ['schema' => ['widget' => '', 'atomic' => false, 'controls' => []]];
         }
         $input = json_decode($inputText, false, self::MAX_DEPTH);
         if (!is_object($input)) {
@@ -134,7 +157,9 @@ final class PageEditValidator
             if (!isset($r['op'])) {
                 return $r;
             }
-            foreach (self::refsOf($r['op']) as $ref) {
+            $references = in_array($r['op']['op'], ['add_native', 'duplicate'], true)
+                ? (isset($r['op']['ref']) ? [$r['op']['ref']] : []) : self::refsOf($r['op']);
+            foreach ($references as $ref) {
                 if (isset($named[$ref])) {
                     return ['code' => 'ops_invalid', 'detail' => $at . ' names ' . $ref . ' again; a call names each node at most once'];
                 }
@@ -143,12 +168,34 @@ final class PageEditValidator
             $clean[] = $r['op'];
         }
 
+        if (self::mixedOperations($clean)) {
+            return ['code' => 'ops_invalid', 'detail' => self::MIXED_HINT];
+        }
+
         $input = ['post_id' => $postId, 'base_fingerprint' => $fingerprint, 'operations' => $clean];
         if ($design !== null) {
             $input['design'] = $design;
         }
 
         return ['input' => $input];
+    }
+
+    /** Explicit operations are classified at parse time; remove/move use the page's kinds. */
+    private static function mixedOperations(array $ops, array $kinds = []): bool
+    {
+        $native = false;
+        $outline = false;
+        foreach ($ops as $op) {
+            $name = $op['op'];
+            $native = $native || in_array($name, ['add_native', 'set_native', 'duplicate'], true);
+            $outline = $outline || in_array($name, ['set_text', 'insert', 'replace'], true);
+            if (in_array($name, ['remove', 'move'], true)) {
+                $kind = $kinds[$op['ref']] ?? null;
+                $native = $native || $kind === 'native';
+                $outline = $outline || ($kind !== null && !in_array($kind, ['native', 'locked'], true));
+            }
+        }
+        return $native && $outline;
     }
 
     /**
@@ -209,6 +256,34 @@ final class PageEditValidator
             }
         }
 
+        $outlineEdit = false;
+        foreach ($input['operations'] as $op) {
+            $outlineEdit = $outlineEdit || in_array($op['op'], ['set_text', 'insert', 'replace'], true);
+        }
+        if ($outlineEdit) {
+            foreach ($input['operations'] as $i => $op) {
+                if (!in_array($op['op'], ['remove', 'replace'], true)) {
+                    continue;
+                }
+                foreach ($kind as $ref => $k) {
+                    if ($k !== 'native') {
+                        continue;
+                    }
+                    $up = $op['op'] === 'replace' ? $ref : ($parent[$ref] ?? null);
+                    while (is_string($up)) {
+                        if ($up === $op['ref']) {
+                            return self::refuse('ops_invalid', self::NATIVE_SECTION_HINT, $i);
+                        }
+                        $up = $parent[$up] ?? null;
+                    }
+                }
+            }
+        }
+
+        if (self::mixedOperations($input['operations'], $kind)) {
+            return self::refuse('ops_invalid', self::MIXED_HINT, null);
+        }
+
         $removed   = [];
         $removedBy = [];
         $new       = 0;
@@ -236,6 +311,16 @@ final class PageEditValidator
             }
 
             switch ($name) {
+                case 'set_native':
+                    break;
+                case 'add_native':
+                case 'duplicate':
+                    $anchor = (string) ($op['after'] ?? $op['before'] ?? $op['into']);
+                    $home = isset($op['into']) ? $anchor : $parent[$anchor];
+                    if ($home === null || !in_array($kind[$home], self::TAKES_CHILDREN, true)) {
+                        return self::refuse('layout_invalid', 'native_widget_parent', $i);
+                    }
+                    break;
                 case 'set_text':
                     $field = (string) $op['field'];
                     if ($target === null || !in_array($field, $editable[$target], true)) {
@@ -292,11 +377,11 @@ final class PageEditValidator
                     }
                     break;
                 case 'move':
-                    $anchor = (string) ($op['after'] ?? $op['before']);
+                    $anchor = (string) ($op['after'] ?? $op['before'] ?? $op['into']);
                     if ($target === null || self::isWithin($anchor, $target, $parent)) {
                         return self::refuse('node_not_editable', 'into_own_subtree', $i);
                     }
-                    $parent[$target] = $parent[$anchor];
+                    $parent[$target] = isset($op['into']) ? $anchor : $parent[$anchor];
                     break;
             }
         }
@@ -516,6 +601,54 @@ final class PageEditValidator
         }
 
         switch ($name) {
+            case 'set_native':
+                $bad = self::keys($o, ['op', 'ref', 'settings'], ['op', 'ref', 'settings'], $at);
+                if ($bad !== null) {
+                    return $bad;
+                }
+                $ref = self::ref($o['ref'], $at . '.ref');
+                if (is_array($ref)) {
+                    return $ref;
+                }
+                $settings = self::nativeSettings($o['settings'], $at);
+                return isset($settings['code']) ? $settings : ['op' => ['op' => $name, 'ref' => $ref, 'settings' => $settings['settings']]];
+            case 'add_native':
+            case 'duplicate':
+                $anchor = self::anchor($o, ['after', 'before', 'into'], $at);
+                if (is_array($anchor)) {
+                    return $anchor;
+                }
+                $required = $name === 'add_native' ? ['widget', 'settings'] : ['ref'];
+                $bad = self::keys($o, array_merge(['op', $anchor], $anchor === 'into' ? ['position'] : [], $required), array_merge(['op', $anchor], $required), $at);
+                if ($bad !== null) {
+                    return $bad;
+                }
+                $clean = ['op' => $name];
+                foreach ($name === 'duplicate' ? ['ref', $anchor] : [$anchor] as $key) {
+                    $ref = self::ref($o[$key], $at . '.' . $key);
+                    if (is_array($ref)) {
+                        return $ref;
+                    }
+                    $clean[$key] = $ref;
+                }
+                if (array_key_exists('position', $o)) {
+                    if (!in_array($o['position'], BuilderContract::POSITIONS, true)) {
+                        return self::bad($at . '.position must be first or last');
+                    }
+                    $clean['position'] = $o['position'];
+                }
+                if ($name === 'add_native') {
+                    if (!is_string($o['widget']) || preg_match('/^[a-z][a-z0-9_-]{0,63}$/D', $o['widget']) !== 1) {
+                        return self::bad($at . '.widget must be a classic widget name');
+                    }
+                    $settings = self::nativeSettings($o['settings'], $at);
+                    if (isset($settings['code'])) {
+                        return $settings;
+                    }
+                    $clean['widget'] = $o['widget'];
+                    $clean['settings'] = $settings['settings'];
+                }
+                return ['op' => $clean];
             case 'set_text':
                 $bad = self::keys($o, ['op', 'ref', 'field', 'text'], ['op', 'ref', 'field', 'text'], $at);
                 if ($bad !== null) {
@@ -597,11 +730,11 @@ final class PageEditValidator
 
                 return ['op' => ['op' => $name, 'ref' => $ref]];
             default:
-                $anchor = self::anchor($o, ['after', 'before'], $at);
+                $anchor = self::anchor($o, ['after', 'before', 'into'], $at);
                 if (is_array($anchor)) {
                     return $anchor;
                 }
-                $bad = self::keys($o, ['op', 'ref', $anchor], ['op', 'ref', $anchor], $at);
+                $bad = self::keys($o, array_merge(['op', 'ref', $anchor], $anchor === 'into' ? ['position'] : []), ['op', 'ref', $anchor], $at);
                 if ($bad !== null) {
                     return $bad;
                 }
@@ -614,8 +747,52 @@ final class PageEditValidator
                     return $to;
                 }
 
-                return ['op' => ['op' => $name, 'ref' => $ref, $anchor => $to]];
+                $clean = ['op' => $name, 'ref' => $ref, $anchor => $to];
+                if (array_key_exists('position', $o)) {
+                    if (!in_array($o['position'], BuilderContract::POSITIONS, true)) {
+                        return self::bad($at . '.position must be first or last');
+                    }
+                    $clean['position'] = $o['position'];
+                }
+                return ['op' => $clean];
         }
+    }
+
+    /** Native settings keep collection shapes and string scalar values. */
+    private static function nativeSettings($value, string $at): array
+    {
+        if (!is_object($value) && $value !== []) {
+            return self::bad($at . '.settings must be an object or empty list');
+        }
+        try {
+            return ['settings' => self::nativeArrays($value, true)];
+        } catch (\InvalidArgumentException $e) {
+            return Refusal::make(NativeSettingsValidator::CODE, 'native settings must use stored collection shapes and string scalars', [[
+                'path' => $at, 'key' => 'settings', 'reason' => 'use JSON objects for control maps and JSON lists for repeater rows; scalars must be strings, with null only for top-level deletion',
+            ]]) + ['schema' => ['widget' => '', 'atomic' => false, 'controls' => []]];
+        }
+    }
+
+    /** @return mixed */
+    private static function nativeArrays($value, bool $top = false, bool $delete = false)
+    {
+        if (is_object($value)) {
+            $map = (array) $value;
+            if ((!$top && $map === []) || ($map !== [] && ArrayShape::isList($map))) {
+                throw new \InvalidArgumentException('a JSON object must retain object encoding');
+            }
+            foreach ($map as $key => $child) {
+                $map[$key] = self::nativeArrays($child, false, $top);
+            }
+            return $map;
+        }
+        if (is_array($value)) {
+            return array_map(static fn ($child) => self::nativeArrays($child), $value);
+        }
+        if (is_string($value) || ($delete && $value === null)) {
+            return $value;
+        }
+        throw new \InvalidArgumentException('native settings scalars must be strings');
     }
 
     /**

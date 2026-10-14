@@ -522,8 +522,10 @@ final class ElementorClassicMapper
      *
      * A node is classified when its type is one this mapper writes, it holds
      * no dynamic content, custom code or attributes, and (for a text editor)
-     * its HTML is exactly one of WPMgr's templates. Everything else is locked,
-     * labelled from LOCKED_LABELS, and its children are not walked. Only the
+     * its HTML is exactly one of WPMgr's templates. With a live native policy,
+     * unclassified core classic widgets become opaque native nodes. Other
+     * unclassified elements remain locked, labelled from LOCKED_LABELS;
+     * neither native nor locked widget children are walked. Only the
      * fields set_text may change are offered as editable, and only those
      * fields' current text appears under from_the_site, with character
      * references decoded.
@@ -535,13 +537,14 @@ final class ElementorClassicMapper
      * subtree is any other shape the node is locked (LABEL_PATTERN_EDITED).
      *
      * @param array<mixed> $tree Decoded stored tree.
+     * @param NativeWidgetPolicy|null $native Live registered core classic eligibility, when available.
      * @return Projection
      * @throws \InvalidArgumentException When an element is not an object or has no usable, unique id.
      */
-    public static function project(array $tree): Projection
+    public static function project(array $tree, ?NativeWidgetPolicy $native = null): Projection
     {
         $projection = new Projection(self::LOCKED_LABELS);
-        self::projectNodes($tree, Projection::ROOT, '', $projection);
+        self::projectNodes($tree, Projection::ROOT, '', $projection, $native);
 
         return $projection;
     }
@@ -1695,7 +1698,7 @@ final class ElementorClassicMapper
      * @return void
      * @throws \InvalidArgumentException When an element is not an object or has no usable, unique id.
      */
-    private static function projectNodes(array $nodes, string $parent, string $parentKind, Projection $projection): void
+    private static function projectNodes(array $nodes, string $parent, string $parentKind, Projection $projection, ?NativeWidgetPolicy $native = null): void
     {
         foreach ($nodes as $node) {
             if (!is_array($node)) {
@@ -1712,9 +1715,15 @@ final class ElementorClassicMapper
                 $projection->addLocked($id, $parent, Projection::FALLBACK_LABEL);
                 continue;
             }
+            // Unclassified registered core classic widgets are opaque native nodes;
+            // every other unclassified element retains its locked label.
             $known = isset(self::ALLOWED_KEYS[$type]) && ($elType === 'widget') === !in_array($type, ['container', 'section', 'column'], true);
             if (!$known) {
-                $projection->addLocked($id, $parent, self::labelKey($type));
+                if ($elType === 'widget' && $native !== null && $native->eligible($type)) {
+                    $projection->addNative($id, $parent, $type, $native->summary($type, $settings));
+                } else {
+                    $projection->addLocked($id, $parent, self::labelKey($type));
+                }
                 continue;
             }
             if (self::holdsDynamicKey($settings, 1)) {
@@ -1735,7 +1744,7 @@ final class ElementorClassicMapper
                     $projection->note($id, ['anchor' => $anchor]);
                     $below = $node['elements'] ?? [];
                     if (is_array($below)) {
-                        self::projectNodes($below, $id, 'section', $projection);
+                        self::projectNodes($below, $id, 'section', $projection, $native);
                     }
                     continue;
                 }
@@ -1743,7 +1752,11 @@ final class ElementorClassicMapper
 
             $kind = self::classify($type, $settings, $parentKind);
             if ($kind === null) {
-                $projection->addLocked($id, $parent, $type === 'text-editor' ? self::LABEL_CUSTOM_TEXT : self::labelKey($type));
+                if ($elType === 'widget' && $native !== null && $native->eligible($type)) {
+                    $projection->addNative($id, $parent, $type, $native->summary($type, $settings));
+                } else {
+                    $projection->addLocked($id, $parent, $type === 'text-editor' ? self::LABEL_CUSTOM_TEXT : self::labelKey($type));
+                }
                 continue;
             }
             [$kindName, $level, $editable, $text] = $kind;
@@ -1755,7 +1768,7 @@ final class ElementorClassicMapper
             if (in_array($type, ['container', 'section', 'column'], true)) {
                 $children = $node['elements'] ?? [];
                 if (is_array($children)) {
-                    self::projectNodes($children, $id, $kindName, $projection);
+                    self::projectNodes($children, $id, $kindName, $projection, $native);
                 }
             }
         }

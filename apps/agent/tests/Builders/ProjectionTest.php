@@ -70,6 +70,10 @@ final class ProjectionTest extends TestCase
                 $p->addPattern('n' . $i, Projection::ROOT, 'three-plans', []);
                 continue;
             }
+            if ($kind === 'native') {
+                $p->addNative('n' . $i, Projection::ROOT, 'counter', 'A counter');
+                continue;
+            }
             $p->add('n' . $i, Projection::ROOT, $kind, $kind === 'heading' ? 2 : null, [], []);
         }
         $p->addLocked('x1', Projection::ROOT, 'form');
@@ -77,7 +81,7 @@ final class ProjectionTest extends TestCase
         $out = $p->toArray(BuilderContract::MAX_STRUCTURE_NODES);
         $this->assertSame(array_merge($kinds, ['locked']), array_column($out['nodes'], 'kind'));
 
-        $refused = ['locked', 'pattern', 'widget', 'Heading', 'heading ', 'text-editor', 'container', ''];
+        $refused = ['locked', 'pattern', 'native', 'widget', 'Heading', 'heading ', 'text-editor', 'container', ''];
         foreach ($refused as $kind) {
             try {
                 $p->add('r' . bin2hex($kind), Projection::ROOT, $kind, null, [], []);

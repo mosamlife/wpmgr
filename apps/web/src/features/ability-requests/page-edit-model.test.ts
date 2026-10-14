@@ -3,6 +3,148 @@ import { designedEditCases, designedEditRow, draftDesign, goldenEditCases, golde
 import { pageEditRow } from "@/test/ability-request-rows";
 import { PATTERN_ICONS, SCALE_RATIOS } from "./outline-model";
 import { parsePageEdit } from "./page-edit-model";
+import { nativeCardCase, nativeCardCases, nativeEditRow, nativeLinkCase, type NativeGolden } from "@/test/native-page-edit";
+
+describe("native page edit facts", () => {
+  it("accepts underscore widget names in input, changes and outline", () => {
+    const c = nativeCardCase("add_native");
+    const input = JSON.parse(c.input) as { operations: Array<{ widget: string }> };
+    input.operations[0]!.widget = "google_maps";
+    c.input = JSON.stringify(input);
+    c.facts.changes[0]!.native!.widget = "google_maps";
+    const ref = c.facts.changes[0]!.new_refs![0];
+    const node = c.facts.after_outline.nodes.find((n) => n.ref === ref)!;
+    node.widget = "google_maps";
+    expect(parsePageEdit(nativeEditRow(c))).not.toBeNull();
+  });
+  it.each(nativeCardCases)("reads the production card $name", (c) => {
+    expect(parsePageEdit(nativeEditRow(c)), c.name).not.toBeNull();
+  });
+
+  it("rejects an extra native member", () => {
+    const c = nativeCardCase("set_native");
+    Reflect.set(c.facts.changes[0]!.native!, "extra", "unshown");
+    expect(parsePageEdit(nativeEditRow(c))).toBeNull();
+  });
+
+  const mutations: Array<[string, string, (c: NativeGolden) => void]> = [
+    ["missing native facts", "set_native", (c) => { delete c.facts.changes[0]!.native; }],
+    ["missing widget", "set_native", (c) => { delete c.facts.changes[0]!.native!.widget; }],
+    ["missing key name", "set_native", (c) => { Reflect.deleteProperty(c.facts.changes[0]!.native!.keys![0]!, "key"); }],
+    ["missing after", "set_native", (c) => { delete c.facts.changes[0]!.native!.keys![0]!.after; }],
+    ["missing before wrapper value", "set_native", (c) => { Reflect.deleteProperty(c.facts.changes[0]!.native!.keys![0]!.from_the_site!, "before"); }],
+    ["extra before wrapper member", "set_native", (c) => { Reflect.set(c.facts.changes[0]!.native!.keys![0]!.from_the_site!, "extra", true); }],
+    ["extra key member", "set_native", (c) => { Reflect.set(c.facts.changes[0]!.native!.keys![0]!, "extra", true); }],
+    ["unrequested key", "set_native", (c) => { c.facts.changes[0]!.native!.keys![0]!.key = "unrequested"; }],
+    ["different after", "set_native", (c) => { c.facts.changes[0]!.native!.keys![0]!.after = "Other text"; }],
+    ["duplicate key", "set_native", (c) => { c.facts.changes[0]!.native!.keys!.push(c.facts.changes[0]!.native!.keys![0]!); }],
+    ["removed key without marker", "merge_delete", (c) => { delete c.facts.changes[0]!.native!.keys![0]!.removed; }],
+    ["removed key with after", "merge_delete", (c) => { c.facts.changes[0]!.native!.keys![0]!.after = "Kept"; }],
+    ["removed key without before", "merge_delete", (c) => { delete c.facts.changes[0]!.native!.keys![0]!.from_the_site; }],
+    ["missing new refs", "add_native", (c) => { delete c.facts.changes[0]!.new_refs; }],
+    ["missing duplicate widget", "duplicate", (c) => { delete c.facts.changes[0]!.native!.widget; }],
+    ["missing duplicate refs", "duplicate", (c) => { delete c.facts.changes[0]!.new_refs; }],
+    ["missing remove count", "remove", (c) => { delete c.facts.changes[0]!.native!.removed_count; }],
+    ["missing remove outline", "remove", (c) => { delete c.facts.changes[0]!.native!.removed_outline; }],
+    ["wrong remove count", "remove", (c) => { c.facts.changes[0]!.native!.removed_count = 99; }],
+    ["extra removed node member", "remove", (c) => { Reflect.set(c.facts.changes[0]!.native!.removed_outline![0]!, "extra", true); }],
+    ["missing move from", "move", (c) => { delete c.facts.changes[0]!.native!.from; }],
+    ["missing move to", "move", (c) => { delete c.facts.changes[0]!.native!.to; }],
+    ["missing move parent", "move", (c) => { Reflect.deleteProperty(c.facts.changes[0]!.native!.to!, "parent"); }],
+    ["missing move index", "move", (c) => { Reflect.deleteProperty(c.facts.changes[0]!.native!.from!, "index"); }],
+    ["extra move place member", "move", (c) => { Reflect.set(c.facts.changes[0]!.native!.from!, "extra", true); }],
+    ["negative move index", "move", (c) => { c.facts.changes[0]!.native!.to!.index = -1; }],
+    ["wrong destination parent", "move", (c) => { c.facts.changes[0]!.native!.to!.parent = "other"; }],
+    ["legacy change member on native", "set_native", (c) => { Reflect.set(c.facts.changes[0]!, "after", "unshown"); }],
+  ];
+  it.each(mutations)("refuses %s", (_name, golden, mutate) => {
+    const c = nativeCardCase(golden);
+    mutate(c);
+    expect(parsePageEdit(nativeEditRow(c))).toBeNull();
+  });
+
+  it.each(["ref", "parent", "kind", "widget", "summary"])("refuses a native outline missing %s", (key) => {
+    const c = nativeCardCase("set_native");
+    Reflect.deleteProperty(c.facts.after_outline.nodes.find((n) => n.kind === "native")!, key);
+    expect(parsePageEdit(nativeEditRow(c))).toBeNull();
+  });
+
+  it.each(["extra", "editable", "from_the_site", "label", "level"])("refuses a native outline with %s", (key) => {
+    const c = nativeCardCase("set_native");
+    Reflect.set(c.facts.after_outline.nodes.find((n) => n.kind === "native")!, key,
+      key === "editable" ? [] : key === "from_the_site" ? {} : key === "level" ? 2 : "extra");
+    expect(parsePageEdit(nativeEditRow(c))).toBeNull();
+  });
+
+  it("reads complete links and refuses missing, changed or extra link members", () => {
+    expect(parsePageEdit(nativeEditRow(nativeLinkCase()))).not.toBeNull();
+    for (const key of ["text", "external_domain"]) {
+      const c = nativeLinkCase();
+      Reflect.deleteProperty(c.facts.changes[0]!.native!.keys![1]!.links![0]!, key);
+      expect(parsePageEdit(nativeEditRow(c)), key).toBeNull();
+    }
+    const c = nativeLinkCase();
+    Reflect.set(c.facts.changes[0]!.native!.keys![1]!.links![0]!, "extra", true);
+    expect(parsePageEdit(nativeEditRow(c))).toBeNull();
+  });
+
+  it("accepts unchanged settings omitted by the producer", () => {
+    const c = nativeCardCase("set_native");
+    const input = JSON.parse(c.input) as { operations: Array<{ settings: unknown }> };
+    input.operations[0]!.settings = { title: "Counter" };
+    c.input = JSON.stringify(input);
+    delete c.facts.changes[0]!.native!.keys;
+    expect(parsePageEdit(nativeEditRow(c))).not.toBeNull();
+  });
+
+  it("accepts empty settings and a first placement on an added widget", () => {
+    const c = nativeCardCase("add_native");
+    const input = JSON.parse(c.input) as { operations: Array<{ settings: unknown; position?: string }> };
+    input.operations[0]!.settings = [];
+    input.operations[0]!.position = "first";
+    c.input = JSON.stringify(input);
+    delete c.facts.changes[0]!.native!.keys;
+    expect(parsePageEdit(nativeEditRow(c))).not.toBeNull();
+  });
+
+  it("accepts links with literal host case and a different object key order", () => {
+    const c = nativeLinkCase();
+    const urls = { z: "https://Outside.example/z", a: "https://another.example/a" };
+    const input = JSON.parse(c.input) as { operations: Array<{ settings: Record<string, unknown> }> };
+    input.operations[0]!.settings.link = urls;
+    c.input = JSON.stringify(input);
+    const key = c.facts.changes[0]!.native!.keys![1]!;
+    key.after = { a: urls.a, z: urls.z };
+    key.links = [{ text: urls.z, external_domain: "Outside.example" }, { text: urls.a, external_domain: "another.example" }];
+    expect(parsePageEdit(nativeEditRow(c))).not.toBeNull();
+  });
+
+  it.each(["set_native", "add_native", "duplicate", "move", "remove"])("refuses extra input members for %s", (name) => {
+    const c = nativeCardCase(name);
+    const input = JSON.parse(c.input) as { operations: Array<Record<string, unknown>> };
+    input.operations[0]!.extra = "unshown";
+    c.input = JSON.stringify(input);
+    expect(parsePageEdit(nativeEditRow(c))).toBeNull();
+  });
+
+  it.each(["set_native", "add_native", "duplicate", "move", "remove"])("refuses each missing required input member for %s", (name) => {
+    const c = nativeCardCase(name);
+    const original = JSON.parse(c.input) as { operations: Array<Record<string, unknown>> };
+    for (const key of Object.keys(original.operations[0]!).filter((k) => k !== "position")) {
+      const input = structuredClone(original);
+      delete input.operations[0]![key];
+      expect(parsePageEdit(nativeEditRow({ ...c, input: JSON.stringify(input) })), key).toBeNull();
+    }
+  });
+
+  it.each([true, 42, { title: true }, { title: 42 }, { title: { nested: null } }])("refuses unsupported input setting scalars %j", (settings) => {
+    const c = nativeCardCase("set_native");
+    const input = JSON.parse(c.input) as { operations: Array<{ settings: unknown }> };
+    input.operations[0]!.settings = settings;
+    c.input = JSON.stringify(input);
+    expect(parsePageEdit(nativeEditRow(c))).toBeNull();
+  });
+});
 
 function withInput(change: (input: DesignedEditInput) => void) {
   const row = designedEditRow();
