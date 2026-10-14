@@ -16,6 +16,7 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 - Reading the structure of a page built in Elementor now also says whether someone has the draft open in an editor (Elementor or the WordPress editor) or has unsaved changes to it, so a connected AI can tell before it asks for an edit that would be refused. A page the AI cannot edit, such as a published one, is not checked, and the read changes nothing on the site (#915). Agent 0.61.164.
 - A connected AI can create a designed Elementor page with sections and ready-made parts: a hero, features, stats, logos, testimonials, pricing, FAQ and a call to action. It uses the colours, fonts, spacing and corner style the AI chooses for it and is saved as a draft. On a block theme, the page fills the screen without the theme's header and footer. Agent 0.61.165.
 - The AI can edit a designed page: change any part's text, add or replace sections in the same design, and undo the change. Agent 0.61.165.
+- A connected AI can read the site's Elementor widgets and their settings, and add, change, duplicate, move and remove Elementor's own widgets on a page. Each edit follows the site's approval settings in WPMgr and can be undone. Agent 0.61.166.
 
 ### Changed
 
@@ -24,9 +25,14 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 - Undoing an Elementor draft the AI created now also works after the AI has edited it through WPMgr. The draft is still moved to the trash, provided every difference from the draft as created was made by WPMgr's own changes, and an edit that failed and was put back by the site counts as one of them. A change by a person, an autosave or an open editor still stops the undo (#894, #913). Agent 0.61.163.
 - An edit, or an undo of one, that the site refuses because someone has the page open in an editor (Elementor or the WordPress editor) now tells WPMgr that the same request can be tried again, since the lock on the page lapses on its own once the editor is closed. Other refusals, such as unsaved changes, a page that changed since the AI read it, or a later change that has altered what the edit wrote, are not marked that way, because waiting does not clear them (#915). Agent 0.61.164.
 - Saving a designed page refreshes its stylesheet once and keeps its template and page settings. Undo restores the template and page settings exactly. Agent 0.61.165.
+- Undo restores a page's data rows in place. Agent 0.61.166.
+- A site whose Elementor version builds widget settings only in the editor gets a plain explanation that those settings are unavailable. Agent 0.61.166.
+- AI request details are cleared 15 days after the request finishes. The record of who made the request, when, its kind and its result stays, and the request card says the details were cleared (#939).
 
 ### Fixed
 
+- Deleting a site or an organisation works again on installs where one database role owns the tables and runs the app (#938).
+- Deleting a site is now fast, and the dialog gives clearer feedback while the deletion is running (#940).
 - After a WordPress core update, or a core rollback, the agent now reports the version installed on disk. It used to report the old version as up to date after a core update that had really happened (#860). Agent 0.61.162.
 - On a site where Composer manages WordPress core (a Roots or Bedrock setup, for example), the agent now skips a core update and reports that core was not changed, with a note to update core in composer.json and redeploy. Before, it tried the update, which could fail partway or be undone by the next deploy. A core update that fails before any core file is replaced now says core was not changed, instead of saying no pre-update snapshot was available to auto-restore (#866). Agent 0.61.162.
 - A backup now makes up to three attempts at a chunk upload when the storage reports a temporary problem (a network error, a timeout, a rate limit or a server error), waits up to 120 seconds for each attempt instead of 30, and asks for a fresh upload address once if the first was refused or has expired. When an upload still fails, the message names the storage host and the HTTP status and storage error code, or the network error, instead of only the chunk's hash (#863). Agent 0.61.162.
