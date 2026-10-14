@@ -1,4 +1,4 @@
-h1:v78v9fs0WHpxzGHeHdBKOpTvTmspmI/A/UUu+/7daIU=
+h1:HIsNwPIf5NRkDnJm8fJ9d/A7khGke1tgKHVJkhqITC8=
 20260527115454_initial.sql h1:WfgbwGaDre3ilGSUpQWqeGW9gLACxOAIXvyRENhSX6w=
 20260527130000_auth_multitenancy.sql h1:dbQRjlWWYbkuHrqKHqZTPt1Z8Txoo58fe/Mr9HW/Plk=
 20260527172114_m2_site_registry.sql h1:RxL0mxr9jcC85gh8pcYnG0ge3IXy4+sGpLHS8YHMDDw=
@@ -177,4 +177,5 @@ h1:v78v9fs0WHpxzGHeHdBKOpTvTmspmI/A/UUu+/7daIU=
 20261013020000_m180_ability_request_content_retention.sql h1:KQeeWBYB9uwJsRqA5IzJff95S5CPpaPkAu2n77wvKPY=
 20261013030000_m181_delete_per_parent_fk_indexes.sql h1:VxnMcz4h8k24OXgyCJzgxkpzdc+SQP7YBOYnU0rjjz4=
 20261013040000_m182_elementor_read_abilities.sql h1:P9TO03wZKN4D67aQv+QV9HZ00r9KXaZnC/ttKhPoaiQ=
-20261014190000_m183_elementor_theme_templates_read.sql h1:ncLTB4z9Vyq1eGo9m81EIIvKNe3Q51UofiHe59qPQ0M=
+20261014190000_m183_elementor_theme_templates_read.sql h1:ELwebqEdlu0iqywfrd8rzaJVN6oTMuDbOP1LsD8zilU=
+20261014200000_m184_header_footer_guidance.sql h1:irx8e+hRjhAQt/r1c/p0hOr267V7az25/WKZb2Sfvtg=

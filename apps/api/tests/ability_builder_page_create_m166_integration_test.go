@@ -110,7 +110,8 @@ func m166AssertCopy(t *testing.T, r sqlc.AbilityCatalogue, wantEnabled bool) {
 }
 
 // m166AssertCopyWithText is m166AssertCopy with the description and usage
-// later migrations wrote over m166's: on a fresh install, m177's.
+// later migrations wrote over m166's: on a fresh install, m184's description
+// and m177's usage.
 func m166AssertCopyWithText(t *testing.T, r sqlc.AbilityCatalogue, wantEnabled bool, wantDescription, wantUsage string) {
 	t.Helper()
 	if r.Description != wantDescription {
@@ -165,12 +166,12 @@ func TestBuilderPageCreateM166AsAppRole(t *testing.T) {
 	w := newE2World(t, true)
 
 	// 1. A fresh install: every migration, then the boot stamp. The row has
-	// m166's limits, with the description and usage m177 wrote after it, its
+	// m166's limits, with m184's description and m177's usage, its
 	// hash is the hash of its new bytes, the signed entry carries
 	// builders_enabled, and describe hands the AI the copy and every integer
 	// limit.
 	fresh := m162Row(t, w)
-	m166AssertCopyWithText(t, fresh, true, m177Description, m177Usage)
+	m166AssertCopyWithText(t, fresh, true, m184CreateDescription, m177Usage)
 	m162AssertStamped(t, fresh)
 	m166AssertSignedEntryCarriesBuilders(t, fresh)
 	res := cpeCall(t, w.eng, w.bearer, mcp.ToolSiteAbilityDescribe, map[string]any{
@@ -180,7 +181,7 @@ func TestBuilderPageCreateM166AsAppRole(t *testing.T) {
 	if !ok {
 		t.Fatalf("describe has no wpmgr block: %v", res)
 	}
-	if wp["description"] != m177Description || wp["usage"] != m177Usage {
+	if wp["description"] != m184CreateDescription || wp["usage"] != m177Usage {
 		t.Fatalf("describe copy: description=%v usage=%v", wp["description"], wp["usage"])
 	}
 	described, ok := wp["limits"].(map[string]any)

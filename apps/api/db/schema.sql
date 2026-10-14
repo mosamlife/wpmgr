@@ -9735,10 +9735,10 @@ WHERE NOT EXISTS (
 
 -- m157: wpmgr/page-create, the first admitted write. limits are as m166
 -- leaves them (layout outlines, drafts built in Elementor,
--- limits.builders_enabled), and description and usage as m177 leaves them
--- (the Elementor versions and outline values WPMgr builds, and designed
--- pages, outline version 3); m162, m166, m176 and m177 each clear the entry
--- hash, which the boot stamp fills.
+-- limits.builders_enabled), usage as m177 leaves it (designed pages,
+-- outline version 3), and description as m184 leaves it (header and footer
+-- drafts). m162, m166, m176, m177 and m184 clear the changed entry hash,
+-- which the boot stamp fills.
 INSERT INTO ability_catalogue (
     name, source, class, status, enabled, approval_mode,
     snapshot, effect_copy, operator_permission, min_agent_version,
@@ -9748,12 +9748,14 @@ SELECT 'wpmgr/page-create', 'wpmgr', 'write', 'admitted', true, 'per_call',
        'created_post_trash', 'draft', 'site.content.edit', '0.61.156',
        'Create a draft page',
        'Creates a new draft page or post from an outline: headings, paragraphs, lists, quotes, tables, ' ||
-       'separators, images already in the site''s media library, and, in the block editor or Elementor, buttons, ' ||
-       'spacing, sections and columns. With editor builder:elementor the draft is built in Elementor, from ' ||
-       'Elementor''s own layout elements and widgets. With outline_version 3 it is a designed page: sections ' ||
-       'with tones, backgrounds and anchors, and patterns such as a hero, features, stats, pricing, ' ||
-       'testimonials, questions and a call to action, styled from one design of colours, fonts and spacing. ' ||
-       'Nothing is published. Undo moves the draft to the trash.',
+       'separators, images already in the site''s media library, and, in the block editor or Elementor, ' ||
+       'buttons, spacing, sections and columns. With editor builder:elementor the draft is built in ' ||
+       'Elementor, from Elementor''s own layout elements and widgets. With outline_version 3 it is a designed ' ||
+       'page: sections with tones, backgrounds and anchors, and patterns such as a hero, features, stats, ' ||
+       'pricing, testimonials, questions and a call to action, styled from one design of colours, fonts and ' ||
+       'spacing. Nothing is published. Undo moves the draft to the trash. With template header or footer ' ||
+       'instead of post_type it makes an Elementor Pro header or footer draft; read ' ||
+       'wpmgr/elementor-theme-templates first.',
        'Build the page as an outline. A top-level item can be any block, a group (a section) or columns. A ' ||
        'group holds blocks or columns; a column holds blocks only. Use 2 to 4 columns; widths are optional ' ||
        'whole percentages that add up to 100. Images must already be in the media library: find an attachment ' ||
@@ -9878,22 +9880,29 @@ SELECT 'wpmgr/elementor-theme-templates', 'wpmgr', 'read', 'admitted', true, 'no
        'Lists the site''s Elementor Pro header and footer templates with their type, status, whether WPMgr made ' ||
        'each one and where each shows, plus whether Elementor Pro''s Theme Builder is ready, the places a ' ||
        'template can be set to show, and the site''s menus. Changes nothing.',
-       'Read this before making or changing a header or footer. pro.theme_builder must be true before a header ' ||
-       'or footer can be made; pro.problem says why it is not. Each template lists shows_on, the display rules ' ||
-       'Elementor Pro stored, such as include/general for the entire site or exclude/singular/page/42 for ' ||
-       'everywhere except page 42. shows_on is null when the rules cannot be read, and shows_on_problem says ' ||
-       'why. places lists the rules this site accepts in this version; takes_id means the rule may end with a ' ||
-       'page or post id. made_by_wpmgr marks templates WPMgr made; only those, while they are still drafts, can ' ||
-       'be changed. Lists stop at 25 entries; templates_total and menus_total count everything. Each menu has ' ||
-       'its id, slug, name and item count.'
+       'Read this before making or changing a header or footer. pro.theme_builder must be true; pro.problem ' ||
+       'says why it is not. Each template lists shows_on, the display rules Elementor Pro stored, such as ' ||
+       'include/general for the entire site or exclude/singular/page/42 for everywhere except page 42; ' ||
+       'shows_on is null when the rules cannot be read, and shows_on_problem says why. places lists the ' ||
+       'rules this site accepts in this version; takes_id means the rule may end with a page or post id. ' ||
+       'made_by_wpmgr marks templates WPMgr made; only those, while they are still drafts, can be changed. ' ||
+       'Lists stop at 25 entries; templates_total and menus_total count everything. Each menu has its id, ' ||
+       'slug, name and item count. To make a header or footer, call wpmgr/page-create with template header ' ||
+       'or footer instead of post_type, editor builder:elementor, elementor_format classic, an outline, and ' ||
+       'shows_on: at most 20 rules from places, each include/ or exclude/ and the place, with a page or post ' ||
+       'id where takes_id allows. Without shows_on the draft shows nowhere. To change one, read it with ' ||
+       'wpmgr/page-structure and use wpmgr/page-edit; set_shows_on replaces the whole list. WPMgr makes and ' ||
+       'changes drafts only and never publishes one: a person publishes it in Elementor. Headers and footers ' ||
+       'need the WPMgr plugin 0.61.167 or later and Elementor Pro.'
 WHERE NOT EXISTS (
     SELECT 1 FROM "public"."ability_catalogue" c WHERE c.name = 'wpmgr/elementor-theme-templates'
 );
 
 -- m169: wpmgr/page-edit, changes to a draft WPMgr created in a page builder.
--- Undo strategy builder_document. usage as m178 leaves it (pattern paths,
--- version 3 insert and replace, anchors); m178 clears the entry hash, which
--- the boot stamp fills.
+-- Undo strategy builder_document. usage as m184 leaves it (pattern paths,
+-- version 3 insert and replace, anchors, widget operations and header and
+-- footer drafts); m178 and m184 clear the changed entry hash, which the
+-- boot stamp fills.
 INSERT INTO ability_catalogue (
     name, source, class, status, enabled, approval_mode,
     snapshot, preview, effect_copy, operator_permission,
@@ -9911,21 +9920,25 @@ SELECT 'wpmgr/page-edit', 'wpmgr', 'write', 'admitted', true, 'per_call',
        'saves, and puts that copy back by itself if the saved page is not the page shown. Undo puts back what the ' ||
        'change wrote, newest change first.',
        'First read the page with wpmgr/page-structure. Send post_id, base_fingerprint (from that read) and ' ||
-       'operations: 1 to 25 changes, applied in order. set_text sets one field (text, url, alt or caption) of a ' ||
-       'node whose editable list names it; in a pattern, name the field by its path, such as plans.1.price or ' ||
-       'faq.3.answer. insert adds outline items after or before a node, or into a node, first or last. replace ' ||
-       'puts outline items in place of a node; to add or remove items in a pattern, replace the pattern. remove ' ||
-       'deletes a node. move puts a node after or before another. Outline items use the wpmgr/page-create ' ||
-       'outline, at most 50 in one change, and all text follows its rules: plain text only, and links that are ' ||
-       'https:// addresses or paths on this site that start with /. On a designed page, insert and replace also ' ||
-       'take version 3 sections and patterns, built with the design the page was created with unless you send ' ||
-       'design, complete, as wpmgr/page-create takes it; they need the WPMgr plugin 0.61.165 or later. A ' ||
-       '#anchor link must name an anchor on the page after the whole request (link_anchor_missing), and a ' ||
-       'section whose anchor is still linked cannot be removed (anchor_in_use). Change each node at most once ' ||
-       'in a request, and never name a node an earlier change in the same request removed or replaced. Locked ' ||
-       'nodes cannot be changed, moved or removed. If the page changed after your read, the request is refused ' ||
-       'with conflict: read the page again and send new changes. Only a draft WPMgr created with ' ||
-       'wpmgr/page-create, still a draft, can be changed; any other page is refused with target_not_eligible.'
+       'operations: 1 to 25 changes, applied in order. set_text sets one field (text, url, alt or caption) ' ||
+       'of a node whose editable list names it; in a pattern, name the field by its path, such as ' ||
+       'plans.1.price or faq.3.answer. insert adds outline items after or before a node, or into a node, ' ||
+       'first or last. replace puts outline items in place of a node; to add or remove items in a pattern, ' ||
+       'replace the pattern. remove deletes a node. move puts a node after or before another. Outline items ' ||
+       'use the wpmgr/page-create outline, at most 50 in one change, and all text follows its rules: plain ' ||
+       'text only, and links that are https:// addresses or paths on this site that start with /. On a ' ||
+       'designed page, insert and replace also take version 3 sections and patterns, built with the design ' ||
+       'the page was created with unless you send design, complete, as wpmgr/page-create takes it; they need ' ||
+       'the WPMgr plugin 0.61.165 or later. A #anchor link must name an anchor on the page after the whole ' ||
+       'request (link_anchor_missing), and a section whose anchor is still linked cannot be removed ' ||
+       '(anchor_in_use). Change each node at most once in a request, and never name a node an earlier change ' ||
+       'in the same request removed or replaced. Locked nodes cannot be changed, moved or removed. If the ' ||
+       'page changed after your read, the request is refused with conflict: read the page again and send new ' ||
+       'changes. Only a draft WPMgr created with wpmgr/page-create, still a draft, can be changed; any other ' ||
+       'page is refused with target_not_eligible. set_native, add_native and duplicate change Elementor ' ||
+       'widgets: read wpmgr/elementor-widget-schema and follow its write_rules, and send them apart from ' ||
+       'text or outline changes. A WPMgr header or footer draft is changed the same way; set_shows_on ' ||
+       '{rules} replaces where it shows, and without it the places stay.'
 WHERE NOT EXISTS (
     SELECT 1 FROM ability_catalogue c WHERE c.name = 'wpmgr/page-edit'
 );

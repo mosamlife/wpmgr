@@ -1,5 +1,5 @@
-// m177 proofs: after every migration, wpmgr/page-create's description and
-// usage are m177's, which describe designed pages (outline_version 3, design,
+// m177 proofs: wpmgr/page-create's description and usage after m177
+// describe designed pages (outline_version 3, design,
 // page_frame, sections and patterns) and name the designed-pages floor,
 // 0.61.165; the hash is the hash of the new bytes and describe hands the AI
 // the new copy. A row on m166's description and m176's usage converges: only
@@ -128,10 +128,10 @@ func TestPageCreateDesignedUsageM177AsAppRole(t *testing.T) {
 	}
 
 	// 1. A fresh install: every migration, then the boot stamp. The row has
-	// m177's copy, m166's limits and the text-only floor, its hash is the hash
-	// of its bytes, and describe hands the AI the new copy.
+	// m184's description, m177's usage, m166's limits and the text-only floor;
+	// its hash is the hash of its bytes, and describe hands the AI the new copy.
 	fresh := m162Row(t, w)
-	m177AssertCopy(t, "a fresh install", fresh, m177Description, m177Usage)
+	m177AssertCopy(t, "a fresh install", fresh, m184CreateDescription, m177Usage)
 	if !reflect.DeepEqual(m166LimitsOf(t, fresh.Limits), m166LimitsOf(t, []byte(m166Limits))) {
 		t.Fatalf("a fresh install's limits are not m166's: %s", fresh.Limits)
 	}
@@ -146,7 +146,7 @@ func TestPageCreateDesignedUsageM177AsAppRole(t *testing.T) {
 	if !ok {
 		t.Fatalf("describe has no wpmgr block: %v", res)
 	}
-	if wp["description"] != m177Description || wp["usage"] != m177Usage {
+	if wp["description"] != m184CreateDescription || wp["usage"] != m177Usage {
 		t.Fatalf("describe copy: description=%v usage=%v", wp["description"], wp["usage"])
 	}
 

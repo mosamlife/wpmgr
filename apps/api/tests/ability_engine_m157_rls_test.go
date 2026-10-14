@@ -67,7 +67,7 @@ func m157Stamp(t *testing.T, tx pgx.Tx, id uuid.UUID, sha string) (sqlc.AbilityC
 }
 
 // TestPageCreateSeedAsAppRole proves the m157 seed row exists, admitted and
-// enabled, with the write rules the brief fixes, the description m177 leaves
+// enabled, with the write rules the brief fixes, the description m184 leaves
 // it with, and no hash yet (nothing has run the boot stamp).
 func TestPageCreateSeedAsAppRole(t *testing.T) {
 	ctx := context.Background()
@@ -81,7 +81,7 @@ func TestPageCreateSeedAsAppRole(t *testing.T) {
 			r.OperatorPermission == nil || *r.OperatorPermission != "site.content.edit" ||
 			r.MinAgentVersion == nil || *r.MinAgentVersion != "0.61.156" ||
 			r.Title != "Create a draft page" ||
-			r.Description != m177Description ||
+			r.Description != m184CreateDescription ||
 			r.EntrySha256 != nil || r.VersionMin != nil || r.OwnerDir != nil {
 			t.Fatalf("wpmgr/page-create seed: %+v", r)
 		}
