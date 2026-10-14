@@ -508,6 +508,11 @@ final class PageEditRouterTest extends TestCase
         $params['revert'] = ['snapshot_sha256' => $write['snapshot_sha256']];
         $undo = $this->callP(json_encode($params));
         $this->assertTrue($undo['ok'], json_encode($undo));
+        $this->assertSame(['header', ['include/singular/front_page']], [$write['template'] ?? null, $write['shows_on'] ?? null]);
+        $this->assertSame(['header', ['include/general']], [$undo['template'] ?? null, $undo['shows_on'] ?? null]);
+        $ledger = $this->callP((string) json_encode(['mode' => 'ledger', 'request_id' => self::EDIT]));
+        $this->assertSame(['header', ['include/general']], [$ledger['template'] ?? null, $ledger['shows_on'] ?? null]);
+        $this->assertSame($write, $ledger['result']);
         $this->assertSame($before, BuilderDocumentFingerprint::ofPost(self::DRAFT, $keys));
         $this->assertSame(['include/general'], $this->api->templateRules(self::DRAFT));
         $this->assertSame([], $this->wpdb->claims);

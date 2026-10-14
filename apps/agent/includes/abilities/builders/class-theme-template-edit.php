@@ -62,7 +62,7 @@ final class ThemeTemplateEdit
     }
 
     /** Verify Pro against the conditions rows in the authenticated snapshot after restoration. */
-    public static function verifyRestored(int $postId, array $snapshot, ThemeTemplateCreate $templates): ?string
+    public static function verifyRestored(int $postId, array $snapshot, ThemeTemplateCreate $templates, ?array &$reported = null): ?string
     {
         if (($snapshot['post']['post_type'] ?? null) !== 'elementor_library') {
             return null;
@@ -84,7 +84,8 @@ final class ThemeTemplateEdit
             }
         }
         try {
-            return self::rulesProblem($wanted, $templates->readRules($postId));
+            $reported = $templates->readRules($postId);
+            return self::rulesProblem($wanted, $reported);
         } catch (\Throwable $e) {
             return 'shows_on could not be read back through Elementor Pro';
         }

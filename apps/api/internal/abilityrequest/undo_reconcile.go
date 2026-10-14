@@ -143,7 +143,7 @@ func (s *Service) reconcileUndoOne(ctx context.Context, r sqlc.ListStuckAbilityR
 		Mode: agentcmd.AbilityRunModeLedger, RequestID: r.ID,
 	})
 	cancel()
-	verdict := undoVerdictFor(row.AbilityName, resp, err)
+	verdict := undoVerdictMatchingApproval(row, resp, err)
 	if verdict == undoVerdictUnknown {
 		return nil
 	}

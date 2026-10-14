@@ -17,6 +17,7 @@ use WPMgr\Agent\Abilities\Builders\BuilderPageStructure;
 use WPMgr\Agent\Abilities\Builders\BuilderRegistry;
 use WPMgr\Agent\Abilities\Builders\DraftEligibility;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
+use WPMgr\Agent\Abilities\Builders\ElementorDocument;
 use WPMgr\Agent\Abilities\Builders\ElementorSectionCompiler;
 use WPMgr\Agent\Abilities\Builders\OutlineV3Schema;
 use WPMgr\Agent\Abilities\Builders\Refusal;
@@ -2091,7 +2092,9 @@ final class AbilityRunCommand implements CommandInterface
                 }
 
                 $blockedDetail = null;
-                $trashed = isset($builderRow['result']['template'])
+                $isTemplate = ($post->post_type ?? null) === 'elementor_library'
+                    && in_array(get_post_meta($postId, ElementorDocument::KEY_TEMPLATE_TYPE, true), ThemeTemplateCreate::TYPES, true);
+                $trashed = $isTemplate
                     ? ThemeTemplateCreate::trashDraft($postId, $blockedDetail)
                     : $this->trashOwn($postId);
                 if (!$trashed) {
@@ -2442,7 +2445,7 @@ final class AbilityRunCommand implements CommandInterface
             'target_post_id'  => $row !== null ? (int) ($row['target_post_id'] ?? 0) : null,
             'undo_state'      => $row !== null ? (string) ($row['undo_state'] ?? '') : null,
             'result'          => $row['result'] ?? null,
-        ];
+        ] + (($row['undo_state'] ?? null) === 'restored' ? ($row['undo_template'] ?? []) : []);
     }
 
     /**

@@ -161,8 +161,8 @@ func ThemeTemplateRefusalMessage(code, detail, site string) string {
 	case "shows_on_target_missing":
 		return prefix + " names a page or post this site does not have, or of the wrong type."
 	case "side_effect_detected":
-		if detail == "Elementor Pro changed its live display list for a draft" {
-			return "Elementor Pro changed its live display list for a draft. Nothing was kept."
+		if detail == "Elementor Pro tried to change its live display list; WPMgr kept it as it was" {
+			return "Elementor Pro tried to change which header or footer shows on the live site. WPMgr kept it as it was, and nothing was changed."
 		}
 	case "verify_mismatch":
 		if strings.HasPrefix(detail, "shows_on differs; Elementor Pro reports:") || detail == "shows_on could not be read back through Elementor Pro" || strings.HasPrefix(detail, "shows_on differs; Elementor Pro stored:") || detail == "shows_on could not be verified" || detail == "the created draft is not what was built: shows_on" {

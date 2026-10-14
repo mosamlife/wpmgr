@@ -1417,6 +1417,46 @@ final class BuilderPageEditTest extends TestCase
         $this->assertSame($before, $this->templateInput(self::ops()));
     }
 
+    public function test_t14_template_edit_reports_applied_and_restored_rules(): void
+    {
+        $this->templateTarget('footer', ['include/general']);
+        $r = $this->templateWrite([...self::ops(), ['op' => 'set_shows_on', 'rules' => []]]);
+        $this->assertTrue($r['ok'], json_encode($r));
+        $this->assertSame(['footer', []], [$r['template'] ?? null, $r['shows_on'] ?? null]);
+        $undo = BuilderPageEdit::revert(self::EDIT, $r['snapshot_sha256'], $this->seam());
+        $this->assertTrue($undo['ok'], json_encode($undo));
+        $this->assertSame(['footer', ['include/general']], [$undo['template'] ?? null, $undo['shows_on'] ?? null]);
+        $again = BuilderPageEdit::revert(self::EDIT, $r['snapshot_sha256'], $this->seam());
+        $this->assertSame(['footer', ['include/general']], [$again['template'] ?? null, $again['shows_on'] ?? null]);
+    }
+
+    public function test_t14_template_edit_adapter_never_admits_initial_type_term(): void
+    {
+        $this->templateTarget();
+        Functions\when('get_term_by')->justReturn((object) ['taxonomy' => 'elementor_library_type', 'slug' => 'header']);
+        $save = $this->api->documents[self::TARGET]->onSave;
+        $this->api->documents[self::TARGET]->onSave = function ($data) use ($save): bool {
+            $this->fire('set_object_terms', self::TARGET, ['header'], [71], 'elementor_library_type', false, []);
+            return $save($data);
+        };
+        $doc = new NativeDocument(self::page(), [ElementorDocument::KEY_TEMPLATE_TYPE => 'header']);
+        $r = $this->seam()['elementor']->write(self::TARGET, $doc, true);
+        $this->assertSame('side_effect_detected', $r['code'] ?? null, json_encode($r));
+    }
+
+    public function test_t14_template_edit_different_type_term_is_a_violation(): void
+    {
+        $this->templateTarget();
+        Functions\when('get_term_by')->justReturn((object) ['taxonomy' => 'elementor_library_type', 'slug' => 'footer']);
+        $save = $this->api->documents[self::TARGET]->onSave;
+        $this->api->documents[self::TARGET]->onSave = function ($data) use ($save): bool {
+            $this->fire('set_object_terms', self::TARGET, ['footer'], [72], 'elementor_library_type', false, [71]);
+            return $save($data);
+        };
+        $r = $this->templateWrite(self::ops());
+        $this->assertSame(['side_effect_detected', true], [$r['code'] ?? null, $r['restored'] ?? null], json_encode($r));
+    }
+
     public function test_template_edit_target_checks_and_provenance(): void
     {
         $this->templateTarget();

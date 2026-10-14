@@ -5,12 +5,13 @@ import (
 	"slices"
 	"time"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 )
 
-// An edit outcome may report its rules. Only a checked identity is compared
-// with approval; display text stays in the request's existing card facts.
+// Template edits report a checked identity for comparison with approval.
+// Display text stays in the request's existing card facts.
 func appliedTemplateEditOutcome(hash string, raw []byte, now time.Time) writeOutcome {
 	oc := appliedEditOutcome(hash, now)
 	if len(raw) == 0 {
@@ -42,11 +43,17 @@ func appliedTemplateEditOutcome(hash string, raw []byte, now time.Time) writeOut
 }
 
 func editOutcomeMatchingApproval(row sqlc.AssistantAbilityRequest, oc writeOutcome) writeOutcome {
-	if oc.outcome != OutcomeApplied || oc.template == nil {
+	if oc.outcome != OutcomeApplied {
 		return oc
 	}
 	card, ok := mcp.ReadPageEditCardFacts(row.CardFacts)
-	if !ok || card.Template == nil || (oc.template.Type != "" && oc.template.Type != card.Template.Type) {
+	if !ok || card.Template == nil {
+		if oc.template == nil {
+			return oc
+		}
+		return writeOutcome{}
+	}
+	if oc.template == nil || oc.template.Type != card.Template.Type {
 		return writeOutcome{}
 	}
 	approved, reported := slices.Clone(card.Template.ShowsOn.After), slices.Clone(oc.template.ShowsOn)
@@ -78,4 +85,38 @@ func undoTemplateRulesValid(raw []byte) bool {
 		return ok
 	}
 	return true
+}
+
+func undoResultMatchingApproval(row sqlc.AssistantAbilityRequest, resp agentcmd.AbilityRunResponse, err error) string {
+	result := undoResultFor(resp, err)
+	if result == UndoDone && !undoMatchesApproval(row, resp.Raw) {
+		return UndoFailed
+	}
+	return result
+}
+func undoVerdictMatchingApproval(row sqlc.AssistantAbilityRequest, resp agentcmd.AbilityRunResponse, err error) undoVerdict {
+	verdict := undoVerdictFor(row.AbilityName, resp, err)
+	if verdict == undoVerdictReverted && !undoMatchesApproval(row, resp.Raw) {
+		return undoVerdictUnknown
+	}
+	return verdict
+}
+
+// Undo evidence belongs to the restore, separately from the ledger's applied result.
+func undoMatchesApproval(row sqlc.AssistantAbilityRequest, raw []byte) bool {
+	if row.AbilityName != mcp.AbilityPageEdit {
+		return true
+	}
+	card, ok := mcp.ReadPageEditCardFacts(row.CardFacts)
+	if !ok || card.Template == nil {
+		return true
+	}
+	oc := appliedTemplateEditOutcome("", raw, time.Time{})
+	if oc.template == nil || oc.template.Type != card.Template.Type {
+		return false
+	}
+	approved, reported := slices.Clone(card.Template.ShowsOn.Before), slices.Clone(oc.template.ShowsOn)
+	slices.Sort(approved)
+	slices.Sort(reported)
+	return slices.Equal(approved, reported)
 }

@@ -816,6 +816,43 @@ final class AbilityWriteScopeTest extends TestCase
         $this->assertContains(AbilityWriteScope::V_OPTION, $scope->outcome()['violations']);
     }
 
+    public function test_t14_empty_live_list_initialization_is_narrow(): void
+    {
+        $this->installOptionUpdates();
+        Functions\when('add_option')->alias(function ($name, $value): bool {
+            $this->options[$name] = $value;
+            return true;
+        });
+        $name = \WPMgr\Agent\Abilities\Builders\ElementorRuntime::OPTION_CONDITIONS;
+        foreach ([AbilityWriteScope::ABSENT, false, '', [], ['header' => [], 'footer' => []]] as $before) {
+            foreach ([[], ['header' => [], 'footer' => []]] as $after) {
+                unset($this->options[$name]);
+                if ($before !== AbilityWriteScope::ABSENT) {
+                    $this->options[$name] = $before;
+                }
+                $scope = new AbilityWriteScope(41, [], [], null, true);
+                $scope->run(fn () => update_option($name, $after));
+                $this->assertSame($after, $this->options[$name] ?? null);
+                $this->assertTrue($scope->outcome()['clean']);
+                $this->assertFalse($scope->blockedOption($name));
+            }
+        }
+        foreach ([AbilityWriteScope::ABSENT, [], ['header' => [17]]] as $before) {
+            unset($this->options[$name]);
+            if ($before !== AbilityWriteScope::ABSENT) {
+                $this->options[$name] = $before;
+            }
+            $scope = new AbilityWriteScope(41, [], [], null, true);
+            $scope->run(fn () => update_option($name, ['header' => [18]]));
+            $this->assertSame($before, $this->options[$name] ?? AbilityWriteScope::ABSENT);
+            $this->assertFalse($scope->outcome()['clean']);
+        }
+        $scope = new AbilityWriteScope(41, [], [], null, true);
+        $scope->run(fn () => update_option('another_option', []));
+        $this->assertArrayNotHasKey('another_option', $this->options);
+        $this->assertFalse($scope->outcome()['clean']);
+    }
+
     public function test_t12_checks_override_patterns_and_last_filter_wins_and_disarms(): void
     {
         $this->installOptionUpdates();

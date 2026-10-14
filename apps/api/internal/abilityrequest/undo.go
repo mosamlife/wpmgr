@@ -382,7 +382,7 @@ func (s *Service) Undo(ctx context.Context, p domain.Principal, siteID, requestI
 		}
 		return after, nil
 	}
-	result := undoResultFor(resp, sendErr)
+	result := undoResultMatchingApproval(row, resp, sendErr)
 	return s.recordUndoFinish(ctx, s.runAsCaller, p, siteID, requestID, result, sendErr, revertReport(resp, sendErr))
 }
 

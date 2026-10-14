@@ -164,9 +164,15 @@ func TestTemplateRefusalMessages(t *testing.T) {
 			t.Fatalf("unclean message %q", got)
 		}
 	}
-	for code, detail := range map[string]string{"side_effect_detected": "Elementor Pro changed its live display list for a draft", "verify_mismatch": `shows_on differs; Elementor Pro stored: []`} {
-		if got := ThemeTemplateRefusalMessage(code, detail, "example.test"); !strings.Contains(got, "Nothing was kept.") {
-			t.Errorf("%s: %s", code, got)
+	for _, tc := range []struct {
+		code, detail, want string
+	}{
+		{"side_effect_detected", "Elementor Pro tried to change its live display list; WPMgr kept it as it was", "Elementor Pro tried to change which header or footer shows on the live site. WPMgr kept it as it was, and nothing was changed."},
+		{"side_effect_detected", "Elementor Pro changed its live display list for a draft", ""},
+		{"verify_mismatch", `shows_on differs; Elementor Pro stored: []`, "Elementor Pro stored different places than asked. Nothing was kept."},
+	} {
+		if got := ThemeTemplateRefusalMessage(tc.code, tc.detail, "example.test"); got != tc.want {
+			t.Errorf("%s detail %q: got %q, want %q", tc.code, tc.detail, got, tc.want)
 		}
 	}
 }

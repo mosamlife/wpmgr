@@ -140,7 +140,8 @@ final class ThemeTemplateCreate
     {
         $detail = null;
         $guard = static function ($value, $name, $before) use (&$detail) {
-            if ($name === ElementorRuntime::OPTION_CONDITIONS && !AbilityWriteScope::sameOptionValue($value, $before)) {
+            if ($name === ElementorRuntime::OPTION_CONDITIONS && !AbilityWriteScope::sameOptionValue($value, $before)
+                && !AbilityWriteScope::emptyLiveListWrite($name, $before, $value)) {
                 $detail = self::DETAIL_LIVE_LIST_KEPT;
                 return $before;
             }

@@ -620,7 +620,7 @@ final class BuilderPageEdit
             return self::fail('not_revertible', 'this request has no change that can be undone');
         }
         if (($row['undo_state'] ?? null) === 'restored') {
-            return ['ok' => true, 'outcome' => 'already_reverted', 'mode' => 'revert', 'request_id' => $requestId, 'post_id' => $postId, 'restored' => true];
+            return ['ok' => true, 'outcome' => 'already_reverted', 'mode' => 'revert', 'request_id' => $requestId, 'post_id' => $postId, 'restored' => true] + ($row['undo_template'] ?? []);
         }
         $keys    = $row['changed_keys'] ?? null;
         $fields  = $row['changed_fields'] ?? null;
@@ -646,9 +646,10 @@ final class BuilderPageEdit
         try {
             // Inside the claim: the row as the last undo of this edit left it,
             // read from the table, not from this request's cache.
-            $state = (AbilityLedger::getStored($requestId) ?? [])['undo_state'] ?? null;
+            $storedRow = AbilityLedger::getStored($requestId) ?? [];
+            $state = $storedRow['undo_state'] ?? null;
             if ($state === 'restored') {
-                return ['ok' => true, 'outcome' => 'already_reverted', 'mode' => 'revert', 'request_id' => $requestId, 'post_id' => $postId, 'restored' => true];
+                return ['ok' => true, 'outcome' => 'already_reverted', 'mode' => 'revert', 'request_id' => $requestId, 'post_id' => $postId, 'restored' => true] + ($storedRow['undo_template'] ?? []);
             }
             if ($state !== 'available' && $state !== self::UNDO_RESTORING) {
                 return self::fail('not_revertible', 'this request has no change that can be undone');
@@ -705,7 +706,8 @@ final class BuilderPageEdit
             }
 
             try {
-                $rulesProblem = ThemeTemplateEdit::verifyRestored($postId, $snapshot, $a->templates());
+                $restoredRules = null;
+                $rulesProblem = ThemeTemplateEdit::verifyRestored($postId, $snapshot, $a->templates(), $restoredRules);
                 if ($rulesProblem !== null) {
                     return self::fail(BuilderDocumentRestore::CODE_MISMATCH, $rulesProblem . (is_string($effect) ? '; ' . $effect : ''), ['post_id' => $postId]);
                 }
@@ -713,7 +715,15 @@ final class BuilderPageEdit
             } catch (\Throwable $e) {
                 $restoredFp = null;
             }
-            if (!AbilityLedger::update($requestId, ['undo_state' => 'restored', 'reverted_at' => time(), 'restored_fp' => $restoredFp])) {
+            $undoTemplate = [];
+            if (($snapshot['post']['post_type'] ?? null) === 'elementor_library') {
+                foreach ($snapshot['meta'] as $pair) {
+                    if ($pair[0] === ElementorDocument::KEY_TEMPLATE_TYPE) {
+                        $undoTemplate = ['template' => $pair[1], 'shows_on' => $restoredRules];
+                    }
+                }
+            }
+            if (!AbilityLedger::update($requestId, ['undo_state' => 'restored', 'reverted_at' => time(), 'restored_fp' => $restoredFp, 'undo_template' => $undoTemplate])) {
                 // The row keeps UNDO_RESTORING: the next undo records it.
                 return self::fail(LayoutOps::CODE_UNREADABLE, 'the page was put back, but the undo could not be recorded; undo again to finish it' . (is_string($effect) ? '; ' . $effect : ''), ['post_id' => $postId, 'restored' => true]);
             }
@@ -723,7 +733,7 @@ final class BuilderPageEdit
                 return self::fail(ElementorDocument::CODE_SIDE_EFFECT, $effect, ['post_id' => $postId, 'restored' => true]);
             }
 
-            return ['ok' => true, 'outcome' => 'reverted', 'mode' => 'revert', 'request_id' => $requestId, 'post_id' => $postId, 'restored' => true];
+            return ['ok' => true, 'outcome' => 'reverted', 'mode' => 'revert', 'request_id' => $requestId, 'post_id' => $postId, 'restored' => true] + $undoTemplate;
         } finally {
             AbilityLedger::releaseTarget($postId);
         }
@@ -849,6 +859,10 @@ final class BuilderPageEdit
             'preview_digest'  => $plan['preview_digest'],
             'changes_applied' => count($plan['changes']),
         ];
+        if (isset($plan['template'])) {
+            $result['template'] = $plan['template'];
+            $result['shows_on'] = $rules['rules'];
+        }
         // A stylesheet that was not regenerated does not undo the edit; the
         // person is told.
         $warnings = ElementorDocument::warningsOf($saved);

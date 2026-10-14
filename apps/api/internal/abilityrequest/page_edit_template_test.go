@@ -45,9 +45,9 @@ func TestTemplateEditOutcomes(t *testing.T) {
 			t.Errorf("ledger accepted=%v rules=%s", ledger.outcome, rules)
 		}
 	}
-	// Display evidence remains in the approved card when the outcome omits rules.
-	if got := outcomeMatchingApproval(row, appliedEditOutcome(strings.Repeat("a", 64), time.Now())); got.outcome != OutcomeApplied {
-		t.Fatal("T-05 response refused")
+	// Template approvals require the agent to report its read-back rules.
+	if got := outcomeMatchingApproval(row, appliedEditOutcome(strings.Repeat("a", 64), time.Now())); got.outcome == OutcomeApplied {
+		t.Fatal("template result without rules accepted")
 	}
 }
 func TestTemplateEditUndoRules(t *testing.T) {
@@ -86,5 +86,77 @@ func TestTemplateEditUndoLedgerRules(t *testing.T) {
 	row.CardFacts = []byte(editTemplateCard)
 	if !UndoOffered(row, agentcmd.MinAgentVersionForThemeTemplateCreate, true, now) || UndoOffered(row, agentcmd.MinAgentVersionForThemeTemplateCreate, false, now) {
 		t.Fatal("template undo lost newest-first ordering")
+	}
+}
+
+func TestT14TemplateOutcomeEvidence(t *testing.T) {
+	row := sqlc.AssistantAbilityRequest{AbilityName: mcp.AbilityPageEdit, CardFacts: []byte(editTemplateCard)}
+	for _, evidence := range []string{``, `"template":"header",`, `"shows_on":["include/general"],`, `"template":"footer","shows_on":["include/general"],`} {
+		raw := []byte(`{` + evidence + `"ok":true,"outcome":"applied","snapshot_sha256":"` + strings.Repeat("a", 64) + `"}`)
+		var resp agentcmd.AbilityRunResponse
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			t.Fatal(err)
+		}
+		resp.Raw = raw
+		if got := outcomeMatchingApproval(row, classifyWrite(mcp.AbilityPageEdit, resp, nil, time.Now())); got.outcome == OutcomeApplied {
+			t.Errorf("direct accepted %s", raw)
+		}
+		oc, _ := outcomeFromStored(mcp.AbilityPageEdit, raw, time.Now())
+		if got := outcomeMatchingApproval(row, oc); got.outcome == OutcomeApplied {
+			t.Errorf("ledger accepted %s", raw)
+		}
+	}
+}
+
+func TestT14TemplateUndoApproval(t *testing.T) {
+	row := sqlc.AssistantAbilityRequest{AbilityName: mcp.AbilityPageEdit, CardFacts: []byte(editTemplateCard)}
+	for _, tc := range []struct {
+		raw string
+		ok  bool
+	}{
+		{`{}`, false},
+		{`{"template":"header"}`, false},
+		{`{"shows_on":["include/singular/category/7"]}`, false},
+		{`{"template":"footer","shows_on":["include/singular/category/7"]}`, false},
+		{`{"template":"header","shows_on":["include/general"]}`, false},
+		{`{"template":"header","shows_on":[]}`, false},
+		{`{"template":"header","shows_on":["include/singular/category/7"]}`, true},
+	} {
+		resp := agentcmd.AbilityRunResponse{Outcome: "reverted", Found: true, UndoState: "restored", Raw: []byte(tc.raw)}
+		if got := undoResultMatchingApproval(row, resp, nil); (got == UndoDone) != tc.ok {
+			t.Errorf("direct %s: %s", tc.raw, got)
+		}
+		if got := undoVerdictMatchingApproval(row, resp, nil); (got == undoVerdictReverted) != tc.ok {
+			t.Errorf("ledger %s: %v", tc.raw, got)
+		}
+	}
+	row.CardFacts = nil
+	resp := agentcmd.AbilityRunResponse{Outcome: "reverted", Found: true, UndoState: "restored"}
+	if undoResultMatchingApproval(row, resp, nil) != UndoDone || undoVerdictMatchingApproval(row, resp, nil) != undoVerdictReverted {
+		t.Fatal("page undo changed")
+	}
+}
+
+func TestT14TemplateRuleOrderAndEmptyRules(t *testing.T) {
+	for _, rules := range []string{`[]`, `["include/general","exclude/singular/category/7"]`} {
+		card := `{"kind":"builder_edit","template":{"type":"footer","shows_on":{"before":` + rules + `,"after":` + rules + `},"rule_titles":[]},"changes":[{"op":"set_shows_on","label":"Where it shows"}]}`
+		row := sqlc.AssistantAbilityRequest{AbilityName: mcp.AbilityPageEdit, CardFacts: []byte(card)}
+		reported := rules
+		if rules != `[]` {
+			reported = `["exclude/singular/category/7","include/general"]`
+		}
+		raw := []byte(`{"template":"footer","shows_on":` + reported + `}`)
+		oc := appliedTemplateEditOutcome(strings.Repeat("a", 64), raw, time.Now())
+		if outcomeMatchingApproval(row, oc).outcome != OutcomeApplied {
+			t.Fatalf("applied rules rejected: %s", raw)
+		}
+		resp := agentcmd.AbilityRunResponse{Outcome: "already_reverted", Found: true, UndoState: "restored", Raw: raw, Result: json.RawMessage(`{"template":"footer","shows_on":["include/archive"]}`)}
+		if undoResultMatchingApproval(row, resp, nil) != UndoDone || undoVerdictMatchingApproval(row, resp, nil) != undoVerdictReverted {
+			t.Fatalf("restored rules rejected: %s", raw)
+		}
+		resp.Raw = nil
+		if undoResultMatchingApproval(row, resp, nil) != UndoFailed || undoVerdictMatchingApproval(row, resp, nil) != undoVerdictUnknown {
+			t.Fatal("applied result used as undo evidence")
+		}
 	}
 }

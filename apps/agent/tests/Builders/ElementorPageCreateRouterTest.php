@@ -601,6 +601,54 @@ final class ElementorPageCreateRouterTest extends TestCase
         $this->assertSame('created_post_touched', $this->revert(self::REQ_GOLDEN)['code'] ?? null);
     }
 
+    public function test_t14_empty_live_list_save_and_trash_succeed(): void
+    {
+        $this->installOptionUpdates();
+        $this->enable();
+        $this->readyTemplates();
+        $name = \WPMgr\Agent\Abilities\Builders\ElementorRuntime::OPTION_CONDITIONS;
+        $save = $this->api->onSaveTemplateRules;
+        $this->api->onSaveTemplateRules = function ($id, $rules) use ($save, $name): bool {
+            $save($id, $rules);
+            update_option($name, []);
+            return true;
+        };
+        $input = $this->templateInput(['shows_on' => ['include/general']]);
+        $pre = $this->precheck(self::REQ_GOLDEN, $input);
+        $result = $this->write(self::REQ_GOLDEN, $input, $pre['precheck_digest'], $pre['preview_digest']);
+        $this->assertTrue($result['ok'] ?? false, json_encode($result));
+        $this->assertSame([], $this->options[$name]);
+        unset($this->options[$name]);
+        add_action('transition_post_status', function () use ($name): void {
+            update_option($name, ['header' => [], 'footer' => []]);
+        }, 10, 3);
+        $undo = $this->revert(self::REQ_GOLDEN);
+        $this->assertTrue($undo['trashed'] ?? false, json_encode($undo));
+        $this->assertArrayNotHasKey('detail', $undo);
+        $this->assertSame(['header' => [], 'footer' => []], $this->options[$name] ?? null);
+    }
+
+    public function test_t14_template_create_without_result_undo_guards_live_list(): void
+    {
+        $this->installOptionUpdates();
+        $this->enable();
+        $this->readyTemplates();
+        $input = $this->templateInput();
+        $pre = $this->precheck(self::REQ_GOLDEN, $input);
+        $result = $this->write(self::REQ_GOLDEN, $input, $pre['precheck_digest'], $pre['preview_digest']);
+        $this->assertTrue($result['ok'] ?? false, json_encode($result));
+        AbilityLedger::update(self::REQ_GOLDEN, ['result' => null, 'after_fp' => BuilderDocumentFingerprint::ofPost($result['post_id'], ElementorDocument::DESCRIPTOR_KEYS)]);
+        $name = \WPMgr\Agent\Abilities\Builders\ElementorRuntime::OPTION_CONDITIONS;
+        $this->options[$name] = ['header' => [91]];
+        add_action('transition_post_status', function () use ($name): void {
+            update_option($name, []);
+        }, 10, 3);
+        $undo = $this->revert(self::REQ_GOLDEN);
+        $this->assertTrue($undo['trashed'] ?? false, json_encode($undo));
+        $this->assertSame(['header' => [91]], $this->options[$name]);
+        $this->assertStringContainsString('WPMgr kept it as it was', $undo['detail'] ?? '');
+    }
+
     public function test_t12_template_rules_preserve_live_list_and_trash_on_change(): void
     {
         $this->installOptionUpdates();

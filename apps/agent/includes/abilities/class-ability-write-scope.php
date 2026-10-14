@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Abilities;
 
+use WPMgr\Agent\Abilities\Builders\ElementorRuntime;
+
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
     exit;
@@ -198,6 +200,9 @@ final class AbilityWriteScope
         foreach (array_keys($this->checks) as $prefix) {
             $checked[] = $prefix . '*';
         }
+        if ($this->preventOptionChanges) {
+            $checked[] = ElementorRuntime::OPTION_CONDITIONS;
+        }
         $this->inner = new AbilitySideEffects(array_merge($this->patterns, $checked), []);
         $this->inner->arm();
 
@@ -261,7 +266,7 @@ final class AbilityWriteScope
                 return $before;
             }, 3, PHP_INT_MAX);
         }
-        if ($this->checks === []) {
+        if ($this->checks === [] && !$this->preventOptionChanges) {
             return;
         }
         $updated = function ($name = '', $before = null, $after = null): void {
@@ -273,7 +278,7 @@ final class AbilityWriteScope
         // Core fires delete_option before the delete, and only for an option
         // that exists, so the value read here is the one being deleted.
         $deleting = function ($name = ''): void {
-            if (!$this->armed || $this->checkFor($name) === null) {
+            if (!$this->armed || ($this->checkFor($name) === null && !($this->preventOptionChanges && $name === ElementorRuntime::OPTION_CONDITIONS))) {
                 return;
             }
             $before = get_option(self::nameOf($name), self::ABSENT);
@@ -369,9 +374,35 @@ final class AbilityWriteScope
         return $value === $before || maybe_serialize($value) === maybe_serialize($before);
     }
 
+    /** The live display list may initialize empty without changing any template entry. */
+    public static function emptyLiveListWrite(string $name, mixed $before, mixed $after): bool
+    {
+        if ($name !== ElementorRuntime::OPTION_CONDITIONS || !self::emptyLiveList($after)) {
+            return false;
+        }
+        return $before === self::ABSENT || $before === false || $before === '' || self::emptyLiveList($before);
+    }
+
+    /** Empty lists and empty per-location lists contain no template entries. */
+    private static function emptyLiveList(mixed $value): bool
+    {
+        if (!is_array($value)) {
+            return false;
+        }
+        foreach ($value as $location => $templates) {
+            if (!is_string($location) || $templates !== []) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** Value checks take precedence over name patterns, including when they throw. */
     private function optionAllowed(string $name, mixed $before, mixed $after): bool
     {
+        if ($this->preventOptionChanges && self::emptyLiveListWrite($name, $before, $after)) {
+            return true;
+        }
         $check = $this->checkFor($name);
         if ($check !== null) {
             try {
@@ -401,6 +432,12 @@ final class AbilityWriteScope
     private function checkedWrite($name, $before, $after): void
     {
         if (!$this->armed) {
+            return;
+        }
+        if ($this->preventOptionChanges && $name === ElementorRuntime::OPTION_CONDITIONS) {
+            if (!self::emptyLiveListWrite($name, $before, $after)) {
+                $this->violations[self::V_OPTION] = true;
+            }
             return;
         }
         $check = $this->checkFor($name);
