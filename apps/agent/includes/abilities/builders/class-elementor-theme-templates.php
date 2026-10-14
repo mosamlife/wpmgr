@@ -229,9 +229,11 @@ final class ElementorThemeTemplates
     }
 
     /**
+     * Stored rules use the read grammar independently of the places the AI may set.
+     *
      * @param array<mixed>|null $rules Complete runtime answer.
      */
-    private static function rulesProblem(?array $rules): ?string
+    public static function rulesProblem(?array $rules): ?string
     {
         if ($rules === null || !ArrayShape::isList($rules)) {
             return 'unreadable';

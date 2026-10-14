@@ -100,10 +100,10 @@ final class ThemeTemplateCreate
         return (new ElementorThemeTemplates($this->api))->alsoLive($type);
     }
 
-    /** @param list<string> $rules Requested rules. @return array<string, mixed> */
-    public function saveRules(int $postId, array $rules): array
+    /** @param list<string> $rules Requested rules. @param bool $replace Save even an empty replacement list. @return array<string, mixed> */
+    public function saveRules(int $postId, array $rules, bool $replace = false): array
     {
-        if ($rules !== []) {
+        if ($replace || $rules !== []) {
             $scope = new AbilityWriteScope($postId, []);
             try {
                 $saved = $scope->run(fn (): bool => $this->api->saveTemplateRules($postId, $rules));
@@ -128,10 +128,16 @@ final class ThemeTemplateCreate
         return ['rules' => $stored];
     }
 
+    /** Read the current rules through Pro; null means unreadable. */
+    public function readRules(int $postId): ?array
+    {
+        return $this->api->templateRules($postId);
+    }
+
     /** @param list<string> $wanted @param array<mixed>|null $stored */
     public static function sameRules(array $wanted, ?array $stored): bool
     {
-        if ($stored === null || self::inputProblem($stored) !== null) {
+        if (ElementorThemeTemplates::rulesProblem($stored) !== null) {
             return false;
         }
         sort($wanted, SORT_STRING);
@@ -144,10 +150,13 @@ final class ThemeTemplateCreate
     {
         $titles = [];
         foreach ($rules as $rule) {
-            [, $id] = self::parts($rule);
-            if ($id !== null && !isset($titles[$id])) {
-                $post = get_post((int) $id);
-                if (!is_object($post) || !is_string($post->post_title ?? null)) {
+            [$place, $id] = self::parts($rule);
+            if (in_array($place, ['singular/page', 'singular/post'], true) && $id !== null && !isset($titles[$id])) {
+                $post = (string) (int) $id === $id ? get_post((int) $id) : null;
+                if (!is_object($post)) {
+                    continue;
+                }
+                if (!is_string($post->post_title ?? null)) {
                     throw new \UnexpectedValueException('shows_on title could not be read');
                 }
                 $titles[$id] = ['id' => (int) $id, 'title' => $post->post_title];

@@ -115,7 +115,7 @@ final class BuilderContractFixturesTest extends TestCase
         $this->assertSame(4194304, BuilderContract::MAX_SNAPSHOT_BYTES);
         $this->assertSame(500, BuilderContract::MAX_STRUCTURE_NODES);
         $this->assertSame(65536, BuilderContract::MAX_STRUCTURE_BYTES);
-        $this->assertSame(['set_text', 'insert', 'replace', 'remove', 'move', 'set_native', 'add_native', 'duplicate'], BuilderContract::OPS);
+        $this->assertSame(['set_text', 'insert', 'replace', 'remove', 'move', 'set_native', 'add_native', 'duplicate', 'set_shows_on'], BuilderContract::OPS);
 
         $edit = BuilderContract::pageEditInputSchema();
         $this->assertSame(['post_id', 'base_fingerprint', 'operations'], $edit['required']);
@@ -170,6 +170,7 @@ final class BuilderContractFixturesTest extends TestCase
             'remove(ref)',
             'replace(outline,ref)',
             'set_native(ref,settings)',
+            'set_shows_on(rules)',
             'set_text(field,ref,text)',
         ], $variants, 'one variant per operation shape: an insert names one anchor, only into takes a position');
 

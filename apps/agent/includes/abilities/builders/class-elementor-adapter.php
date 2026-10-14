@@ -167,6 +167,13 @@ final class ElementorAdapter implements BuilderAdapter
         );
     }
 
+    /** Template edit fingerprints cover the stored display rules as well as the tree. */
+    public function editDescriptor(bool $template): DocumentDescriptor
+    {
+        $d = $this->descriptor();
+        return $template ? new DocumentDescriptor([...$d->exactKeys, ElementorRuntime::KEY_CONDITIONS], $d->prefixes, $d->derivedKeys, $d->flagKeys) : $d;
+    }
+
     /**
      * {@inheritDoc}
      */

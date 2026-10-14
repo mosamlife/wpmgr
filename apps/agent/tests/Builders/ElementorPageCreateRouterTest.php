@@ -503,6 +503,71 @@ final class ElementorPageCreateRouterTest extends TestCase
         $this->assertNull($this->createTemplateSummary()['also_live']);
     }
 
+    public function test_t05_create_preview_carries_site_context_outside_digest(): void
+    {
+        $this->enable();
+        $this->readyTemplates();
+        $this->posts[42] = (object) ['ID' => 42, 'post_type' => 'page', 'post_status' => 'publish', 'post_title' => 'Contact <raw>'];
+        $this->posts[43] = (object) ['ID' => 43, 'post_type' => 'post', 'post_status' => 'draft', 'post_title' => 'News & updates'];
+        $rules = ['include/singular/page/42', 'exclude/singular/post/43', 'exclude/singular/page/42'];
+        $this->existingTemplate(601, 'footer', 'publish', '2026-10-01 12:00:00', ['include/general']);
+        $this->existingTemplate(602, 'header', 'publish', '2026-10-02 12:00:00', []);
+        $input = $this->templateInput(['template' => 'footer', 'shows_on' => $rules]);
+        $pre = $this->precheck(self::REQ_GOLDEN, $input);
+        $this->assertTrue($pre['ok'] ?? false, json_encode($pre));
+        $this->assertSame([['id' => 42, 'title' => 'Contact <raw>'], ['id' => 43, 'title' => 'News & updates']], $pre['preview']['rule_titles'] ?? null);
+        $this->assertSame([['id' => 601, 'title' => 'Live <raw> 601', 'shows_on' => ['include/general'], 'shows_on_problem' => null]], $pre['preview']['also_live'] ?? null);
+        $this->assertSame([], $this->inserted);
+
+        $this->posts[42]->post_title = 'Contact renamed';
+        $this->posts[601]->post_title = 'Footer renamed';
+        $this->api->templateRules[601] = ['include/archive'];
+        $changed = $this->precheck(self::REQ_GOLDEN, $input);
+        $this->assertTrue($changed['ok'] ?? false, json_encode($changed));
+        $this->assertNotSame($pre['preview']['rule_titles'], $changed['preview']['rule_titles']);
+        $this->assertNotSame($pre['preview']['also_live'], $changed['preview']['also_live']);
+        $this->assertSame($pre['preview_digest'], $changed['preview_digest']);
+        $this->assertSame($pre['precheck_digest'], $changed['precheck_digest']);
+        $result = $this->write(self::REQ_GOLDEN, $input, $pre['precheck_digest'], $pre['preview_digest']);
+        $this->assertTrue($result['ok'] ?? false, json_encode($result));
+        $this->assertSame($changed['preview']['rule_titles'], $result['rule_titles']);
+        $this->assertSame($changed['preview']['also_live'], $result['also_live']);
+    }
+
+    public function test_t05_create_preview_omits_title_when_post_disappears_after_readiness(): void
+    {
+        $this->enable();
+        $this->readyTemplates();
+        $this->posts[42] = (object) ['ID' => 42, 'post_type' => 'page', 'post_status' => 'publish', 'post_title' => 'Contact'];
+        Functions\when('get_post')->alias(function ($id) {
+            $post = $this->posts[(int) $id] ?? null;
+            if ((int) $id === 42) {
+                unset($this->posts[42]);
+            }
+            return $post;
+        });
+        $input = $this->templateInput(['shows_on' => ['include/singular/page/42']]);
+        $pre = $this->precheck(self::REQ_GOLDEN, $input);
+        $this->assertTrue($pre['ok'] ?? false, json_encode($pre));
+        $this->assertSame([], $pre['preview']['rule_titles'] ?? null);
+        $this->assertSame(['include/singular/page/42'], $pre['preview']['shows_on']);
+        $this->assertSame('shows_on_target_missing', $this->precheck(self::REQ_B, $input)['code'] ?? null);
+        $this->assertSame([], $this->inserted);
+    }
+
+    public function test_t05_create_preview_has_null_live_context_when_read_fails(): void
+    {
+        $this->enable();
+        $this->readyTemplates();
+        $GLOBALS['wpdb']->themeQueryFails = true;
+        $pre = $this->precheck(self::REQ_GOLDEN, $this->templateInput());
+        $this->assertTrue($pre['ok'] ?? false, json_encode($pre));
+        $this->assertArrayHasKey('also_live', $pre['preview']);
+        $this->assertNull($pre['preview']['also_live']);
+        $this->assertSame([], $pre['preview']['rule_titles']);
+        $this->assertSame([], $this->inserted);
+    }
+
     public function test_template_full_create_digest_fingerprint_and_undo(): void
     {
         $this->enable();
@@ -589,6 +654,7 @@ final class ElementorPageCreateRouterTest extends TestCase
         $input = $this->input('columns', ['post_type' => 'post']);
         $pre = $this->precheck(self::REQ_GOLDEN, $input);
         $this->assertTrue($pre['ok'] ?? false, json_encode($pre));
+        $this->assertSame(['post_type', 'editor', 'format', 'elementor_version', 'layout', 'status', 'title', 'tree'], array_keys($pre['preview']));
         $this->assertSame(hash('sha256', json_encode(['builder:elementor', 'classic', '3.35.9', 'post', 'draft', self::TITLE, json_encode(self::golden(self::CONTAINERS, 'columns')['tree'])])), $pre['preview_digest']);
         $result = $this->write(self::REQ_GOLDEN, $input, $pre['precheck_digest'], $pre['preview_digest']);
         $this->assertTrue($result['ok'] ?? false, json_encode($result));

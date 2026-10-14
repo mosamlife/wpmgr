@@ -225,6 +225,9 @@ final class LayoutOps
         }
         $at   = 'operations[' . $i . ']';
         $name = $op['op'] ?? null;
+        if ($name === 'set_shows_on') {
+            return ['tree' => $tree, 'change' => ['op' => $name, 'after' => $op['rules']], 'touched' => [], 'made' => 0];
+        }
         if ($name === 'insert') {
             return self::insert($tree, $op, $i, $facts, $ids, $media, $containers, $design);
         }

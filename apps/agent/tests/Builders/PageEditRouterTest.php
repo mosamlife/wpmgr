@@ -31,6 +31,7 @@ use WPMgr\Agent\Abilities\Builders\DraftEligibility;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
 use WPMgr\Agent\Abilities\Builders\ElementorClassicMapper;
 use WPMgr\Agent\Abilities\Builders\ElementorDocument;
+use WPMgr\Agent\Abilities\Builders\ElementorRuntime;
 use WPMgr\Agent\Abilities\OwnAbilities;
 use WPMgr\Agent\Commands\AbilityRunCommand;
 use WPMgr\Agent\Commands\ContentEditingEnableCommand;
@@ -469,6 +470,48 @@ final class PageEditRouterTest extends TestCase
         $this->api->activeBreakpoints = [];
         $none = $this->callP($this->p('precheck', $input, [self::DRAFT]));
         $this->assertSame(['active_breakpoints' => []], $none['builder_facts'] ?? null, 'none active is a list, not a missing fact');
+    }
+
+
+    public function test_template_edit_signed_precheck_write_and_undo(): void
+    {
+        $this->enable();
+        $this->rows->update($this->rows->posts, ['post_type' => 'elementor_library'], ['ID' => self::DRAFT]);
+        $this->rows->delete($this->rows->postmeta, ['post_id' => self::DRAFT, 'meta_key' => ElementorDocument::KEY_TEMPLATE_TYPE]);
+        $this->rows->insert($this->rows->postmeta, ['post_id' => self::DRAFT, 'meta_key' => ElementorDocument::KEY_TEMPLATE_TYPE, 'meta_value' => 'header']);
+        $this->rows->insert($this->rows->postmeta, ['post_id' => self::DRAFT, 'meta_key' => ElementorRuntime::KEY_CONDITIONS, 'meta_value' => serialize(['include/general'])]);
+        $this->api->documents[self::DRAFT]->name = 'header';
+        $this->api->pro = true;
+        $this->api->themeBuilderReady = true;
+        $this->api->themeConditions = ['singular', 'front_page'];
+        Functions\when('wp_get_object_terms')->justReturn(['header']);
+        $this->api->onTemplateRules = static fn (int $id): array => unserialize(BuilderDocumentFingerprint::read($id, [ElementorRuntime::KEY_CONDITIONS])['rows'][ElementorRuntime::KEY_CONDITIONS][0], ['allowed_classes' => false]);
+        $this->api->onSaveTemplateRules = function (int $id, array $rules): bool {
+            $this->rows->delete($this->rows->postmeta, ['post_id' => $id, 'meta_key' => ElementorRuntime::KEY_CONDITIONS]);
+            $this->rows->insert($this->rows->postmeta, ['post_id' => $id, 'meta_key' => ElementorRuntime::KEY_CONDITIONS, 'meta_value' => serialize($rules)]);
+            return true;
+        };
+        $keys = [...ElementorDocument::DESCRIPTOR_KEYS, ElementorRuntime::KEY_CONDITIONS];
+        $before = BuilderDocumentFingerprint::ofPost(self::DRAFT, $keys);
+        $decoded = json_decode($this->input(), true);
+        $decoded['base_fingerprint'] = $before;
+        $decoded['operations'][] = ['op' => 'set_shows_on', 'rules' => ['include/singular/front_page']];
+        $input = json_encode($decoded);
+        $pre = $this->callP($this->p('precheck', $input, [self::DRAFT]));
+        $this->assertTrue($pre['ok'], json_encode($pre));
+        $this->assertSame(['before' => ['include/general'], 'after' => ['include/singular/front_page']], $pre['preview']['shows_on']);
+        $write = $this->callP($this->p('write', $input, [self::DRAFT], $pre));
+        $this->assertTrue($write['ok'], json_encode($write));
+        $this->assertSame(BuilderDocumentFingerprint::ofPost(self::DRAFT, $keys), $write['after_fp']);
+        $this->assertSame(['include/singular/front_page'], $this->api->templateRules(self::DRAFT));
+        $params = json_decode($this->p('revert', '{}', [self::DRAFT]), true);
+        $params['revert'] = ['snapshot_sha256' => $write['snapshot_sha256']];
+        $undo = $this->callP(json_encode($params));
+        $this->assertTrue($undo['ok'], json_encode($undo));
+        $this->assertSame($before, BuilderDocumentFingerprint::ofPost(self::DRAFT, $keys));
+        $this->assertSame(['include/general'], $this->api->templateRules(self::DRAFT));
+        $this->assertSame([], $this->wpdb->claims);
+        $this->assertSame(0, $this->currentUser);
     }
 
     // ---- helpers -----------------------------------------------------------

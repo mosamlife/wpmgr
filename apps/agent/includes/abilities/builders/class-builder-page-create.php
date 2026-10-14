@@ -311,6 +311,8 @@ final class BuilderPageCreate
         if ($themeType !== null) {
             $preview['template'] = $themeType;
             $preview['shows_on'] = $spec['shows_on'];
+            $preview['rule_titles'] = ThemeTemplateCreate::ruleTitles($spec['shows_on']);
+            $preview['also_live'] = $a->templates()->alsoLive($themeType);
         }
         // Only an outline with an image carries media, as on the block editor.
         if ($mediaFacts !== []) {

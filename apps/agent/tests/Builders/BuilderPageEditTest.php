@@ -28,11 +28,14 @@ use WPMgr\Agent\Abilities\Builders\BuilderDocumentRestore;
 use WPMgr\Agent\Abilities\Builders\BuilderDocumentSnapshot;
 use WPMgr\Agent\Abilities\Builders\BuilderPageCreate;
 use WPMgr\Agent\Abilities\Builders\BuilderPageEdit;
+use WPMgr\Agent\Abilities\Builders\BuilderPageStructure;
+use WPMgr\Agent\Abilities\Builders\ThemeTemplateCreate;
 use WPMgr\Agent\Abilities\Builders\DesignTokens;
 use WPMgr\Agent\Abilities\Builders\DraftEligibility;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
 use WPMgr\Agent\Abilities\Builders\ElementorClassicMapper;
 use WPMgr\Agent\Abilities\Builders\ElementorDocument;
+use WPMgr\Agent\Abilities\Builders\ElementorRuntime;
 use WPMgr\Agent\Abilities\Builders\ElementorSectionCompiler;
 use WPMgr\Agent\Abilities\Builders\ElementorStyleCache;
 use WPMgr\Agent\Abilities\Builders\IdSeed;
@@ -1333,6 +1336,512 @@ final class BuilderPageEditTest extends TestCase
         $this->assertSame($baseFp, $this->currentFp(), 'the page is back');
         $this->assertSame(['failed', true], [AbilityLedger::get(self::EDIT)['phase'] ?? null, AbilityLedger::get(self::EDIT)['restored'] ?? null]);
         $this->assertSame([], $this->hooks, 'the write scope is disarmed');
+    }
+
+
+    private function templateTarget(string $type = 'header', array $rules = ['include/general']): void
+    {
+        $this->rows->update($this->rows->posts, ['post_type' => 'elementor_library'], ['ID' => self::TARGET]);
+        $this->templateMeta(ElementorDocument::KEY_TEMPLATE_TYPE, $type);
+        $this->templateMeta(ElementorRuntime::KEY_CONDITIONS, serialize($rules));
+        $this->api->pro = true;
+        $this->api->themeBuilderReady = true;
+        $this->api->themeConditions = ['general', 'singular', 'page', 'post', 'front_page', 'not_found404', 'archive'];
+        $this->api->storingDocument(self::TARGET, $this->rows)->name = $type;
+        Functions\when('wp_get_object_terms')->justReturn([$type]);
+        Functions\when('get_post')->alias(static fn ($id) => in_array($id, [81, 82], true) ? (object) ['ID' => $id, 'post_type' => $id === 81 ? 'page' : 'post', 'post_status' => 'publish', 'post_title' => '<b>Raw ' . $id . '</b>'] : null);
+        $this->api->onTemplateRules = fn (int $id): array => unserialize($this->rowsOf(ElementorRuntime::KEY_CONDITIONS)[0], ['allowed_classes' => false]);
+        $this->api->onSaveTemplateRules = function (int $id, array $rules): bool {
+            $this->templateMeta(ElementorRuntime::KEY_CONDITIONS, serialize($rules));
+            $this->fire('updated_post_meta', 99, $id, ElementorRuntime::KEY_CONDITIONS, $rules);
+            return true;
+        };
+    }
+
+    private function templateMeta(string $key, string $value): void
+    {
+        $this->rows->delete($this->rows->postmeta, ['post_id' => self::TARGET, 'meta_key' => $key]);
+        $this->rows->insert($this->rows->postmeta, ['post_id' => self::TARGET, 'meta_key' => $key, 'meta_value' => $value]);
+    }
+
+    private function templateInput(array $ops): string
+    {
+        return $this->input($ops, BuilderDocumentFingerprint::ofPost(self::TARGET, [...ElementorDocument::DESCRIPTOR_KEYS, ElementorRuntime::KEY_CONDITIONS]));
+    }
+
+    private function templateWrite(array $ops): array
+    {
+        $input = $this->templateInput($ops);
+        $plan = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+        return $this->write($input, $this->digest($input)($plan['base_fingerprint'], $plan['preview_digest']), $plan['preview_digest']);
+    }
+
+    public function test_template_edit_precheck_content_only_preserves_rules_and_digest_binds_places(): void
+    {
+        $this->templateTarget('header', ['include/singular/page/81']);
+        $input = $this->templateInput(self::ops());
+        $plan = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+        $this->assertSame('header', $plan['preview']['template']);
+        $this->assertSame(['before' => ['include/singular/page/81'], 'after' => ['include/singular/page/81']], $plan['preview']['shows_on']);
+        $this->assertSame([['id' => 81, 'title' => '<b>Raw 81</b>']], $plan['preview']['rule_titles']);
+        $ops = [...self::ops(), ['op' => 'set_shows_on', 'rules' => ['include/singular/post/82']]];
+        $changed = $this->plan($this->templateInput($ops));
+        $this->assertArrayNotHasKey('refusal', $changed, json_encode($changed['refusal'] ?? null));
+        $this->assertSame([81, 82], array_column($changed['preview']['rule_titles'], 'id'));
+        $this->assertNotSame($plan['preview_digest'], $changed['preview_digest']);
+        $this->assertSame($plan['preview']['tree'], $changed['preview']['tree']);
+        $r = $this->templateWrite(self::ops());
+        $this->assertTrue($r['ok'], json_encode($r));
+        $this->assertSame([], $this->api->callsTo('saveTemplateRules'));
+        $this->assertSame(['include/singular/page/81'], $this->api->templateRules(self::TARGET));
+    }
+
+    public function test_template_edit_replaces_with_empty_rules_and_undo_restores_content_and_rules(): void
+    {
+        $this->templateTarget('footer');
+        $before = $this->templateInput(self::ops());
+        $data = $this->rowsOf(ElementorDocument::KEY_DATA);
+        $r = $this->templateWrite([...self::ops(), ['op' => 'set_shows_on', 'rules' => []]]);
+        $this->assertTrue($r['ok'], json_encode($r));
+        $this->assertSame([], $this->api->templateRules(self::TARGET));
+        $this->assertNotSame($data, $this->rowsOf(ElementorDocument::KEY_DATA));
+        $this->assertSame([[self::TARGET, []]], $this->api->callsTo('saveTemplateRules'));
+        $undo = BuilderPageEdit::revert(self::EDIT, $r['snapshot_sha256'], $this->seam());
+        $this->assertTrue($undo['ok'], json_encode($undo));
+        $this->assertSame($data, $this->rowsOf(ElementorDocument::KEY_DATA));
+        $this->assertSame(['include/general'], $this->api->templateRules(self::TARGET));
+        $this->assertSame($before, $this->templateInput(self::ops()));
+    }
+
+    public function test_template_edit_target_checks_and_provenance(): void
+    {
+        $this->templateTarget();
+        $doc = new ElementorDocument($this->api);
+        $this->assertNull($doc->targetProblem(self::TARGET, []));
+        $this->api->documents[self::TARGET]->name = 'footer';
+        $r = $this->plan($this->templateInput(self::ops()));
+        $this->assertSame('document_type', $r['refusal']['detail'] ?? null);
+        $this->api->documents[self::TARGET]->name = 'header';
+        $this->rows->update($this->rows->posts, ['post_status' => 'publish'], ['ID' => self::TARGET]);
+        $r = $this->plan($this->templateInput(self::ops()));
+        $this->assertSame('not_draft', $r['refusal']['detail'] ?? null);
+        $this->rows->update($this->rows->posts, ['post_status' => 'draft'], ['ID' => self::TARGET]);
+        unset($this->options['wpmgr_ability_ledger_' . self::CREATE]);
+        $r = $this->plan($this->templateInput(self::ops()));
+        $this->assertSame('target_not_eligible', $r['refusal']['code'] ?? null);
+    }
+
+    public function test_template_edit_rules_grammar_and_refusals_name_the_rule(): void
+    {
+        foreach (['include//general', 'include/general/12', 'include/singular/unknown', 'include/singular/page/0', 'include/singular/page/01'] as $rule) {
+            $r = PageEditValidator::parse($this->input([['op' => 'set_shows_on', 'rules' => [$rule]]]));
+            $this->assertSame('bad_input', $r['code'] ?? null);
+            $this->assertStringContainsString($rule, $r['detail']);
+        }
+        foreach ([null, 'include/general', ['include/general', 'include/general'], array_fill(0, 21, 'include/general')] as $rules) {
+            $r = PageEditValidator::parse($this->input([['op' => 'set_shows_on', 'rules' => $rules]]));
+            $this->assertSame('bad_input', $r['code'] ?? null);
+            $this->assertStringContainsString('shows_on', $r['detail']);
+        }
+        $twice = PageEditValidator::parse($this->input([['op' => 'set_shows_on', 'rules' => []], ['op' => 'set_shows_on', 'rules' => []]]));
+        $this->assertSame('ops_invalid', $twice['code'] ?? null);
+        $this->assertStringContainsString('set_shows_on', $twice['detail']);
+    }
+
+    public function test_template_edit_set_shows_on_refuses_a_page(): void
+    {
+        $r = $this->plan($this->input([['op' => 'set_shows_on', 'rules' => []]]));
+        $this->assertSame('bad_input', $r['refusal']['code'] ?? null);
+        $this->assertStringContainsString('template', $r['refusal']['detail']);
+    }
+
+    public function test_template_edit_site_rules_refusals(): void
+    {
+        $this->templateTarget();
+        foreach (['include/singular/page/82', 'include/singular/post/81', 'include/singular/page/999', 'include/singular/page/99999999999999999999'] as $rule) {
+            $r = $this->plan($this->templateInput([['op' => 'set_shows_on', 'rules' => [$rule]]]));
+            $this->assertSame('shows_on_target_missing', $r['refusal']['code'] ?? null, json_encode($r));
+            $this->assertStringContainsString($rule, $r['refusal']['detail']);
+        }
+        $this->api->themeConditions = ['general'];
+        $rule = 'include/singular/front_page';
+        $r = $this->plan($this->templateInput([['op' => 'set_shows_on', 'rules' => [$rule]]]));
+        $this->assertSame('shows_on_place_unavailable', $r['refusal']['code'] ?? null);
+        $this->assertStringContainsString($rule, $r['refusal']['detail']);
+    }
+
+    public function test_template_edit_option_write_restores_snapshot(): void
+    {
+        $this->templateTarget();
+        $before = $this->templateInput(self::ops());
+        $save = $this->api->onSaveTemplateRules;
+        $this->api->onSaveTemplateRules = function ($id, $rules) use ($save): bool {
+            $save($id, $rules);
+            $this->fire('updated_option', 'elementor_pro_theme_builder_conditions', [], ['header' => [$id]]);
+            return true;
+        };
+        $r = $this->templateWrite([...self::ops(), ['op' => 'set_shows_on', 'rules' => []]]);
+        $this->assertSame(['side_effect_detected', true], [$r['code'] ?? null, $r['restored'] ?? null], json_encode($r));
+        $this->assertStringContainsString('Elementor Pro changed its live display list for a draft', $r['detail']);
+        $this->assertSame($before, $this->templateInput(self::ops()));
+    }
+
+    public function test_template_edit_readback_mismatch_restores_snapshot(): void
+    {
+        $this->templateTarget();
+        $before = $this->templateInput(self::ops());
+        $this->api->onSaveTemplateRules = static fn (): bool => true;
+        $r = $this->templateWrite([...self::ops(), ['op' => 'set_shows_on', 'rules' => []]]);
+        $this->assertSame(['verify_mismatch', true], [$r['code'] ?? null, $r['restored'] ?? null], json_encode($r));
+        $this->assertStringContainsString('shows_on', $r['detail']);
+        $this->assertSame($before, $this->templateInput(self::ops()));
+    }
+
+    public function test_template_edit_type_change_by_save_restores_snapshot(): void
+    {
+        $this->templateTarget();
+        $before = $this->templateInput(self::ops());
+        $save = $this->api->documents[self::TARGET]->onSave;
+        $this->api->documents[self::TARGET]->onSave = function ($data) use ($save): bool {
+            $this->templateMeta(ElementorDocument::KEY_TEMPLATE_TYPE, 'footer');
+            return $save($data);
+        };
+        $r = $this->templateWrite(self::ops());
+        $this->assertSame(['verify_mismatch', true], [$r['code'] ?? null, $r['restored'] ?? null], json_encode($r));
+        $this->assertStringContainsString('template_type', $r['detail']);
+        $this->assertSame($before, $this->templateInput(self::ops()));
+    }
+
+    public function test_template_edit_rule_change_after_precheck_conflicts(): void
+    {
+        $this->templateTarget();
+        $input = $this->templateInput(self::ops());
+        $plan = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+        $this->templateMeta(ElementorRuntime::KEY_CONDITIONS, serialize([]));
+        $r = $this->write($input, $this->digest($input)($plan['base_fingerprint'], $plan['preview_digest']), $plan['preview_digest']);
+        $this->assertSame(['conflict', 'changed_since_read'], [$r['code'] ?? null, $r['detail'] ?? null]);
+        $this->assertSame([], $this->api->documents[self::TARGET]->saves);
+    }
+
+    public function test_template_edit_undo_verifies_what_pro_reports(): void
+    {
+        $this->templateTarget();
+        $r = $this->templateWrite([['op' => 'set_shows_on', 'rules' => []]]);
+        $this->assertTrue($r['ok'], json_encode($r));
+        $this->api->onTemplateRules = static fn (): array => [];
+        $undo = BuilderPageEdit::revert(self::EDIT, $r['snapshot_sha256'], $this->seam());
+        $this->assertFalse($undo['ok'], json_encode($undo));
+        $this->assertSame('restore_mismatch', $undo['code']);
+        $this->assertStringContainsString('Elementor Pro', $undo['detail']);
+        $this->assertStringContainsString('[]', $undo['detail']);
+    }
+
+
+    public function test_template_edit_all_existing_tree_operations_accept_rules_alongside(): void
+    {
+        $operations = [
+            ['op' => 'set_text', 'ref' => self::HEADING, 'field' => 'text', 'text' => 'Changed'],
+            ['op' => 'insert', 'after' => self::TEXT, 'outline' => [['type' => 'paragraph', 'text' => 'New']]],
+            ['op' => 'replace', 'ref' => self::HEADING, 'outline' => [['type' => 'paragraph', 'text' => 'Replacement']]],
+            ['op' => 'remove', 'ref' => self::HEADING],
+            ['op' => 'move', 'ref' => self::HEADING, 'after' => self::TEXT],
+            ['op' => 'set_native', 'ref' => self::HEADING, 'settings' => ['title' => 'Native title']],
+            ['op' => 'add_native', 'after' => self::HEADING, 'widget' => 'heading', 'settings' => ['title' => 'New heading']],
+            ['op' => 'duplicate', 'ref' => self::HEADING, 'after' => self::HEADING],
+        ];
+        foreach ($operations as $op) {
+            $this->storePage(self::page());
+            $this->templateTarget();
+            $this->api->coreWidgets = ['heading'];
+            $this->api->widgetCatalogue = [['name' => 'heading', 'title' => 'Heading', 'categories' => ['basic'], 'pro' => false, 'atomic' => false]];
+            $this->api->widgetControls['heading'] = ['title' => ['type' => 'text']];
+            $r = $this->templateWrite([$op, ['op' => 'set_shows_on', 'rules' => ['exclude/archive']]]);
+            $this->assertTrue($r['ok'], $op['op'] . ': ' . json_encode($r));
+            $this->assertSame(['exclude/archive'], $this->api->templateRules(self::TARGET));
+        }
+    }
+
+    public function test_template_edit_rule_order_is_irrelevant_at_readback_but_duplicates_fail(): void
+    {
+        foreach ([false, true] as $duplicate) {
+            $this->storePage(self::page());
+            $this->templateTarget();
+            $save = $this->api->onSaveTemplateRules;
+            $this->api->onSaveTemplateRules = function ($id, $rules) use ($save, $duplicate): bool {
+                return $save($id, $duplicate ? [$rules[0], $rules[0]] : array_reverse($rules));
+            };
+            $r = $this->templateWrite([['op' => 'set_shows_on', 'rules' => ['include/general', 'exclude/archive']]]);
+            if ($duplicate) {
+                $this->assertSame(['verify_mismatch', true], [$r['code'] ?? null, $r['restored'] ?? null], json_encode($r));
+            } else {
+                $this->assertTrue($r['ok'], json_encode($r));
+            }
+        }
+    }
+
+    public function test_template_edit_digest_binds_type_before_and_after_even_for_native(): void
+    {
+        foreach ([null, ['widgets' => (object) []]] as $native) {
+            $template = ['template' => 'header', 'shows_on' => ['before' => ['include/general'], 'after' => []]];
+            $digest = static fn (array $t): string => BuilderPageEdit::previewDigest('elementor', '4.3.4', 41, str_repeat('a', 64), '[]', $native, $t);
+            $base = $digest($template);
+            $other = $template;
+            $other['template'] = 'footer';
+            $this->assertNotSame($base, $digest($other));
+            $other = $template;
+            $other['shows_on']['before'] = [];
+            $this->assertNotSame($base, $digest($other));
+            $other = $template;
+            $other['shows_on']['after'] = ['exclude/archive'];
+            $this->assertNotSame($base, $digest($other));
+        }
+    }
+
+    public function test_template_edit_existing_guards_remain_and_runtime_is_required(): void
+    {
+        $this->templateTarget();
+        foreach (['editor_open', 'autosave_pending', 'not_editable', 'not_builder_page', 'no_marker', 'ledger_other_post', 'not_in_signed_list', 'theme_builder_unavailable'] as $reason) {
+            $this->storePage(self::page());
+            $this->templateTarget();
+            $this->locks = $reason === 'editor_open' ? [self::TARGET => 77] : [];
+            $this->autosaves = $reason === 'autosave_pending' ? [self::TARGET => 77] : [];
+            if ($reason === 'not_editable') {
+                $this->api->documents[self::TARGET]->editable = false;
+            } elseif ($reason === 'not_builder_page') {
+                $this->templateMeta(ElementorDocument::KEY_EDIT_MODE, '');
+            } elseif ($reason === 'no_marker') {
+                $this->rows->delete($this->rows->postmeta, ['post_id' => self::TARGET, 'meta_key' => ElementorDocument::MARKER_KEY]);
+            } elseif ($reason === 'ledger_other_post') {
+                $this->options['wpmgr_ability_ledger_' . self::CREATE]['created_post_id'] = self::OTHER;
+            } elseif ($reason === 'theme_builder_unavailable') {
+                $this->api->themeBuilderReady = false;
+            }
+            $r = BuilderPageEdit::plan($this->templateInput(self::ops()), $this->entry(), $reason === 'not_in_signed_list' ? [] : [self::TARGET], self::EDIT, self::noMedia(), $this->seam());
+            $this->assertSame($reason, $reason === 'theme_builder_unavailable' ? ($r['refusal']['code'] ?? null) : ($r['refusal']['detail'] ?? null), json_encode($r['refusal'] ?? null));
+        }
+    }
+
+    public function test_template_edit_trash_rule_target_is_refused_by_name(): void
+    {
+        $this->templateTarget();
+        Functions\when('get_post')->justReturn((object) ['ID' => 81, 'post_type' => 'page', 'post_status' => 'trash', 'post_title' => 'Discarded']);
+        $r = $this->plan($this->templateInput([['op' => 'set_shows_on', 'rules' => ['include/singular/page/81']]]));
+        $this->assertSame('shows_on_target_missing', $r['refusal']['code'] ?? null);
+        $this->assertStringContainsString('include/singular/page/81', $r['refusal']['detail']);
+    }
+
+    public function test_template_edit_save_checks_document_term_status_and_omitted_rules(): void
+    {
+        foreach (['document_type', 'template_type_term', 'not_draft', 'shows_on'] as $problem) {
+            $this->storePage(self::page());
+            $this->templateTarget();
+            $before = $this->templateInput(self::ops());
+            $save = $this->api->documents[self::TARGET]->onSave;
+            $this->api->documents[self::TARGET]->onSave = function ($data) use ($save, $problem): bool {
+                if ($problem === 'document_type') {
+                    $this->api->documents[self::TARGET]->name = 'footer';
+                } elseif ($problem === 'template_type_term') {
+                    Functions\when('wp_get_object_terms')->justReturn(['header', 'footer']);
+                } elseif ($problem === 'not_draft') {
+                    $this->rows->update($this->rows->posts, ['post_status' => 'publish'], ['ID' => self::TARGET]);
+                } else {
+                    $this->templateMeta(ElementorRuntime::KEY_CONDITIONS, serialize([]));
+                }
+                return $save($data);
+            };
+            $r = $this->templateWrite(self::ops());
+            $this->assertSame(['verify_mismatch', true], [$r['code'] ?? null, $r['restored'] ?? null], json_encode($r));
+            $this->assertStringContainsString($problem, $r['detail']);
+            $this->assertSame($before, $this->templateInput(self::ops()));
+        }
+    }
+
+    public function test_template_edit_term_scope_does_not_admit_create_only_term_assignment(): void
+    {
+        $this->templateTarget();
+        $save = $this->api->documents[self::TARGET]->onSave;
+        $this->api->documents[self::TARGET]->onSave = function ($data) use ($save): bool {
+            $this->fire('set_object_terms', self::TARGET, ['header'], [71], 'elementor_library_type', false, []);
+            return $save($data);
+        };
+        $r = $this->templateWrite(self::ops());
+        $this->assertSame(['side_effect_detected', true], [$r['code'] ?? null, $r['restored'] ?? null], json_encode($r));
+    }
+
+    public function test_template_edit_undo_refuses_published_or_person_rule_changes(): void
+    {
+        foreach (['published', 'rules', 'text'] as $change) {
+            $this->storePage(self::page());
+            $this->templateTarget();
+            $r = $this->templateWrite(self::ops());
+            $this->assertTrue($r['ok'], json_encode($r));
+            if ($change === 'published') {
+                $this->rows->update($this->rows->posts, ['post_status' => 'publish'], ['ID' => self::TARGET]);
+            } elseif ($change === 'rules') {
+                $this->templateMeta(ElementorRuntime::KEY_CONDITIONS, serialize([]));
+            } else {
+                $this->templateMeta(ElementorDocument::KEY_DATA, '[]');
+            }
+            $before = $this->templateInput(self::ops());
+            $undo = BuilderPageEdit::revert(self::EDIT, $r['snapshot_sha256'], $this->seam());
+            $this->assertSame($change === 'published' ? 'refused_published' : 'conflict', $undo['code'] ?? null, json_encode($undo));
+            $this->assertSame($before, $this->templateInput(self::ops()));
+        }
+    }
+
+
+    public function test_template_edit_undo_refuses_person_template_type_change(): void
+    {
+        $this->templateTarget();
+        $r = $this->templateWrite(self::ops());
+        $this->assertTrue($r['ok'], json_encode($r));
+        $this->templateMeta(ElementorDocument::KEY_TEMPLATE_TYPE, 'footer');
+        $before = $this->templateInput(self::ops());
+        $undo = BuilderPageEdit::revert(self::EDIT, $r['snapshot_sha256'], $this->seam());
+        $this->assertSame('conflict', $undo['code'] ?? null, json_encode($undo));
+        $this->assertSame($before, $this->templateInput(self::ops()));
+    }
+
+    public function test_template_edit_document_type_read_failure_after_save_restores_snapshot(): void
+    {
+        $this->templateTarget();
+        $before = $this->templateInput(self::ops());
+        $original = $this->api->documents[self::TARGET];
+        $this->api->documents[self::TARGET] = new class ($original) {
+            private bool $saved = false;
+            public function __construct(private object $document) {}
+            public function get_name(): string {
+                if ($this->saved) {
+                    throw new \RuntimeException('document type unavailable');
+                }
+                return 'header';
+            }
+            public function is_editable_by_current_user(): bool { return true; }
+            public function get_newer_autosave(): bool { return false; }
+            public function save($data): bool {
+                $this->saved = true;
+                return $this->document->save($data);
+            }
+        };
+        $r = $this->templateWrite(self::ops());
+        $this->assertSame(['verify_mismatch', true], [$r['code'] ?? null, $r['restored'] ?? null], json_encode($r));
+        $this->assertStringContainsString('document_type', $r['detail']);
+        $this->assertSame($before, $this->templateInput(self::ops()));
+    }
+
+    public function test_template_edit_precheck_bounds_titles_and_rules_and_accepts_identical_type_terms(): void
+    {
+        $before = array_map(static fn (int $id): string => 'include/singular/page/' . $id, range(1, 20));
+        $after = array_map(static fn (int $id): string => 'exclude/singular/post/' . $id, range(21, 40));
+        $this->templateTarget('footer', $before);
+        Functions\when('get_post')->alias(static fn ($id) => (object) ['ID' => $id, 'post_type' => $id <= 20 ? 'page' : 'post', 'post_status' => 'publish', 'post_title' => 'Raw ' . $id]);
+        $input = $this->templateInput([['op' => 'set_shows_on', 'rules' => $after]]);
+        $plan = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+        $this->assertCount(40, $plan['preview']['rule_titles']);
+        $this->assertSame(range(1, 40), array_column($plan['preview']['rule_titles'], 'id'));
+        $save = $this->api->documents[self::TARGET]->onSave;
+        $this->api->documents[self::TARGET]->onSave = function ($data) use ($save): bool {
+            $this->fire('set_object_terms', self::TARGET, ['footer'], [72], 'elementor_library_type', false, [72]);
+            return $save($data);
+        };
+        $r = $this->templateWrite([['op' => 'set_shows_on', 'rules' => $after]]);
+        $this->assertTrue($r['ok'], json_encode($r));
+    }
+
+
+    public function test_t05_review_structure_fingerprint_and_refs_feed_template_edit(): void
+    {
+        $this->templateTarget();
+        $read = BuilderPageStructure::run((object) ['post_id' => self::TARGET], [self::TARGET], $this->seam()['elementor']);
+        $this->assertArrayHasKey('output', $read, json_encode($read));
+        $out = $read['output'];
+        $this->assertSame(['header', true, 'draft'], [$out['template'], $out['editable'], $out['status']]);
+        $this->assertSame(BuilderDocumentFingerprint::ofPost(self::TARGET, $this->seam()['elementor']->editDescriptor(true)->exactKeys), $out['base_fingerprint']);
+        $heading = array_values(array_filter($out['nodes'], static fn (array $node): bool => $node['kind'] === 'heading'))[0];
+        $input = $this->input([['op' => 'set_text', 'ref' => $heading['ref'], 'field' => 'text', 'text' => 'From the structure read']], $out['base_fingerprint']);
+        $plan = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+        $this->assertSame($out['base_fingerprint'], $plan['base_fingerprint']);
+        $this->templateMeta(ElementorRuntime::KEY_CONDITIONS, serialize([]));
+        $after = BuilderPageStructure::run((object) ['post_id' => self::TARGET], [self::TARGET], $this->seam()['elementor']);
+        $this->assertNotSame($out['base_fingerprint'], $after['output']['base_fingerprint']);
+        $this->assertSame('changed_since_read', $this->plan($input)['refusal']['detail'] ?? null);
+    }
+
+    public function test_t05_review_category_rule_survives_text_edit_and_undo(): void
+    {
+        $rules = ['include/archive/category/5'];
+        $this->templateTarget('header', $rules);
+        Functions\when('get_post')->alias(static function (): never {
+            throw new \LogicException('A category rule must not look up a post title');
+        });
+        $input = $this->templateInput(self::ops());
+        $plan = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+        $this->assertSame(['before' => $rules, 'after' => $rules], $plan['preview']['shows_on']);
+        $this->assertSame([], $plan['preview']['rule_titles']);
+        $r = $this->templateWrite(self::ops());
+        $this->assertTrue($r['ok'], json_encode($r));
+        $this->assertSame([], $this->api->callsTo('saveTemplateRules'));
+        $this->assertSame($rules, $this->api->templateRules(self::TARGET));
+        $undo = BuilderPageEdit::revert(self::EDIT, $r['snapshot_sha256'], $this->seam());
+        $this->assertTrue($undo['ok'], json_encode($undo));
+        $this->assertSame($input, $this->templateInput(self::ops()));
+        $this->assertSame($rules, $this->api->templateRules(self::TARGET));
+    }
+
+    public function test_t05_review_category_rule_replaced_and_restored_by_undo(): void
+    {
+        $rules = ['include/archive/category/5'];
+        $this->templateTarget('footer', $rules);
+        $input = $this->templateInput(self::ops());
+        $r = $this->templateWrite([['op' => 'set_shows_on', 'rules' => ['include/general']]]);
+        $this->assertTrue($r['ok'], json_encode($r));
+        $this->assertSame(['include/general'], $this->api->templateRules(self::TARGET));
+        $undo = BuilderPageEdit::revert(self::EDIT, $r['snapshot_sha256'], $this->seam());
+        $this->assertTrue($undo['ok'], json_encode($undo));
+        $this->assertSame($rules, $this->api->templateRules(self::TARGET));
+        $this->assertSame($input, $this->templateInput(self::ops()));
+        $bad = $this->plan($this->templateInput([['op' => 'set_shows_on', 'rules' => $rules]]));
+        $this->assertSame('bad_input', $bad['refusal']['code'] ?? null);
+        $this->assertStringContainsString($rules[0], $bad['refusal']['detail']);
+    }
+
+    public function test_t05_review_deleted_page_in_before_rules_has_no_title_and_allows_edit(): void
+    {
+        $rules = ['include/singular/page/999', 'exclude/singular/post/82'];
+        $this->templateTarget('header', $rules);
+        $input = $this->templateInput(self::ops());
+        $plan = $this->plan($input);
+        $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+        $this->assertSame([['id' => 82, 'title' => '<b>Raw 82</b>']], $plan['preview']['rule_titles']);
+        $r = $this->templateWrite(self::ops());
+        $this->assertTrue($r['ok'], json_encode($r));
+        $this->assertSame($rules, $this->api->templateRules(self::TARGET));
+        $this->assertSame([], $this->api->callsTo('saveTemplateRules'));
+        $undo = BuilderPageEdit::revert(self::EDIT, $r['snapshot_sha256'], $this->seam());
+        $this->assertTrue($undo['ok'], json_encode($undo));
+        $this->assertSame($input, $this->templateInput(self::ops()));
+        $bad = $this->plan($this->templateInput([['op' => 'set_shows_on', 'rules' => ['include/singular/page/999']]]));
+        $this->assertSame('shows_on_target_missing', $bad['refusal']['code'] ?? null);
+        $this->assertStringContainsString('include/singular/page/999', $bad['refusal']['detail']);
+    }
+
+    public function test_t05_review_stored_rule_equality_uses_read_grammar_and_exact_count(): void
+    {
+        $rules = ['include/archive/category/5', 'include/general'];
+        $this->assertTrue(ThemeTemplateCreate::sameRules($rules, array_reverse($rules)));
+        $this->assertTrue(ThemeTemplateCreate::sameRules([$rules[0], $rules[0]], [$rules[0], $rules[0]]));
+        $this->assertFalse(ThemeTemplateCreate::sameRules($rules, [$rules[0], $rules[0]]));
+        $this->assertFalse(ThemeTemplateCreate::sameRules([$rules[0]], [$rules[0], $rules[0]]));
+        foreach ([null, ['include//general'], [123], ['named' => 'include/general'], array_fill(0, 21, 'include/general')] as $invalid) {
+            $this->assertFalse(ThemeTemplateCreate::sameRules(is_array($invalid) ? $invalid : [], $invalid));
+        }
+        $this->assertNotNull(ThemeTemplateCreate::inputProblem([$rules[0]]));
     }
 
     private static function ops(): array

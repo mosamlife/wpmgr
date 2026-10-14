@@ -475,6 +475,53 @@ final class BuilderPageStructureTest extends TestCase
         $this->assertSame('bad_input', BuilderPageStructure::adapterFor($entry(['elementor', 'elementor']), $seam)['code'] ?? null);
     }
 
+
+    private function templatePost(int $id, string $type): void
+    {
+        $this->wpdb->update($this->wpdb->posts, ['post_type' => 'elementor_library'], ['ID' => $id]);
+        $this->wpdb->delete($this->wpdb->postmeta, ['post_id' => $id, 'meta_key' => ElementorDocument::KEY_TEMPLATE_TYPE]);
+        $this->wpdb->addMeta(++$this->metaId, $id, ElementorDocument::KEY_TEMPLATE_TYPE, $type);
+    }
+
+    public function test_t05_review_published_person_footer_is_read_only(): void
+    {
+        $this->templatePost(self::PUBLISHED, 'footer');
+        $out = $this->structure(self::PUBLISHED, null, 500, []);
+        $this->assertSame(['footer', false, 'publish', null], [$out['template'], $out['editable'], $out['status'], $out['open_state']]);
+        $this->assertSame(BuilderDocumentFingerprint::ofPost(self::PUBLISHED, $this->adapter->editDescriptor(true)->exactKeys), $out['base_fingerprint']);
+        foreach ($out['nodes'] as $node) {
+            $this->assertSame([], $node['editable']);
+        }
+        $subtree = $this->structure(self::PUBLISHED, self::HEADING, 1, []);
+        $this->assertSame('footer', $subtree['template']);
+        $this->assertSame([], $this->optionWrites);
+        $this->assertSame([], $this->api->callsTo('document'));
+        $this->wpdb->update($this->wpdb->posts, ['post_password' => 'secret'], ['ID' => self::PUBLISHED]);
+        $bad = BuilderPageStructure::read(self::PUBLISHED, null, 500, [], $this->adapter);
+        $this->assertSame(['code' => 'post_not_readable', 'detail' => 'password'], $bad['refusal']);
+    }
+
+    public function test_t05_review_person_draft_header_is_not_eligible(): void
+    {
+        $this->templatePost(self::DRAFT, 'header');
+        $this->wpdb->delete($this->wpdb->postmeta, ['post_id' => self::DRAFT, 'meta_key' => DraftEligibility::MARKER_KEY]);
+        $bad = BuilderPageStructure::read(self::DRAFT, null, 500, [self::DRAFT], $this->adapter);
+        $this->assertSame(['code' => 'post_not_readable', 'detail' => 'no_marker'], $bad['refusal']);
+    }
+
+    public function test_t05_review_other_library_types_and_ambiguous_type_rows_are_refused(): void
+    {
+        foreach ([self::DRAFT, self::PUBLISHED] as $id) {
+            $this->templatePost($id, 'section');
+            $bad = BuilderPageStructure::read($id, null, 500, [self::DRAFT], $this->adapter);
+            $this->assertSame(['code' => 'post_not_readable', 'detail' => 'post_type'], $bad['refusal']);
+            $this->templatePost($id, 'header');
+            $this->wpdb->addMeta(++$this->metaId, $id, ElementorDocument::KEY_TEMPLATE_TYPE, 'footer');
+            $bad = BuilderPageStructure::read($id, null, 500, [self::DRAFT], $this->adapter);
+            $this->assertSame(['code' => 'post_not_readable', 'detail' => 'post_type'], $bad['refusal']);
+        }
+    }
+
     // ---- helpers -----------------------------------------------------------
 
     /**

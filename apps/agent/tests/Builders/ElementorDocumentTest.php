@@ -602,7 +602,7 @@ final class ElementorDocumentTest extends TestCase
         Functions\when('wp_get_object_terms')->alias(static function () use (&$terms) { return $terms; });
         $verify = fn () => $doc->verifyCreated(self::TARGET, $tree, self::PRINCIPAL, self::REQUEST, 'elementor_library', null, null, null, 'header', ['include/general']);
         $this->assertNull($doc->targetProblem(self::TARGET, [], 'header'));
-        $this->assertSame('document_type', $doc->targetProblem(self::TARGET, []), 'page scopes do not admit library documents');
+        $this->assertNull($doc->targetProblem(self::TARGET, []), 'header and footer drafts are edit targets');
         $this->assertNull($verify());
         foreach ([[], ['footer'], ['header', 'footer']] as $terms) {
             $this->assertSame('template_term', $verify());

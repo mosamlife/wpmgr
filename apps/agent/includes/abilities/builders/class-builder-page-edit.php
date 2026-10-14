@@ -88,6 +88,10 @@ if (!defined('ABSPATH')) {
  * repeater fields. canonical recursively sorts maps with SORT_STRING,
  * preserves list order and empty PHP arrays as [], and sorts stdClass maps
  * while preserving their object encoding. All JSON uses default PHP flags.
+ * Template previews also carry template, shows_on {before, after}, and
+ * rule_titles. Their digests append the template type, before rules and
+ * after rules to the corresponding page digest's array, in that order.
+ * Titles are site text and are not part of the digest.
  * Widget type keys are sorted with SORT_STRING; empty widgets is {}.
  * Copies and structural operations have no AI-written control document.
  * active_breakpoints is captured once in planEdit from refreshed
@@ -251,8 +255,10 @@ final class BuilderPageEdit
                 : self::refused(self::CODE_NOT_ELIGIBLE, $target);
         }
 
-        $keys = $a->descriptor()->exactKeys;
         try {
+            $identity = BuilderDocumentFingerprint::read($postId, [ElementorDocument::KEY_TEMPLATE_TYPE]);
+            $themeType = ($identity['post']['post_type'] ?? null) === 'elementor_library' ? ($identity['rows'][ElementorDocument::KEY_TEMPLATE_TYPE][0] ?? null) : null;
+            $keys = $a->editDescriptor($themeType !== null)->exactKeys;
             $stored = BuilderDocumentFingerprint::read($postId, $keys);
             if ($stored === null) {
                 return self::refused(self::CODE_NOT_ELIGIBLE, 'missing');
@@ -267,6 +273,11 @@ final class BuilderPageEdit
         $tree = $a->storedTree($stored['rows']);
         if ($tree === null) {
             return self::refused(LayoutOps::CODE_UNREADABLE, 'the page\'s builder document could not be read');
+        }
+
+        $templatePlan = ThemeTemplateEdit::plan($postId, $themeType, $input['operations'], $a->templates());
+        if (isset($templatePlan['code'])) {
+            return self::refused($templatePlan['code'], $templatePlan['detail']);
         }
 
         $identity = LayoutOps::storedProblem($tree);
@@ -350,7 +361,7 @@ final class BuilderPageEdit
                     'active_breakpoints' => $planned['active_breakpoints'], 'builder_version' => $version, 'media' => $verified];
                 $nativePreview = ['before_tree' => $tree, 'before_tree_sha256' => $beforeHash, 'results' => $planned['results'], 'digest_inputs' => $digestInputs];
             }
-            $digest = self::previewDigest($a->id(), $version, $postId, $baseFp, $doc->canonicalBytes, $digestInputs);
+            $digest = self::previewDigest($a->id(), $version, $postId, $baseFp, $doc->canonicalBytes, $digestInputs, $templatePlan['preview'] ?? null);
         } catch (\InvalidArgumentException | \JsonException $e) {
             return self::refused(LayoutOps::CODE_UNREADABLE, 'the edited page could not be encoded');
         }
@@ -370,13 +381,17 @@ final class BuilderPageEdit
                 'after_outline'   => $after,
                 'tree_sha256'     => hash('sha256', $doc->canonicalBytes),
                 'tree'            => $doc->tree,
-            ] + $nativePreview,
+            ] + $nativePreview + ($templatePlan['preview'] ?? []),
             'preview_digest'   => $digest,
             'doc'              => $doc,
             'changes'          => $planned['changes'],
             'touched'          => $planned['touched'],
             'builder_facts'    => $a->editFacts($tree, $doc->tree),
         ];
+        if ($themeType !== null) {
+            $plan['template'] = $themeType;
+            $plan['set_shows_on'] = $templatePlan['replace'];
+        }
         $answer = self::precheckAnswer($plan, $requestId, str_repeat('0', 64));
         if (!$answer['ok']) {
             return ['refusal' => $answer];
@@ -502,12 +517,18 @@ final class BuilderPageEdit
      * @return string
      * @throws \JsonException When a value is not valid UTF-8.
      */
-    public static function previewDigest(string $builder, string $version, int $postId, string $baseFp, string $treeJson, ?array $digestInputs = null): string
+    public static function previewDigest(string $builder, string $version, int $postId, string $baseFp, string $treeJson, ?array $digestInputs = null, ?array $template = null): string
     {
+        $parts = [$digestInputs === null ? self::DIGEST_DOMAIN : self::NATIVE_DIGEST_DOMAIN, $builder, $version, $postId, $baseFp, $treeJson];
         if ($digestInputs !== null) {
-            return hash('sha256', json_encode([self::NATIVE_DIGEST_DOMAIN, $builder, $version, $postId, $baseFp, $treeJson, json_encode($digestInputs, JSON_THROW_ON_ERROR)], JSON_THROW_ON_ERROR));
+            $parts[] = json_encode($digestInputs, JSON_THROW_ON_ERROR);
         }
-        return hash('sha256', json_encode([self::DIGEST_DOMAIN, $builder, $version, $postId, $baseFp, $treeJson], JSON_THROW_ON_ERROR));
+        if ($template !== null) {
+            $parts[] = $template['template'];
+            $parts[] = $template['shows_on']['before'];
+            $parts[] = $template['shows_on']['after'];
+        }
+        return hash('sha256', json_encode($parts, JSON_THROW_ON_ERROR));
     }
 
     /**
@@ -658,7 +679,7 @@ final class BuilderPageEdit
             if (!$resume && !AbilityLedger::update($requestId, ['undo_state' => self::UNDO_RESTORING])) {
                 return self::fail(LayoutOps::CODE_UNREADABLE, 'the undo could not be recorded; nothing was changed', ['post_id' => $postId]);
             }
-            $descriptor = $a->descriptor();
+            $descriptor = $a->editDescriptor(($snapshot['post']['post_type'] ?? null) === 'elementor_library');
             $run        = $a->restoreInScope($postId, static fn () => BuilderDocumentRestore::scoped($postId, $snapshot, $keys, $fields, $descriptor, $a, $resume));
             $thrown     = $run['thrown'] ?? null;
             if ($thrown instanceof \Throwable && !$thrown instanceof \InvalidArgumentException) {
@@ -684,7 +705,11 @@ final class BuilderPageEdit
             }
 
             try {
-                $restoredFp = BuilderDocumentFingerprint::ofPost($postId, $a->descriptor()->exactKeys);
+                $rulesProblem = ThemeTemplateEdit::verifyRestored($postId, $snapshot, $a->templates());
+                if ($rulesProblem !== null) {
+                    return self::fail(BuilderDocumentRestore::CODE_MISMATCH, $rulesProblem, ['post_id' => $postId]);
+                }
+                $restoredFp = BuilderDocumentFingerprint::ofPost($postId, $descriptor->exactKeys);
             } catch (\Throwable $e) {
                 $restoredFp = null;
             }
@@ -746,7 +771,7 @@ final class BuilderPageEdit
         if ($before === null) {
             return self::failed($ledgerUpdate, self::fail('snapshot_failed', 'the copy of the page could not be read back; nothing was changed'));
         }
-        if (self::snapshotFingerprint($before, $a->descriptor()->exactKeys) !== $baseFp) {
+        if (self::snapshotFingerprint($before, $a->editDescriptor(isset($plan['template']))->exactKeys) !== $baseFp) {
             return self::failed($ledgerUpdate, self::fail(self::CODE_CONFLICT, self::CHANGED_SINCE_READ));
         }
 
@@ -754,7 +779,7 @@ final class BuilderPageEdit
         // the approval saw: a save by anyone else since the copy was taken is
         // refused, never overwritten.
         try {
-            $liveFp = BuilderDocumentFingerprint::ofPost($postId, $a->descriptor()->exactKeys);
+            $liveFp = BuilderDocumentFingerprint::ofPost($postId, $a->editDescriptor(isset($plan['template']))->exactKeys);
         } catch (\Throwable $e) {
             return self::failed($ledgerUpdate, self::fail(LayoutOps::CODE_UNREADABLE, 'the page could not be read; nothing was changed'));
         }
@@ -773,14 +798,36 @@ final class BuilderPageEdit
             return self::putBack($postId, $before, $a, $baseFp, $own, $code, is_string($why) && $why !== '' ? $why : 'the page builder did not save the page', $ledgerUpdate);
         }
 
+        if (isset($plan['template'])) {
+            try {
+                $rules = ($plan['set_shows_on'] ?? false)
+                    ? $a->templates()->saveRules($postId, $plan['preview']['shows_on']['after'], true)
+                    : ['rules' => $a->templates()->readRules($postId)];
+                if (isset($rules['code'])) {
+                    return self::putBack($postId, $before, $a, $baseFp, $own, $rules['code'], $rules['detail'], $ledgerUpdate);
+                }
+                $problem = ThemeTemplateEdit::rulesProblem($plan['preview']['shows_on']['after'], $rules['rules']);
+            } catch (\Throwable $e) {
+                $problem = 'shows_on could not be read back through Elementor Pro';
+            }
+            if ($problem !== null) {
+                return self::putBack($postId, $before, $a, $baseFp, $own, 'verify_mismatch', $problem, $ledgerUpdate);
+            }
+        }
         $problem = $a->verifyEdited($postId, $doc, $before);
         if ($problem !== null) {
             return self::putBack($postId, $before, $a, $baseFp, $own, 'verify_mismatch', 'the edited page is not what was planned: ' . $problem, $ledgerUpdate);
         }
         try {
             $written = $scope['target_meta_keys'] ?? [];
-            $changed = BuilderDocumentRestore::changes($postId, $before, is_array($written) ? $written : []);
-            $afterFp = BuilderDocumentFingerprint::ofPost($postId, $a->descriptor()->exactKeys);
+            $written = is_array($written) ? $written : [];
+            if (isset($plan['template'])) {
+                // Undo guards the template's identity and rules even when this edit only changed its tree.
+                $written[] = ElementorRuntime::KEY_CONDITIONS;
+                $written[] = ElementorDocument::KEY_TEMPLATE_TYPE;
+            }
+            $changed = BuilderDocumentRestore::changes($postId, $before, $written);
+            $afterFp = BuilderDocumentFingerprint::ofPost($postId, $a->editDescriptor(isset($plan['template']))->exactKeys);
         } catch (\Throwable $e) {
             $changed = null;
             $afterFp = null;
@@ -1141,11 +1188,14 @@ final class BuilderPageEdit
     {
         $effect = null;
         try {
-            $descriptor = $a->descriptor();
+            $descriptor = $a->editDescriptor(($before['post']['post_type'] ?? null) === 'elementor_library');
             $run        = $a->restoreInScope($postId, static fn (): ?string => BuilderDocumentRestore::full($postId, $before, $descriptor, $a, $baseFp));
             $restored   = ($run['ran'] ?? null) === true && ($run['thrown'] ?? null) === null
                 && array_key_exists('value', $run) && $run['value'] === null;
             $effect     = is_string($run['side_effect'] ?? null) ? $run['side_effect'] : null;
+            if ($restored && ThemeTemplateEdit::verifyRestored($postId, $before, $a->templates()) !== null) {
+                $restored = false;
+            }
         } catch (\Throwable $e) {
             $restored = false;
         }

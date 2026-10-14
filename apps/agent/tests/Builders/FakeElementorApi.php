@@ -127,6 +127,8 @@ final class FakeElementorApi implements ElementorApi
     /** @var array<int, array<mixed>|null> */
     public array $templateRules = [];
     public ?\Closure $onSaveTemplateRules = null;
+
+    public ?\Closure $onTemplateRules = null;
     /** @var list<string> */
     public array $themeConditions = [];
 
@@ -368,6 +370,9 @@ final class FakeElementorApi implements ElementorApi
     public function templateRules(int $postId): ?array
     {
         $this->calls[] = ['templateRules', [$postId]];
+        if ($this->onTemplateRules !== null) {
+            return ($this->onTemplateRules)($postId);
+        }
         return $this->loaded && $this->pro && $this->themeBuilderReady ? ($this->templateRules[$postId] ?? null) : null;
     }
 
