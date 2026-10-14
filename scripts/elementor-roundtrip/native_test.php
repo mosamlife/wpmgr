@@ -84,7 +84,55 @@ class N09Plugin
 function n09_runtime(array $controls, array $active = ['mobile', 'tablet']): \WPMgr\Agent\Abilities\Builders\ElementorRuntime
 {
     if (!defined('ELEMENTOR_VERSION')) define('ELEMENTOR_VERSION', '3.35.9');
-    if (!defined('ELEMENTOR_PATH')) define('ELEMENTOR_PATH', __DIR__ . '/fixtures/elementor/');
+    if (!defined('ELEMENTOR_PATH')) {
+        $root = sys_get_temp_dir() . '/native-elementor-' . bin2hex(random_bytes(8));
+        n09_assert(mkdir($root, 0700), 'temporary Elementor directory unavailable');
+        register_shutdown_function(static function () use ($root): void {
+            $file = $root . '/includes/widgets/heading.php';
+            if (is_file($file)) n09_assert(unlink($file), 'temporary heading cleanup failed');
+            foreach ([$root . '/includes/widgets', $root . '/includes', $root] as $dir) {
+                if (is_dir($dir)) n09_assert(rmdir($dir), 'temporary Elementor directory cleanup failed');
+            }
+        });
+        n09_assert(mkdir($root . '/includes', 0700), 'temporary Elementor includes directory unavailable');
+        n09_assert(mkdir($root . '/includes/widgets', 0700), 'temporary core widgets directory unavailable');
+        $headingSource = <<<'PHP'
+<?php
+declare(strict_types=1);
+
+namespace Elementor;
+
+/** Core heading registered from the stand-in install's widget directory. */
+class Widget_Roundtrip_Heading
+{
+    public function __construct(private array $controls)
+    {
+    }
+
+    public function get_name(): string
+    {
+        return 'heading';
+    }
+
+    public function get_title(): string
+    {
+        return 'Heading';
+    }
+
+    public function get_categories(): array
+    {
+        return ['basic'];
+    }
+
+    public function get_controls(): array
+    {
+        return $this->controls;
+    }
+}
+PHP;
+        n09_assert(file_put_contents($root . '/includes/widgets/heading.php', $headingSource) === strlen($headingSource), 'temporary core heading could not be written');
+        define('ELEMENTOR_PATH', $root . '/');
+    }
     require_once ELEMENTOR_PATH . 'includes/widgets/heading.php';
     $heading = new \Elementor\Widget_Roundtrip_Heading($controls);
     N09Plugin::$instance = (object) [
