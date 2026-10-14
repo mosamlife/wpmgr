@@ -285,7 +285,7 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 == Changelog ==
 
-The entries below summarize the notable changes since 0.61.25. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+The entries below summarize the notable changes since 0.61.78. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
 = 0.61.166 =
 * Added: A connected AI can read the site's Elementor widgets and their settings, and add, change, duplicate, move and remove Elementor's own widgets on a page. Each edit follows the site's approval settings in WPMgr and can be undone.
@@ -432,39 +432,6 @@ The entries below summarize the notable changes since 0.61.25. This project ship
 
 = 0.61.78 =
 * Fixed: the plugin could fail to set up its encryption key on some managed hosts (for example Hostinger and other CloudLinux/CageFS hosts), leaving it active but unable to connect (GH #257). It now tolerates a wp-config.php with missing or partial secret salts, tries the uploads folder as an additional fallback file location, and as a last resort can store a dedicated encryption key in the database when no file location is writable. Key setup is now safe against two requests racing to set it up at the same time and against a write interrupted partway through. Already-connected sites are unaffected.
-
-= 0.61.71 =
-* Fixed: the "Manage in WPMgr" admin bar link now opens the site's Cache page in the dashboard. It previously pointed at a page that has never existed.
-
-= 0.61.64 =
-* Fixed: scheduled backups no longer stall indefinitely at "queued". A backup run now always starts immediately instead of depending solely on WordPress cron, and a request-driven check recovers any run that still gets stuck. A file-based lock alongside the existing database lock prevents two runs of the same backup from overlapping.
-
-= 0.61.63 =
-* Changed: the Real User Monitoring script now ships with a readable, non-minified source file alongside the minified one, for WordPress.org directory transparency. No behavior change.
-
-= 0.61.62 =
-* Fixed: pre-update rollback snapshots (captured before each core, plugin, or theme update) are now reliably cleaned up instead of accumulating indefinitely on a quiet site. Cleanup no longer depends on WordPress cron.
-
-= 0.61.61 =
-* Hardening: a second WordPress.org-compliance pass. Login and forced-password-change screens now escape their output through an explicit allowed-tag list, the media-library helper script is enqueued instead of printed inline, the settings screen is fully translatable, and the WordPress.org build measures folder sizes without shelling out to the operating system.
-
-= 0.61.58 =
-* Fixed: bulk update runs no longer repeat a full WordPress.org update check for every item in the batch. Updates no longer fail with "Could not copy file" on hosts with an overloaded shared temporary directory. Hide-login no longer blocks front-end AJAX requests. Two-factor sign-in messaging is clearer, with a wider accepted time window and single-use setup codes.
-
-= 0.61.57 =
-* Hardening: code-quality and WordPress.org-compliance pass with no behavior change for connected sites. Real User Monitoring now loads through the standard wp_enqueue_script mechanism instead of a hand-built script tag; the two-factor and forced-password-change login screens now escape their output through an explicit allowed-tag list at the point of output; the long-running backup, restore, database-dump, and media routines now use a bounded time limit instead of an unbounded one; and the CloudPanel cache-purge integration sanitizes its server-variable reads inline.
-
-= 0.61.39 =
-* Fixed: the agent no longer overwrites a working Real User Monitoring beacon key with an empty one.
-
-= 0.61.33 =
-* Fixed: backup destinations other than managed control-plane storage now actually work. A local folder on the server or your own S3-compatible bucket could be configured and pass "Test connection", but every backup still went to managed storage because the destination was never threaded through to the backup run. Full and incremental backups now run to the configured destination, and restore reads back from it; for your own bucket, the control plane signs the uploads and downloads so the site never holds your storage credentials.
-
-= 0.61.27 =
-* Fixed: Real User Monitoring now collects data on sites running any page cache, not just this plugin's own. The measurement script was previously injected only inside this plugin's own cache output; it is now injected on a standard WordPress hook during page generation.
-
-= 0.61.25 =
-* Fixed: restore no longer silently drops plugin or theme files whose path happens to contain a reserved WordPress drop-in name (for example a plugin's own class-db.php), which could leave a restored site broken while the restore reported success. Restore now matches its protected-file exclusions by exact path instead of substring, so only genuine root drop-ins (db.php, object-cache.php, advanced-cache.php) and config files are held back.
 
 == Upgrade Notice ==
 
