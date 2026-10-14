@@ -675,6 +675,7 @@ final class ElementorPageCreateRouterTest extends TestCase
         $this->assertSame($live, $this->options[$name]);
         $this->assertSame('side_effect_detected', $result['code'] ?? null);
         $this->assertTrue($result['trashed'] ?? false);
+        $this->assertStringStartsWith('the save wrote outside the page: option_written; ', $result['detail'] ?? '');
         $this->assertStringContainsString('WPMgr kept it as it was', $result['detail'] ?? '');
     }
 

@@ -1556,7 +1556,7 @@ final class BuilderPageEditTest extends TestCase
         $r = $this->templateWrite(self::ops());
         $this->assertSame($live, $this->options[$name]);
         $this->assertSame(['side_effect_detected', true], [$r['code'] ?? null, $r['restored'] ?? null], json_encode($r));
-        $this->assertStringContainsString('WPMgr kept it as it was', $r['detail']);
+        $this->assertSame('the restore wrote outside the page: option_written, after: side_effect_detected', $r['detail']);
         $this->assertSame($before, $this->templateInput(self::ops()));
     }
 
@@ -1579,7 +1579,7 @@ final class BuilderPageEditTest extends TestCase
         $this->assertSame($live, $this->options[$name]);
         $this->assertTrue($undo['restored'] ?? false, json_encode($undo));
         $this->assertSame('side_effect_detected', $undo['code'] ?? null);
-        $this->assertStringContainsString('WPMgr kept it as it was', $undo['detail'] ?? '');
+        $this->assertSame('the restore wrote outside the page: option_written', $undo['detail'] ?? '');
         $this->assertSame($before, $this->templateInput(self::ops()));
     }
 

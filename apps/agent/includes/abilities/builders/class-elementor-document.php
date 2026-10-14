@@ -381,10 +381,9 @@ final class ElementorDocument
         }
         $effect = null;
         if ($kitChanged) {
-            $kept = ThemeTemplateCreate::blockedDetail($scope);
-            $effect = 'the active kit changed during the restore' . ($kept === null ? '' : '; ' . $kept);
+            $effect = 'the active kit changed during the restore';
         } elseif ($outcome['clean'] !== true) {
-            $effect = ThemeTemplateCreate::blockedDetail($scope) ?? 'the restore wrote outside the page: ' . implode(', ', $outcome['violations']);
+            $effect = 'the restore wrote outside the page: ' . implode(', ', $outcome['violations']);
         }
 
         return ['ran' => true, 'value' => $value, 'thrown' => $thrown, 'scope' => $outcome, 'side_effect' => $effect];
@@ -823,11 +822,10 @@ final class ElementorDocument
             $kitChanged = true;
         }
         if ($kitChanged) {
-            $kept = ThemeTemplateCreate::blockedDetail($scope);
-            return ['ok' => false, 'code' => self::CODE_SIDE_EFFECT, 'detail' => 'the active kit changed during the save' . ($kept === null ? '' : '; ' . $kept), 'scope' => $outcome];
+            return ['ok' => false, 'code' => self::CODE_SIDE_EFFECT, 'detail' => 'the active kit changed during the save', 'scope' => $outcome];
         }
         if ($outcome['clean'] !== true) {
-            return ['ok' => false, 'code' => self::CODE_SIDE_EFFECT, 'detail' => ThemeTemplateCreate::blockedDetail($scope) ?? 'the save wrote outside the page: ' . implode(', ', $outcome['violations']), 'scope' => $outcome];
+            return ['ok' => false, 'code' => self::CODE_SIDE_EFFECT, 'detail' => 'the save wrote outside the page: ' . implode(', ', $outcome['violations']), 'scope' => $outcome];
         }
         if ($crashed) {
             return ['ok' => false, 'code' => self::CODE_CRASHED, 'detail' => 'Elementor failed while saving the page', 'scope' => $outcome];
