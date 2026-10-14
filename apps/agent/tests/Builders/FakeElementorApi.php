@@ -122,6 +122,13 @@ final class FakeElementorApi implements ElementorApi
     /** What proActive() answers: Elementor Pro's version constant is defined. */
     public bool $pro = false;
 
+    public ?string $proVersion = null;
+    public bool $themeBuilderReady = false;
+    /** @var array<int, array<mixed>|null> */
+    public array $templateRules = [];
+    /** @var list<string> */
+    public array $themeConditions = [];
+
     /** What elementCacheKey() answers. */
     public string $elementCacheKey = '_elementor_element_cache';
 
@@ -343,6 +350,30 @@ final class FakeElementorApi implements ElementorApi
         $this->calls[] = ['proActive', []];
 
         return $this->pro;
+    }
+
+    public function proVersion(): ?string
+    {
+        $this->calls[] = ['proVersion', []];
+        return $this->pro ? $this->proVersion : null;
+    }
+
+    public function themeBuilderReady(): bool
+    {
+        $this->calls[] = ['themeBuilderReady', []];
+        return $this->loaded && $this->pro && $this->themeBuilderReady;
+    }
+
+    public function templateRules(int $postId): ?array
+    {
+        $this->calls[] = ['templateRules', [$postId]];
+        return $this->loaded && $this->pro && $this->themeBuilderReady ? ($this->templateRules[$postId] ?? null) : null;
+    }
+
+    public function themeConditionRegistered(string $name): bool
+    {
+        $this->calls[] = ['themeConditionRegistered', [$name]];
+        return $this->loaded && $this->pro && $this->themeBuilderReady && in_array($name, $this->themeConditions, true);
     }
 
     /**

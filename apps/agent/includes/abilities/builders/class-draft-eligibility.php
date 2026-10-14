@@ -90,7 +90,7 @@ final class DraftEligibility
         if ($markers === []) {
             return self::no('no_marker');
         }
-        if (count($markers) !== 1 || preg_match(self::RE_REQUEST_ID, $markers[0]) !== 1) {
+        if (!self::validCreationMarker($markers)) {
             return self::no('marker_not_a_request');
         }
 
@@ -116,6 +116,18 @@ final class DraftEligibility
         }
 
         return ['eligible' => true, 'reason' => ''];
+    }
+
+    /**
+     * Whether stored marker rows contain exactly one valid creation request id.
+     * This is provenance only; check() applies the separate edit eligibility rules.
+     *
+     * @param array<mixed> $markers Stored creation marker values.
+     */
+    public static function validCreationMarker(array $markers): bool
+    {
+        return count($markers) === 1 && isset($markers[0]) && is_string($markers[0])
+            && preg_match(self::RE_REQUEST_ID, $markers[0]) === 1;
     }
 
     /**
