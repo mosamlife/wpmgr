@@ -5,11 +5,18 @@ package mcp
 // set: the agent's refusal code (agentcmd.AbilityRunRefusalCodes, anything
 // else is unknown), for a page-edit conflict the reason (the closed set
 // below), and the fixed hint for them. The site's own detail text is
-// untrusted and never reaches the answer.
+// untrusted and never reaches the answer. Display-rule guidance includes
+// only a rule substring validated against the rule grammar.
 
 import (
+	"regexp"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/humantext"
 )
 
 // The reasons a wpmgr/page-edit is refused as a conflict: the closed set the
@@ -70,17 +77,24 @@ const msgSitePrecheckRefused = "the site refused the call, so nothing was asked"
 
 // sitePrecheckRefusal is the refusal for a wpmgr/page-create or
 // wpmgr/page-edit precheck the site refused. Its details are the code,
-// whether a retry can help and the fixed hint when there is one; a page-edit
+// whether a retry can help and the hint when there is one; a page-edit
 // conflict adds its reason, and only editor_open is retryable, whatever the
 // agent's own flag says. The message names the code and the reason and
 // carries the hint, so a client that shows only the message still has them.
-func sitePrecheckRefusal(ability string, refusal *agentcmd.AbilityRunRefusal) *toolRefusal {
+func sitePrecheckRefusal(ability string, refusal *agentcmd.AbilityRunRefusal, site ...string) *toolRefusal {
 	code := refusal.Code
 	if _, ok := agentcmd.AbilityRunRefusalCodes[code]; !ok {
 		code = unknownRefusalCode
 	}
 	details := map[string]any{"code": code, "retryable": refusal.Retryable}
 	reason, hint := "", precheckRefusalHint(code)
+	label := "this site"
+	if len(site) > 0 && site[0] != "" {
+		label = site[0]
+	}
+	if message := ThemeTemplateRefusalMessage(code, refusal.Detail, label); message != "" {
+		hint = message
+	}
 	if ability == AbilityPageEdit && code == pageEditOpsInvalid && (refusal.Detail == pageEditMixedHint || refusal.Detail == pageEditNativeSectionHint) {
 		hint = refusal.Detail
 		details["retryable"] = false
@@ -126,4 +140,48 @@ var nativeRefusalHints = map[string]string{
 	"native_duplicate_refused":       "Choose a widget subtree without protected content, or add a new widget instead.",
 	"native_preview_too_large":       "Use a smaller edit or reduce the page before trying again.",
 	"preview_unreadable":             "Read the page again and retry; the site could not produce a readable preview.",
+}
+
+// ThemeTemplateRefusalMessage uses fixed copy and only a validated display rule.
+func ThemeTemplateRefusalMessage(code, detail, site string) string {
+	site = humantext.CapRunes(humantext.Clean(site), 255)
+	prefix := "shows_on"
+	if rule := firstThemeTemplateRule(detail); rule != "" {
+		prefix += ": " + rule
+	}
+	switch code {
+	case "theme_builder_unavailable":
+		return "Headers and footers need Elementor Pro with its Theme Builder, and it isn't active on " + site + ". Nothing was changed."
+	case "shows_on_place_unavailable":
+		return prefix + " is not a place this site's Elementor Pro can show a template. Read wpmgr/elementor-theme-templates for the places it offers."
+	case "shows_on_target_missing":
+		return prefix + " names a page or post this site does not have, or of the wrong type."
+	case "side_effect_detected":
+		if detail == "Elementor Pro changed its live display list for a draft" {
+			return "Elementor Pro changed its live display list for a draft. Nothing was kept."
+		}
+	case "verify_mismatch":
+		if strings.HasPrefix(detail, "shows_on differs; Elementor Pro stored:") || detail == "shows_on could not be verified" || detail == "the created draft is not what was built: shows_on" {
+			return "Elementor Pro stored different places than asked. Nothing was kept."
+		}
+	}
+	return ""
+}
+
+var themeTemplateRuleToken = regexp.MustCompile(`(?:include|exclude)/[\pL\pN_/-]+`)
+
+func firstThemeTemplateRule(detail string) string {
+	for _, at := range themeTemplateRuleToken.FindAllStringIndex(detail, -1) {
+		if at[0] > 0 {
+			before, _ := utf8.DecodeLastRuneInString(detail[:at[0]])
+			if unicode.IsLetter(before) || unicode.IsNumber(before) || strings.ContainsRune("_/-", before) {
+				continue
+			}
+		}
+		rule := detail[at[0]:at[1]]
+		if themeTemplateRule.MatchString(rule) {
+			return rule
+		}
+	}
+	return ""
 }

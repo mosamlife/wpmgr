@@ -438,6 +438,8 @@ export {
   type AbilityRequestPageMedia,
   type AbilityRequestPageOutline,
   type AbilityRequestPageOutlineNode,
+  type AbilityRequestPageTemplate,
+  type AbilityRequestTemplateRules,
   type AbilityTenantReenableResult,
   type AcceptInvitationData,
   type AcceptInvitationError,

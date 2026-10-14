@@ -8335,6 +8335,16 @@ export const AbilityRequestSchema = {
       description:
         "The page builder that builds a wpmgr/page-create request's page, as\nthe site's precheck named it. Null for a page in a WordPress\neditor, and for every other ability. A card for a request whose\neditor is a page builder cannot be shown in full without it and\nmust not be approvable.\n",
     },
+    page_template: {
+      allOf: [
+        {
+          $ref: "#/components/schemas/AbilityRequestPageTemplate",
+        },
+      ],
+      nullable: true,
+      description:
+        "Template type, places and display facts checked at precheck and retained in the approval card. Titles are cleaned plain site text.",
+    },
     page_edit: {
       allOf: [
         {
@@ -8345,6 +8355,93 @@ export const AbilityRequestSchema = {
       description:
         "The card of a wpmgr/page-edit request: the post, the page\nbuilder, each change and the page's outline after the edit, as\nWPMgr checked them against the site's precheck. Null for every\nother ability. A page-edit request without it cannot be shown in\nfull and must not be approvable.\n",
     },
+  },
+} as const;
+
+export const AbilityRequestPageTemplateSchema = {
+  type: "object",
+  required: ["type", "shows_on", "rule_titles", "also_live", "refusal_message"],
+  properties: {
+    type: {
+      type: "string",
+      enum: ["header", "footer"],
+    },
+    shows_on: {
+      $ref: "#/components/schemas/AbilityRequestTemplateRules",
+    },
+    rule_titles: {
+      type: "array",
+      maxItems: 20,
+      items: {
+        type: "object",
+        required: ["id", "title"],
+        properties: {
+          id: {
+            type: "integer",
+            format: "int64",
+            minimum: 1,
+          },
+          title: {
+            type: "string",
+            description: "Cleaned plain site text.",
+          },
+        },
+      },
+    },
+    also_live: {
+      type: ["array", "null"],
+      maxItems: 5,
+      items: {
+        type: "object",
+        required: ["id", "title", "shows_on", "shows_on_problem"],
+        properties: {
+          id: {
+            type: "integer",
+            format: "int64",
+            minimum: 1,
+          },
+          title: {
+            type: "string",
+            description: "Cleaned plain site text.",
+          },
+          shows_on: {
+            anyOf: [
+              {
+                type: "array",
+                maxItems: 20,
+                items: {
+                  type: "string",
+                  pattern:
+                    "^(include|exclude)(/[a-z0-9_-]{1,64}){1,2}(/[1-9][0-9]{0,19})?$",
+                },
+              },
+              {
+                type: "null",
+              },
+            ],
+          },
+          shows_on_problem: {
+            type: ["string", "null"],
+            enum: ["unreadable", "too_many", null],
+          },
+        },
+      },
+    },
+    refusal_message: {
+      type: ["string", "null"],
+      description:
+        "Fixed guidance with only a validated display rule from the site.",
+    },
+  },
+} as const;
+
+export const AbilityRequestTemplateRulesSchema = {
+  type: "array",
+  maxItems: 20,
+  uniqueItems: true,
+  items: {
+    type: "string",
+    pattern: "^(include|exclude)(/[a-z0-9_-]{1,64}){1,2}(/[1-9][0-9]{0,19})?$",
   },
 } as const;
 

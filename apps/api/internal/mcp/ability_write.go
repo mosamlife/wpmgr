@@ -359,7 +359,8 @@ type checkedPrecheck struct {
 	media []pageMediaFact
 	// builder is what the card shows of the page builder that builds the
 	// page (verifyBuilderPageCreatePrecheck); nil for a WordPress editor.
-	builder *PageCardBuilder
+	builder  *PageCardBuilder
+	template *PageCardTemplate
 }
 
 // precheckDigestsWellFormed: the answer says valid and its digests have
@@ -589,7 +590,7 @@ func (s *Service) runSiteAbilityWrite(ctx context.Context, auth AuthorizedReques
 					meta: map[string]any{"code": refusal.Code},
 				}
 			}
-			return "", sitePrecheckRefusal(AbilityPageCreate, refusal)
+			return "", sitePrecheckRefusal(AbilityPageCreate, refusal, humantext.CapRunes(humantext.Clean(site.row.Name), siteLabelRunes))
 		}
 		return "", refuse(reasonSiteUnreachable, domain.Unavailable(ErrCodeSiteUnreachable,
 			msgSiteUnreachable).WithDetails(map[string]any{"retryable": true}))
@@ -757,6 +758,8 @@ func pageCreateFloorRefusal(agentVersion string, input []byte) *toolRefusal {
 	}
 	msg := msgAbilityLayoutOutdated
 	switch floor {
+	case agentcmd.MinAgentVersionForThemeTemplateCreate:
+		msg = "Headers and footers need WPMgr agent " + floor + " or later. Update the agent. Nothing was asked."
 	case agentcmd.MinAgentVersionForBuilderAdapters:
 		msg = msgAbilityBuilderOutdated
 	case agentcmd.MinAgentVersionForDesignedPages:
@@ -821,7 +824,10 @@ func buildAbilityRequestFacts(auth AuthorizedRequest, row sqlc.Site, host string
 	if facts.usesLayout {
 		f.copyVersion = AbilityCardCopyVersionLayout
 	}
-	card, err := pageCardFactsJSON(pc.media, pc.builder, facts.design, facts.pageFrame)
+	if facts.templateType != "" && pc.template == nil {
+		return abilityRequestFacts{}, fmt.Errorf("template precheck facts are missing")
+	}
+	card, err := pageCardFactsJSON(pc.media, pc.builder, facts.design, facts.pageFrame, pc.template)
 	if err != nil {
 		return abilityRequestFacts{}, err
 	}

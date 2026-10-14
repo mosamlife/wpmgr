@@ -1982,6 +1982,24 @@ func (s *AbilityRequest) Validate() error {
 		})
 	}
 	if err := func() error {
+		if value, ok := s.PageTemplate.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "page_template",
+			Error: err,
+		})
+	}
+	if err := func() error {
 		if value, ok := s.PageEdit.Get(); ok {
 			if err := func() error {
 				if err := value.Validate(); err != nil {
@@ -2524,6 +2542,266 @@ func (s *AbilityRequestPageOutline) Validate() error {
 	return nil
 }
 
+func (s *AbilityRequestPageTemplate) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Type.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "type",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if err := s.ShowsOn.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "shows_on",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if s.RuleTitles == nil {
+			return errors.New("nil is invalid value")
+		}
+		if err := (validate.Array{
+			MinLength:    0,
+			MinLengthSet: false,
+			MaxLength:    20,
+			MaxLengthSet: true,
+		}).ValidateLength(len(s.RuleTitles)); err != nil {
+			return errors.Wrap(err, "array")
+		}
+		var failures []validate.FieldError
+		for i, elem := range s.RuleTitles {
+			if err := func() error {
+				if err := elem.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				failures = append(failures, validate.FieldError{
+					Name:  fmt.Sprintf("[%d]", i),
+					Error: err,
+				})
+			}
+		}
+		if len(failures) > 0 {
+			return &validate.Error{Fields: failures}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "rule_titles",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if s.AlsoLive == nil {
+			return nil // null
+		}
+		if err := (validate.Array{
+			MinLength:    0,
+			MinLengthSet: false,
+			MaxLength:    5,
+			MaxLengthSet: true,
+		}).ValidateLength(len(s.AlsoLive)); err != nil {
+			return errors.Wrap(err, "array")
+		}
+		var failures []validate.FieldError
+		for i, elem := range s.AlsoLive {
+			if err := func() error {
+				if err := elem.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				failures = append(failures, validate.FieldError{
+					Name:  fmt.Sprintf("[%d]", i),
+					Error: err,
+				})
+			}
+		}
+		if len(failures) > 0 {
+			return &validate.Error{Fields: failures}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "also_live",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s *AbilityRequestPageTemplateAlsoLiveItem) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := (validate.Int{
+			MinSet:        true,
+			Min:           1,
+			MaxSet:        false,
+			Max:           0,
+			MinExclusive:  false,
+			MaxExclusive:  false,
+			MultipleOfSet: false,
+			MultipleOf:    0,
+			Pattern:       nil,
+		}).Validate(int64(s.ID)); err != nil {
+			return errors.Wrap(err, "int")
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "id",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if s.ShowsOn == nil {
+			return nil // null
+		}
+		if err := (validate.Array{
+			MinLength:    0,
+			MinLengthSet: false,
+			MaxLength:    20,
+			MaxLengthSet: true,
+		}).ValidateLength(len(s.ShowsOn)); err != nil {
+			return errors.Wrap(err, "array")
+		}
+		var failures []validate.FieldError
+		for i, elem := range s.ShowsOn {
+			if err := func() error {
+				if err := (validate.String{
+					MinLength:     0,
+					MinLengthSet:  false,
+					MaxLength:     0,
+					MaxLengthSet:  false,
+					Email:         false,
+					Hostname:      false,
+					Regex:         regexMap["^(include|exclude)(/[a-z0-9_-]{1,64}){1,2}(/[1-9][0-9]{0,19})?$"],
+					MinNumeric:    0,
+					MinNumericSet: false,
+					MaxNumeric:    0,
+					MaxNumericSet: false,
+				}).Validate(string(elem)); err != nil {
+					return errors.Wrap(err, "string")
+				}
+				return nil
+			}(); err != nil {
+				failures = append(failures, validate.FieldError{
+					Name:  fmt.Sprintf("[%d]", i),
+					Error: err,
+				})
+			}
+		}
+		if len(failures) > 0 {
+			return &validate.Error{Fields: failures}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "shows_on",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if value, ok := s.ShowsOnProblem.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "shows_on_problem",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) Validate() error {
+	switch s {
+	case "unreadable":
+		return nil
+	case "too_many":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s *AbilityRequestPageTemplateRuleTitlesItem) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := (validate.Int{
+			MinSet:        true,
+			Min:           1,
+			MaxSet:        false,
+			Max:           0,
+			MinExclusive:  false,
+			MaxExclusive:  false,
+			MultipleOfSet: false,
+			MultipleOf:    0,
+			Pattern:       nil,
+		}).Validate(int64(s.ID)); err != nil {
+			return errors.Wrap(err, "int")
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "id",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s AbilityRequestPageTemplateType) Validate() error {
+	switch s {
+	case "header":
+		return nil
+	case "footer":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
 func (s AbilityRequestState) Validate() error {
 	switch s {
 	case "pending":
@@ -2549,6 +2827,54 @@ func (s AbilityRequestState) Validate() error {
 	default:
 		return errors.Errorf("invalid value: %v", s)
 	}
+}
+
+func (s AbilityRequestTemplateRules) Validate() error {
+	alias := ([]string)(s)
+	if alias == nil {
+		return errors.New("nil is invalid value")
+	}
+	if err := (validate.Array{
+		MinLength:    0,
+		MinLengthSet: false,
+		MaxLength:    20,
+		MaxLengthSet: true,
+	}).ValidateLength(len(alias)); err != nil {
+		return errors.Wrap(err, "array")
+	}
+	if err := validate.UniqueItems(alias); err != nil {
+		return errors.Wrap(err, "array")
+	}
+	var failures []validate.FieldError
+	for i, elem := range alias {
+		if err := func() error {
+			if err := (validate.String{
+				MinLength:     0,
+				MinLengthSet:  false,
+				MaxLength:     0,
+				MaxLengthSet:  false,
+				Email:         false,
+				Hostname:      false,
+				Regex:         regexMap["^(include|exclude)(/[a-z0-9_-]{1,64}){1,2}(/[1-9][0-9]{0,19})?$"],
+				MinNumeric:    0,
+				MinNumericSet: false,
+				MaxNumeric:    0,
+				MaxNumericSet: false,
+			}).Validate(string(elem)); err != nil {
+				return errors.Wrap(err, "string")
+			}
+			return nil
+		}(); err != nil {
+			failures = append(failures, validate.FieldError{
+				Name:  fmt.Sprintf("[%d]", i),
+				Error: err,
+			})
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
 }
 
 func (s AbilityRequestUndoCode) Validate() error {

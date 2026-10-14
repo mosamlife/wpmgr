@@ -166,6 +166,8 @@ type RequestDTO struct {
 	// WordPress editor, and for every other ability). Version came from the
 	// site.
 	PageBuilder *PageBuilderDTO `json:"page_builder"`
+	// PageTemplate is the template evidence retained in the approved card.
+	PageTemplate *PageTemplateDTO `json:"page_template"`
 	// PageEdit is a wpmgr/page-edit request's card (null for every other
 	// ability): the post, the page builder, each change, and the page's
 	// outline after the edit, as the control plane checked them against
@@ -309,6 +311,7 @@ func toDTO(r sqlc.AssistantAbilityRequest, withDigest bool, agentVersion string,
 		ChangeKindName:     changeKindNameOf(r),
 		AskReason:          askReasonOf(r),
 		PageBuilder:        pageBuilderFor(r),
+		PageTemplate:       pageTemplateFor(r),
 		PageEdit:           pageEditFor(r),
 	}
 	if withDigest {

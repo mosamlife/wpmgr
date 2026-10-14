@@ -4873,6 +4873,10 @@ export type AbilityRequest = {
    */
   page_builder?: AbilityRequestPageBuilder;
   /**
+   * Template type, places and display facts checked at precheck and retained in the approval card. Titles are cleaned plain site text.
+   */
+  page_template?: AbilityRequestPageTemplate;
+  /**
    * The card of a wpmgr/page-edit request: the post, the page
    * builder, each change and the page's outline after the edit, as
    * WPMgr checked them against the site's precheck. Null for every
@@ -4882,6 +4886,33 @@ export type AbilityRequest = {
    */
   page_edit?: AbilityRequestPageEdit;
 };
+
+export type AbilityRequestPageTemplate = {
+  type: "header" | "footer";
+  shows_on: AbilityRequestTemplateRules;
+  rule_titles: Array<{
+    id: number;
+    /**
+     * Cleaned plain site text.
+     */
+    title: string;
+  }>;
+  also_live: Array<{
+    id: number;
+    /**
+     * Cleaned plain site text.
+     */
+    title: string;
+    shows_on: Array<string> | null;
+    shows_on_problem: "unreadable" | "too_many" | null;
+  }> | null;
+  /**
+   * Fixed guidance with only a validated display rule from the site.
+   */
+  refusal_message: string | null;
+};
+
+export type AbilityRequestTemplateRules = Array<string>;
 
 /**
  * A wpmgr/page-edit card. Every value under a `from_the_site` member

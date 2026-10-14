@@ -5558,6 +5558,12 @@ func (s *AbilityRequest) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.PageTemplate.Set {
+			e.FieldStart("page_template")
+			s.PageTemplate.Encode(e)
+		}
+	}
+	{
 		if s.PageEdit.Set {
 			e.FieldStart("page_edit")
 			s.PageEdit.Encode(e)
@@ -5565,7 +5571,7 @@ func (s *AbilityRequest) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAbilityRequest = [44]string{
+var jsonFieldsNameOfAbilityRequest = [45]string{
 	0:  "id",
 	1:  "site_id",
 	2:  "ability_name",
@@ -5609,7 +5615,8 @@ var jsonFieldsNameOfAbilityRequest = [44]string{
 	40: "change_kind_name",
 	41: "ask_reason",
 	42: "page_builder",
-	43: "page_edit",
+	43: "page_template",
+	44: "page_edit",
 }
 
 // Decode decodes AbilityRequest from json.
@@ -6078,6 +6085,16 @@ func (s *AbilityRequest) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"page_builder\"")
+			}
+		case "page_template":
+			if err := func() error {
+				s.PageTemplate.Reset()
+				if err := s.PageTemplate.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"page_template\"")
 			}
 		case "page_edit":
 			if err := func() error {
@@ -9703,6 +9720,556 @@ func (s *AbilityRequestPageOutlineNodeFromTheSite) UnmarshalJSON(data []byte) er
 	return s.Decode(d)
 }
 
+// Encode implements json.Marshaler.
+func (s *AbilityRequestPageTemplate) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AbilityRequestPageTemplate) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("type")
+		s.Type.Encode(e)
+	}
+	{
+		e.FieldStart("shows_on")
+		s.ShowsOn.Encode(e)
+	}
+	{
+		e.FieldStart("rule_titles")
+		e.ArrStart()
+		for _, elem := range s.RuleTitles {
+			elem.Encode(e)
+		}
+		e.ArrEnd()
+	}
+	{
+		e.FieldStart("also_live")
+		if s.AlsoLive == nil {
+			e.Null()
+		} else {
+			e.ArrStart()
+			for _, elem := range s.AlsoLive {
+				elem.Encode(e)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
+		e.FieldStart("refusal_message")
+		s.RefusalMessage.Encode(e)
+	}
+}
+
+var jsonFieldsNameOfAbilityRequestPageTemplate = [5]string{
+	0: "type",
+	1: "shows_on",
+	2: "rule_titles",
+	3: "also_live",
+	4: "refusal_message",
+}
+
+// Decode decodes AbilityRequestPageTemplate from json.
+func (s *AbilityRequestPageTemplate) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AbilityRequestPageTemplate to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "type":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				if err := s.Type.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"type\"")
+			}
+		case "shows_on":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				if err := s.ShowsOn.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"shows_on\"")
+			}
+		case "rule_titles":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				s.RuleTitles = make([]AbilityRequestPageTemplateRuleTitlesItem, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem AbilityRequestPageTemplateRuleTitlesItem
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.RuleTitles = append(s.RuleTitles, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"rule_titles\"")
+			}
+		case "also_live":
+			requiredBitSet[0] |= 1 << 3
+			if err := func() error {
+				switch tt := d.Next(); tt {
+				case jx.Null:
+					if err := d.Skip(); err != nil {
+						return err
+					}
+				default:
+					s.AlsoLive = make([]AbilityRequestPageTemplateAlsoLiveItem, 0)
+					if err := d.Arr(func(d *jx.Decoder) error {
+						var elem AbilityRequestPageTemplateAlsoLiveItem
+						if err := elem.Decode(d); err != nil {
+							return err
+						}
+						s.AlsoLive = append(s.AlsoLive, elem)
+						return nil
+					}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"also_live\"")
+			}
+		case "refusal_message":
+			requiredBitSet[0] |= 1 << 4
+			if err := func() error {
+				if err := s.RefusalMessage.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"refusal_message\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AbilityRequestPageTemplate")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00011111,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAbilityRequestPageTemplate) {
+					name = jsonFieldsNameOfAbilityRequestPageTemplate[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AbilityRequestPageTemplate) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AbilityRequestPageTemplate) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AbilityRequestPageTemplateAlsoLiveItem) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AbilityRequestPageTemplateAlsoLiveItem) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("id")
+		e.Int64(s.ID)
+	}
+	{
+		e.FieldStart("title")
+		e.Str(s.Title)
+	}
+	{
+		e.FieldStart("shows_on")
+		if s.ShowsOn == nil {
+			e.Null()
+		} else {
+			e.ArrStart()
+			for _, elem := range s.ShowsOn {
+				e.Str(elem)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
+		e.FieldStart("shows_on_problem")
+		s.ShowsOnProblem.Encode(e)
+	}
+}
+
+var jsonFieldsNameOfAbilityRequestPageTemplateAlsoLiveItem = [4]string{
+	0: "id",
+	1: "title",
+	2: "shows_on",
+	3: "shows_on_problem",
+}
+
+// Decode decodes AbilityRequestPageTemplateAlsoLiveItem from json.
+func (s *AbilityRequestPageTemplateAlsoLiveItem) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AbilityRequestPageTemplateAlsoLiveItem to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "id":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := d.Int64()
+				s.ID = int64(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"id\"")
+			}
+		case "title":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Str()
+				s.Title = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"title\"")
+			}
+		case "shows_on":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				switch tt := d.Next(); tt {
+				case jx.Null:
+					if err := d.Skip(); err != nil {
+						return err
+					}
+				default:
+					s.ShowsOn = make([]string, 0)
+					if err := d.Arr(func(d *jx.Decoder) error {
+						var elem string
+						v, err := d.Str()
+						elem = string(v)
+						if err != nil {
+							return err
+						}
+						s.ShowsOn = append(s.ShowsOn, elem)
+						return nil
+					}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"shows_on\"")
+			}
+		case "shows_on_problem":
+			requiredBitSet[0] |= 1 << 3
+			if err := func() error {
+				if err := s.ShowsOnProblem.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"shows_on_problem\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AbilityRequestPageTemplateAlsoLiveItem")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00001111,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAbilityRequestPageTemplateAlsoLiveItem) {
+					name = jsonFieldsNameOfAbilityRequestPageTemplateAlsoLiveItem[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AbilityRequestPageTemplateAlsoLiveItem) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AbilityRequestPageTemplateAlsoLiveItem) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem as json.
+func (s AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem from json.
+func (s *AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem(v) {
+	case AbilityRequestPageTemplateAlsoLiveItemShowsOnProblemUnreadable:
+		*s = AbilityRequestPageTemplateAlsoLiveItemShowsOnProblemUnreadable
+	case AbilityRequestPageTemplateAlsoLiveItemShowsOnProblemTooMany:
+		*s = AbilityRequestPageTemplateAlsoLiveItemShowsOnProblemTooMany
+	default:
+		*s = AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AbilityRequestPageTemplateRuleTitlesItem) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AbilityRequestPageTemplateRuleTitlesItem) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("id")
+		e.Int64(s.ID)
+	}
+	{
+		e.FieldStart("title")
+		e.Str(s.Title)
+	}
+}
+
+var jsonFieldsNameOfAbilityRequestPageTemplateRuleTitlesItem = [2]string{
+	0: "id",
+	1: "title",
+}
+
+// Decode decodes AbilityRequestPageTemplateRuleTitlesItem from json.
+func (s *AbilityRequestPageTemplateRuleTitlesItem) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AbilityRequestPageTemplateRuleTitlesItem to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "id":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := d.Int64()
+				s.ID = int64(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"id\"")
+			}
+		case "title":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Str()
+				s.Title = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"title\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AbilityRequestPageTemplateRuleTitlesItem")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000011,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfAbilityRequestPageTemplateRuleTitlesItem) {
+					name = jsonFieldsNameOfAbilityRequestPageTemplateRuleTitlesItem[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AbilityRequestPageTemplateRuleTitlesItem) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AbilityRequestPageTemplateRuleTitlesItem) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AbilityRequestPageTemplateType as json.
+func (s AbilityRequestPageTemplateType) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes AbilityRequestPageTemplateType from json.
+func (s *AbilityRequestPageTemplateType) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AbilityRequestPageTemplateType to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch AbilityRequestPageTemplateType(v) {
+	case AbilityRequestPageTemplateTypeHeader:
+		*s = AbilityRequestPageTemplateTypeHeader
+	case AbilityRequestPageTemplateTypeFooter:
+		*s = AbilityRequestPageTemplateTypeFooter
+	default:
+		*s = AbilityRequestPageTemplateType(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AbilityRequestPageTemplateType) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AbilityRequestPageTemplateType) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes AbilityRequestState as json.
 func (s AbilityRequestState) Encode(e *jx.Encoder) {
 	e.Str(string(s))
@@ -9755,6 +10322,58 @@ func (s AbilityRequestState) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AbilityRequestState) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AbilityRequestTemplateRules as json.
+func (s AbilityRequestTemplateRules) Encode(e *jx.Encoder) {
+	unwrapped := []string(s)
+
+	e.ArrStart()
+	for _, elem := range unwrapped {
+		e.Str(elem)
+	}
+	e.ArrEnd()
+}
+
+// Decode decodes AbilityRequestTemplateRules from json.
+func (s *AbilityRequestTemplateRules) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AbilityRequestTemplateRules to nil")
+	}
+	var unwrapped []string
+	if err := func() error {
+		unwrapped = make([]string, 0)
+		if err := d.Arr(func(d *jx.Decoder) error {
+			var elem string
+			v, err := d.Str()
+			elem = string(v)
+			if err != nil {
+				return err
+			}
+			unwrapped = append(unwrapped, elem)
+			return nil
+		}); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = AbilityRequestTemplateRules(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s AbilityRequestTemplateRules) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AbilityRequestTemplateRules) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -94051,6 +94670,50 @@ func (s *NilAIReadinessCheckReason) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem as json.
+func (o NilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) Encode(e *jx.Encoder) {
+	if o.Null {
+		e.Null()
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem from json.
+func (o *NilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode NilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem
+		o.Value = v
+		o.Null = true
+		return nil
+	}
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s NilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *NilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes AgentMirrorStatusLastAttemptOutcome as json.
 func (o NilAgentMirrorStatusLastAttemptOutcome) Encode(e *jx.Encoder) {
 	if o.Null {
@@ -100211,6 +100874,55 @@ func (s OptNilAbilityRequestPageMediaArray) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptNilAbilityRequestPageMediaArray) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AbilityRequestPageTemplate as json.
+func (o OptNilAbilityRequestPageTemplate) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	if o.Null {
+		e.Null()
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AbilityRequestPageTemplate from json.
+func (o *OptNilAbilityRequestPageTemplate) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptNilAbilityRequestPageTemplate to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v AbilityRequestPageTemplate
+		o.Value = v
+		o.Set = true
+		o.Null = true
+		return nil
+	}
+	o.Set = true
+	o.Null = false
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptNilAbilityRequestPageTemplate) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptNilAbilityRequestPageTemplate) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

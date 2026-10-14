@@ -15,6 +15,7 @@ import (
 )
 
 var regexMap = map[string]ogenregex.Regexp{
+	"^(include|exclude)(/[a-z0-9_-]{1,64}){1,2}(/[1-9][0-9]{0,19})?$": ogenregex.MustCompile("^(include|exclude)(/[a-z0-9_-]{1,64}){1,2}(/[1-9][0-9]{0,19})?$"),
 	"^[A-F0-9]{5}$":                     ogenregex.MustCompile("^[A-F0-9]{5}$"),
 	"^[a-z0-9-]{1,64}$":                 ogenregex.MustCompile("^[a-z0-9-]{1,64}$"),
 	"^[a-z0-9-]{1,64}/[a-z0-9-]{1,64}$": ogenregex.MustCompile("^[a-z0-9-]{1,64}/[a-z0-9-]{1,64}$"),
