@@ -207,15 +207,20 @@ func checkPageEditInput(input []byte) (pageEditFacts, pageCreateRefusal) {
 	top, ok := jsonObjectOf(input)
 	if !ok || !keysExactly(top, []string{"post_id", "base_fingerprint", "operations", "design"},
 		"post_id", "base_fingerprint", "operations") {
-		return pageEditFacts{}, bad
+		if !ok {
+			return pageEditFacts{}, pageInputRefusal("", "input", "must be a JSON object")
+		}
+		failure := pageInputFieldsRefusal(input, "", []string{"post_id", "base_fingerprint", "operations", "design"},
+			"post_id", "base_fingerprint", "operations")
+		return pageEditFacts{}, pageInputRefusal(failure.Path, failure.Key, failure.Reason)
 	}
 	var f pageEditFacts
 	if f.postID, ok = jsonIntOf(top["post_id"]); !ok || f.postID < 1 {
-		return pageEditFacts{}, bad
+		return pageEditFacts{}, pageInputRefusal("", "post_id", "must be a positive integer")
 	}
 	if f.baseFingerprint, ok = jsonStringOf(top["base_fingerprint"]); !ok ||
 		!pageEditFingerprintPattern.MatchString(f.baseFingerprint) {
-		return pageEditFacts{}, bad
+		return pageEditFacts{}, pageInputRefusal("", "base_fingerprint", "must be a string of 64 lowercase hexadecimal characters from wpmgr/page-structure")
 	}
 	if raw, has := top["design"]; has {
 		design, problem := validatePageDesign(raw)
@@ -226,7 +231,7 @@ func checkPageEditInput(input []byte) (pageEditFacts, pageCreateRefusal) {
 	}
 	ops, ok := jsonArrayOf(top["operations"])
 	if !ok || len(ops) == 0 || len(ops) > pageEditMaxOps {
-		return pageEditFacts{}, bad
+		return pageEditFacts{}, pageInputRefusal("", "operations", fmt.Sprintf("must be a list of 1 to %d operations", pageEditMaxOps))
 	}
 	named := make(map[string]struct{}, len(ops)*2)
 	f.ops = make([]pageEditOp, 0, len(ops))
@@ -251,9 +256,9 @@ func checkPageEditInput(input []byte) (pageEditFacts, pageCreateRefusal) {
 		if len(nativeFailures) > 0 {
 			continue
 		}
-		op, ok := pageEditOperation(raw)
-		if !ok {
-			return pageEditFacts{}, bad
+		op, failure := checkPageEditOperation(raw, fmt.Sprintf("operations[%d]", i))
+		if failure != nil {
+			return pageEditFacts{}, pageInputRefusal(failure.Path, failure.Key, failure.Reason)
 		}
 		refs := op.refs()
 		if op.Op == "add_native" {
@@ -337,99 +342,120 @@ func pageEditMixedOperations(ops []pageEditOp, kinds, parents map[string]string)
 
 // pageEditOperation is one operation in its normalised form, or ok=false.
 func pageEditOperation(raw json.RawMessage) (pageEditOp, bool) {
+	op, failure := checkPageEditOperation(raw, "")
+	return op, failure == nil
+}
+
+// checkPageEditOperation keeps the operation grammar's first failure at its
+// address in operations. Reasons contain rule text, never caller values.
+func checkPageEditOperation(raw json.RawMessage, path string) (pageEditOp, *refusalFailure) {
+	fail := func(key, reason string) (pageEditOp, *refusalFailure) {
+		return pageEditOp{}, &refusalFailure{Path: path, Key: key, Reason: reason}
+	}
+	fieldsRefusal := func(allowed []string, required ...string) (pageEditOp, *refusalFailure) {
+		failure := pageInputFieldsRefusal(raw, path, allowed, required...)
+		return pageEditOp{}, &failure
+	}
+	const refReason = "must be a node ref of 1 to 32 letters, digits, underscores or hyphens from wpmgr/page-structure"
+	const opReason = "must be set_text, insert, replace, remove, set_native, move, duplicate or add_native"
+	const fieldReason = "must be text, alt, caption, url or a pattern field path"
+	outlineReason := fmt.Sprintf("must be a list of 1 to %d nodes following the page outline grammar", pageEditMaxOutlinePerOp)
 	o, ok := jsonObjectOf(raw)
 	if !ok {
-		return pageEditOp{}, false
+		return fail("input", "must be a JSON object")
 	}
 	name, ok := jsonStringOf(o["op"])
 	if !ok {
-		return pageEditOp{}, false
+		return fail("op", opReason)
 	}
 	parsed, valid := phpDecodeDocument(raw, pageEditMaxDepth, true)
 	if !valid {
-		return pageEditOp{}, false
+		return fail("input", "must be valid JSON within the input depth limit")
 	}
 	op := pageEditOp{Op: name, Parsed: parsed}
 	switch name {
 	case pageEditOpSetText:
 		if !keysExactly(o, []string{"op", "ref", "field", "text"}, "op", "ref", "field", "text") {
-			return pageEditOp{}, false
+			return fieldsRefusal([]string{"op", "ref", "field", "text"}, "op", "ref", "field", "text")
 		}
 		if op.Field, ok = jsonStringOf(o["field"]); !ok {
-			return pageEditOp{}, false
+			return fail("field", fieldReason)
 		}
 		if op.Text, ok = jsonStringOf(o["text"]); !ok || utf8.RuneCountInString(op.Text) > pageEditMaxTextChars {
-			return pageEditOp{}, false
+			return fail("text", fmt.Sprintf("must be a string of at most %d characters", pageEditMaxTextChars))
 		}
 		if !pageEditFieldTextUsable(op.Field, op.Text) {
-			return pageEditOp{}, false
+			if !stringIn(op.Field, []string{pageEditFieldText, pageEditFieldAlt, pageEditFieldCaption, pageEditFieldURL}) && !pageEditPathPattern.MatchString(op.Field) {
+				return fail("field", fieldReason)
+			}
+			return fail("text", "must follow the plain text, length and link rules for the selected field")
 		}
 		if op.Ref, ok = pageEditRef(o["ref"]); !ok {
-			return pageEditOp{}, false
+			return fail("ref", refReason)
 		}
-		return op, true
+		return op, nil
 	case pageEditOpInsert:
 		if op.Anchor, ok = pageEditAnchor(o, "after", "before", pageEditAnchorInto); !ok {
-			return pageEditOp{}, false
+			return fail("after", "send exactly one of after, before or into")
 		}
 		_, hasPosition := o["position"]
 		if op.Anchor != pageEditAnchorInto && hasPosition {
-			return pageEditOp{}, false
+			return fail("position", "is accepted only with into")
 		}
 		allowed := []string{"op", op.Anchor, "outline"}
 		if op.Anchor == pageEditAnchorInto {
 			allowed = []string{"op", pageEditAnchorInto, "position", "outline"}
 		}
 		if !keysExactly(o, allowed, "op", op.Anchor, "outline") {
-			return pageEditOp{}, false
+			return fieldsRefusal(allowed, "op", op.Anchor, "outline")
 		}
 		if op.AnchorRef, ok = pageEditRef(o[op.Anchor]); !ok {
-			return pageEditOp{}, false
+			return fail(op.Anchor, refReason)
 		}
 		if hasPosition {
 			op.Position, ok = jsonStringOf(o["position"])
 			if !ok || (op.Position != pageEditPositionFirst && op.Position != pageEditPositionLast) {
-				return pageEditOp{}, false
+				return fail("position", "must be first or last")
 			}
 		}
 		if op.Outline, ok = pageEditOutline(o["outline"]); !ok {
-			return pageEditOp{}, false
+			return fail("outline", outlineReason)
 		}
-		return op, true
+		return op, nil
 	case pageEditOpReplace:
 		if !keysExactly(o, []string{"op", "ref", "outline"}, "op", "ref", "outline") {
-			return pageEditOp{}, false
+			return fieldsRefusal([]string{"op", "ref", "outline"}, "op", "ref", "outline")
 		}
 		if op.Ref, ok = pageEditRef(o["ref"]); !ok {
-			return pageEditOp{}, false
+			return fail("ref", refReason)
 		}
 		if op.Outline, ok = pageEditOutline(o["outline"]); !ok {
-			return pageEditOp{}, false
+			return fail("outline", outlineReason)
 		}
-		return op, true
+		return op, nil
 	case pageEditOpRemove:
 		if !keysExactly(o, []string{"op", "ref"}, "op", "ref") {
-			return pageEditOp{}, false
+			return fieldsRefusal([]string{"op", "ref"}, "op", "ref")
 		}
 		if op.Ref, ok = pageEditRef(o["ref"]); !ok {
-			return pageEditOp{}, false
+			return fail("ref", refReason)
 		}
-		return op, true
+		return op, nil
 	case "set_native":
 		if !keysExactly(o, []string{"op", "ref", "settings"}, "op", "ref", "settings") {
-			return pageEditOp{}, false
+			return fieldsRefusal([]string{"op", "ref", "settings"}, "op", "ref", "settings")
 		}
 		if op.Ref, ok = pageEditRef(o["ref"]); !ok {
-			return pageEditOp{}, false
+			return fail("ref", refReason)
 		}
 		op.Settings = o["settings"]
 		if !pageEditNativeInputSettings(op.Settings) {
-			return pageEditOp{}, false
+			return fail("settings", "must be an object of native settings")
 		}
-		return op, true
+		return op, nil
 	case pageEditOpMove, "duplicate", "add_native":
 		if op.Anchor, ok = pageEditAnchor(o, "after", "before", "into"); !ok {
-			return pageEditOp{}, false
+			return fail("after", "send exactly one of after, before or into")
 		}
 		allowed := []string{"op", op.Anchor}
 		required := []string{"op", op.Anchor}
@@ -444,33 +470,33 @@ func pageEditOperation(raw json.RawMessage) (pageEditOp, bool) {
 			required = append(required, "ref")
 		}
 		if !keysExactly(o, allowed, required...) {
-			return pageEditOp{}, false
+			return fieldsRefusal(allowed, required...)
 		}
 		if name != "add_native" {
 			if op.Ref, ok = pageEditRef(o["ref"]); !ok {
-				return pageEditOp{}, false
+				return fail("ref", refReason)
 			}
 		}
 		if op.AnchorRef, ok = pageEditRef(o[op.Anchor]); !ok {
-			return pageEditOp{}, false
+			return fail(op.Anchor, refReason)
 		}
 		if raw, has := o["position"]; has {
 			if op.Position, ok = jsonStringOf(raw); !ok || (op.Position != "first" && op.Position != "last") {
-				return pageEditOp{}, false
+				return fail("position", "must be first or last")
 			}
 		}
 		if name == "add_native" {
 			if op.Widget, ok = jsonStringOf(o["widget"]); !ok || !nativeWidgetPattern.MatchString(op.Widget) {
-				return pageEditOp{}, false
+				return fail("widget", "must be a widget name starting with a lowercase letter, followed by up to 63 lowercase letters, digits, underscores or hyphens")
 			}
 			op.Settings = o["settings"]
 			if !pageEditNativeInputSettings(op.Settings) {
-				return pageEditOp{}, false
+				return fail("settings", "must be an object of native settings")
 			}
 		}
-		return op, true
+		return op, nil
 	}
-	return pageEditOp{}, false
+	return fail("op", opReason)
 }
 
 // pageEditAnchor is the one anchor field an operation names, of anchors.

@@ -257,10 +257,12 @@ func pageCreateRefusalSummary(code string) string {
 	return msgAbilityLayoutInput
 }
 
-// pageCreateRefusalSummaryOf is the summary of a refusal that may be of the
-// outline: a value of the outline that the grammar does not accept is not a
-// value of the design.
+// pageCreateRefusalSummaryOf distinguishes structural input, outline and design
+// failures so the summary names the part that was refused.
 func pageCreateRefusalSummaryOf(r pageCreateRefusal) string {
+	if r.Input {
+		return "the input has a field or value the page grammar does not accept, so nothing was asked"
+	}
 	if r.Outline && r.Code == pageCreateBadInput {
 		return msgAbilityOutlineValue
 	}
