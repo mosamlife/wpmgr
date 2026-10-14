@@ -120,7 +120,7 @@ var nativeRefusalHints = map[string]string{
 	"widget_schema_unreadable":       "Ask the person to check this widget on the site, then read wpmgr/elementor-widget-schema again.",
 	"elementor_controls_unavailable": "Ask the person to update to a newer Elementor for native widget edits, or use the non-native page edit operations.",
 	"control_not_found":              "Read the widget's skeleton with wpmgr/elementor-widget-schema, then request only the control ids it lists.",
-	"native_settings_invalid":        "Read the widget's schema with wpmgr/elementor-widget-schema in controls mode for the failing keys, then send the stored shapes it describes.",
+	"native_settings_invalid":        "Read wpmgr/elementor-widget-schema with widget; send the ids of the controls you are writing in controls and follow write_rules, since defaults are stored shapes. Write scalar values as strings, numbers as numeric strings, and flags in the control's exact shape; null only deletes a top-level settings key.",
 	"native_designed_node":           "Read wpmgr/page-structure and edit this designed node through its design or patterns rather than native settings or duplication.",
 	"native_node_shape":              "Read wpmgr/page-structure again; this widget has a stored shape native editing cannot safely change.",
 	"native_duplicate_refused":       "Choose a widget subtree without protected content, or add a new widget instead.",

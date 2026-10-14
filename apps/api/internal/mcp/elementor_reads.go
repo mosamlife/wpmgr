@@ -27,6 +27,9 @@ var (
 
 const elementorIDSchema = `{"type":"string","pattern":"^[a-zA-Z_][a-zA-Z0-9_-]{0,127}$","maxLength":128}`
 
+// Write guidance is owned by the control plane and added after site projection.
+const nativeWidgetWriteRules = `Control default values are stored shapes. WPMgr writes only the controls it supports for this widget and refuses any other key. Use string leaves, unique keys, nonempty nested maps, arrays for lists, and null only to delete a top-level settings key. number: decimal numeric strings, optional minus, up to six integer and four fractional digits, no leading zeroes except zero. slider: exactly unit and size, an offered unit, a numeric string size; no sizes. dimensions: exactly unit, top, right, bottom, left, isLinked; unit "px" when offered, numeric sides without minus, isLinked "yes" or "". color: upper-case #RRGGBB, transparent, or bounded rgba without spaces. select/choose/select2: offered option strings; a multiple select2 takes an array. switcher/popover_toggle: the control's return_value ("yes" when a switcher names none), or "" for off. text/textarea: bounded plain strings. wysiwyg: permitted rich text, only for text-editor.editor. url: exactly url, is_external, nofollow; a permitted link, flags "on" or "". media: exactly id and url; a positive numeric string id and its verified site-library image URL. icons: exactly value and library; library fa-solid, fa-regular, fa-brands or eicons, with a matching class such as "fas fa-star". font: 1 to 60 letters, digits and spaces. box_shadow/text_shadow: exactly horizontal, vertical, blur, color, plus spread for box_shadow; whole numeric strings of one to three digits, optional minus, no leading zeroes except zero; blur not negative. repeater: an array of field maps, each row with a unique seven-character lower-case hex _id. A grouped control such as typography_font_size needs its group on: typography_typography="custom" in this edit or already on the widget.`
+
 var elementorWidgetsInputSchema = json.RawMessage(`{"type":"object","properties":{"category":` + elementorIDSchema + `,"search":{"type":"string","maxLength":128}},"additionalProperties":false}`)
 var elementorWidgetSchemaInputSchema = json.RawMessage(`{"type":"object","properties":{"widget":` + elementorIDSchema + `,"controls":{"type":"array","maxItems":128,"uniqueItems":true,"items":` + elementorIDSchema + `}},"required":["widget"],"additionalProperties":false}`)
 
@@ -137,6 +140,7 @@ var elementorCatalogueShape = readObject(map[string]*readShape{
 	"widgets": readList(readObject(map[string]*readShape{"name": readID, "title": readText, "categories": readList(readText), "pro": readBool, "atomic": readBool, "usable": readBool})),
 })
 
+// This allowlist validates site fields only; write_rules is added locally.
 func elementorSchemaShape(mode string) *readShape {
 	fields := map[string]*readShape{"builder": {token: regexp.MustCompile(`^elementor$`)}, "builder_version": readText, "truncated": readBool, "widget": readID, "atomic": readBool, "usable": readBool, "mode": {token: regexp.MustCompile(`^(?:skeleton|controls)$`)}}
 	if mode == "skeleton" {
@@ -371,6 +375,13 @@ func fenceElementorRead(name string, raw []byte, maxBytes int) (json.RawMessage,
 	b, err := json.Marshal(out)
 	if err != nil || len(b) > maxBytes {
 		return json.RawMessage(`null`), true
+	}
+	if name == AbilityElementorWidgetSchema {
+		m["write_rules"] = nativeWidgetWriteRules
+		b, err = json.Marshal(out)
+		if err != nil {
+			return json.RawMessage(`null`), true
+		}
 	}
 	return b, false
 }
