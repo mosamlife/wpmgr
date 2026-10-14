@@ -23,7 +23,8 @@ if (!defined('ABSPATH')) {
  *   - a published page or post with no password: editable false, and no
  *     node offers any field.
  *
- * Either way the post is a page or a post whose layout the adapter holds.
+ * Either way the post is a page, post or Elementor header/footer library
+ * template whose layout the adapter holds.
  * Every other post, a missing one included, is refused with the one code
  * post_not_readable; its detail is a token from DETAILS for the
  * person-visible record and never text from the site.
@@ -33,6 +34,9 @@ if (!defined('ABSPATH')) {
  *   {post_id, builder, builder_version, format, status, editable,
  *    open_state, element_cache_active, base_fingerprint, node_count,
  *    truncated, nodes}
+ *
+ * A template also carries template: header or footer in the head. Its
+ * fingerprint includes the stored conditions meta through editDescriptor(true).
  *
  * element_cache_active is true when the builder would serve a cached render
  * of the page in place of its stored document, so an edit may not show on the
@@ -50,7 +54,7 @@ if (!defined('ABSPATH')) {
  * read with core's wp_get_post_autosave() and wp_check_post_lock() only,
  * in the order wpmgr/page-edit checks them, and page-edit checks again
  * before it writes. base_fingerprint is the page's builder_document_v1 and the nodes
- * are the projection of the stored tree, both from one SQL read of the post
+ * are the projection of the stored tree, both from SQL reads of the post
  * and its descriptor rows; the builder's document API is never asked, so
  * the read writes nothing. With a node ref the nodes are that node's
  * subtree (an unknown ref is node_not_found). The nodes are cut to
@@ -67,7 +71,7 @@ final class BuilderPageStructure
     /** The format the answer reads the page in. */
     public const FORMAT_CLASSIC = 'classic';
 
-    /** The post types a structure is read for. */
+    /** Ordinary post types; Elementor library templates additionally require a header/footer type row. */
     public const POST_TYPES = ['page', 'post'];
 
     /**
@@ -192,6 +196,14 @@ final class BuilderPageStructure
         $keys = $a->descriptor()->exactKeys;
         try {
             $stored = BuilderDocumentFingerprint::read($postId, $keys);
+            if ($a instanceof ElementorAdapter && ($stored['post']['post_type'] ?? null) === 'elementor_library'
+                && in_array($stored['rows'][ElementorDocument::KEY_TEMPLATE_TYPE] ?? [], [['header'], ['footer']], true)) {
+                $keys = $a->editDescriptor(true)->exactKeys;
+                $stored = BuilderDocumentFingerprint::read($postId, $keys);
+                if ($stored !== null && $stored['post']['post_type'] !== 'elementor_library') {
+                    return self::notReadable('post_type');
+                }
+            }
         } catch (\Throwable $e) {
             return self::notReadable('unreadable');
         }
@@ -215,7 +227,14 @@ final class BuilderPageStructure
         } else {
             return self::notReadable('not_published');
         }
-        if (!in_array($post['post_type'], self::POST_TYPES, true)) {
+        $template = null;
+        if ($a instanceof ElementorAdapter && $post['post_type'] === 'elementor_library') {
+            $types = $stored['rows'][ElementorDocument::KEY_TEMPLATE_TYPE] ?? [];
+            if (count($types) === 1 && in_array($types[0], ThemeTemplateCreate::TYPES, true)) {
+                $template = $types[0];
+            }
+        }
+        if (!in_array($post['post_type'], self::POST_TYPES, true) && $template === null) {
             return self::notReadable('post_type');
         }
         $owns = $a->owns($postId);
@@ -254,6 +273,9 @@ final class BuilderPageStructure
             'element_cache_active' => $a->servesCachedRender($postId),
             'base_fingerprint'     => $baseFp,
         ];
+        if ($template !== null) {
+            $head['template'] = $template;
+        }
         try {
             // The head and the nodes envelope join into one object: the
             // head's closing brace and the envelope's opening one become a

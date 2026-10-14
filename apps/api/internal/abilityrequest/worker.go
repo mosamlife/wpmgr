@@ -438,6 +438,9 @@ func agentFloorFor(r sqlc.AssistantAbilityRequest) string {
 	case mcp.AbilityPageCreate:
 		return mcp.PageCreateAgentFloor([]byte(r.InputJson))
 	case mcp.AbilityPageEdit:
+		if card, ok := mcp.ReadPageEditCardFacts(r.CardFacts); ok && card.Template != nil {
+			return agentcmd.MinAgentVersionForThemeTemplateCreate
+		}
 		return mcp.PageEditAgentFloor([]byte(r.InputJson))
 	}
 	return agentcmd.MinAgentVersionForPageCreate
@@ -558,7 +561,7 @@ func (s *Service) dispatch(ctx context.Context, a DispatchArgs) error {
 	})
 	cancel()
 	// (5) The outcome.
-	return s.recordOutcome(ctx, p, a, classifyWrite(plan.row.AbilityName, resp, sendErr, s.now()))
+	return s.recordOutcome(ctx, p, a, outcomeMatchingApproval(plan.row, classifyWrite(plan.row.AbilityName, resp, sendErr, s.now())))
 }
 
 // writeExpected is write's expected{}: the preview digest for page-create,
@@ -791,6 +794,7 @@ func (s *Service) reserve(ctx context.Context, p domain.Principal, a DispatchArg
 
 // writeOutcome is what one write (or one ledger read) settled.
 type writeOutcome struct {
+	template      *createdTemplateIdentity
 	outcome       string // "" means still unknown: mark outcome_unknown
 	code          *string
 	notSentReason *string
@@ -923,10 +927,15 @@ func outcomeFromStoredResult(ability string, raw json.RawMessage, now time.Time)
 		return writeOutcome{}, false
 	}
 	if r.OK && r.Outcome == "applied" && ability == mcp.AbilityPageEdit {
-		return appliedEditOutcome(r.SnapshotSHA256, now), true
+		oc := appliedTemplateEditOutcome(r.SnapshotSHA256, raw, now)
+		return oc, oc.outcome != ""
 	}
 	if r.OK && r.Outcome == "created" {
-		return createdOutcome(r.PostID, now), true
+		if ability != mcp.AbilityPageCreate {
+			return createdOutcome(r.PostID, now), true
+		}
+		oc := createdTemplateOutcome(r.PostID, raw, now)
+		return oc, oc.outcome != ""
 	}
 	if r.OK && r.Outcome == "updated" {
 		return appliedOutcome(now), true
@@ -952,12 +961,15 @@ func classifyWriteAnswer(ability string, resp agentcmd.AbilityRunResponse, err e
 	if err == nil {
 		switch resp.Outcome {
 		case "created":
-			return createdOutcome(resp.PostID, now)
+			if ability != mcp.AbilityPageCreate {
+				return createdOutcome(resp.PostID, now)
+			}
+			return createdTemplateOutcome(resp.PostID, resp.Raw, now)
 		case "updated":
 			return appliedOutcome(now)
 		case "applied":
 			if ability == mcp.AbilityPageEdit {
-				return appliedEditOutcome(resp.SnapshotSHA256, now)
+				return appliedTemplateEditOutcome(resp.SnapshotSHA256, resp.Raw, now)
 			}
 		case "already_applied":
 			if oc, ok := outcomeFromStored(ability, resp.Result, now); ok {
@@ -1179,7 +1191,7 @@ func (s *Service) resolveOne(ctx context.Context, r sqlc.ScanResolvingAbilityReq
 	}
 	var site sqlc.GetSiteRow
 	var found bool
-	var ability string
+	var request sqlc.AssistantAbilityRequest
 	if err := s.pool.InTenantTx(ctx, r.TenantID, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
 		req, err := q.GetAbilityRequestForSite(ctx, sqlc.GetAbilityRequestForSiteParams{
@@ -1188,7 +1200,7 @@ func (s *Service) resolveOne(ctx context.Context, r sqlc.ScanResolvingAbilityReq
 		if err != nil {
 			return fmt.Errorf("read the request: %w", err)
 		}
-		ability = req.AbilityName
+		request = req
 		site, err = q.GetSite(ctx, sqlc.GetSiteParams{TenantID: r.TenantID, ID: r.SiteID})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
@@ -1207,7 +1219,7 @@ func (s *Service) resolveOne(ctx context.Context, r sqlc.ScanResolvingAbilityReq
 		})
 		cancel()
 		if err == nil {
-			verdict, decided = ledgerVerdict(ability, resp, unknownFor, now)
+			verdict, decided = ledgerVerdictForRequest(request, resp, unknownFor, now)
 		}
 	}
 	return s.pool.InTenantTx(ctx, r.TenantID, func(tx pgx.Tx) error {

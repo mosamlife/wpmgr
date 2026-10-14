@@ -48,6 +48,9 @@ const MinAgentVersionForAbilityEngine = "0.61.155"
 // asking.
 const MinAgentVersionForPageCreate = "0.61.156"
 
+// MinAgentVersionForThemeTemplateCreate supports header and footer draft creation.
+const MinAgentVersionForThemeTemplateCreate = "0.61.167"
+
 // MinAgentVersionForRecoveryUndo is the first agent release whose revert
 // mode undoes the draft a failed or given-up write left on the site (GH
 // #826). An older agent answers a recovery revert with not_revertible, so
@@ -100,6 +103,10 @@ const MinAgentVersionForDesignedPages = "0.61.165"
 // widget catalogue, compact control schemas and native widget edit operations.
 // Page edits without native operations retain their existing per-input floor.
 const MinAgentVersionForNativeEdit = "0.61.166"
+
+// MinAgentVersionForThemeTemplates is the first agent release with the theme
+// template readiness, conditions, places and menus read.
+const MinAgentVersionForThemeTemplates = "0.61.167"
 
 // AbilityRunMaxAllowedDraftIDs bounds p.allowed_draft_ids: the control plane
 // names at most the one post an input is about, so p stays far under
@@ -585,6 +592,9 @@ var AbilityRunRefusalCodes = map[string]struct{}{
 	"post_not_editable":            {},
 	"sanitiser_changed_value":      {},
 	"side_effect_detected":         {},
+	"theme_builder_unavailable":    {},
+	"shows_on_place_unavailable":   {},
+	"shows_on_target_missing":      {},
 	"post_touched":                 {},
 	"post_content_would_change":    {},
 	"post_scheduled":               {},

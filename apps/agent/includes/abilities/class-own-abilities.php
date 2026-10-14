@@ -7,6 +7,7 @@ namespace WPMgr\Agent\Abilities;
 use WPMgr\Agent\Abilities\Builders\BuilderContract;
 use WPMgr\Agent\Abilities\Builders\BuilderPageStructure;
 use WPMgr\Agent\Abilities\Builders\ElementorWidgetDiscovery;
+use WPMgr\Agent\Abilities\Builders\ElementorThemeTemplates;
 use WPMgr\Agent\Support\ArrayShape;
 
 // Direct-file-access guard: keep above the docblock.
@@ -50,6 +51,8 @@ final class OwnAbilities
     public const NAME_ELEMENTOR_WIDGETS = 'wpmgr/elementor-widgets';
     public const NAME_ELEMENTOR_WIDGET_SCHEMA = 'wpmgr/elementor-widget-schema';
 
+    public const NAME_ELEMENTOR_THEME_TEMPLATES = 'wpmgr/elementor-theme-templates';
+
     private const CATEGORY = 'wpmgr';
 
     /** Most abilities the inventory lists. */
@@ -82,7 +85,7 @@ final class OwnAbilities
      */
     public static function names(): array
     {
-        return [self::NAME_INVENTORY, self::NAME_FACTS, self::NAME_CONTENT, self::NAME_PAGE_CREATE, self::NAME_REST_READ, self::NAME_REST_WRITE, self::NAME_PAGE_STRUCTURE, self::NAME_PAGE_EDIT, self::NAME_ELEMENTOR_WIDGETS, self::NAME_ELEMENTOR_WIDGET_SCHEMA];
+        return [self::NAME_INVENTORY, self::NAME_FACTS, self::NAME_CONTENT, self::NAME_PAGE_CREATE, self::NAME_REST_READ, self::NAME_REST_WRITE, self::NAME_PAGE_STRUCTURE, self::NAME_PAGE_EDIT, self::NAME_ELEMENTOR_WIDGETS, self::NAME_ELEMENTOR_WIDGET_SCHEMA, self::NAME_ELEMENTOR_THEME_TEMPLATES];
     }
 
     /**
@@ -92,7 +95,7 @@ final class OwnAbilities
      */
     public static function readNames(): array
     {
-        return [self::NAME_INVENTORY, self::NAME_FACTS, self::NAME_CONTENT, self::NAME_ELEMENTOR_WIDGETS, self::NAME_ELEMENTOR_WIDGET_SCHEMA];
+        return [self::NAME_INVENTORY, self::NAME_FACTS, self::NAME_CONTENT, self::NAME_ELEMENTOR_WIDGETS, self::NAME_ELEMENTOR_WIDGET_SCHEMA, self::NAME_ELEMENTOR_THEME_TEMPLATES];
     }
 
     /**
@@ -155,6 +158,8 @@ final class OwnAbilities
                 return BuilderContract::pageStructureInputSchema();
             case self::NAME_PAGE_EDIT:
                 return BuilderContract::pageEditInputSchema();
+            case self::NAME_ELEMENTOR_THEME_TEMPLATES:
+                return ElementorThemeTemplates::inputSchema();
             case self::NAME_ELEMENTOR_WIDGETS:
             case self::NAME_ELEMENTOR_WIDGET_SCHEMA:
                 return ElementorWidgetDiscovery::inputSchema($name === self::NAME_ELEMENTOR_WIDGET_SCHEMA);
@@ -278,6 +283,8 @@ final class OwnAbilities
                 return self::contentRead($input);
             case self::NAME_PAGE_STRUCTURE:
                 return ['refusal' => ['code' => 'mode_not_available', 'detail' => 'wpmgr/page-structure runs only through the engine']];
+            case self::NAME_ELEMENTOR_THEME_TEMPLATES:
+                return (new ElementorThemeTemplates())->read($input);
             case self::NAME_ELEMENTOR_WIDGETS:
                 return (new ElementorWidgetDiscovery())->catalogue($input);
             case self::NAME_ELEMENTOR_WIDGET_SCHEMA:
@@ -316,6 +323,7 @@ final class OwnAbilities
             self::NAME_INVENTORY => ['Ability inventory', 'Lists the abilities registered on this site.'],
             self::NAME_FACTS     => ['Site facts', 'WordPress and PHP versions, the active theme and builder hints.'],
             self::NAME_CONTENT   => ['Read a page', 'Reads the text of one published page or post.'],
+            self::NAME_ELEMENTOR_THEME_TEMPLATES => ['Elementor theme templates', 'Reads Theme Builder readiness, header and footer templates, display places and menus.'],
             self::NAME_ELEMENTOR_WIDGETS => ['Elementor widgets', 'Lists the live Elementor widget catalogue with optional category and search filters.'],
             self::NAME_ELEMENTOR_WIDGET_SCHEMA => ['Elementor widget schema', 'Reads a widget control skeleton, or compact details for named controls.'],
         ];
@@ -327,6 +335,9 @@ final class OwnAbilities
             $outputSchema = [];
             if ($name === self::NAME_ELEMENTOR_WIDGETS || $name === self::NAME_ELEMENTOR_WIDGET_SCHEMA) {
                 $outputSchema = ['output_schema' => ElementorWidgetDiscovery::outputSchema($name === self::NAME_ELEMENTOR_WIDGET_SCHEMA)];
+            }
+            if ($name === self::NAME_ELEMENTOR_THEME_TEMPLATES) {
+                $outputSchema = ['output_schema' => ElementorThemeTemplates::outputSchema()];
             }
             wp_register_ability($registered, $outputSchema + [
                 'label'               => $copy[$name][0],

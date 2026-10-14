@@ -177,13 +177,13 @@ func TestBuilderPageCreateM176AsAppRole(t *testing.T) {
 	w := newE2World(t, true)
 
 	// 1. A fresh install: every migration, then the boot stamp. The row has
-	// the usage and description m177 wrote after m176 over m166's limits, its
+	// m177's usage and m184's description over m166's limits, its
 	// hash is the hash of its bytes, and describe hands the AI the usage.
 	fresh := m162Row(t, w)
 	m176AssertUsage(t, fresh, m177Usage)
-	if fresh.Description != m177Description ||
+	if fresh.Description != m184CreateDescription ||
 		!reflect.DeepEqual(m166LimitsOf(t, fresh.Limits), m166LimitsOf(t, []byte(m166Limits))) {
-		t.Fatalf("a fresh install's description is not m177's or its limits are not m166's: %+v", fresh)
+		t.Fatalf("a fresh install's description is not m184's or its limits are not m166's: %+v", fresh)
 	}
 	m162AssertStamped(t, fresh)
 	res := cpeCall(t, w.eng, w.bearer, mcp.ToolSiteAbilityDescribe, map[string]any{

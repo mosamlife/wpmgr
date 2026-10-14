@@ -151,11 +151,18 @@ final class PageEditValidator
 
         $named = [];
         $clean = [];
+        $showsOn = false;
         foreach (array_values($operations) as $i => $operation) {
             $at = 'operations[' . $i . ']';
             $r  = self::operation($operation, $at);
             if (!isset($r['op'])) {
                 return $r;
+            }
+            if ($r['op']['op'] === 'set_shows_on') {
+                if ($showsOn) {
+                    return ['code' => 'ops_invalid', 'detail' => 'set_shows_on is allowed at most once per edit'];
+                }
+                $showsOn = true;
             }
             $references = in_array($r['op']['op'], ['add_native', 'duplicate'], true)
                 ? (isset($r['op']['ref']) ? [$r['op']['ref']] : []) : self::refsOf($r['op']);
@@ -311,6 +318,7 @@ final class PageEditValidator
             }
 
             switch ($name) {
+                case 'set_shows_on':
                 case 'set_native':
                     break;
                 case 'add_native':
@@ -601,6 +609,13 @@ final class PageEditValidator
         }
 
         switch ($name) {
+            case 'set_shows_on':
+                $bad = self::keys($o, ['op', 'rules'], ['op', 'rules'], $at);
+                if ($bad !== null) {
+                    return $bad;
+                }
+                $problem = ThemeTemplateCreate::inputProblem($o['rules']);
+                return $problem === null ? ['op' => ['op' => $name, 'rules' => $o['rules']]] : self::bad($at . ': ' . $problem);
             case 'set_native':
                 $bad = self::keys($o, ['op', 'ref', 'settings'], ['op', 'ref', 'settings'], $at);
                 if ($bad !== null) {

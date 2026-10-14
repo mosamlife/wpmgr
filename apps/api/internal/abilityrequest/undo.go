@@ -104,7 +104,7 @@ const editListLimit = 200
 // put-back did not read back as the copy) finish it as failed.
 func undoResultFor(resp agentcmd.AbilityRunResponse, err error) string {
 	if err == nil {
-		if resp.Outcome == "reverted" || resp.Outcome == "already_reverted" {
+		if (resp.Outcome == "reverted" || resp.Outcome == "already_reverted") && undoTemplateRulesValid(resp.Raw) && undoTemplateRulesValid(resp.Result) {
 			return UndoDone
 		}
 		return UndoFailed
@@ -382,7 +382,7 @@ func (s *Service) Undo(ctx context.Context, p domain.Principal, siteID, requestI
 		}
 		return after, nil
 	}
-	result := undoResultFor(resp, sendErr)
+	result := undoResultMatchingApproval(row, resp, sendErr)
 	return s.recordUndoFinish(ctx, s.runAsCaller, p, siteID, requestID, result, sendErr, revertReport(resp, sendErr))
 }
 

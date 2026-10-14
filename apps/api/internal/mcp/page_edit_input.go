@@ -118,6 +118,7 @@ var pageTextForbiddenSequences = []string{"<", ">", "{{", "}}", "{%", "%}", "<!-
 // AnchorRef the place (insert, move), Outline the new nodes (insert,
 // replace), each outline node's exact JSON text.
 type pageEditOp struct {
+	Index     int // Original input position used to derive node ids.
 	Op        string
 	Ref       string
 	Field     string
@@ -129,6 +130,7 @@ type pageEditOp struct {
 	Widget    string
 	Settings  json.RawMessage
 	Parsed    any
+	Rules     []string
 }
 
 // refs is every ref the operation names: its target, then its anchor.
@@ -236,6 +238,7 @@ func checkPageEditInput(input []byte) (pageEditFacts, pageCreateRefusal) {
 	named := make(map[string]struct{}, len(ops)*2)
 	f.ops = make([]pageEditOp, 0, len(ops))
 	var nativeFailures []refusalFailure
+	showsOn := false
 	for i, raw := range ops {
 		if item, valid := jsonObjectOf(raw); valid {
 			name, _ := jsonStringOf(item["op"])
@@ -260,6 +263,13 @@ func checkPageEditInput(input []byte) (pageEditFacts, pageCreateRefusal) {
 		if failure != nil {
 			return pageEditFacts{}, pageInputRefusal(failure.Path, failure.Key, failure.Reason)
 		}
+		if op.Op == "set_shows_on" {
+			if showsOn {
+				return pageEditFacts{}, pageCreateRefusal{Code: pageEditOpsInvalid, Failures: []refusalFailure{{Path: fmt.Sprintf("operations[%d]", i), Key: "op", Reason: "set_shows_on is allowed at most once per edit"}}}
+			}
+			showsOn = true
+		}
+		op.Index = i
 		refs := op.refs()
 		if op.Op == "add_native" {
 			refs = nil
@@ -357,7 +367,7 @@ func checkPageEditOperation(raw json.RawMessage, path string) (pageEditOp, *refu
 		return pageEditOp{}, &failure
 	}
 	const refReason = "must be a node ref of 1 to 32 letters, digits, underscores or hyphens from wpmgr/page-structure"
-	const opReason = "must be set_text, insert, replace, remove, set_native, move, duplicate or add_native"
+	const opReason = "must be set_text, insert, replace, remove, set_native, move, duplicate, add_native or set_shows_on"
 	const fieldReason = "must be text, alt, caption, url or a pattern field path"
 	outlineReason := fmt.Sprintf("must be a list of 1 to %d nodes following the page outline grammar", pageEditMaxOutlinePerOp)
 	o, ok := jsonObjectOf(raw)
@@ -374,6 +384,16 @@ func checkPageEditOperation(raw json.RawMessage, path string) (pageEditOp, *refu
 	}
 	op := pageEditOp{Op: name, Parsed: parsed}
 	switch name {
+	case "set_shows_on":
+		if !keysExactly(o, []string{"op", "rules"}, "op", "rules") {
+			return fieldsRefusal([]string{"op", "rules"}, "op", "rules")
+		}
+		var problem string
+		op.Rules, problem = CheckThemeTemplateRules(o["rules"])
+		if problem != "" {
+			return fail("rules", problem)
+		}
+		return op, nil
 	case pageEditOpSetText:
 		if !keysExactly(o, []string{"op", "ref", "field", "text"}, "op", "ref", "field", "text") {
 			return fieldsRefusal([]string{"op", "ref", "field", "text"}, "op", "ref", "field", "text")

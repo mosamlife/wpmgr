@@ -102,9 +102,11 @@ var pageFrames = []string{pageFrameTheme, pageFrameFullWidth, pageFrameCanvas}
 
 // pageCreateFacts are what the control plane reads from a valid input.
 type pageCreateFacts struct {
-	postType string
-	editor   string
-	title    string
+	postType     string
+	templateType string
+	showsOn      []string
+	editor       string
+	title        string
 	// builder is the page builder a builder editor names ("elementor" for
 	// "builder:elementor"), "" for a WordPress editor; elementorFormat is
 	// that input's elementor_format, site_default when it sends none.
@@ -215,15 +217,52 @@ func checkPageCreateInput(input []byte) (pageCreateFacts, pageCreateRefusal) {
 	}
 	for k := range top {
 		switch k {
-		case "post_type", "editor", "title", "outline", "elementor_format", "outline_version", "design", "page_frame":
+		case "post_type", "template", "shows_on", "editor", "title", "outline", "elementor_format", "outline_version", "design", "page_frame":
 		default:
-			failure := pageInputFieldsRefusal(input, "", []string{"post_type", "editor", "title", "outline", "elementor_format", "outline_version", "design", "page_frame"})
+			allowed := []string{"post_type", "editor", "title", "outline", "elementor_format", "outline_version", "design", "page_frame"}
+			if _, has := top["template"]; has {
+				allowed = append(allowed, "template", "shows_on")
+			}
+			failure := pageInputFieldsRefusal(input, "", allowed)
 			return pageCreateFacts{}, pageInputRefusal(failure.Path, failure.Key, failure.Reason)
 		}
 	}
 	var f pageCreateFacts
-	if f.postType, ok = jsonStringOf(top["post_type"]); !ok || (f.postType != "page" && f.postType != "post") {
-		return pageCreateFacts{}, pageInputRefusal("", "post_type", "must be page or post")
+	_, isTemplate := top["template"]
+	_, hasPostType := top["post_type"]
+	if isTemplate && hasPostType {
+		return pageCreateFacts{}, pageInputRefusal("", "template", "send either post_type or template, never both")
+	}
+	if isTemplate {
+		f.templateType, ok = jsonStringOf(top["template"])
+		if !ok || !ThemeTemplateTypeKnown(f.templateType) {
+			return pageCreateFacts{}, pageInputRefusal("", "template", "must be header or footer")
+		}
+		f.postType = "elementor_library"
+		if _, has := top["page_frame"]; has {
+			return pageCreateFacts{}, pageInputRefusal("", "page_frame", "is only for a page or post")
+		}
+		f.showsOn = []string{}
+		if raw, has := top["shows_on"]; has {
+			var problem string
+			f.showsOn, problem = CheckThemeTemplateRules(raw)
+			if problem != "" {
+				return pageCreateFacts{}, pageInputRefusal("", "shows_on", problem)
+			}
+		}
+		if editor, _ := jsonStringOf(top["editor"]); editor != pageEditorBuilderElementor {
+			return pageCreateFacts{}, pageInputRefusal("", "editor", "a template requires builder:elementor")
+		}
+		if format, _ := jsonStringOf(top["elementor_format"]); format != elementorFormatClassic {
+			return pageCreateFacts{}, pageInputRefusal("", "elementor_format", "a template requires classic")
+		}
+	} else {
+		if f.postType, ok = jsonStringOf(top["post_type"]); !ok || (f.postType != "page" && f.postType != "post") {
+			return pageCreateFacts{}, pageInputRefusal("", "post_type", "must be page or post")
+		}
+		if _, has := top["shows_on"]; has {
+			return pageCreateFacts{}, pageInputRefusal("", "shows_on", "is accepted only with template")
+		}
 	}
 	if f.editor, ok = jsonStringOf(top["editor"]); !ok {
 		return pageCreateFacts{}, pageInputRefusal("", "editor", "must be wordpress_blocks, wordpress_classic or builder:elementor")
@@ -286,10 +325,12 @@ func checkPageCreateInput(input []byte) (pageCreateFacts, pageCreateRefusal) {
 		return pageCreateFacts{}, outlineRefusal(pageCreateBadInput, "input", "outline", reason)
 	}
 	if designed {
-		if f.pageFrame, ok = pageFrameOf(top, outline); !ok {
-			return pageCreateFacts{}, pageInputRefusal("", "page_frame", "must be theme, full_width or canvas")
+		if f.templateType == "" {
+			if f.pageFrame, ok = pageFrameOf(top, outline); !ok {
+				return pageCreateFacts{}, pageInputRefusal("", "page_frame", "must be theme, full_width or canvas")
+			}
+			_, f.pageFrameSent = top["page_frame"]
 		}
-		_, f.pageFrameSent = top["page_frame"]
 		if len(outline) > pageCreateMaxSections {
 			return pageCreateFacts{}, outlineRefusal(pageCreateLayoutInvalid, "input", "outline",
 				fmt.Sprintf("a page holds 1 to %d sections; this one has %d", pageCreateMaxSections, len(outline)))
@@ -1178,13 +1219,19 @@ func pageCreateUsesLayout(input []byte) bool {
 }
 
 // PageCreateAgentFloor is the first agent release that runs this
-// wpmgr/page-create input: MinAgentVersionForDesignedPages for a designed
+// wpmgr/page-create input: MinAgentVersionForThemeTemplateCreate for a header
+// or footer template, MinAgentVersionForDesignedPages for a designed
 // page, MinAgentVersionForBuilderAdapters when it asks for a page builder,
 // MinAgentVersionForPageLayout when the outline holds a block beyond heading,
 // paragraph and list (or the input cannot be read),
 // MinAgentVersionForPageCreate otherwise. The run path and the dispatch
 // worker both decide with it.
 func PageCreateAgentFloor(input []byte) string {
+	if top, ok := jsonObjectOf(input); ok {
+		if _, has := top["template"]; has {
+			return agentcmd.MinAgentVersionForThemeTemplateCreate
+		}
+	}
 	if pageCreateIsDesigned(input) {
 		return agentcmd.MinAgentVersionForDesignedPages
 	}
@@ -1349,13 +1396,15 @@ func pageContentImagesMatch(content string, media []pageMediaFact) bool {
 // frame the site's precheck resolved (bindPageFrame), which the stored input
 // also names. The presented digest covers these bytes, so approving the card
 // approves that design in that frame. A version 2 page's card holds neither
-// member.
+// member. A template card binds its type and shows_on rules; a designed
+// template holds its design without a page frame.
 type pageCardFacts struct {
-	Kind      string           `json:"kind"`
-	Media     []PageCardMedia  `json:"media,omitempty"`
-	Builder   *PageCardBuilder `json:"builder,omitempty"`
-	Design    *pageDesign      `json:"design,omitempty"`
-	PageFrame string           `json:"page_frame,omitempty"`
+	Kind      string            `json:"kind"`
+	Template  *PageCardTemplate `json:"template,omitempty"`
+	Media     []PageCardMedia   `json:"media,omitempty"`
+	Builder   *PageCardBuilder  `json:"builder,omitempty"`
+	Design    *pageDesign       `json:"design,omitempty"`
+	PageFrame string            `json:"page_frame,omitempty"`
 }
 
 // PageCardBuilder is the page builder of a page-create request's card, as
@@ -1387,11 +1436,14 @@ const pageCardFactsKind = "page_create"
 // is not a designed page. design and frame are a designed page's checked
 // design and its page frame (pageCreateFacts.design and .pageFrame), nil and
 // "" for a version 2 page.
-func pageCardFactsJSON(media []pageMediaFact, builder *PageCardBuilder, design *pageDesign, frame string) ([]byte, error) {
+func pageCardFactsJSON(media []pageMediaFact, builder *PageCardBuilder, design *pageDesign, frame string, templates ...*PageCardTemplate) ([]byte, error) {
 	if len(media) == 0 && builder == nil && design == nil && frame == "" {
 		return nil, nil
 	}
 	card := pageCardFacts{Kind: pageCardFactsKind, Builder: builder, Design: design, PageFrame: frame}
+	if len(templates) > 0 {
+		card.Template = templates[0]
+	}
 	for _, m := range media {
 		card.Media = append(card.Media, PageCardMedia{
 			ID: m.ID, Filename: humantext.CapRunes(humantext.Clean(m.Filename), pageCreateMaxFilenameChars),
@@ -1458,7 +1510,7 @@ func readPageCardTop(stored []byte) (map[string]json.RawMessage, bool) {
 	}
 	for k := range top {
 		switch k {
-		case "kind", "media", "builder", "design", "page_frame":
+		case "kind", "media", "builder", "design", "page_frame", "template":
 		default:
 			return nil, false
 		}
@@ -1468,6 +1520,17 @@ func readPageCardTop(stored []byte) (map[string]json.RawMessage, bool) {
 	}
 	if raw, has := top["builder"]; has {
 		if _, ok := readPageCardBuilder(raw); !ok {
+			return nil, false
+		}
+	}
+	if raw, has := top["template"]; has {
+		if _, ok := readPageCardTemplate(raw); !ok {
+			return nil, false
+		}
+		if _, has := top["builder"]; !has {
+			return nil, false
+		}
+		if _, has := top["page_frame"]; has {
 			return nil, false
 		}
 	}
@@ -1487,6 +1550,12 @@ func readPageCardDesign(top map[string]json.RawMessage) (*pageDesign, string, bo
 	rawFrame, hasFrame := top["page_frame"]
 	if !hasDesign && !hasFrame {
 		return nil, "", true
+	}
+	if hasDesign && !hasFrame {
+		if _, has := top["template"]; has {
+			d, p := validatePageDesign(rawDesign)
+			return &d, "", p == nil
+		}
 	}
 	if !hasDesign || !hasFrame {
 		return nil, "", false

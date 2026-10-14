@@ -75,7 +75,7 @@ const (
 // ledger marks a reverted draft 'trashed' and an undone page edit
 // 'restored'; any other state means the revert did not happen.
 func undoVerdictFor(ability string, resp agentcmd.AbilityRunResponse, err error) undoVerdict {
-	if err != nil || resp.Inflight {
+	if err != nil || resp.Inflight || !undoTemplateRulesValid(resp.Raw) || !undoTemplateRulesValid(resp.Result) {
 		return undoVerdictUnknown
 	}
 	if !resp.Found {
@@ -143,7 +143,7 @@ func (s *Service) reconcileUndoOne(ctx context.Context, r sqlc.ListStuckAbilityR
 		Mode: agentcmd.AbilityRunModeLedger, RequestID: r.ID,
 	})
 	cancel()
-	verdict := undoVerdictFor(row.AbilityName, resp, err)
+	verdict := undoVerdictMatchingApproval(row, resp, err)
 	if verdict == undoVerdictUnknown {
 		return nil
 	}

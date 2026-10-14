@@ -190,6 +190,30 @@ interface ElementorApi
      */
     public function proActive(): bool;
 
+    /** Pro's version token, or null when absent or invalid. */
+    public function proVersion(): ?string;
+
+    /** The Theme Builder module and its required condition methods can be asked. */
+    public function themeBuilderReady(): bool;
+
+    /**
+     * Complete display rules for one template, or null when unreadable.
+     *
+     * @param int $postId Template id.
+     * @return list<string>|null
+     */
+    public function templateRules(int $postId): ?array;
+
+    /** Save complete display rules through Pro's conditions manager. @param list<string> $rules */
+    public function saveTemplateRules(int $postId, array $rules): bool;
+
+    /**
+     * Whether Pro registers a named condition.
+     *
+     * @param string $name Condition name.
+     */
+    public function themeConditionRegistered(string $name): bool;
+
     /**
      * The post meta key under which Elementor keeps a post's cached element
      * output: Elementor's own document constant when this request has one

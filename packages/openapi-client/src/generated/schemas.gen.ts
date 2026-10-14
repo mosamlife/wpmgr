@@ -8335,6 +8335,16 @@ export const AbilityRequestSchema = {
       description:
         "The page builder that builds a wpmgr/page-create request's page, as\nthe site's precheck named it. Null for a page in a WordPress\neditor, and for every other ability. A card for a request whose\neditor is a page builder cannot be shown in full without it and\nmust not be approvable.\n",
     },
+    page_template: {
+      allOf: [
+        {
+          $ref: "#/components/schemas/AbilityRequestPageTemplate",
+        },
+      ],
+      nullable: true,
+      description:
+        "Template type, places and display facts checked at precheck and retained in the approval card. Titles are cleaned plain site text.",
+    },
     page_edit: {
       allOf: [
         {
@@ -8348,10 +8358,156 @@ export const AbilityRequestSchema = {
   },
 } as const;
 
+export const AbilityRequestPageTemplateSchema = {
+  type: "object",
+  required: ["type", "shows_on", "rule_titles", "also_live", "refusal_message"],
+  properties: {
+    type: {
+      type: "string",
+      enum: ["header", "footer"],
+    },
+    shows_on: {
+      $ref: "#/components/schemas/AbilityRequestTemplateRules",
+    },
+    rule_titles: {
+      type: "array",
+      maxItems: 20,
+      items: {
+        type: "object",
+        required: ["id", "title"],
+        properties: {
+          id: {
+            type: "integer",
+            format: "int64",
+            minimum: 1,
+          },
+          title: {
+            type: "string",
+            description: "Cleaned plain site text.",
+          },
+        },
+      },
+    },
+    also_live: {
+      type: ["array", "null"],
+      maxItems: 5,
+      items: {
+        type: "object",
+        required: ["id", "title", "shows_on", "shows_on_problem"],
+        properties: {
+          id: {
+            type: "integer",
+            format: "int64",
+            minimum: 1,
+          },
+          title: {
+            type: "string",
+            description: "Cleaned plain site text.",
+          },
+          shows_on: {
+            anyOf: [
+              {
+                type: "array",
+                maxItems: 20,
+                items: {
+                  type: "string",
+                  pattern:
+                    "^(include|exclude)(/[a-z0-9_-]{1,64}){1,2}(/[1-9][0-9]{0,19})?$",
+                },
+              },
+              {
+                type: "null",
+              },
+            ],
+          },
+          shows_on_problem: {
+            type: ["string", "null"],
+            enum: ["unreadable", "too_many", null],
+          },
+        },
+      },
+    },
+    refusal_message: {
+      type: ["string", "null"],
+      description:
+        "Fixed guidance with only a validated display rule from the site.",
+    },
+  },
+} as const;
+
+export const AbilityRequestTemplateRulesSchema = {
+  type: "array",
+  maxItems: 20,
+  uniqueItems: true,
+  items: {
+    type: "string",
+    pattern: "^(include|exclude)(/[a-z0-9_-]{1,64}){1,2}(/[1-9][0-9]{0,19})?$",
+  },
+} as const;
+
+export const AbilityRequestPageEditTemplateSchema = {
+  type: "object",
+  description:
+    "The template type and display lists approved with the edit. Titles are cleaned site text.",
+  required: ["type", "shows_on", "rule_titles"],
+  properties: {
+    type: {
+      type: "string",
+      enum: ["header", "footer"],
+    },
+    shows_on: {
+      type: "object",
+      required: ["before", "after"],
+      properties: {
+        before: {
+          $ref: "#/components/schemas/AbilityRequestTemplateReadRules",
+        },
+        after: {
+          $ref: "#/components/schemas/AbilityRequestTemplateReadRules",
+        },
+      },
+    },
+    rule_titles: {
+      type: "array",
+      maxItems: 40,
+      items: {
+        type: "object",
+        required: ["id", "title"],
+        properties: {
+          id: {
+            type: "integer",
+            format: "int64",
+            minimum: 1,
+          },
+          title: {
+            type: "string",
+            description:
+              "Cleaned plain site text for a page or post named in either list.",
+          },
+        },
+      },
+    },
+    refusal_message: {
+      type: "string",
+      description:
+        "Fixed guidance, optionally including a validated display rule.",
+    },
+  },
+} as const;
+
+export const AbilityRequestTemplateReadRulesSchema = {
+  type: "array",
+  maxItems: 20,
+  items: {
+    type: "string",
+    pattern: "^(include|exclude)(/[a-z0-9_-]{1,64}){1,2}(/[1-9][0-9]{0,19})?$",
+  },
+} as const;
+
 export const AbilityRequestPageEditSchema = {
   type: "object",
   description:
-    "A wpmgr/page-edit card. Every value under a `from_the_site` member\ncame from the site: render it as plain text in the \"From the site\"\nslot. A change's `after` is the text the AI asked for. The other\nstrings are WPMgr's.\n",
+    "A wpmgr/page-edit card. Every value under a `from_the_site` member\ncame from the site: render it as plain text in the \"From the site\"\nslot. A change's `after` is the text the AI asked for. Template rule titles are cleaned site text. The other\nstrings are WPMgr's.\n",
   required: ["kind", "post", "builder", "changes", "checked_at"],
   properties: {
     kind: {
@@ -8397,9 +8553,13 @@ export const AbilityRequestPageEditSchema = {
         },
       },
     },
+    template: {
+      $ref: "#/components/schemas/AbilityRequestPageEditTemplate",
+    },
     changes: {
       type: "array",
-      description: "One per operation, in the order they apply.",
+      description:
+        "Checked content changes, plus Where it shows when the display lists differ.",
       items: {
         $ref: "#/components/schemas/AbilityRequestPageEditChange",
       },
@@ -8428,7 +8588,11 @@ export const AbilityRequestPageEditChangeSchema = {
   properties: {
     op: {
       type: "string",
-      enum: ["set_text", "insert", "replace", "remove", "move"],
+      enum: ["set_text", "insert", "replace", "remove", "move", "set_shows_on"],
+    },
+    label: {
+      type: "string",
+      description: "Where it shows for a display-list change.",
     },
     ref: {
       type: "string",

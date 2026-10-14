@@ -172,8 +172,8 @@ func TestPageEditNamedInputFailures(t *testing.T) {
 
 	for _, tc := range []struct{ name, op, key, reason string }{
 		{"not object", `null`, "input", "must be a JSON object"},
-		{"op type", `{"op":null}`, "op", "must be set_text, insert, replace, remove, set_native, move, duplicate or add_native"},
-		{"op value", `{"op":"other"}`, "op", "must be set_text, insert, replace, remove, set_native, move, duplicate or add_native"},
+		{"op type", `{"op":null}`, "op", "must be set_text, insert, replace, remove, set_native, move, duplicate, add_native or set_shows_on"},
+		{"op value", `{"op":"other"}`, "op", "must be set_text, insert, replace, remove, set_native, move, duplicate, add_native or set_shows_on"},
 		{"unknown field", `{"op":"remove","ref":"a","extra":true}`, "extra", "unknown field: send only op and ref"},
 		{"missing field", `{"op":"remove"}`, "ref", "is required"},
 		{"ref", `{"op":"remove","ref":"bad ref"}`, "ref", "must be a node ref of 1 to 32 letters, digits, underscores or hyphens from wpmgr/page-structure"},

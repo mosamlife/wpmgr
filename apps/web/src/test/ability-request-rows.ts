@@ -469,6 +469,47 @@ export function pageEditRow(
   return row;
 }
 
+/** Template DTOs from abilityrequest/handler.go and mcp/page_edit_precheck.go. */
+export function templateCreateRow(
+  template: Partial<NonNullable<AbilityRequest["page_template"]>> = {},
+  over: Partial<AbilityRequest> = {},
+): AbilityRequest {
+  const facts: NonNullable<AbilityRequest["page_template"]> = {
+    type: "header", shows_on: ["include/general", "exclude/singular/page/42"],
+    rule_titles: [{ id: 42, title: "Contact" }], also_live: null, refusal_message: null,
+    ...template,
+  };
+  return pageCreateRow({
+    input_json: JSON.stringify({ template: facts.type, shows_on: facts.shows_on,
+      editor: ELEMENTOR, elementor_format: "classic", title: "Brewcraft header",
+      outline: [{ type: "heading", level: 2, text: "Brewcraft" }] }),
+    post_type: "elementor_library", title_excerpt: "Brewcraft header",
+    page_builder: elementorFacts({ version: "4.3.4" }), page_template: facts,
+    ...over,
+  });
+}
+
+export function templateEditRow(
+  template: Partial<NonNullable<PageEditRow["template"]>> = {},
+  over: Partial<AbilityRequest> = {},
+  setPlaces = true,
+): AbilityRequest {
+  const facts: NonNullable<PageEditRow["template"]> = {
+    type: "header", shows_on: { before: ["include/general"],
+      after: setPlaces ? ["include/singular/page", "exclude/singular/page/42"] : ["include/general"] },
+    rule_titles: [{ id: 42, title: "Contact" }], ...template,
+  };
+  const base = editFacts();
+  const changed = JSON.stringify(facts.shows_on.before) !== JSON.stringify(facts.shows_on.after);
+  return pageEditRow({
+    ops: [...defaultEditOps(), ...(setPlaces ? [{ op: "set_shows_on", rules: facts.shows_on.after }] : [])],
+    page_edit: { ...base, template: facts, post: { id: 418, from_the_site: { title: "Brewcraft header" } },
+      builder: { ...base.builder, version: "4.3.4" },
+      changes: [...base.changes, ...(changed ? [{ op: "set_shows_on" as const, label: "Where it shows" }] : [])] },
+    ...over,
+  });
+}
+
 // --- how a request was approved, and why one waits (approval tiers) -----------
 
 type ApprovalFields = Pick<AbilityRequest, "approval" | "change_class" | "change_kind_name">;

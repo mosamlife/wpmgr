@@ -47,6 +47,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -76,6 +77,9 @@ const (
 
 // pageEditPreview is precheck's preview member.
 type pageEditPreview struct {
+	Template       json.RawMessage `json:"template,omitempty"`
+	ShowsOn        json.RawMessage `json:"shows_on,omitempty"`
+	RuleTitles     json.RawMessage `json:"rule_titles,omitempty"`
 	PostID         int64           `json:"post_id"`
 	Builder        string          `json:"builder"`
 	BuilderVersion string          `json:"builder_version"`
@@ -127,6 +131,7 @@ type pageEditChangeAnchor struct {
 
 // checkedPageEdit is a page-edit precheck answer the control plane verified.
 type checkedPageEdit struct {
+	template        *PageEditCardTemplate
 	precheckDigest  string
 	previewDigest   string
 	baseFingerprint string
@@ -176,7 +181,7 @@ func indexTree(tree any) (map[string]*treeElement, bool) {
 }
 
 // pageEditPreviewDigest is BuilderPageEdit::previewDigest().
-func pageEditPreviewDigest(builder, version string, postID int64, baseFP string, treeJSON []byte) (string, bool) {
+func pageEditPreviewDigest(builder, version string, postID int64, baseFP string, treeJSON []byte, template ...*PageEditCardTemplate) (string, bool) {
 	parts := make([]string, 0, 6)
 	for _, s := range []string{pageEditDigestDomain, builder, version} {
 		enc, ok := phpJSONString(s)
@@ -192,6 +197,13 @@ func pageEditPreviewDigest(builder, version string, postID int64, baseFP string,
 			return "", false
 		}
 		parts = append(parts, enc)
+	}
+	if len(template) > 0 && template[0] != nil {
+		extra, ok := phpEncodeBytes(templateEditDigestParts(phpList{}, template[0]))
+		if !ok {
+			return "", false
+		}
+		parts = append(parts, string(extra[1:len(extra)-1]))
 	}
 	return sha256Hex([]byte("[" + strings.Join(parts, ",") + "]")), true
 }
@@ -215,6 +227,10 @@ func verifyPageEditPrecheck(resp agentcmd.AbilityRunResponse, entrySum string, i
 		!elementorVersionPattern.MatchString(pv.BuilderVersion) || !hex64Pattern.MatchString(pv.TreeSHA256) {
 		return checkedPageEdit{}, false
 	}
+	template, ok := checkPageEditTemplate(pv, f)
+	if !ok {
+		return checkedPageEdit{}, false
+	}
 	tree, ok := phpDecodeDocument(pv.Tree, pageEditTreeMaxDepth, true)
 	if !ok {
 		return checkedPageEdit{}, false
@@ -223,7 +239,7 @@ func verifyPageEditPrecheck(resp agentcmd.AbilityRunResponse, entrySum string, i
 	if !ok || sha256Hex(treeJSON) != pv.TreeSHA256 {
 		return checkedPageEdit{}, false
 	}
-	digest, ok := pageEditPreviewDigest(pv.Builder, pv.BuilderVersion, pv.PostID, resp.BaseFingerprint, treeJSON)
+	digest, ok := pageEditPreviewDigest(pv.Builder, pv.BuilderVersion, pv.PostID, resp.BaseFingerprint, treeJSON, template)
 	if !ok || digest != resp.PreviewDigest || !precheckDigestMatches(resp, entrySum, input) {
 		return checkedPageEdit{}, false
 	}
@@ -244,8 +260,13 @@ func verifyPageEditPrecheck(resp agentcmd.AbilityRunResponse, entrySum string, i
 	if !ok {
 		return checkedPageEdit{}, false
 	}
+	changesRaw, treeFacts, ok := pageEditTreeChanges(pv.Changes, f)
+	if !ok {
+		return checkedPageEdit{}, false
+	}
+	f = treeFacts
 	var changes []pageEditChange
-	cd := json.NewDecoder(bytes.NewReader(pv.Changes))
+	cd := json.NewDecoder(bytes.NewReader(changesRaw))
 	cd.DisallowUnknownFields()
 	if cd.Decode(&changes) != nil || cd.More() || len(changes) != len(f.ops) {
 		return checkedPageEdit{}, false
@@ -272,7 +293,7 @@ func verifyPageEditPrecheck(resp agentcmd.AbilityRunResponse, entrySum string, i
 		}
 		// New nodes a later operation took off are not on the page to check.
 		if (op.Op == "insert" || op.Op == "replace") && elements[changes[i].NewRefs[0]] != nil {
-			if !pageEditNewNodesMatch(changes[i].NewRefs, op, tree, elements, proj, mapping, i) {
+			if !pageEditNewNodesMatch(changes[i].NewRefs, op, tree, elements, proj, mapping, op.Index) {
 				return checkedPageEdit{}, false
 			}
 		}
@@ -283,7 +304,7 @@ func verifyPageEditPrecheck(resp agentcmd.AbilityRunResponse, entrySum string, i
 	return checkedPageEdit{
 		precheckDigest: resp.PrecheckDigest, previewDigest: resp.PreviewDigest,
 		baseFingerprint: resp.BaseFingerprint, postID: pv.PostID, title: pv.Title,
-		builderVersion: pv.BuilderVersion, format: pv.Format, changes: changes, afterOutline: after,
+		builderVersion: pv.BuilderVersion, format: pv.Format, changes: changes, afterOutline: after, template: template,
 	}, true
 }
 
@@ -607,13 +628,14 @@ func sameProjection(got, want phpList, parentKind string) bool {
 // PageEditCardFacts is a page edit's card_facts. Every value under a
 // from_the_site member came from the site; after is the AI's text.
 type PageEditCardFacts struct {
-	Kind                string               `json:"kind"`
-	Post                PageEditCardPost     `json:"post"`
-	Builder             PageEditCardBuilder  `json:"builder"`
-	Changes             []PageEditCardChange `json:"changes"`
-	AfterOutline        json.RawMessage      `json:"after_outline,omitempty"`
-	AfterOutlineOmitted bool                 `json:"after_outline_omitted,omitempty"`
-	CheckedAt           string               `json:"checked_at"`
+	Template            *PageEditCardTemplate `json:"template,omitempty"`
+	Kind                string                `json:"kind"`
+	Post                PageEditCardPost      `json:"post"`
+	Builder             PageEditCardBuilder   `json:"builder"`
+	Changes             []PageEditCardChange  `json:"changes"`
+	AfterOutline        json.RawMessage       `json:"after_outline,omitempty"`
+	AfterOutlineOmitted bool                  `json:"after_outline_omitted,omitempty"`
+	CheckedAt           string                `json:"checked_at"`
 }
 
 // PageEditCardPost is the post a page edit changes.
@@ -636,6 +658,7 @@ type PageEditCardBuilder struct {
 
 // PageEditCardChange is one operation as the card shows it.
 type PageEditCardChange struct {
+	Label       string                    `json:"label,omitempty"`
 	Op          string                    `json:"op"`
 	Ref         string                    `json:"ref,omitempty"`
 	Kind        string                    `json:"kind,omitempty"`
@@ -669,10 +692,11 @@ type PageEditCardChangeSite struct {
 // would not fit the column with it.
 func buildPageEditCardFacts(pc checkedPageEdit, now time.Time) ([]byte, error) {
 	card := PageEditCardFacts{
-		Kind:    PageEditCardKind,
-		Post:    PageEditCardPost{ID: pc.postID, FromTheSite: PageEditCardPostSite{Title: cardSiteText(pc.title)}},
-		Builder: PageEditCardBuilder{ID: pageBuilderElementor, Version: pc.builderVersion, Format: pc.format},
-		Changes: make([]PageEditCardChange, 0, len(pc.changes)),
+		Template: pc.template,
+		Kind:     PageEditCardKind,
+		Post:     PageEditCardPost{ID: pc.postID, FromTheSite: PageEditCardPostSite{Title: cardSiteText(pc.title)}},
+		Builder:  PageEditCardBuilder{ID: pageBuilderElementor, Version: pc.builderVersion, Format: pc.format},
+		Changes:  make([]PageEditCardChange, 0, len(pc.changes)),
 		// The time WPMgr checked the request on the site.
 		CheckedAt: now.UTC().Format(time.RFC3339),
 	}
@@ -699,6 +723,9 @@ func buildPageEditCardFacts(pc checkedPageEdit, now time.Time) ([]byte, error) {
 	if pc.nativeChanges != nil {
 		card.Changes = pc.nativeChanges
 		card.Post.FromTheSite.Title = fenceSiteText(pc.title)
+	}
+	if pc.template != nil && !slices.Equal(pc.template.ShowsOn.Before, pc.template.ShowsOn.After) {
+		card.Changes = append(card.Changes, PageEditCardChange{Op: "set_shows_on", Label: "Where it shows"})
 	}
 	outline, err := json.Marshal(pc.afterOutline)
 	if err != nil {

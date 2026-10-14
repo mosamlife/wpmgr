@@ -1,0 +1,69 @@
+{
+  "pro": {
+    "active": true,
+    "version": "3.35.1",
+    "theme_builder": true,
+    "problem": null
+  },
+  "templates": [
+    {
+      "id": 1,
+      "type": "header",
+      "status": "draft",
+      "made_by_wpmgr": true,
+      "title": "[site-supplied] Draft header",
+      "modified_gmt": "[site-supplied] 2026-10-15T12:00:00Z",
+      "shows_on": [
+        "include/general",
+        "exclude/singular/page/42"
+      ],
+      "shows_on_problem": null
+    },
+    {
+      "id": 2,
+      "type": "footer",
+      "status": "publish",
+      "made_by_wpmgr": false,
+      "title": "[site-supplied] Site footer",
+      "modified_gmt": "[site-supplied] 2026-10-03T12:00:00Z",
+      "shows_on": null,
+      "shows_on_problem": "unreadable"
+    }
+  ],
+  "templates_total": 2,
+  "places": [
+    {
+      "rule": "general",
+      "takes_id": false
+    },
+    {
+      "rule": "singular/front_page",
+      "takes_id": false
+    },
+    {
+      "rule": "singular/page",
+      "takes_id": true
+    },
+    {
+      "rule": "singular/post",
+      "takes_id": true
+    },
+    {
+      "rule": "singular/not_found404",
+      "takes_id": false
+    },
+    {
+      "rule": "archive",
+      "takes_id": false
+    }
+  ],
+  "menus": [
+    {
+      "id": 7,
+      "slug": "main-menu",
+      "name": "[site-supplied] Main menu",
+      "items": 3
+    }
+  ],
+  "menus_total": 1
+}

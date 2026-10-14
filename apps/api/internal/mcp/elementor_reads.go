@@ -14,9 +14,10 @@ import (
 
 // WPMgr's widget discovery reads expose identifiers and fenced site metadata.
 const (
-	AbilityElementorWidgets      = "wpmgr/elementor-widgets"
-	AbilityElementorWidgetSchema = "wpmgr/elementor-widget-schema"
-	elementorReadMaxBytes        = 32768
+	AbilityElementorWidgets        = "wpmgr/elementor-widgets"
+	AbilityElementorWidgetSchema   = "wpmgr/elementor-widget-schema"
+	AbilityElementorThemeTemplates = "wpmgr/elementor-theme-templates"
+	elementorReadMaxBytes          = 32768
 )
 
 var (
@@ -32,15 +33,33 @@ const nativeWidgetWriteRules = `Control default values are stored shapes. WPMgr 
 
 var elementorWidgetsInputSchema = json.RawMessage(`{"type":"object","properties":{"category":` + elementorIDSchema + `,"search":{"type":"string","maxLength":128}},"additionalProperties":false}`)
 var elementorWidgetSchemaInputSchema = json.RawMessage(`{"type":"object","properties":{"widget":` + elementorIDSchema + `,"controls":{"type":"array","maxItems":128,"uniqueItems":true,"items":` + elementorIDSchema + `}},"required":["widget"],"additionalProperties":false}`)
+var elementorThemeTemplatesInputSchema = json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
 
 func isElementorRead(name string) bool {
-	return name == AbilityElementorWidgets || name == AbilityElementorWidgetSchema
+	return name == AbilityElementorWidgets || name == AbilityElementorWidgetSchema || name == AbilityElementorThemeTemplates
+}
+
+func elementorReadAgentFloor(name string) string {
+	if name == AbilityElementorThemeTemplates {
+		return agentcmd.MinAgentVersionForThemeTemplates
+	}
+	return agentcmd.MinAgentVersionForNativeEdit
+}
+
+func elementorReadOutdatedMessage(name string) string {
+	if name == AbilityElementorThemeTemplates {
+		return "Theme template reads need the WPMgr plugin " + agentcmd.MinAgentVersionForThemeTemplates + " or later on this site. Nothing was asked."
+	}
+	return msgNativeEditOutdated
 }
 
 func elementorReadInputBad(name string, input []byte) bool {
 	top, ok := jsonObjectOf(input)
 	if !ok {
 		return true
+	}
+	if name == AbilityElementorThemeTemplates {
+		return len(top) != 0
 	}
 	if name == AbilityElementorWidgets {
 		if !keysExactly(top, []string{"category", "search"}) {
@@ -93,6 +112,8 @@ type readShape struct {
 	values   *readShape
 	scalar   string
 	token    *regexp.Regexp
+	maxItems int
+	minimum  int64
 	// Option keys containing spaces are site text, even within their closed pattern.
 	fenceSpaces bool
 	nullable    bool
@@ -183,7 +204,7 @@ func (s *readShape) project(v any) (any, bool) {
 	}
 	if s.items != nil {
 		a, ok := v.([]any)
-		if !ok {
+		if !ok || (s.maxItems > 0 && len(a) > s.maxItems) {
 			return nil, false
 		}
 		out := make([]any, 0, len(a))
@@ -244,6 +265,14 @@ func (s *readShape) project(v any) (any, bool) {
 	if s.scalar == "bool" {
 		b, ok := v.(bool)
 		return b, ok
+	}
+	if s.scalar == "integer" {
+		n, ok := v.(json.Number)
+		if !ok {
+			return nil, false
+		}
+		i, err := n.Int64()
+		return n, err == nil && i >= s.minimum
 	}
 	return nil, false
 }
@@ -346,7 +375,9 @@ func fenceElementorRead(name string, raw []byte, maxBytes int) (json.RawMessage,
 		return json.RawMessage(`null`), true
 	}
 	shape := elementorCatalogueShape
-	if name == AbilityElementorWidgetSchema {
+	if name == AbilityElementorThemeTemplates {
+		shape = elementorThemeTemplatesShape
+	} else if name == AbilityElementorWidgetSchema {
 		m, ok := v.(map[string]any)
 		if !ok {
 			return json.RawMessage(`null`), true
@@ -368,6 +399,10 @@ func fenceElementorRead(name string, raw []byte, maxBytes int) (json.RawMessage,
 			if !elementorWidgetType.MatchString(widget["name"].(string)) {
 				widget["usable"] = false
 			}
+		}
+	} else if name == AbilityElementorThemeTemplates {
+		if !validThemeTemplatesRelations(m) {
+			return json.RawMessage(`null`), true
 		}
 	} else if !elementorWidgetType.MatchString(m["widget"].(string)) {
 		m["usable"] = false

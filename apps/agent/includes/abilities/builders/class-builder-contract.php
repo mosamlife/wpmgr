@@ -92,7 +92,7 @@ final class BuilderContract
     public const MAX_STRUCTURE_BYTES = 65536;
 
     /** The page-edit operations. Each adapter declares which of these it supports. */
-    public const OPS = ['set_text', 'insert', 'replace', 'remove', 'move', 'set_native', 'add_native', 'duplicate'];
+    public const OPS = ['set_text', 'insert', 'replace', 'remove', 'move', 'set_native', 'add_native', 'duplicate', 'set_shows_on'];
 
     /**
      * The node kinds of a page projection: the page-create outline kinds, then
@@ -164,6 +164,8 @@ final class BuilderContract
             self::opSchema('move', ['ref' => $ref, 'after' => $ref], ['ref', 'after']),
             self::opSchema('move', ['ref' => $ref, 'before' => $ref], ['ref', 'before']),
         ];
+        $operations[] = self::opSchema('set_shows_on', ['rules' => ['type' => 'array', 'maxItems' => ElementorThemeTemplates::MAX_RULES, 'uniqueItems' => true,
+            'items' => ['type' => 'string', 'pattern' => '^(include|exclude)(/[a-z0-9_-]{1,64}){1,2}(/[1-9][0-9]{0,19})?$']]], ['rules']);
         $settings = ['oneOf' => [['type' => 'object'], ['type' => 'array', 'maxItems' => 0]]];
         $operations[] = self::opSchema('set_native', ['ref' => $ref, 'settings' => $settings], ['ref', 'settings']);
         foreach (['after', 'before', 'into'] as $anchor) {
@@ -178,6 +180,7 @@ final class BuilderContract
             'position' => ['type' => 'string', 'enum' => self::POSITIONS]], ['ref', 'into']);
 
         return [
+            'description' => 'Edits WPMgr-created page, post, header or footer drafts. set_shows_on replaces a template draft display list, once per edit; an empty list shows nowhere. Omitted rules stay unchanged. A person publishes in Elementor.',
             'type'                 => 'object',
             'properties'           => [
                 'post_id'          => ['type' => 'integer', 'minimum' => 1],

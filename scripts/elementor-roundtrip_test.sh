@@ -1006,7 +1006,7 @@ mutant() {
 agent_mutants() {
   mutant verify "its verify skipped" "rt: FAIL [4.3.4 agent-containers tamper] refused:" \
     abilities/builders/class-builder-page-create.php \
-    '$problem = $a->verifyCreated($postId, $doc, $principal, $requestId);' \
+    '$problem = $a->verifyCreated($postId, $doc, $principal, $requestId, $spec['\''shows_on'\''] ?? []);' \
     '$problem = null;'
   mutant undo "an undo that says reverted and leaves the post" "rt: FAIL [4.3.4 agent-containers heading] trashed:" \
     commands/class-ability-run-command.php \

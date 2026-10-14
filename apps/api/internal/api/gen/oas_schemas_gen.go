@@ -3415,6 +3415,9 @@ type AbilityRequest struct {
 	// Null for a page in a WordPress editor, and for every other ability. A card for a request whose
 	// editor is a page builder cannot be shown in full without it and must not be approvable.
 	PageBuilder OptNilAbilityRequestPageBuilder `json:"page_builder"`
+	// Template type, places and display facts checked at precheck and retained in the approval card.
+	// Titles are cleaned plain site text.
+	PageTemplate OptNilAbilityRequestPageTemplate `json:"page_template"`
 	// The card of a wpmgr/page-edit request: the post, the page builder, each change and the page's
 	// outline after the edit, as WPMgr checked them against the site's precheck. Null for every other
 	// ability. A page-edit request without it cannot be shown in full and must not be approvable.
@@ -3636,6 +3639,11 @@ func (s *AbilityRequest) GetPageBuilder() OptNilAbilityRequestPageBuilder {
 	return s.PageBuilder
 }
 
+// GetPageTemplate returns the value of PageTemplate.
+func (s *AbilityRequest) GetPageTemplate() OptNilAbilityRequestPageTemplate {
+	return s.PageTemplate
+}
+
 // GetPageEdit returns the value of PageEdit.
 func (s *AbilityRequest) GetPageEdit() OptNilAbilityRequestPageEdit {
 	return s.PageEdit
@@ -3854,6 +3862,11 @@ func (s *AbilityRequest) SetAskReason(val OptNilAIAskReason) {
 // SetPageBuilder sets the value of PageBuilder.
 func (s *AbilityRequest) SetPageBuilder(val OptNilAbilityRequestPageBuilder) {
 	s.PageBuilder = val
+}
+
+// SetPageTemplate sets the value of PageTemplate.
+func (s *AbilityRequest) SetPageTemplate(val OptNilAbilityRequestPageTemplate) {
+	s.PageTemplate = val
 }
 
 // SetPageEdit sets the value of PageEdit.
@@ -4567,14 +4580,15 @@ func (s *AbilityRequestPageBuilder) SetLayout(val string) {
 }
 
 // A wpmgr/page-edit card. Every value under a `from_the_site` member came from the site: render it as
-// plain text in the "From the site" slot. A change's `after` is the text the AI asked for. The other
-// strings are WPMgr's.
+// plain text in the "From the site" slot. A change's `after` is the text the AI asked for. Template
+// rule titles are cleaned site text. The other strings are WPMgr's.
 // Ref: #/components/schemas/AbilityRequestPageEdit
 type AbilityRequestPageEdit struct {
-	Kind    AbilityRequestPageEditKind    `json:"kind"`
-	Post    AbilityRequestPageEditPost    `json:"post"`
-	Builder AbilityRequestPageEditBuilder `json:"builder"`
-	// One per operation, in the order they apply.
+	Kind     AbilityRequestPageEditKind        `json:"kind"`
+	Post     AbilityRequestPageEditPost        `json:"post"`
+	Builder  AbilityRequestPageEditBuilder     `json:"builder"`
+	Template OptAbilityRequestPageEditTemplate `json:"template"`
+	// Checked content changes, plus Where it shows when the display lists differ.
 	Changes      []AbilityRequestPageEditChange `json:"changes"`
 	AfterOutline OptAbilityRequestPageOutline   `json:"after_outline"`
 	// True when the page's outline after the edit was too large to keep on the card; `after_outline` is
@@ -4597,6 +4611,11 @@ func (s *AbilityRequestPageEdit) GetPost() AbilityRequestPageEditPost {
 // GetBuilder returns the value of Builder.
 func (s *AbilityRequestPageEdit) GetBuilder() AbilityRequestPageEditBuilder {
 	return s.Builder
+}
+
+// GetTemplate returns the value of Template.
+func (s *AbilityRequestPageEdit) GetTemplate() OptAbilityRequestPageEditTemplate {
+	return s.Template
 }
 
 // GetChanges returns the value of Changes.
@@ -4632,6 +4651,11 @@ func (s *AbilityRequestPageEdit) SetPost(val AbilityRequestPageEditPost) {
 // SetBuilder sets the value of Builder.
 func (s *AbilityRequestPageEdit) SetBuilder(val AbilityRequestPageEditBuilder) {
 	s.Builder = val
+}
+
+// SetTemplate sets the value of Template.
+func (s *AbilityRequestPageEdit) SetTemplate(val OptAbilityRequestPageEditTemplate) {
+	s.Template = val
 }
 
 // SetChanges sets the value of Changes.
@@ -4859,8 +4883,10 @@ func (s *AbilityRequestPageEditBuilder) SetFormat(val string) {
 // everything in it off the page; `move` puts `ref` by `anchor`.
 // Ref: #/components/schemas/AbilityRequestPageEditChange
 type AbilityRequestPageEditChange struct {
-	Op  AbilityRequestPageEditChangeOp `json:"op"`
-	Ref OptString                      `json:"ref"`
+	Op AbilityRequestPageEditChangeOp `json:"op"`
+	// Where it shows for a display-list change.
+	Label OptString `json:"label"`
+	Ref   OptString `json:"ref"`
 	// What the node is, such as `heading` or `paragraph`.
 	Kind OptString `json:"kind"`
 	// A heading's level.
@@ -4877,6 +4903,11 @@ type AbilityRequestPageEditChange struct {
 // GetOp returns the value of Op.
 func (s *AbilityRequestPageEditChange) GetOp() AbilityRequestPageEditChangeOp {
 	return s.Op
+}
+
+// GetLabel returns the value of Label.
+func (s *AbilityRequestPageEditChange) GetLabel() OptString {
+	return s.Label
 }
 
 // GetRef returns the value of Ref.
@@ -4922,6 +4953,11 @@ func (s *AbilityRequestPageEditChange) GetFromTheSite() OptAbilityRequestPageEdi
 // SetOp sets the value of Op.
 func (s *AbilityRequestPageEditChange) SetOp(val AbilityRequestPageEditChangeOp) {
 	s.Op = val
+}
+
+// SetLabel sets the value of Label.
+func (s *AbilityRequestPageEditChange) SetLabel(val OptString) {
+	s.Label = val
 }
 
 // SetRef sets the value of Ref.
@@ -5049,11 +5085,12 @@ func (s *AbilityRequestPageEditChangeFromTheSiteBefore) init() AbilityRequestPag
 type AbilityRequestPageEditChangeOp string
 
 const (
-	AbilityRequestPageEditChangeOpSetText AbilityRequestPageEditChangeOp = "set_text"
-	AbilityRequestPageEditChangeOpInsert  AbilityRequestPageEditChangeOp = "insert"
-	AbilityRequestPageEditChangeOpReplace AbilityRequestPageEditChangeOp = "replace"
-	AbilityRequestPageEditChangeOpRemove  AbilityRequestPageEditChangeOp = "remove"
-	AbilityRequestPageEditChangeOpMove    AbilityRequestPageEditChangeOp = "move"
+	AbilityRequestPageEditChangeOpSetText    AbilityRequestPageEditChangeOp = "set_text"
+	AbilityRequestPageEditChangeOpInsert     AbilityRequestPageEditChangeOp = "insert"
+	AbilityRequestPageEditChangeOpReplace    AbilityRequestPageEditChangeOp = "replace"
+	AbilityRequestPageEditChangeOpRemove     AbilityRequestPageEditChangeOp = "remove"
+	AbilityRequestPageEditChangeOpMove       AbilityRequestPageEditChangeOp = "move"
+	AbilityRequestPageEditChangeOpSetShowsOn AbilityRequestPageEditChangeOp = "set_shows_on"
 )
 
 // AllValues returns all AbilityRequestPageEditChangeOp values.
@@ -5064,6 +5101,7 @@ func (AbilityRequestPageEditChangeOp) AllValues() []AbilityRequestPageEditChange
 		AbilityRequestPageEditChangeOpReplace,
 		AbilityRequestPageEditChangeOpRemove,
 		AbilityRequestPageEditChangeOpMove,
+		AbilityRequestPageEditChangeOpSetShowsOn,
 	}
 }
 
@@ -5079,6 +5117,8 @@ func (s AbilityRequestPageEditChangeOp) MarshalText() ([]byte, error) {
 	case AbilityRequestPageEditChangeOpRemove:
 		return []byte(s), nil
 	case AbilityRequestPageEditChangeOpMove:
+		return []byte(s), nil
+	case AbilityRequestPageEditChangeOpSetShowsOn:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -5102,6 +5142,9 @@ func (s *AbilityRequestPageEditChangeOp) UnmarshalText(data []byte) error {
 		return nil
 	case AbilityRequestPageEditChangeOpMove:
 		*s = AbilityRequestPageEditChangeOpMove
+		return nil
+	case AbilityRequestPageEditChangeOpSetShowsOn:
+		*s = AbilityRequestPageEditChangeOpSetShowsOn
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -5180,6 +5223,148 @@ func (s *AbilityRequestPageEditPostFromTheSite) GetTitle() string {
 // SetTitle sets the value of Title.
 func (s *AbilityRequestPageEditPostFromTheSite) SetTitle(val string) {
 	s.Title = val
+}
+
+// The template type and display lists approved with the edit. Titles are cleaned site text.
+// Ref: #/components/schemas/AbilityRequestPageEditTemplate
+type AbilityRequestPageEditTemplate struct {
+	Type       AbilityRequestPageEditTemplateType             `json:"type"`
+	ShowsOn    AbilityRequestPageEditTemplateShowsOn          `json:"shows_on"`
+	RuleTitles []AbilityRequestPageEditTemplateRuleTitlesItem `json:"rule_titles"`
+	// Fixed guidance, optionally including a validated display rule.
+	RefusalMessage OptString `json:"refusal_message"`
+}
+
+// GetType returns the value of Type.
+func (s *AbilityRequestPageEditTemplate) GetType() AbilityRequestPageEditTemplateType {
+	return s.Type
+}
+
+// GetShowsOn returns the value of ShowsOn.
+func (s *AbilityRequestPageEditTemplate) GetShowsOn() AbilityRequestPageEditTemplateShowsOn {
+	return s.ShowsOn
+}
+
+// GetRuleTitles returns the value of RuleTitles.
+func (s *AbilityRequestPageEditTemplate) GetRuleTitles() []AbilityRequestPageEditTemplateRuleTitlesItem {
+	return s.RuleTitles
+}
+
+// GetRefusalMessage returns the value of RefusalMessage.
+func (s *AbilityRequestPageEditTemplate) GetRefusalMessage() OptString {
+	return s.RefusalMessage
+}
+
+// SetType sets the value of Type.
+func (s *AbilityRequestPageEditTemplate) SetType(val AbilityRequestPageEditTemplateType) {
+	s.Type = val
+}
+
+// SetShowsOn sets the value of ShowsOn.
+func (s *AbilityRequestPageEditTemplate) SetShowsOn(val AbilityRequestPageEditTemplateShowsOn) {
+	s.ShowsOn = val
+}
+
+// SetRuleTitles sets the value of RuleTitles.
+func (s *AbilityRequestPageEditTemplate) SetRuleTitles(val []AbilityRequestPageEditTemplateRuleTitlesItem) {
+	s.RuleTitles = val
+}
+
+// SetRefusalMessage sets the value of RefusalMessage.
+func (s *AbilityRequestPageEditTemplate) SetRefusalMessage(val OptString) {
+	s.RefusalMessage = val
+}
+
+type AbilityRequestPageEditTemplateRuleTitlesItem struct {
+	ID int64 `json:"id"`
+	// Cleaned plain site text for a page or post named in either list.
+	Title string `json:"title"`
+}
+
+// GetID returns the value of ID.
+func (s *AbilityRequestPageEditTemplateRuleTitlesItem) GetID() int64 {
+	return s.ID
+}
+
+// GetTitle returns the value of Title.
+func (s *AbilityRequestPageEditTemplateRuleTitlesItem) GetTitle() string {
+	return s.Title
+}
+
+// SetID sets the value of ID.
+func (s *AbilityRequestPageEditTemplateRuleTitlesItem) SetID(val int64) {
+	s.ID = val
+}
+
+// SetTitle sets the value of Title.
+func (s *AbilityRequestPageEditTemplateRuleTitlesItem) SetTitle(val string) {
+	s.Title = val
+}
+
+type AbilityRequestPageEditTemplateShowsOn struct {
+	Before AbilityRequestTemplateReadRules `json:"before"`
+	After  AbilityRequestTemplateReadRules `json:"after"`
+}
+
+// GetBefore returns the value of Before.
+func (s *AbilityRequestPageEditTemplateShowsOn) GetBefore() AbilityRequestTemplateReadRules {
+	return s.Before
+}
+
+// GetAfter returns the value of After.
+func (s *AbilityRequestPageEditTemplateShowsOn) GetAfter() AbilityRequestTemplateReadRules {
+	return s.After
+}
+
+// SetBefore sets the value of Before.
+func (s *AbilityRequestPageEditTemplateShowsOn) SetBefore(val AbilityRequestTemplateReadRules) {
+	s.Before = val
+}
+
+// SetAfter sets the value of After.
+func (s *AbilityRequestPageEditTemplateShowsOn) SetAfter(val AbilityRequestTemplateReadRules) {
+	s.After = val
+}
+
+type AbilityRequestPageEditTemplateType string
+
+const (
+	AbilityRequestPageEditTemplateTypeHeader AbilityRequestPageEditTemplateType = "header"
+	AbilityRequestPageEditTemplateTypeFooter AbilityRequestPageEditTemplateType = "footer"
+)
+
+// AllValues returns all AbilityRequestPageEditTemplateType values.
+func (AbilityRequestPageEditTemplateType) AllValues() []AbilityRequestPageEditTemplateType {
+	return []AbilityRequestPageEditTemplateType{
+		AbilityRequestPageEditTemplateTypeHeader,
+		AbilityRequestPageEditTemplateTypeFooter,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestPageEditTemplateType) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestPageEditTemplateTypeHeader:
+		return []byte(s), nil
+	case AbilityRequestPageEditTemplateTypeFooter:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestPageEditTemplateType) UnmarshalText(data []byte) error {
+	switch AbilityRequestPageEditTemplateType(data) {
+	case AbilityRequestPageEditTemplateTypeHeader:
+		*s = AbilityRequestPageEditTemplateTypeHeader
+		return nil
+	case AbilityRequestPageEditTemplateTypeFooter:
+		*s = AbilityRequestPageEditTemplateTypeFooter
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 // One image a wpmgr/page-create request places. `filename` came from the site: render it as plain
@@ -5442,6 +5627,222 @@ func (s *AbilityRequestPageOutlineNodeFromTheSite) init() AbilityRequestPageOutl
 	return m
 }
 
+// Ref: #/components/schemas/AbilityRequestPageTemplate
+type AbilityRequestPageTemplate struct {
+	Type       AbilityRequestPageTemplateType             `json:"type"`
+	ShowsOn    AbilityRequestTemplateRules                `json:"shows_on"`
+	RuleTitles []AbilityRequestPageTemplateRuleTitlesItem `json:"rule_titles"`
+	AlsoLive   []AbilityRequestPageTemplateAlsoLiveItem   `json:"also_live"`
+	// Fixed guidance with only a validated display rule from the site.
+	RefusalMessage NilString `json:"refusal_message"`
+}
+
+// GetType returns the value of Type.
+func (s *AbilityRequestPageTemplate) GetType() AbilityRequestPageTemplateType {
+	return s.Type
+}
+
+// GetShowsOn returns the value of ShowsOn.
+func (s *AbilityRequestPageTemplate) GetShowsOn() AbilityRequestTemplateRules {
+	return s.ShowsOn
+}
+
+// GetRuleTitles returns the value of RuleTitles.
+func (s *AbilityRequestPageTemplate) GetRuleTitles() []AbilityRequestPageTemplateRuleTitlesItem {
+	return s.RuleTitles
+}
+
+// GetAlsoLive returns the value of AlsoLive.
+func (s *AbilityRequestPageTemplate) GetAlsoLive() []AbilityRequestPageTemplateAlsoLiveItem {
+	return s.AlsoLive
+}
+
+// GetRefusalMessage returns the value of RefusalMessage.
+func (s *AbilityRequestPageTemplate) GetRefusalMessage() NilString {
+	return s.RefusalMessage
+}
+
+// SetType sets the value of Type.
+func (s *AbilityRequestPageTemplate) SetType(val AbilityRequestPageTemplateType) {
+	s.Type = val
+}
+
+// SetShowsOn sets the value of ShowsOn.
+func (s *AbilityRequestPageTemplate) SetShowsOn(val AbilityRequestTemplateRules) {
+	s.ShowsOn = val
+}
+
+// SetRuleTitles sets the value of RuleTitles.
+func (s *AbilityRequestPageTemplate) SetRuleTitles(val []AbilityRequestPageTemplateRuleTitlesItem) {
+	s.RuleTitles = val
+}
+
+// SetAlsoLive sets the value of AlsoLive.
+func (s *AbilityRequestPageTemplate) SetAlsoLive(val []AbilityRequestPageTemplateAlsoLiveItem) {
+	s.AlsoLive = val
+}
+
+// SetRefusalMessage sets the value of RefusalMessage.
+func (s *AbilityRequestPageTemplate) SetRefusalMessage(val NilString) {
+	s.RefusalMessage = val
+}
+
+type AbilityRequestPageTemplateAlsoLiveItem struct {
+	ID int64 `json:"id"`
+	// Cleaned plain site text.
+	Title          string                                                  `json:"title"`
+	ShowsOn        []string                                                `json:"shows_on"`
+	ShowsOnProblem NilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem `json:"shows_on_problem"`
+}
+
+// GetID returns the value of ID.
+func (s *AbilityRequestPageTemplateAlsoLiveItem) GetID() int64 {
+	return s.ID
+}
+
+// GetTitle returns the value of Title.
+func (s *AbilityRequestPageTemplateAlsoLiveItem) GetTitle() string {
+	return s.Title
+}
+
+// GetShowsOn returns the value of ShowsOn.
+func (s *AbilityRequestPageTemplateAlsoLiveItem) GetShowsOn() []string {
+	return s.ShowsOn
+}
+
+// GetShowsOnProblem returns the value of ShowsOnProblem.
+func (s *AbilityRequestPageTemplateAlsoLiveItem) GetShowsOnProblem() NilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem {
+	return s.ShowsOnProblem
+}
+
+// SetID sets the value of ID.
+func (s *AbilityRequestPageTemplateAlsoLiveItem) SetID(val int64) {
+	s.ID = val
+}
+
+// SetTitle sets the value of Title.
+func (s *AbilityRequestPageTemplateAlsoLiveItem) SetTitle(val string) {
+	s.Title = val
+}
+
+// SetShowsOn sets the value of ShowsOn.
+func (s *AbilityRequestPageTemplateAlsoLiveItem) SetShowsOn(val []string) {
+	s.ShowsOn = val
+}
+
+// SetShowsOnProblem sets the value of ShowsOnProblem.
+func (s *AbilityRequestPageTemplateAlsoLiveItem) SetShowsOnProblem(val NilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) {
+	s.ShowsOnProblem = val
+}
+
+type AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem string
+
+const (
+	AbilityRequestPageTemplateAlsoLiveItemShowsOnProblemUnreadable AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem = "unreadable"
+	AbilityRequestPageTemplateAlsoLiveItemShowsOnProblemTooMany    AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem = "too_many"
+)
+
+// AllValues returns all AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem values.
+func (AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) AllValues() []AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem {
+	return []AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem{
+		AbilityRequestPageTemplateAlsoLiveItemShowsOnProblemUnreadable,
+		AbilityRequestPageTemplateAlsoLiveItemShowsOnProblemTooMany,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestPageTemplateAlsoLiveItemShowsOnProblemUnreadable:
+		return []byte(s), nil
+	case AbilityRequestPageTemplateAlsoLiveItemShowsOnProblemTooMany:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) UnmarshalText(data []byte) error {
+	switch AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem(data) {
+	case AbilityRequestPageTemplateAlsoLiveItemShowsOnProblemUnreadable:
+		*s = AbilityRequestPageTemplateAlsoLiveItemShowsOnProblemUnreadable
+		return nil
+	case AbilityRequestPageTemplateAlsoLiveItemShowsOnProblemTooMany:
+		*s = AbilityRequestPageTemplateAlsoLiveItemShowsOnProblemTooMany
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type AbilityRequestPageTemplateRuleTitlesItem struct {
+	ID int64 `json:"id"`
+	// Cleaned plain site text.
+	Title string `json:"title"`
+}
+
+// GetID returns the value of ID.
+func (s *AbilityRequestPageTemplateRuleTitlesItem) GetID() int64 {
+	return s.ID
+}
+
+// GetTitle returns the value of Title.
+func (s *AbilityRequestPageTemplateRuleTitlesItem) GetTitle() string {
+	return s.Title
+}
+
+// SetID sets the value of ID.
+func (s *AbilityRequestPageTemplateRuleTitlesItem) SetID(val int64) {
+	s.ID = val
+}
+
+// SetTitle sets the value of Title.
+func (s *AbilityRequestPageTemplateRuleTitlesItem) SetTitle(val string) {
+	s.Title = val
+}
+
+type AbilityRequestPageTemplateType string
+
+const (
+	AbilityRequestPageTemplateTypeHeader AbilityRequestPageTemplateType = "header"
+	AbilityRequestPageTemplateTypeFooter AbilityRequestPageTemplateType = "footer"
+)
+
+// AllValues returns all AbilityRequestPageTemplateType values.
+func (AbilityRequestPageTemplateType) AllValues() []AbilityRequestPageTemplateType {
+	return []AbilityRequestPageTemplateType{
+		AbilityRequestPageTemplateTypeHeader,
+		AbilityRequestPageTemplateTypeFooter,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestPageTemplateType) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestPageTemplateTypeHeader:
+		return []byte(s), nil
+	case AbilityRequestPageTemplateTypeFooter:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestPageTemplateType) UnmarshalText(data []byte) error {
+	switch AbilityRequestPageTemplateType(data) {
+	case AbilityRequestPageTemplateTypeHeader:
+		*s = AbilityRequestPageTemplateTypeHeader
+		return nil
+	case AbilityRequestPageTemplateTypeFooter:
+		*s = AbilityRequestPageTemplateTypeFooter
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 type AbilityRequestState string
 
 const (
@@ -5538,6 +5939,10 @@ func (s *AbilityRequestState) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+type AbilityRequestTemplateReadRules []string
+
+type AbilityRequestTemplateRules []string
 
 // Why a failed undo (`undo_state` failed) failed: the copy the site kept of the page for this change
 // was changed on the site, so WPMgr did not use it and nothing changed (snapshot_tampered), or the
@@ -36072,6 +36477,51 @@ func (o NilAIReadinessCheckReason) Or(d AIReadinessCheckReason) AIReadinessCheck
 	return d
 }
 
+// NewNilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem returns new NilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem with value set to v.
+func NewNilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem(v AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) NilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem {
+	return NilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem{
+		Value: v,
+	}
+}
+
+// NilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem is nullable AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem.
+type NilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem struct {
+	Value AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem
+	Null  bool
+}
+
+// SetTo sets value to v.
+func (o *NilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) SetTo(v AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) {
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o NilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *NilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) SetToNull() {
+	o.Null = true
+	var v AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o NilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) Get() (v AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o NilAbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) Or(d AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem) AbilityRequestPageTemplateAlsoLiveItemShowsOnProblem {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewNilAgentMirrorStatusLastAttemptOutcome returns new NilAgentMirrorStatusLastAttemptOutcome with value set to v.
 func NewNilAgentMirrorStatusLastAttemptOutcome(v AgentMirrorStatusLastAttemptOutcome) NilAgentMirrorStatusLastAttemptOutcome {
 	return NilAgentMirrorStatusLastAttemptOutcome{
@@ -38726,6 +39176,52 @@ func (o OptAbilityRequestPageEditChangeFromTheSite) Get() (v AbilityRequestPageE
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAbilityRequestPageEditChangeFromTheSite) Or(d AbilityRequestPageEditChangeFromTheSite) AbilityRequestPageEditChangeFromTheSite {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityRequestPageEditTemplate returns new OptAbilityRequestPageEditTemplate with value set to v.
+func NewOptAbilityRequestPageEditTemplate(v AbilityRequestPageEditTemplate) OptAbilityRequestPageEditTemplate {
+	return OptAbilityRequestPageEditTemplate{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityRequestPageEditTemplate is optional AbilityRequestPageEditTemplate.
+type OptAbilityRequestPageEditTemplate struct {
+	Value AbilityRequestPageEditTemplate
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityRequestPageEditTemplate was set.
+func (o OptAbilityRequestPageEditTemplate) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityRequestPageEditTemplate) Reset() {
+	var v AbilityRequestPageEditTemplate
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityRequestPageEditTemplate) SetTo(v AbilityRequestPageEditTemplate) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityRequestPageEditTemplate) Get() (v AbilityRequestPageEditTemplate, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityRequestPageEditTemplate) Or(d AbilityRequestPageEditTemplate) AbilityRequestPageEditTemplate {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -43316,6 +43812,74 @@ func (o OptNilAbilityRequestPageMediaArray) Get() (v []AbilityRequestPageMedia, 
 
 // Or returns value if set, or given parameter if does not.
 func (o OptNilAbilityRequestPageMediaArray) Or(d []AbilityRequestPageMedia) []AbilityRequestPageMedia {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilAbilityRequestPageTemplate returns new OptNilAbilityRequestPageTemplate with value set to v.
+func NewOptNilAbilityRequestPageTemplate(v AbilityRequestPageTemplate) OptNilAbilityRequestPageTemplate {
+	return OptNilAbilityRequestPageTemplate{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilAbilityRequestPageTemplate is optional nullable AbilityRequestPageTemplate.
+type OptNilAbilityRequestPageTemplate struct {
+	Value AbilityRequestPageTemplate
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilAbilityRequestPageTemplate was set.
+func (o OptNilAbilityRequestPageTemplate) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilAbilityRequestPageTemplate) Reset() {
+	var v AbilityRequestPageTemplate
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilAbilityRequestPageTemplate) SetTo(v AbilityRequestPageTemplate) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilAbilityRequestPageTemplate) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilAbilityRequestPageTemplate) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v AbilityRequestPageTemplate
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAbilityRequestPageTemplate) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilAbilityRequestPageTemplate) Get() (v AbilityRequestPageTemplate, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilAbilityRequestPageTemplate) Or(d AbilityRequestPageTemplate) AbilityRequestPageTemplate {
 	if v, ok := o.Get(); ok {
 		return v
 	}

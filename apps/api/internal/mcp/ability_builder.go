@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
@@ -327,8 +328,12 @@ func pageCreateBuilderRefusal(f pageCreateFacts, limits, input []byte) *toolRefu
 // builderPreview is the precheck preview of a page built with Elementor:
 // the page, the Elementor format, version and layout that build it, and
 // the tree it saves. Media is present exactly when the outline has an
-// image.
+// image. Template previews also carry checked display titles and live templates.
 type builderPreview struct {
+	Template         json.RawMessage `json:"template,omitempty"`
+	ShowsOn          json.RawMessage `json:"shows_on,omitempty"`
+	RuleTitles       json.RawMessage `json:"rule_titles,omitempty"`
+	AlsoLive         json.RawMessage `json:"also_live,omitempty"`
 	PostType         string          `json:"post_type"`
 	Editor           string          `json:"editor"`
 	Format           string          `json:"format"`
@@ -366,6 +371,20 @@ func verifyBuilderPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum 
 		return checkedPrecheck{}, false
 	}
 	if pv.PostType != f.postType || pv.Editor != f.editor || pv.Status != "draft" || pv.Title != f.title {
+		return checkedPrecheck{}, false
+	}
+	var template *PageCardTemplate
+	if f.templateType != "" {
+		typ, ok := jsonStringOf(pv.Template)
+		rules, problem := CheckThemeTemplateRules(pv.ShowsOn)
+		if !ok || typ != f.templateType || problem != "" || !slices.Equal(rules, f.showsOn) {
+			return checkedPrecheck{}, false
+		}
+		template, ok = checkTemplatePrecheckFacts(pv, f)
+		if !ok {
+			return checkedPrecheck{}, false
+		}
+	} else if len(pv.Template) != 0 || len(pv.ShowsOn) != 0 || len(pv.RuleTitles) != 0 || len(pv.AlsoLive) != 0 {
 		return checkedPrecheck{}, false
 	}
 	// Only the classic format is built; an input asking for atomic is
@@ -412,6 +431,12 @@ func verifyBuilderPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum 
 		return checkedPrecheck{}, false
 	}
 	prev, ok := phpJSONStringArray(pv.Editor, pv.Format, pv.ElementorVersion, pv.PostType, "draft", pv.Title, string(want))
+	if ok && f.templateType != "" {
+		typ, okType := phpJSONString(f.templateType)
+		rules, okRules := phpJSONStringArray(f.showsOn...)
+		ok = okType && okRules
+		prev = append(prev[:len(prev)-1], []byte(","+typ+","+string(rules)+"]")...)
+	}
 	if !ok || sha256Hex(prev) != resp.PreviewDigest {
 		return checkedPrecheck{}, false
 	}
@@ -420,7 +445,7 @@ func verifyBuilderPageCreatePrecheck(resp agentcmd.AbilityRunResponse, entrySum 
 	}
 	return checkedPrecheck{
 		precheckDigest: resp.PrecheckDigest, previewDigest: resp.PreviewDigest,
-		baseFingerprint: resp.BaseFingerprint, media: media,
+		baseFingerprint: resp.BaseFingerprint, media: media, template: template,
 		builder: &PageCardBuilder{
 			Builder: pageBuilderElementor, Format: pv.Format, Version: pv.ElementorVersion, Layout: pv.Layout,
 		},
@@ -483,7 +508,7 @@ const msgPageFrameOverLimit = "this site builds the page in the %s frame, and th
 // given. The refusal is precheck_unverifiable for an answer that resolved no
 // frame, or names another, and bad_input for an input that cannot carry it.
 func bindPageFrame(resp agentcmd.AbilityRunResponse, entrySum string, input []byte, f pageCreateFacts, pc checkedPrecheck) ([]byte, pageCreateFacts, checkedPrecheck, *toolRefusal) {
-	if f.outlineVersion != pageOutlineVersionDesigned {
+	if f.outlineVersion != pageOutlineVersionDesigned || f.templateType != "" {
 		return input, f, pc, nil
 	}
 	frame, ok := precheckPageFrame(resp.Raw, f)

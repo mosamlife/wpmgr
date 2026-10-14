@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Abilities\Builders;
 
+use WPMgr\Agent\Support\ArrayShape;
+
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
     exit;
@@ -25,6 +27,11 @@ if (!defined('ABSPATH')) {
  */
 final class ElementorRuntime implements ElementorApi
 {
+    /** Elementor Pro's conditions meta key; to be confirmed on a Pro site. */
+    public const KEY_CONDITIONS = '_elementor_conditions';
+
+    public const OPTION_CONDITIONS = 'elementor_pro_theme_builder_conditions';
+
     /** Elementor's main plugin class. */
     public const PLUGIN_CLASS = 'Elementor\\Plugin';
 
@@ -72,6 +79,7 @@ final class ElementorRuntime implements ElementorApi
      * @param string $postCssClass    Tests only: stands in for Elementor's post CSS class. Production passes none.
      * @param string $proConstant     Tests only: stands in for Elementor Pro's version constant. Production passes none.
      * @param string $documentClass   Tests only: stands in for Elementor's base document class. Production passes none.
+     * @param string $themeBuilderClass Tests only: stands in for the Theme Builder module.
      */
     public function __construct(
         private readonly string $pluginClass = self::PLUGIN_CLASS,
@@ -80,7 +88,8 @@ final class ElementorRuntime implements ElementorApi
         private readonly string $fontsClass = self::FONTS_CLASS,
         private readonly string $postCssClass = self::POST_CSS_CLASS,
         private readonly string $proConstant = ElementorFacts::PRO_VERSION_CONSTANT,
-        private readonly string $documentClass = self::DOCUMENT_CLASS
+        private readonly string $documentClass = self::DOCUMENT_CLASS,
+        private readonly string $themeBuilderClass = 'ElementorPro\\Modules\\ThemeBuilder\\Module'
     ) {
     }
 
@@ -483,6 +492,147 @@ final class ElementorRuntime implements ElementorApi
     public function proActive(): bool
     {
         return defined($this->proConstant);
+    }
+
+    /** {@inheritDoc} */
+    public function proVersion(): ?string
+    {
+        try {
+            $version = $this->proActive() ? constant($this->proConstant) : null;
+            return is_string($version) && preg_match(self::RE_VERSION, $version) === 1 ? $version : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /** {@inheritDoc} */
+    public function themeBuilderReady(): bool
+    {
+        try {
+            $parts = $this->themeBuilder();
+            if ($parts === null) {
+                return false;
+            }
+            return is_object($parts[1]->get_condition('general'));
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /** {@inheritDoc} */
+    public function templateRules(int $postId): ?array
+    {
+        try {
+            $parts = $postId > 0 ? $this->themeBuilder() : null;
+            if ($parts === null) {
+                return null;
+            }
+            [$module, $manager] = $parts;
+            $document = $module->get_document($postId);
+            if (!is_object($document)) {
+                return null;
+            }
+            $maps = $manager->get_document_conditions($document);
+            if (!is_array($maps) || !ArrayShape::isList($maps)) {
+                return null;
+            }
+            $rules = [];
+            foreach ($maps as $map) {
+                if (!is_array($map) || !isset($map['type'], $map['name'])) {
+                    return null;
+                }
+                $parts = [];
+                foreach (['type', 'name', 'sub_name', 'sub_id'] as $key) {
+                    $value = array_key_exists($key, $map) ? $map[$key] : '';
+                    if (!is_string($value) && !($key === 'sub_id' && is_int($value))) {
+                        return null;
+                    }
+                    $value = (string) $value;
+                    // Each map member is one path part, never a path itself.
+                    if (str_contains($value, '/')) {
+                        return null;
+                    }
+                    $parts[] = $value;
+                }
+                while (end($parts) === '') {
+                    array_pop($parts);
+                }
+                $rule = implode('/', $parts);
+                if (preg_match(ElementorThemeTemplates::RE_RULE, $rule) !== 1) {
+                    return null;
+                }
+                $rules[] = $rule;
+            }
+            return $rules;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /** {@inheritDoc} */
+    public function saveTemplateRules(int $postId, array $rules): bool
+    {
+        if (ThemeTemplateCreate::inputProblem($rules) !== null) {
+            return false;
+        }
+        try {
+            $parts = $postId > 0 ? $this->themeBuilder() : null;
+            if ($parts === null) {
+                return false;
+            }
+            $maps = [];
+            foreach ($rules as $rule) {
+                $segments = explode('/', $rule);
+                $maps[] = ['type' => $segments[0], 'name' => $segments[1], 'sub_name' => $segments[2] ?? '', 'sub_id' => $segments[3] ?? ''];
+            }
+            return $parts[1]->save_conditions($postId, $maps) !== false;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /** {@inheritDoc} */
+    public function themeConditionRegistered(string $name): bool
+    {
+        try {
+            $parts = $this->themeBuilder();
+            return $parts !== null && is_object($parts[1]->get_condition($name));
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * The guarded Pro module and manager, without writing conditions.
+     *
+     * @return array{object, object}|null
+     * @throws \Throwable Caught by every public caller.
+     */
+    private function themeBuilder(): ?array
+    {
+        $class = $this->themeBuilderClass;
+        if (!$this->proActive() || !class_exists($class) || !method_exists($class, 'instance') || !is_callable([$class, 'instance'])) {
+            return null;
+        }
+        $module = $class::instance();
+        if (!is_object($module)) {
+            return null;
+        }
+        foreach (['get_conditions_manager', 'get_document'] as $method) {
+            if (!method_exists($module, $method) || !is_callable([$module, $method])) {
+                return null;
+            }
+        }
+        $manager = $module->get_conditions_manager();
+        if (!is_object($manager)) {
+            return null;
+        }
+        foreach (['get_document_conditions', 'get_condition', 'save_conditions'] as $method) {
+            if (!method_exists($manager, $method) || !is_callable([$manager, $method])) {
+                return null;
+            }
+        }
+        return [$module, $manager];
     }
 
     /**

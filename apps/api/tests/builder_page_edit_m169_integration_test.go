@@ -396,7 +396,7 @@ func TestM169SeedsStampAndRerunAsAppRole(t *testing.T) {
 		t.Fatalf("wpmgr/page-structure copy: title=%q description=%q usage=%v", ps.Title, ps.Description, ps.Usage)
 	}
 	if pe.Title != m169EditTitle || pe.Description != m169EditDescription ||
-		pe.Usage == nil || *pe.Usage != m178Usage {
+		pe.Usage == nil || *pe.Usage != m184EditUsage {
 		t.Fatalf("wpmgr/page-edit copy: title=%q description=%q usage=%v", pe.Title, pe.Description, pe.Usage)
 	}
 	m169Limits(t, ps.Limits, map[string]any{"builders_enabled": []any{"elementor"}, "max_nodes": float64(500)})

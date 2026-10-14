@@ -1,6 +1,6 @@
-// m178 proofs: after every migration, wpmgr/page-edit's usage is m178's,
-// which names pattern paths (plans.1.price), version 3 insert and replace
-// with the design inherited or sent, the designed-pages floor and
+// m178 proofs: wpmgr/page-edit's usage after m178 names pattern paths
+// (plans.1.price), version 3 insert and replace with the design inherited or
+// sent, the designed-pages floor and
 // anchor_in_use; describe hands the AI the new usage. A row on m169's usage
 // converges: only usage changes, the hash is cleared and the boot stamp
 // re-stamps it. A re-run changes nothing. A usage a person rewrote is kept
@@ -131,10 +131,10 @@ func TestPageEditDesignedUsageM178AsAppRole(t *testing.T) {
 	}
 
 	// 1. A fresh install: every migration, then the boot stamp. The row has
-	// m178's usage over m169's description, limits and floor.
+	// m184's usage over m169's description, limits and floor.
 	m162Stamp(t, w)
 	fresh := m178Row(t, w)
-	m176AssertUsage(t, fresh, m178Usage)
+	m176AssertUsage(t, fresh, m184EditUsage)
 	if fresh.Description != m169EditDescription || fresh.Title != m169EditTitle ||
 		fresh.MinAgentVersion == nil || *fresh.MinAgentVersion != "0.61.163" {
 		t.Fatalf("a fresh install's page-edit copy or floor is not m169's: %+v", fresh)

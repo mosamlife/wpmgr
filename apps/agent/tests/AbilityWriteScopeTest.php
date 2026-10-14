@@ -25,6 +25,8 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
  */
 final class AbilityWriteScopeTest extends TestCase
 {
+    use OptionUpdateHarness;
+
     private const TARGET = 41;
 
     private const OTHER = 77;
@@ -65,6 +67,36 @@ final class AbilityWriteScopeTest extends TestCase
 
     /** @var mixed */
     private $savedStack;
+
+    public function test_template_term_scope_is_narrow(): void
+    {
+        Functions\when('get_term_by')->alias(static fn ($field, $id, $taxonomy) => (object) ['slug' => $id === 71 ? 'header' : 'footer', 'taxonomy' => 'elementor_library_type']);
+        $cases = [
+            [self::TARGET, [71], 'elementor_library_type', [], true],
+            [self::TARGET, [71], 'elementor_library_type', [71], true],
+            [self::TARGET, [71], 'category', [], false],
+            [self::OTHER, [71], 'elementor_library_type', [], false],
+            [self::TARGET, [72], 'elementor_library_type', [], false],
+            [self::TARGET, [71, 72], 'elementor_library_type', [], false],
+            [self::TARGET, [71], 'elementor_library_type', [72], false],
+        ];
+        foreach ($cases as [$id, $new, $taxonomy, $old, $clean]) {
+            $scope = new AbilityWriteScope(self::TARGET, [], [], 'header');
+            $scope->run(fn () => $this->fire('set_object_terms', $id, ['header'], $new, $taxonomy, false, $old));
+            $this->assertSame($clean, $scope->outcome()['clean'], json_encode([$id, $new, $taxonomy, $old]));
+        }
+        $scope = new AbilityWriteScope(self::TARGET, []);
+        $scope->run(fn () => $this->fire('set_object_terms', self::TARGET, ['header'], [71], 'elementor_library_type', false, []));
+        $this->assertFalse($scope->outcome()['clean']);
+    }
+
+    public function test_template_term_scope_refuses_append_without_the_old_set(): void
+    {
+        Functions\when('get_term_by')->justReturn((object) ['slug' => 'header', 'taxonomy' => 'elementor_library_type']);
+        $scope = new AbilityWriteScope(self::TARGET, [], [], 'header');
+        $scope->run(fn () => $this->fire('set_object_terms', self::TARGET, ['header'], [71], 'elementor_library_type', true, []));
+        $this->assertSame([AbilityWriteScope::V_TERMS], $scope->outcome()['violations']);
+    }
 
     protected function set_up(): void
     {
@@ -711,6 +743,143 @@ final class AbilityWriteScopeTest extends TestCase
         $scope->run($events);
 
         return $scope->outcome();
+    }
+
+    public function test_t12_template_option_prevention_and_page_detection(): void
+    {
+        $this->installOptionUpdates();
+        foreach ([true, false] as $prevent) {
+            $this->options['live_list'] = ['header' => [17]];
+            $scope = new AbilityWriteScope(41, [], [], null, $prevent);
+            $scope->run(fn () => update_option('live_list', []));
+            $this->assertSame($prevent ? ['header' => [17]] : [], $this->options['live_list']);
+            $this->assertContains(AbilityWriteScope::V_OPTION, $scope->outcome()['violations']);
+        }
+    }
+
+    public function test_t12_unchanged_option_and_admitted_writes_remain_clean(): void
+    {
+        $this->installOptionUpdates();
+        $this->options['live_list'] = ['header' => [17]];
+        $this->options['own_41'] = 'old';
+        $scope = new AbilityWriteScope(41, ['own_{target}'], [], null, true);
+        $scope->run(function (): void {
+            $this->assertFalse(update_option('live_list', ['header' => [17]]));
+            $this->assertTrue(update_option('own_41', 'new'));
+        });
+        $this->assertSame('new', $this->options['own_41']);
+        $this->assertTrue($scope->outcome()['clean']);
+    }
+
+    public function test_t12_direct_add_and_delete_are_detected_and_checked_absence_is_admitted(): void
+    {
+        $this->installOptionUpdates();
+        Functions\when('add_option')->alias(function ($name, $value): bool {
+            $this->options[$name] = $value;
+            $this->fire('added_option', $name, $value);
+            return true;
+        });
+        Functions\when('delete_option')->alias(function ($name): bool {
+            $this->fire('delete_option', $name);
+            unset($this->options[$name]);
+            $this->fire('deleted_option', $name);
+            return true;
+        });
+        foreach (['add', 'delete'] as $operation) {
+            $scope = new AbilityWriteScope(41, [], [], null, true);
+            $scope->run(function () use ($operation): void {
+                if ($operation === 'add') {
+                    add_option('foreign', 'added directly');
+                } else {
+                    delete_option('foreign');
+                }
+            });
+            $this->assertSame($operation === 'add', array_key_exists('foreign', $this->options));
+            $this->assertContains(AbilityWriteScope::V_OPTION, $scope->outcome()['violations']);
+        }
+        $scope = new AbilityWriteScope(41, [], ['checked' => static fn ($before, $after) => $before === AbilityWriteScope::ABSENT && $after === 'own'], null, true);
+        $scope->run(fn () => update_option('checked', 'own'));
+        $this->assertSame('own', $this->options['checked']);
+        $this->assertTrue($scope->outcome()['clean']);
+    }
+
+    public function test_t12_first_write_is_blocked_before_add_option(): void
+    {
+        $this->installOptionUpdates();
+        Functions\when('add_option')->alias(function ($name, $value): bool {
+            $this->options[$name] = $value;
+            return true;
+        });
+        $scope = new AbilityWriteScope(41, [], [], null, true);
+        $scope->run(fn () => update_option('missing_live_list', []));
+        $this->assertArrayNotHasKey('missing_live_list', $this->options);
+        $this->assertContains(AbilityWriteScope::V_OPTION, $scope->outcome()['violations']);
+    }
+
+    public function test_t14_empty_live_list_initialization_is_narrow(): void
+    {
+        $this->installOptionUpdates();
+        Functions\when('add_option')->alias(function ($name, $value): bool {
+            $this->options[$name] = $value;
+            return true;
+        });
+        $name = \WPMgr\Agent\Abilities\Builders\ElementorRuntime::OPTION_CONDITIONS;
+        foreach ([AbilityWriteScope::ABSENT, false, '', [], ['header' => [], 'footer' => []]] as $before) {
+            foreach ([[], ['header' => [], 'footer' => []]] as $after) {
+                unset($this->options[$name]);
+                if ($before !== AbilityWriteScope::ABSENT) {
+                    $this->options[$name] = $before;
+                }
+                $scope = new AbilityWriteScope(41, [], [], null, true);
+                $scope->run(fn () => update_option($name, $after));
+                $this->assertSame($after, $this->options[$name] ?? null);
+                $this->assertTrue($scope->outcome()['clean']);
+                $this->assertFalse($scope->blockedOption($name));
+            }
+        }
+        foreach ([AbilityWriteScope::ABSENT, [], ['header' => [17]]] as $before) {
+            unset($this->options[$name]);
+            if ($before !== AbilityWriteScope::ABSENT) {
+                $this->options[$name] = $before;
+            }
+            $scope = new AbilityWriteScope(41, [], [], null, true);
+            $scope->run(fn () => update_option($name, ['header' => [18]]));
+            $this->assertSame($before, $this->options[$name] ?? AbilityWriteScope::ABSENT);
+            $this->assertFalse($scope->outcome()['clean']);
+        }
+        $scope = new AbilityWriteScope(41, [], [], null, true);
+        $scope->run(fn () => update_option('another_option', []));
+        $this->assertArrayNotHasKey('another_option', $this->options);
+        $this->assertFalse($scope->outcome()['clean']);
+    }
+
+    public function test_t12_checks_override_patterns_and_last_filter_wins_and_disarms(): void
+    {
+        $this->installOptionUpdates();
+        $this->options['checked'] = 'old';
+        $this->options['live_list'] = 'old';
+        $scope = new AbilityWriteScope(41, ['*'], ['checked' => static fn ($before, $after) => $after === 'own'], null, true);
+        $scope->run(function (): void {
+            $this->assertTrue(update_option('checked', 'own'));
+            update_option('checked', 'foreign');
+        });
+        $this->assertSame('own', $this->options['checked']);
+        $this->assertContains(AbilityWriteScope::V_OPTION, $scope->outcome()['violations']);
+        $change = static fn () => 'changed by earlier filter';
+        add_filter('pre_update_option', $change, PHP_INT_MAX - 1, 3);
+        $scope = new AbilityWriteScope(41, [], [], null, true);
+        try {
+            $scope->run(function (): void {
+                update_option('live_list', 'old');
+                throw new \RuntimeException('stop');
+            });
+        } catch (\RuntimeException $e) {
+            $this->assertSame('stop', $e->getMessage());
+        }
+        $this->assertSame('old', $this->options['live_list']);
+        $this->assertContains(AbilityWriteScope::V_OPTION, $scope->outcome()['violations']);
+        remove_filter('pre_update_option', $change, PHP_INT_MAX - 1);
+        $this->assertTrue(update_option('live_list', 'after scope'));
     }
 
     /**

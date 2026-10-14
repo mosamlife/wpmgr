@@ -586,6 +586,49 @@ final class ElementorDocumentTest extends TestCase
         }
     }
 
+    public function test_template_target_and_verify_guards(): void
+    {
+        $tree = self::tree();
+        $doc = new ElementorDocument($this->api);
+        $this->storeCreated(json_encode($tree, JSON_THROW_ON_ERROR));
+        $this->wpdb->addPost(self::TARGET, self::postRow('elementor_library', 'draft'));
+        $this->wpdb->delete($this->wpdb->postmeta, ['post_id' => self::TARGET, 'meta_key' => ElementorDocument::KEY_TEMPLATE_TYPE]);
+        $this->wpdb->addMeta(++$this->metaId, self::TARGET, ElementorDocument::KEY_TEMPLATE_TYPE, 'header');
+        $document = $this->api->addDocument(self::TARGET, 'header');
+        $this->api->pro = true;
+        $this->api->themeBuilderReady = true;
+        $this->api->templateRules[self::TARGET] = ['include/general'];
+        $terms = ['header'];
+        Functions\when('wp_get_object_terms')->alias(static function () use (&$terms) { return $terms; });
+        $verify = fn () => $doc->verifyCreated(self::TARGET, $tree, self::PRINCIPAL, self::REQUEST, 'elementor_library', null, null, null, 'header', ['include/general']);
+        $this->assertNull($doc->targetProblem(self::TARGET, [], 'header'));
+        $this->assertNull($doc->targetProblem(self::TARGET, []), 'header and footer drafts are edit targets');
+        $this->assertNull($verify());
+        foreach ([[], ['footer'], ['header', 'footer']] as $terms) {
+            $this->assertSame('template_term', $verify());
+        }
+        $terms = ['header'];
+        $document->name = 'footer';
+        $this->assertSame('document_type', $doc->targetProblem(self::TARGET, [], 'header'));
+        $this->assertSame('document_type', $verify());
+        $document->name = 'header';
+        $this->api->templateRules[self::TARGET] = ['include/general', 'include/general'];
+        $this->assertSame('shows_on', $verify());
+        $this->api->templateRules[self::TARGET] = [];
+        $this->assertSame('shows_on', $verify());
+        $this->api->templateRules[self::TARGET] = ['include/general'];
+        $this->wpdb->addMeta(++$this->metaId, self::TARGET, ElementorDocument::KEY_TEMPLATE_TYPE, 'footer');
+        $this->assertSame('template_type', $verify());
+        $this->wpdb->delete($this->wpdb->postmeta, ['post_id' => self::TARGET, 'meta_key' => ElementorDocument::KEY_TEMPLATE_TYPE]);
+        $this->wpdb->addMeta(++$this->metaId, self::TARGET, ElementorDocument::KEY_TEMPLATE_TYPE, 'header');
+        $this->wpdb->delete($this->wpdb->postmeta, ['post_id' => self::TARGET, 'meta_key' => ElementorDocument::MARKER_KEY]);
+        $this->assertSame('document_type', $doc->targetProblem(self::TARGET, [], 'header'));
+        $this->wpdb->addMeta(++$this->metaId, self::TARGET, ElementorDocument::MARKER_KEY, self::REQUEST);
+        $this->wpdb->addPost(self::TARGET, self::postRow('page', 'draft'));
+        $this->assertSame('post_type', $verify());
+        $this->assertSame('document_type', $doc->targetProblem(self::TARGET, [], 'header'));
+    }
+
     public function test_verify_checks_every_stored_row(): void
     {
         $tree = self::tree();

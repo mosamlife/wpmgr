@@ -587,7 +587,7 @@ func classify(name string, entries []sqlc.AbilityCatalogue, inv *sqlc.SiteAbilit
 		return not(notRunnableAgentOutdated)
 	case isRestAbility(name) && !abilityAgentMeetsFloor(agentVersion, abilityStrPtr(agentcmd.MinAgentVersionForRestCall)):
 		return not(notRunnableAgentOutdated)
-	case isElementorRead(name) && !abilityAgentMeetsFloor(agentVersion, abilityStrPtr(agentcmd.MinAgentVersionForNativeEdit)):
+	case isElementorRead(name) && !abilityAgentMeetsFloor(agentVersion, abilityStrPtr(elementorReadAgentFloor(name))):
 		return not(notRunnableAgentOutdated)
 	case isBuilderEditAbility(name) && !abilityAgentMeetsFloor(agentVersion, abilityStrPtr(agentcmd.MinAgentVersionForBuilderEdit)):
 		return not(notRunnableAgentOutdated)
@@ -934,10 +934,11 @@ var ownAbilityInputSchemas = map[string]json.RawMessage{
 	AbilityRestRead:   restInputSchema,
 	AbilityRestWrite:  restInputSchema,
 	// The agent registers the same input schemas for these own abilities.
-	AbilityElementorWidgets:      elementorWidgetsInputSchema,
-	AbilityElementorWidgetSchema: elementorWidgetSchemaInputSchema,
-	AbilityPageStructure:         pageStructureInputSchema,
-	AbilityPageEdit:              pageEditInputSchema,
+	AbilityElementorWidgets:        elementorWidgetsInputSchema,
+	AbilityElementorWidgetSchema:   elementorWidgetSchemaInputSchema,
+	AbilityElementorThemeTemplates: elementorThemeTemplatesInputSchema,
+	AbilityPageStructure:           pageStructureInputSchema,
+	AbilityPageEdit:                pageEditInputSchema,
 }
 
 type describeWPMgr struct {
@@ -1367,7 +1368,7 @@ func (s *Service) runSiteAbility(ctx context.Context, auth AuthorizedRequest, ra
 				floor, msg = agentcmd.MinAgentVersionForVendorReads, msgAbilityOutdatedVendor
 			}
 			if isElementorRead(name) && !vendor {
-				floor, msg = agentcmd.MinAgentVersionForNativeEdit, msgNativeEditOutdated
+				floor, msg = elementorReadAgentFloor(name), elementorReadOutdatedMessage(name)
 			}
 			if isRestAbility(name) {
 				floor, msg = agentcmd.MinAgentVersionForRestCall, msgAbilityRestOutdated

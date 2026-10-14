@@ -42,6 +42,7 @@ import {
 } from "./page-edit-model";
 import { PageEditPreview } from "./page-edit-preview";
 import { useWindowOpen } from "./use-window-open";
+import { editTemplateSchema, TEMPLATE_EDIT_UNDO, TEMPLATE_EFFECT, templatePublished } from "./template-card-model";
 
 // The approval card for "AI changes a draft in Elementor" (wpmgr/page-edit,
 // BF-E), and what it says afterwards: the change done, each change's undo
@@ -84,8 +85,9 @@ export function PageEditCard({
   const changesLabelId = useId();
   const setUpFor = setUpForLine(request);
   const busy = approvePending || declinePending;
-  const title = pageEditCardTitle(request.site_label);
-  const links = status.links && view ? editLinks(siteUrl, view.postId) : [];
+  const template = editTemplateSchema.safeParse(request.page_edit?.template);
+  const title = template.success ? `Change a ${template.data.type} draft in Elementor` : pageEditCardTitle(request.site_label);
+  const links = status.links && view ? editLinks(siteUrl, view.postId).filter((l) => !view.template || l.label === "Open in Elementor") : [];
 
   return (
     <article
@@ -94,7 +96,7 @@ export function PageEditCard({
       tabIndex={deepLinked ? -1 : undefined}
       className={cn(
         "space-y-3 rounded-lg border border-border bg-card p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]",
-        auto && status.kind === "failed" && "border-destructive",
+        auto && (status.kind === "failed" || template.success && status.tone === "red") && "border-destructive",
         className,
       )}
     >
@@ -112,15 +114,15 @@ export function PageEditCard({
       <dl className="grid grid-cols-[minmax(7rem,auto)_1fr] gap-x-4 gap-y-1 text-sm">
         {view ? (
           <>
-            <dt className="text-muted-foreground">Page</dt>
+            <dt className="text-muted-foreground">{view.template ? view.template.type === "header" ? "Header" : "Footer" : "Page"}</dt>
             <dd
               data-testid="page-line"
               className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 text-foreground"
             >
               <span className="break-words">
-                {`#${view.postId} "`}
+                {`#${view.postId} ${view.template ? "“" : '"'}`}
                 <bdi>{view.title}</bdi>
-                {`" · Draft · Elementor ${view.builderVersion}`}
+                {`${view.template ? "”" : '"'} · ${view.template && templatePublished(request) ? "Published" : "Draft"} · Elementor ${view.builderVersion}${view.template ? " with Pro" : ""}`}
               </span>
               <span className="text-xs font-medium text-muted-foreground">From the site</span>
             </dd>
@@ -149,14 +151,14 @@ export function PageEditCard({
       {view ? (
         <>
           <PageEditPreview view={view} siteHost={request.site_host} siteUrl={siteUrl} labelledBy={changesLabelId} />
-          <dl data-testid="edit-rows" className="grid grid-cols-[minmax(7rem,auto)_1fr] gap-x-4 gap-y-1 text-sm">
+          {view.template && (templatePublished(request) || request.undo_state === "refused_conflict") ? null : (<dl data-testid="edit-rows" className="grid grid-cols-[minmax(7rem,auto)_1fr] gap-x-4 gap-y-1 text-sm">
             {editRows(view, request.created_at, pending).map((row) => (
               <Fragment key={row.label}>
                 <dt className="text-muted-foreground">{row.label}</dt>
                 <dd className="min-w-0 break-words text-foreground">{row.text}</dd>
               </Fragment>
             ))}
-          </dl>
+          </dl>)}
         </>
       ) : (
         <p className="text-sm text-muted-foreground">{NOT_SHOWABLE_COPY}</p>
@@ -224,6 +226,7 @@ export function PageEditCard({
       <UndoConfirm
         open={confirmOpen}
         page={view === null ? null : view.title === "" ? `#${view.postId}` : view.title}
+        restoresPlaces={view?.setsPlaces ?? false}
         onCancel={() => setConfirmOpen(false)}
         onConfirm={() => {
           setConfirmOpen(false);
@@ -251,6 +254,13 @@ interface EditRow {
 /** The rows under the changes: what is kept, what WPMgr checks, the effect and the undo. */
 function editRows(view: PageEditView, createdAt: string, pending: boolean): EditRow[] {
   const rows: EditRow[] = [];
+  if (view.template) {
+    rows.push({ label: "Keeps", text: "Everything not listed above stays as it was." });
+    rows.push({ label: "Effect", text: TEMPLATE_EFFECT });
+    if (view.setsPlaces) rows.push({ label: "Undo", text: TEMPLATE_EDIT_UNDO });
+    else if (pending) rows.push({ label: "Undo", text: undoPromise(createdAt) });
+    return rows;
+  }
   if (view.hasTextChange) rows.push({ label: "Keeps", text: KEEPS_COPY });
   rows.push({ label: "Checks", text: CHECKS_COPY });
   rows.push({ label: "Effect", text: EFFECT_COPY });
@@ -325,11 +335,13 @@ function UndoConfirm({
   page,
   onCancel,
   onConfirm,
+  restoresPlaces,
 }: {
   open: boolean;
   page: string | null;
   onCancel: () => void;
   onConfirm: () => void;
+  restoresPlaces: boolean;
 }) {
   const titleId = useId();
   const bodyId = useId();
@@ -341,7 +353,7 @@ function UndoConfirm({
         </DialogHeader>
         <DialogBody>
           <p id={bodyId} className="text-sm text-foreground">
-            {page === null ? (
+            {restoresPlaces ? TEMPLATE_EDIT_UNDO : page === null ? (
               "WPMgr puts back what this change wrote on the page."
             ) : (
               <>

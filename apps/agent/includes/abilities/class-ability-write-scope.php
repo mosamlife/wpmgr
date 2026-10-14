@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Abilities;
 
+use WPMgr\Agent\Abilities\Builders\ElementorRuntime;
+
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
     exit;
@@ -25,7 +27,9 @@ if (!defined('ABSPATH')) {
  * - terms: a change to any object's term relationships is a violation.
  *   Setting an object's terms to the set it already holds is not a change:
  *   core's post update sets the categories of every post type that has
- *   them again;
+ *   them again. A template scope also admits its target's one named library
+ *   type term, from an empty or identical old set, including creation of
+ *   that term. No other changed term set is admitted;
  * - options: a name outside the given patterns is a violation. "{target}" in
  *   a pattern stands for the target id in decimal, so a pattern written for
  *   one post never admits another post's option. A name that starts with
@@ -47,7 +51,9 @@ if (!defined('ABSPATH')) {
  *
  * Violations are fixed labels; no site text is reported in them. The
  * outcome is complete once the scope is disarmed. Writes are recorded, not
- * undone, except the blocked privilege writes.
+ * undone, except the blocked privilege writes. Template work can also block
+ * non-admitted option updates before storage; direct adds and deletes are
+ * detected, not prevented.
  *
  * Scope: effects made through the WordPress APIs that fire these hooks.
  */
@@ -74,7 +80,7 @@ final class AbilityWriteScope
     /** An object's term relationships changed. */
     public const V_TERMS = 'term_changed';
 
-    /** An option outside the patterns was written. */
+    /** An option write outside the patterns or value checks was attempted. */
     public const V_OPTION = 'option_written';
 
     /** A user's roles or a super-admin grant changed. */
@@ -109,6 +115,9 @@ final class AbilityWriteScope
     /** @var array<string, callable(mixed, mixed, int, string): mixed> Option-name prefix => value check. */
     private array $checks = [];
 
+    /** @var array<string,true> Option updates prevented before storage. */
+    private array $blockedOptions = [];
+
     private bool $armed = false;
 
     private ?AbilitySideEffects $inner = null;
@@ -129,12 +138,17 @@ final class AbilityWriteScope
      * @param int                 $targetId       Post the save may write.
      * @param list<mixed>         $optionPatterns Option-name patterns the save may write; "*" is the only wildcard.
      * @param array<mixed, mixed> $optionChecks   Option-name prefix => value check: callable(mixed $before, mixed $after, int $targetId, string $name), true when that one write is the save's own.
+     * @param string|null $templateType Header or footer, only to admit the initial library type term.
+     * @param bool $preventOptionChanges Block non-admitted option updates for template work.
      * @throws \InvalidArgumentException When the post id is not positive, or a check has no plain prefix or is not callable.
      */
-    public function __construct(int $targetId, array $optionPatterns, array $optionChecks = [])
+    public function __construct(int $targetId, array $optionPatterns, array $optionChecks = [], private readonly ?string $templateType = null, private readonly bool $preventOptionChanges = false)
     {
         if ($targetId < 1) {
             throw new \InvalidArgumentException('A write scope needs a post id.');
+        }
+        if ($templateType !== null && !in_array($templateType, ['header', 'footer'], true)) {
+            throw new \InvalidArgumentException('A template scope needs header or footer.');
         }
         $this->targetId = $targetId;
         foreach ($optionPatterns as $pattern) {
@@ -178,12 +192,16 @@ final class AbilityWriteScope
         $this->revisions  = [];
         $this->targetKeys = [];
         $this->violations = [];
+        $this->blockedOptions = [];
         $this->armed      = true;
         // A checked name is left to its check, write by write, never to the
         // inner recorder's patterns alone.
         $checked = [];
         foreach (array_keys($this->checks) as $prefix) {
             $checked[] = $prefix . '*';
+        }
+        if ($this->preventOptionChanges) {
+            $checked[] = ElementorRuntime::OPTION_CONDITIONS;
         }
         $this->inner = new AbilitySideEffects(array_merge($this->patterns, $checked), []);
         $this->inner->arm();
@@ -205,6 +223,9 @@ final class AbilityWriteScope
             $this->metaWritten($objectId, $key);
         };
         $setTerms = function ($objectId = 0, $terms = null, $ttIds = null, $taxonomy = '', $append = false, $oldTtIds = null): void {
+            if ($this->armed && $this->templateType !== null && $append === false && $this->templateTermsAllowed($objectId, $ttIds, $taxonomy, $oldTtIds)) {
+                return;
+            }
             if ($this->armed && self::termsChanged($ttIds, $oldTtIds, (bool) $append)) {
                 $this->violations[self::V_TERMS] = true;
             }
@@ -231,7 +252,21 @@ final class AbilityWriteScope
         $this->hook('deleted_term_relationships', $deletedTerms, 1, PHP_INT_MIN);
         $this->hook('map_meta_cap', $metaCap, 4, PHP_INT_MAX);
         $this->hook('user_has_cap', $userCaps, 2, PHP_INT_MAX);
-        if ($this->checks === []) {
+        if ($this->preventOptionChanges) {
+            $this->hook('pre_update_option', function ($value, $name, $before) {
+                if (!$this->armed || self::sameOptionValue($value, $before)) {
+                    return $value;
+                }
+                $stored = get_option($name, self::ABSENT);
+                if ($this->optionAllowed($name, $stored, $value)) {
+                    return $value;
+                }
+                $this->violations[self::V_OPTION] = true;
+                $this->blockedOptions[$name] = true;
+                return $before;
+            }, 3, PHP_INT_MAX);
+        }
+        if ($this->checks === [] && !$this->preventOptionChanges) {
             return;
         }
         $updated = function ($name = '', $before = null, $after = null): void {
@@ -243,7 +278,7 @@ final class AbilityWriteScope
         // Core fires delete_option before the delete, and only for an option
         // that exists, so the value read here is the one being deleted.
         $deleting = function ($name = ''): void {
-            if (!$this->armed || $this->checkFor($name) === null) {
+            if (!$this->armed || ($this->checkFor($name) === null && !($this->preventOptionChanges && $name === ElementorRuntime::OPTION_CONDITIONS))) {
                 return;
             }
             $before = get_option(self::nameOf($name), self::ABSENT);
@@ -327,6 +362,63 @@ final class AbilityWriteScope
         ];
     }
 
+    /** Whether this scope prevented an update of the named option. */
+    public function blockedOption(string $name): bool
+    {
+        return isset($this->blockedOptions[$name]);
+    }
+
+    /** The same no-change comparison update_option uses before its add branch. */
+    public static function sameOptionValue(mixed $value, mixed $before): bool
+    {
+        return $value === $before || maybe_serialize($value) === maybe_serialize($before);
+    }
+
+    /** The live display list may initialize empty without changing any template entry. */
+    public static function emptyLiveListWrite(string $name, mixed $before, mixed $after): bool
+    {
+        if ($name !== ElementorRuntime::OPTION_CONDITIONS || !self::emptyLiveList($after)) {
+            return false;
+        }
+        return $before === self::ABSENT || $before === false || $before === '' || self::emptyLiveList($before);
+    }
+
+    /** Empty lists and empty per-location lists contain no template entries. */
+    private static function emptyLiveList(mixed $value): bool
+    {
+        if (!is_array($value)) {
+            return false;
+        }
+        foreach ($value as $location => $templates) {
+            if (!is_string($location) || $templates !== []) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Value checks take precedence over name patterns, including when they throw. */
+    private function optionAllowed(string $name, mixed $before, mixed $after): bool
+    {
+        if ($this->preventOptionChanges && self::emptyLiveListWrite($name, $before, $after)) {
+            return true;
+        }
+        $check = $this->checkFor($name);
+        if ($check !== null) {
+            try {
+                return $check($before, $after, $this->targetId, $name) === true;
+            } catch (\Throwable $e) {
+                return false;
+            }
+        }
+        foreach ($this->patterns as $pattern) {
+            if (AbilitySideEffects::matches($pattern, $name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * One write of an option: a violation when a value check covers its name
      * and does not answer true. A name no check covers is the inner
@@ -340,6 +432,12 @@ final class AbilityWriteScope
     private function checkedWrite($name, $before, $after): void
     {
         if (!$this->armed) {
+            return;
+        }
+        if ($this->preventOptionChanges && $name === ElementorRuntime::OPTION_CONDITIONS) {
+            if (!self::emptyLiveListWrite($name, $before, $after)) {
+                $this->violations[self::V_OPTION] = true;
+            }
             return;
         }
         $check = $this->checkFor($name);
@@ -508,6 +606,25 @@ final class AbilityWriteScope
     private static function forbidden(string $cap): bool
     {
         return $cap === 'unfiltered_html' || str_starts_with($cap, 'publish_') || str_starts_with($cap, 'delete_');
+    }
+
+    /** Admit replacement with the target's one library type term from an empty or identical set. */
+    private function templateTermsAllowed(mixed $objectId, mixed $ttIds, mixed $taxonomy, mixed $oldTtIds): bool
+    {
+        if (self::id($objectId) !== $this->targetId || $taxonomy !== 'elementor_library_type') {
+            return false;
+        }
+        $now = self::idSet($ttIds);
+        $old = self::idSet($oldTtIds);
+        if ($now === null || count($now) !== 1 || ($old !== [] && $old !== $now)) {
+            return false;
+        }
+        try {
+            $term = get_term_by('term_taxonomy_id', array_key_first($now), 'elementor_library_type');
+            return is_object($term) && ($term->taxonomy ?? null) === 'elementor_library_type' && ($term->slug ?? null) === $this->templateType;
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 
     /**

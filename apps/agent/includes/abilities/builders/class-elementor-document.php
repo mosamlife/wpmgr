@@ -350,9 +350,10 @@ final class ElementorDocument
      * @param int      $postId  The page.
      * @param int      $kitId   The active kit's post id; 0 when there is none.
      * @param callable $restore The restore.
+     * @param bool $template Whether the authenticated snapshot belongs to a header or footer.
      * @return array{ran: bool, code?: string, detail?: string, value?: mixed, thrown?: \Throwable|null, scope?: array<string, mixed>, side_effect?: string|null}
      */
-    public function restoreScoped(int $postId, int $kitId, callable $restore): array
+    public function restoreScoped(int $postId, int $kitId, callable $restore, bool $template = false): array
     {
         if ($postId < 1) {
             return ['ran' => false, 'code' => self::CODE_REFUSED, 'detail' => 'no page to restore'];
@@ -363,7 +364,7 @@ final class ElementorDocument
             return ['ran' => false, 'code' => 'data_unreadable', 'detail' => 'the active kit could not be read; nothing was changed'];
         }
 
-        $scope  = new AbilityWriteScope($postId, $this->saveOptionPatterns(), self::saveOptionChecks());
+        $scope  = new AbilityWriteScope($postId, $this->saveOptionPatterns(), self::saveOptionChecks(), null, $template);
         $value  = null;
         $thrown = null;
         try {
@@ -611,15 +612,17 @@ final class ElementorDocument
      *
      * @param int                  $postId Target post.
      * @param array<string, mixed> $facts  From ElementorFacts::collect().
+     * @param string|null $themeType Expected header or footer type; otherwise read from a library target.
      * @return string|null
      */
-    public function targetProblem(int $postId, array $facts): ?string
+    public function targetProblem(int $postId, array $facts, ?string $themeType = null): ?string
     {
         if ($postId < 1) {
             return 'post_missing';
         }
         try {
-            $stored = BuilderDocumentFingerprint::read($postId, [self::KEY_EDIT_MODE]);
+            $keys = [self::KEY_EDIT_MODE, self::MARKER_KEY, self::KEY_TEMPLATE_TYPE];
+            $stored = BuilderDocumentFingerprint::read($postId, $keys);
         } catch (\Throwable $e) {
             return 'post_unreadable';
         }
@@ -658,7 +661,16 @@ final class ElementorDocument
         } catch (\Throwable $e) {
             return 'not_editable';
         }
-        if (!in_array($name, [self::TEMPLATE_PAGE, self::TEMPLATE_POST], true)) {
+        if ($stored['post']['post_type'] === 'elementor_library' && $themeType === null) {
+            $themeType = $stored['rows'][self::KEY_TEMPLATE_TYPE][0] ?? '';
+        }
+        if ($themeType !== null) {
+            if (!in_array($themeType, ThemeTemplateCreate::TYPES, true) || $stored['post']['post_type'] !== 'elementor_library'
+                || !DraftEligibility::validCreationMarker($stored['rows'][self::MARKER_KEY] ?? [])
+                || ($stored['rows'][self::KEY_TEMPLATE_TYPE] ?? []) !== [$themeType] || $name !== $themeType) {
+                return 'document_type';
+            }
+        } elseif (!in_array($name, [self::TEMPLATE_PAGE, self::TEMPLATE_POST], true)) {
             return 'document_type';
         }
 
@@ -669,7 +681,7 @@ final class ElementorDocument
      * Why the post may not take an edit, as a short token, or null.
      *
      * Every targetProblem() reason first, then, in order: the post is not a
-     * page or a post (post_type); anyone has an autosave of it, or
+     * page, post or header/footer library draft (post_type); anyone has an autosave of it, or
      * Elementor's document reports a newer autosave (TARGET_AUTOSAVE;
      * autosave_unreadable when Elementor fails to answer); someone else holds
      * its edit lock (TARGET_LOCKED; lock_unreadable when that cannot be
@@ -695,7 +707,7 @@ final class ElementorDocument
         if ($stored === null) {
             return 'post_missing';
         }
-        if (!in_array($stored['post']['post_type'], self::EDIT_POST_TYPES, true)) {
+        if (!in_array($stored['post']['post_type'], [...self::EDIT_POST_TYPES, 'elementor_library'], true)) {
             return 'post_type';
         }
 
@@ -760,9 +772,11 @@ final class ElementorDocument
      * @param int          $postId Target post, checked by targetProblem().
      * @param array<mixed> $tree   Element tree, checked by precheckTree().
      * @param int          $kitId  The active kit's post id; 0 when there is none.
+     * @param string|null $themeType Library type whose term this template save may assign.
+     * @param bool $template Protect option updates without admitting initial type terms on edits.
      * @return array{ok: bool, code?: string, detail?: string, scope: array<string, mixed>|null, warnings?: list<array{code: string, detail: string}>}
      */
-    public function save(int $postId, array $tree, int $kitId): array
+    public function save(int $postId, array $tree, int $kitId, ?string $themeType = null, bool $template = false): array
     {
         $document = $postId > 0 ? $this->api->document($postId) : null;
         $save     = $document === null ? null : [$document, 'save'];
@@ -775,7 +789,7 @@ final class ElementorDocument
             return ['ok' => false, 'code' => self::CODE_REFUSED, 'detail' => 'the active kit could not be read', 'scope' => null];
         }
 
-        $scope    = new AbilityWriteScope($postId, $this->saveOptionPatterns(), self::saveOptionChecks());
+        $scope    = new AbilityWriteScope($postId, $this->saveOptionPatterns(), self::saveOptionChecks(), $themeType, $template || $themeType !== null);
         $locale   = setlocale(LC_NUMERIC, '0');
         $level    = ob_get_level();
         $since    = time();
@@ -1000,9 +1014,11 @@ final class ElementorDocument
      *                                tree is held to; null for a plain page's
      *                                (ElementorClassicMapper::ALLOWED_KEYS), the
      *                                designed one for a designed page's.
+     * @param string|null $themeType Header or footer for a library draft, otherwise null.
+     * @param list<string> $showsOn Complete approved rules for a library draft.
      * @return string|null
      */
-    public function verifyCreated(int $postId, array $tree, int $principal, string $requestId, string $postType, ?string $template = null, ?array $pageSettings = null, ?array $allowed = null): ?string
+    public function verifyCreated(int $postId, array $tree, int $principal, string $requestId, string $postType, ?string $template = null, ?array $pageSettings = null, ?array $allowed = null, ?string $themeType = null, array $showsOn = []): ?string
     {
         if ($postId < 1) {
             return 'post_missing';
@@ -1034,8 +1050,25 @@ final class ElementorDocument
         if (($rows[self::KEY_EDIT_MODE] ?? []) !== [self::EDIT_MODE_BUILDER]) {
             return 'edit_mode';
         }
-        if (($rows[self::KEY_TEMPLATE_TYPE] ?? []) !== [self::templateType($postType)]) {
+        if (($rows[self::KEY_TEMPLATE_TYPE] ?? []) !== [$themeType ?? self::templateType($postType)]) {
             return 'template_type';
+        }
+        if ($themeType !== null) {
+            try {
+                $document = $this->api->document($postId);
+                if (!in_array($themeType, ThemeTemplateCreate::TYPES, true) || $postType !== 'elementor_library'
+                    || $document === null || !is_callable([$document, 'get_name']) || $document->get_name() !== $themeType) {
+                    return 'document_type';
+                }
+                if (!ThemeTemplateCreate::termMatches($postId, $themeType)) {
+                    return 'template_term';
+                }
+                if (!ThemeTemplateCreate::sameRules($showsOn, $this->api->templateRules($postId))) {
+                    return 'shows_on';
+                }
+            } catch (\Throwable $e) {
+                return 'template_unreadable';
+            }
         }
         $settingsRows = $rows[self::KEY_PAGE_SETTINGS] ?? [];
         if ($pageSettings === null ? $settingsRows !== [] : $settingsRows !== [self::pageSettingsBytes($pageSettings)]) {
@@ -1149,8 +1182,24 @@ final class ElementorDocument
             return 'edit_mode';
         }
         $template = $rows[self::KEY_TEMPLATE_TYPE] ?? [];
-        if ($template !== $snapshot['rows'][self::KEY_TEMPLATE_TYPE] || !in_array($template, [[self::TEMPLATE_PAGE], [self::TEMPLATE_POST]], true)) {
+        $theme = $post['post_type'] === 'elementor_library';
+        $types = $theme ? [['header'], ['footer']] : [[self::TEMPLATE_PAGE], [self::TEMPLATE_POST]];
+        if ($template !== $snapshot['rows'][self::KEY_TEMPLATE_TYPE] || !in_array($template, $types, true)) {
             return 'template_type';
+        }
+        if ($theme) {
+            try {
+                $document = $this->api->document($postId);
+                $name = is_object($document) && is_callable([$document, 'get_name']) ? $document->get_name() : null;
+            } catch (\Throwable $e) {
+                $name = null;
+            }
+            if ($name !== $template[0]) {
+                return 'document_type';
+            }
+            if (!ThemeTemplateCreate::termMatches($postId, $template[0])) {
+                return 'template_type_term';
+            }
         }
         $wantSettings = $pageSettings === null ? $snapshot['rows'][self::KEY_PAGE_SETTINGS] : [self::pageSettingsBytes($pageSettings)];
         if (($rows[self::KEY_PAGE_SETTINGS] ?? []) !== $wantSettings) {

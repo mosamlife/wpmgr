@@ -167,12 +167,25 @@ final class ElementorAdapter implements BuilderAdapter
         );
     }
 
+    /** Template edit fingerprints cover the stored display rules as well as the tree. */
+    public function editDescriptor(bool $template): DocumentDescriptor
+    {
+        $d = $this->descriptor();
+        return $template ? new DocumentDescriptor([...$d->exactKeys, ElementorRuntime::KEY_CONDITIONS], $d->prefixes, $d->derivedKeys, $d->flagKeys) : $d;
+    }
+
     /**
      * {@inheritDoc}
      */
     public function capabilities(): array
     {
         return ['operations' => BuilderContract::OPS, 'node_kinds' => BuilderContract::KINDS];
+    }
+
+    /** Draft-template validation and the scoped conditions save, using this adapter's runtime. */
+    public function templates(): ThemeTemplateCreate
+    {
+        return new ThemeTemplateCreate($this->api);
     }
 
     /**
@@ -202,7 +215,7 @@ final class ElementorAdapter implements BuilderAdapter
     public function buildCreate(array $spec, IdSeed $ids, array $mediaById): array
     {
         $postType = $spec['post_type'] ?? null;
-        if (!is_string($postType) || !in_array($postType, self::POST_TYPES, true)) {
+        if (!is_string($postType) || (!in_array($postType, self::POST_TYPES, true) && !($postType === 'elementor_library' && in_array($spec['template'] ?? null, ThemeTemplateCreate::TYPES, true)))) {
             return ['code' => 'bad_input', 'detail' => 'post_type: not a type an Elementor page is created as'];
         }
         $facts      = $this->facts();
@@ -224,7 +237,7 @@ final class ElementorAdapter implements BuilderAdapter
         try {
             $doc = new NativeDocument($mapped['tree'], [
                 ElementorDocument::KEY_EDIT_MODE     => ElementorDocument::EDIT_MODE_BUILDER,
-                ElementorDocument::KEY_TEMPLATE_TYPE => ElementorDocument::templateType($postType),
+                ElementorDocument::KEY_TEMPLATE_TYPE => $spec['template'] ?? ElementorDocument::templateType($postType),
             ]);
         } catch (\Throwable $e) {
             return ['code' => 'bad_input', 'detail' => 'outline: the page could not be encoded'];
@@ -321,12 +334,15 @@ final class ElementorAdapter implements BuilderAdapter
 
     /**
      * {@inheritDoc}
+     *
+     * @param bool $templateEdit Protect template edits without admitting initial type terms.
      */
-    public function write(int $postId, NativeDocument $doc): array
+    public function write(int $postId, NativeDocument $doc, bool $templateEdit = false): array
     {
         $kitId = $this->facts()['active_kit_id'] ?? 0;
 
-        return $this->document->save($postId, $doc->tree, is_int($kitId) ? $kitId : 0);
+        $type = $doc->meta[ElementorDocument::KEY_TEMPLATE_TYPE] ?? null;
+        return $this->document->save($postId, $doc->tree, is_int($kitId) ? $kitId : 0, !$templateEdit && in_array($type, ThemeTemplateCreate::TYPES, true) ? $type : null, $templateEdit);
     }
 
     /**
@@ -337,10 +353,11 @@ final class ElementorAdapter implements BuilderAdapter
      * page carries one, and its tree is held to the designed allowlist for
      * the breakpoints this site has active; a plain page's to ALLOWED_KEYS.
      */
-    public function verifyCreated(int $postId, NativeDocument $doc, int $principal, string $requestId): ?string
+    public function verifyCreated(int $postId, NativeDocument $doc, int $principal, string $requestId, array $showsOn = []): ?string
     {
         $template = $doc->meta[ElementorDocument::KEY_TEMPLATE_TYPE] ?? null;
-        $postType = is_string($template) ? (self::POST_TYPES[$template] ?? null) : null;
+        $themeType = in_array($template, ThemeTemplateCreate::TYPES, true) ? $template : null;
+        $postType = $themeType !== null ? 'elementor_library' : (is_string($template) ? (self::POST_TYPES[$template] ?? null) : null);
         if ($postType === null) {
             return 'template_type';
         }
@@ -349,9 +366,9 @@ final class ElementorAdapter implements BuilderAdapter
         $pageSettings = $doc->meta[ElementorDocument::KEY_PAGE_SETTINGS] ?? null;
 
         $active  = $this->facts()['active_breakpoints'] ?? null;
-        $allowed = is_string($pageTemplate) ? LeafPolicy::forBreakpoints(ElementorClassicMapper::designedKeys(), is_array($active) ? array_values($active) : []) : null;
+        $allowed = (is_string($pageTemplate) || ($themeType !== null && ElementorClassicMapper::holdsDesignedSection($doc->tree))) ? LeafPolicy::forBreakpoints(ElementorClassicMapper::designedKeys(), is_array($active) ? array_values($active) : []) : null;
 
-        return $this->document->verifyCreated($postId, $doc->tree, $principal, $requestId, $postType, is_string($pageTemplate) ? $pageTemplate : null, is_array($pageSettings) ? $pageSettings : null, $allowed);
+        return $this->document->verifyCreated($postId, $doc->tree, $principal, $requestId, $postType, is_string($pageTemplate) ? $pageTemplate : null, is_array($pageSettings) ? $pageSettings : null, $allowed, $themeType, $showsOn);
     }
 
     /**
@@ -409,13 +426,14 @@ final class ElementorAdapter implements BuilderAdapter
      *
      * @param int      $postId  The page.
      * @param callable $restore The restore.
+     * @param bool $template Whether the authenticated snapshot belongs to a header or footer.
      * @return array<string, mixed>
      */
-    public function restoreInScope(int $postId, callable $restore): array
+    public function restoreInScope(int $postId, callable $restore, bool $template = false): array
     {
         $kitId = $this->facts()['active_kit_id'] ?? 0;
 
-        return $this->document->restoreScoped($postId, is_int($kitId) ? $kitId : 0, $restore);
+        return $this->document->restoreScoped($postId, is_int($kitId) ? $kitId : 0, $restore, $template);
     }
 
     /**

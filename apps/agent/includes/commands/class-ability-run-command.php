@@ -17,9 +17,11 @@ use WPMgr\Agent\Abilities\Builders\BuilderPageStructure;
 use WPMgr\Agent\Abilities\Builders\BuilderRegistry;
 use WPMgr\Agent\Abilities\Builders\DraftEligibility;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
+use WPMgr\Agent\Abilities\Builders\ElementorDocument;
 use WPMgr\Agent\Abilities\Builders\ElementorSectionCompiler;
 use WPMgr\Agent\Abilities\Builders\OutlineV3Schema;
 use WPMgr\Agent\Abilities\Builders\Refusal;
+use WPMgr\Agent\Abilities\Builders\ThemeTemplateCreate;
 use WPMgr\Agent\Abilities\OwnAbilities;
 use WPMgr\Agent\Abilities\PageCreateBuilder;
 use WPMgr\Agent\Abilities\RestCall;
@@ -2089,8 +2091,14 @@ final class AbilityRunCommand implements CommandInterface
                     }
                 }
 
-                if (!$this->trashOwn($postId)) {
-                    return $this->fail('revert_failed', 'the draft could not be moved to the trash');
+                $blockedDetail = null;
+                $isTemplate = ($post->post_type ?? null) === 'elementor_library'
+                    && in_array(get_post_meta($postId, ElementorDocument::KEY_TEMPLATE_TYPE, true), ThemeTemplateCreate::TYPES, true);
+                $trashed = $isTemplate
+                    ? ThemeTemplateCreate::trashDraft($postId, $blockedDetail)
+                    : $this->trashOwn($postId);
+                if (!$trashed) {
+                    return $this->fail('revert_failed', 'the draft could not be moved to the trash' . ($blockedDetail === null ? '' : '; ' . $blockedDetail));
                 }
                 AbilityLedger::update($requestId, ['undo_state' => 'trashed', 'reverted_at' => time()]);
 
@@ -2101,7 +2109,7 @@ final class AbilityRunCommand implements CommandInterface
                     'request_id' => $requestId,
                     'post_id'    => $postId,
                     'trashed'    => true,
-                ];
+                ] + ($blockedDetail === null ? [] : ['detail' => $blockedDetail]);
             });
         } finally {
             AbilityLedger::releaseTarget($postId);
@@ -2437,7 +2445,7 @@ final class AbilityRunCommand implements CommandInterface
             'target_post_id'  => $row !== null ? (int) ($row['target_post_id'] ?? 0) : null,
             'undo_state'      => $row !== null ? (string) ($row['undo_state'] ?? '') : null,
             'result'          => $row['result'] ?? null,
-        ];
+        ] + (($row['undo_state'] ?? null) === 'restored' ? ($row['undo_template'] ?? []) : []);
     }
 
     /**
