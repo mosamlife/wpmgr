@@ -101,6 +101,10 @@ const MinAgentVersionForDesignedPages = "0.61.165"
 // Page edits without native operations retain their existing per-input floor.
 const MinAgentVersionForNativeEdit = "0.61.166"
 
+// MinAgentVersionForThemeTemplates is the first agent release with the theme
+// template readiness, conditions, places and menus read.
+const MinAgentVersionForThemeTemplates = "0.61.167"
+
 // AbilityRunMaxAllowedDraftIDs bounds p.allowed_draft_ids: the control plane
 // names at most the one post an input is about, so p stays far under
 // AbilityRunMaxPBytes however many drafts WPMgr created on the site.
