@@ -16,6 +16,8 @@ final class ThemeTemplateCreate
 {
     public const TYPES = ['header', 'footer'];
 
+    public const DETAIL_LIVE_LIST_KEPT = 'Elementor Pro tried to change its live display list; WPMgr kept it as it was';
+
     public function __construct(private readonly ElementorApi $api)
     {
     }
@@ -104,7 +106,7 @@ final class ThemeTemplateCreate
     public function saveRules(int $postId, array $rules, bool $replace = false): array
     {
         if ($replace || $rules !== []) {
-            $scope = new AbilityWriteScope($postId, []);
+            $scope = new AbilityWriteScope($postId, [], [], null, true);
             try {
                 $saved = $scope->run(fn (): bool => $this->api->saveTemplateRules($postId, $rules));
             } catch (\Throwable $e) {
@@ -112,9 +114,8 @@ final class ThemeTemplateCreate
             }
             $outcome = $scope->outcome();
             if (!$outcome['clean']) {
-                $detail = in_array(AbilityWriteScope::V_OPTION, $outcome['violations'], true)
-                    ? 'Elementor Pro changed its live display list for a draft'
-                    : 'the rules save wrote outside the draft: ' . implode(', ', $outcome['violations']);
+                $detail = self::blockedDetail($scope)
+                    ?? 'the rules save wrote outside the draft: ' . implode(', ', $outcome['violations']);
                 return ['code' => ElementorDocument::CODE_SIDE_EFFECT, 'detail' => $detail];
             }
             if (!$saved) {
@@ -126,6 +127,34 @@ final class ThemeTemplateCreate
             return ['code' => 'verify_mismatch', 'detail' => 'shows_on differs; Elementor Pro stored: ' . wp_json_encode($stored, JSON_UNESCAPED_SLASHES)];
         }
         return ['rules' => $stored];
+    }
+
+    /** A live-list preservation detail only when the option update was prevented. */
+    public static function blockedDetail(AbilityWriteScope $scope): ?string
+    {
+        return $scope->blockedOption(ElementorRuntime::OPTION_CONDITIONS) ? self::DETAIL_LIVE_LIST_KEPT : null;
+    }
+
+    /** Trash a template draft while preserving only the live display list option. */
+    public static function trashDraft(int $postId, ?string &$detail = null): bool
+    {
+        $detail = null;
+        $guard = static function ($value, $name, $before) use (&$detail) {
+            if ($name === ElementorRuntime::OPTION_CONDITIONS && !AbilityWriteScope::sameOptionValue($value, $before)) {
+                $detail = self::DETAIL_LIVE_LIST_KEPT;
+                return $before;
+            }
+            return $value;
+        };
+        add_filter('pre_update_option', $guard, PHP_INT_MAX, 3);
+        try {
+            wp_trash_post($postId);
+            clean_post_cache($postId);
+            $after = get_post($postId);
+            return !is_object($after) || ($after->post_status ?? null) === 'trash';
+        } finally {
+            remove_filter('pre_update_option', $guard, PHP_INT_MAX);
+        }
     }
 
     /** Read the current rules through Pro; null means unreadable. */

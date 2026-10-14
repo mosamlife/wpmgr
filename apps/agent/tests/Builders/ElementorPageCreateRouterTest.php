@@ -48,6 +48,8 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
  */
 final class ElementorPageCreateRouterTest extends TestCase
 {
+    use \WPMgr\Agent\Tests\OptionUpdateHarness;
+
     private const CONTAINERS = __DIR__ . '/../fixtures/ability-run/elementor-classic-containers.json';
 
     private const SECTIONS = __DIR__ . '/../fixtures/ability-run/elementor-classic-sections.json';
@@ -248,8 +250,10 @@ final class ElementorPageCreateRouterTest extends TestCase
             if (!isset($this->posts[$id])) {
                 return false;
             }
+            $oldStatus = $this->posts[$id]->post_status;
             $this->posts[$id]->post_status = 'trash';
             $this->syncRow($id);
+            $this->fire('transition_post_status', 'trash', $oldStatus, $this->posts[$id]);
 
             return $this->posts[$id];
         });
@@ -597,6 +601,83 @@ final class ElementorPageCreateRouterTest extends TestCase
         $this->assertSame('created_post_touched', $this->revert(self::REQ_GOLDEN)['code'] ?? null);
     }
 
+    public function test_t12_template_rules_preserve_live_list_and_trash_on_change(): void
+    {
+        $this->installOptionUpdates();
+        $this->enable();
+        $this->readyTemplates();
+        $name = \WPMgr\Agent\Abilities\Builders\ElementorRuntime::OPTION_CONDITIONS;
+        $live = ['header' => [91], 'footer' => [92]];
+        $this->options[$name] = $live;
+        $save = $this->api->onSaveTemplateRules;
+        $this->api->onSaveTemplateRules = function ($id, $rules) use ($save, $name): bool {
+            $save($id, $rules);
+            update_option($name, []);
+            return true;
+        };
+        $input = $this->templateInput(['shows_on' => ['include/general']]);
+        $pre = $this->precheck(self::REQ_GOLDEN, $input);
+        $result = $this->write(self::REQ_GOLDEN, $input, $pre['precheck_digest'], $pre['preview_digest']);
+        $this->assertSame($live, $this->options[$name]);
+        $this->assertSame('side_effect_detected', $result['code'] ?? null);
+        $this->assertTrue($result['trashed'] ?? false);
+        $this->assertStringContainsString('Elementor Pro tried to change its live display list; WPMgr kept it as it was', $result['detail']);
+    }
+
+    public function test_t12_template_unchanged_rules_cache_succeeds_and_undo_guards_trash(): void
+    {
+        $this->installOptionUpdates();
+        $this->enable();
+        $this->readyTemplates();
+        $name = \WPMgr\Agent\Abilities\Builders\ElementorRuntime::OPTION_CONDITIONS;
+        $live = ['header' => [91]];
+        $this->options[$name] = $live;
+        $save = $this->api->onSaveTemplateRules;
+        $this->api->onSaveTemplateRules = function ($id, $rules) use ($save, $name, $live): bool {
+            $save($id, $rules);
+            update_option($name, $live);
+            return true;
+        };
+        $input = $this->templateInput(['shows_on' => ['include/general']]);
+        $pre = $this->precheck(self::REQ_GOLDEN, $input);
+        $result = $this->write(self::REQ_GOLDEN, $input, $pre['precheck_digest'], $pre['preview_digest']);
+        $this->assertTrue($result['ok'] ?? false, json_encode($result));
+        add_action('transition_post_status', function () use ($name): void {
+            update_option($name, []);
+            update_option('trash_observer', 'ran');
+        }, 10, 3);
+        $undo = $this->revert(self::REQ_GOLDEN);
+        $this->assertTrue($undo['trashed'] ?? false, json_encode($undo));
+        $this->assertSame($live, $this->options[$name]);
+        $this->assertSame('ran', $this->options['trash_observer']);
+        $this->assertStringContainsString('WPMgr kept it as it was', $undo['detail'] ?? '');
+        $this->assertTrue(update_option($name, []), 'trash guard is removed');
+    }
+
+    public function test_t12_template_document_save_and_failure_trash_guard_live_list(): void
+    {
+        $this->installOptionUpdates();
+        $this->enable();
+        $this->readyTemplates();
+        $name = \WPMgr\Agent\Abilities\Builders\ElementorRuntime::OPTION_CONDITIONS;
+        $live = ['footer' => [92]];
+        $this->options[$name] = $live;
+        $this->alterOnSave = function ($tree) use ($name) {
+            update_option($name, []);
+            return $tree;
+        };
+        add_action('transition_post_status', function () use ($name): void {
+            update_option($name, ['header' => []]);
+        }, 10, 3);
+        $input = $this->templateInput(['template' => 'footer']);
+        $pre = $this->precheck(self::REQ_GOLDEN, $input);
+        $result = $this->write(self::REQ_GOLDEN, $input, $pre['precheck_digest'], $pre['preview_digest']);
+        $this->assertSame($live, $this->options[$name]);
+        $this->assertSame('side_effect_detected', $result['code'] ?? null);
+        $this->assertTrue($result['trashed'] ?? false);
+        $this->assertStringContainsString('WPMgr kept it as it was', $result['detail'] ?? '');
+    }
+
     public function test_template_rules_failure_trashes_draft(): void
     {
         $this->enable();
@@ -605,13 +686,13 @@ final class ElementorPageCreateRouterTest extends TestCase
         $pre = $this->precheck(self::REQ_GOLDEN, $input);
         $this->assertTrue($pre['ok'] ?? false, json_encode($pre));
         $this->api->onSaveTemplateRules = function (int $id, array $rules): bool {
-            $this->fire('updated_option', 'elementor_pro_theme_builder_conditions', [], $rules);
+            $this->fire('updated_option', \WPMgr\Agent\Abilities\Builders\ElementorRuntime::OPTION_CONDITIONS, [], $rules);
             $this->api->templateRules[$id] = $rules;
             return true;
         };
         $result = $this->write(self::REQ_GOLDEN, $input, $pre['precheck_digest'], $pre['preview_digest']);
         $this->assertTrue($result['trashed'] ?? false, json_encode($result));
-        $this->assertStringContainsString('live display list for a draft', $result['detail']);
+        $this->assertStringContainsString('the rules save wrote outside the draft: option_written', $result['detail']);
         $this->api->onSaveTemplateRules = function (int $id, array $rules): bool {
             $this->api->templateRules[$id] = ['exclude/general'];
             return true;

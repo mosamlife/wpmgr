@@ -350,9 +350,10 @@ final class ElementorDocument
      * @param int      $postId  The page.
      * @param int      $kitId   The active kit's post id; 0 when there is none.
      * @param callable $restore The restore.
+     * @param bool $template Whether the authenticated snapshot belongs to a header or footer.
      * @return array{ran: bool, code?: string, detail?: string, value?: mixed, thrown?: \Throwable|null, scope?: array<string, mixed>, side_effect?: string|null}
      */
-    public function restoreScoped(int $postId, int $kitId, callable $restore): array
+    public function restoreScoped(int $postId, int $kitId, callable $restore, bool $template = false): array
     {
         if ($postId < 1) {
             return ['ran' => false, 'code' => self::CODE_REFUSED, 'detail' => 'no page to restore'];
@@ -363,7 +364,7 @@ final class ElementorDocument
             return ['ran' => false, 'code' => 'data_unreadable', 'detail' => 'the active kit could not be read; nothing was changed'];
         }
 
-        $scope  = new AbilityWriteScope($postId, $this->saveOptionPatterns(), self::saveOptionChecks());
+        $scope  = new AbilityWriteScope($postId, $this->saveOptionPatterns(), self::saveOptionChecks(), null, $template);
         $value  = null;
         $thrown = null;
         try {
@@ -380,9 +381,10 @@ final class ElementorDocument
         }
         $effect = null;
         if ($kitChanged) {
-            $effect = 'the active kit changed during the restore';
+            $kept = ThemeTemplateCreate::blockedDetail($scope);
+            $effect = 'the active kit changed during the restore' . ($kept === null ? '' : '; ' . $kept);
         } elseif ($outcome['clean'] !== true) {
-            $effect = 'the restore wrote outside the page: ' . implode(', ', $outcome['violations']);
+            $effect = ThemeTemplateCreate::blockedDetail($scope) ?? 'the restore wrote outside the page: ' . implode(', ', $outcome['violations']);
         }
 
         return ['ran' => true, 'value' => $value, 'thrown' => $thrown, 'scope' => $outcome, 'side_effect' => $effect];
@@ -772,9 +774,10 @@ final class ElementorDocument
      * @param array<mixed> $tree   Element tree, checked by precheckTree().
      * @param int          $kitId  The active kit's post id; 0 when there is none.
      * @param string|null $themeType Library type whose term this template save may assign.
+     * @param bool $template Protect option updates without admitting initial type terms on edits.
      * @return array{ok: bool, code?: string, detail?: string, scope: array<string, mixed>|null, warnings?: list<array{code: string, detail: string}>}
      */
-    public function save(int $postId, array $tree, int $kitId, ?string $themeType = null): array
+    public function save(int $postId, array $tree, int $kitId, ?string $themeType = null, bool $template = false): array
     {
         $document = $postId > 0 ? $this->api->document($postId) : null;
         $save     = $document === null ? null : [$document, 'save'];
@@ -787,7 +790,7 @@ final class ElementorDocument
             return ['ok' => false, 'code' => self::CODE_REFUSED, 'detail' => 'the active kit could not be read', 'scope' => null];
         }
 
-        $scope    = new AbilityWriteScope($postId, $this->saveOptionPatterns(), self::saveOptionChecks(), $themeType);
+        $scope    = new AbilityWriteScope($postId, $this->saveOptionPatterns(), self::saveOptionChecks(), $themeType, $template || $themeType !== null);
         $locale   = setlocale(LC_NUMERIC, '0');
         $level    = ob_get_level();
         $since    = time();
@@ -820,10 +823,11 @@ final class ElementorDocument
             $kitChanged = true;
         }
         if ($kitChanged) {
-            return ['ok' => false, 'code' => self::CODE_SIDE_EFFECT, 'detail' => 'the active kit changed during the save', 'scope' => $outcome];
+            $kept = ThemeTemplateCreate::blockedDetail($scope);
+            return ['ok' => false, 'code' => self::CODE_SIDE_EFFECT, 'detail' => 'the active kit changed during the save' . ($kept === null ? '' : '; ' . $kept), 'scope' => $outcome];
         }
         if ($outcome['clean'] !== true) {
-            return ['ok' => false, 'code' => self::CODE_SIDE_EFFECT, 'detail' => 'the save wrote outside the page: ' . implode(', ', $outcome['violations']), 'scope' => $outcome];
+            return ['ok' => false, 'code' => self::CODE_SIDE_EFFECT, 'detail' => ThemeTemplateCreate::blockedDetail($scope) ?? 'the save wrote outside the page: ' . implode(', ', $outcome['violations']), 'scope' => $outcome];
         }
         if ($crashed) {
             return ['ok' => false, 'code' => self::CODE_CRASHED, 'detail' => 'Elementor failed while saving the page', 'scope' => $outcome];

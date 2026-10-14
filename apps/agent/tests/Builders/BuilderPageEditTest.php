@@ -52,6 +52,8 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
  */
 final class BuilderPageEditTest extends TestCase
 {
+    use \WPMgr\Agent\Tests\OptionUpdateHarness;
+
     private const FIXTURE = __DIR__ . '/../fixtures/ability-run/elementor-classic-containers.json';
 
     private const TARGET = 41;
@@ -1472,6 +1474,115 @@ final class BuilderPageEditTest extends TestCase
         $this->assertStringContainsString($rule, $r['refusal']['detail']);
     }
 
+    public function test_t12_template_edit_rules_block_live_list_and_restore(): void
+    {
+        $this->installOptionUpdates();
+        $this->templateTarget();
+        $before = $this->templateInput(self::ops());
+        $name = \WPMgr\Agent\Abilities\Builders\ElementorRuntime::OPTION_CONDITIONS;
+        $live = ['header' => [91]];
+        $this->options[$name] = $live;
+        $save = $this->api->onSaveTemplateRules;
+        $this->api->onSaveTemplateRules = function ($id, $rules) use ($save, $name): bool {
+            $save($id, $rules);
+            update_option($name, []);
+            return true;
+        };
+        $r = $this->templateWrite([...self::ops(), ['op' => 'set_shows_on', 'rules' => []]]);
+        $this->assertSame($live, $this->options[$name]);
+        $this->assertSame(['side_effect_detected', true], [$r['code'] ?? null, $r['restored'] ?? null], json_encode($r));
+        $this->assertStringContainsString('WPMgr kept it as it was', $r['detail']);
+        $this->assertSame($before, $this->templateInput(self::ops()));
+    }
+
+    public function test_t12_live_list_detail_survives_failed_putback(): void
+    {
+        $this->installOptionUpdates();
+        $this->templateTarget();
+        $name = ElementorRuntime::OPTION_CONDITIONS;
+        $live = ['header' => [91]];
+        $this->options[$name] = $live;
+        $save = $this->api->onSaveTemplateRules;
+        $this->api->onSaveTemplateRules = function ($id, $rules) use ($save, $name): bool {
+            $save($id, $rules);
+            update_option($name, []);
+            $this->api->onTemplateRules = static fn (): array => ['include/archive'];
+            return true;
+        };
+        $r = $this->templateWrite([['op' => 'set_shows_on', 'rules' => []]]);
+        $this->assertFalse($r['restored'] ?? true, json_encode($r));
+        $this->assertSame($live, $this->options[$name]);
+        $this->assertStringContainsString('WPMgr kept it as it was', $r['detail']);
+    }
+
+    public function test_t12_template_edit_unchanged_live_list_succeeds(): void
+    {
+        $this->installOptionUpdates();
+        $this->templateTarget('footer');
+        $name = \WPMgr\Agent\Abilities\Builders\ElementorRuntime::OPTION_CONDITIONS;
+        $live = ['footer' => [92]];
+        $this->options[$name] = $live;
+        $save = $this->api->onSaveTemplateRules;
+        $this->api->onSaveTemplateRules = function ($id, $rules) use ($save, $name, $live): bool {
+            $save($id, $rules);
+            update_option($name, $live);
+            return true;
+        };
+        $r = $this->templateWrite([['op' => 'set_shows_on', 'rules' => []]]);
+        $this->assertTrue($r['ok'] ?? false, json_encode($r));
+        $this->assertSame($live, $this->options[$name]);
+    }
+
+    public function test_t12_template_edit_document_save_and_putback_guard_live_list(): void
+    {
+        $this->installOptionUpdates();
+        $this->templateTarget();
+        $before = $this->templateInput(self::ops());
+        $name = \WPMgr\Agent\Abilities\Builders\ElementorRuntime::OPTION_CONDITIONS;
+        $live = ['header' => [91]];
+        $this->options[$name] = $live;
+        $doc = $this->api->document(self::TARGET);
+        $save = $doc->onSave;
+        $doc->onSave = function ($data) use ($save, $name): bool {
+            $save($data);
+            update_option($name, []);
+            return true;
+        };
+        Functions\when('do_action')->alias(static function ($tag) use ($name): void {
+            if ($tag === 'elementor/atomic-widgets/styles/clear') {
+                update_option($name, []);
+            }
+        });
+        $r = $this->templateWrite(self::ops());
+        $this->assertSame($live, $this->options[$name]);
+        $this->assertSame(['side_effect_detected', true], [$r['code'] ?? null, $r['restored'] ?? null], json_encode($r));
+        $this->assertStringContainsString('WPMgr kept it as it was', $r['detail']);
+        $this->assertSame($before, $this->templateInput(self::ops()));
+    }
+
+    public function test_t12_template_edit_undo_restore_guards_live_list(): void
+    {
+        $this->installOptionUpdates();
+        $this->templateTarget('footer');
+        $before = $this->templateInput(self::ops());
+        $r = $this->templateWrite(self::ops());
+        $this->assertTrue($r['ok'] ?? false, json_encode($r));
+        $name = \WPMgr\Agent\Abilities\Builders\ElementorRuntime::OPTION_CONDITIONS;
+        $live = ['footer' => [92]];
+        $this->options[$name] = $live;
+        Functions\when('do_action')->alias(static function ($tag) use ($name): void {
+            if ($tag === 'elementor/atomic-widgets/styles/clear') {
+                update_option($name, []);
+            }
+        });
+        $undo = BuilderPageEdit::revert(self::EDIT, $r['snapshot_sha256'], $this->seam());
+        $this->assertSame($live, $this->options[$name]);
+        $this->assertTrue($undo['restored'] ?? false, json_encode($undo));
+        $this->assertSame('side_effect_detected', $undo['code'] ?? null);
+        $this->assertStringContainsString('WPMgr kept it as it was', $undo['detail'] ?? '');
+        $this->assertSame($before, $this->templateInput(self::ops()));
+    }
+
     public function test_template_edit_option_write_restores_snapshot(): void
     {
         $this->templateTarget();
@@ -1479,12 +1590,12 @@ final class BuilderPageEditTest extends TestCase
         $save = $this->api->onSaveTemplateRules;
         $this->api->onSaveTemplateRules = function ($id, $rules) use ($save): bool {
             $save($id, $rules);
-            $this->fire('updated_option', 'elementor_pro_theme_builder_conditions', [], ['header' => [$id]]);
+            $this->fire('updated_option', \WPMgr\Agent\Abilities\Builders\ElementorRuntime::OPTION_CONDITIONS, [], ['header' => [$id]]);
             return true;
         };
         $r = $this->templateWrite([...self::ops(), ['op' => 'set_shows_on', 'rules' => []]]);
         $this->assertSame(['side_effect_detected', true], [$r['code'] ?? null, $r['restored'] ?? null], json_encode($r));
-        $this->assertStringContainsString('Elementor Pro changed its live display list for a draft', $r['detail']);
+        $this->assertStringContainsString('the rules save wrote outside the draft: option_written', $r['detail']);
         $this->assertSame($before, $this->templateInput(self::ops()));
     }
 

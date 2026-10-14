@@ -30,6 +30,8 @@ final class ElementorRuntime implements ElementorApi
     /** Elementor Pro's conditions meta key; to be confirmed on a Pro site. */
     public const KEY_CONDITIONS = '_elementor_conditions';
 
+    public const OPTION_CONDITIONS = 'elementor_pro_theme_builder_conditions';
+
     /** Elementor's main plugin class. */
     public const PLUGIN_CLASS = 'Elementor\\Plugin';
 

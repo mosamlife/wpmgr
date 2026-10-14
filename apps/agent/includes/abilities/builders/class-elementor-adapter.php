@@ -334,13 +334,15 @@ final class ElementorAdapter implements BuilderAdapter
 
     /**
      * {@inheritDoc}
+     *
+     * @param bool $templateEdit Protect template edits without admitting initial type terms.
      */
-    public function write(int $postId, NativeDocument $doc): array
+    public function write(int $postId, NativeDocument $doc, bool $templateEdit = false): array
     {
         $kitId = $this->facts()['active_kit_id'] ?? 0;
 
         $type = $doc->meta[ElementorDocument::KEY_TEMPLATE_TYPE] ?? null;
-        return $this->document->save($postId, $doc->tree, is_int($kitId) ? $kitId : 0, in_array($type, ThemeTemplateCreate::TYPES, true) ? $type : null);
+        return $this->document->save($postId, $doc->tree, is_int($kitId) ? $kitId : 0, !$templateEdit && in_array($type, ThemeTemplateCreate::TYPES, true) ? $type : null, $templateEdit);
     }
 
     /**
@@ -424,13 +426,14 @@ final class ElementorAdapter implements BuilderAdapter
      *
      * @param int      $postId  The page.
      * @param callable $restore The restore.
+     * @param bool $template Whether the authenticated snapshot belongs to a header or footer.
      * @return array<string, mixed>
      */
-    public function restoreInScope(int $postId, callable $restore): array
+    public function restoreInScope(int $postId, callable $restore, bool $template = false): array
     {
         $kitId = $this->facts()['active_kit_id'] ?? 0;
 
-        return $this->document->restoreScoped($postId, is_int($kitId) ? $kitId : 0, $restore);
+        return $this->document->restoreScoped($postId, is_int($kitId) ? $kitId : 0, $restore, $template);
     }
 
     /**

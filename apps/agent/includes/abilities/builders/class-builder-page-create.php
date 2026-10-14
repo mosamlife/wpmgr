@@ -514,8 +514,9 @@ final class BuilderPageCreate
         }
         if (!$ledgerUpdate(['phase' => 'post_created', 'created_post_id' => $postId])) {
             // Undo could never find this draft, so it is not left behind.
-            $trashed = self::trashOwn($postId);
-            $result  = self::fail('snapshot_failed', 'the ledger could not record the created draft; it was moved to the trash', ['post_id' => $postId, 'trashed' => $trashed]);
+            $blockedDetail = null;
+            $trashed = self::trashOwn($postId, isset($spec['template']), $blockedDetail);
+            $result  = self::fail('snapshot_failed', 'the ledger could not record the created draft; it was moved to the trash' . ($blockedDetail === null ? '' : '; ' . $blockedDetail), ['post_id' => $postId, 'trashed' => $trashed]);
             $ledgerUpdate([
                 'phase'           => 'failed',
                 'created_post_id' => $postId,
@@ -528,10 +529,10 @@ final class BuilderPageCreate
 
         $target = $a->document()->targetProblem($postId, $a->facts(), $spec['template'] ?? null);
         if ($target === 'not_editable') {
-            return self::failTrashed($postId, AdapterStatus::CODE, 'role_excluded', $ledgerUpdate);
+            return self::failTrashed($postId, AdapterStatus::CODE, 'role_excluded', $ledgerUpdate, isset($spec['template']));
         }
         if ($target !== null) {
-            return self::failTrashed($postId, ElementorDocument::CODE_REFUSED, 'the new draft cannot take the page builder\'s save: ' . $target, $ledgerUpdate);
+            return self::failTrashed($postId, ElementorDocument::CODE_REFUSED, 'the new draft cannot take the page builder\'s save: ' . $target, $ledgerUpdate, isset($spec['template']));
         }
 
         $saved = $a->write($postId, $doc);
@@ -540,7 +541,7 @@ final class BuilderPageCreate
             $code = is_string($code) && in_array($code, self::SAVE_CODES, true) ? $code : ElementorDocument::CODE_REFUSED;
             $why  = $saved['detail'] ?? null;
 
-            return self::failTrashed($postId, $code, is_string($why) && $why !== '' ? $why : 'the page builder did not save the page', $ledgerUpdate);
+            return self::failTrashed($postId, $code, is_string($why) && $why !== '' ? $why : 'the page builder did not save the page', $ledgerUpdate, isset($spec['template']));
         }
 
         $themeType = $spec['template'] ?? null;
@@ -550,12 +551,12 @@ final class BuilderPageCreate
             try {
                 $rulesResult = $a->templates()->saveRules($postId, $spec['shows_on']);
                 if (!isset($rulesResult['rules'])) {
-                    return self::failTrashed($postId, $rulesResult['code'], $rulesResult['detail'], $ledgerUpdate);
+                    return self::failTrashed($postId, $rulesResult['code'], $rulesResult['detail'], $ledgerUpdate, isset($spec['template']));
                 }
                 $rules = $rulesResult['rules'];
                 $titles = ThemeTemplateCreate::ruleTitles($rules);
             } catch (\Throwable $e) {
-                return self::failTrashed($postId, 'verify_mismatch', 'shows_on could not be verified', $ledgerUpdate);
+                return self::failTrashed($postId, 'verify_mismatch', 'shows_on could not be verified', $ledgerUpdate, isset($spec['template']));
             }
         }
 
@@ -580,7 +581,7 @@ final class BuilderPageCreate
             }
         }
         if ($problem !== null || $afterFp === null) {
-            return self::failTrashed($postId, 'verify_mismatch', 'the created draft is not what was built: ' . ($problem ?? 'fingerprint'), $ledgerUpdate);
+            return self::failTrashed($postId, 'verify_mismatch', 'the created draft is not what was built: ' . ($problem ?? 'fingerprint'), $ledgerUpdate, isset($spec['template']));
         }
 
         $result = [
@@ -625,7 +626,7 @@ final class BuilderPageCreate
             'result'           => $result,
         ]);
         if (!$recorded) {
-            return self::failTrashed($postId, 'snapshot_failed', 'the ledger could not record the created draft', $ledgerUpdate);
+            return self::failTrashed($postId, 'snapshot_failed', 'the ledger could not record the created draft', $ledgerUpdate, isset($spec['template']));
         }
 
         return $result;
@@ -945,11 +946,14 @@ final class BuilderPageCreate
      * @param string                               $code         Refusal code.
      * @param string                               $detail       Reason, WPMgr's own words.
      * @param callable(array<string, mixed>): bool $ledgerUpdate Merges fields into the ledger row.
+     * @param bool $template Whether this request created a header or footer.
      * @return array<string, mixed>
      */
-    private static function failTrashed(int $postId, string $code, string $detail, callable $ledgerUpdate): array
+    private static function failTrashed(int $postId, string $code, string $detail, callable $ledgerUpdate, bool $template = false): array
     {
-        $trashed = self::trashOwn($postId);
+        $blockedDetail = null;
+        $trashed = self::trashOwn($postId, $template, $blockedDetail);
+        $detail = $blockedDetail === null || str_contains($detail, $blockedDetail) ? $detail : $detail . '; ' . $blockedDetail;
         $result  = self::fail($code, $detail, ['post_id' => $postId, 'trashed' => $trashed]);
         $ledgerUpdate([
             'phase'      => 'failed',
@@ -964,10 +968,15 @@ final class BuilderPageCreate
      * Trash a post this request created (the ledger proves it), then confirm.
      *
      * @param int $postId Post id.
+     * @param bool $template Whether this request created a header or footer.
+     * @param string|null $detail Receives the detail when a live-list update was prevented.
      * @return bool
      */
-    private static function trashOwn(int $postId): bool
+    private static function trashOwn(int $postId, bool $template = false, ?string &$detail = null): bool
     {
+        if ($template) {
+            return ThemeTemplateCreate::trashDraft($postId, $detail);
+        }
         wp_trash_post($postId);
         clean_post_cache($postId);
         $after = get_post($postId);

@@ -49,7 +49,9 @@ if (!defined('ABSPATH')) {
  *
  * Violations are fixed labels; no site text is reported in them. The
  * outcome is complete once the scope is disarmed. Writes are recorded, not
- * undone, except the blocked privilege writes.
+ * undone, except the blocked privilege writes. Template work can also block
+ * non-admitted option updates before storage; direct adds and deletes are
+ * detected, not prevented.
  *
  * Scope: effects made through the WordPress APIs that fire these hooks.
  */
@@ -76,7 +78,7 @@ final class AbilityWriteScope
     /** An object's term relationships changed. */
     public const V_TERMS = 'term_changed';
 
-    /** An option outside the patterns was written. */
+    /** An option write outside the patterns or value checks was attempted. */
     public const V_OPTION = 'option_written';
 
     /** A user's roles or a super-admin grant changed. */
@@ -111,6 +113,9 @@ final class AbilityWriteScope
     /** @var array<string, callable(mixed, mixed, int, string): mixed> Option-name prefix => value check. */
     private array $checks = [];
 
+    /** @var array<string,true> Option updates prevented before storage. */
+    private array $blockedOptions = [];
+
     private bool $armed = false;
 
     private ?AbilitySideEffects $inner = null;
@@ -131,10 +136,11 @@ final class AbilityWriteScope
      * @param int                 $targetId       Post the save may write.
      * @param list<mixed>         $optionPatterns Option-name patterns the save may write; "*" is the only wildcard.
      * @param array<mixed, mixed> $optionChecks   Option-name prefix => value check: callable(mixed $before, mixed $after, int $targetId, string $name), true when that one write is the save's own.
-     * @param string|null $templateType Header or footer, only for a template document save.
+     * @param string|null $templateType Header or footer, only to admit the initial library type term.
+     * @param bool $preventOptionChanges Block non-admitted option updates for template work.
      * @throws \InvalidArgumentException When the post id is not positive, or a check has no plain prefix or is not callable.
      */
-    public function __construct(int $targetId, array $optionPatterns, array $optionChecks = [], private readonly ?string $templateType = null)
+    public function __construct(int $targetId, array $optionPatterns, array $optionChecks = [], private readonly ?string $templateType = null, private readonly bool $preventOptionChanges = false)
     {
         if ($targetId < 1) {
             throw new \InvalidArgumentException('A write scope needs a post id.');
@@ -184,6 +190,7 @@ final class AbilityWriteScope
         $this->revisions  = [];
         $this->targetKeys = [];
         $this->violations = [];
+        $this->blockedOptions = [];
         $this->armed      = true;
         // A checked name is left to its check, write by write, never to the
         // inner recorder's patterns alone.
@@ -240,6 +247,20 @@ final class AbilityWriteScope
         $this->hook('deleted_term_relationships', $deletedTerms, 1, PHP_INT_MIN);
         $this->hook('map_meta_cap', $metaCap, 4, PHP_INT_MAX);
         $this->hook('user_has_cap', $userCaps, 2, PHP_INT_MAX);
+        if ($this->preventOptionChanges) {
+            $this->hook('pre_update_option', function ($value, $name, $before) {
+                if (!$this->armed || self::sameOptionValue($value, $before)) {
+                    return $value;
+                }
+                $stored = get_option($name, self::ABSENT);
+                if ($this->optionAllowed($name, $stored, $value)) {
+                    return $value;
+                }
+                $this->violations[self::V_OPTION] = true;
+                $this->blockedOptions[$name] = true;
+                return $before;
+            }, 3, PHP_INT_MAX);
+        }
         if ($this->checks === []) {
             return;
         }
@@ -334,6 +355,37 @@ final class AbilityWriteScope
             'revision_ids'     => array_keys($this->revisions),
             'target_meta_keys' => array_map('strval', array_keys($this->targetKeys)),
         ];
+    }
+
+    /** Whether this scope prevented an update of the named option. */
+    public function blockedOption(string $name): bool
+    {
+        return isset($this->blockedOptions[$name]);
+    }
+
+    /** The same no-change comparison update_option uses before its add branch. */
+    public static function sameOptionValue(mixed $value, mixed $before): bool
+    {
+        return $value === $before || maybe_serialize($value) === maybe_serialize($before);
+    }
+
+    /** Value checks take precedence over name patterns, including when they throw. */
+    private function optionAllowed(string $name, mixed $before, mixed $after): bool
+    {
+        $check = $this->checkFor($name);
+        if ($check !== null) {
+            try {
+                return $check($before, $after, $this->targetId, $name) === true;
+            } catch (\Throwable $e) {
+                return false;
+            }
+        }
+        foreach ($this->patterns as $pattern) {
+            if (AbilitySideEffects::matches($pattern, $name)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

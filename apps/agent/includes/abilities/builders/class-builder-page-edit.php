@@ -680,7 +680,7 @@ final class BuilderPageEdit
                 return self::fail(LayoutOps::CODE_UNREADABLE, 'the undo could not be recorded; nothing was changed', ['post_id' => $postId]);
             }
             $descriptor = $a->editDescriptor(($snapshot['post']['post_type'] ?? null) === 'elementor_library');
-            $run        = $a->restoreInScope($postId, static fn () => BuilderDocumentRestore::scoped($postId, $snapshot, $keys, $fields, $descriptor, $a, $resume));
+            $run        = $a->restoreInScope($postId, static fn () => BuilderDocumentRestore::scoped($postId, $snapshot, $keys, $fields, $descriptor, $a, $resume), ($snapshot['post']['post_type'] ?? null) === 'elementor_library');
             $thrown     = $run['thrown'] ?? null;
             if ($thrown instanceof \Throwable && !$thrown instanceof \InvalidArgumentException) {
                 throw $thrown;
@@ -707,7 +707,7 @@ final class BuilderPageEdit
             try {
                 $rulesProblem = ThemeTemplateEdit::verifyRestored($postId, $snapshot, $a->templates());
                 if ($rulesProblem !== null) {
-                    return self::fail(BuilderDocumentRestore::CODE_MISMATCH, $rulesProblem, ['post_id' => $postId]);
+                    return self::fail(BuilderDocumentRestore::CODE_MISMATCH, $rulesProblem . (is_string($effect) ? '; ' . $effect : ''), ['post_id' => $postId]);
                 }
                 $restoredFp = BuilderDocumentFingerprint::ofPost($postId, $descriptor->exactKeys);
             } catch (\Throwable $e) {
@@ -715,7 +715,7 @@ final class BuilderPageEdit
             }
             if (!AbilityLedger::update($requestId, ['undo_state' => 'restored', 'reverted_at' => time(), 'restored_fp' => $restoredFp])) {
                 // The row keeps UNDO_RESTORING: the next undo records it.
-                return self::fail(LayoutOps::CODE_UNREADABLE, 'the page was put back, but the undo could not be recorded; undo again to finish it', ['post_id' => $postId, 'restored' => true]);
+                return self::fail(LayoutOps::CODE_UNREADABLE, 'the page was put back, but the undo could not be recorded; undo again to finish it' . (is_string($effect) ? '; ' . $effect : ''), ['post_id' => $postId, 'restored' => true]);
             }
             if (is_string($effect)) {
                 // The page is back and the undo is recorded; what was written
@@ -787,7 +787,7 @@ final class BuilderPageEdit
             return self::failed($ledgerUpdate, self::fail(self::CODE_CONFLICT, self::CHANGED_SINCE_READ));
         }
 
-        $saved = $a->write($postId, $doc);
+        $saved = $a->write($postId, $doc, isset($plan['template']));
         $scope = is_array($saved['scope'] ?? null) ? $saved['scope'] : [];
         $own   = self::scopeRevisions($scope);
         if (($saved['ok'] ?? null) !== true) {
@@ -1189,7 +1189,7 @@ final class BuilderPageEdit
         $effect = null;
         try {
             $descriptor = $a->editDescriptor(($before['post']['post_type'] ?? null) === 'elementor_library');
-            $run        = $a->restoreInScope($postId, static fn (): ?string => BuilderDocumentRestore::full($postId, $before, $descriptor, $a, $baseFp));
+            $run        = $a->restoreInScope($postId, static fn (): ?string => BuilderDocumentRestore::full($postId, $before, $descriptor, $a, $baseFp), ($before['post']['post_type'] ?? null) === 'elementor_library');
             $restored   = ($run['ran'] ?? null) === true && ($run['thrown'] ?? null) === null
                 && array_key_exists('value', $run) && $run['value'] === null;
             $effect     = is_string($run['side_effect'] ?? null) ? $run['side_effect'] : null;
@@ -1205,6 +1205,10 @@ final class BuilderPageEdit
             $result = self::fail(ElementorDocument::CODE_SIDE_EFFECT, $effect . ', after: ' . $code, ['post_id' => $postId, 'restored' => true]);
         } else {
             $result = self::fail($code, $detail, ['post_id' => $postId, 'restored' => true]);
+        }
+        $kept = ThemeTemplateCreate::DETAIL_LIVE_LIST_KEPT;
+        if ((str_contains($detail, $kept) || str_contains($effect ?? '', $kept)) && !str_contains($result['detail'], $kept)) {
+            $result['detail'] .= '; ' . $kept;
         }
         $ledgerUpdate(['phase' => 'failed', 'restored' => $restored, 'own_revision_ids' => $own, 'result' => $result]);
 
