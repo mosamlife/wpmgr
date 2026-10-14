@@ -129,7 +129,8 @@ func TestPageCreateNamedInputFailures(t *testing.T) {
 		{"designed format omitted", "elementor_format", formatReason, v3HeadInput(nil, "elementor_format")},
 		{"designed format atomic", "elementor_format", formatReason, v3HeadInput(map[string]string{"elementor_format": `"atomic"`})},
 		{"designed format site default", "elementor_format", formatReason, v3HeadInput(map[string]string{"elementor_format": `"site_default"`})},
-		{"designed editor", "elementor_format", formatReason, v3HeadInput(map[string]string{"editor": `"wordpress_blocks"`}, "elementor_format")},
+		{"designed block editor", "editor", "a designed page (outline_version 3) needs editor builder:elementor with elementor_format classic", v3HeadInput(map[string]string{"editor": `"wordpress_blocks"`}, "elementor_format")},
+		{"designed classic editor", "editor", "a designed page (outline_version 3) needs editor builder:elementor with elementor_format classic", v3HeadInput(map[string]string{"editor": `"wordpress_classic"`}, "elementor_format")},
 		{"design without version", "design", "is accepted only with outline_version 3", v3HeadInput(nil, "outline_version")},
 		{"frame without version", "page_frame", "is accepted only with outline_version 3", v3HeadInput(map[string]string{"page_frame": `"theme"`}, "outline_version", "design")},
 		{"title", "title", "must be a nonempty string containing more than whitespace", v3HeadInput(map[string]string{"title": `" "`})},
@@ -141,6 +142,11 @@ func TestPageCreateNamedInputFailures(t *testing.T) {
 			assertPageInputFailure(t, refusal, pageCreateInputRefusal(refusal), "", tc.key, tc.reason)
 		})
 	}
+	t.Run("designed editor repair is accepted", func(t *testing.T) {
+		if _, refusal := checkPageCreateInput(v3HeadInput(nil)); refusal.Code != "" {
+			t.Fatalf("builder:elementor with classic was refused: %+v", refusal)
+		}
+	})
 }
 
 func TestPageEditNamedInputFailures(t *testing.T) {
@@ -246,4 +252,48 @@ func TestPageInputUnknownFieldNames(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestPageInputUnknownFieldKeyLimit(t *testing.T) {
+	for _, boundary := range []struct {
+		name   string
+		length int
+	}{
+		{"at limit", refusalMaxKeyChars},
+		{"past limit", refusalMaxKeyChars + 1},
+	} {
+		t.Run(boundary.name, func(t *testing.T) {
+			key := strings.Repeat("x", boundary.length)
+			encoded, err := json.Marshal(key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := key
+			if boundary.length > refusalMaxKeyChars {
+				want = "fields[0]"
+			}
+			for _, kind := range []string{"create", "edit", "operation"} {
+				t.Run(kind, func(t *testing.T) {
+					var refusal pageCreateRefusal
+					build := pageCreateInputRefusal
+					path := ""
+					reason := "unknown field: send only post_type, editor, title, outline, elementor_format, outline_version, design and page_frame"
+					switch kind {
+					case "create":
+						_, refusal = checkPageCreateInput([]byte(`{` + string(encoded) + `:true,"post_type":"page"}`))
+					case "edit":
+						_, refusal = checkPageEditInput([]byte(`{` + string(encoded) + `:true,"post_id":1,"base_fingerprint":"` + targetTestFingerprint + `","operations":` + opsSetText + `}`))
+						build = pageEditRefusalOf
+						reason = "unknown field: send only post_id, base_fingerprint, operations and design"
+					case "operation":
+						_, refusal = checkPageEditInput(editOps(`[{`+string(encoded)+`:true,"op":"remove","ref":"a"}]`, ""))
+						build = pageEditRefusalOf
+						path = "operations[0]"
+						reason = "unknown field: send only op and ref"
+					}
+					assertPageInputFailure(t, refusal, build(refusal), path, want, reason)
+				})
+			}
+		})
+	}
 }

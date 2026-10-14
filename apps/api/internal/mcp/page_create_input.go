@@ -252,7 +252,10 @@ func checkPageCreateInput(input []byte) (pageCreateFacts, pageCreateRefusal) {
 		// A designed page is built with Elementor's classic format, and an
 		// input that does not state it has site_default, which only the site
 		// can resolve.
-		if f.builder != pageBuilderElementor || f.elementorFormat != elementorFormatClassic {
+		if f.builder != pageBuilderElementor {
+			return pageCreateFacts{}, pageInputRefusal("", "editor", "a designed page (outline_version 3) needs editor builder:elementor with elementor_format classic")
+		}
+		if f.elementorFormat != elementorFormatClassic {
 			return pageCreateFacts{}, pageInputRefusal("", "elementor_format", "a designed page (outline_version 3) is built as classic widgets: send elementor_format classic")
 		}
 	} else if _, has := top["design"]; has {

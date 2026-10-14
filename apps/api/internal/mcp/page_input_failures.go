@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-var pageInputKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+var pageInputKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,` + strconv.Itoa(refusalMaxKeyChars) + `}$`)
 
 // pageInputRefusal names a structural input failure without changing its code.
 func pageInputRefusal(path, key, reason string) pageCreateRefusal {
