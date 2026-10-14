@@ -21,7 +21,6 @@ spl_autoload_register(static function (string $class): void {
     $file = \WPMgr\Agent\Autoloader::resolve($class);
     if ($file !== null) require_once $file;
 });
-require_once WPMGR_AGENT_DIR . 'tests/Builders/FakeElementorApi.php';
 require_once __DIR__ . '/dump-widgets.php';
 
 // A direct planted run exposes the phase's actual red lines and exit status.
@@ -76,6 +75,34 @@ function n09_reject(callable $run, string $why): void
     }
     throw new RuntimeException('invalid input accepted');
 }
+
+class N09Plugin
+{
+    public static object $instance;
+}
+
+function n09_runtime(array $controls, array $active = ['mobile', 'tablet']): \WPMgr\Agent\Abilities\Builders\ElementorRuntime
+{
+    if (!defined('ELEMENTOR_VERSION')) define('ELEMENTOR_VERSION', '3.35.9');
+    if (!defined('ELEMENTOR_PATH')) define('ELEMENTOR_PATH', __DIR__ . '/fixtures/elementor/');
+    require_once ELEMENTOR_PATH . 'includes/widgets/heading.php';
+    $heading = new \Elementor\Widget_Roundtrip_Heading($controls);
+    N09Plugin::$instance = (object) [
+        'widgets_manager' => new class($heading) {
+            public function __construct(private object $heading) {}
+            public function get_widget_types(?string $name = null): array|object|null
+            {
+                return $name === null ? ['heading' => $this->heading] : ($name === 'heading' ? $this->heading : null);
+            }
+        },
+        'breakpoints' => new class($active) {
+            public function __construct(private array $active) {}
+            public function get_active_breakpoints(): array { return array_fill_keys($this->active, new \stdClass()); }
+        },
+    ];
+    return new \WPMgr\Agent\Abilities\Builders\ElementorRuntime(N09Plugin::class);
+}
+
 $test = static function (string $name, callable $run) use (&$pass, &$failed): void {
     try { $run(); ++$pass; echo "ok   native $name\n"; }
     catch (Throwable $e) { ++$failed; fwrite(STDERR, "FAIL native $name: {$e->getMessage()}\n"); }
@@ -161,9 +188,7 @@ $test('only named oracle omissions are excused', static function () use ($live):
     n09_assert(rt_native_compare([], $skipped, $live)[0]['allowed'] === null, 'new skip reason excused');
 });
 $test('the actual discovery matches the oracle on chains single mode and on-switches', static function (): void {
-    $api = new \WPMgr\Agent\Tests\Builders\FakeElementorApi();
-    $api->activeBreakpoints = ['mobile', 'tablet', 'tablet_extra', 'laptop', 'widescreen', 'mobile_extra'];
-    $api->widgetCatalogue = [['name' => 'heading', 'title' => 'Heading', 'categories' => ['basic'], 'atomic' => false, 'pro' => false]];
+    $active = ['mobile', 'tablet', 'tablet_extra', 'laptop', 'widescreen', 'mobile_extra'];
     $raw = [
         'title' => ['type' => 'text'],
         'header_size' => ['type' => 'select', 'options' => ['h2' => 'Heading 2', 'h1' => 'Heading 1']],
@@ -177,7 +202,8 @@ $test('the actual discovery matches the oracle on chains single mode and on-swit
         'typography_font_weight' => ['type' => 'select', 'options' => ['' => 'Default', 700 => 'Bold'], 'groupType' => 'typography', 'groupPrefix' => 'typography_', 'condition' => ['typography_typography' => 'custom']],
         '_css_classes' => ['type' => 'text'],
     ];
-    $api->widgetControls['heading'] = $raw;
+    $api = n09_runtime($raw, $active);
+    n09_assert($api->widgetIsCore('heading'), 'heading is not registered from the core widget directory');
     $d = new \WPMgr\Agent\Abilities\Builders\ElementorWidgetDiscovery($api);
     $catalogue = $d->catalogue((object) [])['output'];
     n09_assert($catalogue['widgets'][0]['usable'], 'actual catalogue refused heading');
@@ -187,7 +213,7 @@ $test('the actual discovery matches the oracle on chains single mode and on-swit
     $manager = new class { public function get_control_groups(string $family): object {
         return new class { public function get_options(): array { return ['popover' => ['starter_name' => 'typography']]; } };
     } };
-    $oracle = rt_widget_dump_controls($raw, $manager, array_merge(['desktop'], $api->activeBreakpoints));
+    $oracle = rt_widget_dump_controls($raw, $manager, array_merge(['desktop'], $api->activeBreakpoints()));
     $diffs = rt_native_compare($oracle['controls'], $oracle['controls_skipped'], $live);
     n09_assert(array_filter($diffs, static fn ($d) => $d['allowed'] === null) === [], json_encode($diffs));
     n09_assert(!isset($live['width_laptop']) && in_array('tablet_extra', $live['width']['responsive']['devices'], true), 'chain not folded');
@@ -370,13 +396,10 @@ $test('metadata failures identify row keys byte changes and order without loosen
     n09_assert(rt_native_meta_diff($before, $before) === null, 'honest metadata refused');
 });
 $test('an oracle failure preserves live discovery counts and the offered tablet alignment', static function (): void {
-    if (!defined('ELEMENTOR_VERSION')) define('ELEMENTOR_VERSION', '3.35.9');
-    $api = new \WPMgr\Agent\Tests\Builders\FakeElementorApi();
-    $api->widgetCatalogue = [['name' => 'heading', 'title' => 'Heading', 'categories' => ['basic'], 'atomic' => false, 'pro' => false]];
-    $api->widgetControls['heading'] = [
+    $api = n09_runtime([
         'title' => ['type' => 'text'],
         'align' => ['type' => 'choose', 'options' => ['start' => [], 'center' => [], 'end' => [], 'justify' => []], 'is_responsive' => true],
-    ];
+    ]);
     $context = ['registration_checks' => 0];
     $calls = 0;
     $oracle = static function () use (&$calls): array { ++$calls; throw new RuntimeException('offline oracle failure'); };
