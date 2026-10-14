@@ -403,6 +403,15 @@ func nativeContainsDenied(v any) bool {
 	}
 	return false
 }
+
+// Exact control IDs take precedence over responsive suffixes.
+func nativeControlKey(key string, controls any) (string, string) {
+	if nativeHas(controls, key) {
+		return key, ""
+	}
+	return nativeSplit(key)
+}
+
 func nativeSplit(key string) (string, string) {
 	for _, b := range nativeBreakpoints {
 		suffix := "_" + b
@@ -457,6 +466,9 @@ func nativeOwnedResponsive(w *elementornative.Window, b string) bool {
 }
 
 func nativeUnknownOverride(key string, controls any) bool {
+	if nativeHas(controls, key) {
+		return false
+	}
 	o, _ := nativeMap(controls)
 	for _, p := range o {
 		r := nativeGet(p.value, "responsive")
@@ -587,7 +599,7 @@ func (s *nativePolicyState) validateWritten(before, written, merged any) {
 }
 
 func (s *nativePolicyState) overridden(key string, before, controls any) bool {
-	base, _ := nativeSplit(key)
+	base, _ := nativeControlKey(key, controls)
 	activation := nativeString(nativeGet(nativeGet(nativeGet(controls, base), "activator"), "key"))
 	if own, ok := s.owned[base]; ok && own.Group != nil && own.Group.Activator != nil {
 		activation = *own.Group.Activator
@@ -604,7 +616,7 @@ func (s *nativePolicyState) overridden(key string, before, controls any) bool {
 			if p.value == nil || nativeEqual(p.value, "") || nativeEqual(p.value, phpList{}) {
 				continue
 			}
-			bound, _ := nativeSplit(p.key)
+			bound, _ := nativeControlKey(p.key, controls)
 			if bound == base || bound == activation {
 				return true
 			}
@@ -614,7 +626,7 @@ func (s *nativePolicyState) overridden(key string, before, controls any) bool {
 }
 
 func (s *nativePolicyState) control(key string, controls any, owned map[string]elementornative.Control) (phpObject, string) {
-	base, b := nativeSplit(key)
+	base, b := nativeControlKey(key, controls)
 	c, ok := nativeMap(nativeGet(controls, base))
 	typ := nativeString(nativeGet(c, "type"))
 	if !ok || typ == "" {
@@ -752,7 +764,7 @@ func (s *nativePolicyState) settings(controls any, owned map[string]elementornat
 		if len(s.failures) >= nativeFailureLimit {
 			return
 		}
-		base, _ := nativeSplit(p.key)
+		base, _ := nativeControlKey(p.key, controls)
 		if nativeDeniedKey(p.key) || nativeDeniedKey(base) {
 			s.fail(path, p.key, "this control is never written")
 			continue

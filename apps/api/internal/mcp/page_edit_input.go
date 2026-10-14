@@ -71,6 +71,7 @@ const (
 	pageEditMaxAltChars     = 300
 	// pageEditMaxButtonTextChars is the length of a button's text: page-create's.
 	pageEditMaxButtonTextChars = 80
+	pageEditNativeSectionHint  = "This section holds Elementor widgets: remove it and add widgets with widget operations, or edit its text with set_text in a separate edit."
 	pageEditMixedHint          = "Send widget operations and text or outline operations in separate edits."
 	pageEditOpsInvalid         = "ops_invalid"
 	pageEditOpSetText          = "set_text"
@@ -244,14 +245,49 @@ func checkPageEditInput(input []byte) (pageEditFacts, pageCreateRefusal) {
 		}
 		f.ops = append(f.ops, op)
 	}
-	if pageEditMixedOperations(f.ops, nil) {
+	if pageEditMixedOperations(f.ops, nil, nil) {
 		return pageEditFacts{}, pageCreateRefusal{Code: pageEditOpsInvalid, Hint: pageEditMixedHint}
 	}
 	return f, pageCreateRefusal{}
 }
 
+// Outline edits use a separate call from structural operations covering native widgets.
+func pageEditNativeSectionOperations(ops []pageEditOp, kinds, parents map[string]string) bool {
+	outline := false
+	for _, op := range ops {
+		outline = outline || op.Op == "set_text" || op.Op == "insert" || op.Op == "replace"
+	}
+	if !outline {
+		return false
+	}
+	for _, op := range ops {
+		if op.Op != "remove" && op.Op != "replace" {
+			continue
+		}
+		for ref, kind := range kinds {
+			if kind != "native" {
+				continue
+			}
+			up := ref
+			if op.Op == "remove" {
+				up = parents[ref]
+			}
+			for depth := 0; up != "" && up != "root" && depth <= pageEditTreeMaxDepth; depth++ {
+				if up == op.Ref {
+					return true
+				}
+				up = parents[up]
+			}
+		}
+	}
+	return false
+}
+
 // Explicit operations are classified at parse time; remove/move use the page's kinds.
-func pageEditMixedOperations(ops []pageEditOp, kinds map[string]string) bool {
+func pageEditMixedOperations(ops []pageEditOp, kinds, parents map[string]string) bool {
+	if pageEditNativeSectionOperations(ops, kinds, parents) {
+		return true
+	}
 	native, outline := false, false
 	for _, op := range ops {
 		switch op.Op {
@@ -396,7 +432,7 @@ func pageEditOperation(raw json.RawMessage) (pageEditOp, bool) {
 			}
 		}
 		if name == "add_native" {
-			if op.Widget, ok = jsonStringOf(o["widget"]); !ok || !regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`).MatchString(op.Widget) {
+			if op.Widget, ok = jsonStringOf(o["widget"]); !ok || !nativeWidgetPattern.MatchString(op.Widget) {
 				return pageEditOp{}, false
 			}
 			op.Settings = o["settings"]

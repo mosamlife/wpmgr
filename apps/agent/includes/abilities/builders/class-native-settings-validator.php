@@ -161,7 +161,7 @@ final class NativeSettingsValidator
             } elseif ($value !== null) {
                 $accepted[$key] = $value;
             } else {
-                [$base, $breakpoint] = self::split($key);
+                [$base, $breakpoint] = self::split($key, $schema->document['controls']);
                 $control = $schema->document['controls'][$base] ?? null;
                 [, $baseBreakpoint] = self::split($base);
                 if (!is_array($control) || !in_array($control['type'] ?? null, self::CONTROL_TYPES, true)
@@ -249,7 +249,7 @@ final class NativeSettingsValidator
             if (str_starts_with($failure['path'], 'settings.')) {
                 $key = explode('.', substr($failure['path'], strlen('settings.')))[0];
             }
-            [$base] = self::split($key);
+            [$base] = self::split($key, $known);
             foreach (array_unique([$base, $key]) as $candidate) {
                 if (isset($known[$candidate]) && is_array($known[$candidate])) {
                     $controls[$candidate] = $known[$candidate];
@@ -286,7 +286,7 @@ final class NativeSettingsValidator
                 return;
             }
             $key = (string) $key;
-            [$base, $breakpoint] = self::split($key);
+            [$base, $breakpoint] = self::split($key, $controls);
             if (self::deniedKey($key) || self::deniedKey($base)) {
                 self::failure($failures, $path, $key, 'this control is never written');
                 continue;
@@ -521,7 +521,7 @@ final class NativeSettingsValidator
     /** @param array<string,mixed> $before Previous settings. @param array<string,mixed> $controls Schema controls. */
     private static function overridden(string $key, array $before, array $controls): bool
     {
-        [$base] = self::split($key);
+        [$base] = self::split($key, $controls);
         $control = $controls[$base] ?? null;
         $activation = is_array($control) ? ($control['activator'] ?? null) : null;
         $activator = is_array($activation) ? ($activation['key'] ?? null) : null;
@@ -534,7 +534,7 @@ final class NativeSettingsValidator
                 if ($value === '' || $value === null || $value === []) {
                     continue;
                 }
-                [$boundBase] = self::split((string) $bound);
+                [$boundBase] = self::split((string) $bound, $controls);
                 if ($boundBase === $base || $boundBase === $activator) {
                     return true;
                 }
@@ -545,8 +545,11 @@ final class NativeSettingsValidator
     }
 
     /** @return array{string,?string} Base control and known breakpoint suffix. */
-    private static function split(string $key): array
+    private static function split(string $key, array $controls = []): array
     {
+        if (array_key_exists($key, $controls)) {
+            return [$key, null];
+        }
         foreach (self::BREAKPOINTS as $breakpoint) {
             $suffix = '_' . $breakpoint;
             if (str_ends_with($key, $suffix)) {
@@ -592,6 +595,9 @@ final class NativeSettingsValidator
     /** @param array<string,mixed> $controls Known base controls. */
     private static function unknownOverride(string $key, array $controls): bool
     {
+        if (array_key_exists($key, $controls)) {
+            return false;
+        }
         foreach ($controls as $base => $control) {
             if (is_string($base) && is_array($control) && ($control['responsive'] ?? false) !== false
                 && str_starts_with($key, $base . '_')) {

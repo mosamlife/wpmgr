@@ -14,7 +14,7 @@ import (
 const elementorPatternMaxDepth = 8
 
 var (
-	elementorPatternWidgetType = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
+	elementorPatternWidgetType = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 	elementorPatternNumber     = regexp.MustCompile(`^[0-9]{1,9}$`)
 )
 

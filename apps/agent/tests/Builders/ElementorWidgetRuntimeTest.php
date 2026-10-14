@@ -79,8 +79,9 @@ final class ElementorWidgetRuntimeTest extends TestCase
         $catalogue = OwnAbilities::run('wpmgr/elementor-widgets', (object) []);
         $this->assertSame(['heading'], array_column($catalogue['output']['widgets'], 'name'));
         $schema = OwnAbilities::run('wpmgr/elementor-widget-schema', (object) ['widget' => 'heading', 'controls' => ['title']]);
-        $this->assertSame('text', ((array) $schema['output']['controls'])['title']['type']);
-        $this->assertSame([[], [], ['heading']], $manager->calls);
+        $this->assertFalse($catalogue['output']['widgets'][0]['usable']);
+        $this->assertSame('widget_not_usable', $schema['refusal']['code'] ?? null);
+        $this->assertSame([[], ['heading'], ['heading'], [], ['heading'], ['heading']], $manager->calls);
     }
 }
 

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/url"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -77,7 +78,11 @@ func verifyPageEditNativePrecheck(resp agentcmd.AbilityRunResponse, entrySum str
 		return fail()
 	}
 	kinds, good := nativeEditOperationKinds(before, original, pv.BuilderVersion)
-	if !good || pageEditMixedOperations(f.ops, kinds) {
+	parents := make(map[string]string, len(original))
+	for ref, e := range original {
+		parents[ref] = e.parent
+	}
+	if !good || pageEditMixedOperations(f.ops, kinds, parents) {
 		return fail()
 	}
 	final, ok := indexTree(tree)
@@ -486,11 +491,35 @@ func nativePolicyMedia(media []pageMediaFact) []NativeMediaFact {
 	return out
 }
 
+var nativeCopiedAttachmentID = regexp.MustCompile(`^[0-9]+$`)
+
 func nativeEditWrittenMedia(v any, media []pageMediaFact, used map[string]bool) bool {
+	return nativeEditMediaValues(v, media, used, false)
+}
+
+func nativeEditMediaValues(v any, media []pageMediaFact, used map[string]bool, copied bool) bool {
 	switch x := v.(type) {
 	case phpObject:
 		if nativeHas(x, "id") && nativeHas(x, "url") {
 			id, ok1 := nativeGet(x, "id").(string)
+			if copied {
+				switch value := nativeGet(x, "id").(type) {
+				case string:
+					n, err := strconv.ParseInt(value, 10, 64)
+					ok1 = err == nil && n > 0 && nativeCopiedAttachmentID.MatchString(value)
+					if ok1 {
+						id = strconv.FormatInt(n, 10)
+					}
+				case json.Number:
+					n, err := value.Int64()
+					ok1 = err == nil && n > 0
+					if ok1 {
+						id = strconv.FormatInt(n, 10)
+					}
+				default:
+					ok1 = false
+				}
+			}
 			u, ok2 := nativeGet(x, "url").(string)
 			if !ok1 || !ok2 {
 				return false
@@ -507,13 +536,13 @@ func nativeEditWrittenMedia(v any, media []pageMediaFact, used map[string]bool) 
 			}
 		}
 		for _, p := range x {
-			if !nativeEditWrittenMedia(p.value, media, used) {
+			if !nativeEditMediaValues(p.value, media, used, copied) {
 				return false
 			}
 		}
 	case phpList:
 		for _, item := range x {
-			if !nativeEditWrittenMedia(item, media, used) {
+			if !nativeEditMediaValues(item, media, used, copied) {
 				return false
 			}
 		}
@@ -522,7 +551,7 @@ func nativeEditWrittenMedia(v any, media []pageMediaFact, used map[string]bool) 
 }
 
 func nativeEditCopiedMedia(node any, media []pageMediaFact, used map[string]bool) bool {
-	if !nativeEditWrittenMedia(nativeGet(node, "settings"), media, used) {
+	if !nativeEditMediaValues(nativeGet(node, "settings"), media, used, true) {
 		return false
 	}
 	for _, child := range phpValues(nativeGet(node, "elements")) {
@@ -545,7 +574,10 @@ func nativeOwnedSchema(widget, version string, written any) ([]byte, bool) {
 		return nil, false
 	}
 	for _, p := range m {
-		base, _ := nativeSplit(p.key)
+		base := p.key
+		if _, exact := owned[base]; !exact {
+			base, _ = nativeSplit(base)
+		}
 		keys[base] = true
 	}
 	queue := make([]string, 0, len(keys))
@@ -744,7 +776,7 @@ func nativePlaceNode(tree any, op pageEditOp, node any, index map[string]*treeEl
 	}
 	typ := nativeString(nativeGet(node, "elType"))
 	if widgetOnly || typ == "widget" {
-		if host == nil || (host.elType != "container" && host.elType != "column") || elementorHoldsDynamicKey(nativeGet(host.node, "settings"), 1) || nativeDesignedAncestor(host, index) || !nativeLeafFlag(node) {
+		if host == nil || (host.elType != "container" && host.elType != "column") || elementorHoldsDynamicKey(nativeGet(host.node, "settings"), 1) || nativeDesignedAncestor(host, index) || !nativeLeafFlag(node) || nativeHostHoldsColumns(tree, host) {
 			return nil, false
 		}
 	} else if host == nil {
@@ -771,6 +803,19 @@ func nativePlaceNode(tree any, op pageEditOp, node any, index map[string]*treeEl
 	}
 	return nativeSplice(tree, parent, at, 0, phpList{node})
 }
+func nativeHostHoldsColumns(tree any, host *treeElement) bool {
+	proj, err := elementorProject(tree)
+	if err != nil {
+		return true
+	}
+	for _, n := range proj.nodes {
+		if n.ref == nativeString(nativeGet(host.node, "id")) {
+			return n.kind == "columns" || (host.elType == "section" && n.kind == "section")
+		}
+	}
+	return true
+}
+
 func nativeLeafFlag(node any) bool {
 	v := nativeGet(node, "isInner")
 	return v == nil || v == false || v == ""

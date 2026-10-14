@@ -169,7 +169,7 @@ final class BuilderContract
         foreach (['after', 'before', 'into'] as $anchor) {
             $position = $anchor === 'into' ? ['position' => ['type' => 'string', 'enum' => self::POSITIONS]] : [];
             $operations[] = self::opSchema('add_native', [$anchor => $ref] + $position + [
-                'widget' => ['type' => 'string', 'pattern' => '^[a-z][a-z0-9-]{0,63}$'],
+                'widget' => ['type' => 'string', 'pattern' => '^[a-z][a-z0-9_-]{0,63}$'],
                 'settings' => $settings,
             ], [$anchor, 'widget', 'settings']);
             $operations[] = self::opSchema('duplicate', ['ref' => $ref, $anchor => $ref] + $position, ['ref', $anchor]);

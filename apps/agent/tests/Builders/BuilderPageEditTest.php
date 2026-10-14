@@ -422,7 +422,7 @@ final class BuilderPageEditTest extends TestCase
     public function test_invalid_core_type_projects_locked_and_other_text_prechecks(): void
     {
         $tree = self::page();
-        foreach (['bad_name', 'Bad-name', str_repeat('a', 65)] as $i => $type) {
+        foreach (['bad.name', 'Bad-name', str_repeat('a', 65)] as $i => $type) {
             $this->api->widgetTypes[] = $type;
             $this->api->coreWidgets[] = $type;
             $this->api->widgetCatalogue[] = ['name' => $type, 'title' => 'Core', 'categories' => ['basic'], 'pro' => false, 'atomic' => false];

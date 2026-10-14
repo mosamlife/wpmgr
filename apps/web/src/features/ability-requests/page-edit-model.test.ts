@@ -6,6 +6,17 @@ import { parsePageEdit } from "./page-edit-model";
 import { nativeCardCase, nativeCardCases, nativeEditRow, nativeLinkCase, type NativeGolden } from "@/test/native-page-edit";
 
 describe("native page edit facts", () => {
+  it("accepts underscore widget names in input, changes and outline", () => {
+    const c = nativeCardCase("add_native");
+    const input = JSON.parse(c.input) as { operations: Array<{ widget: string }> };
+    input.operations[0]!.widget = "google_maps";
+    c.input = JSON.stringify(input);
+    c.facts.changes[0]!.native!.widget = "google_maps";
+    const ref = c.facts.changes[0]!.new_refs![0];
+    const node = c.facts.after_outline.nodes.find((n) => n.ref === ref)!;
+    node.widget = "google_maps";
+    expect(parsePageEdit(nativeEditRow(c))).not.toBeNull();
+  });
   it.each(nativeCardCases)("reads the production card $name", (c) => {
     expect(parsePageEdit(nativeEditRow(c)), c.name).not.toBeNull();
   });

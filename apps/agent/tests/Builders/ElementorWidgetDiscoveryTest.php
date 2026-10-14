@@ -38,6 +38,33 @@ final class ElementorWidgetDiscoveryTest extends TestCase
         }
     }
 
+    public function test_phase2_discovery_uses_native_eligibility(): void
+    {
+        $cases = json_decode(file_get_contents(__DIR__ . '/../fixtures/ability-run/native-phase2-cases.json'), true, 512, JSON_THROW_ON_ERROR);
+        $this->api->widgetCatalogue = [];
+        foreach ($cases['widgets'] as $case) {
+            $type = $case['name'];
+            $this->api->widgetTypes[] = $type;
+            if ($case['core']) {
+                $this->api->coreWidgets[] = $type;
+            }
+            $this->api->widgetCatalogue[] = ['name' => $type, 'title' => $type, 'categories' => ['basic'], 'pro' => $case['pro'], 'atomic' => $case['atomic']];
+            $this->api->widgetControls[$type] = self::controls();
+        }
+        $discovery = new ElementorWidgetDiscovery($this->api);
+        $catalogue = $discovery->catalogue((object) []);
+        foreach ($catalogue['output']['widgets'] as $i => $row) {
+            $this->assertSame($cases['widgets'][$i]['eligible'], $row['usable'], $row['name']);
+            $schema = $discovery->schema((object) ['widget' => $row['name']]);
+            $this->assertSame($row['usable'], isset($schema['output']), $row['name']);
+            if ($row['usable']) {
+                $this->assertTrue($schema['output']['usable']);
+            } else {
+                $this->assertSame('widget_not_usable', $schema['refusal']['code']);
+            }
+        }
+    }
+
     private const CATALOGUE = 'wpmgr/elementor-widgets';
     private const SCHEMA = 'wpmgr/elementor-widget-schema';
 
@@ -54,6 +81,8 @@ final class ElementorWidgetDiscoveryTest extends TestCase
             ['name' => 'e-heading', 'title' => 'Atomic Heading', 'categories' => ['basic'], 'pro' => false, 'atomic' => true],
             ['name' => 'html', 'title' => 'HTML', 'categories' => ['basic'], 'pro' => false, 'atomic' => false],
         ];
+        $this->api->coreWidgets = ['heading', 'gallery', 'html', 'e-heading'];
+        $this->api->widgetTypes = $this->api->coreWidgets;
         $this->api->widgetControls = ['heading' => self::controls()];
     }
 
@@ -68,13 +97,13 @@ final class ElementorWidgetDiscoveryTest extends TestCase
         $out = $this->catalogue([]);
         $this->assertSame('3.35.9', $out['builder_version']);
         $this->assertSame(['heading', 'gallery', 'e-heading', 'html'], array_column($out['widgets'], 'name'));
-        $this->assertSame([true, true, false, false], array_column($out['widgets'], 'usable'));
+        $this->assertSame([true, false, false, false], array_column($out['widgets'], 'usable'));
         $this->assertSame([false, true, false, false], array_column($out['widgets'], 'pro'));
         $this->assertSame(['Photo Gallery'], array_column($this->catalogue(['category' => 'media', 'search' => 'PHOTO'])['widgets'], 'title'));
         $this->assertSame([], $this->catalogue(['category' => 'basic', 'search' => 'gallery'])['widgets']);
         $this->api->widgetCatalogue = [];
         $this->assertSame([], $this->catalogue([])['widgets']);
-        $this->assertCount(4, $this->api->callsTo('widgetCatalogue'));
+        $this->assertCount(7, $this->api->callsTo('widgetCatalogue'));
         $this->assertSame([], $this->api->callsTo('document'));
         $this->assertSame([], $this->api->callsTo('regeneratePostCss'));
     }

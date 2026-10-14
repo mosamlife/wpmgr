@@ -66,8 +66,8 @@ final class NativeWidgetPolicy
 
     public function eligible(string $type): bool
     {
-        if (preg_match('/^[a-z][a-z0-9-]{0,63}$/D', $type) !== 1 || str_starts_with($type, 'e-')
-            || self::denied($type, LeafPolicy::DENIED_TYPES, LeafPolicy::DENIED_TYPE_PREFIXES)
+        if (preg_match('/^[a-z][a-z0-9_-]{0,63}$/D', $type) !== 1 || str_starts_with($type, 'e-')
+            || str_starts_with($type, 'nested-') || self::denied($type, LeafPolicy::DENIED_TYPES, LeafPolicy::DENIED_TYPE_PREFIXES)
             || !$this->api->widgetTypeExists($type) || !$this->api->widgetIsCore($type)) {
             return false;
         }
@@ -98,7 +98,7 @@ final class NativeWidgetPolicy
             $raw = ElementorWidgetDiscovery::baseControls($raw);
             $selected = $keys === null ? array_fill_keys(array_keys($raw), true) : [];
             foreach ($keys ?? [] as $key) {
-                $base = self::baseControl($key);
+                $base = array_key_exists($key, $raw) ? $key : self::baseControl($key);
                 $selected[$base] = true;
             }
             // A member needs its activator; a written activator also needs its governed members.

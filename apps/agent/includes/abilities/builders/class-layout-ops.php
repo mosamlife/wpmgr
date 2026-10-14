@@ -363,7 +363,7 @@ final class LayoutOps
         }
         $host = self::nodeAt($tree, $parent);
         if (!in_array($host['elType'] ?? null, ['container', 'column'], true)
-            || ($facts[$host['id'] ?? '']['kind'] ?? null) === 'locked') {
+            || ($facts[$host['id'] ?? '']['kind'] ?? null) === 'locked' || self::holdsColumns($host, $facts)) {
             return self::refuse(self::CODE_PLACEMENT, 'native_widget_parent', $i);
         }
         $index = $how === 'into' ? (($op['position'] ?? 'last') === 'first' ? 0 : count($host['elements'] ?? []))
@@ -690,7 +690,7 @@ final class LayoutOps
             // Legacy widgets without the flag or with the stored empty-string flag are equivalent.
             // Moves change only parent and index, so a true inner flag is refused here.
             return in_array($moved['isInner'] ?? false, [false, ''], true) && in_array($parentType, ['container', 'column'], true)
-                && ($facts[$parent['id'] ?? '']['kind'] ?? null) !== 'locked';
+                && ($facts[$parent['id'] ?? '']['kind'] ?? null) !== 'locked' && !self::holdsColumns($parent, $facts);
         }
         if (self::holdsColumns($parent, $facts)) {
             if ($parentType === 'section') {

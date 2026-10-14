@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
  * skeleton of every value control, grouped by tab and section. Named reads
  * return whole compact descriptors, never a slice of an option or default.
  * Both forms are capped by their JSON-encoded size and report truncation.
- * Atomic and hard-denied widgets are discoverable but are not usable.
+ * Only eligible core classic widgets are usable for native edits.
  */
 final class ElementorWidgetDiscovery
 {
@@ -44,7 +44,7 @@ final class ElementorWidgetDiscovery
             return [
                 'type' => 'object',
                 'properties' => [
-                    'widget' => $id,
+                    'widget' => ['type' => 'string', 'pattern' => '^[a-z][a-z0-9_-]{0,63}$', 'maxLength' => 64],
                     'controls' => ['type' => 'array', 'maxItems' => self::MAX_CONTROLS, 'uniqueItems' => true, 'items' => $id],
                 ],
                 'required' => ['widget'],
@@ -139,7 +139,7 @@ final class ElementorWidgetDiscovery
         if (array_diff(array_keys($props), $allowed) !== []) {
             return 'unknown input field';
         }
-        if ($schema && (!isset($props['widget']) || !is_string($props['widget']) || preg_match(self::RE_ID, $props['widget']) !== 1)) {
+        if ($schema && (!isset($props['widget']) || !is_string($props['widget']) || preg_match('/^[a-z][a-z0-9_-]{0,63}$/D', $props['widget']) !== 1)) {
             return 'widget must be a widget name';
         }
         if (array_key_exists('category', $props) && (!is_string($props['category']) || preg_match(self::RE_ID, $props['category']) !== 1)) {
@@ -194,7 +194,7 @@ final class ElementorWidgetDiscovery
                 if ($search !== '' && stripos($row['name'], $search) === false && stripos($row['title'], $search) === false) {
                     continue;
                 }
-                $row['usable'] = !$row['atomic'] && !self::denied($row['name'], LeafPolicy::DENIED_TYPES, LeafPolicy::DENIED_TYPE_PREFIXES);
+                $row['usable'] = (new NativeWidgetPolicy($this->api))->eligible($row['name']);
                 $candidate = $out;
                 $candidate['widgets'][] = $row;
                 if (!self::fits($candidate)) {
@@ -242,7 +242,7 @@ final class ElementorWidgetDiscovery
         if ($widget['atomic']) {
             return self::refuse('atomic_not_supported', 'atomic widget schemas are not supported in this phase');
         }
-        if (self::denied($widget['name'], LeafPolicy::DENIED_TYPES, LeafPolicy::DENIED_TYPE_PREFIXES)) {
+        if (!(new NativeWidgetPolicy($this->api))->eligible($widget['name'])) {
             return self::refuse('widget_not_usable', 'this widget is not usable for native edits');
         }
         $raw = $this->api->widgetControls($widget['name']);

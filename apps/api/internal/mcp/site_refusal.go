@@ -81,8 +81,8 @@ func sitePrecheckRefusal(ability string, refusal *agentcmd.AbilityRunRefusal) *t
 	}
 	details := map[string]any{"code": code, "retryable": refusal.Retryable}
 	reason, hint := "", precheckRefusalHint(code)
-	if ability == AbilityPageEdit && code == pageEditOpsInvalid && refusal.Detail == pageEditMixedHint {
-		hint = pageEditMixedHint
+	if ability == AbilityPageEdit && code == pageEditOpsInvalid && (refusal.Detail == pageEditMixedHint || refusal.Detail == pageEditNativeSectionHint) {
+		hint = refusal.Detail
 		details["retryable"] = false
 	}
 	if ability == AbilityPageEdit && code == pageEditCodeConflict {

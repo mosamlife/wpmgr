@@ -20,6 +20,7 @@ type nativeEditPolicyCases struct {
 		Operations json.RawMessage `json:"operations"`
 		ParseCode  string          `json:"parse_code"`
 		PageCode   string          `json:"page_code"`
+		Hint       string          `json:"hint"`
 	} `json:"batches"`
 	Destinations []struct {
 		Label  string `json:"label"`
@@ -93,8 +94,21 @@ func TestNativeEditSharedMixedBatches(t *testing.T) {
 			if code != c.ParseCode {
 				t.Fatalf("code=%q, want %q", code, c.ParseCode)
 			}
-			if code == "" && pageEditMixedOperations(facts.ops, kinds) != (c.PageCode == pageEditOpsInvalid) {
+			parents := map[string]string{}
+			for ref, e := range index {
+				parents[ref] = e.parent
+			}
+			if code == "" && pageEditMixedOperations(facts.ops, kinds, parents) != (c.PageCode == pageEditOpsInvalid) {
 				t.Fatal("page-dependent batch classification differs")
+			}
+			if c.Hint != "" {
+				if !pageEditNativeSectionOperations(facts.ops, kinds, parents) || c.Hint != pageEditNativeSectionHint {
+					t.Fatal("native section input refusal differs")
+				}
+				refusal := sitePrecheckRefusal(AbilityPageEdit, &agentcmd.AbilityRunRefusal{Code: c.PageCode, Detail: c.Hint})
+				if refusal.err.Details["hint"] != c.Hint {
+					t.Fatal("native section hint differs")
+				}
 			}
 			if code == pageEditOpsInvalid {
 				_, refusal := pageEditPreInputRefusal(input)

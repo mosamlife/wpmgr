@@ -101,7 +101,7 @@
       }
     },
     "settings": {
-      "value": "Café & tea"
+      "value": "Caf\u00e9 & tea"
     },
     "breakpoints": [
       "tablet",
@@ -3755,7 +3755,7 @@
     "expected": "ok"
   },
   {
-    "name": "responsive explicit suffix inactive refused",
+    "name": "exact responsive control with inactive suffix accepted",
     "schema": {
       "widget": "heading",
       "atomic": false,
@@ -3791,15 +3791,10 @@
     "breakpoints": [
       "mobile"
     ],
-    "expected": {
-      "code": "native_settings_invalid",
-      "keys": [
-        "size_tablet"
-      ]
-    }
+    "expected": "ok"
   },
   {
-    "name": "responsive explicit suffix unresponsive refused",
+    "name": "exact standalone control with device suffix accepted",
     "schema": {
       "widget": "heading",
       "atomic": false,
@@ -3819,12 +3814,7 @@
       "tablet",
       "mobile"
     ],
-    "expected": {
-      "code": "native_settings_invalid",
-      "keys": [
-        "size_mobile"
-      ]
-    }
+    "expected": "ok"
   },
   {
     "name": "responsive malformed window refused",
@@ -5521,7 +5511,7 @@
     }
   },
   {
-    "name": "widely nested unknown suffix refused",
+    "name": "exact standalone control with other suffix accepted",
     "schema": {
       "widget": "heading",
       "atomic": false,
@@ -5542,12 +5532,7 @@
       "tablet",
       "mobile"
     ],
-    "expected": {
-      "code": "native_settings_invalid",
-      "keys": [
-        "size_watch"
-      ]
-    }
+    "expected": "ok"
   },
   {
     "name": "group null metadata refused",
@@ -5582,7 +5567,7 @@
     }
   },
   {
-    "name": "responsive no base refused",
+    "name": "exact standalone control without root accepted",
     "schema": {
       "widget": "heading",
       "atomic": false,
@@ -5600,12 +5585,7 @@
       "tablet",
       "mobile"
     ],
-    "expected": {
-      "code": "native_settings_invalid",
-      "keys": [
-        "title_mobile"
-      ]
-    }
+    "expected": "ok"
   },
   {
     "name": "repeater uppercase id refused",
@@ -6058,7 +6038,7 @@
       }
     },
     "settings": {
-      "\n\u0000": "Value"
+      "\u007f\n\u0000": "Value"
     },
     "breakpoints": [
       "mobile"
@@ -10792,7 +10772,7 @@
       }
     },
     "settings": {
-      "token_mobile": "é"
+      "token_mobile": "\u00e9"
     },
     "before": {},
     "breakpoints": [
@@ -11183,7 +11163,7 @@
       }
     },
     "settings": {
-      "token_mobile": "é"
+      "token_mobile": "\u00e9"
     },
     "before": {},
     "breakpoints": [
@@ -11325,6 +11305,356 @@
       "token": "A sentence: (one, two); / words"
     },
     "before": {},
+    "breakpoints": [],
+    "expected": "ok"
+  },
+  {
+    "name": "exact visibility desktop",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "hide_desktop": {
+          "type": "switcher",
+          "return_value": "hidden"
+        },
+        "hide": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "before": {},
+    "settings": {
+      "hide_desktop": "hidden"
+    },
+    "breakpoints": [],
+    "expected": "ok"
+  },
+  {
+    "name": "exact visibility desktop delete",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "hide_desktop": {
+          "type": "switcher",
+          "return_value": "hidden"
+        },
+        "hide": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "before": {
+      "hide_desktop": "hidden"
+    },
+    "settings": {
+      "hide_desktop": null
+    },
+    "breakpoints": [],
+    "expected": "ok"
+  },
+  {
+    "name": "exact visibility tablet",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "hide_tablet": {
+          "type": "switcher",
+          "return_value": "hidden"
+        },
+        "hide": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "before": {},
+    "settings": {
+      "hide_tablet": "hidden"
+    },
+    "breakpoints": [],
+    "expected": "ok"
+  },
+  {
+    "name": "exact visibility tablet delete",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "hide_tablet": {
+          "type": "switcher",
+          "return_value": "hidden"
+        },
+        "hide": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "before": {
+      "hide_tablet": "hidden"
+    },
+    "settings": {
+      "hide_tablet": null
+    },
+    "breakpoints": [],
+    "expected": "ok"
+  },
+  {
+    "name": "exact visibility mobile",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "hide_mobile": {
+          "type": "switcher",
+          "return_value": "hidden"
+        },
+        "hide": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "before": {},
+    "settings": {
+      "hide_mobile": "hidden"
+    },
+    "breakpoints": [],
+    "expected": "ok"
+  },
+  {
+    "name": "exact visibility mobile delete",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "hide_mobile": {
+          "type": "switcher",
+          "return_value": "hidden"
+        },
+        "hide": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "before": {
+      "hide_mobile": "hidden"
+    },
+    "settings": {
+      "hide_mobile": null
+    },
+    "breakpoints": [],
+    "expected": "ok"
+  },
+  {
+    "name": "exact visibility tablet_extra",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "hide_tablet_extra": {
+          "type": "switcher",
+          "return_value": "hidden"
+        },
+        "hide": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "before": {},
+    "settings": {
+      "hide_tablet_extra": "hidden"
+    },
+    "breakpoints": [],
+    "expected": "ok"
+  },
+  {
+    "name": "exact visibility tablet_extra delete",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "hide_tablet_extra": {
+          "type": "switcher",
+          "return_value": "hidden"
+        },
+        "hide": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "before": {
+      "hide_tablet_extra": "hidden"
+    },
+    "settings": {
+      "hide_tablet_extra": null
+    },
+    "breakpoints": [],
+    "expected": "ok"
+  },
+  {
+    "name": "exact visibility mobile_extra",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "hide_mobile_extra": {
+          "type": "switcher",
+          "return_value": "hidden"
+        },
+        "hide": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "before": {},
+    "settings": {
+      "hide_mobile_extra": "hidden"
+    },
+    "breakpoints": [],
+    "expected": "ok"
+  },
+  {
+    "name": "exact visibility mobile_extra delete",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "hide_mobile_extra": {
+          "type": "switcher",
+          "return_value": "hidden"
+        },
+        "hide": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "before": {
+      "hide_mobile_extra": "hidden"
+    },
+    "settings": {
+      "hide_mobile_extra": null
+    },
+    "breakpoints": [],
+    "expected": "ok"
+  },
+  {
+    "name": "exact visibility laptop",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "hide_laptop": {
+          "type": "switcher",
+          "return_value": "hidden"
+        },
+        "hide": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "before": {},
+    "settings": {
+      "hide_laptop": "hidden"
+    },
+    "breakpoints": [],
+    "expected": "ok"
+  },
+  {
+    "name": "exact visibility laptop delete",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "hide_laptop": {
+          "type": "switcher",
+          "return_value": "hidden"
+        },
+        "hide": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "before": {
+      "hide_laptop": "hidden"
+    },
+    "settings": {
+      "hide_laptop": null
+    },
+    "breakpoints": [],
+    "expected": "ok"
+  },
+  {
+    "name": "exact visibility widescreen",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "hide_widescreen": {
+          "type": "switcher",
+          "return_value": "hidden"
+        },
+        "hide": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "before": {},
+    "settings": {
+      "hide_widescreen": "hidden"
+    },
+    "breakpoints": [],
+    "expected": "ok"
+  },
+  {
+    "name": "exact visibility widescreen delete",
+    "operation": "written",
+    "schema": {
+      "widget": "heading",
+      "atomic": false,
+      "controls": {
+        "hide_widescreen": {
+          "type": "switcher",
+          "return_value": "hidden"
+        },
+        "hide": {
+          "type": "text",
+          "responsive": true
+        }
+      }
+    },
+    "before": {
+      "hide_widescreen": "hidden"
+    },
+    "settings": {
+      "hide_widescreen": null
+    },
     "breakpoints": [],
     "expected": "ok"
   }

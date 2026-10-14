@@ -682,6 +682,132 @@
             ],
             "parse_code": "",
             "page_code": ""
+        },
+        {
+            "name": "replace native section",
+            "operations": [
+                {
+                    "op": "replace",
+                    "ref": "1111111",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                }
+            ],
+            "parse_code": "",
+            "page_code": "ops_invalid",
+            "hint": "This section holds Elementor widgets: remove it and add widgets with widget operations, or edit its text with set_text in a separate edit."
+        },
+        {
+            "name": "text then remove native section",
+            "operations": [
+                {
+                    "op": "set_text",
+                    "ref": "bbbbbbb",
+                    "field": "text",
+                    "text": "New"
+                },
+                {
+                    "op": "remove",
+                    "ref": "1111111"
+                }
+            ],
+            "parse_code": "",
+            "page_code": "ops_invalid",
+            "hint": "This section holds Elementor widgets: remove it and add widgets with widget operations, or edit its text with set_text in a separate edit."
+        },
+        {
+            "name": "remove native section then text",
+            "operations": [
+                {
+                    "op": "remove",
+                    "ref": "1111111"
+                },
+                {
+                    "op": "set_text",
+                    "ref": "bbbbbbb",
+                    "field": "text",
+                    "text": "New"
+                }
+            ],
+            "parse_code": "",
+            "page_code": "ops_invalid",
+            "hint": "This section holds Elementor widgets: remove it and add widgets with widget operations, or edit its text with set_text in a separate edit."
+        },
+        {
+            "name": "insert then remove native section",
+            "operations": [
+                {
+                    "op": "insert",
+                    "into": "2222222",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                },
+                {
+                    "op": "remove",
+                    "ref": "1111111"
+                }
+            ],
+            "parse_code": "",
+            "page_code": "ops_invalid",
+            "hint": "This section holds Elementor widgets: remove it and add widgets with widget operations, or edit its text with set_text in a separate edit."
+        },
+        {
+            "name": "remove native section then insert",
+            "operations": [
+                {
+                    "op": "remove",
+                    "ref": "1111111"
+                },
+                {
+                    "op": "insert",
+                    "into": "2222222",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                }
+            ],
+            "parse_code": "",
+            "page_code": "ops_invalid",
+            "hint": "This section holds Elementor widgets: remove it and add widgets with widget operations, or edit its text with set_text in a separate edit."
+        },
+        {
+            "name": "remove native section alone",
+            "operations": [
+                {
+                    "op": "remove",
+                    "ref": "1111111"
+                }
+            ],
+            "parse_code": "",
+            "page_code": ""
+        },
+        {
+            "name": "replace ordinary heading",
+            "operations": [
+                {
+                    "op": "replace",
+                    "ref": "bbbbbbb",
+                    "outline": [
+                        {
+                            "type": "paragraph",
+                            "text": "New"
+                        }
+                    ]
+                }
+            ],
+            "parse_code": "",
+            "page_code": ""
         }
     ],
     "destinations": [

@@ -82,6 +82,84 @@ final class NativePageEditTest extends TestCase
         return LayoutOps::apply($tree, $parsed['input']['operations'], new IdSeed('native-edit'), $media, true, null, $policy, ['mobile', 'tablet']);
     }
 
+
+    private static function phase2Cases(): array
+    {
+        return json_decode(file_get_contents(__DIR__ . '/../fixtures/ability-run/native-phase2-cases.json'), true, 512, JSON_THROW_ON_ERROR);
+    }
+
+    public function test_phase2_widget_eligibility(): void
+    {
+        foreach (self::phase2Cases()['widgets'] as $case) {
+            $type = $case['name'];
+            $this->api->widgetTypes[] = $type;
+            if ($case['core']) {
+                $this->api->coreWidgets[] = $type;
+            }
+            $this->api->widgetCatalogue = array_values(array_filter($this->api->widgetCatalogue, static fn ($row) => $row['name'] !== $type));
+            $this->api->widgetCatalogue[] = ['name' => $type, 'title' => $type, 'categories' => ['basic'], 'pro' => $case['pro'], 'atomic' => $case['atomic']];
+            $this->api->widgetControls[$type] = ['title' => ['type' => 'text', 'label' => 'Title']];
+            $policy = new NativeWidgetPolicy($this->api);
+            $this->assertSame($case['eligible'], $policy->eligible($type), $type);
+            $nodes = ElementorClassicMapper::project([self::widget($type)], $policy)->nodes();
+            $this->assertSame($case['eligible'] ? 'native' : 'locked', $nodes[0]['kind'], $type);
+            $r = $this->apply([['op' => 'add_native', 'into' => '2222222', 'widget' => $type, 'settings' => ['title' => 'Map']]]);
+            $this->assertSame($case['eligible'], isset($r['tree']), json_encode($r));
+        }
+    }
+
+    public function test_phase2_nested_widget_is_ineligible(): void
+    {
+        $this->api->widgetTypes[] = 'nested-tabs';
+        $this->api->coreWidgets[] = 'nested-tabs';
+        $this->api->widgetCatalogue[] = ['name' => 'nested-tabs', 'title' => 'Tabs', 'categories' => ['basic'], 'pro' => false, 'atomic' => false];
+        $this->assertFalse((new NativeWidgetPolicy($this->api))->eligible('nested-tabs'));
+    }
+
+    public function test_phase2_visibility_schema_selection(): void
+    {
+        $policy = new NativeWidgetPolicy($this->api);
+        foreach (self::phase2Cases()['devices'] as $device) {
+            $key = 'hide_' . $device;
+            $this->api->widgetControls['counter'][$key] = ['type' => 'switcher', 'return_value' => 'hidden', 'label' => 'Hide'];
+            $schema = $policy->schema('counter', [], [$key], []);
+            $this->assertNotNull($schema);
+            $this->assertArrayHasKey($key, $schema->document['controls']);
+            $r = $this->apply([['op' => 'set_native', 'ref' => 'aaaaaaa', 'settings' => [$key => 'hidden']]]);
+            $this->assertArrayHasKey('tree', $r, json_encode($r));
+        }
+    }
+
+    public function test_phase2_column_destinations(): void
+    {
+        foreach (['add_native', 'duplicate', 'move'] as $name) {
+            foreach (['into', 'before', 'after'] as $anchor) {
+                $tree = self::tree();
+                $tree[1]['settings'] = ['flex_direction' => 'row'];
+                $tree[1]['elements'] = [['id' => '3333333', 'elType' => 'container', 'settings' => [], 'elements' => []]];
+                $op = ['op' => $name, $anchor => $anchor === 'into' ? '2222222' : '3333333'];
+                $op += $name === 'add_native' ? ['widget' => 'counter', 'settings' => ['title' => 'New']] : ['ref' => 'aaaaaaa'];
+                $r = $this->apply([$op], $tree);
+                $this->assertArrayNotHasKey('tree', $r, json_encode($op));
+                $op = ['op' => $name, 'into' => '3333333'] + ($name === 'add_native' ? ['widget' => 'counter', 'settings' => ['title' => 'New']] : ['ref' => 'aaaaaaa']);
+                $this->assertArrayHasKey('tree', $this->apply([$op], $tree));
+            }
+        }
+    }
+
+    public function test_phase2_copied_media(): void
+    {
+        foreach (self::phase2Cases()['copied_media'] as $case) {
+            $tree = self::tree();
+            $tree[0]['elements'][0]['settings'] = ['image' => ['id' => $case['id'], 'url' => 'https://site.example/image.jpg']];
+            $r = $this->apply([['op' => 'duplicate', 'ref' => 'aaaaaaa', 'into' => '2222222']], $tree, [7 => ['id' => 7, 'url' => 'https://site.example/image.jpg']]);
+            $this->assertSame($case['accepted'], isset($r['tree']), json_encode($case));
+            if ($case['accepted']) {
+                $this->assertSame($case['id'], $r['tree'][1]['elements'][0]['settings']['image']['id']);
+            }
+        }
+    }
+
     private static function policyCases(): array
     {
         $cases = json_decode(file_get_contents(__DIR__ . '/../fixtures/ability-run/native-edit-policy-cases.json'), true, 512, JSON_THROW_ON_ERROR);
@@ -128,7 +206,7 @@ final class NativePageEditTest extends TestCase
                 $rule = PageEditValidator::againstPage($r['input'], $nodes, ['operations' => BuilderContract::OPS]);
                 $this->assertSame($case['page_code'] ?? '', $rule['code'] ?? '', $case['name']);
                 if (($case['page_code'] ?? '') === 'ops_invalid') {
-                    $this->assertSame(PageEditValidator::MIXED_HINT, $rule['detail']);
+                    $this->assertSame($case['hint'] ?? PageEditValidator::MIXED_HINT, $rule['detail']);
                 }
             }
             if ($case['parse_code'] === 'ops_invalid') {
@@ -477,7 +555,7 @@ final class NativePageEditTest extends TestCase
         $r = PageEditValidator::parse($raw);
         $this->assertSame('native_settings_invalid', $r['code'] ?? null);
         $this->assertNotEmpty($r['failures']);
-        $this->assertSame('bad_input', self::parse([['op' => 'add_native', 'into' => '1111111', 'widget' => 'bad_name', 'settings' => []]])['code'] ?? null);
+        $this->assertSame('bad_input', self::parse([['op' => 'add_native', 'into' => '1111111', 'widget' => 'bad.name', 'settings' => []]])['code'] ?? null);
         foreach (['{"rows":{"0":{"_id":"aaaaaaa","text":"x"}}}', '{"rows":[{}]}'] as $settings) {
             $raw = '{"post_id":41,"base_fingerprint":"' . str_repeat('a', 64) . '","operations":[{"op":"set_native","ref":"aaaaaaa","settings":' . $settings . '}]}';
             $this->assertSame('native_settings_invalid', PageEditValidator::parse($raw)['code'] ?? null);
@@ -597,7 +675,7 @@ final class NativePageEditTest extends TestCase
         $this->assertSame(PageEditValidator::MIXED_HINT, $rule['detail'] ?? null);
         $parsed = self::parse([['op' => 'remove', 'ref' => '1111111'], ['op' => 'set_text', 'ref' => 'bbbbbbb', 'field' => 'text', 'text' => 'New']]);
         $rule = PageEditValidator::againstPage($parsed['input'], ElementorClassicMapper::project(self::tree(), new NativeWidgetPolicy($this->api))->nodes(), ['operations' => BuilderContract::OPS]);
-        $this->assertSame('ref_gone', $rule['detail'] ?? null);
+        $this->assertSame(PageEditValidator::NATIVE_SECTION_HINT, $rule['detail'] ?? null);
         $tree = self::tree();
         $tree[1]['elements'] = [self::widget()];
         $this->assertSame('data_unreadable', LayoutOps::apply($tree, [], new IdSeed('native-edit'), [], true, null, new NativeWidgetPolicy($this->api))['code'] ?? null);
@@ -671,14 +749,14 @@ final class NativePageEditTest extends TestCase
         $this->assertSame('native_settings_invalid', $this->apply([$op])['code'] ?? null);
     }
 
-    public function test_native_widgets_fit_row_containers_without_changing_inner_flag(): void
+    public function test_native_widgets_refuse_column_rows(): void
     {
         $tree = self::tree();
         $tree[1]['settings']['flex_direction'] = 'row';
         $r = $this->apply([['op' => 'add_native', 'into' => '2222222', 'widget' => 'counter', 'settings' => []]], $tree);
-        $this->assertArrayHasKey('tree', $r, json_encode($r));
+        $this->assertSame('layout_invalid', $r['code'] ?? null);
         $r = $this->apply([['op' => 'move', 'ref' => 'aaaaaaa', 'into' => '2222222']], $tree);
-        $this->assertSame($tree[0]['elements'][0], $r['tree'][1]['elements'][0] ?? null);
+        $this->assertSame('layout_invalid', $r['code'] ?? null);
         $tree[0]['elements'][0]['isInner'] = true;
         $this->assertSame('layout_invalid', $this->apply([['op' => 'move', 'ref' => 'aaaaaaa', 'into' => '2222222']], $tree)['code'] ?? null);
     }

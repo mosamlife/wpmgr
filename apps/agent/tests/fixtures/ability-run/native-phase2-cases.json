@@ -1,0 +1,18 @@
+{
+  "widgets": [
+    {"name":"google_maps","core":true,"pro":false,"atomic":false,"eligible":true},
+    {"name":"nested-tabs","core":true,"pro":false,"atomic":false,"eligible":false},
+    {"name":"premium","core":true,"pro":true,"atomic":false,"eligible":false},
+    {"name":"vendor-widget","core":false,"pro":false,"atomic":false,"eligible":false}
+  ],
+  "devices": ["desktop","tablet","mobile","tablet_extra","mobile_extra","laptop","widescreen"],
+  "copied_media": [
+    {"id":7,"accepted":true},
+    {"id":"7","accepted":true},
+    {"id":7.5,"accepted":false},
+    {"id":"7.5","accepted":false},
+    {"id":true,"accepted":false},
+    {"id":8,"accepted":false}
+  ],
+  "section_hint":"This section holds Elementor widgets: remove it and add widgets with widget operations, or edit its text with set_text in a separate edit."
+}

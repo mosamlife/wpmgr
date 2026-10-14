@@ -200,7 +200,7 @@ final class Projection
     public function addNative(string $ref, string $parent, string $widget, string $summary): void
     {
         $this->checkPlace($ref, $parent);
-        if (preg_match('/^[a-z][a-z0-9-]{0,63}$/D', $widget) !== 1 || preg_match('/^.{0,120}$/usD', $summary) !== 1
+        if (preg_match('/^[a-z][a-z0-9_-]{0,63}$/D', $widget) !== 1 || preg_match('/^.{0,120}$/usD', $summary) !== 1
             || preg_match('/[<>\x00-\x1F\x7F]/', $summary) === 1) {
             throw new \InvalidArgumentException('a native node needs a widget name and a bounded plain summary');
         }

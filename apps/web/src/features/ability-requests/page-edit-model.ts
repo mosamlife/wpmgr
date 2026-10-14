@@ -68,7 +68,7 @@ function isPatternField(field: string): boolean {
 }
 const fieldSchema = z.union([z.enum(FIELDS), z.string().refine(isPatternField)]);
 const positionSchema = z.enum(["first", "last"]);
-const widgetSchema = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/);
+const widgetSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
 const parentSchema = z.union([z.literal("root"), refSchema]);
 const nativeValueSchema = z.json();
 export type NativeValue = z.infer<typeof nativeValueSchema>;

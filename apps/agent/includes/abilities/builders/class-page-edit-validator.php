@@ -72,6 +72,9 @@ if (!defined('ABSPATH')) {
  */
 final class PageEditValidator
 {
+    /** Plain next step for outline edits covering native widgets. */
+    public const NATIVE_SECTION_HINT = 'This section holds Elementor widgets: remove it and add widgets with widget operations, or edit its text with set_text in a separate edit.';
+
     /** Plain next step for a call that crosses the widget and outline contracts. */
     public const MIXED_HINT = 'Send widget operations and text or outline operations in separate edits.';
 
@@ -250,6 +253,30 @@ final class PageEditValidator
             }
             if ($k === 'heading' && ($node['level'] ?? null) === 1) {
                 $page->h1s[] = $ref;
+            }
+        }
+
+        $outlineEdit = false;
+        foreach ($input['operations'] as $op) {
+            $outlineEdit = $outlineEdit || in_array($op['op'], ['set_text', 'insert', 'replace'], true);
+        }
+        if ($outlineEdit) {
+            foreach ($input['operations'] as $i => $op) {
+                if (!in_array($op['op'], ['remove', 'replace'], true)) {
+                    continue;
+                }
+                foreach ($kind as $ref => $k) {
+                    if ($k !== 'native') {
+                        continue;
+                    }
+                    $up = $op['op'] === 'replace' ? $ref : ($parent[$ref] ?? null);
+                    while (is_string($up)) {
+                        if ($up === $op['ref']) {
+                            return self::refuse('ops_invalid', self::NATIVE_SECTION_HINT, $i);
+                        }
+                        $up = $parent[$up] ?? null;
+                    }
+                }
             }
         }
 
@@ -611,7 +638,7 @@ final class PageEditValidator
                     $clean['position'] = $o['position'];
                 }
                 if ($name === 'add_native') {
-                    if (!is_string($o['widget']) || preg_match('/^[a-z][a-z0-9-]{0,63}$/D', $o['widget']) !== 1) {
+                    if (!is_string($o['widget']) || preg_match('/^[a-z][a-z0-9_-]{0,63}$/D', $o['widget']) !== 1) {
                         return self::bad($at . '.widget must be a classic widget name');
                     }
                     $settings = self::nativeSettings($o['settings'], $at);
