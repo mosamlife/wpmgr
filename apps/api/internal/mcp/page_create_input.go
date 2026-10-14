@@ -186,14 +186,14 @@ type pageLink struct {
 // fields of the design; an outline that is refused names the address of the
 // node and the field that holds the problem (outline[0].children[2], key
 // "level"). Outline is set for the second, so the message speaks of the
-// outline and not of the design. A refusal of another member of the input
-// (the post type, the editor, the title) names a code only. The zero value is
-// an input that was accepted.
+// outline and not of the design. Input marks a structural input failure,
+// including the post type, editor and title. The zero value is an accepted input.
 type pageCreateRefusal struct {
 	Hint     string
 	Code     string
 	Failures []refusalFailure
 	Outline  bool
+	Input    bool
 }
 
 // validatePageCreateInput checks input against the outline grammar. It
@@ -217,50 +217,54 @@ func checkPageCreateInput(input []byte) (pageCreateFacts, pageCreateRefusal) {
 		switch k {
 		case "post_type", "editor", "title", "outline", "elementor_format", "outline_version", "design", "page_frame":
 		default:
-			return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
+			failure := pageInputFieldsRefusal(input, "", []string{"post_type", "editor", "title", "outline", "elementor_format", "outline_version", "design", "page_frame"})
+			return pageCreateFacts{}, pageInputRefusal(failure.Path, failure.Key, failure.Reason)
 		}
 	}
 	var f pageCreateFacts
 	if f.postType, ok = jsonStringOf(top["post_type"]); !ok || (f.postType != "page" && f.postType != "post") {
-		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
+		return pageCreateFacts{}, pageInputRefusal("", "post_type", "must be page or post")
 	}
 	if f.editor, ok = jsonStringOf(top["editor"]); !ok {
-		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
+		return pageCreateFacts{}, pageInputRefusal("", "editor", "must be wordpress_blocks, wordpress_classic or builder:elementor")
 	}
 	switch f.editor {
 	case pageEditorBlocks, pageEditorClassic:
 	case pageEditorBuilderElementor:
 		f.builder, f.elementorFormat = pageBuilderElementor, pageElementorFormatDefault
 	default:
-		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
+		return pageCreateFacts{}, pageInputRefusal("", "editor", "must be wordpress_blocks, wordpress_classic or builder:elementor")
 	}
 	// elementor_format belongs to builder:elementor alone and holds one of the
 	// published values; the facts of every other editor carry no format.
 	if raw, has := top["elementor_format"]; has {
 		format, ok := jsonStringOf(raw)
 		if !ok || f.builder != pageBuilderElementor || !pageElementorFormatKnown(format) {
-			return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
+			return pageCreateFacts{}, pageInputRefusal("", "elementor_format", "must be site_default, classic or atomic, only with editor builder:elementor")
 		}
 		f.elementorFormat = format
 	}
 	if f.outlineVersion, ok = pageOutlineVersionOf(top); !ok {
-		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
+		return pageCreateFacts{}, pageInputRefusal("", "outline_version", "must be the integer 3 or left out")
 	}
 	designed := f.outlineVersion == pageOutlineVersionDesigned
 	if designed {
 		// A designed page is built with Elementor's classic format, and an
 		// input that does not state it has site_default, which only the site
 		// can resolve.
-		if f.builder != pageBuilderElementor || f.elementorFormat != elementorFormatClassic {
-			return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
+		if f.builder != pageBuilderElementor {
+			return pageCreateFacts{}, pageInputRefusal("", "editor", "a designed page (outline_version 3) needs editor builder:elementor with elementor_format classic")
+		}
+		if f.elementorFormat != elementorFormatClassic {
+			return pageCreateFacts{}, pageInputRefusal("", "elementor_format", "a designed page (outline_version 3) is built as classic widgets: send elementor_format classic")
 		}
 	} else if _, has := top["design"]; has {
-		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
+		return pageCreateFacts{}, pageInputRefusal("", "design", "is accepted only with outline_version 3")
 	} else if _, has := top["page_frame"]; has {
-		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
+		return pageCreateFacts{}, pageInputRefusal("", "page_frame", "is accepted only with outline_version 3")
 	}
 	if f.title, ok = jsonStringOf(top["title"]); !ok || strings.TrimSpace(f.title) == "" {
-		return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
+		return pageCreateFacts{}, pageInputRefusal("", "title", "must be a nonempty string containing more than whitespace")
 	}
 	// The design is judged before the outline, so a page without one is
 	// told that rather than anything about its nodes.
@@ -283,7 +287,7 @@ func checkPageCreateInput(input []byte) (pageCreateFacts, pageCreateRefusal) {
 	}
 	if designed {
 		if f.pageFrame, ok = pageFrameOf(top, outline); !ok {
-			return pageCreateFacts{}, pageCreateRefusal{Code: pageCreateBadInput}
+			return pageCreateFacts{}, pageInputRefusal("", "page_frame", "must be theme, full_width or canvas")
 		}
 		_, f.pageFrameSent = top["page_frame"]
 		if len(outline) > pageCreateMaxSections {

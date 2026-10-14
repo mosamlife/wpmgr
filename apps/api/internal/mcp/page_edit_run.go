@@ -57,14 +57,14 @@ func pageEditInputRefusal(code string) *toolRefusal {
 }
 
 // pageEditRefusalOf is pageEditInputRefusal for a refusal that may carry
-// failures (the design's): the message spells out the first three and
+// failures: the message spells out the first three and
 // failures[] holds the rest. A value the design may not hold carries the
 // page-edit schema.
 func pageEditRefusalOf(r pageCreateRefusal) *toolRefusal {
 	code := r.Code
 	msg, failures := msgPageEditInput, []refusalFailure(nil)
 	if len(r.Failures) > 0 {
-		msg, failures = refusalEnvelope(pageCreateRefusalSummary(code), r.Failures)
+		msg, failures = refusalEnvelope(pageCreateRefusalSummaryOf(r), r.Failures)
 	}
 	if code == pageCreateBadInput {
 		ref := argRefusal(reasonInvalidArguments, "input", "", msgAbilityArgInput, pageEditInputSchema)
