@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.165
+Stable tag: 0.61.166
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -287,6 +287,11 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.61.25. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
+= 0.61.166 =
+* Added: A connected AI can read the site's Elementor widgets and their settings, and add, change, duplicate, move and remove Elementor's own widgets on a page. Each edit follows the site's approval settings in WPMgr and can be undone.
+* Changed: Undo restores a page's data rows in place.
+* Changed: A site whose Elementor version builds widget settings only in the editor gets a plain explanation that those settings are unavailable.
+
 = 0.61.165 =
 * Added: A connected AI can create a designed Elementor page with sections and ready-made parts: a hero, features, stats, logos, testimonials, pricing, FAQ and a call to action. It uses the colours, fonts, spacing and corner style the AI chooses for it and is saved as a draft. On a block theme, the page fills the screen without the theme's header and footer.
 * Added: The AI can edit a designed page: change any part's text, add or replace sections in the same design, and undo the change.
@@ -462,6 +467,9 @@ The entries below summarize the notable changes since 0.61.25. This project ship
 * Fixed: restore no longer silently drops plugin or theme files whose path happens to contain a reserved WordPress drop-in name (for example a plugin's own class-db.php), which could leave a restored site broken while the restore reported success. Restore now matches its protected-file exclusions by exact path instead of substring, so only genuine root drop-ins (db.php, object-cache.php, advanced-cache.php) and config files are held back.
 
 == Upgrade Notice ==
+
+= 0.61.166 =
+Lets a connected AI read the site's Elementor widgets and their settings, and add, change, duplicate, move and remove Elementor's own widgets on a page, following your approval settings, with undo. Undo restores the page's data rows in place. A site whose Elementor version builds widget settings only in the editor gets a plain explanation that those settings are unavailable.
 
 = 0.61.165 =
 Lets a connected AI create and edit designed Elementor draft pages in the colours, fonts, spacing and corner style the AI chooses for them, with ready-made sections and undo. On a block theme, the page fills the screen without the theme's header and footer. Saving refreshes the stylesheet once and keeps the template and page settings; undo restores them exactly.
