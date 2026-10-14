@@ -16,6 +16,8 @@ import {
   parseOutlineFragment, patternVariantSchema, readInput, type DesignedEditNode, type OutlineNode, type PageDesign,
 } from "./outline-model";
 
+import { editTemplateSchema, showsOnWords, templatePublished, templateRulesSchema, templateStatus, type EditTemplate } from "./template-card-model";
+
 type EditNode = OutlineNode | DesignedEditNode;
 
 // Pure logic for the approval card of "AI changes a draft in Elementor"
@@ -89,6 +91,7 @@ export type HowAnchor = "after" | "before" | "into";
 
 const outlineJson = z.array(z.unknown());
 const operationSchema = z.union([
+  z.strictObject({ op: z.literal("set_shows_on"), rules: templateRulesSchema }),
   z.strictObject({ op: z.literal("set_text"), ref: refSchema, field: fieldSchema, text: z.string() }),
   z.strictObject({ op: z.literal("insert"), after: refSchema, outline: outlineJson }),
   z.strictObject({ op: z.literal("insert"), before: refSchema, outline: outlineJson }),
@@ -134,11 +137,13 @@ interface EditInput {
   readonly postId: number;
   readonly ops: readonly EditOp[];
   readonly design: PageDesign | null;
+  readonly showsOn: readonly string[] | null;
 }
 
 function normalise(o: z.infer<typeof operationSchema>, designed: boolean): EditOp | null {
   const fragment = designed ? parseDesignedOutlineFragment : parseOutlineFragment;
   switch (o.op) {
+    case "set_shows_on": return null;
     case "set_text":
       return { op: "set_text", ref: o.ref, field: o.field, text: o.text };
     case "insert": {
@@ -174,12 +179,18 @@ function parseInput(inputJson: string): EditInput | null {
   const parsed = inputSchema.safeParse(raw);
   if (!parsed.success) return null;
   const ops: EditOp[] = [];
+  let showsOn: readonly string[] | null = null;
   for (const o of parsed.data.operations) {
+    if (o.op === "set_shows_on") {
+      if (showsOn !== null) return null;
+      showsOn = o.rules;
+      continue;
+    }
     const op = normalise(o, parsed.data.design !== undefined);
     if (op === null) return null;
     ops.push(op);
   }
-  return { postId: parsed.data.post_id, ops, design: parsed.data.design ?? null };
+  return { postId: parsed.data.post_id, ops, design: parsed.data.design ?? null, showsOn };
 }
 
 // --- The checked card -------------------------------------------------------
@@ -296,7 +307,8 @@ const factsSchema = z
       version: z.string().regex(ELEMENTOR_VERSION),
       format: z.enum(["classic", "atomic"]),
     }),
-    changes: z.array(changeSchema).min(1).max(25),
+    template: editTemplateSchema.optional(),
+    changes: z.array(z.union([changeSchema, z.strictObject({ op: z.literal("set_shows_on"), label: z.literal("Where it shows") })])).max(25),
     after_outline: afterOutlineSchema.optional(),
     after_outline_omitted: z.boolean().optional(),
     checked_at: z.string().refine((s) => !Number.isNaN(Date.parse(s))),
@@ -305,7 +317,7 @@ const factsSchema = z
   .refine((f) => (f.after_outline !== undefined) !== (f.after_outline_omitted === true));
 
 type Facts = z.infer<typeof factsSchema>;
-type Change = Facts["changes"][number];
+type Change = z.infer<typeof changeSchema>;
 type OutlineFact = z.infer<typeof outlineNodeSchema>;
 
 // --- Words (ours) -----------------------------------------------------------
@@ -377,7 +389,7 @@ export type EditOpName = EditOp["op"];
 
 /** One change as the card lists it. */
 export interface ChangeLine {
-  readonly op: EditOpName;
+  readonly op: EditOpName | "set_shows_on";
   /** What the change does, in order: our words and the site's. */
   readonly title: readonly Seg[];
   /** set_text: the text before (the site's) and the text asked for (the AI's). */
@@ -426,6 +438,8 @@ export interface PageEditView {
   /** True when a set_text is among the changes. */
   readonly hasTextChange: boolean;
   readonly design: PageDesign | null;
+  readonly template: EditTemplate | null;
+  readonly setsPlaces: boolean;
 }
 
 function siteTextOf(t: SiteText | undefined): SiteText {
@@ -696,7 +710,17 @@ export function parsePageEdit(r: AbilityRequest): PageEditView | null {
   if (!parsed.success) return null;
   const facts = parsed.data;
   if (facts.post.id !== input.postId) return null;
-  if (facts.changes.length !== input.ops.length) return null;
+  const template = facts.template;
+  const placesChanged = template !== undefined
+    && JSON.stringify(template.shows_on.before) !== JSON.stringify(template.shows_on.after);
+  if (template === undefined && input.showsOn !== null) return null;
+  if (template !== undefined && JSON.stringify(template.shows_on.after)
+    !== JSON.stringify(input.showsOn ?? template.shows_on.before)) return null;
+  const displayChanges = facts.changes.filter((c) => c.op === "set_shows_on");
+  if (displayChanges.length !== (placesChanged ? 1 : 0)) return null;
+  if (displayChanges.length && facts.changes.at(-1)?.op !== "set_shows_on") return null;
+  const changes = facts.changes.filter((c): c is Change => c.op !== "set_shows_on");
+  if (changes.length !== input.ops.length || (input.ops.length === 0 && input.showsOn === null)) return null;
 
   const after = facts.after_outline;
   const nodeText = new Map<string, SiteText>();
@@ -710,13 +734,18 @@ export function parsePageEdit(r: AbilityRequest): PageEditView | null {
   const lines: ChangeLine[] = [];
   for (let i = 0; i < input.ops.length; i += 1) {
     const op = input.ops[i]!;
-    const change = facts.changes[i]!;
+    const change = changes[i]!;
     if (!agrees(change, op)) return null;
     if (op.op === "set_text" || op.op === "set_native") marks.set(op.ref, "changed");
     if (op.op === "move") marks.set(op.ref, "moved");
     for (const ref of change.new_refs ?? []) marks.set(ref, "new");
     lines.push(lineFor(change, op, textOf));
   }
+  if (placesChanged && template) lines.push({
+    op: "set_shows_on", fromSite: false,
+    title: [ours("Where it shows: "), fromSite(showsOnWords(template.shows_on.before, template.rule_titles)),
+      ours(" → "), fromSite(showsOnWords(template.shows_on.after, template.rule_titles))],
+  });
   const tree = afterView(facts, marks);
   if (after !== undefined && tree === null) return null;
   return {
@@ -728,6 +757,8 @@ export function parsePageEdit(r: AbilityRequest): PageEditView | null {
     checkedAt: facts.checked_at,
     design: input.design,
     hasTextChange: input.ops.some((o) => o.op === "set_text"),
+    template: template ?? null,
+    setsPlaces: input.showsOn !== null,
   };
 }
 
@@ -932,7 +963,13 @@ export function failedEditStatus(
  * uses (approval tiers, `automaticStatus`).
  */
 export function pageEditStatus(r: AbilityRequest): PageEditStatus {
-  return automaticStatus(r, basePageEditStatus(r));
+  const base = automaticStatus(r, basePageEditStatus(r));
+  const template = editTemplateSchema.safeParse(r.page_edit?.template);
+  if (!template.success) return base;
+  const status = templateStatus(r, template.data, base);
+  if (templatePublished(r)) return { ...status, tone: "amber", links: true };
+  if (r.undo_state === "refused_conflict") return { ...status, tone: "red", links: true };
+  return status;
 }
 
 /** The status as a person's own approval reads it; `pageEditStatus` adjusts it for an automatic one. */
@@ -1020,6 +1057,7 @@ export type EditUndoView =
  * applied change of its page that has not been undone.
  */
 export function editUndoView(r: AbilityRequest, windowOpen: boolean): EditUndoView {
+  if (r.page_edit?.template && templatePublished(r)) return "silent";
   if (r.state !== "done" || r.outcome !== "applied") return "silent";
   if (r.undo_state == null) return "none";
   if (r.undo_state !== "available") return "silent";

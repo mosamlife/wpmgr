@@ -19,6 +19,10 @@ import { isRestWrite } from "./rest-card-model";
 import { StructuredAbilityCard } from "./structured-card";
 import { useWindowOpen } from "./use-window-open";
 import {
+  TEMPLATE_CHECKS, TEMPLATE_EFFECT, liveTemplateLine, readCreateTemplate, sentence,
+  showsOnWords, templatePreviewInput, templatePublished, templateStatus,
+} from "./template-card-model";
+import {
   NOT_SHOWABLE_COPY,
   NOTHING_PUBLISHED,
   abilityCardTitle,
@@ -95,18 +99,21 @@ function PageCreateCard({
 }: AbilityRequestCardProps & { canUndo: boolean }) {
   const pending = isPending(request);
   const { articleRef, declineRef } = useDeepLinkFocus(deepLinked, pending);
-  const status = abilityStatus(request, laterEdits);
+  const template = readCreateTemplate(request);
+  const status = template ? templateStatus(request, template, abilityStatus(request, laterEdits)) : abilityStatus(request, laterEdits);
+  const undoOpen = canUndo && (template === null || !templatePublished(request) && request.undo_state !== "refused_conflict");
   const auto = ranAutomatically(request.approval);
   const elementor = isElementorRequest(request);
   // Null unless every node, every image fact and the page's builder can be
   // shown in full, and the builder is the editor the request recorded.
-  const parsed = parsePagePreview(request.input_json, request.page_media, request.page_builder);
+  const input = template ? templatePreviewInput(request, template) : request.page_template != null ? null : request.input_json;
+  const parsed = input === null ? null : parsePagePreview(input, request.page_media, request.page_builder);
   const preview = parsed !== null && (parsed.builder !== null) === elementor ? parsed : null;
   // A designed page (outline version 3) has its own reader, and the two refuse
   // each other's input. The card shows its design and its sections in full.
   const designed =
-    preview === null && elementor
-      ? parseDesignedPagePreview(request.input_json, request.page_media, request.page_builder)
+    preview === null && elementor && input !== null
+      ? parseDesignedPagePreview(input, request.page_media, request.page_builder)
       : null;
   // What the card can show in full, and the only thing Approve keys on: a
   // request neither reader accepts shows nothing and cannot be approved.
@@ -116,8 +123,10 @@ function PageCreateCard({
   const outlineLabelId = useId();
   const setUpFor = setUpForLine(request);
   const busy = approvePending || declinePending;
-  const links = draftLinks(request, status, siteUrl);
-  const title = abilityCardTitle(request);
+  const links = template && request.created_post_id != null && status.kind !== "undone"
+    ? draftLinks(request, { ...status, kind: "done" }, siteUrl).filter((l) => l.label === "Open in Elementor")
+    : draftLinks(request, status, siteUrl);
+  const title = template ? `New ${template.type} draft in Elementor` : abilityCardTitle(request);
 
   return (
     <article
@@ -142,28 +151,57 @@ function PageCreateCard({
       </div>
 
       <dl className="grid grid-cols-[minmax(7rem,auto)_1fr] gap-x-4 gap-y-1 text-sm">
-        <dt className="text-muted-foreground">Editor</dt>
-        {builder ? (
-          <dd
-            data-testid="editor-line"
-            className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 text-foreground"
-          >
-            <span className="break-words">{elementorEditorLine(builder)}</span>
-            <span className="text-xs font-medium text-muted-foreground">From the site</span>
-          </dd>
-        ) : (
-          <dd data-testid="editor-line" className="min-w-0 break-words text-foreground">
-            {editorName(request.editor)}
-          </dd>
-        )}
-        {layout ? (
+        {template ? (
           <>
-            <dt className="text-muted-foreground">Layout</dt>
-            <dd data-testid="layout-summary" className="min-w-0 break-words text-foreground">
-              {layout}
+            <dt className="text-muted-foreground">{template.type === "header" ? "Header" : "Footer"}</dt>
+            <dd className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 text-foreground">
+              <span className="break-words">
+                {request.created_post_id != null ? `#${request.created_post_id} ` : ""}“<bdi>{shown?.title ?? request.title_excerpt}</bdi>”
+                {` · ${templatePublished(request) ? "Published" : "Draft"} · Elementor ${builder?.version ?? "(version not recorded)"} with Pro`}
+              </span>
+              <span className="text-xs font-medium text-muted-foreground">From the site</span>
             </dd>
+            <dt className="text-muted-foreground">Shows on</dt>
+            <dd className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 text-foreground">
+              <span className="break-words"><bdi>{sentence(showsOnWords(template.shows_on, template.rule_titles))}</bdi> Only after a person publishes it.</span>
+              <span className="text-xs font-medium text-muted-foreground">Chosen by the AI</span>
+            </dd>
+            {template.also_live && template.also_live.length > 0 ? (
+              <>
+                <dt className="text-muted-foreground">Also live</dt>
+                <dd className="min-w-0 space-y-1 break-words rounded-md bg-warning-subtle px-3 py-2 text-warning-subtle-fg">
+                  {template.also_live.map((live) => <p key={live.id}><bdi>{liveTemplateLine(live, template)}</bdi></p>)}
+                  <p>{`When you publish this one, set ${template.also_live.length === 1 ? "that one" : "those"} to draft so the two don't compete.`}</p>
+                </dd>
+              </>
+            ) : null}
           </>
-        ) : null}
+        ) : (
+          <>
+            <dt className="text-muted-foreground">Editor</dt>
+            {builder ? (
+              <dd
+                data-testid="editor-line"
+                className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 text-foreground"
+              >
+                <span className="break-words">{elementorEditorLine(builder)}</span>
+                <span className="text-xs font-medium text-muted-foreground">From the site</span>
+              </dd>
+            ) : (
+              <dd data-testid="editor-line" className="min-w-0 break-words text-foreground">
+                {editorName(request.editor)}
+              </dd>
+            )}
+            {layout ? (
+              <>
+                <dt className="text-muted-foreground">Layout</dt>
+                <dd data-testid="layout-summary" className="min-w-0 break-words text-foreground">
+                  {layout}
+                </dd>
+              </>
+            ) : null}
+          </>
+        )}
         <dt className="text-muted-foreground">Asked by</dt>
         <dd className="min-w-0 break-words text-foreground">{request.grant_label}</dd>
         <dt className="text-muted-foreground">Set up for</dt>
@@ -179,7 +217,7 @@ function PageCreateCard({
       </dl>
       {setUpFor.caption ? <p className="text-xs text-muted-foreground">{setUpFor.caption}</p> : null}
 
-      <div className="space-y-1">
+      {template && !pending ? null : (<div className="space-y-1">
         <p id={outlineLabelId} className="text-xs font-medium text-muted-foreground">
           Chosen by the AI
         </p>
@@ -204,9 +242,9 @@ function PageCreateCard({
         ) : (
           <p className="text-sm text-muted-foreground">{NOT_SHOWABLE_COPY}</p>
         )}
-      </div>
+      </div>)}
 
-      {shown?.builder ? (
+      {!template && shown?.builder ? (
         <dl
           data-testid="builder-rows"
           className="grid grid-cols-[minmax(7rem,auto)_1fr] gap-x-4 gap-y-1 text-sm"
@@ -222,14 +260,14 @@ function PageCreateCard({
             </Fragment>
           ))}
         </dl>
-      ) : (
+      ) : template ? null : (
         <p className="text-sm text-muted-foreground">{NOTHING_PUBLISHED}</p>
       )}
 
       {pending ? null : (
         <div className="space-y-1">
           <p className="text-sm text-foreground">{status.text}</p>
-          {undoWindowOver(request, status.kind, canUndo) ? (
+          {undoWindowOver(request, status.kind, undoOpen) ? (
             <p className="text-sm text-muted-foreground">{UNDO_WINDOW_OVER_LINE}</p>
           ) : null}
           {links.length > 0 ? (
@@ -249,6 +287,17 @@ function PageCreateCard({
           ) : null}
         </div>
       )}
+
+      {template && !templatePublished(request) && request.undo_state !== "refused_conflict" ? (
+        <dl data-testid="builder-rows" className="grid grid-cols-[minmax(7rem,auto)_1fr] gap-x-4 gap-y-1 text-sm">
+          <dt className="text-muted-foreground">Checks</dt>
+          <dd className="min-w-0 break-words text-foreground">{TEMPLATE_CHECKS}</dd>
+          <dt className="text-muted-foreground">Effect</dt>
+          <dd className="min-w-0 break-words text-foreground">{TEMPLATE_EFFECT}</dd>
+          <dt className="text-muted-foreground">Undo</dt>
+          <dd className="min-w-0 break-words text-foreground">Undo moves the draft to the trash.</dd>
+        </dl>
+      ) : null}
 
       {notice ? (
         <p role="alert" className="text-sm text-destructive">
@@ -278,7 +327,7 @@ function PageCreateCard({
             {approvePending ? "Approving…" : "Approve"}
           </Button>
         </div>
-      ) : canUndo ? (
+      ) : undoOpen ? (
         <div className="space-y-1">
           {laterEdits > 0 ? (
             <p data-testid="also-covers" className="text-right text-xs text-muted-foreground">
@@ -287,7 +336,7 @@ function PageCreateCard({
           ) : null}
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button type="button" variant="outline" disabled={undoPending} onClick={() => onUndo(request)}>
-              {undoPending ? "Undoing…" : laterEdits > 0 ? "Move draft to trash" : "Undo"}
+              {undoPending ? "Undoing…" : template ? "Undo this change" : laterEdits > 0 ? "Move draft to trash" : "Undo"}
             </Button>
           </div>
         </div>
