@@ -245,6 +245,8 @@ func pageCreateInputRefusal(r pageCreateRefusal) *toolRefusal {
 // was wrong, in a sentence.
 func pageCreateRefusalSummary(code string) string {
 	switch code {
+	case "native_settings_invalid":
+		return "the native settings do not follow the write rules, so nothing was asked"
 	case pageDesignNotReady:
 		return msgAbilityDesignNotReady
 	case pageDesignContrastLow:

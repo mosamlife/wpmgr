@@ -44,11 +44,13 @@ const (
 // is being edited, and Path the address of the field that holds the problem;
 // Key is the field itself. Either of Ref and Path may be empty.
 type refusalFailure struct {
-	Ref     string   `json:"ref,omitempty"`
-	Path    string   `json:"path,omitempty"`
-	Key     string   `json:"key"`
-	Reason  string   `json:"reason"`
-	Allowed []string `json:"allowed,omitempty"`
+	// Native input failures carry the whole value path and a separate control key.
+	fullPath bool
+	Ref      string   `json:"ref,omitempty"`
+	Path     string   `json:"path,omitempty"`
+	Key      string   `json:"key"`
+	Reason   string   `json:"reason"`
+	Allowed  []string `json:"allowed,omitempty"`
 }
 
 // refusalEnvelope is the message of a refusal and the failures it carries.
@@ -104,6 +106,9 @@ func refusalEnvelope(summary string, fails []refusalFailure) (string, []refusalF
 // refusalWhere is where a failure is: a node ref, or the dotted address of
 // the field.
 func refusalWhere(f refusalFailure) string {
+	if f.fullPath {
+		return f.Path
+	}
 	at := f.Key
 	if f.Path != "" {
 		at = f.Path + "." + f.Key
@@ -120,11 +125,16 @@ func refusalWhere(f refusalFailure) string {
 // cleanRefusalFailure is a failure with every field on one line and within
 // its bound, and the empty allowed values dropped.
 func cleanRefusalFailure(f refusalFailure) (refusalFailure, bool) {
+	keyChars := refusalMaxKeyChars
+	if f.fullPath {
+		keyChars = 64
+	}
 	out := refusalFailure{
-		Ref:    refusalLine(f.Ref, refusalMaxRefChars),
-		Path:   refusalLine(f.Path, refusalMaxPathChars),
-		Key:    refusalLine(f.Key, refusalMaxKeyChars),
-		Reason: refusalLine(f.Reason, refusalMaxReasonChars),
+		fullPath: f.fullPath,
+		Ref:      refusalLine(f.Ref, refusalMaxRefChars),
+		Path:     refusalLine(f.Path, refusalMaxPathChars),
+		Key:      refusalLine(f.Key, keyChars),
+		Reason:   refusalLine(f.Reason, refusalMaxReasonChars),
 	}
 	if out.Key == "" || out.Reason == "" {
 		return refusalFailure{}, false

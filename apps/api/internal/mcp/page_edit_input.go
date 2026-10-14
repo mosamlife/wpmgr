@@ -186,8 +186,23 @@ func checkPageEditInput(input []byte) (pageEditFacts, pageCreateRefusal) {
 	if !valid {
 		return pageEditFacts{}, bad
 	}
-	if nativeDuplicate(decoded, "input") != nil {
-		return pageEditFacts{}, pageCreateRefusal{Code: "native_settings_invalid"}
+	if failures := pageEditNativeDuplicateFailures(decoded); len(failures) > 0 {
+		ops, _ := nativeList(nativeGet(decoded, "operations"))
+		for i, op := range ops {
+			name := nativeString(nativeGet(op, "op"))
+			if name != "set_native" && name != "add_native" {
+				continue
+			}
+			if settings, ok := nativeMap(nativeGet(op, "settings")); ok {
+				for _, f := range pageEditNativeValueFailures(settings, fmt.Sprintf("operations[%d].settings", i)) {
+					if len(failures) == refusalMaxFailures {
+						break
+					}
+					failures = append(failures, f)
+				}
+			}
+		}
+		return pageEditFacts{}, pageCreateRefusal{Code: "native_settings_invalid", Failures: failures}
 	}
 	top, ok := jsonObjectOf(input)
 	if !ok || !keysExactly(top, []string{"post_id", "base_fingerprint", "operations", "design"},
@@ -215,16 +230,26 @@ func checkPageEditInput(input []byte) (pageEditFacts, pageCreateRefusal) {
 	}
 	named := make(map[string]struct{}, len(ops)*2)
 	f.ops = make([]pageEditOp, 0, len(ops))
-	for _, raw := range ops {
+	var nativeFailures []refusalFailure
+	for i, raw := range ops {
 		if item, valid := jsonObjectOf(raw); valid {
 			name, _ := jsonStringOf(item["op"])
 			if name == "set_native" || name == "add_native" {
 				if settings, has := item["settings"]; has {
-					if _, failure := nativeParseSettings(settings); failure == nil && !pageEditNativeInputSettings(settings) {
-						return pageEditFacts{}, pageCreateRefusal{Code: "native_settings_invalid"}
+					if v, failure := nativeParseSettings(settings); failure == nil {
+						m, _ := nativeMap(v)
+						for _, f := range pageEditNativeValueFailures(m, fmt.Sprintf("operations[%d].settings", i)) {
+							if len(nativeFailures) == refusalMaxFailures {
+								break
+							}
+							nativeFailures = append(nativeFailures, f)
+						}
 					}
 				}
 			}
+		}
+		if len(nativeFailures) > 0 {
+			continue
 		}
 		op, ok := pageEditOperation(raw)
 		if !ok {
@@ -244,6 +269,9 @@ func checkPageEditInput(input []byte) (pageEditFacts, pageCreateRefusal) {
 			named[ref] = struct{}{}
 		}
 		f.ops = append(f.ops, op)
+	}
+	if len(nativeFailures) > 0 {
+		return pageEditFacts{}, pageCreateRefusal{Code: "native_settings_invalid", Failures: nativeFailures}
 	}
 	if pageEditMixedOperations(f.ops, nil, nil) {
 		return pageEditFacts{}, pageCreateRefusal{Code: pageEditOpsInvalid, Hint: pageEditMixedHint}
@@ -701,42 +729,5 @@ func pageEditNativeInputSettings(raw []byte) bool {
 	if !ok {
 		return false
 	}
-	var walk func(any, bool) bool
-	walk = func(v any, deletion bool) bool {
-		switch x := v.(type) {
-		case string:
-			return true
-		case nil:
-			return deletion
-		case phpList:
-			for _, child := range x {
-				if !walk(child, false) {
-					return false
-				}
-			}
-			return true
-		case phpObject:
-			if len(x) == 0 {
-				return false
-			}
-			numeric := true
-			for i, p := range x {
-				if p.key != fmt.Sprint(i) {
-					numeric = false
-				}
-				if !walk(p.value, false) {
-					return false
-				}
-			}
-			return !numeric
-		default:
-			return false
-		}
-	}
-	for _, p := range m {
-		if !walk(p.value, true) {
-			return false
-		}
-	}
-	return true
+	return len(pageEditNativeValueFailures(m, "settings")) == 0
 }
