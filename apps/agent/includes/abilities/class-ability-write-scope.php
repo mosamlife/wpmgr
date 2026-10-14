@@ -25,7 +25,9 @@ if (!defined('ABSPATH')) {
  * - terms: a change to any object's term relationships is a violation.
  *   Setting an object's terms to the set it already holds is not a change:
  *   core's post update sets the categories of every post type that has
- *   them again;
+ *   them again. A template scope also admits its target's one named library
+ *   type term, from an empty or identical old set, including creation of
+ *   that term. No other changed term set is admitted;
  * - options: a name outside the given patterns is a violation. "{target}" in
  *   a pattern stands for the target id in decimal, so a pattern written for
  *   one post never admits another post's option. A name that starts with
@@ -129,12 +131,16 @@ final class AbilityWriteScope
      * @param int                 $targetId       Post the save may write.
      * @param list<mixed>         $optionPatterns Option-name patterns the save may write; "*" is the only wildcard.
      * @param array<mixed, mixed> $optionChecks   Option-name prefix => value check: callable(mixed $before, mixed $after, int $targetId, string $name), true when that one write is the save's own.
+     * @param string|null $templateType Header or footer, only for a template document save.
      * @throws \InvalidArgumentException When the post id is not positive, or a check has no plain prefix or is not callable.
      */
-    public function __construct(int $targetId, array $optionPatterns, array $optionChecks = [])
+    public function __construct(int $targetId, array $optionPatterns, array $optionChecks = [], private readonly ?string $templateType = null)
     {
         if ($targetId < 1) {
             throw new \InvalidArgumentException('A write scope needs a post id.');
+        }
+        if ($templateType !== null && !in_array($templateType, ['header', 'footer'], true)) {
+            throw new \InvalidArgumentException('A template scope needs header or footer.');
         }
         $this->targetId = $targetId;
         foreach ($optionPatterns as $pattern) {
@@ -205,6 +211,9 @@ final class AbilityWriteScope
             $this->metaWritten($objectId, $key);
         };
         $setTerms = function ($objectId = 0, $terms = null, $ttIds = null, $taxonomy = '', $append = false, $oldTtIds = null): void {
+            if ($this->armed && $this->templateType !== null && $append === false && $this->templateTermsAllowed($objectId, $ttIds, $taxonomy, $oldTtIds)) {
+                return;
+            }
             if ($this->armed && self::termsChanged($ttIds, $oldTtIds, (bool) $append)) {
                 $this->violations[self::V_TERMS] = true;
             }
@@ -508,6 +517,25 @@ final class AbilityWriteScope
     private static function forbidden(string $cap): bool
     {
         return $cap === 'unfiltered_html' || str_starts_with($cap, 'publish_') || str_starts_with($cap, 'delete_');
+    }
+
+    /** Admit replacement with the target's one library type term from an empty or identical set. */
+    private function templateTermsAllowed(mixed $objectId, mixed $ttIds, mixed $taxonomy, mixed $oldTtIds): bool
+    {
+        if (self::id($objectId) !== $this->targetId || $taxonomy !== 'elementor_library_type') {
+            return false;
+        }
+        $now = self::idSet($ttIds);
+        $old = self::idSet($oldTtIds);
+        if ($now === null || count($now) !== 1 || ($old !== [] && $old !== $now)) {
+            return false;
+        }
+        try {
+            $term = get_term_by('term_taxonomy_id', array_key_first($now), 'elementor_library_type');
+            return is_object($term) && ($term->taxonomy ?? null) === 'elementor_library_type' && ($term->slug ?? null) === $this->templateType;
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 
     /**

@@ -16,6 +16,7 @@ final class ElementorThemeTemplates
 {
     public const MAX_BYTES = 30 * 1024;
     public const MAX_ROWS = 25;
+    public const MAX_ALSO_LIVE = 5;
     public const MAX_RULES = 20;
     public const STATUSES = ['publish', 'draft', 'pending', 'private', 'future', 'other'];
     public const RE_RULE = '/^(include|exclude)(\/[a-z0-9_-]{1,64}){1,2}(\/[1-9][0-9]{0,19})?$/D';
@@ -126,8 +127,7 @@ final class ElementorThemeTemplates
                 if (!in_array($type, ['header', 'footer'], true)) {
                     return self::refuse('read_failed', 'a theme template type could not be read');
                 }
-                $rules = $ready ? $this->api->templateRules((int) $id) : null;
-                $problem = !$ready ? 'pro_unavailable' : self::rulesProblem($rules);
+                $rules = $this->readRules((int) $id, $ready);
                 $markers = get_post_meta((int) $id, DraftEligibility::MARKER_KEY, false);
                 $date = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $post->post_modified_gmt, new \DateTimeZone('UTC'));
                 if ($date === false || $date->format('Y-m-d H:i:s') !== $post->post_modified_gmt) {
@@ -137,8 +137,7 @@ final class ElementorThemeTemplates
                     'id' => (int) $id, 'type' => $type, 'status' => in_array($post->post_status, self::STATUSES, true) ? $post->post_status : 'other',
                     'made_by_wpmgr' => is_array($markers) && DraftEligibility::validCreationMarker($markers),
                     'title' => $post->post_title, 'modified_gmt' => $date->format('Y-m-d\TH:i:s\Z'),
-                    'shows_on' => $problem === null ? $rules : null, 'shows_on_problem' => $problem,
-                ];
+                ] + $rules;
                 if (!self::append($out, 'templates', $row)) {
                     break;
                 }
@@ -156,25 +155,73 @@ final class ElementorThemeTemplates
     }
 
     /**
+     * Optional create-card context: newest published templates of the same type.
+     * A failed row or query makes the summary unavailable, never the create.
+     *
+     * @return list<array{id:int,title:string,shows_on:list<string>|null,shows_on_problem:string|null}>|null
+     */
+    public function alsoLive(string $type): ?array
+    {
+        if (!in_array($type, ['header', 'footer'], true)) {
+            return null;
+        }
+        try {
+            $templates = self::templateIds($type, self::MAX_ALSO_LIVE);
+            if ($templates === null) {
+                return null;
+            }
+            $rows = [];
+            foreach (array_slice($templates['ids'], 0, self::MAX_ALSO_LIVE) as $id) {
+                $post = get_post($id);
+                if (!is_object($post) || ($post->post_type ?? null) !== 'elementor_library'
+                    || ($post->post_status ?? null) !== 'publish' || !is_string($post->post_title ?? null)
+                    || get_post_meta($id, '_elementor_template_type', true) !== $type) {
+                    return null;
+                }
+                $rows[] = ['id' => $id, 'title' => $post->post_title] + $this->readRules($id);
+            }
+            return $rows;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /** @return array{shows_on:list<string>|null,shows_on_problem:string|null} */
+    private function readRules(int $postId, bool $ready = true): array
+    {
+        $rules = $ready ? $this->api->templateRules($postId) : null;
+        $problem = $ready ? self::rulesProblem($rules) : 'pro_unavailable';
+        return ['shows_on' => $problem === null ? $rules : null, 'shows_on_problem' => $problem];
+    }
+
+    /**
      * Count every matching post and read only the newest bounded set of ids.
      * EXISTS keeps duplicate meta rows from duplicating a template.
+     * A published type restricts both queries to that type's published posts.
      *
      * @return array{ids: list<int>, total: int}|null
      */
-    private static function templateIds(): ?array
+    private static function templateIds(?string $publishedType = null, int $limit = self::MAX_ROWS): ?array
     {
         global $wpdb;
-        $where = "FROM %i p WHERE p.post_type = %s AND p.post_status NOT IN (%s, %s, %s)
+        $status = $publishedType === null ? 'p.post_status NOT IN (%s, %s, %s)' : 'p.post_status = %s';
+        $type = $publishedType === null ? 'BINARY m.meta_value IN (%s, %s)' : 'BINARY m.meta_value = BINARY %s';
+        $where = "FROM %i p WHERE p.post_type = %s AND $status
             AND EXISTS (SELECT 1 FROM %i m WHERE m.post_id = p.ID
-                AND BINARY m.meta_key = BINARY %s AND BINARY m.meta_value IN (%s, %s))";
-        $args = [$wpdb->posts, 'elementor_library', 'trash', 'auto-draft', 'inherit', $wpdb->postmeta, '_elementor_template_type', 'header', 'footer'];
+                AND BINARY m.meta_key = BINARY %s AND $type)";
+        $args = array_merge(
+            [$wpdb->posts, 'elementor_library'],
+            $publishedType === null ? ['trash', 'auto-draft', 'inherit'] : ['publish'],
+            [$wpdb->postmeta, '_elementor_template_type'],
+            $publishedType === null ? ['header', 'footer'] : [$publishedType]
+        );
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- Prepared identifiers and values; fresh totals must include all matching statuses.
         $total = $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) ' . $where, ...$args));
         if ((!is_string($total) && !is_int($total)) || preg_match('/^[0-9]+$/D', (string) $total) !== 1 || $wpdb->last_error !== '') {
             return null;
         }
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Same prepared predicate; GMT ordering and bounded ids are part of this read's contract.
-        $ids = $wpdb->get_col($wpdb->prepare('SELECT p.ID ' . $where . ' ORDER BY p.post_modified_gmt DESC, p.ID DESC LIMIT %d', ...array_merge($args, [self::MAX_ROWS])));
+        $ids = $wpdb->get_col($wpdb->prepare('SELECT p.ID ' . $where . ' ORDER BY p.post_modified_gmt DESC, p.ID DESC LIMIT %d', ...array_merge($args, [$limit])));
         if (!is_array($ids) || $wpdb->last_error !== '') {
             return null;
         }

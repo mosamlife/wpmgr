@@ -27,6 +27,9 @@ if (!defined('ABSPATH')) {
  */
 final class ElementorRuntime implements ElementorApi
 {
+    /** Elementor Pro's conditions meta key; to be confirmed on a Pro site. */
+    public const KEY_CONDITIONS = '_elementor_conditions';
+
     /** Elementor's main plugin class. */
     public const PLUGIN_CLASS = 'Elementor\\Plugin';
 
@@ -561,6 +564,28 @@ final class ElementorRuntime implements ElementorApi
             return $rules;
         } catch (\Throwable $e) {
             return null;
+        }
+    }
+
+    /** {@inheritDoc} */
+    public function saveTemplateRules(int $postId, array $rules): bool
+    {
+        if (ThemeTemplateCreate::inputProblem($rules) !== null) {
+            return false;
+        }
+        try {
+            $parts = $postId > 0 ? $this->themeBuilder() : null;
+            if ($parts === null) {
+                return false;
+            }
+            $maps = [];
+            foreach ($rules as $rule) {
+                $segments = explode('/', $rule);
+                $maps[] = ['type' => $segments[0], 'name' => $segments[1], 'sub_name' => $segments[2] ?? '', 'sub_id' => $segments[3] ?? ''];
+            }
+            return $parts[1]->save_conditions($postId, $maps) !== false;
+        } catch (\Throwable $e) {
+            return false;
         }
     }
 

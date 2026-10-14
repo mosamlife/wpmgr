@@ -8,6 +8,7 @@ use WPMgr\Agent\Abilities\Builders\BuilderRegistry;
 use WPMgr\Agent\Abilities\Builders\DesignInput;
 use WPMgr\Agent\Abilities\Builders\OutlineV3;
 use WPMgr\Agent\Abilities\Builders\OutlineV3Schema;
+use WPMgr\Agent\Abilities\Builders\ThemeTemplateCreate;
 
 // Direct-file-access guard: keep above the docblock.
 if (!defined('ABSPATH')) {
@@ -18,7 +19,9 @@ if (!defined('ABSPATH')) {
  * wpmgr/page-create: validate the outline, and render it deterministically.
  *
  * Input (exact JSON text, an object):
- *   post_type         "page" | "post"
+ *   post_type         "page" | "post", or template "header" | "footer"
+ *   shows_on          optional display rules, only with template; absent is []
+ *   template          requires builder:elementor and elementor_format classic
  *   editor            "wordpress_blocks" | "wordpress_classic" | "builder:elementor"
  *   title             plain text, 1..200 characters, no newline
  *   outline           1..200 items; an item is a block, a group or columns
@@ -225,19 +228,43 @@ final class PageCreateBuilder
     public static function validate(object $input): array
     {
         $vars    = get_object_vars($input);
-        $allowed = ['post_type', 'editor', 'title', 'outline', 'elementor_format'];
+        $allowed = ['post_type', 'template', 'shows_on', 'editor', 'title', 'outline', 'elementor_format'];
         // The members of a designed page are admitted by the version that names them.
         if (array_key_exists('outline_version', $vars)) {
             $allowed = array_merge($allowed, ['outline_version', 'design', 'page_frame']);
         }
         foreach (array_keys($vars) as $key) {
             if (!in_array((string) $key, $allowed, true)) {
-                return self::bad('bad_input', 'unknown input field');
+                return self::bad('bad_input', 'unknown input field: ' . $key);
             }
         }
-        $type = $vars['post_type'] ?? null;
-        if (!is_string($type) || !in_array($type, ['page', 'post'], true)) {
+        $isTemplate = array_key_exists('template', $vars);
+        if ($isTemplate === array_key_exists('post_type', $vars)) {
+            return self::bad('bad_input', 'send either post_type or template, never both');
+        }
+        $template = $vars['template'] ?? null;
+        if ($isTemplate && !in_array($template, ThemeTemplateCreate::TYPES, true)) {
+            return self::bad('bad_input', 'template must be header or footer');
+        }
+        $type = $isTemplate ? 'elementor_library' : ($vars['post_type'] ?? null);
+        if (!$isTemplate && (!is_string($type) || !in_array($type, ['page', 'post'], true))) {
             return self::bad('bad_input', 'post_type must be page or post');
+        }
+        if (!$isTemplate && array_key_exists('shows_on', $vars)) {
+            return self::bad('bad_input', 'shows_on is only allowed with template');
+        }
+        $rules = $vars['shows_on'] ?? [];
+        if ($isTemplate) {
+            if (array_key_exists('page_frame', $vars)) {
+                return self::bad('bad_input', 'page_frame is only for a page or post, not a template');
+            }
+            $problem = ThemeTemplateCreate::inputProblem(array_key_exists('shows_on', $vars) ? $vars['shows_on'] : []);
+            if ($problem !== null) {
+                return self::bad('bad_input', $problem);
+            }
+            if (($vars['editor'] ?? null) !== self::EDITOR_BUILDER_ELEMENTOR || ($vars['elementor_format'] ?? null) !== 'classic') {
+                return self::bad('bad_input', 'template requires editor builder:elementor and elementor_format classic');
+            }
         }
         $editor  = $vars['editor'] ?? null;
         $builder = is_string($editor) && preg_match(BuilderRegistry::RE_EDITOR, $editor) === 1;
@@ -275,7 +302,12 @@ final class PageCreateBuilder
             return self::bad('create_content_invalid', 'title: ' . $why);
         }
         if ($designed) {
-            return self::validateDesigned($vars, $type, $title);
+            $validated = self::validateDesigned($vars, $type, $title);
+            if ($isTemplate && isset($validated['spec'])) {
+                $validated['spec']['template'] = $template;
+                $validated['spec']['shows_on'] = $rules;
+            }
+            return $validated;
         }
 
         $outline = $vars['outline'] ?? null;
@@ -310,6 +342,10 @@ final class PageCreateBuilder
             $spec['elementor_format'] = $format ?? self::ELEMENTOR_FORMATS[0];
         }
 
+        if ($isTemplate) {
+            $spec['template'] = $template;
+            $spec['shows_on'] = $rules;
+        }
         return ['spec' => $spec];
     }
 
@@ -719,6 +755,8 @@ final class PageCreateBuilder
             'type'                 => 'object',
             'properties'           => [
                 'post_type' => ['type' => 'string', 'enum' => ['page', 'post']],
+                'template' => ['type' => 'string', 'enum' => ThemeTemplateCreate::TYPES],
+                'shows_on' => ['type' => 'array', 'maxItems' => 20, 'uniqueItems' => true, 'items' => ['type' => 'string', 'pattern' => '^(include|exclude)(/[a-z0-9_-]{1,64}){1,2}(/[1-9][0-9]{0,19})?$']],
                 'editor'    => ['type' => 'string', 'enum' => [self::EDITOR_BLOCKS, self::EDITOR_CLASSIC, self::EDITOR_BUILDER_ELEMENTOR]],
                 'title'     => ['type' => 'string', 'minLength' => 1, 'maxLength' => self::MAX_TITLE_CHARS],
                 'outline'   => [
@@ -732,7 +770,12 @@ final class PageCreateBuilder
                 'design'           => OutlineV3Schema::designSchema(),
                 'page_frame'       => OutlineV3Schema::pageFrameSchema(),
             ],
-            'required'             => ['post_type', 'editor', 'title', 'outline'],
+            'required'             => ['editor', 'title', 'outline'],
+            'oneOf' => [
+                ['required' => ['post_type'], 'not' => ['anyOf' => [['required' => ['template']], ['required' => ['shows_on']]]]],
+                ['required' => ['template', 'elementor_format'], 'not' => ['required' => ['post_type']], 'properties' => ['editor' => ['const' => self::EDITOR_BUILDER_ELEMENTOR], 'elementor_format' => ['const' => 'classic']]],
+            ],
+            'description' => 'Creates a page or post draft, or an Elementor Pro header or footer draft. Template drafts use classic Elementor and optional shows_on rules; omitted rules show nowhere. A person publishes in Elementor.',
             'additionalProperties' => false,
         ];
     }

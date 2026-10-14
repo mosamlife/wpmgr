@@ -126,6 +126,7 @@ final class FakeElementorApi implements ElementorApi
     public bool $themeBuilderReady = false;
     /** @var array<int, array<mixed>|null> */
     public array $templateRules = [];
+    public ?\Closure $onSaveTemplateRules = null;
     /** @var list<string> */
     public array $themeConditions = [];
 
@@ -368,6 +369,16 @@ final class FakeElementorApi implements ElementorApi
     {
         $this->calls[] = ['templateRules', [$postId]];
         return $this->loaded && $this->pro && $this->themeBuilderReady ? ($this->templateRules[$postId] ?? null) : null;
+    }
+
+    public function saveTemplateRules(int $postId, array $rules): bool
+    {
+        $this->calls[] = ['saveTemplateRules', [$postId, $rules]];
+        if ($this->onSaveTemplateRules !== null) {
+            return ($this->onSaveTemplateRules)($postId, $rules);
+        }
+        $this->templateRules[$postId] = $rules;
+        return true;
     }
 
     public function themeConditionRegistered(string $name): bool

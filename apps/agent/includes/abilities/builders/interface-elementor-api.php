@@ -204,6 +204,9 @@ interface ElementorApi
      */
     public function templateRules(int $postId): ?array;
 
+    /** Save complete display rules through Pro's conditions manager. @param list<string> $rules */
+    public function saveTemplateRules(int $postId, array $rules): bool;
+
     /**
      * Whether Pro registers a named condition.
      *

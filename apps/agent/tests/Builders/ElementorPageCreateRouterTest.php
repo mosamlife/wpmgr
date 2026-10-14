@@ -26,6 +26,7 @@ use Brain\Monkey\Functions;
 use ReflectionProperty;
 use WPMgr\Agent\Abilities\AbilityLedger;
 use WPMgr\Agent\Abilities\Builders\BuilderDocumentFingerprint;
+use WPMgr\Agent\Abilities\Builders\BuilderPageCreate;
 use WPMgr\Agent\Abilities\Builders\ElementorAdapter;
 use WPMgr\Agent\Abilities\Builders\ElementorClassicMapper;
 use WPMgr\Agent\Abilities\Builders\ElementorDocument;
@@ -80,6 +81,9 @@ final class ElementorPageCreateRouterTest extends TestCase
 
     /** @var array<int,array<string,mixed>> */
     private array $meta = [];
+
+    /** @var array<int,list<string>> Library terms stored by the document save. */
+    private array $templateTerms = [];
 
     /** @var array<string,object> */
     private array $roles = [];
@@ -301,6 +305,296 @@ final class ElementorPageCreateRouterTest extends TestCase
         unset($GLOBALS['wpdb'], $GLOBALS['wp_version']);
         Monkey\tearDown();
         parent::tear_down();
+    }
+
+    private function templateInput(array $overrides = []): string
+    {
+        $input = json_decode($this->input('columns'), true);
+        unset($input['post_type']);
+        return json_encode(array_replace($input, ['template' => 'header', 'elementor_format' => 'classic'], $overrides), JSON_THROW_ON_ERROR);
+    }
+
+    private function readyTemplates(): void
+    {
+        $this->api->pro = true;
+        $this->api->themeBuilderReady = true;
+        $this->api->themeConditions = ['general', 'singular', 'page', 'post', 'front_page', 'not_found404', 'archive'];
+        Functions\when('get_term_by')->alias(static fn ($field, $id, $taxonomy) => (object) ['slug' => $id === 71 ? 'header' : 'footer', 'taxonomy' => 'elementor_library_type', 'term_taxonomy_id' => $id]);
+        Functions\when('wp_get_object_terms')->alias(fn ($id, $taxonomy, $args = []) => $this->templateTerms[$id] ?? []);
+        $this->api->onSaveTemplateRules = function (int $id, array $rules): bool {
+            $this->api->templateRules[$id] = array_reverse($rules);
+            $this->rows->addMeta(++$this->metaId, $id, '_elementor_conditions', serialize($rules));
+            $this->fire('added_post_meta', $this->metaId, $id, '_elementor_conditions', $rules);
+            return true;
+        };
+    }
+
+    public function test_template_input_grammar_refuses_named_fields(): void
+    {
+        $cases = [
+            [['post_type' => 'page'], 'post_type'],
+            [['template' => null], 'template'],
+            [['template' => 'single'], 'template'],
+            [['editor' => 'wordpress_blocks'], 'editor'],
+            [['elementor_format' => 'site_default'], 'elementor_format'],
+            [['page_frame' => 'canvas', 'outline_version' => 3], 'page_frame'],
+            [['shows_on' => null], 'shows_on'],
+            [['shows_on' => ['include//page']], 'include//page'],
+            [['shows_on' => array_map(static fn ($n) => 'include/singular/page/' . $n, range(1, 21))], 'shows_on'],
+            [['shows_on' => ['include/general', 'include/general']], 'include/general'],
+            [['shows_on' => ['include/general/42']], 'include/general/42'],
+            [['shows_on' => ['include/singular/unknown']], 'include/singular/unknown'],
+            [['shows_on' => ['include/singular/page/0']], 'include/singular/page/0'],
+        ];
+        foreach ($cases as [$overrides, $field]) {
+            $result = PageCreateBuilder::validate(json_decode($this->templateInput($overrides)));
+            $this->assertSame('bad_input', $result['code'] ?? null, json_encode($overrides));
+            $this->assertStringContainsString($field, $result['detail'] ?? '');
+        }
+        $input = json_decode($this->input('columns', ['shows_on' => []]));
+        $this->assertStringContainsString('shows_on', PageCreateBuilder::validate($input)['detail']);
+        unset($input->shows_on, $input->post_type);
+        $this->assertStringContainsString('post_type', PageCreateBuilder::validate($input)['detail']);
+        $valid = PageCreateBuilder::validate(json_decode($this->templateInput()));
+        $this->assertSame([], $valid['spec']['shows_on'] ?? null);
+    }
+
+    public function test_template_readiness_places_and_rule_ids(): void
+    {
+        $this->enable();
+        $input = $this->templateInput(['shows_on' => ['include/singular/page/42']]);
+        foreach ([[false, false], [true, false]] as [$active, $ready]) {
+            $this->api->pro = $active;
+            $this->api->themeBuilderReady = $ready;
+            $pre = $this->precheck(self::REQ_GOLDEN, $input);
+            $this->assertSame('theme_builder_unavailable', $pre['code'] ?? null);
+            $this->assertSame('Headers and footers need Elementor Pro with its Theme Builder, and it is not ready on this site.', $pre['detail']);
+        }
+        $this->readyTemplates();
+        $this->api->themeConditions = ['general'];
+        $pre = $this->precheck(self::REQ_GOLDEN, $input);
+        $this->assertSame('shows_on_place_unavailable', $pre['code'] ?? null);
+        $this->assertSame("shows_on: include/singular/page/42 is not a place this site's Elementor Pro can show a template", $pre['detail']);
+        $this->readyTemplates();
+        foreach (['page', 'post'] as $wanted) {
+            $rule = 'include/singular/' . $wanted . '/42';
+            $input = $this->templateInput(['shows_on' => [$rule]]);
+            foreach ([null, $wanted === 'page' ? 'post' : 'page', $wanted] as $type) {
+                unset($this->posts[42]);
+                if ($type !== null) {
+                    $this->posts[42] = (object) ['ID' => 42, 'post_type' => $type, 'post_status' => $type === $wanted ? 'trash' : 'publish'];
+                }
+                $pre = $this->precheck(self::REQ_GOLDEN, $input);
+                $this->assertSame('shows_on_target_missing', $pre['code'] ?? null);
+                $this->assertSame('shows_on: ' . $rule . ' needs an existing non-trashed ' . $wanted, $pre['detail']);
+            }
+        }
+        $this->assertSame([], $this->inserted);
+        $this->assertSame([], $this->api->callsTo('createElementInstance'));
+    }
+
+    public function test_template_readiness_lost_after_approval_creates_nothing(): void
+    {
+        $this->enable();
+        $this->readyTemplates();
+        $input = $this->templateInput();
+        $pre = $this->precheck(self::REQ_GOLDEN, $input);
+        $this->assertTrue($pre['ok'] ?? false, json_encode($pre));
+        $this->api->pro = false;
+        $result = $this->write(self::REQ_GOLDEN, $input, $pre['precheck_digest'], $pre['preview_digest']);
+        $this->assertSame('theme_builder_unavailable', $result['code'] ?? null);
+        $this->assertSame('Headers and footers need Elementor Pro with its Theme Builder, and it is not ready on this site.', $result['detail']);
+        $this->assertSame([], $this->inserted);
+        $this->assertNull(AbilityLedger::get(self::REQ_GOLDEN));
+    }
+
+    public function test_template_write_rechecks_readiness_after_build(): void
+    {
+        $principal = (int) $this->enable()['user_id'];
+        $this->readyTemplates();
+        $spec = PageCreateBuilder::validate(json_decode($this->templateInput()))['spec'];
+        $adapter = new ElementorAdapter($this->api, $principal);
+        $built = BuilderPageCreate::precheck($spec, $adapter, $adapter->facts(), [], self::REQ_GOLDEN);
+        $this->assertArrayNotHasKey('refusal', $built);
+        foreach ([[false, true], [true, false]] as [$active, $ready]) {
+            $this->api->pro = $active;
+            $this->api->themeBuilderReady = $ready;
+            $updates = [];
+            $result = BuilderPageCreate::write($principal, $spec, $adapter, self::REQ_GOLDEN, $built, static function ($fields) use (&$updates): bool {
+                $updates[] = $fields;
+                return true;
+            });
+            $this->assertSame('theme_builder_unavailable', $result['code'] ?? null, json_encode($result));
+            $this->assertSame('Headers and footers need Elementor Pro with its Theme Builder, and it is not ready on this site.', $result['detail']);
+            $this->assertSame([], $this->inserted);
+            $this->assertSame([['phase' => 'failed', 'result' => $result]], $updates);
+        }
+    }
+
+    private function existingTemplate(int $id, string $type, string $status, string $modified, ?array $rules): void
+    {
+        $this->posts[$id] = (object) ['ID' => $id, 'post_type' => 'elementor_library', 'post_status' => $status, 'post_title' => 'Live <raw> ' . $id, 'post_modified_gmt' => $modified];
+        $this->meta[$id]['_elementor_template_type'] = $type;
+        $this->api->templateRules[$id] = $rules;
+    }
+
+    private function createTemplateSummary(string $type = 'header'): array
+    {
+        $this->enable();
+        $this->readyTemplates();
+        $input = $this->templateInput(['template' => $type]);
+        $pre = $this->precheck(self::REQ_GOLDEN, $input);
+        $this->assertTrue($pre['ok'] ?? false, json_encode($pre));
+        $result = $this->write(self::REQ_GOLDEN, $input, $pre['precheck_digest'], $pre['preview_digest']);
+        $this->assertTrue($result['ok'] ?? false, json_encode($result));
+        $this->assertArrayHasKey('also_live', $result);
+        $this->assertSame('completed', AbilityLedger::get(self::REQ_GOLDEN)['phase']);
+        $this->assertSame($result['also_live'], AbilityLedger::get(self::REQ_GOLDEN)['result']['also_live']);
+        return $result;
+    }
+
+    public function test_template_also_live_none(): void
+    {
+        $this->assertSame([], $this->createTemplateSummary()['also_live']);
+    }
+
+    public function test_template_also_live_one_with_raw_title_and_rules(): void
+    {
+        $rules = ['include/general', 'exclude/singular/page/42'];
+        $this->existingTemplate(601, 'footer', 'publish', '2026-10-01 12:00:00', $rules);
+        $this->assertSame([['id' => 601, 'title' => 'Live <raw> 601', 'shows_on' => $rules, 'shows_on_problem' => null]], $this->createTemplateSummary('footer')['also_live']);
+        $this->assertContains([601], $this->api->callsTo('templateRules'));
+    }
+
+    public function test_template_also_live_newest_five_of_six_and_only_matching_published(): void
+    {
+        foreach (range(601, 606) as $id) {
+            $this->existingTemplate($id, 'header', 'publish', sprintf('2026-10-%02d 12:00:00', 607 - $id), ['include/general']);
+        }
+        $this->existingTemplate(607, 'header', 'draft', '2026-10-30 12:00:00', []);
+        $this->existingTemplate(608, 'footer', 'publish', '2026-10-31 12:00:00', []);
+        $this->existingTemplate(609, 'header', 'trash', '2026-10-29 12:00:00', []);
+        $live = $this->createTemplateSummary()['also_live'];
+        $this->assertSame([601, 602, 603, 604, 605], array_column($live, 'id'));
+        foreach ([606, 607, 608, 609] as $id) {
+            $this->assertNotContains([$id], $this->api->callsTo('templateRules'));
+        }
+    }
+
+    public function test_template_also_live_unreadable_and_too_many_rules(): void
+    {
+        $this->existingTemplate(601, 'header', 'publish', '2026-10-02 12:00:00', null);
+        $this->existingTemplate(602, 'header', 'publish', '2026-10-01 12:00:00', array_fill(0, 21, 'include/general'));
+        $this->assertSame([
+            ['id' => 601, 'title' => 'Live <raw> 601', 'shows_on' => null, 'shows_on_problem' => 'unreadable'],
+            ['id' => 602, 'title' => 'Live <raw> 602', 'shows_on' => null, 'shows_on_problem' => 'too_many'],
+        ], $this->createTemplateSummary()['also_live']);
+    }
+
+    public function test_template_also_live_draft_only_is_empty(): void
+    {
+        $this->existingTemplate(601, 'header', 'draft', '2026-10-30 12:00:00', ['include/general']);
+        $this->assertSame([], $this->createTemplateSummary()['also_live']);
+    }
+
+    public function test_template_also_live_query_failure_does_not_fail_create(): void
+    {
+        $GLOBALS['wpdb']->themeQueryFails = true;
+        $this->assertNull($this->createTemplateSummary()['also_live']);
+    }
+
+    public function test_template_full_create_digest_fingerprint_and_undo(): void
+    {
+        $this->enable();
+        $this->readyTemplates();
+        $this->posts[42] = (object) ['ID' => 42, 'post_type' => 'page', 'post_status' => 'publish', 'post_title' => 'Contact <raw>'];
+        $this->posts[43] = (object) ['ID' => 43, 'post_type' => 'post', 'post_status' => 'draft', 'post_title' => 'News & updates'];
+        $rules = ['include/general', 'exclude/singular/page/42', 'include/singular/post/43', 'include/singular/page/42'];
+        $input = $this->templateInput(['shows_on' => $rules]);
+        $pre = $this->precheck(self::REQ_GOLDEN, $input);
+        $this->assertTrue($pre['ok'] ?? false, json_encode($pre));
+        $this->assertSame('header', $pre['preview']['template']);
+        $this->assertSame($rules, $pre['preview']['shows_on']);
+        foreach ([['template' => 'footer'], ['shows_on' => array_reverse($rules)], ['shows_on' => []]] as $change) {
+            $other = $this->precheck(self::REQ_GOLDEN, $this->templateInput(array_replace(['shows_on' => $rules], $change)));
+            $this->assertNotSame($pre['preview_digest'], $other['preview_digest'] ?? null);
+        }
+        $result = $this->write(self::REQ_GOLDEN, $input, $pre['precheck_digest'], $pre['preview_digest']);
+        $this->assertTrue($result['ok'] ?? false, json_encode($result));
+        $id = $result['post_id'];
+        $this->assertSame('elementor_library', $result['post_type']);
+        $this->assertSame('header', $result['template']);
+        $this->assertSame(array_reverse($rules), $result['shows_on']);
+        $this->assertSame([['id' => 42, 'title' => 'Contact <raw>'], ['id' => 43, 'title' => 'News & updates']], $result['rule_titles']);
+        $keys = array_merge(ElementorDocument::DESCRIPTOR_KEYS, [\WPMgr\Agent\Abilities\Builders\ElementorRuntime::KEY_CONDITIONS]);
+        $this->assertSame(BuilderDocumentFingerprint::ofPost($id, $keys), $result['after_fp']);
+        $this->rows->addMeta(++$this->metaId, $id, '_elementor_conditions', serialize(['include/archive']));
+        $this->assertSame('created_post_touched', $this->revert(self::REQ_GOLDEN)['code'] ?? null);
+    }
+
+    public function test_template_rules_failure_trashes_draft(): void
+    {
+        $this->enable();
+        $this->readyTemplates();
+        $input = $this->templateInput(['shows_on' => ['include/general']]);
+        $pre = $this->precheck(self::REQ_GOLDEN, $input);
+        $this->assertTrue($pre['ok'] ?? false, json_encode($pre));
+        $this->api->onSaveTemplateRules = function (int $id, array $rules): bool {
+            $this->fire('updated_option', 'elementor_pro_theme_builder_conditions', [], $rules);
+            $this->api->templateRules[$id] = $rules;
+            return true;
+        };
+        $result = $this->write(self::REQ_GOLDEN, $input, $pre['precheck_digest'], $pre['preview_digest']);
+        $this->assertTrue($result['trashed'] ?? false, json_encode($result));
+        $this->assertStringContainsString('live display list for a draft', $result['detail']);
+        $this->api->onSaveTemplateRules = function (int $id, array $rules): bool {
+            $this->api->templateRules[$id] = ['exclude/general'];
+            return true;
+        };
+        $pre = $this->precheck(self::REQ_B, $input);
+        $result = $this->write(self::REQ_B, $input, $pre['precheck_digest'], $pre['preview_digest']);
+        $this->assertTrue($result['trashed'] ?? false, json_encode($result));
+        $this->assertStringContainsString('exclude/general', $result['detail']);
+    }
+
+    public function test_template_empty_rules_create_and_trash_undo(): void
+    {
+        $this->enable();
+        $this->readyTemplates();
+        foreach ([self::REQ_GOLDEN => 'header', self::REQ_B => 'footer'] as $rid => $type) {
+            $input = $this->templateInput(['template' => $type]);
+            $pre = $this->precheck($rid, $input);
+            $this->assertTrue($pre['ok'] ?? false, json_encode($pre));
+            $result = $this->write($rid, $input, $pre['precheck_digest'], $pre['preview_digest']);
+            $this->assertTrue($result['ok'] ?? false, json_encode($result));
+            $this->assertSame($type, $result['template']);
+            $this->assertSame([], $result['shows_on']);
+            $this->assertSame([], $this->api->callsTo('saveTemplateRules'));
+            $id = $result['post_id'];
+            $this->posts[$id]->post_status = 'publish';
+            $this->syncRow($id);
+            $this->assertSame('created_post_published', $this->revert($rid)['code'] ?? null);
+            $this->posts[$id]->post_status = 'draft';
+            $this->syncRow($id);
+            $this->templateTerms[$id] = ['header', 'footer'];
+            $this->assertSame('created_post_touched', $this->revert($rid)['code'] ?? null);
+            $this->templateTerms[$id] = [$type];
+            $this->assertTrue($this->revert($rid)['trashed'] ?? false);
+        }
+    }
+
+    public function test_template_admission_keeps_elementor_post_create_digest(): void
+    {
+        $this->enable();
+        $input = $this->input('columns', ['post_type' => 'post']);
+        $pre = $this->precheck(self::REQ_GOLDEN, $input);
+        $this->assertTrue($pre['ok'] ?? false, json_encode($pre));
+        $this->assertSame(hash('sha256', json_encode(['builder:elementor', 'classic', '3.35.9', 'post', 'draft', self::TITLE, json_encode(self::golden(self::CONTAINERS, 'columns')['tree'])])), $pre['preview_digest']);
+        $result = $this->write(self::REQ_GOLDEN, $input, $pre['precheck_digest'], $pre['preview_digest']);
+        $this->assertTrue($result['ok'] ?? false, json_encode($result));
+        $this->assertArrayNotHasKey('template', $result);
+        $this->assertArrayNotHasKey('shows_on', $result);
+        $this->assertSame('wp-post', $this->meta[$result['post_id']]['_elementor_template_type']);
     }
 
     public function test_builder_editor_refused_when_not_in_builders_enabled(): void
@@ -1143,8 +1437,14 @@ final class ElementorPageCreateRouterTest extends TestCase
         }
         $this->inserted[] = $id;
 
-        $document         = $this->api->addDocument($id, 'wp-page');
+        $document         = $this->api->addDocument($id, $this->meta[$id]['_elementor_template_type'] ?? 'wp-page');
         $document->onSave = function ($data) use ($id): bool {
+            if ($this->posts[$id]->post_type === 'elementor_library') {
+                $type = $this->meta[$id]['_elementor_template_type'];
+                $this->templateTerms[$id] = [$type];
+                $this->fire('set_object_terms', $id, [$type], [$type === 'header' ? 71 : 72], 'elementor_library_type', false, []);
+                $this->api->templateRules[$id] = [];
+            }
             $tree = $data['elements'];
             if ($this->alterOnSave !== null) {
                 $tree = ($this->alterOnSave)($tree);
@@ -1371,6 +1671,7 @@ final class ElementorPageCreateRouterTest extends TestCase
             public string $posts      = 'wp_posts';
             public string $postmeta   = 'wp_postmeta';
             public string $last_error = '';
+            public bool $themeQueryFails = false;
 
             public function __construct(private FakeBuilderWpdb $rows, private ElementorPageCreateRouterTest $t)
             {
@@ -1395,7 +1696,28 @@ final class ElementorPageCreateRouterTest extends TestCase
             {
                 [$sql, $args] = self::parse($q);
 
+                if (str_starts_with($sql, 'SELECT COUNT(*) FROM %i p')) {
+                    $this->assertTemplateQuery($sql, $args);
+                    return $this->themeQueryFails ? null : (string) count($this->t->publishedTemplateIds($args[5]));
+                }
                 return str_starts_with($sql, 'SELECT option_value FROM wp_options') ? $this->t->rawOption((string) $args[0]) : null;
+            }
+
+            public function get_col(string $q): array
+            {
+                [$sql, $args] = self::parse($q);
+                $this->assertTemplateQuery($sql, $args);
+                \PHPUnit\Framework\Assert::assertStringContainsString('ORDER BY p.post_modified_gmt DESC, p.ID DESC LIMIT %d', $sql);
+                \PHPUnit\Framework\Assert::assertSame(5, $args[6]);
+                return array_slice($this->t->publishedTemplateIds($args[5]), 0, $args[6]);
+            }
+
+            private function assertTemplateQuery(string $sql, array $args): void
+            {
+                \PHPUnit\Framework\Assert::assertStringContainsString('p.post_status = %s', $sql);
+                \PHPUnit\Framework\Assert::assertStringContainsString('BINARY m.meta_value = BINARY %s', $sql);
+                \PHPUnit\Framework\Assert::assertSame(['wp_posts', 'elementor_library', 'publish', 'wp_postmeta', '_elementor_template_type'], array_slice($args, 0, 5));
+                \PHPUnit\Framework\Assert::assertContains($args[5], ['header', 'footer']);
             }
 
             public function query(string $q): int
@@ -1432,6 +1754,15 @@ final class ElementorPageCreateRouterTest extends TestCase
                 return [(string) preg_replace('/\s+/', ' ', trim((string) $d['sql'])), array_values((array) $d['args'])];
             }
         };
+    }
+
+    /** Fake-wpdb hook: published library documents of exactly the requested type. */
+    public function publishedTemplateIds(string $type): array
+    {
+        $posts = array_filter($this->posts, fn ($post) => $post->post_type === 'elementor_library'
+            && $post->post_status === 'publish' && ($this->meta[$post->ID]['_elementor_template_type'] ?? null) === $type);
+        usort($posts, static fn ($a, $b) => strcmp($b->post_modified_gmt, $a->post_modified_gmt) ?: $b->ID <=> $a->ID);
+        return array_column($posts, 'ID');
     }
 
     /** Fake-wpdb hook: the raw value of an options row, or null. */

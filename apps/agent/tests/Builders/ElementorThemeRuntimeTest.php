@@ -90,6 +90,37 @@ final class ElementorThemeRuntimeTest extends TestCase
         $this->assertSame(0, $manager->documentReads);
     }
 
+    public function test_template_save_uses_pro_maps_and_fails_closed(): void
+    {
+        $manager = new class {
+            public array $saves = [];
+            public bool $throws = false;
+            public function get_condition(string $name): object { return new \stdClass(); }
+            public function get_document_conditions(object $document): array { return []; }
+            public function save_conditions(int $id, array $maps): void
+            {
+                if ($this->throws) { throw new \RuntimeException('unavailable'); }
+                $this->saves[] = [$id, $maps];
+            }
+        };
+        $api = $this->runtime();
+        ThemeModuleStandIn::$module = new ThemeBuilderStandIn($manager);
+        $rules = ['include/general', 'exclude/singular/page/42', 'include/archive', 'include/singular/post'];
+        $this->assertTrue($api->saveTemplateRules(50, $rules));
+        $this->assertSame([[50, [
+            ['type' => 'include', 'name' => 'general', 'sub_name' => '', 'sub_id' => ''],
+            ['type' => 'exclude', 'name' => 'singular', 'sub_name' => 'page', 'sub_id' => '42'],
+            ['type' => 'include', 'name' => 'archive', 'sub_name' => '', 'sub_id' => ''],
+            ['type' => 'include', 'name' => 'singular', 'sub_name' => 'post', 'sub_id' => ''],
+        ]]], $manager->saves);
+        $this->assertFalse($api->saveTemplateRules(0, $rules));
+        $this->assertFalse($api->saveTemplateRules(50, ['include/general/42']));
+        $manager->throws = true;
+        $this->assertFalse($api->saveTemplateRules(50, $rules));
+        ThemeModuleStandIn::$module = null;
+        $this->assertFalse($api->saveTemplateRules(50, $rules));
+    }
+
     public function test_rules_are_complete_validated_and_read_fresh(): void
     {
         $manager = new ThemeConditionsStandIn();

@@ -93,6 +93,27 @@ final class PageCreateLayoutTest extends TestCase
         'icon-not-in-the-list',
     ];
 
+    public function test_template_schema_enforces_exclusive_target_and_rules(): void
+    {
+        $schema = PageCreateBuilder::inputSchema();
+        $input = ['template' => 'header', 'editor' => 'builder:elementor', 'elementor_format' => 'classic', 'title' => 'Header', 'outline' => [(object) ['type' => 'paragraph', 'text' => 'Hello']]];
+        $this->assertSame([], MiniJsonSchema::errors((object) $input, $schema));
+        foreach ([
+            ['post_type' => 'page'],
+            ['elementor_format' => 'atomic'],
+            ['editor' => 'wordpress_blocks'],
+            ['shows_on' => ['include/general', 'include/general']],
+        ] as $changes) {
+            $this->assertNotSame([], MiniJsonSchema::errors((object) array_replace($input, $changes), $schema));
+        }
+        unset($input['template']);
+        $this->assertNotSame([], MiniJsonSchema::errors((object) $input, $schema));
+        $input['post_type'] = 'page';
+        $this->assertSame([], MiniJsonSchema::errors((object) $input, $schema));
+        $input['shows_on'] = [];
+        $this->assertNotSame([], MiniJsonSchema::errors((object) $input, $schema));
+    }
+
     public function testSchemaAdmitsV3(): void
     {
         $schema = PageCreateBuilder::inputSchema();
@@ -100,7 +121,9 @@ final class PageCreateLayoutTest extends TestCase
         foreach (['outline_version', 'design', 'page_frame'] as $key) {
             $this->assertArrayHasKey($key, $props, $key . ' is a published input');
         }
-        $this->assertSame(['post_type', 'editor', 'title', 'outline'], $schema['required'], 'version 2 inputs stay valid: v3 keys are never required by the schema');
+        $this->assertSame(['editor', 'title', 'outline'], $schema['required'], 'v3 keys are never required by the schema');
+        $this->assertSame(['post_type'], $schema['oneOf'][0]['required'], 'the page/post branch requires post_type');
+        $this->assertSame(['template', 'elementor_format'], $schema['oneOf'][1]['required'], 'the template branch requires its type and format');
         $this->assertFalse($schema['additionalProperties']);
         $this->assertSame([3], $props['outline_version']['enum']);
         $this->assertSame(['theme', 'full_width', 'canvas'], $props['page_frame']['enum']);

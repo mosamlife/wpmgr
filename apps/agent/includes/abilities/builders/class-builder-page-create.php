@@ -183,7 +183,19 @@ final class BuilderPageCreate
         if ($format === null) {
             return self::refusedPrecheck('bad_input', 'elementor_format must be site_default, classic or atomic');
         }
-        $refusal = ElementorFacts::createRefusal($facts, $postType, $format);
+        $themeType = $spec['template'] ?? null;
+        if ($themeType !== null) {
+            $problem = $a->templates()->readinessRefusal($spec['shows_on']);
+            if ($problem !== null) {
+                return self::refusedPrecheck($problem['code'], $problem['detail']);
+            }
+        }
+        // Theme Builder registers its own library document independently of the page editor's post-type setting.
+        $createFacts = $facts;
+        if ($themeType !== null) {
+            $createFacts['post_types'] = ['elementor_library'];
+        }
+        $refusal = ElementorFacts::createRefusal($createFacts, $postType, $format);
         if ($refusal !== null) {
             return self::refusedPrecheck($refusal['code'], $refusal['detail']);
         }
@@ -198,7 +210,7 @@ final class BuilderPageCreate
             return self::refusedEnvelope(self::containersRequired());
         }
         $blockTheme = ElementorFacts::blockTheme($facts);
-        $frame      = self::pageFrame($spec, $blockTheme);
+        $frame      = $themeType !== null ? null : self::pageFrame($spec, $blockTheme);
         $template   = is_string($frame) ? ElementorDocument::pageTemplate($frame) : null;
         if ($frame === false || (is_string($frame) && $template === null)) {
             return self::refusedPrecheck('bad_input', 'page_frame must be theme, full_width or canvas, with outline_version 3');
@@ -280,7 +292,7 @@ final class BuilderPageCreate
         }
 
         try {
-            $digest = self::previewDigest($editor, $format, $version, $postType, $title, $doc->canonicalBytes);
+            $digest = self::previewDigest($editor, $format, $version, $postType, $title, $doc->canonicalBytes, $themeType, $spec['shows_on'] ?? []);
             $base   = PageCreateBuilder::baseFingerprint($postType, $mediaFacts);
         } catch (\JsonException $e) {
             return self::refusedPrecheck('bad_input', 'the page could not be encoded');
@@ -296,6 +308,10 @@ final class BuilderPageCreate
             'title'             => $title,
             'tree'              => $doc->tree,
         ];
+        if ($themeType !== null) {
+            $preview['template'] = $themeType;
+            $preview['shows_on'] = $spec['shows_on'];
+        }
         // Only an outline with an image carries media, as on the block editor.
         if ($mediaFacts !== []) {
             $preview['media'] = array_values($mediaFacts);
@@ -468,6 +484,15 @@ final class BuilderPageCreate
             return $result;
         }
 
+        if (isset($spec['template'])) {
+            $unavailable = $a->templates()->availabilityRefusal();
+            if ($unavailable !== null) {
+                $result = self::fail($unavailable['code'], $unavailable['detail']);
+                $ledgerUpdate(['phase' => 'failed', 'result' => $result]);
+                return $result;
+            }
+        }
+
         // Always a draft, always the principal's, the content left to the
         // builder's save. The meta is the request marker and the rows the
         // builder needs to treat the post as its page.
@@ -499,7 +524,7 @@ final class BuilderPageCreate
             return $result;
         }
 
-        $target = $a->document()->targetProblem($postId, $a->facts());
+        $target = $a->document()->targetProblem($postId, $a->facts(), $spec['template'] ?? null);
         if ($target === 'not_editable') {
             return self::failTrashed($postId, AdapterStatus::CODE, 'role_excluded', $ledgerUpdate);
         }
@@ -516,10 +541,29 @@ final class BuilderPageCreate
             return self::failTrashed($postId, $code, is_string($why) && $why !== '' ? $why : 'the page builder did not save the page', $ledgerUpdate);
         }
 
-        $problem = $a->verifyCreated($postId, $doc, $principal, $requestId);
+        $themeType = $spec['template'] ?? null;
+        $rules = [];
+        $titles = [];
+        if ($themeType !== null) {
+            try {
+                $rulesResult = $a->templates()->saveRules($postId, $spec['shows_on']);
+                if (!isset($rulesResult['rules'])) {
+                    return self::failTrashed($postId, $rulesResult['code'], $rulesResult['detail'], $ledgerUpdate);
+                }
+                $rules = $rulesResult['rules'];
+                $titles = ThemeTemplateCreate::ruleTitles($rules);
+            } catch (\Throwable $e) {
+                return self::failTrashed($postId, 'verify_mismatch', 'shows_on could not be verified', $ledgerUpdate);
+            }
+        }
+
+        $problem = $a->verifyCreated($postId, $doc, $principal, $requestId, $spec['shows_on'] ?? []);
         $afterFp = null;
         if ($problem === null) {
             $keys = $a->descriptor()->exactKeys;
+            if ($themeType !== null) {
+                $keys[] = ElementorRuntime::KEY_CONDITIONS;
+            }
             try {
                 $stored = BuilderDocumentFingerprint::read($postId, $keys);
                 if ($stored === null) {
@@ -553,6 +597,12 @@ final class BuilderPageCreate
             'after_fp'          => $afterFp,
             'verify'            => ['tree_equal' => true, 'status' => 'draft'],
         ];
+        if ($themeType !== null) {
+            $result['template'] = $themeType;
+            $result['shows_on'] = $rules;
+            $result['rule_titles'] = $titles;
+            $result['also_live'] = $a->templates()->alsoLive($themeType);
+        }
         // A stylesheet that was not regenerated does not undo the page; the
         // person is told.
         $warnings = ElementorDocument::warningsOf($saved);
@@ -653,6 +703,13 @@ final class BuilderPageCreate
         $keys    = is_string($builder) ? (self::DESCRIPTOR_KEYS[$builder] ?? null) : null;
         if (!is_string($builder) || $keys === null) {
             return 'this draft was built with a page builder this agent cannot check';
+        }
+        $themeType = $ledgerRow['result']['template'] ?? null;
+        if ($themeType !== null) {
+            if (!in_array($themeType, ThemeTemplateCreate::TYPES, true) || !ThemeTemplateCreate::termMatches($postId, $themeType)) {
+                return 'the template type changed after creation';
+            }
+            $keys[] = ElementorRuntime::KEY_CONDITIONS;
         }
         $afterFp = $ledgerRow['after_fp'] ?? null;
         if (!is_string($afterFp) || preg_match(self::RE_FP, $afterFp) !== 1) {
@@ -796,12 +853,19 @@ final class BuilderPageCreate
      * @param string $postType Post type.
      * @param string $title    The plain title.
      * @param string $treeJson The tree's canonical bytes.
+     * @param string|null $themeType Header or footer; null preserves page/post digest bytes.
+     * @param list<string> $showsOn Rules in the exact requested order.
      * @return string
      * @throws \JsonException When a value is not valid UTF-8.
      */
-    public static function previewDigest(string $editor, string $format, string $version, string $postType, string $title, string $treeJson): string
+    public static function previewDigest(string $editor, string $format, string $version, string $postType, string $title, string $treeJson, ?string $themeType = null, array $showsOn = []): string
     {
-        return hash('sha256', json_encode([$editor, $format, $version, $postType, 'draft', $title, $treeJson], JSON_THROW_ON_ERROR));
+        $parts = [$editor, $format, $version, $postType, 'draft', $title, $treeJson];
+        if ($themeType !== null) {
+            $parts[] = $themeType;
+            $parts[] = $showsOn;
+        }
+        return hash('sha256', json_encode($parts, JSON_THROW_ON_ERROR));
     }
 
     /**

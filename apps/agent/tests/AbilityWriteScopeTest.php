@@ -66,6 +66,36 @@ final class AbilityWriteScopeTest extends TestCase
     /** @var mixed */
     private $savedStack;
 
+    public function test_template_term_scope_is_narrow(): void
+    {
+        Functions\when('get_term_by')->alias(static fn ($field, $id, $taxonomy) => (object) ['slug' => $id === 71 ? 'header' : 'footer', 'taxonomy' => 'elementor_library_type']);
+        $cases = [
+            [self::TARGET, [71], 'elementor_library_type', [], true],
+            [self::TARGET, [71], 'elementor_library_type', [71], true],
+            [self::TARGET, [71], 'category', [], false],
+            [self::OTHER, [71], 'elementor_library_type', [], false],
+            [self::TARGET, [72], 'elementor_library_type', [], false],
+            [self::TARGET, [71, 72], 'elementor_library_type', [], false],
+            [self::TARGET, [71], 'elementor_library_type', [72], false],
+        ];
+        foreach ($cases as [$id, $new, $taxonomy, $old, $clean]) {
+            $scope = new AbilityWriteScope(self::TARGET, [], [], 'header');
+            $scope->run(fn () => $this->fire('set_object_terms', $id, ['header'], $new, $taxonomy, false, $old));
+            $this->assertSame($clean, $scope->outcome()['clean'], json_encode([$id, $new, $taxonomy, $old]));
+        }
+        $scope = new AbilityWriteScope(self::TARGET, []);
+        $scope->run(fn () => $this->fire('set_object_terms', self::TARGET, ['header'], [71], 'elementor_library_type', false, []));
+        $this->assertFalse($scope->outcome()['clean']);
+    }
+
+    public function test_template_term_scope_refuses_append_without_the_old_set(): void
+    {
+        Functions\when('get_term_by')->justReturn((object) ['slug' => 'header', 'taxonomy' => 'elementor_library_type']);
+        $scope = new AbilityWriteScope(self::TARGET, [], [], 'header');
+        $scope->run(fn () => $this->fire('set_object_terms', self::TARGET, ['header'], [71], 'elementor_library_type', true, []));
+        $this->assertSame([AbilityWriteScope::V_TERMS], $scope->outcome()['violations']);
+    }
+
     protected function set_up(): void
     {
         parent::set_up();

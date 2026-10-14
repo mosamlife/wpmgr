@@ -19,7 +19,7 @@ final class MiniJsonSchema
 {
     private const KEYWORDS = [
         'type', 'properties', 'required', 'additionalProperties', 'items', 'oneOf', 'anyOf',
-        'enum', 'const', 'minimum', 'maximum', 'minLength', 'maxLength', 'minItems', 'maxItems', 'pattern',
+        'description', 'not', 'uniqueItems', 'enum', 'const', 'minimum', 'maximum', 'minLength', 'maxLength', 'minItems', 'maxItems', 'pattern',
     ];
 
     /**
@@ -37,6 +37,9 @@ final class MiniJsonSchema
             }
         }
         $out = [];
+        if (isset($schema['not']) && self::errors($value, $schema['not'], $path) === []) {
+            $out[] = $path . ': fits the forbidden schema';
+        }
         if (isset($schema['type']) && !self::typeFits($value, (string) $schema['type'])) {
             return [$path . ': not a ' . $schema['type']];
         }
@@ -67,6 +70,16 @@ final class MiniJsonSchema
             }
         }
         if (is_array($value)) {
+            if (($schema['uniqueItems'] ?? false) === true) {
+                $seen = [];
+                foreach ($value as $item) {
+                    if (in_array($item, $seen, true)) {
+                        $out[] = $path . ': repeated item';
+                        break;
+                    }
+                    $seen[] = $item;
+                }
+            }
             if (isset($schema['minItems']) && count($value) < $schema['minItems']) {
                 $out[] = $path . ': too few items';
             }
