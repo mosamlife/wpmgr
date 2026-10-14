@@ -39,7 +39,8 @@ const (
 		"listed in the node's editable list; a locked node can be an anchor but is never changed, replaced, removed " +
 		"or moved; insert into a section, column, group or columns only; never move a node into its own subtree."
 	hintPageEditOpNotSupported = "The page builder of this page does not support that operation. Use set_text, " +
-		"insert, replace or remove instead, as wpmgr/page-structure's answer allows."
+		"insert, replace, remove, move, set_native, add_native, duplicate or set_shows_on, as wpmgr/page-structure's answer allows. " +
+		"set_shows_on replaces the whole display list of a header or footer draft; an edit without it leaves the places unchanged."
 	hintPageEditPageTooLarge = "The call adds more than 400 new nodes, or leaves the page with more than 800 nodes " +
 		"or a page larger than WPMgr edits. Send fewer or smaller changes."
 	hintPageEditAnchorInUse = "A section this call removes, or replaces without its anchor, is still linked to by a " +
@@ -148,8 +149,8 @@ func (s *Service) runPageEdit(ctx context.Context, auth AuthorizedRequest, eng *
 }
 
 func (s *Service) runPageEditChecked(ctx context.Context, auth AuthorizedRequest, eng *abilityEngine, site abilitySite, e *sqlc.AbilityCatalogue, host string, input []byte) (string, error) {
-	// Native operations enforce their floor before the operation grammar.
-	if PageEditAgentFloor(input) == agentcmd.MinAgentVersionForNativeEdit {
+	// Native and display-list operations enforce their floor before the operation grammar.
+	if floor := PageEditAgentFloor(input); floor == agentcmd.MinAgentVersionForNativeEdit || floor == agentcmd.MinAgentVersionForThemeTemplateCreate {
 		if fr := pageEditFloorRefusal(site.row.AgentVersion, input); fr != nil {
 			return "", fr
 		}
@@ -228,7 +229,7 @@ func (s *Service) runPageEditChecked(ctx context.Context, auth AuthorizedRequest
 					meta: map[string]any{"code": refusal.Code},
 				}
 			}
-			return "", sitePrecheckRefusal(AbilityPageEdit, refusal)
+			return "", sitePrecheckRefusal(AbilityPageEdit, refusal, site.row.Name)
 		}
 		return "", refuse(reasonSiteUnreachable, domain.Unavailable(ErrCodeSiteUnreachable,
 			msgSiteUnreachable).WithDetails(map[string]any{"retryable": true}))
@@ -292,6 +293,14 @@ func PageEditAgentFloor(input []byte) string {
 		return agentcmd.MinAgentVersionForDesignedPages
 	}
 	if ops, ok := jsonArrayOf(top["operations"]); ok {
+		for _, raw := range ops {
+			op, _ := jsonObjectOf(raw)
+			if kind, _ := jsonStringOf(op["op"]); kind == "set_shows_on" {
+				return agentcmd.MinAgentVersionForThemeTemplateCreate
+			}
+		}
+	}
+	if ops, ok := jsonArrayOf(top["operations"]); ok {
 		for _, rawOp := range ops {
 			op, ok := jsonObjectOf(rawOp)
 			if !ok {
@@ -344,11 +353,17 @@ func pageEditOpIsDesigned(op map[string]json.RawMessage) bool {
 // entry's own floor is classify's, so an input whose floor is
 // MinAgentVersionForBuilderEdit is never refused here.
 func pageEditFloorRefusal(agentVersion string, input []byte) *toolRefusal {
-	floor := PageEditAgentFloor(input)
+	return pageEditRequiredFloorRefusal(agentVersion, PageEditAgentFloor(input))
+}
+
+func pageEditRequiredFloorRefusal(agentVersion, floor string) *toolRefusal {
 	if floor == agentcmd.MinAgentVersionForBuilderEdit || abilityAgentMeetsFloor(agentVersion, &floor) {
 		return nil
 	}
 	msg := msgPageEditDesignedOutdated
+	if floor == agentcmd.MinAgentVersionForThemeTemplateCreate {
+		msg = "Headers and footers need WPMgr agent " + floor + " or later. Update the agent. Nothing was asked."
+	}
 	if floor == agentcmd.MinAgentVersionForNativeEdit {
 		msg = msgNativeEditOutdated
 	}

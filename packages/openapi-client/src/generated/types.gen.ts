@@ -4915,9 +4915,33 @@ export type AbilityRequestPageTemplate = {
 export type AbilityRequestTemplateRules = Array<string>;
 
 /**
+ * The template type and display lists approved with the edit. Titles are cleaned site text.
+ */
+export type AbilityRequestPageEditTemplate = {
+  type: "header" | "footer";
+  shows_on: {
+    before: AbilityRequestTemplateReadRules;
+    after: AbilityRequestTemplateReadRules;
+  };
+  rule_titles: Array<{
+    id: number;
+    /**
+     * Cleaned plain site text for a page or post named in either list.
+     */
+    title: string;
+  }>;
+  /**
+   * Fixed guidance, optionally including a validated display rule.
+   */
+  refusal_message?: string;
+};
+
+export type AbilityRequestTemplateReadRules = Array<string>;
+
+/**
  * A wpmgr/page-edit card. Every value under a `from_the_site` member
  * came from the site: render it as plain text in the "From the site"
- * slot. A change's `after` is the text the AI asked for. The other
+ * slot. A change's `after` is the text the AI asked for. Template rule titles are cleaned site text. The other
  * strings are WPMgr's.
  *
  */
@@ -4946,8 +4970,9 @@ export type AbilityRequestPageEdit = {
      */
     format: string;
   };
+  template?: AbilityRequestPageEditTemplate;
   /**
-   * One per operation, in the order they apply.
+   * Checked content changes, plus Where it shows when the display lists differ.
    */
   changes: Array<AbilityRequestPageEditChange>;
   after_outline?: AbilityRequestPageOutline;
@@ -4971,7 +4996,11 @@ export type AbilityRequestPageEdit = {
  *
  */
 export type AbilityRequestPageEditChange = {
-  op: "set_text" | "insert" | "replace" | "remove" | "move";
+  op: "set_text" | "insert" | "replace" | "remove" | "move" | "set_shows_on";
+  /**
+   * Where it shows for a display-list change.
+   */
+  label?: string;
   ref?: string;
   /**
    * What the node is, such as `heading` or `paragraph`.

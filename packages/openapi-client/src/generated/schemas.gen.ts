@@ -8445,10 +8445,69 @@ export const AbilityRequestTemplateRulesSchema = {
   },
 } as const;
 
+export const AbilityRequestPageEditTemplateSchema = {
+  type: "object",
+  description:
+    "The template type and display lists approved with the edit. Titles are cleaned site text.",
+  required: ["type", "shows_on", "rule_titles"],
+  properties: {
+    type: {
+      type: "string",
+      enum: ["header", "footer"],
+    },
+    shows_on: {
+      type: "object",
+      required: ["before", "after"],
+      properties: {
+        before: {
+          $ref: "#/components/schemas/AbilityRequestTemplateReadRules",
+        },
+        after: {
+          $ref: "#/components/schemas/AbilityRequestTemplateReadRules",
+        },
+      },
+    },
+    rule_titles: {
+      type: "array",
+      maxItems: 40,
+      items: {
+        type: "object",
+        required: ["id", "title"],
+        properties: {
+          id: {
+            type: "integer",
+            format: "int64",
+            minimum: 1,
+          },
+          title: {
+            type: "string",
+            description:
+              "Cleaned plain site text for a page or post named in either list.",
+          },
+        },
+      },
+    },
+    refusal_message: {
+      type: "string",
+      description:
+        "Fixed guidance, optionally including a validated display rule.",
+    },
+  },
+} as const;
+
+export const AbilityRequestTemplateReadRulesSchema = {
+  type: "array",
+  maxItems: 20,
+  items: {
+    type: "string",
+    pattern: "^(include|exclude)(/[a-z0-9_-]{1,64}){1,2}(/[1-9][0-9]{0,19})?$",
+  },
+} as const;
+
 export const AbilityRequestPageEditSchema = {
   type: "object",
   description:
-    "A wpmgr/page-edit card. Every value under a `from_the_site` member\ncame from the site: render it as plain text in the \"From the site\"\nslot. A change's `after` is the text the AI asked for. The other\nstrings are WPMgr's.\n",
+    "A wpmgr/page-edit card. Every value under a `from_the_site` member\ncame from the site: render it as plain text in the \"From the site\"\nslot. A change's `after` is the text the AI asked for. Template rule titles are cleaned site text. The other\nstrings are WPMgr's.\n",
   required: ["kind", "post", "builder", "changes", "checked_at"],
   properties: {
     kind: {
@@ -8494,9 +8553,13 @@ export const AbilityRequestPageEditSchema = {
         },
       },
     },
+    template: {
+      $ref: "#/components/schemas/AbilityRequestPageEditTemplate",
+    },
     changes: {
       type: "array",
-      description: "One per operation, in the order they apply.",
+      description:
+        "Checked content changes, plus Where it shows when the display lists differ.",
       items: {
         $ref: "#/components/schemas/AbilityRequestPageEditChange",
       },
@@ -8525,7 +8588,11 @@ export const AbilityRequestPageEditChangeSchema = {
   properties: {
     op: {
       type: "string",
-      enum: ["set_text", "insert", "replace", "remove", "move"],
+      enum: ["set_text", "insert", "replace", "remove", "move", "set_shows_on"],
+    },
+    label: {
+      type: "string",
+      description: "Where it shows for a display-list change.",
     },
     ref: {
       type: "string",

@@ -4580,14 +4580,15 @@ func (s *AbilityRequestPageBuilder) SetLayout(val string) {
 }
 
 // A wpmgr/page-edit card. Every value under a `from_the_site` member came from the site: render it as
-// plain text in the "From the site" slot. A change's `after` is the text the AI asked for. The other
-// strings are WPMgr's.
+// plain text in the "From the site" slot. A change's `after` is the text the AI asked for. Template
+// rule titles are cleaned site text. The other strings are WPMgr's.
 // Ref: #/components/schemas/AbilityRequestPageEdit
 type AbilityRequestPageEdit struct {
-	Kind    AbilityRequestPageEditKind    `json:"kind"`
-	Post    AbilityRequestPageEditPost    `json:"post"`
-	Builder AbilityRequestPageEditBuilder `json:"builder"`
-	// One per operation, in the order they apply.
+	Kind     AbilityRequestPageEditKind        `json:"kind"`
+	Post     AbilityRequestPageEditPost        `json:"post"`
+	Builder  AbilityRequestPageEditBuilder     `json:"builder"`
+	Template OptAbilityRequestPageEditTemplate `json:"template"`
+	// Checked content changes, plus Where it shows when the display lists differ.
 	Changes      []AbilityRequestPageEditChange `json:"changes"`
 	AfterOutline OptAbilityRequestPageOutline   `json:"after_outline"`
 	// True when the page's outline after the edit was too large to keep on the card; `after_outline` is
@@ -4610,6 +4611,11 @@ func (s *AbilityRequestPageEdit) GetPost() AbilityRequestPageEditPost {
 // GetBuilder returns the value of Builder.
 func (s *AbilityRequestPageEdit) GetBuilder() AbilityRequestPageEditBuilder {
 	return s.Builder
+}
+
+// GetTemplate returns the value of Template.
+func (s *AbilityRequestPageEdit) GetTemplate() OptAbilityRequestPageEditTemplate {
+	return s.Template
 }
 
 // GetChanges returns the value of Changes.
@@ -4645,6 +4651,11 @@ func (s *AbilityRequestPageEdit) SetPost(val AbilityRequestPageEditPost) {
 // SetBuilder sets the value of Builder.
 func (s *AbilityRequestPageEdit) SetBuilder(val AbilityRequestPageEditBuilder) {
 	s.Builder = val
+}
+
+// SetTemplate sets the value of Template.
+func (s *AbilityRequestPageEdit) SetTemplate(val OptAbilityRequestPageEditTemplate) {
+	s.Template = val
 }
 
 // SetChanges sets the value of Changes.
@@ -4872,8 +4883,10 @@ func (s *AbilityRequestPageEditBuilder) SetFormat(val string) {
 // everything in it off the page; `move` puts `ref` by `anchor`.
 // Ref: #/components/schemas/AbilityRequestPageEditChange
 type AbilityRequestPageEditChange struct {
-	Op  AbilityRequestPageEditChangeOp `json:"op"`
-	Ref OptString                      `json:"ref"`
+	Op AbilityRequestPageEditChangeOp `json:"op"`
+	// Where it shows for a display-list change.
+	Label OptString `json:"label"`
+	Ref   OptString `json:"ref"`
 	// What the node is, such as `heading` or `paragraph`.
 	Kind OptString `json:"kind"`
 	// A heading's level.
@@ -4890,6 +4903,11 @@ type AbilityRequestPageEditChange struct {
 // GetOp returns the value of Op.
 func (s *AbilityRequestPageEditChange) GetOp() AbilityRequestPageEditChangeOp {
 	return s.Op
+}
+
+// GetLabel returns the value of Label.
+func (s *AbilityRequestPageEditChange) GetLabel() OptString {
+	return s.Label
 }
 
 // GetRef returns the value of Ref.
@@ -4935,6 +4953,11 @@ func (s *AbilityRequestPageEditChange) GetFromTheSite() OptAbilityRequestPageEdi
 // SetOp sets the value of Op.
 func (s *AbilityRequestPageEditChange) SetOp(val AbilityRequestPageEditChangeOp) {
 	s.Op = val
+}
+
+// SetLabel sets the value of Label.
+func (s *AbilityRequestPageEditChange) SetLabel(val OptString) {
+	s.Label = val
 }
 
 // SetRef sets the value of Ref.
@@ -5062,11 +5085,12 @@ func (s *AbilityRequestPageEditChangeFromTheSiteBefore) init() AbilityRequestPag
 type AbilityRequestPageEditChangeOp string
 
 const (
-	AbilityRequestPageEditChangeOpSetText AbilityRequestPageEditChangeOp = "set_text"
-	AbilityRequestPageEditChangeOpInsert  AbilityRequestPageEditChangeOp = "insert"
-	AbilityRequestPageEditChangeOpReplace AbilityRequestPageEditChangeOp = "replace"
-	AbilityRequestPageEditChangeOpRemove  AbilityRequestPageEditChangeOp = "remove"
-	AbilityRequestPageEditChangeOpMove    AbilityRequestPageEditChangeOp = "move"
+	AbilityRequestPageEditChangeOpSetText    AbilityRequestPageEditChangeOp = "set_text"
+	AbilityRequestPageEditChangeOpInsert     AbilityRequestPageEditChangeOp = "insert"
+	AbilityRequestPageEditChangeOpReplace    AbilityRequestPageEditChangeOp = "replace"
+	AbilityRequestPageEditChangeOpRemove     AbilityRequestPageEditChangeOp = "remove"
+	AbilityRequestPageEditChangeOpMove       AbilityRequestPageEditChangeOp = "move"
+	AbilityRequestPageEditChangeOpSetShowsOn AbilityRequestPageEditChangeOp = "set_shows_on"
 )
 
 // AllValues returns all AbilityRequestPageEditChangeOp values.
@@ -5077,6 +5101,7 @@ func (AbilityRequestPageEditChangeOp) AllValues() []AbilityRequestPageEditChange
 		AbilityRequestPageEditChangeOpReplace,
 		AbilityRequestPageEditChangeOpRemove,
 		AbilityRequestPageEditChangeOpMove,
+		AbilityRequestPageEditChangeOpSetShowsOn,
 	}
 }
 
@@ -5092,6 +5117,8 @@ func (s AbilityRequestPageEditChangeOp) MarshalText() ([]byte, error) {
 	case AbilityRequestPageEditChangeOpRemove:
 		return []byte(s), nil
 	case AbilityRequestPageEditChangeOpMove:
+		return []byte(s), nil
+	case AbilityRequestPageEditChangeOpSetShowsOn:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -5115,6 +5142,9 @@ func (s *AbilityRequestPageEditChangeOp) UnmarshalText(data []byte) error {
 		return nil
 	case AbilityRequestPageEditChangeOpMove:
 		*s = AbilityRequestPageEditChangeOpMove
+		return nil
+	case AbilityRequestPageEditChangeOpSetShowsOn:
+		*s = AbilityRequestPageEditChangeOpSetShowsOn
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -5193,6 +5223,148 @@ func (s *AbilityRequestPageEditPostFromTheSite) GetTitle() string {
 // SetTitle sets the value of Title.
 func (s *AbilityRequestPageEditPostFromTheSite) SetTitle(val string) {
 	s.Title = val
+}
+
+// The template type and display lists approved with the edit. Titles are cleaned site text.
+// Ref: #/components/schemas/AbilityRequestPageEditTemplate
+type AbilityRequestPageEditTemplate struct {
+	Type       AbilityRequestPageEditTemplateType             `json:"type"`
+	ShowsOn    AbilityRequestPageEditTemplateShowsOn          `json:"shows_on"`
+	RuleTitles []AbilityRequestPageEditTemplateRuleTitlesItem `json:"rule_titles"`
+	// Fixed guidance, optionally including a validated display rule.
+	RefusalMessage OptString `json:"refusal_message"`
+}
+
+// GetType returns the value of Type.
+func (s *AbilityRequestPageEditTemplate) GetType() AbilityRequestPageEditTemplateType {
+	return s.Type
+}
+
+// GetShowsOn returns the value of ShowsOn.
+func (s *AbilityRequestPageEditTemplate) GetShowsOn() AbilityRequestPageEditTemplateShowsOn {
+	return s.ShowsOn
+}
+
+// GetRuleTitles returns the value of RuleTitles.
+func (s *AbilityRequestPageEditTemplate) GetRuleTitles() []AbilityRequestPageEditTemplateRuleTitlesItem {
+	return s.RuleTitles
+}
+
+// GetRefusalMessage returns the value of RefusalMessage.
+func (s *AbilityRequestPageEditTemplate) GetRefusalMessage() OptString {
+	return s.RefusalMessage
+}
+
+// SetType sets the value of Type.
+func (s *AbilityRequestPageEditTemplate) SetType(val AbilityRequestPageEditTemplateType) {
+	s.Type = val
+}
+
+// SetShowsOn sets the value of ShowsOn.
+func (s *AbilityRequestPageEditTemplate) SetShowsOn(val AbilityRequestPageEditTemplateShowsOn) {
+	s.ShowsOn = val
+}
+
+// SetRuleTitles sets the value of RuleTitles.
+func (s *AbilityRequestPageEditTemplate) SetRuleTitles(val []AbilityRequestPageEditTemplateRuleTitlesItem) {
+	s.RuleTitles = val
+}
+
+// SetRefusalMessage sets the value of RefusalMessage.
+func (s *AbilityRequestPageEditTemplate) SetRefusalMessage(val OptString) {
+	s.RefusalMessage = val
+}
+
+type AbilityRequestPageEditTemplateRuleTitlesItem struct {
+	ID int64 `json:"id"`
+	// Cleaned plain site text for a page or post named in either list.
+	Title string `json:"title"`
+}
+
+// GetID returns the value of ID.
+func (s *AbilityRequestPageEditTemplateRuleTitlesItem) GetID() int64 {
+	return s.ID
+}
+
+// GetTitle returns the value of Title.
+func (s *AbilityRequestPageEditTemplateRuleTitlesItem) GetTitle() string {
+	return s.Title
+}
+
+// SetID sets the value of ID.
+func (s *AbilityRequestPageEditTemplateRuleTitlesItem) SetID(val int64) {
+	s.ID = val
+}
+
+// SetTitle sets the value of Title.
+func (s *AbilityRequestPageEditTemplateRuleTitlesItem) SetTitle(val string) {
+	s.Title = val
+}
+
+type AbilityRequestPageEditTemplateShowsOn struct {
+	Before AbilityRequestTemplateReadRules `json:"before"`
+	After  AbilityRequestTemplateReadRules `json:"after"`
+}
+
+// GetBefore returns the value of Before.
+func (s *AbilityRequestPageEditTemplateShowsOn) GetBefore() AbilityRequestTemplateReadRules {
+	return s.Before
+}
+
+// GetAfter returns the value of After.
+func (s *AbilityRequestPageEditTemplateShowsOn) GetAfter() AbilityRequestTemplateReadRules {
+	return s.After
+}
+
+// SetBefore sets the value of Before.
+func (s *AbilityRequestPageEditTemplateShowsOn) SetBefore(val AbilityRequestTemplateReadRules) {
+	s.Before = val
+}
+
+// SetAfter sets the value of After.
+func (s *AbilityRequestPageEditTemplateShowsOn) SetAfter(val AbilityRequestTemplateReadRules) {
+	s.After = val
+}
+
+type AbilityRequestPageEditTemplateType string
+
+const (
+	AbilityRequestPageEditTemplateTypeHeader AbilityRequestPageEditTemplateType = "header"
+	AbilityRequestPageEditTemplateTypeFooter AbilityRequestPageEditTemplateType = "footer"
+)
+
+// AllValues returns all AbilityRequestPageEditTemplateType values.
+func (AbilityRequestPageEditTemplateType) AllValues() []AbilityRequestPageEditTemplateType {
+	return []AbilityRequestPageEditTemplateType{
+		AbilityRequestPageEditTemplateTypeHeader,
+		AbilityRequestPageEditTemplateTypeFooter,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AbilityRequestPageEditTemplateType) MarshalText() ([]byte, error) {
+	switch s {
+	case AbilityRequestPageEditTemplateTypeHeader:
+		return []byte(s), nil
+	case AbilityRequestPageEditTemplateTypeFooter:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AbilityRequestPageEditTemplateType) UnmarshalText(data []byte) error {
+	switch AbilityRequestPageEditTemplateType(data) {
+	case AbilityRequestPageEditTemplateTypeHeader:
+		*s = AbilityRequestPageEditTemplateTypeHeader
+		return nil
+	case AbilityRequestPageEditTemplateTypeFooter:
+		*s = AbilityRequestPageEditTemplateTypeFooter
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 // One image a wpmgr/page-create request places. `filename` came from the site: render it as plain
@@ -5767,6 +5939,8 @@ func (s *AbilityRequestState) UnmarshalText(data []byte) error {
 		return errors.Errorf("invalid value: %q", data)
 	}
 }
+
+type AbilityRequestTemplateReadRules []string
 
 type AbilityRequestTemplateRules []string
 
@@ -39002,6 +39176,52 @@ func (o OptAbilityRequestPageEditChangeFromTheSite) Get() (v AbilityRequestPageE
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAbilityRequestPageEditChangeFromTheSite) Or(d AbilityRequestPageEditChangeFromTheSite) AbilityRequestPageEditChangeFromTheSite {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAbilityRequestPageEditTemplate returns new OptAbilityRequestPageEditTemplate with value set to v.
+func NewOptAbilityRequestPageEditTemplate(v AbilityRequestPageEditTemplate) OptAbilityRequestPageEditTemplate {
+	return OptAbilityRequestPageEditTemplate{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAbilityRequestPageEditTemplate is optional AbilityRequestPageEditTemplate.
+type OptAbilityRequestPageEditTemplate struct {
+	Value AbilityRequestPageEditTemplate
+	Set   bool
+}
+
+// IsSet returns true if OptAbilityRequestPageEditTemplate was set.
+func (o OptAbilityRequestPageEditTemplate) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAbilityRequestPageEditTemplate) Reset() {
+	var v AbilityRequestPageEditTemplate
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAbilityRequestPageEditTemplate) SetTo(v AbilityRequestPageEditTemplate) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAbilityRequestPageEditTemplate) Get() (v AbilityRequestPageEditTemplate, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAbilityRequestPageEditTemplate) Or(d AbilityRequestPageEditTemplate) AbilityRequestPageEditTemplate {
 	if v, ok := o.Get(); ok {
 		return v
 	}

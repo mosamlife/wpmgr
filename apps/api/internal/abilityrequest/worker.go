@@ -438,6 +438,9 @@ func agentFloorFor(r sqlc.AssistantAbilityRequest) string {
 	case mcp.AbilityPageCreate:
 		return mcp.PageCreateAgentFloor([]byte(r.InputJson))
 	case mcp.AbilityPageEdit:
+		if card, ok := mcp.ReadPageEditCardFacts(r.CardFacts); ok && card.Template != nil {
+			return agentcmd.MinAgentVersionForThemeTemplateCreate
+		}
 		return mcp.PageEditAgentFloor([]byte(r.InputJson))
 	}
 	return agentcmd.MinAgentVersionForPageCreate
@@ -924,7 +927,8 @@ func outcomeFromStoredResult(ability string, raw json.RawMessage, now time.Time)
 		return writeOutcome{}, false
 	}
 	if r.OK && r.Outcome == "applied" && ability == mcp.AbilityPageEdit {
-		return appliedEditOutcome(r.SnapshotSHA256, now), true
+		oc := appliedTemplateEditOutcome(r.SnapshotSHA256, raw, now)
+		return oc, oc.outcome != ""
 	}
 	if r.OK && r.Outcome == "created" {
 		if ability != mcp.AbilityPageCreate {
@@ -965,7 +969,7 @@ func classifyWriteAnswer(ability string, resp agentcmd.AbilityRunResponse, err e
 			return appliedOutcome(now)
 		case "applied":
 			if ability == mcp.AbilityPageEdit {
-				return appliedEditOutcome(resp.SnapshotSHA256, now)
+				return appliedTemplateEditOutcome(resp.SnapshotSHA256, resp.Raw, now)
 			}
 		case "already_applied":
 			if oc, ok := outcomeFromStored(ability, resp.Result, now); ok {

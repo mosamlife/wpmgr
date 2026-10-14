@@ -75,7 +75,7 @@ const (
 // ledger marks a reverted draft 'trashed' and an undone page edit
 // 'restored'; any other state means the revert did not happen.
 func undoVerdictFor(ability string, resp agentcmd.AbilityRunResponse, err error) undoVerdict {
-	if err != nil || resp.Inflight {
+	if err != nil || resp.Inflight || !undoTemplateRulesValid(resp.Raw) || !undoTemplateRulesValid(resp.Result) {
 		return undoVerdictUnknown
 	}
 	if !resp.Found {

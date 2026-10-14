@@ -75,6 +75,9 @@ func createdTemplateOutcome(postID int64, raw []byte, now time.Time) writeOutcom
 }
 
 func outcomeMatchingApproval(row sqlc.AssistantAbilityRequest, oc writeOutcome) writeOutcome {
+	if row.AbilityName == mcp.AbilityPageEdit {
+		return editOutcomeMatchingApproval(row, oc)
+	}
 	if row.AbilityName != mcp.AbilityPageCreate || oc.outcome != OutcomeCreated {
 		return oc
 	}

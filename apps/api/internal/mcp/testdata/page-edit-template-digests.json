@@ -1,0 +1,1018 @@
+[
+    {
+        "request_id": "44444444-2222-4333-8444-666666666666",
+        "entry_sha256": "78c19e7a025917769ff08ae9768f82f688f84c0a08d7665fea60c5609fe6333d",
+        "input": "{\"post_id\":120,\"base_fingerprint\":\"8ce93e610afd1f7a8022bc0699169ad1703c40779937881c6ccc7642b3523f08\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"52982f9\",\"field\":\"text\",\"text\":\"Summer sale & more\"},{\"op\":\"insert\",\"after\":\"6cbe98a\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Open every day\"}]}]}",
+        "base_fingerprint": "8ce93e610afd1f7a8022bc0699169ad1703c40779937881c6ccc7642b3523f08",
+        "preview": {
+            "post_id": 120,
+            "builder": "elementor",
+            "builder_version": "3.35.9",
+            "format": "classic",
+            "title": "Our services",
+            "changes": [
+                {
+                    "op": "set_text",
+                    "ref": "52982f9",
+                    "kind": "heading",
+                    "level": 3,
+                    "before": {
+                        "text": "Left column"
+                    },
+                    "after": {
+                        "text": "Summer sale & more"
+                    }
+                },
+                {
+                    "op": "insert",
+                    "new_refs": [
+                        "82e3b4f"
+                    ],
+                    "anchor": {
+                        "ref": "6cbe98a",
+                        "how": "after",
+                        "kind": "paragraph"
+                    }
+                }
+            ],
+            "after_outline": {
+                "node_count": 6,
+                "truncated": false,
+                "nodes": [
+                    {
+                        "ref": "605cdc2",
+                        "parent": "root",
+                        "kind": "columns",
+                        "editable": [],
+                        "from_the_site": {}
+                    },
+                    {
+                        "ref": "c87900b",
+                        "parent": "605cdc2",
+                        "kind": "column",
+                        "editable": [],
+                        "from_the_site": {}
+                    },
+                    {
+                        "ref": "52982f9",
+                        "parent": "c87900b",
+                        "kind": "heading",
+                        "level": 3,
+                        "editable": [
+                            "text"
+                        ],
+                        "from_the_site": {
+                            "text": "Summer sale & more"
+                        }
+                    },
+                    {
+                        "ref": "3d3406f",
+                        "parent": "605cdc2",
+                        "kind": "column",
+                        "editable": [],
+                        "from_the_site": {}
+                    },
+                    {
+                        "ref": "6cbe98a",
+                        "parent": "3d3406f",
+                        "kind": "paragraph",
+                        "editable": [
+                            "text"
+                        ],
+                        "from_the_site": {
+                            "text": "Right column"
+                        }
+                    },
+                    {
+                        "ref": "82e3b4f",
+                        "parent": "3d3406f",
+                        "kind": "paragraph",
+                        "editable": [
+                            "text"
+                        ],
+                        "from_the_site": {
+                            "text": "Open every day"
+                        }
+                    }
+                ]
+            },
+            "tree_sha256": "09aaaf158670cca8abe0633f8d4e9c74fdf7f397b1aee45400a109daafd879c1",
+            "tree": [
+                {
+                    "id": "605cdc2",
+                    "elType": "container",
+                    "settings": {
+                        "content_width": "boxed",
+                        "flex_direction": "row",
+                        "flex_direction_mobile": "column",
+                        "flex_gap": {
+                            "unit": "px",
+                            "size": "24",
+                            "column": "24",
+                            "row": "24"
+                        }
+                    },
+                    "elements": [
+                        {
+                            "id": "c87900b",
+                            "elType": "container",
+                            "settings": {
+                                "content_width": "full",
+                                "flex_direction": "column",
+                                "width": {
+                                    "unit": "%",
+                                    "size": "50",
+                                    "sizes": []
+                                }
+                            },
+                            "elements": [
+                                {
+                                    "id": "52982f9",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "title": "Summer sale &amp; more",
+                                        "header_size": "h3"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "heading"
+                                }
+                            ],
+                            "isInner": true
+                        },
+                        {
+                            "id": "3d3406f",
+                            "elType": "container",
+                            "settings": {
+                                "content_width": "full",
+                                "flex_direction": "column",
+                                "width": {
+                                    "unit": "%",
+                                    "size": "50",
+                                    "sizes": []
+                                }
+                            },
+                            "elements": [
+                                {
+                                    "id": "6cbe98a",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<p>Right column</p>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                },
+                                {
+                                    "id": "82e3b4f",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<p>Open every day</p>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                }
+                            ],
+                            "isInner": true
+                        }
+                    ],
+                    "isInner": false
+                }
+            ],
+            "template": "header",
+            "shows_on": {
+                "before": [
+                    "include/singular/category/7"
+                ],
+                "after": [
+                    "include/singular/category/7"
+                ]
+            },
+            "rule_titles": []
+        },
+        "tree_json": "[{\"id\":\"605cdc2\",\"elType\":\"container\",\"settings\":{\"content_width\":\"boxed\",\"flex_direction\":\"row\",\"flex_direction_mobile\":\"column\",\"flex_gap\":{\"unit\":\"px\",\"size\":\"24\",\"column\":\"24\",\"row\":\"24\"}},\"elements\":[{\"id\":\"c87900b\",\"elType\":\"container\",\"settings\":{\"content_width\":\"full\",\"flex_direction\":\"column\",\"width\":{\"unit\":\"%\",\"size\":\"50\",\"sizes\":[]}},\"elements\":[{\"id\":\"52982f9\",\"elType\":\"widget\",\"settings\":{\"title\":\"Summer sale &amp; more\",\"header_size\":\"h3\"},\"elements\":[],\"widgetType\":\"heading\"}],\"isInner\":true},{\"id\":\"3d3406f\",\"elType\":\"container\",\"settings\":{\"content_width\":\"full\",\"flex_direction\":\"column\",\"width\":{\"unit\":\"%\",\"size\":\"50\",\"sizes\":[]}},\"elements\":[{\"id\":\"6cbe98a\",\"elType\":\"widget\",\"settings\":{\"editor\":\"<p>Right column<\\/p>\"},\"elements\":[],\"widgetType\":\"text-editor\"},{\"id\":\"82e3b4f\",\"elType\":\"widget\",\"settings\":{\"editor\":\"<p>Open every day<\\/p>\"},\"elements\":[],\"widgetType\":\"text-editor\"}],\"isInner\":true}],\"isInner\":false}]",
+        "preview_digest": "59d1accb6f4aeac40ba2e9cf5540abd809a156acb3b243b732c2937d4ffcecd8",
+        "precheck_digest": "d78a387241b0fee13aa5ec929efe1f76eca091cf4b20440b8ba5d91d1f840dba",
+        "name": "classic-keep"
+    },
+    {
+        "request_id": "44444444-2222-4333-8444-666666666666",
+        "entry_sha256": "78c19e7a025917769ff08ae9768f82f688f84c0a08d7665fea60c5609fe6333d",
+        "input": "{\"post_id\":120,\"base_fingerprint\":\"8ce93e610afd1f7a8022bc0699169ad1703c40779937881c6ccc7642b3523f08\",\"operations\":[{\"op\":\"set_text\",\"ref\":\"52982f9\",\"field\":\"text\",\"text\":\"Summer sale & more\"},{\"op\":\"insert\",\"after\":\"6cbe98a\",\"outline\":[{\"type\":\"paragraph\",\"text\":\"Open every day\"}]},{\"op\":\"set_shows_on\",\"rules\":[\"exclude\\/singular\\/page\\/42\"]}]}",
+        "base_fingerprint": "8ce93e610afd1f7a8022bc0699169ad1703c40779937881c6ccc7642b3523f08",
+        "preview": {
+            "post_id": 120,
+            "builder": "elementor",
+            "builder_version": "3.35.9",
+            "format": "classic",
+            "title": "Our services",
+            "changes": [
+                {
+                    "op": "set_text",
+                    "ref": "52982f9",
+                    "kind": "heading",
+                    "level": 3,
+                    "before": {
+                        "text": "Left column"
+                    },
+                    "after": {
+                        "text": "Summer sale & more"
+                    }
+                },
+                {
+                    "op": "insert",
+                    "new_refs": [
+                        "82e3b4f"
+                    ],
+                    "anchor": {
+                        "ref": "6cbe98a",
+                        "how": "after",
+                        "kind": "paragraph"
+                    }
+                },
+                {
+                    "op": "set_shows_on",
+                    "after": [
+                        "exclude/singular/page/42"
+                    ]
+                }
+            ],
+            "after_outline": {
+                "node_count": 6,
+                "truncated": false,
+                "nodes": [
+                    {
+                        "ref": "605cdc2",
+                        "parent": "root",
+                        "kind": "columns",
+                        "editable": [],
+                        "from_the_site": {}
+                    },
+                    {
+                        "ref": "c87900b",
+                        "parent": "605cdc2",
+                        "kind": "column",
+                        "editable": [],
+                        "from_the_site": {}
+                    },
+                    {
+                        "ref": "52982f9",
+                        "parent": "c87900b",
+                        "kind": "heading",
+                        "level": 3,
+                        "editable": [
+                            "text"
+                        ],
+                        "from_the_site": {
+                            "text": "Summer sale & more"
+                        }
+                    },
+                    {
+                        "ref": "3d3406f",
+                        "parent": "605cdc2",
+                        "kind": "column",
+                        "editable": [],
+                        "from_the_site": {}
+                    },
+                    {
+                        "ref": "6cbe98a",
+                        "parent": "3d3406f",
+                        "kind": "paragraph",
+                        "editable": [
+                            "text"
+                        ],
+                        "from_the_site": {
+                            "text": "Right column"
+                        }
+                    },
+                    {
+                        "ref": "82e3b4f",
+                        "parent": "3d3406f",
+                        "kind": "paragraph",
+                        "editable": [
+                            "text"
+                        ],
+                        "from_the_site": {
+                            "text": "Open every day"
+                        }
+                    }
+                ]
+            },
+            "tree_sha256": "09aaaf158670cca8abe0633f8d4e9c74fdf7f397b1aee45400a109daafd879c1",
+            "tree": [
+                {
+                    "id": "605cdc2",
+                    "elType": "container",
+                    "settings": {
+                        "content_width": "boxed",
+                        "flex_direction": "row",
+                        "flex_direction_mobile": "column",
+                        "flex_gap": {
+                            "unit": "px",
+                            "size": "24",
+                            "column": "24",
+                            "row": "24"
+                        }
+                    },
+                    "elements": [
+                        {
+                            "id": "c87900b",
+                            "elType": "container",
+                            "settings": {
+                                "content_width": "full",
+                                "flex_direction": "column",
+                                "width": {
+                                    "unit": "%",
+                                    "size": "50",
+                                    "sizes": []
+                                }
+                            },
+                            "elements": [
+                                {
+                                    "id": "52982f9",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "title": "Summer sale &amp; more",
+                                        "header_size": "h3"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "heading"
+                                }
+                            ],
+                            "isInner": true
+                        },
+                        {
+                            "id": "3d3406f",
+                            "elType": "container",
+                            "settings": {
+                                "content_width": "full",
+                                "flex_direction": "column",
+                                "width": {
+                                    "unit": "%",
+                                    "size": "50",
+                                    "sizes": []
+                                }
+                            },
+                            "elements": [
+                                {
+                                    "id": "6cbe98a",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<p>Right column</p>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                },
+                                {
+                                    "id": "82e3b4f",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<p>Open every day</p>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                }
+                            ],
+                            "isInner": true
+                        }
+                    ],
+                    "isInner": false
+                }
+            ],
+            "template": "header",
+            "shows_on": {
+                "before": [
+                    "include/singular/category/7"
+                ],
+                "after": [
+                    "exclude/singular/page/42"
+                ]
+            },
+            "rule_titles": [
+                {
+                    "id": 42,
+                    "title": "About us"
+                }
+            ]
+        },
+        "tree_json": "[{\"id\":\"605cdc2\",\"elType\":\"container\",\"settings\":{\"content_width\":\"boxed\",\"flex_direction\":\"row\",\"flex_direction_mobile\":\"column\",\"flex_gap\":{\"unit\":\"px\",\"size\":\"24\",\"column\":\"24\",\"row\":\"24\"}},\"elements\":[{\"id\":\"c87900b\",\"elType\":\"container\",\"settings\":{\"content_width\":\"full\",\"flex_direction\":\"column\",\"width\":{\"unit\":\"%\",\"size\":\"50\",\"sizes\":[]}},\"elements\":[{\"id\":\"52982f9\",\"elType\":\"widget\",\"settings\":{\"title\":\"Summer sale &amp; more\",\"header_size\":\"h3\"},\"elements\":[],\"widgetType\":\"heading\"}],\"isInner\":true},{\"id\":\"3d3406f\",\"elType\":\"container\",\"settings\":{\"content_width\":\"full\",\"flex_direction\":\"column\",\"width\":{\"unit\":\"%\",\"size\":\"50\",\"sizes\":[]}},\"elements\":[{\"id\":\"6cbe98a\",\"elType\":\"widget\",\"settings\":{\"editor\":\"<p>Right column<\\/p>\"},\"elements\":[],\"widgetType\":\"text-editor\"},{\"id\":\"82e3b4f\",\"elType\":\"widget\",\"settings\":{\"editor\":\"<p>Open every day<\\/p>\"},\"elements\":[],\"widgetType\":\"text-editor\"}],\"isInner\":true}],\"isInner\":false}]",
+        "preview_digest": "79dc97a7a681ed911f6c755c9ad929b280636099af964c0ded66d04c2ddd59a2",
+        "precheck_digest": "88a353528f18b131bc4c0843e7ea1f217f81b76d01a78d2c54f415a84f341009",
+        "name": "classic-replace"
+    },
+    {
+        "name": "native-keep",
+        "request_id": "22222222-3333-4444-8555-888888888888",
+        "entry_sha256": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+        "input": "{\"post_id\":41,\"base_fingerprint\":\"a47e469b0de0606ecbb20c87734056a2892b163fda8362cf2fe09f4ce24d6ad0\",\"operations\":[{\"op\":\"set_native\",\"ref\":\"ccccccc\",\"settings\":{\"title\":\"New counter\"}}]}",
+        "base_fingerprint": "a47e469b0de0606ecbb20c87734056a2892b163fda8362cf2fe09f4ce24d6ad0",
+        "preview": {
+            "post_id": 41,
+            "builder": "elementor",
+            "builder_version": "3.35.9",
+            "format": "classic",
+            "title": "Spring",
+            "changes": [
+                {
+                    "op": "set_native",
+                    "ref": "ccccccc",
+                    "kind": "native",
+                    "before_settings": {
+                        "title": "Counter"
+                    },
+                    "settings": {
+                        "title": "New counter"
+                    }
+                }
+            ],
+            "after_outline": {
+                "node_count": 6,
+                "truncated": false,
+                "nodes": [
+                    {
+                        "ref": "605cdc2",
+                        "parent": "root",
+                        "kind": "columns",
+                        "editable": [],
+                        "from_the_site": {}
+                    },
+                    {
+                        "ref": "c87900b",
+                        "parent": "605cdc2",
+                        "kind": "column",
+                        "editable": [],
+                        "from_the_site": {}
+                    },
+                    {
+                        "ref": "52982f9",
+                        "parent": "c87900b",
+                        "kind": "heading",
+                        "level": 3,
+                        "editable": [
+                            "text"
+                        ],
+                        "from_the_site": {
+                            "text": "Left column"
+                        }
+                    },
+                    {
+                        "ref": "3d3406f",
+                        "parent": "605cdc2",
+                        "kind": "column",
+                        "editable": [],
+                        "from_the_site": {}
+                    },
+                    {
+                        "ref": "6cbe98a",
+                        "parent": "3d3406f",
+                        "kind": "paragraph",
+                        "editable": [
+                            "text"
+                        ],
+                        "from_the_site": {
+                            "text": "Right column"
+                        }
+                    },
+                    {
+                        "ref": "ccccccc",
+                        "parent": "3d3406f",
+                        "kind": "native",
+                        "widget": "counter",
+                        "summary": "New counter"
+                    }
+                ]
+            },
+            "tree_sha256": "64faec57109ea44e3273ac8f312d0fa2ffc03ccf6ba3d9434b1389ed80996dc2",
+            "tree": [
+                {
+                    "id": "605cdc2",
+                    "elType": "container",
+                    "settings": {
+                        "content_width": "boxed",
+                        "flex_direction": "row",
+                        "flex_direction_mobile": "column",
+                        "flex_gap": {
+                            "unit": "px",
+                            "size": "24",
+                            "column": "24",
+                            "row": "24"
+                        }
+                    },
+                    "elements": [
+                        {
+                            "id": "c87900b",
+                            "elType": "container",
+                            "settings": {
+                                "content_width": "full",
+                                "flex_direction": "column",
+                                "width": {
+                                    "unit": "%",
+                                    "size": "50",
+                                    "sizes": []
+                                }
+                            },
+                            "elements": [
+                                {
+                                    "id": "52982f9",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "title": "Left column",
+                                        "header_size": "h3",
+                                        "title_color": "#c0392b"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "heading"
+                                }
+                            ],
+                            "isInner": true
+                        },
+                        {
+                            "id": "3d3406f",
+                            "elType": "container",
+                            "settings": {
+                                "content_width": "full",
+                                "flex_direction": "column",
+                                "width": {
+                                    "unit": "%",
+                                    "size": "50",
+                                    "sizes": []
+                                }
+                            },
+                            "elements": [
+                                {
+                                    "id": "6cbe98a",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<p>Right column</p>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                },
+                                {
+                                    "id": "ccccccc",
+                                    "elType": "widget",
+                                    "widgetType": "counter",
+                                    "isInner": false,
+                                    "settings": {
+                                        "title": "New counter"
+                                    },
+                                    "elements": []
+                                }
+                            ],
+                            "isInner": true
+                        }
+                    ],
+                    "isInner": false
+                }
+            ],
+            "before_tree": [
+                {
+                    "id": "605cdc2",
+                    "elType": "container",
+                    "settings": {
+                        "content_width": "boxed",
+                        "flex_direction": "row",
+                        "flex_direction_mobile": "column",
+                        "flex_gap": {
+                            "unit": "px",
+                            "size": "24",
+                            "column": "24",
+                            "row": "24"
+                        }
+                    },
+                    "elements": [
+                        {
+                            "id": "c87900b",
+                            "elType": "container",
+                            "settings": {
+                                "content_width": "full",
+                                "flex_direction": "column",
+                                "width": {
+                                    "unit": "%",
+                                    "size": "50",
+                                    "sizes": []
+                                }
+                            },
+                            "elements": [
+                                {
+                                    "id": "52982f9",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "title": "Left column",
+                                        "header_size": "h3",
+                                        "title_color": "#c0392b"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "heading"
+                                }
+                            ],
+                            "isInner": true
+                        },
+                        {
+                            "id": "3d3406f",
+                            "elType": "container",
+                            "settings": {
+                                "content_width": "full",
+                                "flex_direction": "column",
+                                "width": {
+                                    "unit": "%",
+                                    "size": "50",
+                                    "sizes": []
+                                }
+                            },
+                            "elements": [
+                                {
+                                    "id": "6cbe98a",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<p>Right column</p>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                },
+                                {
+                                    "id": "ccccccc",
+                                    "elType": "widget",
+                                    "widgetType": "counter",
+                                    "isInner": false,
+                                    "settings": {
+                                        "title": "Counter"
+                                    },
+                                    "elements": []
+                                }
+                            ],
+                            "isInner": true
+                        }
+                    ],
+                    "isInner": false
+                }
+            ],
+            "before_tree_sha256": "0c20f3170f177a37380077ae8abfe0fbd2c8d8507c0383aa0e9e2f389bf97119",
+            "results": [
+                {
+                    "op": {
+                        "op": "set_native",
+                        "ref": "ccccccc",
+                        "settings": {
+                            "title": "New counter"
+                        }
+                    },
+                    "result_node": {
+                        "id": "ccccccc",
+                        "elType": "widget",
+                        "widgetType": "counter",
+                        "isInner": false,
+                        "settings": {
+                            "title": "New counter"
+                        },
+                        "elements": []
+                    },
+                    "before_settings": {
+                        "title": "Counter"
+                    }
+                }
+            ],
+            "digest_inputs": {
+                "before_tree_sha256": "0c20f3170f177a37380077ae8abfe0fbd2c8d8507c0383aa0e9e2f389bf97119",
+                "widgets": {
+                    "counter": "a0f10f7af3a845a5b7d2f8159aeb59a442cc90ef9dffd3386f6b892621b9a75c"
+                },
+                "active_breakpoints": [
+                    "mobile",
+                    "tablet"
+                ],
+                "builder_version": "3.35.9",
+                "media": []
+            },
+            "template": "footer",
+            "shows_on": {
+                "before": [
+                    "include/singular/category/7"
+                ],
+                "after": [
+                    "include/singular/category/7"
+                ]
+            },
+            "rule_titles": []
+        },
+        "tree_json": "[{\"id\":\"605cdc2\",\"elType\":\"container\",\"settings\":{\"content_width\":\"boxed\",\"flex_direction\":\"row\",\"flex_direction_mobile\":\"column\",\"flex_gap\":{\"unit\":\"px\",\"size\":\"24\",\"column\":\"24\",\"row\":\"24\"}},\"elements\":[{\"id\":\"c87900b\",\"elType\":\"container\",\"settings\":{\"content_width\":\"full\",\"flex_direction\":\"column\",\"width\":{\"unit\":\"%\",\"size\":\"50\",\"sizes\":[]}},\"elements\":[{\"id\":\"52982f9\",\"elType\":\"widget\",\"settings\":{\"title\":\"Left column\",\"header_size\":\"h3\",\"title_color\":\"#c0392b\"},\"elements\":[],\"widgetType\":\"heading\"}],\"isInner\":true},{\"id\":\"3d3406f\",\"elType\":\"container\",\"settings\":{\"content_width\":\"full\",\"flex_direction\":\"column\",\"width\":{\"unit\":\"%\",\"size\":\"50\",\"sizes\":[]}},\"elements\":[{\"id\":\"6cbe98a\",\"elType\":\"widget\",\"settings\":{\"editor\":\"<p>Right column<\\/p>\"},\"elements\":[],\"widgetType\":\"text-editor\"},{\"id\":\"ccccccc\",\"elType\":\"widget\",\"widgetType\":\"counter\",\"isInner\":false,\"settings\":{\"title\":\"New counter\"},\"elements\":[]}],\"isInner\":true}],\"isInner\":false}]",
+        "preview_digest": "6cf24756cf5f7617f62057d25d822f688ce104eb5c86910139cc0b48ac3405bf",
+        "precheck_digest": "5d334b261068159d21fa64545edcd7506c966a38639e394a29ced86e6b25a674"
+    },
+    {
+        "name": "native-replace",
+        "request_id": "22222222-3333-4444-8555-888888888888",
+        "entry_sha256": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+        "input": "{\"post_id\":41,\"base_fingerprint\":\"a47e469b0de0606ecbb20c87734056a2892b163fda8362cf2fe09f4ce24d6ad0\",\"operations\":[{\"op\":\"set_native\",\"ref\":\"ccccccc\",\"settings\":{\"title\":\"New counter\"}},{\"op\":\"set_shows_on\",\"rules\":[\"exclude\\/singular\\/page\\/42\"]}]}",
+        "base_fingerprint": "a47e469b0de0606ecbb20c87734056a2892b163fda8362cf2fe09f4ce24d6ad0",
+        "preview": {
+            "post_id": 41,
+            "builder": "elementor",
+            "builder_version": "3.35.9",
+            "format": "classic",
+            "title": "Spring",
+            "changes": [
+                {
+                    "op": "set_native",
+                    "ref": "ccccccc",
+                    "kind": "native",
+                    "before_settings": {
+                        "title": "Counter"
+                    },
+                    "settings": {
+                        "title": "New counter"
+                    }
+                },
+                {
+                    "op": "set_shows_on",
+                    "after": [
+                        "exclude/singular/page/42"
+                    ]
+                }
+            ],
+            "after_outline": {
+                "node_count": 6,
+                "truncated": false,
+                "nodes": [
+                    {
+                        "ref": "605cdc2",
+                        "parent": "root",
+                        "kind": "columns",
+                        "editable": [],
+                        "from_the_site": {}
+                    },
+                    {
+                        "ref": "c87900b",
+                        "parent": "605cdc2",
+                        "kind": "column",
+                        "editable": [],
+                        "from_the_site": {}
+                    },
+                    {
+                        "ref": "52982f9",
+                        "parent": "c87900b",
+                        "kind": "heading",
+                        "level": 3,
+                        "editable": [
+                            "text"
+                        ],
+                        "from_the_site": {
+                            "text": "Left column"
+                        }
+                    },
+                    {
+                        "ref": "3d3406f",
+                        "parent": "605cdc2",
+                        "kind": "column",
+                        "editable": [],
+                        "from_the_site": {}
+                    },
+                    {
+                        "ref": "6cbe98a",
+                        "parent": "3d3406f",
+                        "kind": "paragraph",
+                        "editable": [
+                            "text"
+                        ],
+                        "from_the_site": {
+                            "text": "Right column"
+                        }
+                    },
+                    {
+                        "ref": "ccccccc",
+                        "parent": "3d3406f",
+                        "kind": "native",
+                        "widget": "counter",
+                        "summary": "New counter"
+                    }
+                ]
+            },
+            "tree_sha256": "64faec57109ea44e3273ac8f312d0fa2ffc03ccf6ba3d9434b1389ed80996dc2",
+            "tree": [
+                {
+                    "id": "605cdc2",
+                    "elType": "container",
+                    "settings": {
+                        "content_width": "boxed",
+                        "flex_direction": "row",
+                        "flex_direction_mobile": "column",
+                        "flex_gap": {
+                            "unit": "px",
+                            "size": "24",
+                            "column": "24",
+                            "row": "24"
+                        }
+                    },
+                    "elements": [
+                        {
+                            "id": "c87900b",
+                            "elType": "container",
+                            "settings": {
+                                "content_width": "full",
+                                "flex_direction": "column",
+                                "width": {
+                                    "unit": "%",
+                                    "size": "50",
+                                    "sizes": []
+                                }
+                            },
+                            "elements": [
+                                {
+                                    "id": "52982f9",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "title": "Left column",
+                                        "header_size": "h3",
+                                        "title_color": "#c0392b"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "heading"
+                                }
+                            ],
+                            "isInner": true
+                        },
+                        {
+                            "id": "3d3406f",
+                            "elType": "container",
+                            "settings": {
+                                "content_width": "full",
+                                "flex_direction": "column",
+                                "width": {
+                                    "unit": "%",
+                                    "size": "50",
+                                    "sizes": []
+                                }
+                            },
+                            "elements": [
+                                {
+                                    "id": "6cbe98a",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<p>Right column</p>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                },
+                                {
+                                    "id": "ccccccc",
+                                    "elType": "widget",
+                                    "widgetType": "counter",
+                                    "isInner": false,
+                                    "settings": {
+                                        "title": "New counter"
+                                    },
+                                    "elements": []
+                                }
+                            ],
+                            "isInner": true
+                        }
+                    ],
+                    "isInner": false
+                }
+            ],
+            "before_tree": [
+                {
+                    "id": "605cdc2",
+                    "elType": "container",
+                    "settings": {
+                        "content_width": "boxed",
+                        "flex_direction": "row",
+                        "flex_direction_mobile": "column",
+                        "flex_gap": {
+                            "unit": "px",
+                            "size": "24",
+                            "column": "24",
+                            "row": "24"
+                        }
+                    },
+                    "elements": [
+                        {
+                            "id": "c87900b",
+                            "elType": "container",
+                            "settings": {
+                                "content_width": "full",
+                                "flex_direction": "column",
+                                "width": {
+                                    "unit": "%",
+                                    "size": "50",
+                                    "sizes": []
+                                }
+                            },
+                            "elements": [
+                                {
+                                    "id": "52982f9",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "title": "Left column",
+                                        "header_size": "h3",
+                                        "title_color": "#c0392b"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "heading"
+                                }
+                            ],
+                            "isInner": true
+                        },
+                        {
+                            "id": "3d3406f",
+                            "elType": "container",
+                            "settings": {
+                                "content_width": "full",
+                                "flex_direction": "column",
+                                "width": {
+                                    "unit": "%",
+                                    "size": "50",
+                                    "sizes": []
+                                }
+                            },
+                            "elements": [
+                                {
+                                    "id": "6cbe98a",
+                                    "elType": "widget",
+                                    "settings": {
+                                        "editor": "<p>Right column</p>"
+                                    },
+                                    "elements": [],
+                                    "widgetType": "text-editor"
+                                },
+                                {
+                                    "id": "ccccccc",
+                                    "elType": "widget",
+                                    "widgetType": "counter",
+                                    "isInner": false,
+                                    "settings": {
+                                        "title": "Counter"
+                                    },
+                                    "elements": []
+                                }
+                            ],
+                            "isInner": true
+                        }
+                    ],
+                    "isInner": false
+                }
+            ],
+            "before_tree_sha256": "0c20f3170f177a37380077ae8abfe0fbd2c8d8507c0383aa0e9e2f389bf97119",
+            "results": [
+                {
+                    "op": {
+                        "op": "set_native",
+                        "ref": "ccccccc",
+                        "settings": {
+                            "title": "New counter"
+                        }
+                    },
+                    "result_node": {
+                        "id": "ccccccc",
+                        "elType": "widget",
+                        "widgetType": "counter",
+                        "isInner": false,
+                        "settings": {
+                            "title": "New counter"
+                        },
+                        "elements": []
+                    },
+                    "before_settings": {
+                        "title": "Counter"
+                    }
+                },
+                {
+                    "op": {
+                        "op": "set_shows_on",
+                        "rules": [
+                            "exclude/singular/page/42"
+                        ]
+                    }
+                }
+            ],
+            "digest_inputs": {
+                "before_tree_sha256": "0c20f3170f177a37380077ae8abfe0fbd2c8d8507c0383aa0e9e2f389bf97119",
+                "widgets": {
+                    "counter": "a0f10f7af3a845a5b7d2f8159aeb59a442cc90ef9dffd3386f6b892621b9a75c"
+                },
+                "active_breakpoints": [
+                    "mobile",
+                    "tablet"
+                ],
+                "builder_version": "3.35.9",
+                "media": []
+            },
+            "template": "footer",
+            "shows_on": {
+                "before": [
+                    "include/singular/category/7"
+                ],
+                "after": [
+                    "exclude/singular/page/42"
+                ]
+            },
+            "rule_titles": [
+                {
+                    "id": 42,
+                    "title": "About us"
+                }
+            ]
+        },
+        "tree_json": "[{\"id\":\"605cdc2\",\"elType\":\"container\",\"settings\":{\"content_width\":\"boxed\",\"flex_direction\":\"row\",\"flex_direction_mobile\":\"column\",\"flex_gap\":{\"unit\":\"px\",\"size\":\"24\",\"column\":\"24\",\"row\":\"24\"}},\"elements\":[{\"id\":\"c87900b\",\"elType\":\"container\",\"settings\":{\"content_width\":\"full\",\"flex_direction\":\"column\",\"width\":{\"unit\":\"%\",\"size\":\"50\",\"sizes\":[]}},\"elements\":[{\"id\":\"52982f9\",\"elType\":\"widget\",\"settings\":{\"title\":\"Left column\",\"header_size\":\"h3\",\"title_color\":\"#c0392b\"},\"elements\":[],\"widgetType\":\"heading\"}],\"isInner\":true},{\"id\":\"3d3406f\",\"elType\":\"container\",\"settings\":{\"content_width\":\"full\",\"flex_direction\":\"column\",\"width\":{\"unit\":\"%\",\"size\":\"50\",\"sizes\":[]}},\"elements\":[{\"id\":\"6cbe98a\",\"elType\":\"widget\",\"settings\":{\"editor\":\"<p>Right column<\\/p>\"},\"elements\":[],\"widgetType\":\"text-editor\"},{\"id\":\"ccccccc\",\"elType\":\"widget\",\"widgetType\":\"counter\",\"isInner\":false,\"settings\":{\"title\":\"New counter\"},\"elements\":[]}],\"isInner\":true}],\"isInner\":false}]",
+        "preview_digest": "35dc49b1c0267898d96989312ebd565e683d6117f03b9ba149cec232d0250549",
+        "precheck_digest": "ab4dac0d928a3733e4eea13f12f48dce69bd95f9c7127dd0fe1983f506f118aa"
+    }
+]

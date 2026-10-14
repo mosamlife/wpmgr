@@ -120,13 +120,13 @@ func templateSiteTitle(raw []byte) (string, bool) {
 
 func checkTemplateDisplayFacts(rules []string, rawTitles, rawLive []byte) ([]TemplateRuleTitle, []TemplateLive, bool) {
 	titles, ok := jsonArrayOf(rawTitles)
-	if !ok || len(titles) > 20 {
+	if !ok || len(titles) > len(rules) {
 		return nil, nil, false
 	}
 	targets := map[string]bool{}
 	for _, rule := range rules {
 		parts := strings.Split(rule, "/")
-		if len(parts) == 4 {
+		if len(parts) == 4 && parts[1] == "singular" && (parts[2] == "page" || parts[2] == "post") {
 			targets[parts[3]] = true
 		}
 	}

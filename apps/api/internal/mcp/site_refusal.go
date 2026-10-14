@@ -150,6 +150,10 @@ func ThemeTemplateRefusalMessage(code, detail, site string) string {
 		prefix += ": " + rule
 	}
 	switch code {
+	case "refused_published":
+		return "A person published this draft, scheduled it or made it private, so it cannot be undone. Change it in WordPress."
+	case "target_not_draft":
+		return "This target is no longer a draft, so it cannot be undone."
 	case "theme_builder_unavailable":
 		return "Headers and footers need Elementor Pro with its Theme Builder, and it isn't active on " + site + ". Nothing was changed."
 	case "shows_on_place_unavailable":
@@ -161,7 +165,7 @@ func ThemeTemplateRefusalMessage(code, detail, site string) string {
 			return "Elementor Pro changed its live display list for a draft. Nothing was kept."
 		}
 	case "verify_mismatch":
-		if strings.HasPrefix(detail, "shows_on differs; Elementor Pro stored:") || detail == "shows_on could not be verified" || detail == "the created draft is not what was built: shows_on" {
+		if strings.HasPrefix(detail, "shows_on differs; Elementor Pro reports:") || detail == "shows_on could not be read back through Elementor Pro" || strings.HasPrefix(detail, "shows_on differs; Elementor Pro stored:") || detail == "shows_on could not be verified" || detail == "the created draft is not what was built: shows_on" {
 			return "Elementor Pro stored different places than asked. Nothing was kept."
 		}
 	}

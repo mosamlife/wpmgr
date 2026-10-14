@@ -228,13 +228,42 @@ func cardFactsFor(r sqlc.AssistantAbilityRequest) json.RawMessage {
 // pageEditFor is page_edit: a page-edit request's stored card, or null when
 // the row is another ability's or holds no page-edit card.
 func pageEditFor(r sqlc.AssistantAbilityRequest) json.RawMessage {
-	if r.AbilityName != mcp.AbilityPageEdit {
+	if r.AbilityName != mcp.AbilityPageEdit || r.ContentClearedAt.Valid {
 		return json.RawMessage("null")
 	}
-	if _, ok := mcp.ReadPageEditCardFacts(r.CardFacts); !ok {
+	card, ok := mcp.ReadPageEditCardFacts(r.CardFacts)
+	if !ok {
 		return json.RawMessage("null")
 	}
-	return cardFactsJSON(r.CardFacts)
+	if card.Template == nil {
+		return cardFactsJSON(r.CardFacts)
+	}
+	code, detail := "", ""
+	if r.OutcomeCode != nil {
+		code = *r.OutcomeCode
+	}
+	if r.SiteReportedText != nil {
+		detail = *r.SiteReportedText
+	}
+	message := mcp.ThemeTemplateRefusalMessage(code, detail, r.SiteLabel)
+	if r.UndoState != nil && *r.UndoState == UndoRefusedPublished {
+		message = "A person published this " + card.Template.Type + ", scheduled it or made it private, so it cannot be undone. Change it in WordPress."
+	}
+	if message == "" {
+		return cardFactsJSON(r.CardFacts)
+	}
+	var top map[string]json.RawMessage
+	var template map[string]json.RawMessage
+	if json.Unmarshal(r.CardFacts, &top) != nil || json.Unmarshal(top["template"], &template) != nil {
+		return json.RawMessage("null")
+	}
+	template["refusal_message"], _ = json.Marshal(message)
+	top["template"], _ = json.Marshal(template)
+	out, err := json.Marshal(top)
+	if err != nil {
+		return json.RawMessage("null")
+	}
+	return out
 }
 
 // pageMediaFor is page_media: a page-create request's images from its

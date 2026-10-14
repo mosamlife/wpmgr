@@ -63,6 +63,15 @@ func verifyPageEditNativePrecheck(resp agentcmd.AbilityRunResponse, entrySum str
 	if !nativeStrictJSON(resp.Preview, &pv) || pv.PostID != f.postID || pv.Builder != pageBuilderElementor || pv.Format != elementorFormatClassic || !elementorVersionPattern.MatchString(pv.BuilderVersion) {
 		return fail()
 	}
+	template, ok := checkPageEditTemplate(pv.pageEditPreview, f)
+	if !ok {
+		return fail()
+	}
+	if template != nil {
+		if _, _, ok := pageEditTreeChanges(pv.Changes, f); !ok {
+			return fail()
+		}
+	}
 	before, ok1 := phpDecodeDocument(pv.BeforeTree, pageEditTreeMaxDepth, true)
 	tree, ok2 := phpDecodeDocument(pv.Tree, pageEditTreeMaxDepth, true)
 	if !ok1 || !ok2 || !nativeTreeShape(before) || !nativeTreeShape(tree) {
@@ -158,6 +167,11 @@ func verifyPageEditNativePrecheck(resp agentcmd.AbilityRunResponse, entrySum str
 		card.Native = nativeCard
 		var next any
 		switch op.Op {
+		case "set_shows_on":
+			if len(r.ResultNode) != 0 || len(r.BeforeSettings) != 0 || len(r.NewIDs) != 0 {
+				return fail()
+			}
+			continue
 		case "set_native", "add_native":
 			if nativeGet(digestInputs, "active_breakpoints") == nil {
 				return fail()
@@ -287,7 +301,7 @@ func verifyPageEditNativePrecheck(resp agentcmd.AbilityRunResponse, entrySum str
 	if !ok {
 		return fail()
 	}
-	digestBytes, ok := phpEncodeBytes(phpList{pageEditNativeDigestDomain, pv.Builder, pv.BuilderVersion, json.Number(strconv.FormatInt(pv.PostID, 10)), resp.BaseFingerprint, string(treeBytes), string(canonicalInputs)})
+	digestBytes, ok := phpEncodeBytes(templateEditDigestParts(phpList{pageEditNativeDigestDomain, pv.Builder, pv.BuilderVersion, json.Number(strconv.FormatInt(pv.PostID, 10)), resp.BaseFingerprint, string(treeBytes), string(canonicalInputs)}, template))
 	if !ok || sha256Hex(digestBytes) != resp.PreviewDigest {
 		return fail()
 	}
@@ -295,7 +309,7 @@ func verifyPageEditNativePrecheck(resp agentcmd.AbilityRunResponse, entrySum str
 	if !ok {
 		return fail()
 	}
-	return checkedPageEdit{precheckDigest: resp.PrecheckDigest, previewDigest: resp.PreviewDigest, baseFingerprint: resp.BaseFingerprint, postID: pv.PostID, title: pv.Title, builderVersion: pv.BuilderVersion, format: pv.Format, afterOutline: after, nativeChanges: cards}, true
+	return checkedPageEdit{precheckDigest: resp.PrecheckDigest, previewDigest: resp.PreviewDigest, baseFingerprint: resp.BaseFingerprint, postID: pv.PostID, title: pv.Title, builderVersion: pv.BuilderVersion, format: pv.Format, afterOutline: after, nativeChanges: cards, template: template}, true
 }
 
 func nativeStrictJSON(raw []byte, out any) bool {
@@ -329,6 +343,13 @@ func nativeRawEqual(raw []byte, want any) bool {
 // Parsed operation echoes use the agent's field order and PHP's empty-array encoding.
 func nativeParsedOperation(op pageEditOp) any {
 	o := phpObject{{"op", op.Op}}
+	if op.Op == "set_shows_on" {
+		rules := phpList{}
+		for _, rule := range op.Rules {
+			rules = append(rules, rule)
+		}
+		return append(o, phpPair{"rules", rules})
+	}
 	if op.Ref != "" {
 		o = append(o, phpPair{"ref", op.Ref})
 	}

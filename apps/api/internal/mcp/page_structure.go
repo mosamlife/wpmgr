@@ -141,6 +141,7 @@ var pageStructureOutputShape = obj(map[string]*outShape{
 	"post_id": intLeaf, "builder": tokenLeaf(pageStructureBuilderToken), "builder_version": leaf,
 	"format": tokenLeaf(pageStructureWordToken), "status": leaf, "editable": boolLeaf,
 	"open_state":           tokenLeaf(pageStructureOpenStateToken),
+	"template":             tokenLeaf(pageStructureClosedToken([]string{"header", "footer"})),
 	"element_cache_active": boolLeaf,
 	"base_fingerprint":     tokenLeaf(pageEditFingerprintPattern), "node_count": intLeaf, "truncated": boolLeaf,
 	"nodes": list(obj(map[string]*outShape{
