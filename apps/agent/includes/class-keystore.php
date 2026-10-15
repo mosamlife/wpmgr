@@ -41,7 +41,10 @@
  *
  * To stay deterministic (the keystore must decrypt what it earlier encrypted),
  * the chosen source is pinned in a wp-option marker the first time a key is
- * established, so later requests never silently switch sources.
+ * established, so later requests never silently switch sources. With no
+ * source pinned and keys already stored, the existing key probe() checks is
+ * kept and pinned whenever it opens any of them, so no new key takes its
+ * place.
  *
  * @package WPMgr\Agent
  */
@@ -295,15 +298,9 @@ final class Keystore implements EmailKeystoreInterface
                     : 'unknown';
             }
 
-            $stored = [];
-            foreach (self::PROBE_ITEMS as $name => $option) {
-                $value = get_option($option);
-                if (is_string($value) && $value !== '') {
-                    $stored[$name]           = $value;
-                    $result['items'][$name] = self::ITEM_OK;
-                } else {
-                    $result['items'][$name] = self::ITEM_ABSENT;
-                }
+            $stored = $this->storedEnvelopes();
+            foreach (array_keys(self::PROBE_ITEMS) as $name) {
+                $result['items'][$name] = isset($stored[$name]) ? self::ITEM_OK : self::ITEM_ABSENT;
             }
             if ($stored === []) {
                 return $result;
@@ -373,6 +370,47 @@ final class Keystore implements EmailKeystoreInterface
         $result['detail'] = $detail;
 
         return $result;
+    }
+
+    /**
+     * Every stored envelope probe() checks, by item name. An item that is
+     * missing or empty is not stored and is left out.
+     *
+     * @return array<string,string>
+     */
+    private function storedEnvelopes(): array
+    {
+        $stored = [];
+        foreach (self::PROBE_ITEMS as $name => $option) {
+            $value = get_option($option);
+            if (is_string($value) && $value !== '') {
+                $stored[$name] = $value;
+            }
+        }
+
+        return $stored;
+    }
+
+    /**
+     * Whether the key opens at least one of the stored envelopes. Recovered
+     * plaintext is wiped as soon as it has been checked.
+     *
+     * @param string               $key    32-byte key.
+     * @param array<string,string> $stored Stored envelopes by item name.
+     * @return bool
+     */
+    private function opensAny(string $key, array $stored): bool
+    {
+        foreach ($stored as $envelope) {
+            $parts     = $this->splitEnvelope($envelope);
+            $plaintext = $parts !== null ? $this->openParts($parts, $key) : null;
+            if ($plaintext !== null) {
+                SecureMemory::wipe($plaintext);
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -663,6 +701,12 @@ final class Keystore implements EmailKeystoreInterface
      * Establish the master key for this install, pinning the source on first
      * use and honouring an already-pinned source thereafter.
      *
+     * With no source pinned and keys already stored, the existing key probe()
+     * checks is kept and pinned whenever it opens any of them, before any step
+     * that can create a key, so no new key takes its place. Otherwise (nothing
+     * is stored, no key exists, or that key opens nothing stored) discovery
+     * runs in the order below.
+     *
      * @return string 32 raw bytes.
      * @throws \RuntimeException If the key cannot be established, or if a
      *                            previously-pinned source has become
@@ -682,7 +726,16 @@ final class Keystore implements EmailKeystoreInterface
             return $this->keyForPinnedSource($pinned, true);
         }
 
-        // First run (or unpinned legacy install): discover a source in order.
+        // No source is pinned but keys are already stored: keep the existing
+        // key probe() checks when it opens any of them, and pin it.
+        $inUse = $this->keyInUse();
+        if ($inUse !== null) {
+            $this->pinSource($inUse['marker']);
+            return $inUse['key'];
+        }
+
+        // First run, or that key opens nothing stored: discover a source in
+        // order.
 
         // 1. Explicit constant.
         $key = $this->keyFromConstant();
@@ -745,10 +798,8 @@ final class Keystore implements EmailKeystoreInterface
      * pinning or writing anything. Used by probe().
      *
      * With a pinned source it returns that source's key or throws the same
-     * message resolveMasterKey() would. Without one it looks, in discovery
-     * order, only at sources that already exist (the WPMGR_AGENT_KEY_FILE
-     * file, an existing key file, the salts, the database-stored key) and
-     * returns null when none does.
+     * message resolveMasterKey() would. Without one it returns the key
+     * findExistingKey() finds, or null when no key exists.
      *
      * @param array{source:string,path?:string}|null $pinned Pinned source marker.
      * @return string|null 32 raw bytes, or null when unpinned and nothing exists.
@@ -760,22 +811,71 @@ final class Keystore implements EmailKeystoreInterface
             return $this->keyForPinnedSource($pinned, false);
         }
 
+        $found = $this->findExistingKey();
+
+        return $found !== null ? $found['key'] : null;
+    }
+
+    /**
+     * The first key this install already has, with the marker that pins its
+     * source. Creates, pins and writes nothing.
+     *
+     * Looks, in discovery order, only at sources that already exist: the
+     * WPMGR_AGENT_KEY_FILE file, an existing key file, the salts, the
+     * database-stored key. probe() and resolveMasterKey() both find a key
+     * through this one method, so they agree on which key that is.
+     *
+     * @return array{key:string,marker:array{source:string,path?:string}}|null Null when no key exists.
+     */
+    private function findExistingKey(): ?array
+    {
         $key = $this->keyFromConstant(false);
         if ($key !== null) {
-            return $key;
+            return ['key' => $key, 'marker' => ['source' => 'constant']];
         }
         foreach ($this->existingKeyFilePaths() as $existing) {
             $key = $this->readKeyFile($existing);
             if ($key !== null) {
-                return $key;
+                return ['key' => $key, 'marker' => ['source' => 'file', 'path' => $existing]];
             }
         }
         $key = $this->keyFromSalts();
         if ($key !== null) {
-            return $key;
+            return ['key' => $key, 'marker' => ['source' => 'salts']];
+        }
+        $key = $this->readDatabaseKey();
+        if ($key !== null) {
+            return ['key' => $key, 'marker' => ['source' => 'db']];
         }
 
-        return $this->readDatabaseKey();
+        return null;
+    }
+
+    /**
+     * For an install with no pinned source, the key its stored items open
+     * under, with the marker that pins it: the key findExistingKey() finds,
+     * and only when it opens at least one stored item. Null when nothing is
+     * stored, no key exists, or that key opens nothing stored. Writes nothing.
+     *
+     * @return array{key:string,marker:array{source:string,path?:string}}|null
+     */
+    private function keyInUse(): ?array
+    {
+        $stored = $this->storedEnvelopes();
+        if ($stored === []) {
+            return null;
+        }
+
+        $found = $this->findExistingKey();
+        if ($found === null) {
+            return null;
+        }
+        if (!$this->opensAny($found['key'], $stored)) {
+            SecureMemory::wipe($found['key']);
+            return null;
+        }
+
+        return $found;
     }
 
     /**
