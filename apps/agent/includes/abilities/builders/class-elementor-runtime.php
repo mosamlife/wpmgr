@@ -348,6 +348,26 @@ final class ElementorRuntime implements ElementorApi
         }
     }
 
+    /** {@inheritDoc} */
+    public function widgetIsPro(string $type): bool
+    {
+        try {
+            if (!$this->proActive() || !defined('ELEMENTOR_PRO_PATH') || !is_string(ELEMENTOR_PRO_PATH) || ELEMENTOR_PRO_PATH === '') {
+                return false;
+            }
+            $widget = $this->call('widgets_manager', 'get_widget_types', [$type]);
+            if (!is_object($widget)) {
+                return false;
+            }
+            $file = (new \ReflectionClass($widget))->getFileName();
+            $root = @realpath(ELEMENTOR_PRO_PATH);
+            $source = is_string($file) ? @realpath($file) : false;
+            return is_string($root) && is_string($source) && str_starts_with($source, $root . DIRECTORY_SEPARATOR);
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
     /**
      * {@inheritDoc}
      */

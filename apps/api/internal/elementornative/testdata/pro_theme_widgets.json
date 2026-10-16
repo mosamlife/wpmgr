@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "pairs": [
+    "3.35.9+3.35.1",
+    "3.36.0+3.34.0"
+  ],
+  "shared_controls": {
+    "sample_text": {
+      "definitions": [
+        {
+          "type": "text",
+          "options": [],
+          "responsive": null,
+          "group": null,
+          "fields": [],
+          "versions": [
+            "3.35.9+3.35.1",
+            "3.36.0+3.34.0"
+          ]
+        }
+      ]
+    }
+  },
+  "widgets": [
+    {
+      "name": "theme-site-title",
+      "versions": [
+        "3.35.9+3.35.1",
+        "3.36.0+3.34.0"
+      ],
+      "shared_controls": [
+        {
+          "versions": [
+            "3.35.9+3.35.1",
+            "3.36.0+3.34.0"
+          ],
+          "controls": {
+            "sample_text": 0
+          }
+        }
+      ],
+      "controls_skipped": {
+        "3.35.9+3.35.1": [],
+        "3.36.0+3.34.0": []
+      },
+      "controls": [
+        {
+          "id": "sample_choice",
+          "versions": [
+            "3.35.9+3.35.1",
+            "3.36.0+3.34.0"
+          ],
+          "definitions": [
+            {
+              "type": "select",
+              "options": [
+                "first"
+              ],
+              "responsive": null,
+              "group": null,
+              "fields": [],
+              "versions": [
+                "3.35.9+3.35.1"
+              ]
+            },
+            {
+              "type": "select",
+              "options": [
+                "second"
+              ],
+              "responsive": null,
+              "group": null,
+              "fields": [],
+              "versions": [
+                "3.36.0+3.34.0"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

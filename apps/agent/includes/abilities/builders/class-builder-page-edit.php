@@ -275,6 +275,14 @@ final class BuilderPageEdit
             return self::refused(LayoutOps::CODE_UNREADABLE, 'the page\'s builder document could not be read');
         }
 
+        $template = null;
+        if ($stored['post']['post_type'] === 'elementor_library') {
+            $types = $stored['rows'][ElementorDocument::KEY_TEMPLATE_TYPE] ?? [];
+            if (count($types) === 1 && in_array($types[0], ThemeTemplateCreate::TYPES, true)) {
+                $template = $types[0];
+            }
+        }
+
         $templatePlan = ThemeTemplateEdit::plan($postId, $themeType, $input['operations'], $a->templates());
         if (isset($templatePlan['code'])) {
             return self::refused($templatePlan['code'], $templatePlan['detail']);
@@ -286,7 +294,7 @@ final class BuilderPageEdit
         }
 
         try {
-            $nodes = $a->project($tree)->nodes();
+            $nodes = $a->project($tree, $template)->nodes();
             $designed = NativeWidgetPolicy::designedProblem($tree, $input['operations'], $nodes);
             if ($designed !== null) {
                 return ['refusal' => self::fail($designed['code'], $designed['detail'], ['op_index' => $designed['op_index']])];
@@ -339,7 +347,7 @@ final class BuilderPageEdit
         }
 
         try {
-            $after = (($planned['has_native'] ?? false) ? $a->project($doc->tree) : ElementorClassicMapper::project($doc->tree))->toArray(BuilderContract::MAX_STRUCTURE_NODES);
+            $after = (($planned['has_native'] ?? false) ? $a->project($doc->tree, $template) : ElementorClassicMapper::project($doc->tree))->toArray(BuilderContract::MAX_STRUCTURE_NODES);
             $nativePreview = [];
             $digestInputs = null;
             if ($planned['has_native'] ?? false) {

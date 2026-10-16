@@ -1379,6 +1379,64 @@ final class BuilderPageEditTest extends TestCase
         return $this->write($input, $this->digest($input)($plan['base_fingerprint'], $plan['preview_digest']), $plan['preview_digest']);
     }
 
+    public function test_theme_pro_native_structure_plan_and_write_use_stored_template_type(): void
+    {
+        $names = ['theme-site-logo', 'theme-site-title', 'nav-menu', 'search-form'];
+        $this->api->proVersion = '3.35.1';
+        $this->api->proWidgets = $names;
+        foreach ($names as $name) {
+            $this->api->widgetTypes[] = $name;
+            $this->api->widgetCatalogue[] = ['name' => $name, 'atomic' => false, 'pro' => true];
+            $this->api->widgetControls[$name] = ['title' => ['type' => 'text']];
+        }
+        foreach (['header', 'footer'] as $template) {
+            foreach ($names as $name) {
+                $tree = self::page();
+                $tree[0]['elements'][0]['elements'][] = ['id' => 'ccccccc', 'elType' => 'widget', 'settings' => ['title' => 'Stored'], 'elements' => [], 'widgetType' => $name];
+                $this->storePage($tree);
+                $this->templateTarget($template);
+                $read = BuilderPageStructure::run((object) ['post_id' => self::TARGET], [self::TARGET], $this->seam()['elementor']);
+                $this->assertArrayHasKey('output', $read, json_encode($read));
+                $nodes = array_column($read['output']['nodes'], null, 'ref');
+                $this->assertSame('native', $nodes['ccccccc']['kind']);
+                foreach ([
+                    ['op' => 'set_native', 'ref' => 'ccccccc', 'settings' => ['title' => 'New']],
+                    ['op' => 'add_native', 'into' => self::RIGHT, 'widget' => $name, 'settings' => ['title' => 'New']],
+                    ['op' => 'duplicate', 'ref' => 'ccccccc', 'into' => self::RIGHT],
+                ] as $op) {
+                    $input = $this->input([$op], $read['output']['base_fingerprint']);
+                    $plan = $this->plan($input);
+                    $this->assertArrayNotHasKey('refusal', $plan, json_encode($plan['refusal'] ?? null));
+                    $after = array_column($plan['preview']['after_outline']['nodes'], null, 'ref');
+                    $this->assertSame('native', $after['ccccccc']['kind']);
+                }
+            }
+        }
+        $result = $this->templateWrite([['op' => 'set_native', 'ref' => 'ccccccc', 'settings' => ['title' => 'Saved']]]);
+        $this->assertTrue($result['ok'] ?? false, json_encode($result));
+        $this->assertStringContainsString('Saved', $this->rowsOf(ElementorDocument::KEY_DATA)[0]);
+    }
+
+    public function test_theme_pro_adapter_refuses_missing_ambiguous_or_non_template_metadata(): void
+    {
+        $this->api->pro = true;
+        $this->api->proVersion = '3.35.1';
+        $this->api->proWidgets = ['theme-site-logo'];
+        $this->api->widgetTypes[] = 'theme-site-logo';
+        $this->api->widgetCatalogue[] = ['name' => 'theme-site-logo', 'atomic' => false, 'pro' => true];
+        $this->api->widgetControls['theme-site-logo'] = ['title' => ['type' => 'text']];
+        $ops = [['op' => 'add_native', 'into' => self::RIGHT, 'widget' => 'theme-site-logo', 'settings' => ['title' => 'New']]];
+        foreach ([['page', ['header']], ['elementor_library', []], ['elementor_library', ['section']], ['elementor_library', ['header', 'header']], ['elementor_library', ['header', 'footer']]] as [$postType, $types]) {
+            $this->rows->update($this->rows->posts, ['post_type' => $postType], ['ID' => self::TARGET]);
+            $this->rows->delete($this->rows->postmeta, ['post_id' => self::TARGET, 'meta_key' => ElementorDocument::KEY_TEMPLATE_TYPE]);
+            foreach ($types as $type) {
+                $this->rows->insert($this->rows->postmeta, ['post_id' => self::TARGET, 'meta_key' => ElementorDocument::KEY_TEMPLATE_TYPE, 'meta_value' => $type]);
+            }
+            $result = $this->seam()['elementor']->planEdit(self::TARGET, $ops, new IdSeed(self::EDIT), []);
+            $this->assertSame('widget_not_usable', $result['code'] ?? null, json_encode([$postType, $types, $result]));
+        }
+    }
+
     public function test_template_edit_precheck_content_only_preserves_rules_and_digest_binds_places(): void
     {
         $this->templateTarget('header', ['include/singular/page/81']);

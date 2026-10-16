@@ -262,9 +262,9 @@ final class ElementorAdapter implements BuilderAdapter
     /**
      * {@inheritDoc}
      */
-    public function project(array $tree): Projection
+    public function project(array $tree, ?string $templateType = null): Projection
     {
-        return ElementorClassicMapper::project($tree, new NativeWidgetPolicy($this->api));
+        return ElementorClassicMapper::project($tree, new NativeWidgetPolicy($this->api, $templateType));
     }
 
     /**
@@ -285,7 +285,7 @@ final class ElementorAdapter implements BuilderAdapter
             return ['code' => LayoutOps::CODE_UNREADABLE, 'detail' => 'not a post', 'op_index' => null];
         }
         try {
-            $stored = BuilderDocumentFingerprint::read($postId, [ElementorDocument::KEY_DATA]);
+            $stored = BuilderDocumentFingerprint::read($postId, [ElementorDocument::KEY_DATA, ElementorDocument::KEY_TEMPLATE_TYPE]);
         } catch (\Throwable $e) {
             return ['code' => LayoutOps::CODE_UNREADABLE, 'detail' => 'the page could not be read', 'op_index' => null];
         }
@@ -314,7 +314,14 @@ final class ElementorAdapter implements BuilderAdapter
             }
             $compiler = new ElementorSectionCompiler($tokens, is_array($active) ? array_values($active) : null, $mediaById);
         }
-        $native = new NativeWidgetPolicy($this->api);
+        $template = null;
+        if (($stored['post']['post_type'] ?? null) === 'elementor_library') {
+            $types = $stored['rows'][ElementorDocument::KEY_TEMPLATE_TYPE] ?? [];
+            if (count($types) === 1 && in_array($types[0], ThemeTemplateCreate::TYPES, true)) {
+                $template = $types[0];
+            }
+        }
+        $native = new NativeWidgetPolicy($this->api, $template);
         $nativeCall = NativeWidgetPolicy::isNativeCall($ops, ElementorClassicMapper::project($tree, $native)->nodes());
         $planned = LayoutOps::apply($tree, $ops, $ids, $mediaById, ($this->facts()['containers'] ?? null) === true, $compiler, $nativeCall ? $native : null, $active);
         if (!isset($planned['tree'], $planned['changes'], $planned['touched'], $planned['new_count'])) {
