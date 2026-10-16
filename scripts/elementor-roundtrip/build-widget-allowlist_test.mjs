@@ -276,6 +276,113 @@ try {
       assert.equal(run().status, 0);
     }
   });
+  const proNames = ['theme-site-logo', 'theme-site-title', 'nav-menu', 'search-form'];
+  const proFiles = [path.join(tmp, 'pro-first.json'), path.join(tmp, 'pro-second.json')];
+  const proOutput = path.join(tmp, 'pro.json');
+  const proDocs = [
+    { ...dump('3.35.9', proNames.map((name, i) => widget(name, [control('sample_text'),
+      ...(i === 0 ? [control('sample_choice', 'select', { options: ['first'] })] : [])]))), elementor_pro_version: '3.35.1' },
+    { ...dump('3.36.0', proNames.map((name, i) => widget(name, [control('sample_text'),
+      ...(i === 0 ? [control('sample_choice', 'select', { options: ['second'] })] : [])]))), elementor_pro_version: '3.34.0' },
+  ];
+  const writePro = () => proFiles.forEach((file, i) => fs.writeFileSync(file, JSON.stringify(proDocs[i])));
+  const runPro = (inputs = proFiles, target = proOutput) => spawnSync(path.join(here, 'build-widget-allowlist.sh'),
+    ['--pro', ...inputs, '--out', target], { encoding: 'utf8' });
+  writePro();
+  test('Pro builds deterministically with pair tokens throughout', () => {
+    const result = runPro();
+    assert.equal(result.status, 0, result.stderr);
+    const first = fs.readFileSync(proOutput, 'utf8');
+    assert.equal(runPro([...proFiles].reverse()).status, 0);
+    assert.equal(fs.readFileSync(proOutput, 'utf8'), first);
+    const data = JSON.parse(first);
+    assert.equal(data.schema_version, 1);
+    assert.deepEqual(data.pairs, ['3.35.9+3.35.1', '3.36.0+3.34.0']);
+    assert.ok(!Object.hasOwn(data, 'elementor_versions'));
+    assert.deepEqual(data.widgets.map(w => w.name), [...proNames].sort());
+    const own = data.widgets.find(w => w.name === 'theme-site-logo').controls[0];
+    assert.equal(own.id, 'sample_choice');
+    assert.deepEqual(own.versions, data.pairs);
+    assert.deepEqual(own.definitions.map(d => d.options[0]).sort(), ['first', 'second']);
+    const checkVersions = value => {
+      if (!value || typeof value !== 'object') return;
+      if (Object.hasOwn(value, 'versions')) assert.ok(value.versions.every(v => data.pairs.includes(v)));
+      for (const child of Object.values(value)) checkVersions(child);
+    };
+    checkVersions(data);
+    for (const entry of data.widgets) {
+      assert.deepEqual(entry.versions, data.pairs);
+      assert.deepEqual(Object.keys(entry.controls_skipped), data.pairs);
+      for (const binding of entry.shared_controls) {
+        for (const [id, index] of Object.entries(binding.controls)) {
+          assert.ok(binding.versions.every(v => data.shared_controls[id].definitions[index].versions.includes(v)));
+        }
+      }
+    }
+  });
+  test('Pro accepts a single dump', () => {
+    const result = runPro(proFiles.slice(0, 1));
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(fs.readFileSync(proOutput, 'utf8')).pairs, ['3.35.9+3.35.1']);
+  });
+  test('Pro defaults to its own file in an isolated project', () => {
+    const project = path.join(tmp, 'isolated');
+    const scriptDir = path.join(project, 'scripts', 'elementor-roundtrip');
+    fs.mkdirSync(scriptDir, { recursive: true });
+    const script = path.join(scriptDir, 'build-widget-allowlist.mjs');
+    fs.copyFileSync(path.join(here, 'build-widget-allowlist.mjs'), script);
+    const result = spawnSync(process.execPath, [script, '--pro', proFiles[0]], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    const target = path.join(project, 'apps', 'api', 'internal', 'elementornative');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(target, 'pro_theme_widgets.json'), 'utf8')).pairs,
+      ['3.35.9+3.35.1']);
+    assert.ok(!fs.existsSync(path.join(target, 'core_widgets.json')));
+    assert.deepEqual(fs.readdirSync(target), ['pro_theme_widgets.json']);
+  });
+  test('Pro refuses missing dumps and malformed output flags', () => {
+    for (const args of [['--pro'], ['--pro', '--out', proOutput], ['--pro', proFiles[0], '--out']]) {
+      const result = spawnSync(path.join(here, 'build-widget-allowlist.sh'), args, { encoding: 'utf8' });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /usage:/);
+    }
+  });
+  function rejectPro(name, edit, pattern) {
+    test(name, () => {
+      const before = fs.existsSync(proOutput) ? fs.readFileSync(proOutput, 'utf8') : null;
+      try {
+        const doc = structuredClone(proDocs[0]);
+        edit(doc);
+        fs.writeFileSync(proFiles[0], JSON.stringify(doc));
+        const result = runPro();
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, pattern);
+        assert.equal(fs.existsSync(proOutput) ? fs.readFileSync(proOutput, 'utf8') : null, before);
+      } finally { writePro(); }
+    });
+  }
+  rejectPro('Pro refuses an extra excluded widget', doc => doc.widgets.push(widget('html')), /exactly.*theme widgets/);
+  rejectPro('Pro refuses a missing widget', doc => doc.widgets.pop(), /exactly.*theme widgets/);
+  rejectPro('Pro refuses an unknown widget', doc => { doc.widgets[0].name = 'unknown'; }, /exactly.*theme widgets/);
+  rejectPro('Pro requires its version', doc => { delete doc.elementor_pro_version; }, /elementor_pro_version/);
+  rejectPro('Pro refuses malformed versions', doc => { doc.elementor_version = '3.35'; }, /version/);
+  rejectPro('Pro refuses malformed Pro versions', doc => { doc.elementor_pro_version = '3.35.1-beta'; }, /version/);
+  rejectPro('Pro refuses duplicate pairs', doc => {
+    doc.elementor_version = proDocs[1].elementor_version;
+    doc.elementor_pro_version = proDocs[1].elementor_pro_version;
+  }, /duplicate pair/);
+  rejectPro('Pro obeys the output size limit', doc => {
+    doc.widgets[0].controls.push(control('large', 'select', { options: ['é'.repeat(600_000)] }));
+  }, /size=\d+ bytes.*exceeds/);
+  test('core output and check-dump mode remain unchanged after Pro builds', () => {
+    const before = fs.readFileSync(output, 'utf8');
+    const result = run();
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(output, 'utf8'), before);
+    const checked = spawnSync(path.join(here, 'build-widget-allowlist.sh'),
+      ['--check-dump', files[0], versions[0]], { encoding: 'utf8' });
+    assert.equal(checked.status, 0, checked.stderr);
+    assert.match(checked.stdout, /validated widget dump/);
+  });
   console.log(`widget-allowlist_test: ${passed} passed, ${failed} failed`);
   if (failed) process.exitCode = 1;
 } catch (error) {

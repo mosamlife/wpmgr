@@ -4,6 +4,9 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const defaultOutput = path.resolve(here, '../../apps/api/internal/elementornative/core_widgets.json');
+const defaultProOutput = path.resolve(here, '../../apps/api/internal/elementornative/pro_theme_widgets.json');
+const proThemeWidgets = ['theme-site-logo', 'theme-site-title', 'nav-menu', 'search-form'];
+const versionToken = value => typeof value === 'string' && /^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$/.test(value);
 const maxOutputBytes = 1024 * 1024;
 const start = 'rt: WIDGETS_JSON_START';
 const end = 'rt: WIDGETS_JSON_END';
@@ -58,7 +61,7 @@ function skippedControls(list, at) {
     return { id: entry.id, reason: entry.reason };
   }).sort((a, b) => a.id.localeCompare(b.id, 'en'));
 }
-function parseDump(file) {
+function parseDump(file, pro = false) {
   const raw = fs.readFileSync(file, 'utf8');
   const lines = raw.split(/\r?\n/);
   const starts = lines.flatMap((line, i) => line === start ? [i] : []);
@@ -71,6 +74,13 @@ function parseDump(file) {
   const data = JSON.parse(json);
   demand(object(data) && data.schema_version === 2 && typeof data.elementor_version === 'string', `${file}: invalid dump header (requires eligible-widget dump schema 2)`);
   demand(Array.isArray(data.widgets) && data.widgets.length > 0, `${file}: dump has no widgets`);
+  if (pro) {
+    demand(versionToken(data.elementor_version), `${file}: invalid elementor_version`);
+    demand(versionToken(data.elementor_pro_version), `${file}: invalid or missing elementor_pro_version`);
+    demand(data.widgets.length === proThemeWidgets.length
+      && proThemeWidgets.every(name => data.widgets.some(widget => object(widget) && widget.name === name)),
+    `${file}: Pro dumps must contain exactly the supported theme widgets`);
+  }
   const seen = new Set();
   data.widgets = data.widgets.map(widget => {
     demand(object(widget) && token(widget.name) && typeof widget.title === 'string' && widget.title !== '', `${file}: invalid widget`);
@@ -94,6 +104,12 @@ function versionOrder(a, b) {
   }
   return 0;
 }
+function pairOrder(a, b) {
+  const [leftElementor, leftPro] = a.split('+');
+  const [rightElementor, rightPro] = b.split('+');
+  return versionOrder(leftElementor, rightElementor) || versionOrder(leftPro, rightPro)
+    || (a < b ? -1 : a > b ? 1 : 0);
+}
 function sharedBindings(references) {
   const groups = new Map();
   for (const [id, variants] of references) {
@@ -108,7 +124,8 @@ function sharedBindings(references) {
     controls: Object.fromEntries([...group.controls].sort(([a], [b]) => a.localeCompare(b, 'en'))),
   }));
 }
-function build(dumps) {
+function build(dumps, pro = false) {
+  const order = pro ? pairOrder : versionOrder;
   const pool = new Map();
   for (const dump of dumps) {
     for (const widget of dump.widgets) {
@@ -130,7 +147,7 @@ function build(dumps) {
     if (!repeated.length) continue;
     sharedIndexes.set(id, new Map(repeated.map(([key], index) => [key, index])));
     shared.push([id, { definitions: repeated.map(([, variant]) => ({
-      ...variant.definition, versions: [...variant.versions].sort(versionOrder),
+      ...variant.definition, versions: [...variant.versions].sort(order),
     })) }]);
   }
   const widgets = new Map();
@@ -163,7 +180,8 @@ function build(dumps) {
       }
     }
   }
-  return { schema_version: 2, elementor_versions: dumps.map(d => d.elementor_version), shared_controls: Object.fromEntries(shared),
+  return { ...(pro ? { schema_version: 1, pairs: dumps.map(d => d.elementor_version) }
+    : { schema_version: 2, elementor_versions: dumps.map(d => d.elementor_version) }), shared_controls: Object.fromEntries(shared),
     widgets: [...widgets.values()].sort((a, b) => a.name.localeCompare(b.name, 'en')).map(widget => ({
       name: widget.name, versions: widget.versions,
       shared_controls: sharedBindings(widget.shared_controls),
@@ -185,15 +203,33 @@ try {
     demand(data.elementor_version === args[2], 'widget dump version does not match the boot');
     console.log(`widget-allowlist: validated widget dump for ${data.elementor_version}`);
   } else {
-    demand(args.length === 3 || args.length === 4, 'usage: build-widget-allowlist.sh <dump1> <dump2> <dump3> [output.json]');
-    const output = path.resolve(args[3] || defaultOutput);
-    demand(!args.slice(0, 3).some(file => path.resolve(file) === output), 'output must differ from the inputs');
-    const pinned = fs.readFileSync(path.join(here, 'pins.txt'), 'utf8').split(/\r?\n/)
-      .filter(line => /^elementor\s/.test(line)).map(line => line.trim().split(/\s+/)[1]).sort(versionOrder);
-    demand(pinned.length === 3 && new Set(pinned).size === pinned.length, 'expected distinct Elementor pins');
-    const dumps = args.slice(0, 3).map(parseDump).sort((a, b) => versionOrder(a.elementor_version, b.elementor_version));
-    demand(JSON.stringify(dumps.map(d => d.elementor_version)) === JSON.stringify(pinned), 'dumps must cover each pinned Elementor version exactly once');
-    const data = build(dumps);
+    const pro = args[0] === '--pro';
+    let output, dumps;
+    if (pro) {
+      const inputs = args.slice(1);
+      const outIndex = inputs.indexOf('--out');
+      demand(outIndex === -1 || (outIndex === inputs.length - 2 && inputs[outIndex + 1] !== ''),
+        'usage: --pro <dump>... [--out <file>]');
+      output = path.resolve(outIndex === -1 ? defaultProOutput : inputs[outIndex + 1]);
+      const files = outIndex === -1 ? inputs : inputs.slice(0, outIndex);
+      demand(files.length > 0 && files.every(file => !file.startsWith('--')), 'usage: --pro <dump>... [--out <file>]');
+      demand(!files.some(file => path.resolve(file) === output), 'output must differ from the inputs');
+      dumps = files.map(file => {
+        const dump = parseDump(file, true);
+        return { ...dump, elementor_version: `${dump.elementor_version}+${dump.elementor_pro_version}` };
+      }).sort((a, b) => pairOrder(a.elementor_version, b.elementor_version));
+      demand(new Set(dumps.map(dump => dump.elementor_version)).size === dumps.length, 'duplicate pair');
+    } else {
+      demand(args.length === 3 || args.length === 4, 'usage: build-widget-allowlist.sh <dump1> <dump2> <dump3> [output.json]');
+      output = path.resolve(args[3] || defaultOutput);
+      demand(!args.slice(0, 3).some(file => path.resolve(file) === output), 'output must differ from the inputs');
+      const pinned = fs.readFileSync(path.join(here, 'pins.txt'), 'utf8').split(/\r?\n/)
+        .filter(line => /^elementor\s/.test(line)).map(line => line.trim().split(/\s+/)[1]).sort(versionOrder);
+      demand(pinned.length === 3 && new Set(pinned).size === pinned.length, 'expected distinct Elementor pins');
+      dumps = args.slice(0, 3).map(file => parseDump(file)).sort((a, b) => versionOrder(a.elementor_version, b.elementor_version));
+      demand(JSON.stringify(dumps.map(d => d.elementor_version)) === JSON.stringify(pinned), 'dumps must cover each pinned Elementor version exactly once');
+    }
+    const data = build(dumps, pro);
     const json = JSON.stringify(data) + '\n';
     const size = Buffer.byteLength(json, 'utf8');
     demand(size <= maxOutputBytes, `size=${size} bytes exceeds ${maxOutputBytes} byte output limit`);
