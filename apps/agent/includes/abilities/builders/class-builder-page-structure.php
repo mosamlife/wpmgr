@@ -247,7 +247,7 @@ final class BuilderPageStructure
             return self::refusal(LayoutOps::CODE_UNREADABLE, 'the page\'s builder document could not be read');
         }
         try {
-            $projection = $a->project($tree);
+            $projection = $a instanceof ElementorAdapter ? $a->project($tree, $template) : $a->project($tree);
             $baseFp     = BuilderDocumentFingerprint::compute($post, $stored['rows'], $keys);
         } catch (\Throwable $e) {
             return self::refusal(LayoutOps::CODE_UNREADABLE, 'the page\'s builder document could not be read');

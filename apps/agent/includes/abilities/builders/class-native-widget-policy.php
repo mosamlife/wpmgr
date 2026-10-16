@@ -10,11 +10,16 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-/** Live core classic eligibility and compact schemas for one native edit plan. */
+/** Live classic widget eligibility and compact schemas for one native edit plan. */
 final class NativeWidgetPolicy
 {
-    public function __construct(private ElementorApi $api)
+    public const THEME_PRO_WIDGETS = ['theme-site-logo', 'theme-site-title', 'nav-menu', 'search-form'];
+
+    public function __construct(private ElementorApi $api, private ?string $templateType = null)
     {
+        if ($templateType !== null && !in_array($templateType, ThemeTemplateCreate::TYPES, true)) {
+            throw new \InvalidArgumentException('unsupported template type');
+        }
     }
 
     /** Explicit native operations, native targets and removals/replacements covering native nodes use the native contract. */
@@ -68,7 +73,14 @@ final class NativeWidgetPolicy
     {
         if (preg_match('/^[a-z][a-z0-9_-]{0,63}$/D', $type) !== 1 || str_starts_with($type, 'e-')
             || str_starts_with($type, 'nested-') || self::denied($type, LeafPolicy::DENIED_TYPES, LeafPolicy::DENIED_TYPE_PREFIXES)
-            || !$this->api->widgetTypeExists($type) || !$this->api->widgetIsCore($type)) {
+            || !$this->api->widgetTypeExists($type)) {
+            return false;
+        }
+        $core = $this->api->widgetIsCore($type);
+        $pro = $this->templateType !== null && in_array($type, self::THEME_PRO_WIDGETS, true)
+            && $this->api->proActive() && preg_match('/^[0-9]+\.[0-9]+\.[0-9]+$/D', $this->api->proVersion() ?? '') === 1
+            && $this->api->widgetIsPro($type);
+        if (!$core && !$pro) {
             return false;
         }
         $matches = [];
@@ -77,7 +89,8 @@ final class NativeWidgetPolicy
                 $matches[] = $row;
             }
         }
-        return count($matches) === 1 && ($matches[0]['atomic'] ?? null) === false && ($matches[0]['pro'] ?? null) === false;
+        return count($matches) === 1 && ($matches[0]['atomic'] ?? null) === false
+            && (($core && ($matches[0]['pro'] ?? null) === false) || ($pro && ($matches[0]['pro'] ?? null) === true));
     }
 
     /**

@@ -69,12 +69,12 @@ final class NativePageEditTest extends TestCase
         return PageEditValidator::parse(json_encode(['post_id' => 41, 'base_fingerprint' => str_repeat('a', 64), 'operations' => $ops]));
     }
 
-    private function apply(array $ops, ?array $tree = null, array $media = []): array
+    private function apply(array $ops, ?array $tree = null, array $media = [], ?string $templateType = null): array
     {
         $parsed = self::parse($ops);
         $this->assertArrayHasKey('input', $parsed, json_encode($parsed));
         $tree = $tree ?? self::tree();
-        $policy = new NativeWidgetPolicy($this->api);
+        $policy = new NativeWidgetPolicy($this->api, $templateType);
         $rule = PageEditValidator::againstPage($parsed['input'], ElementorClassicMapper::project($tree, $policy)->nodes(), ['operations' => BuilderContract::OPS]);
         if ($rule !== null) {
             return $rule;
@@ -106,6 +106,119 @@ final class NativePageEditTest extends TestCase
             $r = $this->apply([['op' => 'add_native', 'into' => '2222222', 'widget' => $type, 'settings' => ['title' => 'Map']]]);
             $this->assertSame($case['eligible'], isset($r['tree']), json_encode($r));
         }
+    }
+
+    public function test_theme_pro_widgets_require_active_pro_and_template_draft(): void
+    {
+        $names = ['theme-site-logo', 'theme-site-title', 'nav-menu', 'search-form'];
+        $this->api->pro = true;
+        $this->api->proVersion = '3.35.1';
+        $this->api->proWidgets = array_merge($names, ['form', 'posts']);
+        foreach ($this->api->proWidgets as $name) {
+            $this->api->widgetTypes[] = $name;
+            $this->api->widgetCatalogue[] = ['name' => $name, 'atomic' => false, 'pro' => true];
+            $this->api->widgetControls[$name] = ['title' => ['type' => 'text']];
+        }
+        $ready = clone $this->api;
+        foreach (['header', 'footer', null] as $template) {
+            foreach ($names as $name) {
+                $this->assertThemeNativeOperations($name, $template, $template !== null);
+            }
+        }
+        foreach (['inactive', 'version_missing', 'version_short', 'version_suffix', 'version_newline', 'not_owned', 'not_registered', 'duplicate_row', 'atomic', 'not_pro', 'missing_row', 'missing_flags'] as $case) {
+            foreach ($names as $name) {
+                $this->api = clone $ready;
+                switch ($case) {
+                    case 'inactive': $this->api->pro = false; break;
+                    case 'version_missing': $this->api->proVersion = null; break;
+                    case 'version_short': $this->api->proVersion = '3.35'; break;
+                    case 'version_suffix': $this->api->proVersion = '3.35.1-beta'; break;
+                    case 'version_newline': $this->api->proVersion = "3.35.1\n"; break;
+                    case 'not_owned': $this->api->proWidgets = []; break;
+                    case 'not_registered': $this->api->widgetTypes = []; break;
+                    default:
+                        $rows = array_values(array_filter($this->api->widgetCatalogue, static fn ($row) => $row['name'] !== $name));
+                        if ($case !== 'missing_row') {
+                            $rows[] = $case === 'missing_flags' ? ['name' => $name] : ['name' => $name, 'atomic' => $case === 'atomic', 'pro' => $case !== 'not_pro'];
+                        }
+                        if ($case === 'duplicate_row') {
+                            $rows[] = ['name' => $name, 'atomic' => false, 'pro' => true];
+                        }
+                        $this->api->widgetCatalogue = $rows;
+                }
+                $this->assertThemeNativeOperations($name, 'header', false, $case);
+            }
+        }
+        $this->api = $ready;
+        foreach (['form', 'posts'] as $name) {
+            $this->assertThemeNativeOperations($name, 'header', false);
+        }
+        $this->expectException(\InvalidArgumentException::class);
+        new NativeWidgetPolicy($this->api, 'section');
+    }
+
+    public function test_theme_pro_widgets_keep_native_guards_and_discovery_policy(): void
+    {
+        $name = 'theme-site-logo';
+        $this->api->pro = true;
+        $this->api->proVersion = '3.35.1';
+        $this->api->proWidgets = [$name];
+        $this->api->widgetTypes[] = $name;
+        $this->api->widgetCatalogue = [['name' => $name, 'title' => 'Logo', 'categories' => ['theme'], 'atomic' => false, 'pro' => true]];
+        $this->api->widgetControls[$name] = ['title' => ['type' => 'text'], 'code' => ['type' => 'code']];
+        $discovery = new \WPMgr\Agent\Abilities\Builders\ElementorWidgetDiscovery($this->api);
+        $this->assertFalse($discovery->catalogue((object) [])['output']['widgets'][0]['usable']);
+        $tree = self::tree();
+        $tree[0]['elements'][0] = self::widget($name);
+        $set = ['op' => 'set_native', 'ref' => 'aaaaaaa', 'settings' => ['title' => 'New']];
+        $duplicate = ['op' => 'duplicate', 'ref' => 'aaaaaaa', 'into' => '2222222'];
+        $add = ['op' => 'add_native', 'into' => '2222222', 'widget' => $name, 'settings' => ['title' => 'New']];
+        foreach (['custom_css', '_element_id', '__dynamic__', '__globals__', 'code'] as $key) {
+            foreach ([$set, $add] as $op) {
+                $op['settings'] = [$key => 'value'];
+                $result = $this->apply([$op], $tree, [], 'header');
+                $this->assertSame('native_settings_invalid', $result['code'] ?? null, $key);
+            }
+        }
+        foreach (['__dynamic__', '__globals__'] as $key) {
+            $bound = $tree;
+            $bound[0]['elements'][0]['settings'][$key] = ['title' => 'bound/title'];
+            foreach ([$set, $duplicate] as $op) {
+                $this->assertArrayNotHasKey('tree', $this->apply([$op], $bound, [], 'header'));
+            }
+        }
+        foreach (['isInner' => true, 'elements' => [self::widget($name, [], 'ddddddd')]] as $key => $value) {
+            $nonleaf = $tree;
+            $nonleaf[0]['elements'][0][$key] = $value;
+            $this->assertSame('native_node_shape', $this->apply([$set], $nonleaf, [], 'header')['code'] ?? null);
+        }
+        $designed = $tree;
+        $designed[0]['elements'][0]['settings'][LeafPolicy::LABEL_KEY] = LeafPolicy::LABEL_PREFIX . 'Logo';
+        foreach ([$set, $duplicate] as $op) {
+            $this->assertSame('native_designed_node', $this->apply([$op], $designed, [], 'header')['code'] ?? null);
+        }
+        $designed = $tree;
+        $designed[1]['settings'][LeafPolicy::LABEL_KEY] = LeafPolicy::SECTION_LABEL;
+        $this->assertSame('native_designed_node', $this->apply([$add], $designed, [], 'header')['code'] ?? null);
+        $tree[1]['settings']['flex_direction'] = 'row';
+        $this->assertArrayNotHasKey('tree', $this->apply([$add], $tree, [], 'header'));
+    }
+
+    private function assertThemeNativeOperations(string $name, ?string $template, bool $eligible, string $case = ''): void
+    {
+        $tree = self::tree();
+        $tree[0]['elements'][0] = self::widget($name);
+        $label = $name . ' ' . ($template ?? 'page') . ' ' . $case;
+        foreach ([
+            ['op' => 'add_native', 'into' => '2222222', 'widget' => $name, 'settings' => ['title' => 'New']],
+            ['op' => 'set_native', 'ref' => 'aaaaaaa', 'settings' => ['title' => 'New']],
+            ['op' => 'duplicate', 'ref' => 'aaaaaaa', 'into' => '2222222'],
+        ] as $op) {
+            $result = $this->apply([$op], $tree, [], $template);
+            $this->assertSame($eligible, isset($result['tree']), $label . ' ' . $op['op'] . ' ' . json_encode($result));
+        }
+        $nodes = ElementorClassicMapper::project([self::widget($name)], new NativeWidgetPolicy($this->api, $template))->nodes();
+        $this->assertSame($eligible ? 'native' : 'locked', $nodes[0]['kind'], $label);
     }
 
     public function test_phase2_nested_widget_is_ineligible(): void

@@ -113,6 +113,9 @@ interface ElementorApi
     /** Whether the registered widget class is shipped in Elementor's core widget directory. */
     public function widgetIsCore(string $type): bool;
 
+    /** Whether Pro is active and the registered widget class is shipped inside its plugin directory. */
+    public function widgetIsPro(string $type): bool;
+
     /**
      * The live widget registry, with metadata from each widget object.
      * Pro is determined by the ElementorPro namespace; atomic by the prop

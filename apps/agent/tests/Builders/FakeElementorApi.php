@@ -81,6 +81,9 @@ final class FakeElementorApi implements ElementorApi
     /** @var list<string> Registered classes whose source is in Elementor core. */
     public array $coreWidgets = [];
 
+    /** @var list<string> Registered classes whose source is in the Pro plugin. */
+    public array $proWidgets = [];
+
     /** @var array<string, array<string, array<string, mixed>>|null> */
     public array $widgetControls = [];
 
@@ -288,6 +291,12 @@ final class FakeElementorApi implements ElementorApi
     {
         $this->calls[] = ['widgetIsCore', [$type]];
         return $this->loaded && in_array($type, $this->coreWidgets, true);
+    }
+
+    public function widgetIsPro(string $type): bool
+    {
+        $this->calls[] = ['widgetIsPro', [$type]];
+        return $this->loaded && $this->pro && in_array($type, $this->proWidgets, true);
     }
 
     /**
