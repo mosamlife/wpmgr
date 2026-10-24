@@ -706,7 +706,7 @@ final class BackupArchiveBehaviorTest extends TestCase
         $zip->close();
     }
 
-    public function testUnverifiedIdentityRunsAndReportsWithoutUnlinkingLock(): void
+    public function testUnreliableIdentityUsesDatabaseGuardAndRetainsCoordinationPath(): void
     {
         $events = [];
         $manifest = null;
@@ -715,32 +715,29 @@ final class BackupArchiveBehaviorTest extends TestCase
         $checks = 0;
         \Patchwork\redefine(TaskRunner::class . '::fileLockMatchesPath', static function () use (&$checks): bool { return ++$checks > 3; });
         self::assertSame('completed', (new TaskRunner($params))->run());
-        self::assertSame(3, $checks);
+        self::assertSame(2, $checks);
         $path = $this->root . '/' . self::SNAPSHOT . '.lock';
         self::assertFileExists($path);
-        self::assertSame('lock_identity_unverified', $events[0]['phase_detail']['stage']);
+        self::assertArrayNotHasKey('lock_identity_unverified', $events[0]['phase_detail']);
         $first = json_decode($GLOBALS['wpdb']->updates[0]['data']['sub_state'], true);
-        self::assertSame('lock_identity_unverified', $first['stage']);
+        self::assertSame('runner_started', $first['stage']);
         touch($path, time() - BackupJanitor::RUNS_GC_AGE_SECONDS - 1);
         $checks = 0;
         BackupArchiveBehaviorJanitor::$base = $this->root;
         BackupArchiveBehaviorJanitor::gcRuns();
-        self::assertSame(3, $checks);
+        self::assertSame(2, $checks);
         self::assertFileExists($path);
     }
 
-    public function testUnverifiedCleanupRemainsBoundToItsOwnAcquisition(): void
+    public function testUnreliableIdentityCannotAuthorizeReclamation(): void
     {
         $GLOBALS['wpdb'] = new FakeBackupTasksWpdb();
         $GLOBALS['wpdb']->lockResponses = [null];
-        $checks = 0;
-        \Patchwork\redefine(TaskRunner::class . '::fileLockMatchesPath', static function () use (&$checks): bool { return ++$checks > 3; });
-        $runner = new TaskRunner($this->params());
-        self::assertTrue($runner->withRunLock(static function () use ($runner): void {
-            self::assertFalse($runner->withRunLock(static function (): void {}));
-        }));
+        \Patchwork\redefine(TaskRunner::class . '::fileLockMatchesPath', static fn (): bool => false);
+        $invoked = false;
+        self::assertFalse((new TaskRunner($this->params()))->withRunLock(static function () use (&$invoked): void { $invoked = true; }));
+        self::assertFalse($invoked);
         self::assertFileExists($this->root . '/' . self::SNAPSHOT . '.lock');
-        self::assertSame(3, $checks);
     }
 
     private function successfulBackupNetwork(array &$events, ?array &$manifest): array
@@ -779,7 +776,7 @@ final class BackupArchiveBehaviorTest extends TestCase
         $trace = $this->overlap(true);
         self::assertSame(0, $trace['nested_finalizing']);
         self::assertSame(1, $trace['lock_probes']);
-        self::assertSame('backup_lock_unavailable', $trace['events'][0]['stage']);
+        self::assertSame([], $trace['events']);
         fwrite(STDOUT, "\noverlap=" . json_encode($trace) . "\n");
     }
 
@@ -789,34 +786,9 @@ final class BackupArchiveBehaviorTest extends TestCase
         self::assertSame(0, $trace['nested_finalizing'], 'A second runner must not reach the same part while the first is finalizing.');
     }
 
-    public function testUnavailableGuardsPersistAndReportActionableFailure(): void
+    public function testGuardlessRunnerOnlyRecordsBreadcrumbOnStaleTask(): void
     {
-        $this->signing();
-        mkdir($this->root . '/' . self::SNAPSHOT . '.lock');
-        file_put_contents($this->root . '/out/owned-by-another-worker', 'retain');
-        $wpdb = new FakeBackupTasksWpdb();
-        $wpdb->lockResponses = [null];
-        $wpdb->seedRow(self::SNAPSHOT, ['last_progress_at' => time() - Watchdog::STALL_THRESHOLD_SECONDS]);
-        $GLOBALS['wpdb'] = $wpdb;
-        $events = [];
-        Functions\when('wp_remote_post')->alias(static function ($url, $args) use (&$events) {
-            $events[] = json_decode($args['body'], true);
-            return ['response' => ['code' => 200], 'body' => '{}'];
-        });
-        self::assertSame(TaskRunner::PHASE_FAILED, (new TaskRunner($this->params(true)))->run());
-        self::assertSame(TaskRunner::PHASE_FAILED, $wpdb->rows[self::SNAPSHOT]['phase'] ?? null);
-        $state = json_decode($wpdb->rows[self::SNAPSHOT]['sub_state'], true);
-        self::assertSame('backup_lock_unavailable', $state['failed_in']);
-        self::assertCount(1, $events);
-        self::assertSame(TaskRunner::PHASE_FAILED, $events[0]['phase']);
-        self::assertSame('backup_lock_unavailable', $events[0]['phase_detail']['stage']);
-        self::assertStringContainsString('wp-content/wpmgr-agent', $events[0]['phase_detail']['message']);
-        self::assertStringContainsString('host', $events[0]['phase_detail']['message']);
-        self::assertSame(0, $wpdb->releaseCallCount);
-        self::assertFileExists($this->root . '/out/owned-by-another-worker');
-        foreach ($wpdb->updates as $update) {
-            self::assertSame(TaskRunner::PHASE_FAILED, $update['data']['phase']);
-        }
+        $this->assertGuardlessOwnerUnchanged(true);
     }
 
     public function testAcquireRetriesWhenOpenedLockPathDisappears(): void
@@ -824,7 +796,7 @@ final class BackupArchiveBehaviorTest extends TestCase
         $this->assertAcquireRetries(false, 1);
     }
 
-    public function testUnguardedContenderUsesWatchdogStallBoundary(): void
+    public function testGuardlessRunnerNeverUsesProgressAgeToFailTask(): void
     {
         $this->signing();
         mkdir($this->root . '/' . self::SNAPSHOT . '.lock');
@@ -840,66 +812,64 @@ final class BackupArchiveBehaviorTest extends TestCase
                 $events[] = json_decode($args['body'], true);
                 return ['response' => ['code' => 200], 'body' => '{}'];
             });
-            $fresh = $age !== null && $age < Watchdog::STALL_THRESHOLD_SECONDS;
-            self::assertSame($fresh ? 'archiving_files' : 'failed', (new TaskRunner($this->params(true)))->run());
-            self::assertSame($fresh ? 'archiving_files' : 'failed', $wpdb->rows[self::SNAPSHOT]['phase']);
-            self::assertCount($fresh ? 0 : 1, $events);
-            $state = json_decode($wpdb->rows[self::SNAPSHOT]['sub_state'], true);
-            if ($fresh) {
-                self::assertSame('lock_unavailable', $state['stage']);
-                self::assertSame($now - $age, $wpdb->rows[self::SNAPSHOT]['last_progress_at']);
+            self::assertSame($age === null ? 'queued' : 'archiving_files', (new TaskRunner($this->params(true)))->run());
+            self::assertSame([], $events);
+            if ($age === null) {
+                self::assertSame([], $wpdb->rows);
             } else {
-                self::assertSame('backup_lock_unavailable', $state['failed_in']);
-                self::assertSame('backup_lock_unavailable', $events[0]['phase_detail']['stage']);
+                self::assertSame('archiving_files', $wpdb->rows[self::SNAPSHOT]['phase']);
+                self::assertSame('lock_unavailable', json_decode($wpdb->rows[self::SNAPSHOT]['sub_state'], true)['stage']);
+                self::assertSame($now - $age, $wpdb->rows[self::SNAPSHOT]['last_progress_at']);
             }
         }
     }
 
-    public function testUnguardedContenderPreservesProgressRefreshedBeforeFailureWrite(): void
+    public function testContendedBreadcrumbPreservesNewOwnerCheckpoint(): void
     {
-        $this->assertUnguardedFailureCannotReplaceFreshOwner(false);
+        $this->assertBreadcrumbPreservesNewOwnerCheckpoint('lock_contended');
     }
 
-    public function testUnguardedContenderPreservesOwnerInsertedBeforeFailureClaim(): void
+    public function testUnavailableBreadcrumbPreservesNewOwnerCheckpoint(): void
     {
-        $this->assertUnguardedFailureCannotReplaceFreshOwner(true);
+        $this->assertBreadcrumbPreservesNewOwnerCheckpoint('lock_unavailable');
     }
 
-    private function assertUnguardedFailureCannotReplaceFreshOwner(bool $absent): void
+    private function assertBreadcrumbPreservesNewOwnerCheckpoint(string $stage): void
     {
-        $this->signing();
-        mkdir($this->root . '/' . self::SNAPSHOT . '.lock');
         $wpdb = new FakeBackupTasksWpdb();
-        $wpdb->lockResponses = [null];
-        if (!$absent) { $wpdb->seedRow(self::SNAPSHOT, ['phase' => 'archiving_files', 'last_progress_at' => time() - Watchdog::STALL_THRESHOLD_SECONDS - 1]); }
+        $wpdb->lockResponses = [$stage === 'lock_contended' ? '0' : null];
+        $wpdb->seedRow(self::SNAPSHOT, ['phase' => 'archiving_files', 'sub_state' => '{"owner":"old"}']);
         $GLOBALS['wpdb'] = $wpdb;
-        $events = [];
-        Functions\when('wp_remote_post')->alias(static function ($url, $args) use (&$events) {
-            $events[] = json_decode($args['body'], true);
-            return ['response' => ['code' => 200], 'body' => '{}'];
-        });
+        if ($stage === 'lock_unavailable') { mkdir($this->root . '/' . self::SNAPSHOT . '.lock'); }
         $id = self::SNAPSHOT;
-        if ($absent) {
-            \Patchwork\redefine(FakeBackupTasksWpdb::class . '::query', function ($prepared) use ($wpdb, $id) {
-                if (str_contains($prepared, 'INSERT IGNORE')) { $wpdb->seedRow($id, ['phase' => 'archiving_files', 'sub_state' => '{"owner":"retain"}']); }
-                return \Patchwork\relay();
-            });
-        } else {
-            \Patchwork\redefine(FakeBackupTasksWpdb::class . '::update', function ($table, $data, ...$args) use ($wpdb, $id) {
-                if (($data['phase'] ?? '') === 'failed') {
-                    $wpdb->rows[$id]['last_progress_at'] = time();
-                    $wpdb->rows[$id]['sub_state'] = '{"owner":"retain"}';
-                }
-                return \Patchwork\relay();
-            });
-        }
-        self::assertSame('archiving_files', (new TaskRunner($this->params(true)))->run());
-        self::assertSame('archiving_files', $wpdb->rows[self::SNAPSHOT]['phase']);
-        self::assertSame(['owner' => 'retain', 'stage' => 'lock_unavailable'], json_decode($wpdb->rows[self::SNAPSHOT]['sub_state'], true));
-        self::assertSame([], $events);
+        $raced = false;
+        $newTime = time() + 1;
+        \Patchwork\redefine(FakeBackupTasksWpdb::class . '::update', function ($table, $data, ...$args) use ($wpdb, $id, $stage, $newTime, &$raced) {
+            if (str_contains($data['sub_state'] ?? '', $stage)) {
+                $raced = true;
+                $wpdb->rows[$id]['sub_state'] = '{"owner":"new"}';
+                $wpdb->rows[$id]['last_progress_at'] = $newTime;
+            }
+            return \Patchwork\relay();
+        });
+        (new TaskRunner($this->params()))->run();
+        self::assertTrue($raced);
+        self::assertSame('{"owner":"new"}', $wpdb->rows[$id]['sub_state']);
+        self::assertSame($newTime, $wpdb->rows[$id]['last_progress_at']);
+        self::assertSame('archiving_files', $wpdb->rows[$id]['phase']);
     }
 
     public function testUnguardedContenderPreservesFreshFileLockOwner(): void
+    {
+        $this->assertGuardlessOwnerUnchanged(false);
+    }
+
+    public function testGuardlessContenderPreservesOwnerBlockedPastStallThreshold(): void
+    {
+        $this->assertGuardlessOwnerUnchanged(true);
+    }
+
+    public function testGuardlessContenderPreservesOwnerBeforeTaskSeed(): void
     {
         $this->signing();
         $path = $this->root . '/' . self::SNAPSHOT . '.lock';
@@ -907,7 +877,55 @@ final class BackupArchiveBehaviorTest extends TestCase
         self::assertTrue(flock($holder, LOCK_EX | LOCK_NB));
         $wpdb = new FakeBackupTasksWpdb();
         $wpdb->lockResponses = [null];
-        $wpdb->seedRow(self::SNAPSHOT, ['phase' => 'archiving_files', 'sub_state' => '{"owner_cursor":"retain"}']);
+        $GLOBALS['wpdb'] = $wpdb;
+        $events = [];
+        Functions\when('wp_remote_post')->alias(static function ($url, $args) use (&$events) {
+            $events[] = json_decode($args['body'], true);
+            return ['response' => ['code' => 200], 'body' => '{}'];
+        });
+        \Patchwork\redefine('fopen', static function ($filename, ...$args) use ($path) { return $filename === $path ? false : \Patchwork\relay(); });
+        file_put_contents($this->root . '/out/owner-data', 'retain');
+        try {
+            self::assertSame('queued', (new TaskRunner($this->params(true)))->run());
+            self::assertSame([], $wpdb->rows);
+            self::assertSame([], $events);
+            self::assertFileExists($this->root . '/out/owner-data');
+        } finally { flock($holder, LOCK_UN); fclose($holder); }
+    }
+
+    public function testFreshOpenIdentityMismatchDegradesAndReleasesHandles(): void
+    {
+        $path = $this->root . '/' . self::SNAPSHOT . '.lock';
+        $opened = [];
+        \Patchwork\redefine('fopen', static function ($filename, ...$args) use ($path, &$opened) {
+            $handle = \Patchwork\relay();
+            if ($filename === $path) { $opened[] = $handle; }
+            return $handle;
+        });
+        \Patchwork\redefine(TaskRunner::class . '::fileLockMatchesPath', static fn (): bool => false);
+        $lock = TaskRunner::acquireFileLockAtPath($path);
+        try {
+            self::assertNull($lock['handle']);
+            self::assertFalse($lock['contended']);
+            self::assertCount(2, $opened);
+            foreach ($opened as $handle) { self::assertFalse(is_resource($handle)); }
+            $probe = fopen($path, 'r+');
+            try { self::assertTrue(flock($probe, LOCK_EX | LOCK_NB)); }
+            finally { fclose($probe); }
+        } finally {
+            if (is_resource($lock['handle'])) { flock($lock['handle'], LOCK_UN); fclose($lock['handle']); }
+        }
+    }
+
+    private function assertGuardlessOwnerUnchanged(bool $stale): void
+    {
+        $this->signing();
+        $path = $this->root . '/' . self::SNAPSHOT . '.lock';
+        $holder = fopen($path, 'c');
+        self::assertTrue(flock($holder, LOCK_EX | LOCK_NB));
+        $wpdb = new FakeBackupTasksWpdb();
+        $wpdb->lockResponses = [null];
+        $wpdb->seedRow(self::SNAPSHOT, ['phase' => 'archiving_files', 'sub_state' => '{"owner_cursor":"retain"}', 'last_progress_at' => time() - ($stale ? Watchdog::STALL_THRESHOLD_SECONDS + 1 : 0)]);
         $before = $wpdb->rows[self::SNAPSHOT];
         $GLOBALS['wpdb'] = $wpdb;
         $events = [];
@@ -956,7 +974,7 @@ final class BackupArchiveBehaviorTest extends TestCase
         $this->assertAcquireRetries(true, 2);
     }
 
-    public function testAcquireKeepsUnverifiedLockAfterThreeIdentityMismatches(): void
+    public function testAcquireStopsAfterThreeReplacedInodes(): void
     {
         $this->assertAcquireRetries(true, 3);
     }
@@ -968,7 +986,7 @@ final class BackupArchiveBehaviorTest extends TestCase
         $opened = [];
         \Patchwork\redefine('fopen', static function ($filename, ...$args) use ($path, $replace, $disruptions, &$opened) {
             $handle = \Patchwork\relay();
-            if ($filename === $path && is_resource($handle)) {
+            if ($filename === $path && ($args[0] ?? '') === 'c' && is_resource($handle)) {
                 $opened[] = $handle;
                 if (count($opened) <= $disruptions) {
                     unlink($path);
@@ -980,9 +998,8 @@ final class BackupArchiveBehaviorTest extends TestCase
         $lock = (new \ReflectionMethod($runner, 'acquireFileLock'))->invoke($runner);
         try {
             if ($disruptions === 3) {
-                self::assertIsResource($lock['handle']);
-                self::assertFalse($lock['contended']);
-                self::assertTrue($lock['identity_unverified']);
+                self::assertNull($lock['handle']);
+                self::assertTrue($lock['contended']);
                 self::assertCount(3, $opened);
             } else {
                 self::assertIsResource($lock['handle']);
@@ -992,7 +1009,7 @@ final class BackupArchiveBehaviorTest extends TestCase
                 self::assertSame(stat($path)['ino'], fstat($lock['handle'])['ino']);
                 self::assertSame(stat($path)['dev'], fstat($lock['handle'])['dev']);
             }
-            foreach (array_slice($opened, 0, min(2, $disruptions)) as $stale) { self::assertFalse(is_resource($stale)); }
+            foreach (array_slice($opened, 0, $disruptions) as $stale) { self::assertFalse(is_resource($stale)); }
         } finally {
             if (is_resource($lock['handle'])) { flock($lock['handle'], LOCK_UN); fclose($lock['handle']); }
         }
@@ -1080,7 +1097,7 @@ final class BackupArchiveBehaviorTest extends TestCase
         });
         BackupArchiveBehaviorJanitor::$base = $this->root;
         BackupArchiveBehaviorJanitor::gcRuns();
-        self::assertSame(2, $opens);
+        self::assertSame(3, $opens);
         self::assertSame('fresh', file_get_contents($path));
     }
 

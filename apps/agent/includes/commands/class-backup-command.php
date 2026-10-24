@@ -221,6 +221,21 @@ final class BackupCommand implements CommandInterface
             return $this->refuse('age recipient mismatch');
         }
 
+        // Check guard support before claiming work or persisting any task row.
+        $contentPath = defined('WP_CONTENT_DIR') ? (string) WP_CONTENT_DIR : '';
+        $guardProbe = new TaskRunner([
+            'snapshot_id' => $snapshotId,
+            'kind' => $kind,
+            'wp_content_path' => $contentPath,
+            'scratch_dir' => $contentPath !== '' ? rtrim($contentPath, '/\\') . '/wpmgr-agent/runs/' . $snapshotId : '',
+        ]);
+        if (!$guardProbe->probeLockAvailability()) {
+            if ($this->mayHaveInFlightWork($snapshotId)) {
+                return $this->refuse('Backup not started: this snapshot may already have a runner in flight.', 'runner_in_flight');
+            }
+            return $this->refuse('This host offers neither a database lock nor a working file lock in wp-content/wpmgr-agent. The backup cannot run safely. Ask your host to enable database locks or make that directory writable.', 'backup_lock_unavailable');
+        }
+
         // --- 1.5. Backup-readiness preflight (ADR-037 Sprint 1, 1B) -------
         //
         // Cheap defense-in-depth gate ahead of scratch creation + dedup claim.
@@ -452,6 +467,26 @@ final class BackupCommand implements CommandInterface
             $claimedAt = time();
         }
         return $inserted !== false;
+    }
+
+    /** Read-only veto for a redelivery whose owner may still hold an inaccessible guard. */
+    private function mayHaveInFlightWork(string $snapshotId): bool
+    {
+        global $wpdb;
+        if (!is_object($wpdb)) { return true; }
+        try {
+            $tasks = $wpdb->prefix . Schema::BACKUP_TASKS_TABLE;
+            $task = $wpdb->get_row($wpdb->prepare("SELECT phase FROM {$tasks} WHERE snapshot_id = %s", $snapshotId), ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- read-only lookup on the plugin-owned snapshot key
+            if (!empty($wpdb->last_error)) { return true; }
+            if (is_array($task)) {
+                return !in_array((string) ($task['phase'] ?? ''), [TaskRunner::PHASE_COMPLETED, TaskRunner::PHASE_FAILED], true);
+            }
+            $runs = $wpdb->prefix . Schema::BACKUP_RUNS_TABLE;
+            $claim = $wpdb->get_row($wpdb->prepare("SELECT pid, started_at FROM {$runs} WHERE snapshot_id = %s", $snapshotId)); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- a claim may precede its owner's task seed
+            return is_object($claim) || !empty($wpdb->last_error);
+        } catch (\Throwable $_) {
+            return true;
+        }
     }
 
     private function releaseDedup(string $snapshotId): void

@@ -138,10 +138,6 @@ final class TaskRunner
 
     private bool $timingReported = false;
 
-    private bool $lockIdentityUnverified = false;
-
-    private bool $lockIdentityReported = false;
-
     private int $skippedSourcesCount = 0;
 
     /** @var list<string> Relative paths omitted from the snapshot. */
@@ -237,9 +233,8 @@ final class TaskRunner
      * even be attempted (path unresolvable, or the filesystem/permissions
      * prevent opening the lock file — e.g. an exotic FS without flock()
      * support), a held GET_LOCK permits the run to proceed. If neither
-     * guard is held, a fresh active task receives only a lock_unavailable
-     * breadcrumb. An absent or watchdog-stalled task fails with
-     * backup_lock_unavailable without entering a phase or reclaiming files.
+     * guard is held, an existing active task receives only a lock_unavailable
+     * breadcrumb. The invocation never seeds, advances, fails or reclaims work.
      *
      * @return string Terminal phase reached this invocation. One of
      *                PHASE_COMPLETED, PHASE_FAILED, or — if a future phase
@@ -251,8 +246,6 @@ final class TaskRunner
     {
         $this->workerStartedAt = time();
         $this->timingReported = false;
-        $this->lockIdentityUnverified = false;
-        $this->lockIdentityReported = false;
         @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, PHPCompatibility.FunctionUse.ArgumentFunctionsReportCurrentValue.NeedsInspection, Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup loop must not hit max_execution_time; @-guarded, no-op when disabled
         @ignore_user_abort(true);
 
@@ -315,8 +308,6 @@ final class TaskRunner
         }
         /** @var resource|null $fileLockHandle */
         $fileLockHandle = $fileLock['handle'];
-        $identityUnverified = !empty($fileLock['identity_unverified']);
-        $this->lockIdentityUnverified = $identityUnverified;
         if (!$lockHeld && $fileLockHandle === null) {
             return $this->handleUnavailableGuards();
         }
@@ -364,8 +355,7 @@ final class TaskRunner
             //   phase past 'queued'                      => advanced
             // A task without either guard returns before this breadcrumb.
             if ($lockHeld || $fileLockHandle !== null) {
-                $subState['stage'] = $this->lockIdentityUnverified ? 'lock_identity_unverified' : 'runner_started';
-                if ($this->lockIdentityUnverified) { $subState['lock_identity_unverified'] = true; }
+                $subState['stage'] = 'runner_started';
                 $this->saveTaskState($currentPhase, $subState);
             }
 
@@ -513,7 +503,7 @@ final class TaskRunner
                 // Only the terminal owner removes its own path, while its
                 // flock is still held. Losers never reclaim a lock file.
                 try {
-                    if ($terminal) { $this->cleanupFileLock($fileLockHandle, $identityUnverified); }
+                    if ($terminal) { $this->cleanupFileLock($fileLockHandle); }
                 } finally {
                     $this->releaseFileLock($fileLockHandle);
                 }
@@ -565,7 +555,6 @@ final class TaskRunner
 
         /** @var resource $fileLockHandle */
         $fileLockHandle = $fileLock['handle'];
-        $identityUnverified = !empty($fileLock['identity_unverified']);
 
         try {
             $callback();
@@ -575,13 +564,33 @@ final class TaskRunner
             }
             // Reclaim the owner's path while its flock is still held.
             try {
-                $this->cleanupFileLock($fileLockHandle, $identityUnverified);
+                $this->cleanupFileLock($fileLockHandle);
             } finally {
                 $this->releaseFileLock($fileLockHandle);
             }
         }
 
         return true;
+    }
+
+    /** Probe guard support without claiming work or removing a coordination path. */
+    public function probeLockAvailability(): bool
+    {
+        $probeName = 'wpmgr_bk_probe_' . $this->snapshotId();
+        $token = $this->getLock($probeName);
+        $databaseAvailable = $token === '1' || $token === '0';
+        $handle = null;
+        try {
+            $file = $this->acquireFileLock();
+            $handle = $file['handle'];
+            // Contention proves the guard works; existing owners remain protected.
+            return $databaseAvailable || $handle !== null || $file['contended'];
+        } catch (\Throwable $_) {
+            return $databaseAvailable;
+        } finally {
+            if ($handle !== null) { $this->releaseFileLock($handle); }
+            if ($token === '1') { $this->releaseLock($probeName); }
+        }
     }
 
     /**
@@ -617,7 +626,7 @@ final class TaskRunner
      *                      failed — either way, run() still attempts the
      *                      authoritative flock() guard next.
      */
-    private function getLock(): ?string
+    private function getLock(?string $name = null): ?string
     {
         global $wpdb;
         if (!is_object($wpdb)) {
@@ -625,7 +634,7 @@ final class TaskRunner
         }
         /** @var \wpdb $wpdb */
         try {
-            $result = $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $this->lockName())); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- advisory run-lock probe; anti-double-fire correctness read, not a cacheable value
+            $result = $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $name ?? $this->lockName())); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- advisory run-lock probe; anti-double-fire correctness read, not a cacheable value
         } catch (\Throwable $e) {
             return null;
         }
@@ -637,7 +646,7 @@ final class TaskRunner
      * releases the lock automatically when this session's connection closes,
      * so a failed RELEASE_LOCK() here is never fatal.
      */
-    private function releaseLock(): void
+    private function releaseLock(?string $name = null): void
     {
         global $wpdb;
         if (!is_object($wpdb)) {
@@ -645,7 +654,7 @@ final class TaskRunner
         }
         /** @var \wpdb $wpdb */
         try {
-            $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $this->lockName())); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- advisory run-lock release; no core helper exists
+            $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $name ?? $this->lockName())); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- advisory run-lock release; no core helper exists
         } catch (\Throwable $e) {
             // Swallow — MySQL releases the lock automatically on connection close.
         }
@@ -715,7 +724,7 @@ final class TaskRunner
      *     without flock() support). run() requires a held database guard
      *     in this case; reclamation requires a held file guard.
      *
-     * @return array{handle:resource|null,contended:bool,identity_unverified?:bool}
+     * @return array{handle:resource|null,contended:bool}
      */
     private function acquireFileLock(): array
     {
@@ -734,11 +743,11 @@ final class TaskRunner
 
     /**
      * Acquire an inode-checked, non-blocking file lock. A pathname change
-     * retries acquisition. Repeated flock success with unverifiable identity
-     * permits a held-lock fallback whose pathname must never be unlinked.
+     * retries acquisition when a fresh handle verifies the pathname's identity.
+     * An identity mismatch on the fresh handle makes the file guard unavailable.
      * Existing-only acquisition never creates a janitor candidate.
      *
-     * @return array{handle:resource|null,contended:bool,identity_unverified?:bool}
+     * @return array{handle:resource|null,contended:bool}
      */
     public static function acquireFileLockAtPath(string $path, bool $create = true): array
     {
@@ -755,11 +764,15 @@ final class TaskRunner
                 if ($create) { @chmod($path, 0600); } // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- private coordination file permissions
                 return ['handle' => $handle, 'contended' => false];
             }
-            if ($attempt === 2) {
-                return ['handle' => $handle, 'contended' => false, 'identity_unverified' => true];
+            $fresh = @fopen($path, 'r+'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- diagnose identity using an existing pathname without creating it
+            $reliable = true;
+            if ($fresh !== false) {
+                try { $reliable = self::fileLockMatchesPath($fresh, $path); }
+                finally { fclose($fresh); } // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- close the diagnostic handle
             }
             flock($handle, LOCK_UN);
             fclose($handle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- release a stale inode before retrying
+            if (!$reliable) { return ['handle' => null, 'contended' => false]; }
         }
         return ['handle' => null, 'contended' => true];
     }
@@ -800,75 +813,33 @@ final class TaskRunner
      * held. A different inode belongs to another owner and is retained.
      *
      * @param resource $handle This invocation's held file lock.
-     * @param bool $identityUnverified Whether this acquisition used the identity fallback.
      */
-    private function cleanupFileLock($handle, bool $identityUnverified): void
+    private function cleanupFileLock($handle): void
     {
         $path = $this->fileLockPath();
-        if (!$identityUnverified && $path !== '' && self::fileLockMatchesPath($handle, $path)) {
+        if ($path !== '' && self::fileLockMatchesPath($handle, $path)) {
             wp_delete_file($path);
         }
     }
 
-    /**
-     * Without a held guard, fresh active tasks receive only a breadcrumb.
-     * Failure claims require an absent row or unchanged watchdog-stalled
-     * progress. Terminal tasks retain their existing outcome.
-     */
+    /** A guardless runner may record a breadcrumb, but cannot advance or fail work. */
     private function handleUnavailableGuards(): string
     {
-        global $wpdb;
-        $phase = self::PHASE_QUEUED;
-        if (!is_object($wpdb)) { return $phase; }
-        $message = 'This host offers neither a database lock nor a working file lock in wp-content/wpmgr-agent. The backup cannot run safely. Ask your host to enable database locks or make that directory writable.';
-        $state = ['last_error' => $message, 'failed_in' => 'backup_lock_unavailable'];
         try {
             $task = $this->loadTask();
-            $claimed = false;
-            if ($task === null) {
-                $claimed = $this->seedTask(self::PHASE_FAILED, $state);
-                if (!$claimed) { $task = $this->loadTask(); }
-                if (!$claimed && $task === null) { return $phase; }
+            $phase = (string) ($task['phase'] ?? self::PHASE_QUEUED);
+            if ($task !== null && $phase !== self::PHASE_COMPLETED && $phase !== self::PHASE_FAILED) {
+                $this->recordLockContended('lock_unavailable');
             }
-            if (!$claimed) {
-                $phase = (string) $task['phase'];
-                if ($phase === self::PHASE_COMPLETED || $phase === self::PHASE_FAILED) { return $phase; }
-                // Match Watchdog::resumeIfStalled()'s progress-age rule.
-                if (time() - $task['last_progress_at'] < Watchdog::STALL_THRESHOLD_SECONDS) {
-                    $this->recordLockContended('lock_unavailable');
-                    return $phase;
-                }
-                $updated = $wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- atomic failure claim conditioned on the observed task phase and progress
-                    $this->tableName(),
-                    ['phase' => self::PHASE_FAILED, 'sub_state' => self::encodeSubState($state), 'last_progress_at' => time()],
-                    ['snapshot_id' => $this->snapshotId(), 'phase' => $phase, 'last_progress_at' => $task['last_progress_at']],
-                    ['%s', '%s', '%d'],
-                    ['%s', '%s', '%d']
-                );
-                if ($updated !== 1) {
-                    $task = $this->loadTask();
-                    $phase = (string) ($task['phase'] ?? self::PHASE_QUEUED);
-                    if ($task !== null && $phase !== self::PHASE_COMPLETED && $phase !== self::PHASE_FAILED) {
-                        $this->recordLockContended('lock_unavailable');
-                    }
-                    return $phase;
-                }
-            }
-        } catch (\Throwable $_) {
-            // Unreadable task storage cannot establish that an owner is absent.
             return $phase;
-        }
-        try {
-            $this->postProgress(self::PHASE_FAILED, ['stage' => 'backup_lock_unavailable', 'message' => $message]);
         } catch (\Throwable $_) {
-            // The terminal task remains persisted when progress delivery fails.
+            return self::PHASE_QUEUED;
         }
-        return self::PHASE_FAILED;
     }
 
     /**
      * Record a lock breadcrumb without changing phase or progress time.
-     * Unavailable-guard breadcrumbs compare the raw cursor before writing.
+     * Every breadcrumb compares the raw cursor before writing.
      *
      * Reads the RAW sub_state column value directly (NOT through loadTask(),
      * which follows the sidecar-spill pointer and would rehydrate a
@@ -921,8 +892,7 @@ final class TaskRunner
                 return;
             }
 
-            $where = ['snapshot_id' => $this->snapshotId()];
-            if ($stage === 'lock_unavailable') { $where['sub_state'] = $raw; }
+            $where = ['snapshot_id' => $this->snapshotId(), 'sub_state' => $raw];
             $wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned table; breadcrumb-only write, phase column untouched
                 $table,
                 ['sub_state' => $encoded],
@@ -2064,11 +2034,6 @@ final class TaskRunner
     {
         if ($this->progressClient === null) {
             return;
-        }
-        if ($this->lockIdentityUnverified && !$this->lockIdentityReported) {
-            $detail['stage'] = $detail['stage'] ?? 'lock_identity_unverified';
-            $detail['lock_identity_unverified'] = true;
-            $this->lockIdentityReported = true;
         }
         if ($this->skippedSourcesCount > 0) {
             $detail['skipped_sources_count'] = $this->skippedSourcesCount;

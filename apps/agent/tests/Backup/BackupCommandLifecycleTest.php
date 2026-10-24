@@ -98,7 +98,7 @@ final class BackupCommandLifecycleTest extends TestCase
         try { $shutdown(); }
         finally { flock($lock, LOCK_UN); fclose($lock); }
         self::assertSame('queued', $this->database->tasks->rows[self::SNAPSHOT]['phase']);
-        self::assertSame(1, $this->database->tasks->lockCallCount);
+        self::assertSame(2, $this->database->tasks->lockCallCount);
         self::assertFileDoesNotExist(WP_CONTENT_DIR . '/wpmgr-agent/runs/' . self::SNAPSHOT . '/paths.cache');
         fwrite(STDOUT, "\naccepted shutdown runner rejected by held flock\n");
     }
@@ -111,6 +111,123 @@ final class BackupCommandLifecycleTest extends TestCase
         self::assertFalse($result['ok']);
         self::assertSame('runner_in_flight', $result['code']);
         fwrite(STDOUT, "\nrecent duplicate=" . json_encode($result) . "\n");
+    }
+
+    public function testBothLockProbesUnavailableRefusesBeforeClaimAndTaskSeed(): void
+    {
+        $this->database->tasks->lockResponses = [null];
+        $path = WP_CONTENT_DIR . '/wpmgr-agent/runs/' . self::SNAPSHOT . '.lock';
+        \Patchwork\redefine('fopen', static function ($filename, ...$args) use ($path) { return $filename === $path ? false : \Patchwork\relay(); });
+        $registered = 0;
+        Functions\when('register_shutdown_function')->alias(static function () use (&$registered): void { $registered++; });
+        $result = $this->command()->execute([], $this->params());
+        self::assertFalse($result['ok']);
+        self::assertSame('backup_lock_unavailable', $result['code']);
+        self::assertStringContainsString('neither a database lock nor a working file lock', $result['detail']);
+        self::assertStringContainsString('wp-content/wpmgr-agent', $result['detail']);
+        self::assertStringContainsString('Ask your host', $result['detail']);
+        self::assertSame([], $this->database->runs);
+        self::assertSame([], $this->database->tasks->rows);
+        self::assertSame(0, $registered);
+        self::assertDirectoryDoesNotExist(WP_CONTENT_DIR . '/wpmgr-agent/runs/' . self::SNAPSHOT);
+    }
+
+    public function testDatabaseProbeAloneAcceptsAndReleasesProbeName(): void
+    {
+        $this->database->tasks->lockResponses = ['1'];
+        $path = WP_CONTENT_DIR . '/wpmgr-agent/runs/' . self::SNAPSHOT . '.lock';
+        \Patchwork\redefine('fopen', static function ($filename, ...$args) use ($path) { return $filename === $path ? false : \Patchwork\relay(); });
+        $names = [];
+        \Patchwork\redefine(FakeBackupTasksWpdb::class . '::get_var', function ($prepared) use (&$names) {
+            $query = json_decode($prepared, true);
+            if (str_contains($query['sql'] ?? '', 'GET_LOCK') || str_contains($query['sql'] ?? '', 'RELEASE_LOCK')) { $names[] = $query['args'][0]; }
+            return \Patchwork\relay();
+        });
+        Functions\expect('register_shutdown_function')->once();
+        self::assertTrue($this->command()->execute([], $this->params())['ok']);
+        self::assertCount(2, $names);
+        self::assertSame($names[0], $names[1]);
+        self::assertStringStartsWith('wpmgr_bk_probe_', $names[0]);
+        self::assertNotSame('wpmgr_bk_' . self::SNAPSHOT, $names[0]);
+        self::assertSame(1, $this->database->tasks->releaseCallCount);
+        self::assertArrayHasKey(self::SNAPSHOT, $this->database->tasks->rows);
+    }
+
+    public function testFileProbeAloneAcceptsAndReleasesHandle(): void
+    {
+        $this->database->tasks->lockResponses = [null];
+        Functions\expect('register_shutdown_function')->once();
+        self::assertTrue($this->command()->execute([], $this->params())['ok']);
+        $path = WP_CONTENT_DIR . '/wpmgr-agent/runs/' . self::SNAPSHOT . '.lock';
+        $probe = fopen($path, 'r+');
+        self::assertIsResource($probe);
+        try { self::assertTrue(flock($probe, LOCK_EX | LOCK_NB)); }
+        finally { fclose($probe); }
+        self::assertSame(0, $this->database->tasks->releaseCallCount);
+    }
+
+    public function testUnreliableFileIdentityWithoutDatabaseSupportRefusesCommand(): void
+    {
+        $this->database->tasks->lockResponses = [null];
+        \Patchwork\redefine(TaskRunner::class . '::fileLockMatchesPath', static fn (): bool => false);
+        Functions\expect('register_shutdown_function')->never();
+        $result = $this->command()->execute([], $this->params());
+        self::assertFalse($result['ok']);
+        self::assertSame('backup_lock_unavailable', $result['code']);
+        self::assertSame([], $this->database->runs);
+        self::assertSame([], $this->database->tasks->rows);
+    }
+
+    public function testContendedDatabaseProbeIsUsableAndNeverReleasedByContender(): void
+    {
+        $this->database->tasks->lockResponses = ['0'];
+        $path = WP_CONTENT_DIR . '/wpmgr-agent/runs/' . self::SNAPSHOT . '.lock';
+        \Patchwork\redefine('fopen', static function ($filename, ...$args) use ($path) { return $filename === $path ? false : \Patchwork\relay(); });
+        Functions\expect('register_shutdown_function')->once();
+        self::assertTrue($this->command()->execute([], $this->params())['ok']);
+        self::assertSame(0, $this->database->tasks->releaseCallCount);
+    }
+
+    public function testContendedFileProbePreservesRunningOwner(): void
+    {
+        $this->database->tasks->lockResponses = [null];
+        $base = WP_CONTENT_DIR . '/wpmgr-agent/runs';
+        mkdir($base, 0700, true);
+        $path = $base . '/' . self::SNAPSHOT . '.lock';
+        $holder = fopen($path, 'c');
+        self::assertTrue(flock($holder, LOCK_EX | LOCK_NB));
+        $this->database->runs[self::SNAPSHOT] = ['snapshot_id' => self::SNAPSHOT, 'pid' => 123, 'started_at' => time()];
+        $this->database->tasks->seedRow(self::SNAPSHOT, ['phase' => 'archiving_files']);
+        $before = $this->database->tasks->rows;
+        Functions\expect('register_shutdown_function')->never();
+        try {
+            $result = $this->command()->execute([], $this->params());
+            self::assertSame('runner_in_flight', $result['code']);
+            self::assertSame($before, $this->database->tasks->rows);
+            self::assertFileExists($path);
+            $probe = fopen($path, 'r+');
+            try { self::assertFalse(flock($probe, LOCK_EX | LOCK_NB)); }
+            finally { fclose($probe); }
+        } finally { flock($holder, LOCK_UN); fclose($holder); }
+    }
+
+    public function testUnavailableProbesDoNotRefuseExistingInFlightWorkAsFailed(): void
+    {
+        $this->database->tasks->lockResponses = [null];
+        $path = WP_CONTENT_DIR . '/wpmgr-agent/runs/' . self::SNAPSHOT . '.lock';
+        \Patchwork\redefine('fopen', static function ($filename, ...$args) use ($path) { return $filename === $path ? false : \Patchwork\relay(); });
+        $this->database->runs[self::SNAPSHOT] = ['snapshot_id' => self::SNAPSHOT, 'pid' => 123, 'started_at' => time() - 1000];
+        Functions\expect('register_shutdown_function')->never();
+        foreach ([null, 'archiving_files'] as $phase) {
+            if ($phase !== null) { $this->database->tasks->seedRow(self::SNAPSHOT, ['phase' => $phase, 'last_progress_at' => time() - 1000]); }
+            $claim = $this->database->runs[self::SNAPSHOT];
+            $tasks = $this->database->tasks->rows;
+            $result = $this->command()->execute([], $this->params());
+            self::assertFalse($result['ok']);
+            self::assertSame('runner_in_flight', $result['code']);
+            self::assertSame($claim, $this->database->runs[self::SNAPSHOT]);
+            self::assertSame($tasks, $this->database->tasks->rows);
+        }
     }
 
     public function testExpiredDuplicateCommandLeavesEveryActivePhaseUntouched(): void
