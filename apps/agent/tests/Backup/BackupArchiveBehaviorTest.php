@@ -522,11 +522,12 @@ final class BackupArchiveBehaviorTest extends TestCase
         self::assertSame(2, $trace['lock_probes']);
     }
 
-    public function testUnavailableGuardsReproduceOverlappingRunners(): void
+    public function testUnavailableGuardsStopBeforeArchiving(): void
     {
         $trace = $this->overlap(true);
-        self::assertGreaterThan(0, $trace['nested_finalizing']);
-        self::assertSame(2, $trace['lock_probes']);
+        self::assertSame(0, $trace['nested_finalizing']);
+        self::assertSame(1, $trace['lock_probes']);
+        self::assertSame('backup_lock_unavailable', $trace['events'][0]['stage']);
         fwrite(STDOUT, "\noverlap=" . json_encode($trace) . "\n");
     }
 
@@ -536,11 +537,193 @@ final class BackupArchiveBehaviorTest extends TestCase
         self::assertSame(0, $trace['nested_finalizing'], 'A second runner must not reach the same part while the first is finalizing.');
     }
 
-    public function testReleasedLockCleanupReproducesOverlappingRunners(): void
+    public function testUnavailableGuardsPersistAndReportActionableFailure(): void
+    {
+        $this->signing();
+        mkdir($this->root . '/' . self::SNAPSHOT . '.lock');
+        file_put_contents($this->root . '/out/owned-by-another-worker', 'retain');
+        $wpdb = new FakeBackupTasksWpdb();
+        $wpdb->lockResponses = [null];
+        $wpdb->seedRow(self::SNAPSHOT);
+        $GLOBALS['wpdb'] = $wpdb;
+        $events = [];
+        Functions\when('wp_remote_post')->alias(static function ($url, $args) use (&$events) {
+            $events[] = json_decode($args['body'], true);
+            return ['response' => ['code' => 200], 'body' => '{}'];
+        });
+        self::assertSame(TaskRunner::PHASE_FAILED, (new TaskRunner($this->params(true)))->run());
+        self::assertSame(TaskRunner::PHASE_FAILED, $wpdb->rows[self::SNAPSHOT]['phase'] ?? null);
+        $state = json_decode($wpdb->rows[self::SNAPSHOT]['sub_state'], true);
+        self::assertSame('backup_lock_unavailable', $state['failed_in']);
+        self::assertCount(1, $events);
+        self::assertSame(TaskRunner::PHASE_FAILED, $events[0]['phase']);
+        self::assertSame('backup_lock_unavailable', $events[0]['phase_detail']['stage']);
+        self::assertStringContainsString('wp-content/wpmgr-agent', $events[0]['phase_detail']['message']);
+        self::assertStringContainsString('host', $events[0]['phase_detail']['message']);
+        self::assertSame(0, $wpdb->releaseCallCount);
+        self::assertFileExists($this->root . '/out/owned-by-another-worker');
+        foreach ($wpdb->updates as $update) {
+            self::assertSame(TaskRunner::PHASE_FAILED, $update['data']['phase']);
+        }
+    }
+
+    public function testAcquireRetriesWhenOpenedLockPathDisappears(): void
+    {
+        $this->assertAcquireRetries(false, 1);
+    }
+
+    public function testUnavailableGuardsReportFailureWithoutTaskStorage(): void
+    {
+        $this->signing();
+        unset($GLOBALS['wpdb']);
+        mkdir($this->root . '/' . self::SNAPSHOT . '.lock');
+        $events = [];
+        Functions\when('wp_remote_post')->alias(static function ($url, $args) use (&$events) {
+            $events[] = json_decode($args['body'], true);
+            return ['response' => ['code' => 200], 'body' => '{}'];
+        });
+        self::assertSame(TaskRunner::PHASE_FAILED, (new TaskRunner($this->params(true)))->run());
+        self::assertCount(1, $events);
+        self::assertSame('backup_lock_unavailable', $events[0]['phase_detail']['stage']);
+        self::assertStringContainsString('cannot run safely', $events[0]['phase_detail']['message']);
+    }
+
+    public function testAcquireRetriesWhenOpenedLockPathNamesAnotherInode(): void
+    {
+        $this->assertAcquireRetries(true, 1);
+    }
+
+    public function testAcquireStopsAfterThreeReplacedInodes(): void
+    {
+        $this->assertAcquireRetries(true, 3);
+    }
+
+    private function assertAcquireRetries(bool $replace, int $disruptions): void
+    {
+        $runner = new TaskRunner($this->params());
+        $path = $this->root . '/' . self::SNAPSHOT . '.lock';
+        $opened = [];
+        \Patchwork\redefine('fopen', static function ($filename, ...$args) use ($path, $replace, $disruptions, &$opened) {
+            $handle = \Patchwork\relay();
+            if ($filename === $path && is_resource($handle)) {
+                $opened[] = $handle;
+                if (count($opened) <= $disruptions) {
+                    unlink($path);
+                    if ($replace) { file_put_contents($path, 'replacement'); }
+                }
+            }
+            return $handle;
+        });
+        $lock = (new \ReflectionMethod($runner, 'acquireFileLock'))->invoke($runner);
+        try {
+            if ($disruptions === 3) {
+                self::assertNull($lock['handle']);
+                self::assertTrue($lock['contended']);
+                self::assertCount(3, $opened);
+            } else {
+                self::assertIsResource($lock['handle']);
+                self::assertFalse($lock['contended']);
+                self::assertCount(2, $opened);
+                clearstatcache(true, $path);
+                self::assertSame(stat($path)['ino'], fstat($lock['handle'])['ino']);
+                self::assertSame(stat($path)['dev'], fstat($lock['handle'])['dev']);
+            }
+            foreach (array_slice($opened, 0, $disruptions) as $stale) { self::assertFalse(is_resource($stale)); }
+        } finally {
+            if (is_resource($lock['handle'])) { flock($lock['handle'], LOCK_UN); fclose($lock['handle']); }
+        }
+    }
+
+    public function testTerminalCleanupUnlinksWhileHoldingTheLock(): void
+    {
+        $wpdb = new FakeBackupTasksWpdb();
+        $GLOBALS['wpdb'] = $wpdb;
+        $path = $this->root . '/' . self::SNAPSHOT . '.lock';
+        $checked = false;
+        Functions\when('wp_delete_file')->alias(static function ($file) use ($path, &$checked): void {
+            if ($file === $path) {
+                $probe = fopen($file, 'r+');
+                try { self::assertFalse(flock($probe, LOCK_EX | LOCK_NB)); }
+                finally { fclose($probe); }
+                $checked = true;
+            }
+            unlink($file);
+        });
+        self::assertTrue((new TaskRunner($this->params()))->withRunLock(static function (): void {}));
+        self::assertTrue($checked);
+        self::assertFileDoesNotExist($path);
+    }
+
+    public function testCleanupPreservesAReplacementLockInode(): void
+    {
+        $wpdb = new FakeBackupTasksWpdb();
+        $GLOBALS['wpdb'] = $wpdb;
+        $path = $this->root . '/' . self::SNAPSHOT . '.lock';
+        $replacement = null;
+        try {
+            self::assertTrue((new TaskRunner($this->params()))->withRunLock(static function () use ($path, &$replacement): void {
+                unlink($path);
+                $replacement = fopen($path, 'c');
+                self::assertTrue(flock($replacement, LOCK_EX | LOCK_NB));
+            }));
+            self::assertFileExists($path);
+        } finally {
+            if (is_resource($replacement)) { flock($replacement, LOCK_UN); fclose($replacement); }
+        }
+    }
+
+    public function testJanitorRetainsHeldOldLockAndRemovesUnheldOldLock(): void
+    {
+        $GLOBALS['wpdb'] = new FakeBackupTasksWpdb();
+        $held = $this->root . '/' . self::SNAPSHOT . '.lock';
+        $free = $this->root . '/bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee.lock';
+        $holder = fopen($held, 'c');
+        self::assertTrue(flock($holder, LOCK_EX | LOCK_NB));
+        file_put_contents($free, '');
+        foreach ([$held, $free] as $path) { touch($path, time() - BackupJanitor::RUNS_GC_AGE_SECONDS - 1); }
+        $deletedWhileHeld = false;
+        Functions\when('wp_delete_file')->alias(static function ($path) use ($free, &$deletedWhileHeld): void {
+            self::assertSame($free, $path);
+            $probe = fopen($path, 'r+');
+            try { self::assertFalse(flock($probe, LOCK_EX | LOCK_NB)); }
+            finally { fclose($probe); }
+            $deletedWhileHeld = true;
+            unlink($path);
+        });
+        BackupArchiveBehaviorJanitor::$base = $this->root;
+        try {
+            BackupArchiveBehaviorJanitor::gcRuns();
+            self::assertFileExists($held);
+            self::assertFileDoesNotExist($free);
+            self::assertTrue($deletedWhileHeld);
+        } finally { flock($holder, LOCK_UN); fclose($holder); }
+    }
+
+    public function testJanitorRetainsFreshReplacementAfterInodeRetry(): void
+    {
+        $GLOBALS['wpdb'] = new FakeBackupTasksWpdb();
+        $path = $this->root . '/' . self::SNAPSHOT . '.lock';
+        file_put_contents($path, 'old');
+        touch($path, time() - BackupJanitor::RUNS_GC_AGE_SECONDS - 1);
+        $opens = 0;
+        \Patchwork\redefine('fopen', static function ($filename, ...$args) use ($path, &$opens) {
+            $handle = \Patchwork\relay();
+            if ($filename === $path && ++$opens === 1) {
+                unlink($path);
+                file_put_contents($path, 'fresh');
+            }
+            return $handle;
+        });
+        BackupArchiveBehaviorJanitor::$base = $this->root;
+        BackupArchiveBehaviorJanitor::gcRuns();
+        self::assertSame(2, $opens);
+        self::assertSame('fresh', file_get_contents($path));
+    }
+
+    public function testLockCleanupDoesNotAdmitOverlappingRunners(): void
     {
         $trace = $this->lockCleanupOverlap();
-        self::assertGreaterThan(0, $trace['overlapping_finalizing']);
-        self::assertNotSame($trace['owner_inode'], $trace['new_inode']);
+        self::assertSame(0, $trace['overlapping_finalizing']);
         fwrite(STDOUT, "\nlock cleanup overlap=" . json_encode($trace) . "\n");
     }
 
@@ -550,11 +733,11 @@ final class BackupArchiveBehaviorTest extends TestCase
         self::assertSame(0, $trace['overlapping_finalizing'], 'The lock pathname must continue to coordinate runners after ownership changes.');
     }
 
-    public function testJanitorUnlinksHeldOldLock(): void
+    public function testJanitorRetainsHeldOldLockAndRejectsAnotherOwner(): void
     {
         $trace = $this->oldLockJanitor();
-        self::assertFalse($trace['lock_path_exists']);
-        self::assertTrue($trace['another_owner_entered']);
+        self::assertTrue($trace['lock_path_exists']);
+        self::assertFalse($trace['another_owner_entered']);
         fwrite(STDOUT, "\nold lock janitor=" . json_encode($trace) . "\n");
     }
 
@@ -806,7 +989,10 @@ final class BackupArchiveBehaviorTest extends TestCase
                 $triggered = true;
                 $worker = 'B';
                 $owner->start();
-                if (!$owner->isSuspended()) { throw new \RuntimeException('Expected a live runner holding the original lock.'); }
+                if (!$owner->isSuspended()) {
+                    $worker = 'A';
+                    return unlink($path);
+                }
                 unlink($path);
                 $worker = 'C';
                 (new TaskRunner($params))->run();

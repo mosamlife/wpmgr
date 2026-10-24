@@ -232,10 +232,9 @@ final class TaskRunner
      * breadcrumb and returns WITHOUT mutating phase. If flock itself cannot
      * even be attempted (path unresolvable, or the filesystem/permissions
      * prevent opening the lock file — e.g. an exotic FS without flock()
-     * support), that degrades SAFELY to today's GET_LOCK-only behavior
-     * rather than blocking the run; the phase machine is already
-     * idempotent/re-entrant and the CP tolerates duplicate presigns via a
-     * 422, so that worst case is no worse than pre-#232 behavior.
+     * support), a held GET_LOCK permits the run to proceed. If neither
+     * guard is held, the task fails with backup_lock_unavailable before
+     * entering the phase machine or reclaiming scratch files.
      *
      * @return string Terminal phase reached this invocation. One of
      *                PHASE_COMPLETED, PHASE_FAILED, or — if a future phase
@@ -309,6 +308,7 @@ final class TaskRunner
         }
         /** @var resource|null $fileLockHandle */
         $fileLockHandle = $fileLock['handle'];
+        $guardsUnavailable = !$lockHeld && $fileLockHandle === null;
 
         // GH #232 lock-file GC follow-up: set to true at every point this
         // invocation reaches a TERMINAL outcome for the snapshot (already
@@ -327,20 +327,25 @@ final class TaskRunner
             if ($task === null) {
                 $this->seedTask();
                 $task = $this->loadTask();
-                if ($task === null) {
+                if ($task === null && !$guardsUnavailable) {
                     // Seed failed (unwritable schema / missing $wpdb). We
                     // can't drive a state machine without a row.
                     throw new \RuntimeException('TaskRunner: cannot create task row');
                 }
             }
-            $currentPhase = (string) $task['phase'];
-            $subState     = (array) $task['sub_state'];
+            $currentPhase = (string) ($task['phase'] ?? self::PHASE_QUEUED);
+            $subState     = (array) ($task['sub_state'] ?? []);
             $this->retainSkippedSources((array) ($subState['files'] ?? []));
 
             // Terminal? Re-entry is a no-op.
             if ($currentPhase === self::PHASE_COMPLETED || $currentPhase === self::PHASE_FAILED) {
                 $terminal = true;
                 return $currentPhase;
+            }
+
+            if ($guardsUnavailable) {
+                $currentPhase = 'backup_lock_unavailable';
+                throw new \RuntimeException('This host offers neither a database lock nor a working file lock in wp-content/wpmgr-agent. The backup cannot run safely. Ask your host to enable database locks or make that directory writable.');
             }
 
             // GH #232: stamp the runner_started breadcrumb now that we hold
@@ -351,8 +356,7 @@ final class TaskRunner
             //   stage=dispatch_entered                  => hook fired, runner never advanced
             //   stage=runner_started                     => a lock held, first phase failed to persist
             //   phase past 'queued'                      => advanced
-            // Never stamped when BOTH guards were unavailable (a fully
-            // degraded environment — no lock semantics apply there at all).
+            // A task without either guard fails before this breadcrumb.
             if ($lockHeld || $fileLockHandle !== null) {
                 $subState['stage'] = 'runner_started';
                 $this->saveTaskState($currentPhase, $subState);
@@ -467,25 +471,19 @@ final class TaskRunner
                 // Swallow.
             }
 
-            // GH #279: GC the orphaned scratch dir + chunk/artifact files now
-            // that this run is genuinely terminal (the task row is about to
-            // be DELETEd below, so there will be no further watchdog
-            // re-entry to clean these up; cleanupOnCompleted() only ever ran
-            // on the COMPLETED path). Best-effort: a second exception here
-            // must never mask the original failure already captured above.
+            // Scratch reclamation requires a held guard. Cleanup failures
+            // must never mask the failure already persisted and reported.
             try {
-                $this->cleanupOnFailed();
+                if (!$guardsUnavailable) { $this->cleanupOnFailed(); }
             } catch (\Throwable $_) {
                 // Swallow.
             }
 
-            // Bug 2 fix: also DELETE the failed row so a delayed watchdog
-            // cron event can't re-enter and re-emit a stale phantom
-            // /presign call. The CP-side audit + the just-posted `failed`
-            // progress event have already recorded the failure for ops.
+            // Guarded failures remove their task row after reporting.
+            // A lock-unavailable failure remains terminal in task storage.
             try {
                 global $wpdb;
-                if (is_object($wpdb)) {
+                if (!$guardsUnavailable && is_object($wpdb)) {
                     $tasksTable = $this->prefix() . Schema::BACKUP_TASKS_TABLE;
                     /** @phpstan-ignore-next-line */
                     @$wpdb->delete($tasksTable, ['snapshot_id' => $this->snapshotId()], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; no core helper exists
@@ -505,25 +503,12 @@ final class TaskRunner
                 $this->releaseLock();
             }
             if ($fileLockHandle !== null) {
-                // Release the flock FIRST (LOCK_UN + fclose) — only THEN,
-                // with the fd closed, unlink the lock file itself. Doing it
-                // in this order (never unlink-before-release) avoids any
-                // platform-specific flock-vs-unlink-on-an-open-fd subtlety.
-                $this->releaseFileLock($fileLockHandle);
-
-                // GH #232 lock-file GC follow-up: only the WINNER that
-                // brought this snapshot to a genuinely terminal state
-                // reclaims its own lock file — never on a contended-loser
-                // return (those exit above, before this finally is even
-                // reached) and never mid-run, so an in-flight winner's lock
-                // file is never removed out from under a legitimately
-                // waiting resumer. A crashed run that never reaches this
-                // `finally` at all (fatal/OOM/SIGKILL) leaks its lock file
-                // exactly like it always leaked its scratch dir before GH
-                // #151 — BackupJanitor::gcRuns() is the age-gated backstop
-                // for both.
-                if ($terminal) {
-                    $this->cleanupFileLock();
+                // Only the terminal owner removes its own path, while its
+                // flock is still held. Losers never reclaim a lock file.
+                try {
+                    if ($terminal) { $this->cleanupFileLock($fileLockHandle); }
+                } finally {
+                    $this->releaseFileLock($fileLockHandle);
                 }
             }
         }
@@ -534,59 +519,16 @@ final class TaskRunner
     // ==================================================================
 
     /**
-     * GH #256 (post-ship review, finding 1, TOCTOU): acquire run()'s own two
-     * mutual-exclusion guards (GET_LOCK then flock, the exact same order and
-     * the exact same per-snapshot names run() itself uses), invoke
-     * $callback while BOTH are held, and release both in a `finally`,
-     * regardless of whether $callback returns normally or throws.
+     * Reclaim snapshot state while holding the same guards run() uses.
+     * The file lock is required; database-lock contention also vetoes the
+     * callback. An unavailable database lock permits file-guarded reclamation.
+     * Every acquired guard remains held throughout the callback and is
+     * released even when it throws. Only the held inode's path is removed,
+     * before releasing the file lock.
      *
-     * This exists so a caller entirely OUTSIDE run() (Watchdog's terminal
-     * give-up paths and BackupJanitor::gcRuns(), both of which construct a
-     * throwaway TaskRunner purely to reclaim a snapshot's scratch directory
-     * once its task row/age is judged dead) can perform that reclaim using
-     * the same locks run() relies on for correctness, instead of a second,
-     * independently maintained liveness heuristic that could disagree with
-     * the real one. Making the lock itself the liveness signal, held for
-     * the FULL duration of the reclaim rather than merely probed beforehand,
-     * is what closes the race where a live runner is still writing chunks
-     * into the scratch directory while a give-up path deletes it out from
-     * under the process.
-     *
-     * The earlier shape of this guard (a bool-returning `isRunLockFree()`
-     * probe, checked by the caller, which then did its own file deletion
-     * AFTER this method had already released both locks) left exactly the
-     * TOCTOU window this method exists to close: on a multi-hour backup with
-     * thousands of chunk files, the caller's own glob-and-unlink sweep could
-     * easily still be running tens of milliseconds after the probe reported
-     * "free", by which time a resumed/re-entered runner could have started
-     * writing into the same directory again. Folding the actual reclaim work
-     * INTO the locked critical section, never a separate probe-then-act pair
-     * of calls, removes that window entirely.
-     *
-     * GH #256 finding 2 (fail-open): unlike run()'s own inline guard (left
-     * intentionally unchanged, see its doc), this method treats a flock
-     * guard that could not even be ATTEMPTED (acquireFileLock() returning
-     * `['handle' => null, 'contended' => false]`, meaning an unresolvable
-     * lock path, a wp_mkdir_p() failure, or a fopen() failure from
-     * permissions / open_basedir / a read-only filesystem) as NOT provably
-     * free, and never invokes $callback. That degraded outcome is a
-     * legitimate reason for run() to forge ahead without a flock guard
-     * (worst case: a wasted duplicate run, the phase machine is idempotent),
-     * but here the consequence of proceeding is a DELETE: absence of proof
-     * that no one else is running is not proof of absence, so this path
-     * refuses rather than gambles.
-     *
-     * @param callable(): void $callback Invoked only when BOTH guards were
-     *                                    acquired free of contention AND the
-     *                                    flock guard was genuinely attempted
-     *                                    (not degraded). Runs with both
-     *                                    guards held for its entire
-     *                                    duration.
-     * @return bool True when $callback ran. False when GET_LOCK reported
-     *              contention, the flock reported contention, or the flock
-     *              guard degraded to "could not be attempted"; in every
-     *              false case $callback was never invoked and the caller
-     *              must leave the snapshot's files untouched this pass.
+     * @param callable(): void $callback Reclamation performed under the lock.
+     * @return bool True when the callback ran; false on contention or when
+     *              the file lock could not be acquired.
      */
     public function withRunLock(callable $callback): bool
     {
@@ -623,18 +565,12 @@ final class TaskRunner
             if ($lockHeld) {
                 $this->releaseLock();
             }
-            // Release the flock FIRST (LOCK_UN + fclose); only THEN, with
-            // the fd closed, unlink the lock file itself (same ordering
-            // run()'s own `finally` uses; see cleanupFileLock()'s doc).
-            // $callback ran, which means this snapshot's scratch state is
-            // being reclaimed regardless of $callback's own outcome, and
-            // there is no future resume left to protect. The coordination
-            // file this call opened (or found already orphaned) is always
-            // reclaimed here rather than left behind as a fresh zero-byte
-            // file for BackupJanitor::gcRuns()'s own age-gated sweep to find
-            // later.
-            $this->releaseFileLock($fileLockHandle);
-            $this->cleanupFileLock();
+            // Reclaim the owner's path while its flock is still held.
+            try {
+                $this->cleanupFileLock($fileLockHandle);
+            } finally {
+                $this->releaseFileLock($fileLockHandle);
+            }
         }
 
         return true;
@@ -768,8 +704,8 @@ final class TaskRunner
      *   - ['handle' => null,     'contended' => false]  — the guard could not
      *     even be attempted (no resolvable path, or the filesystem/
      *     permissions prevent opening the lock file — e.g. an exotic FS
-     *     without flock() support). Degrades SAFELY: the caller proceeds
-     *     exactly as it would have before this guard existed.
+     *     without flock() support). run() requires a held database guard
+     *     in this case; reclamation requires a held file guard.
      *
      * @return array{handle:resource|null,contended:bool}
      */
@@ -785,24 +721,49 @@ final class TaskRunner
             return ['handle' => null, 'contended' => false];
         }
 
-        // 'c': create the file if it does not exist yet, but never truncate
-        // an existing one — only flock()'s exclusivity matters here, the
-        // file's contents are never read or written by this guard.
-        $handle = @fopen($path, 'c'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- headless agent; WP_Filesystem has no flock()-equivalent API and is never initialized in this context; small, server-derived, empty coordination file
-        if ($handle === false) {
-            return ['handle' => null, 'contended' => false];
-        }
-        @chmod($path, 0600); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- explicit security perms on our own coordination file; WP_Filesystem would coerce to wider FS_CHMOD_FILE
+        return self::acquireFileLockAtPath($path);
+    }
 
-        if (!flock($handle, LOCK_EX | LOCK_NB)) {
-            // Genuinely contended: another live PHP process holds this exact
-            // snapshot's lock right now, regardless of its $wpdb connection
-            // state. This is the authoritative reject.
-            fclose($handle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- releasing our own failed-lock-attempt handle, not a WP_Filesystem-managed resource
-            return ['handle' => null, 'contended' => true];
+    /**
+     * Acquire an inode-checked, non-blocking file lock. A pathname change
+     * retries acquisition; repeated changes are treated as contention.
+     * Existing-only acquisition never creates a janitor candidate.
+     *
+     * @return array{handle:resource|null,contended:bool}
+     */
+    public static function acquireFileLockAtPath(string $path, bool $create = true): array
+    {
+        for ($attempt = 0; $attempt < 3; $attempt++) {
+            $handle = @fopen($path, $create ? 'c' : 'r+'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- flock requires a native file handle
+            if ($handle === false) {
+                return ['handle' => null, 'contended' => $attempt > 0];
+            }
+            if (!flock($handle, LOCK_EX | LOCK_NB)) {
+                fclose($handle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- native flock handle
+                return ['handle' => null, 'contended' => true];
+            }
+            if (self::fileLockMatchesPath($handle, $path)) {
+                if ($create) { @chmod($path, 0600); } // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- private coordination file permissions
+                return ['handle' => $handle, 'contended' => false];
+            }
+            flock($handle, LOCK_UN);
+            fclose($handle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- release a stale inode before retrying
         }
+        return ['handle' => null, 'contended' => true];
+    }
 
-        return ['handle' => $handle, 'contended' => false];
+    /**
+     * Confirm that the pathname still names the held file's device and inode.
+     *
+     * @param resource $handle Locked file handle.
+     */
+    public static function fileLockMatchesPath($handle, string $path): bool
+    {
+        clearstatcache(true, $path);
+        $held = @fstat($handle);
+        $named = @stat($path);
+        return $held !== false && $named !== false
+            && $held['dev'] === $named['dev'] && $held['ino'] === $named['ino'];
     }
 
     /**
@@ -823,30 +784,17 @@ final class TaskRunner
     }
 
     /**
-     * Reclaim this run's own `<snapshot_id>.lock` coordination file — GH
-     * #232 follow-up: without this, one empty 0-byte file per snapshot
-     * accumulates in the runs base forever (thousands over time on an
-     * active fleet). Called from run()'s `finally`, AFTER
-     * releaseFileLock() has already run flock(LOCK_UN) + fclose() on this
-     * same handle — the fd is closed before the path is ever touched here,
-     * so there is no unlink-against-an-open-fd ordering subtlety. Only
-     * called when this invocation reached a genuinely TERMINAL outcome
-     * (see run()'s `$terminal` doc) — a run that crashes before reaching
-     * this `finally` at all (fatal/OOM/SIGKILL) still leaks its lock file,
-     * exactly like it always leaked its scratch dir before GH #151;
-     * BackupJanitor::gcRuns() is the age-gated backstop for both.
+     * Reclaim only the terminal owner's lock pathname while its flock is
+     * held. A different inode belongs to another owner and is retained.
      *
-     * Best-effort: a failed unlink here is cosmetic disk-hygiene, never a
-     * correctness concern — the file is empty and carries no state, and a
-     * lingering one is reclaimed by the janitor regardless.
+     * @param resource $handle This invocation's held file lock.
      */
-    private function cleanupFileLock(): void
+    private function cleanupFileLock($handle): void
     {
         $path = $this->fileLockPath();
-        if ($path === '' || !is_file($path)) {
-            return;
+        if ($path !== '' && self::fileLockMatchesPath($handle, $path)) {
+            wp_delete_file($path);
         }
-        wp_delete_file($path);
     }
 
     /**
