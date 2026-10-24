@@ -18,6 +18,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/webhooktext"
 )
 
 // ---------------------------------------------------------------------------
@@ -76,6 +78,7 @@ type WebhookPoster interface {
 // worker.go). Includes the FULL filtered finding set (no display cap — that
 // is an email-rendering constraint only).
 type VulnAlertWebhookPayload struct {
+	Text      string                 `json:"text"`
 	Event     string                 `json:"event"`
 	TenantID  string                 `json:"tenant_id"`
 	NewCount  int                    `json:"new_count"`
@@ -454,7 +457,7 @@ func buildVulnAlertWebhookPayload(tenantID uuid.UUID, claimed []ClaimedFinding) 
 		})
 	}
 
-	return VulnAlertWebhookPayload{
+	payload := VulnAlertWebhookPayload{
 		Event:     VulnAlertEvent,
 		TenantID:  tenantID.String(),
 		NewCount:  len(sorted),
@@ -462,4 +465,38 @@ func buildVulnAlertWebhookPayload(tenantID uuid.UUID, claimed []ClaimedFinding) 
 		Sites:     sites,
 		FiredAt:   time.Now().UTC(),
 	}
+	payload.Text = renderVulnWebhookText(payload)
+	return payload
+}
+
+func renderVulnWebhookText(p VulnAlertWebhookPayload) string {
+	findingWord, siteWord := "vulnerabilities", "sites"
+	if p.NewCount == 1 {
+		findingWord = "vulnerability"
+	}
+	if p.SiteCount == 1 {
+		siteWord = "site"
+	}
+	text := fmt.Sprintf("%d new %s on %d %s", p.NewCount, findingWord, p.SiteCount, siteWord)
+	if len(p.Sites) == 0 {
+		return text
+	}
+	site := p.Sites[0]
+	name, url := webhooktext.Value(site.SiteName), webhooktext.Value(site.SiteURL)
+	if name == "" {
+		name = url
+	} else if url != "" {
+		name += " (" + url + ")"
+	}
+	if name == "" {
+		name = webhooktext.Value(site.SiteID)
+	}
+	text += ": " + name
+	if len(site.Findings) > 0 {
+		text += ": " + webhooktext.Value(site.Findings[0].Component)
+	}
+	if p.NewCount > 1 {
+		text += "; and more"
+	}
+	return text
 }
