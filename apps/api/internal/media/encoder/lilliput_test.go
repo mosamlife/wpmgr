@@ -13,6 +13,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"testing"
 
 	"github.com/discord/lilliput"
@@ -273,6 +274,90 @@ type decodeProbe struct {
 func (d *decodeProbe) DecodeTo(*lilliput.Framebuffer) error {
 	d.calls++
 	return errors.New("pixel decoding reached")
+}
+
+func TestBGRDecoder_EOFWithoutScratch(t *testing.T) {
+	var source bytes.Buffer
+	if err := jpeg.Encode(&source, image.NewGray(image.Rect(0, 0, 32, 24)), nil); err != nil {
+		t.Fatal(err)
+	}
+	decoder, err := lilliput.NewDecoder(source.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer decoder.Close()
+	adapter := &bgrDecoder{Decoder: decoder}
+	dst := lilliput.NewFramebuffer(32, 24)
+	defer dst.Close()
+	if err := adapter.DecodeTo(dst); err != nil {
+		t.Fatal(err)
+	}
+	headerAllocs := testing.AllocsPerRun(1, func() { _, err = decoder.Header() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.DecodeTo(dst); err != io.EOF {
+		t.Fatalf("second decode = %v, want io.EOF", err)
+	}
+	allocs := testing.AllocsPerRun(1, func() { err = adapter.DecodeTo(dst) })
+	if err != io.EOF {
+		t.Errorf("later decode = %v, want io.EOF", err)
+	}
+	if allocs > headerAllocs {
+		t.Errorf("EOF allocations = %g, header-only baseline = %g; want no scratch allocation", allocs, headerAllocs)
+	}
+}
+
+func TestBGRDecoder_RejectsAdditionalFrame(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "frame", err: nil},
+		{name: "buffer_too_small", err: lilliput.ErrBufTooSmall},
+		{name: "decode_error", err: lilliput.ErrDecodingFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var source bytes.Buffer
+			if err := png.Encode(&source, image.NewGray(image.Rect(0, 0, 8, 8))); err != nil {
+				t.Fatal(err)
+			}
+			decoder, err := lilliput.NewDecoder(source.Bytes())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer decoder.Close()
+			inner := &additionalFrameDecoder{Decoder: decoder, nextErr: tc.err}
+			adapter := &bgrDecoder{Decoder: inner}
+			dst := lilliput.NewFramebuffer(8, 8)
+			defer dst.Close()
+			if err := adapter.DecodeTo(dst); err != nil {
+				t.Fatal(err)
+			}
+			if err := adapter.DecodeTo(dst); !errors.Is(err, ErrUnsupportedSource) {
+				t.Errorf("additional frame = %v, want ErrUnsupportedSource", err)
+			}
+			if inner.probe == nil || inner.probe == dst || inner.probe.Width() != 0 || inner.probe.Height() != 0 {
+				t.Error("additional frame must be probed with an empty framebuffer")
+			}
+		})
+	}
+}
+
+type additionalFrameDecoder struct {
+	lilliput.Decoder
+	decoded bool
+	nextErr error
+	probe   *lilliput.Framebuffer
+}
+
+func (d *additionalFrameDecoder) DecodeTo(dst *lilliput.Framebuffer) error {
+	if !d.decoded {
+		d.decoded = true
+		return d.Decoder.DecodeTo(dst)
+	}
+	d.probe = dst
+	return d.nextErr
 }
 
 // makeGreyAlphaPNG writes PNG colour type 4: 8-bit grey plus alpha. Go's PNG

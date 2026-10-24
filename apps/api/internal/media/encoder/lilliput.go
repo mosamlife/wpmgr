@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"io"
 
 	"github.com/discord/lilliput"
 )
@@ -214,9 +215,20 @@ func (e *LilliputEncoder) Encode(ctx context.Context, req EncodeRequest) (Encode
 // bgrDecoder expands greyscale pixels before ImageOps normalizes orientation.
 type bgrDecoder struct {
 	lilliput.Decoder
+	expanded bool
+	probe    lilliput.Framebuffer
 }
 
 func (d *bgrDecoder) DecodeTo(dst *lilliput.Framebuffer) error {
+	if d.expanded {
+		// Only still sources are expanded. Probe for EOF without pixel storage;
+		// further frames cannot be passed to the AVIF encoder through this adapter.
+		defer d.probe.Close()
+		if err := d.Decoder.DecodeTo(&d.probe); err == io.EOF {
+			return err
+		}
+		return ErrUnsupportedSource
+	}
 	header, err := d.Header()
 	if err != nil {
 		return err
@@ -235,7 +247,11 @@ func (d *bgrDecoder) DecodeTo(dst *lilliput.Framebuffer) error {
 	if err := dst.Create3Channel(grey.Width(), grey.Height()); err != nil {
 		return err
 	}
-	return dst.CopyToOffsetNoBlend(grey, image.Rect(0, 0, grey.Width(), grey.Height()))
+	if err := dst.CopyToOffsetNoBlend(grey, image.Rect(0, 0, grey.Width(), grey.Height())); err != nil {
+		return err
+	}
+	d.expanded = true
+	return nil
 }
 
 // encodeOptionsFor maps resolved params to lilliput's EncodeOptions map. Only
