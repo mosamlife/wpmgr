@@ -3688,7 +3688,10 @@ func (s *Service) PutBackupNotifications(ctx context.Context, in PutBackupNotifi
 		}
 	}
 	// Load existing content settings to preserve them during this notification-only update.
-	existing, _ := s.GetBackupSettings(ctx, in.TenantID, in.SiteID)
+	existing, err := s.GetBackupSettings(ctx, in.TenantID, in.SiteID)
+	if err != nil {
+		return SiteBackupSettings{}, err
+	}
 	merged := SiteBackupSettings{
 		SiteID:             in.SiteID,
 		BackupComponents:   existing.BackupComponents,
@@ -3717,13 +3720,13 @@ type BackupScopeConfig struct {
 
 // scheduleBackupScope resolves the Track-A backup-scope settings from the site's
 // backup settings (site_backup_settings table, m50). Returns the zero
-// BackupScopeConfig when no settings row exists (or the lookup fails), which
-// produces "all components, no exclusions" — identical to the pre-m49 default.
+// BackupScopeConfig when no settings row exists. Other lookup errors are
+// returned so dispatch can retry without sending an unfiltered command.
 // This is the single dispatch point for BOTH manual and scheduled backup runs.
-func (s *Service) scheduleBackupScope(ctx context.Context, tenantID, siteID uuid.UUID) BackupScopeConfig {
-	settings, err := s.repo.GetBackupSettings(ctx, tenantID, siteID)
+func (s *Service) scheduleBackupScope(ctx context.Context, tenantID, siteID uuid.UUID) (BackupScopeConfig, error) {
+	settings, err := s.GetBackupSettings(ctx, tenantID, siteID)
 	if err != nil {
-		return BackupScopeConfig{} // no settings row → no filter (all components)
+		return BackupScopeConfig{}, err
 	}
 	return BackupScopeConfig{
 		Components:        settings.BackupComponents,
@@ -3731,7 +3734,7 @@ func (s *Service) scheduleBackupScope(ctx context.Context, tenantID, siteID uuid
 		ExcludePaths:      settings.ExcludePaths,
 		ExcludeExtensions: settings.ExcludeExtensions,
 		ExcludeFileSizeMB: settings.ExcludeFileSizeMB,
-	}
+	}, nil
 }
 
 // sendBackupEmail enqueues a backup-notification email (Track B, m50) when the

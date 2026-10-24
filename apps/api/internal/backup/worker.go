@@ -329,11 +329,12 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 		w.recordAudit(ctx, running, ActionBackupStarted, nil)
 	}
 
-	// Track A (m49): resolve component-scope + exclusion settings from the
-	// site's schedule. Zero value = no filter (all components, no exclusions),
-	// which is the pre-m49 default and safe to thread into older agents (all
-	// new fields are omitempty on the wire).
-	scope := w.svc.scheduleBackupScope(ctx, a.TenantID, snap.SiteID)
+	// Resolve component scope and exclusions from the site's backup settings.
+	// A missing settings row uses defaults; other read errors must be retried.
+	scope, err := w.svc.scheduleBackupScope(ctx, a.TenantID, snap.SiteID)
+	if err != nil {
+		return fmt.Errorf("resolve backup settings: %w", err)
+	}
 
 	// ADR-036 P1 storage adapter (GH #146): resolve which backend the agent
 	// should land this snapshot's chunks against. snap.DestinationID == Nil

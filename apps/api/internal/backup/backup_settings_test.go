@@ -384,7 +384,10 @@ func TestScheduleBackupScope_NoRow_ReturnsZero(t *testing.T) {
 	repo := newSettingsFakeRepo()
 	svc := settingsSvc(repo)
 
-	scope := svc.scheduleBackupScope(context.Background(), uuid.New(), uuid.New())
+	scope, err := svc.scheduleBackupScope(context.Background(), uuid.New(), uuid.New())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(scope.Components) != 0 {
 		t.Errorf("expected no components on missing row; got %v", scope.Components)
 	}
@@ -408,7 +411,10 @@ func TestScheduleBackupScope_WithRow_ReturnsSettings(t *testing.T) {
 		ExcludeFileSizeMB: 512,
 	}
 
-	scope := svc.scheduleBackupScope(context.Background(), uuid.New(), siteID)
+	scope, err := svc.scheduleBackupScope(context.Background(), uuid.New(), siteID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(scope.Components) != 2 {
 		t.Errorf("expected 2 components, got %v", scope.Components)
 	}
