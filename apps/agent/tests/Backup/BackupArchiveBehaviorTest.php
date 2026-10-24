@@ -354,6 +354,71 @@ final class BackupArchiveBehaviorTest extends TestCase
         } finally { chmod($this->root . '/src/victim.txt', 0600); }
     }
 
+    public function testResumedRebuildReplaysDeletionsMadeBeforeClose(): void
+    {
+        $result = $this->resumedPartWithAnEarlyDeletion(false);
+        self::assertTrue($result['done']);
+        self::assertSame(['uploads/earlier.txt', 'uploads/keep.txt', 'uploads/victim.txt'], $this->entries($result));
+        $baseline = FilesArchiver::loadPrevMap($this->root . '/out/files.list');
+        self::assertArrayNotHasKey('uploads/missing.txt', $baseline);
+        $paths = array_keys($baseline);
+        sort($paths);
+        self::assertSame(['uploads/earlier.txt', 'uploads/keep.txt', 'uploads/victim.txt'], $paths);
+        self::assertSame(3, $baseline['uploads/victim.txt']['size']);
+        self::assertSame("uploads\tuploads/earlier.txt\nuploads\tuploads/victim.txt\nuploads\tuploads/keep.txt\n", file_get_contents($this->root . '/out/paths.cache'));
+        self::assertSame(['uploads/missing.txt'], file($result['tombstones_file'], FILE_IGNORE_NEW_LINES));
+        self::assertSame(1, $result['tombstones_count']);
+        self::assertSame(1, $result['skipped_sources_count']);
+        self::assertSame(3, $result['files_total']);
+    }
+
+    public function testResumedRebuildDeletionFailureIsFatal(): void
+    {
+        $this->expectException(\WPMgr\Agent\Backup\ZipCloseException::class);
+        $this->resumedPartWithAnEarlyDeletion(true);
+    }
+
+    private function resumedPartWithAnEarlyDeletion(bool $rejectReplay): array
+    {
+        mkdir($this->root . '/src/uploads');
+        file_put_contents($this->root . '/src/uploads/victim.txt', 'abcdefgh');
+        file_put_contents($this->root . '/src/uploads/keep.txt', 'keep');
+        $zip = new \ZipArchive();
+        self::assertTrue($zip->open($this->root . '/out/uploads.g000.part001.zip', \ZipArchive::CREATE));
+        $zip->addFromString('uploads/earlier.txt', 'EARLIER');
+        $zip->addFromString('uploads/missing.txt', 'OLD');
+        $zip->close();
+        file_put_contents($this->root . '/out/paths.cache', "uploads\tuploads/earlier.txt\nuploads\tuploads/missing.txt\nuploads\tuploads/victim.txt\nuploads\tuploads/keep.txt\n");
+        file_put_contents($this->root . '/out/files.list', "uploads/earlier.txt\t7\t1\nuploads/missing.txt\t3\t1\nuploads/victim.txt\t8\t1\nuploads/keep.txt\t4\t1\n");
+        $opens = 0;
+        $deletions = [];
+        $factory = static function () use (&$opens, &$deletions, $rejectReplay): \ZipArchive {
+            $opens++;
+            return new class ($opens > 1 && $rejectReplay, $deletions) extends \ZipArchive {
+                public function __construct(private bool $reject, private array &$deletions) {}
+                public function deleteName(string $name): bool
+                {
+                    $this->deletions[] = $name;
+                    return $this->reject ? false : parent::deleteName($name);
+                }
+            };
+        };
+        $resume = ['total_files' => 4, 'file_index' => 1, 'components' => ['uploads' => ['current_part' => 1]]];
+        $deletedBeforeClose = null;
+        $result = (new FilesArchiver($this->root . '/src', [], ['zip_factory' => $factory]))->archive($this->root . '/out', $resume,
+            function ($phase, $detail) use (&$deletions, &$deletedBeforeClose): void {
+                if (($detail['stage'] ?? '') === 'finalizing_part') {
+                    $deletedBeforeClose = $deletions;
+                    file_put_contents($this->root . '/src/uploads/victim.txt', 'abcdef');
+                } elseif (($detail['stage'] ?? '') === 'rebuilding_part' && $detail['rebuild_attempt'] === 1) {
+                    file_put_contents($this->root . '/src/uploads/victim.txt', 'abc');
+                }
+            }, ['uploads/missing.txt' => ['size' => 3, 'mtime' => 1]]);
+        self::assertSame(['uploads/missing.txt'], $deletedBeforeClose);
+        self::assertSame(3, $opens);
+        return $result;
+    }
+
     public function testUnwritableDestinationRemainsFatalEvenWithAChangedSource(): void
     {
         foreach ([false, true] as $changed) {
@@ -544,7 +609,7 @@ final class BackupArchiveBehaviorTest extends TestCase
         file_put_contents($this->root . '/out/owned-by-another-worker', 'retain');
         $wpdb = new FakeBackupTasksWpdb();
         $wpdb->lockResponses = [null];
-        $wpdb->seedRow(self::SNAPSHOT);
+        $wpdb->seedRow(self::SNAPSHOT, ['last_progress_at' => time() - Watchdog::STALL_THRESHOLD_SECONDS]);
         $GLOBALS['wpdb'] = $wpdb;
         $events = [];
         Functions\when('wp_remote_post')->alias(static function ($url, $args) use (&$events) {
@@ -572,7 +637,115 @@ final class BackupArchiveBehaviorTest extends TestCase
         $this->assertAcquireRetries(false, 1);
     }
 
-    public function testUnavailableGuardsReportFailureWithoutTaskStorage(): void
+    public function testUnguardedContenderUsesWatchdogStallBoundary(): void
+    {
+        $this->signing();
+        mkdir($this->root . '/' . self::SNAPSHOT . '.lock');
+        $now = time();
+        \Patchwork\redefine('time', static fn (): int => $now);
+        foreach ([Watchdog::STALL_THRESHOLD_SECONDS - 1, Watchdog::STALL_THRESHOLD_SECONDS, Watchdog::STALL_THRESHOLD_SECONDS + 1, null] as $age) {
+            $wpdb = new FakeBackupTasksWpdb();
+            $wpdb->lockResponses = [null];
+            if ($age !== null) { $wpdb->seedRow(self::SNAPSHOT, ['phase' => 'archiving_files', 'last_progress_at' => $now - $age]); }
+            $GLOBALS['wpdb'] = $wpdb;
+            $events = [];
+            Functions\when('wp_remote_post')->alias(static function ($url, $args) use (&$events) {
+                $events[] = json_decode($args['body'], true);
+                return ['response' => ['code' => 200], 'body' => '{}'];
+            });
+            $fresh = $age !== null && $age < Watchdog::STALL_THRESHOLD_SECONDS;
+            self::assertSame($fresh ? 'archiving_files' : 'failed', (new TaskRunner($this->params(true)))->run());
+            self::assertSame($fresh ? 'archiving_files' : 'failed', $wpdb->rows[self::SNAPSHOT]['phase']);
+            self::assertCount($fresh ? 0 : 1, $events);
+            $state = json_decode($wpdb->rows[self::SNAPSHOT]['sub_state'], true);
+            if ($fresh) {
+                self::assertSame('lock_unavailable', $state['stage']);
+                self::assertSame($now - $age, $wpdb->rows[self::SNAPSHOT]['last_progress_at']);
+            } else {
+                self::assertSame('backup_lock_unavailable', $state['failed_in']);
+                self::assertSame('backup_lock_unavailable', $events[0]['phase_detail']['stage']);
+            }
+        }
+    }
+
+    public function testUnguardedContenderPreservesProgressRefreshedBeforeFailureWrite(): void
+    {
+        $this->assertUnguardedFailureCannotReplaceFreshOwner(false);
+    }
+
+    public function testUnguardedContenderPreservesOwnerInsertedBeforeFailureClaim(): void
+    {
+        $this->assertUnguardedFailureCannotReplaceFreshOwner(true);
+    }
+
+    private function assertUnguardedFailureCannotReplaceFreshOwner(bool $absent): void
+    {
+        $this->signing();
+        mkdir($this->root . '/' . self::SNAPSHOT . '.lock');
+        $wpdb = new FakeBackupTasksWpdb();
+        $wpdb->lockResponses = [null];
+        if (!$absent) { $wpdb->seedRow(self::SNAPSHOT, ['phase' => 'archiving_files', 'last_progress_at' => time() - Watchdog::STALL_THRESHOLD_SECONDS - 1]); }
+        $GLOBALS['wpdb'] = $wpdb;
+        $events = [];
+        Functions\when('wp_remote_post')->alias(static function ($url, $args) use (&$events) {
+            $events[] = json_decode($args['body'], true);
+            return ['response' => ['code' => 200], 'body' => '{}'];
+        });
+        $id = self::SNAPSHOT;
+        if ($absent) {
+            \Patchwork\redefine(FakeBackupTasksWpdb::class . '::query', function ($prepared) use ($wpdb, $id) {
+                if (str_contains($prepared, 'INSERT IGNORE')) { $wpdb->seedRow($id, ['phase' => 'archiving_files', 'sub_state' => '{"owner":"retain"}']); }
+                return \Patchwork\relay();
+            });
+        } else {
+            \Patchwork\redefine(FakeBackupTasksWpdb::class . '::update', function ($table, $data, ...$args) use ($wpdb, $id) {
+                if (($data['phase'] ?? '') === 'failed') {
+                    $wpdb->rows[$id]['last_progress_at'] = time();
+                    $wpdb->rows[$id]['sub_state'] = '{"owner":"retain"}';
+                }
+                return \Patchwork\relay();
+            });
+        }
+        self::assertSame('archiving_files', (new TaskRunner($this->params(true)))->run());
+        self::assertSame('archiving_files', $wpdb->rows[self::SNAPSHOT]['phase']);
+        self::assertSame(['owner' => 'retain', 'stage' => 'lock_unavailable'], json_decode($wpdb->rows[self::SNAPSHOT]['sub_state'], true));
+        self::assertSame([], $events);
+    }
+
+    public function testUnguardedContenderPreservesFreshFileLockOwner(): void
+    {
+        $this->signing();
+        $path = $this->root . '/' . self::SNAPSHOT . '.lock';
+        $holder = fopen($path, 'c');
+        self::assertTrue(flock($holder, LOCK_EX | LOCK_NB));
+        $wpdb = new FakeBackupTasksWpdb();
+        $wpdb->lockResponses = [null];
+        $wpdb->seedRow(self::SNAPSHOT, ['phase' => 'archiving_files', 'sub_state' => '{"owner_cursor":"retain"}']);
+        $before = $wpdb->rows[self::SNAPSHOT];
+        $GLOBALS['wpdb'] = $wpdb;
+        $events = [];
+        Functions\when('wp_remote_post')->alias(static function ($url, $args) use (&$events) {
+            $events[] = json_decode($args['body'], true);
+            return ['response' => ['code' => 200], 'body' => '{}'];
+        });
+        \Patchwork\redefine('fopen', static function ($filename, ...$args) use ($path) {
+            return $filename === $path ? false : \Patchwork\relay();
+        });
+        file_put_contents($this->root . '/out/owner-data', 'retain');
+        try {
+            self::assertSame('archiving_files', (new TaskRunner($this->params(true)))->run());
+            $after = $wpdb->rows[self::SNAPSHOT];
+            self::assertSame($before['phase'], $after['phase']);
+            self::assertSame($before['last_progress_at'], $after['last_progress_at']);
+            self::assertSame($before['started_at'], $after['started_at']);
+            self::assertSame(['owner_cursor' => 'retain', 'stage' => 'lock_unavailable'], json_decode($after['sub_state'], true));
+            self::assertSame([], $events);
+            self::assertFileExists($this->root . '/out/owner-data');
+            foreach ($wpdb->updates as $update) { self::assertSame(['sub_state'], array_keys($update['data'])); }
+        } finally { flock($holder, LOCK_UN); fclose($holder); }
+    }
+
+    public function testUnavailableGuardsDoNotPublishFailureWithoutTaskStorage(): void
     {
         $this->signing();
         unset($GLOBALS['wpdb']);
@@ -582,10 +755,8 @@ final class BackupArchiveBehaviorTest extends TestCase
             $events[] = json_decode($args['body'], true);
             return ['response' => ['code' => 200], 'body' => '{}'];
         });
-        self::assertSame(TaskRunner::PHASE_FAILED, (new TaskRunner($this->params(true)))->run());
-        self::assertCount(1, $events);
-        self::assertSame('backup_lock_unavailable', $events[0]['phase_detail']['stage']);
-        self::assertStringContainsString('cannot run safely', $events[0]['phase_detail']['message']);
+        self::assertSame(TaskRunner::PHASE_QUEUED, (new TaskRunner($this->params(true)))->run());
+        self::assertSame([], $events);
     }
 
     public function testAcquireRetriesWhenOpenedLockPathNamesAnotherInode(): void

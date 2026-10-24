@@ -233,8 +233,9 @@ final class TaskRunner
      * even be attempted (path unresolvable, or the filesystem/permissions
      * prevent opening the lock file — e.g. an exotic FS without flock()
      * support), a held GET_LOCK permits the run to proceed. If neither
-     * guard is held, the task fails with backup_lock_unavailable before
-     * entering the phase machine or reclaiming scratch files.
+     * guard is held, a fresh active task receives only a lock_unavailable
+     * breadcrumb. An absent or watchdog-stalled task fails with
+     * backup_lock_unavailable without entering a phase or reclaiming files.
      *
      * @return string Terminal phase reached this invocation. One of
      *                PHASE_COMPLETED, PHASE_FAILED, or — if a future phase
@@ -308,7 +309,9 @@ final class TaskRunner
         }
         /** @var resource|null $fileLockHandle */
         $fileLockHandle = $fileLock['handle'];
-        $guardsUnavailable = !$lockHeld && $fileLockHandle === null;
+        if (!$lockHeld && $fileLockHandle === null) {
+            return $this->handleUnavailableGuards();
+        }
 
         // GH #232 lock-file GC follow-up: set to true at every point this
         // invocation reaches a TERMINAL outcome for the snapshot (already
@@ -327,7 +330,7 @@ final class TaskRunner
             if ($task === null) {
                 $this->seedTask();
                 $task = $this->loadTask();
-                if ($task === null && !$guardsUnavailable) {
+                if ($task === null) {
                     // Seed failed (unwritable schema / missing $wpdb). We
                     // can't drive a state machine without a row.
                     throw new \RuntimeException('TaskRunner: cannot create task row');
@@ -343,11 +346,6 @@ final class TaskRunner
                 return $currentPhase;
             }
 
-            if ($guardsUnavailable) {
-                $currentPhase = 'backup_lock_unavailable';
-                throw new \RuntimeException('This host offers neither a database lock nor a working file lock in wp-content/wpmgr-agent. The backup cannot run safely. Ask your host to enable database locks or make that directory writable.');
-            }
-
             // GH #232: stamp the runner_started breadcrumb now that we hold
             // at least one real exclusivity guard (GET_LOCK and/or flock) and
             // have a loaded/seeded row. Feeds the observability ladder
@@ -356,7 +354,7 @@ final class TaskRunner
             //   stage=dispatch_entered                  => hook fired, runner never advanced
             //   stage=runner_started                     => a lock held, first phase failed to persist
             //   phase past 'queued'                      => advanced
-            // A task without either guard fails before this breadcrumb.
+            // A task without either guard returns before this breadcrumb.
             if ($lockHeld || $fileLockHandle !== null) {
                 $subState['stage'] = 'runner_started';
                 $this->saveTaskState($currentPhase, $subState);
@@ -474,7 +472,7 @@ final class TaskRunner
             // Scratch reclamation requires a held guard. Cleanup failures
             // must never mask the failure already persisted and reported.
             try {
-                if (!$guardsUnavailable) { $this->cleanupOnFailed(); }
+                $this->cleanupOnFailed();
             } catch (\Throwable $_) {
                 // Swallow.
             }
@@ -483,7 +481,7 @@ final class TaskRunner
             // A lock-unavailable failure remains terminal in task storage.
             try {
                 global $wpdb;
-                if (!$guardsUnavailable && is_object($wpdb)) {
+                if (is_object($wpdb)) {
                     $tasksTable = $this->prefix() . Schema::BACKUP_TASKS_TABLE;
                     /** @phpstan-ignore-next-line */
                     @$wpdb->delete($tasksTable, ['snapshot_id' => $this->snapshotId()], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; no core helper exists
@@ -798,9 +796,64 @@ final class TaskRunner
     }
 
     /**
-     * Record a `lock_contended` breadcrumb on the task row WITHOUT touching
-     * `phase` — called when getLock() reports we lost the race to another
-     * session that is provably already running this task.
+     * Without a held guard, fresh active tasks receive only a breadcrumb.
+     * Failure claims require an absent row or unchanged watchdog-stalled
+     * progress. Terminal tasks retain their existing outcome.
+     */
+    private function handleUnavailableGuards(): string
+    {
+        global $wpdb;
+        $phase = self::PHASE_QUEUED;
+        if (!is_object($wpdb)) { return $phase; }
+        $message = 'This host offers neither a database lock nor a working file lock in wp-content/wpmgr-agent. The backup cannot run safely. Ask your host to enable database locks or make that directory writable.';
+        $state = ['last_error' => $message, 'failed_in' => 'backup_lock_unavailable'];
+        try {
+            $task = $this->loadTask();
+            $claimed = false;
+            if ($task === null) {
+                $claimed = $this->seedTask(self::PHASE_FAILED, $state);
+                if (!$claimed) { $task = $this->loadTask(); }
+                if (!$claimed && $task === null) { return $phase; }
+            }
+            if (!$claimed) {
+                $phase = (string) $task['phase'];
+                if ($phase === self::PHASE_COMPLETED || $phase === self::PHASE_FAILED) { return $phase; }
+                // Match Watchdog::resumeIfStalled()'s progress-age rule.
+                if (time() - $task['last_progress_at'] < Watchdog::STALL_THRESHOLD_SECONDS) {
+                    $this->recordLockContended('lock_unavailable');
+                    return $phase;
+                }
+                $updated = $wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- atomic failure claim conditioned on the observed task phase and progress
+                    $this->tableName(),
+                    ['phase' => self::PHASE_FAILED, 'sub_state' => json_encode($state), 'last_progress_at' => time()],
+                    ['snapshot_id' => $this->snapshotId(), 'phase' => $phase, 'last_progress_at' => $task['last_progress_at']],
+                    ['%s', '%s', '%d'],
+                    ['%s', '%s', '%d']
+                );
+                if ($updated !== 1) {
+                    $task = $this->loadTask();
+                    $phase = (string) ($task['phase'] ?? self::PHASE_QUEUED);
+                    if ($task !== null && $phase !== self::PHASE_COMPLETED && $phase !== self::PHASE_FAILED) {
+                        $this->recordLockContended('lock_unavailable');
+                    }
+                    return $phase;
+                }
+            }
+        } catch (\Throwable $_) {
+            // Unreadable task storage cannot establish that an owner is absent.
+            return $phase;
+        }
+        try {
+            $this->postProgress(self::PHASE_FAILED, ['stage' => 'backup_lock_unavailable', 'message' => $message]);
+        } catch (\Throwable $_) {
+            // The terminal task remains persisted when progress delivery fails.
+        }
+        return self::PHASE_FAILED;
+    }
+
+    /**
+     * Record a lock breadcrumb without changing phase or progress time.
+     * Unavailable-guard breadcrumbs compare the raw cursor before writing.
      *
      * Reads the RAW sub_state column value directly (NOT through loadTask(),
      * which follows the sidecar-spill pointer and would rehydrate a
@@ -813,12 +866,14 @@ final class TaskRunner
      * Best-effort: a failure here must never throw — the caller (run()'s
      * loser path) already wraps this in its own try/catch, but every DB call
      * inside is additionally guarded so nothing here can escalate on its own.
+     *
+     * @param string $stage Coordination breadcrumb.
      */
-    private function recordLockContended(): void
+    private function recordLockContended(string $stage = 'lock_contended'): void
     {
         \WPMgr\Agent\Support\DebugLog::write(
-            'WPMgr TaskRunner: lock contended for snapshot ' . $this->snapshotId()
-            . ' — another session already holds the run-lock; skipping re-entry without mutating phase'
+            'WPMgr TaskRunner: ' . $stage . ' for snapshot ' . $this->snapshotId()
+            . ' — skipping re-entry without mutating phase'
         );
 
         global $wpdb;
@@ -845,18 +900,20 @@ final class TaskRunner
                     $envelope = $decoded;
                 }
             }
-            $envelope['stage'] = 'lock_contended';
+            $envelope['stage'] = $stage;
             $encoded = json_encode($envelope);
             if ($encoded === false) {
                 return;
             }
 
+            $where = ['snapshot_id' => $this->snapshotId()];
+            if ($stage === 'lock_unavailable') { $where['sub_state'] = $raw; }
             $wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned table; breadcrumb-only write, phase column untouched
                 $table,
                 ['sub_state' => $encoded],
-                ['snapshot_id' => $this->snapshotId()],
+                $where,
                 ['%s'],
-                ['%s']
+                array_fill(0, count($where), '%s')
             );
         } catch (\Throwable $e) {
             // Swallow — a breadcrumb write failure must never surface from
@@ -1683,7 +1740,7 @@ final class TaskRunner
     /**
      * Load the task row by snapshot_id. Returns null if the row doesn't exist.
      *
-     * @return array{phase:string,kind:string,sub_state:array<string,mixed>,resume_count:int,max_resumes:int}|null
+     * @return array{phase:string,kind:string,sub_state:array<string,mixed>,resume_count:int,max_resumes:int,last_progress_at:int}|null
      */
     private function loadTask(): ?array
     {
@@ -1698,7 +1755,7 @@ final class TaskRunner
         }
 
         // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- interpolated identifier is prefix+constant (trusted); value bound via %s placeholder
-        $sql = "SELECT phase, kind, sub_state, resume_count, max_resumes FROM {$table} WHERE snapshot_id = %s LIMIT 1";
+        $sql = "SELECT phase, kind, sub_state, resume_count, max_resumes, last_progress_at FROM {$table} WHERE snapshot_id = %s LIMIT 1";
         /** @phpstan-ignore-next-line — $wpdb is a runtime interface. */
         $prepared = $wpdb->prepare($sql, $this->snapshotId()); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- already prepared on the preceding line
         $row      = $wpdb->get_row($prepared, ARRAY_A); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.UnescapedDBParameter, PluginCheck.Security.DirectDB.UnescapedDBParameter -- direct query on plugin-owned table; value is the output of $wpdb->prepare()
@@ -1715,23 +1772,27 @@ final class TaskRunner
             'sub_state'    => $sub,
             'resume_count' => (int) ($row['resume_count'] ?? 0),
             'max_resumes'  => (int) ($row['max_resumes'] ?? 6),
+            'last_progress_at' => (int) ($row['last_progress_at'] ?? 0),
         ];
     }
 
     /**
-     * Insert a fresh task row in `queued` state. Caller-safe under retry: if
-     * the row already exists (snapshot_id PK) the INSERT is a no-op.
+     * Insert a task in the requested phase only when its snapshot has no row.
+     *
+     * @param string              $phase Initial phase; queued by default.
+     * @param array<string,mixed> $subState Initial task state.
+     * @return bool True only when this invocation inserted the row.
      */
-    private function seedTask(): void
+    private function seedTask(string $phase = self::PHASE_QUEUED, array $subState = []): bool
     {
         global $wpdb;
         if (!is_object($wpdb)) {
-            return;
+            return false;
         }
         /** @var \wpdb $wpdb */
         $table = $this->tableName();
         if ($table === '') {
-            return;
+            return false;
         }
         $now = time();
 
@@ -1746,15 +1807,15 @@ final class TaskRunner
             $sql, // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- identifier validated against information_schema / prefix+constant; values bound via placeholders
             $this->snapshotId(),
             $this->kind(),
-            self::PHASE_QUEUED,
-            '{}',
+            $phase,
+            $subState === [] ? '{}' : json_encode($subState),
             $now,
             $now,
             0,
             6
         );
         /** @phpstan-ignore-next-line */
-        $wpdb->query($prepared); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.UnescapedDBParameter, PluginCheck.Security.DirectDB.UnescapedDBParameter -- direct INSERT IGNORE on plugin-owned table; value is the output of $wpdb->prepare()
+        return $wpdb->query($prepared) === 1; // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.UnescapedDBParameter, PluginCheck.Security.DirectDB.UnescapedDBParameter -- direct INSERT IGNORE on plugin-owned table; value is the output of $wpdb->prepare()
     }
 
     /**

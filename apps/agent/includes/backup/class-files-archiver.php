@@ -846,6 +846,7 @@ final class FilesArchiver
         $state['part_path']            = $partPath;
         $state['open_flags']           = $openFlags;
         $state['queued_sources']       = [];
+        $state['deleted_entries']      = [];
         // If reopening on resume, the existing zip's numFiles is the
         // entry-rotation cursor. Same for filesize as the byte estimate.
         $state['part_entries']         = $zip->numFiles;
@@ -899,6 +900,12 @@ final class FilesArchiver
                 $zip = ($this->zipFactory)();
                 if ($zip->open($partPath, $state['open_flags']) !== true) { throw $failure; } // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- retains the libzip close diagnostic
                 $state['zip'] = $zip;
+                // Every rebuild retains this process's omissions from the part.
+                foreach ($state['deleted_entries'] as $rel => $_) {
+                    if ($zip->locateName((string) $rel) !== false && !$zip->deleteName((string) $rel)) {
+                        throw new ZipCloseException(basename($partPath), $zip->status, $zip->getStatusString()); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- ZipCloseException owns message escaping
+                    }
+                }
                 foreach ($state['queued_sources'] as $rel => $_) {
                     $metadata = $this->sourceMetadata((string) $rel);
                     if ($metadata === null) {
@@ -968,8 +975,11 @@ final class FilesArchiver
         unset($state['queued_sources'][$relativePath]);
         $zip = $state['zip'];
         if ($zip !== null) {
-            if ($zip->locateName($relativePath) !== false && !$zip->deleteName($relativePath)) {
-                throw new ZipCloseException(basename($state['part_path']), $zip->status, $zip->getStatusString()); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- ZipCloseException owns message escaping
+            if ($zip->locateName($relativePath) !== false) {
+                if (!$zip->deleteName($relativePath)) {
+                    throw new ZipCloseException(basename($state['part_path']), $zip->status, $zip->getStatusString()); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- ZipCloseException owns message escaping
+                }
+                $state['deleted_entries'][$relativePath] = true;
             }
             $state['part_entries'] = $zip->numFiles;
         }

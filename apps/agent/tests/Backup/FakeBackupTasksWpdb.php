@@ -150,6 +150,9 @@ final class FakeBackupTasksWpdb
         if ($id === '' || !isset($this->rows[$id])) {
             return 0;
         }
+        foreach ($where as $key => $value) {
+            if (($this->rows[$id][$key] ?? null) !== $value) { return 0; }
+        }
         $this->updates[] = ['table' => $table, 'data' => $data, 'where' => $where];
         foreach ($data as $k => $v) {
             $this->rows[$id][$k] = $v;
