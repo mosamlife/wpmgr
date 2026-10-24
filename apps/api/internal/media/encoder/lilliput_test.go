@@ -4,11 +4,17 @@ package encoder
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
+	"encoding/binary"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/jpeg"
+	"image/png"
 	"testing"
+
+	"github.com/discord/lilliput"
 )
 
 // makeJPEG renders a small gradient JPEG fixture in-memory so the golden test
@@ -93,5 +99,200 @@ func TestLilliputEncode_UnsupportedSource(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for non-image source")
+	}
+}
+
+func TestLilliputEncode_GreyscalePixels(t *testing.T) {
+	const width, height = 97, 65
+	grey := image.NewGray(image.Rect(0, 0, width, height))
+	rgb := image.NewRGBA(grey.Bounds())
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			v := uint8(160*x/(width-1) + 80*y/(height-1))
+			grey.SetGray(x, y, color.Gray{Y: v})
+			rgb.SetRGBA(x, y, color.RGBA{R: v, G: v, B: v, A: 255})
+		}
+	}
+	enc := NewLilliputEncoder(1)
+	defer enc.Close()
+	for _, tc := range []struct {
+		name     string
+		img      image.Image
+		png      bool
+		alpha    bool
+		oriented bool
+		channels int
+	}{
+		{name: "grey_jpeg", img: grey, channels: 1},
+		{name: "rgb_jpeg", img: rgb, channels: 3},
+		{name: "grey_png", img: grey, png: true, channels: 1},
+		{name: "grey_alpha_png", img: grey, png: true, alpha: true, channels: 4},
+		{name: "grey_jpeg_exif", img: grey, oriented: true, channels: 1},
+	} {
+		var source bytes.Buffer
+		if tc.alpha {
+			source.Write(makeGreyAlphaPNG(t, grey))
+		} else if tc.png {
+			if err := png.Encode(&source, tc.img); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			if err := jpeg.Encode(&source, tc.img, &jpeg.Options{Quality: 95}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		encoded := source.Bytes()
+		if tc.oriented {
+			// APP1 contains a little-endian TIFF with orientation 6 (90 degrees clockwise).
+			exif := []byte{
+				0xff, 0xe1, 0, 34, 'E', 'x', 'i', 'f', 0, 0,
+				'I', 'I', 42, 0, 8, 0, 0, 0, 1, 0,
+				0x12, 1, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
+			}
+			encoded = append(append(append([]byte{}, encoded[:2]...), exif...), encoded[2:]...)
+		}
+		want, _, err := image.Decode(bytes.NewReader(encoded))
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoder, err := lilliput.NewDecoder(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		header, err := decoder.Header()
+		decoder.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if channels := header.PixelType().Channels(); channels != tc.channels {
+			t.Fatalf("%s: source channels = %d, want %d", tc.name, channels, tc.channels)
+		}
+		if tc.oriented {
+			if header.Orientation() != lilliput.OrientationRightTop {
+				t.Fatalf("source orientation = %v, want right-top", header.Orientation())
+			}
+			rotated := image.NewNRGBA(image.Rect(0, 0, height, width))
+			for y := 0; y < height; y++ {
+				for x := 0; x < width; x++ {
+					rotated.Set(height-1-y, x, want.At(x, y))
+				}
+			}
+			want = rotated
+		}
+		for _, target := range []string{"avif", "webp", "original"} {
+			t.Run(tc.name+"/"+target, func(t *testing.T) {
+				res, err := enc.Encode(context.Background(), EncodeRequest{
+					Source: encoded, TargetFormat: target,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := decodeEncodedPixels(t, res.Output)
+				assertPixelsClose(t, got, want)
+			})
+		}
+	}
+}
+
+// makeGreyAlphaPNG writes PNG colour type 4: 8-bit grey plus alpha. Go's PNG
+// encoder writes NRGBA fixtures as colour type 6, so the channels are explicit here.
+func makeGreyAlphaPNG(t *testing.T, grey *image.Gray) []byte {
+	t.Helper()
+	var file, compressed bytes.Buffer
+	file.WriteString("\x89PNG\r\n\x1a\n")
+	chunk := func(kind string, data []byte) {
+		if err := binary.Write(&file, binary.BigEndian, uint32(len(data))); err != nil {
+			t.Fatal(err)
+		}
+		file.WriteString(kind)
+		file.Write(data)
+		crc := crc32.NewIEEE()
+		crc.Write([]byte(kind))
+		crc.Write(data)
+		if err := binary.Write(&file, binary.BigEndian, crc.Sum32()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	header := make([]byte, 13)
+	binary.BigEndian.PutUint32(header, uint32(grey.Bounds().Dx()))
+	binary.BigEndian.PutUint32(header[4:], uint32(grey.Bounds().Dy()))
+	header[8], header[9] = 8, 4
+	chunk("IHDR", header)
+	writer := zlib.NewWriter(&compressed)
+	for y := 0; y < grey.Bounds().Dy(); y++ {
+		row := []byte{0} // PNG filter: none.
+		for x := 0; x < grey.Bounds().Dx(); x++ {
+			row = append(row, grey.GrayAt(x, y).Y, uint8(64+160*y/(grey.Bounds().Dy()-1)))
+		}
+		if _, err := writer.Write(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	chunk("IDAT", compressed.Bytes())
+	chunk("IEND", nil)
+	return file.Bytes()
+}
+
+func decodeEncodedPixels(t *testing.T, encoded []byte) image.Image {
+	t.Helper()
+	decoder, err := lilliput.NewDecoder(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer decoder.Close()
+	header, err := decoder.Header()
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := lilliput.NewFramebuffer(header.Width(), header.Height())
+	defer frame.Close()
+	if err := decoder.DecodeTo(frame); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := lilliput.NewEncoder(".png", decoder, make([]byte, 1<<20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	pixels, err := writer.Encode(frame, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := png.Decode(bytes.NewReader(pixels))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return img
+}
+
+func assertPixelsClose(t *testing.T, got, want image.Image) {
+	t.Helper()
+	if got.Bounds() != want.Bounds() {
+		t.Fatalf("decoded bounds = %v, want %v", got.Bounds(), want.Bounds())
+	}
+	var total, maxDelta int
+	for y := want.Bounds().Min.Y; y < want.Bounds().Max.Y; y++ {
+		for x := want.Bounds().Min.X; x < want.Bounds().Max.X; x++ {
+			g := color.NRGBAModel.Convert(got.At(x, y)).(color.NRGBA)
+			w := color.NRGBAModel.Convert(want.At(x, y)).(color.NRGBA)
+			for i, gv := range []uint8{g.R, g.G, g.B, g.A} {
+				wv := []uint8{w.R, w.G, w.B, w.A}[i]
+				delta := int(gv) - int(wv)
+				if delta < 0 {
+					delta = -delta
+				}
+				total += delta
+				if delta > maxDelta {
+					maxDelta = delta
+				}
+			}
+		}
+	}
+	mean := float64(total) / float64(want.Bounds().Dx()*want.Bounds().Dy()*4)
+	if mean > 8 || maxDelta > 35 {
+		t.Errorf("pixel error: mean %.2f (limit 8), max %d (limit 35)", mean, maxDelta)
 	}
 }

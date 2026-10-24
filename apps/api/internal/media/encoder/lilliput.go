@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 
 	"github.com/discord/lilliput"
 )
@@ -110,6 +111,11 @@ func (e *LilliputEncoder) Encode(ctx context.Context, req EncodeRequest) (Encode
 	if !ok {
 		return EncodeResult{}, ErrUnsupportedSource
 	}
+	// AVIF receives BGR or BGRA pixels. Expand single-channel sources while
+	// retaining the decoder's orientation and colour profile metadata.
+	if params.outputExt == ".avif" && header.PixelType().Channels() == 1 {
+		decoder = &bgrDecoder{Decoder: decoder}
+	}
 
 	// Acquire a pooled ImageOps context.
 	var ops *lilliput.ImageOps
@@ -200,6 +206,27 @@ func (e *LilliputEncoder) Encode(ctx context.Context, req EncodeRequest) (Encode
 		}
 		return EncodeResult{}, encCtx.Err()
 	}
+}
+
+// bgrDecoder expands greyscale pixels before ImageOps normalizes orientation.
+type bgrDecoder struct {
+	lilliput.Decoder
+}
+
+func (d *bgrDecoder) DecodeTo(dst *lilliput.Framebuffer) error {
+	header, err := d.Header()
+	if err != nil {
+		return err
+	}
+	grey := lilliput.NewFramebuffer(header.Width(), header.Height())
+	defer grey.Close()
+	if err := d.Decoder.DecodeTo(grey); err != nil {
+		return err
+	}
+	if err := dst.Create3Channel(grey.Width(), grey.Height()); err != nil {
+		return err
+	}
+	return dst.CopyToOffsetNoBlend(grey, image.Rect(0, 0, grey.Width(), grey.Height()))
 }
 
 // encodeOptionsFor maps resolved params to lilliput's EncodeOptions map. Only
