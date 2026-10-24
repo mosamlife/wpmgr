@@ -6,8 +6,9 @@ import (
 	"unicode"
 )
 
-// Value returns a single display line of at most 200 runes. Mentions, chat
-// control sequences and Markdown link labels remain visible as plain text.
+// Value returns a single display line of at most 200 runes. Mentions,
+// character references, chat control sequences and Markdown link labels remain
+// visible as plain text.
 func Value(s string) string {
 	s = strings.ToValidUTF8(s, "")
 	s = strings.Map(func(r rune) rune {
@@ -21,15 +22,16 @@ func Value(s string) string {
 	count := 0
 	for _, r := range s {
 		size := 1
-		if r == '@' {
+		if r == '@' || r == '&' {
 			size = 2
 		}
 		if count+size > 200 {
 			break
 		}
 		switch r {
-		case '@':
-			b.WriteString("@\u2060")
+		case '@', '&':
+			b.WriteRune(r)
+			b.WriteRune('\u2060')
 		case '<':
 			b.WriteRune('‹')
 		case '>':

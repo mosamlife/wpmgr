@@ -125,6 +125,7 @@ func TestWebhookTextSiteValues(t *testing.T) {
 		{name: "Example", detail: "wp_fatal_error", want: "Example is down: WordPress critical error"},
 		{name: "Example", detail: "wp_db_error", want: "Example is down: database connection error"},
 		{name: "Example", security: true, want: "Security event on Example: user.created"},
+		{name: "&#64;channel", want: "&\u2060#64;channel is down"},
 	}
 	for i, tc := range cases {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
