@@ -16,6 +16,9 @@ import (
 // pixel guard (MaxSourcePixels) catches anything pathological.
 const maxImageDim = 8192
 
+// imageOpsBufferBytes is the backing capacity of each pooled framebuffer.
+var imageOpsBufferBytes = maxImageDim * maxImageDim * 4
+
 // outBufCap is the initial output buffer size handed to Transform. lilliput
 // grows it if needed; 50 MB matches the MaxSourceBytes guard so a worst-case
 // re-encode never reallocs in the common path.
@@ -218,7 +221,13 @@ func (d *bgrDecoder) DecodeTo(dst *lilliput.Framebuffer) error {
 	if err != nil {
 		return err
 	}
-	grey := lilliput.NewFramebuffer(header.Width(), header.Height())
+	pixels := int64(header.Width()) * int64(header.Height())
+	if pixels > int64(imageOpsBufferBytes)/3 {
+		return ErrDimensionsTooBig
+	}
+	// NewFramebuffer reserves four bytes per nominal pixel; DecodeTo sets the
+	// actual dimensions. Round the single-channel byte count up to that unit.
+	grey := lilliput.NewFramebuffer(int((pixels+3)/4), 1)
 	defer grey.Close()
 	if err := d.Decoder.DecodeTo(grey); err != nil {
 		return err

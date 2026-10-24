@@ -7,6 +7,7 @@ import (
 	"compress/zlib"
 	"context"
 	"encoding/binary"
+	"errors"
 	"hash/crc32"
 	"image"
 	"image/color"
@@ -192,6 +193,86 @@ func TestLilliputEncode_GreyscalePixels(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestLilliputEncode_GreyscaleCapacity(t *testing.T) {
+	const poolDim = 24
+	previousCapacity := imageOpsBufferBytes
+	imageOpsBufferBytes = poolDim * poolDim * 4
+	t.Cleanup(func() { imageOpsBufferBytes = previousCapacity })
+
+	pool := make(chan *lilliput.ImageOps, 1)
+	pool <- lilliput.NewImageOps(poolDim)
+	enc := &LilliputEncoder{pool: pool}
+	defer enc.Close()
+	for _, tc := range []struct {
+		name          string
+		width, height int
+		wantErr       bool
+	}{
+		{name: "just_over_capacity", width: imageOpsBufferBytes/3 + 1, height: 1, wantErr: true},
+		{name: "exact_capacity", width: 32, height: 24},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			grey := image.NewGray(image.Rect(0, 0, tc.width, tc.height))
+			for y := 0; y < tc.height; y++ {
+				for x := 0; x < tc.width; x++ {
+					grey.SetGray(x, y, color.Gray{Y: uint8(160*x/max(1, tc.width-1) + 80*y/max(1, tc.height-1))})
+				}
+			}
+			var source bytes.Buffer
+			if err := png.Encode(&source, grey); err != nil {
+				t.Fatal(err)
+			}
+			res, err := enc.Encode(context.Background(), EncodeRequest{Source: source.Bytes(), TargetFormat: "avif"})
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertPixelsClose(t, decodeEncodedPixels(t, res.Output), grey)
+				return
+			}
+			if !errors.Is(err, ErrDimensionsTooBig) {
+				t.Errorf("encode error = %v, want ErrDimensionsTooBig", err)
+			}
+
+			decoder, err := lilliput.NewDecoder(source.Bytes())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer decoder.Close()
+			if _, err := decoder.Header(); err != nil {
+				t.Fatal(err)
+			}
+			probe := &decodeProbe{Decoder: decoder}
+			adapter := &bgrDecoder{Decoder: probe}
+			dst := lilliput.NewFramebuffer(poolDim, poolDim)
+			defer dst.Close()
+			// Header may allocate its metadata object; rejection must add no
+			// allocations for expansion beyond that baseline.
+			headerAllocs := testing.AllocsPerRun(1, func() { _, err = probe.Header() })
+			if err != nil {
+				t.Fatal(err)
+			}
+			allocs := testing.AllocsPerRun(1, func() { err = adapter.DecodeTo(dst) })
+			if !errors.Is(err, ErrDimensionsTooBig) {
+				t.Errorf("adapter error = %v, want ErrDimensionsTooBig", err)
+			}
+			if probe.calls != 0 || allocs != headerAllocs {
+				t.Errorf("rejected expansion: decode calls = %d, expansion allocations = %g; want none", probe.calls, allocs-headerAllocs)
+			}
+		})
+	}
+}
+
+type decodeProbe struct {
+	lilliput.Decoder
+	calls int
+}
+
+func (d *decodeProbe) DecodeTo(*lilliput.Framebuffer) error {
+	d.calls++
+	return errors.New("pixel decoding reached")
 }
 
 // makeGreyAlphaPNG writes PNG colour type 4: 8-bit grey plus alpha. Go's PNG
