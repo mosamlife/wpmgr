@@ -340,7 +340,7 @@ final class FilesArchiver
             }
             $pathExcludes[$entry] = true;
         }
-        $this->pathExcludes = array_values(array_keys($pathExcludes));
+        $this->pathExcludes = array_map('strval', array_keys($pathExcludes));
 
         // Merge defaults + caller excludes, dedupe, drop empties. Segment
         // names only — slashes in entries would never match an exploded
@@ -353,7 +353,7 @@ final class FilesArchiver
             }
             $merged[$entry] = true;
         }
-        $this->excludes = array_values(array_keys($merged));
+        $this->excludes = array_map('strval', array_keys($merged));
 
         $this->maxPartBytes = isset($opts['max_part_bytes'])
             ? max(1, (int) $opts['max_part_bytes'])
@@ -378,7 +378,7 @@ final class FilesArchiver
                 $normExts[$ext] = true;
             }
         }
-        $this->excludeExtensions = array_values(array_keys($normExts));
+        $this->excludeExtensions = array_map('strval', array_keys($normExts));
 
         // A5 (#187): exclude by file size. 0 means disabled.
         $excludeMb = isset($opts['exclude_file_size_mb']) && is_numeric($opts['exclude_file_size_mb'])
@@ -834,7 +834,7 @@ final class FilesArchiver
         }
 
         if (!$zip->close()) {
-            throw new \RuntimeException('FilesArchiver: zip close failed for ' . esc_html($partPath));
+            throw new ZipCloseException(basename($partPath), $zip->status, $zip->getStatusString()); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- ZipCloseException escapes the reason and part; libzip status is an integer
         }
         $size = (int) @filesize($partPath);
         $state['zip']       = null;

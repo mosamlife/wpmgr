@@ -124,7 +124,8 @@ final class TaskRunner
      *            manifest_endpoint:string,progress_endpoint:string,chunk_bytes:int,
      *            scratch_dir:string,wp_content_path:string,db:array<string,string>,
      *            is_incremental?:bool,parent_snapshot_id?:string,base_snapshot_id?:string,
-     *            generation?:int,prev_files_list_chunks?:list<array<string,string>>}
+     *            generation?:int,prev_files_list_chunks?:list<array<string,string>>,
+     *            timing?:array{received_at:int,preflight_done_at:int,claimed_at:int}}
      */
     private array $params;
 
@@ -133,11 +134,16 @@ final class TaskRunner
 
     private ?ProgressClient $progressClient = null;
 
+    private ?int $workerStartedAt = null;
+
+    private bool $timingReported = false;
+
     /**
      * @param array{snapshot_id:string,kind:string,age_recipient:string,
      *              presign_endpoint:string,manifest_endpoint:string,
      *              progress_endpoint:string,chunk_bytes:int,scratch_dir:string,
-     *              wp_content_path:string,db:array<string,string>} $params
+     *              wp_content_path:string,db:array<string,string>,
+     *              timing?:array{received_at:int,preflight_done_at:int,claimed_at:int}} $params
      */
     public function __construct(array $params)
     {
@@ -234,6 +240,8 @@ final class TaskRunner
      */
     public function run(): string
     {
+        $this->workerStartedAt = time();
+        $this->timingReported = false;
         @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, PHPCompatibility.FunctionUse.ArgumentFunctionsReportCurrentValue.NeedsInspection, Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup loop must not hit max_execution_time; @-guarded, no-op when disabled
         @ignore_user_abort(true);
 
@@ -440,10 +448,15 @@ final class TaskRunner
                 // Swallow.
             }
             try {
-                $this->postProgress(self::PHASE_FAILED, [
+                $failureDetail = [
                     'stage'   => $currentPhase,
                     'message' => substr($e->getMessage(), 0, 240),
-                ]);
+                ];
+                if ($e instanceof ZipCloseException) {
+                    $failureDetail['part'] = $e->part();
+                    $failureDetail['libzip_status'] = $e->libzipStatus();
+                }
+                $this->postProgress(self::PHASE_FAILED, $failureDetail);
             } catch (\Throwable $_) {
                 // Swallow.
             }
@@ -1994,6 +2007,16 @@ final class TaskRunner
     {
         if ($this->progressClient === null) {
             return;
+        }
+        if (!$this->timingReported && $this->workerStartedAt !== null && isset($this->params['timing'])) {
+            $timing = $this->params['timing'];
+            $detail['timing'] = [
+                'received_at'       => (int) $timing['received_at'],
+                'preflight_done_at' => (int) $timing['preflight_done_at'],
+                'claimed_at'        => (int) $timing['claimed_at'],
+                'worker_started_at' => $this->workerStartedAt,
+            ];
+            $this->timingReported = true;
         }
         try {
             $this->progressClient->post($phase, $detail);
