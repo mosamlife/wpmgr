@@ -6,6 +6,8 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.198] - 2026-10-24
+
 ### Added
 
 - Alert webhooks for uptime, application, security and vulnerability alerts now carry a readable `text` line, so Slack, Mattermost and Rocket.Chat incoming webhooks accept them directly. Every existing field and the signature are unchanged (#956).
