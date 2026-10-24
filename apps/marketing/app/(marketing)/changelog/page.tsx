@@ -50,6 +50,102 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.198",
+    date: "2026-10-24",
+    summary:
+      "AI connections gain Elementor page creation and editing with undo, backups handle more host and file conditions, alert webhooks work directly with chat services, and site deletion, image conversion and security dependencies improve.",
+    items: [
+      {
+        tag: "Added",
+        text: "Alert webhooks for uptime, application, security and vulnerability alerts now carry a readable text line that Slack, Mattermost and Rocket.Chat incoming webhooks accept directly. Existing fields and the signature stay the same.",
+      },
+      {
+        tag: "Added",
+        text: "An AI connected through WPMgr can create an Elementor draft page or post from an outline, using classic widgets in containers or sections and columns. You approve each request in WPMgr, nothing is published, and undo moves an untouched draft to the trash. It needs Elementor 3.20 to 4.3; Atomic editor requests are refused. The approval card shows the version and layout and links to edit or preview the draft. Agent 0.61.161; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Added",
+        text: "A connected AI can read an Elementor page's structure and edit drafts it created, in batches of up to 25 changes you approve in WPMgr. Published pages can be read but never changed. Edits refuse conflicting or unsaved changes, open editors and database tables that cannot roll back a failed change. Each edit can be undone for 14 days, newest first, while it remains a draft and later changes have not altered what the edit wrote. Copies kept for undo are cleared after 15 days. It needs Elementor 3.20 to 4.3. Agent 0.61.163; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Added",
+        text: "A connected AI can create and edit a designed Elementor draft with a hero, features, stats, logos, testimonials, pricing, FAQ and a call to action, using its chosen colours, fonts, spacing and corners. On block themes the page fills the screen without the theme's header and footer. Section and text changes can be undone, saving refreshes the stylesheet once and keeps page settings and the template, and undo restores both exactly. Agent 0.61.165; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Added",
+        text: "A connected AI can read Elementor's own widgets and settings and add, change, duplicate, move or remove those widgets, following the site's approval settings with undo. Undo restores data rows in place. Sites whose Elementor version builds settings only in the editor get a plain explanation that the settings are unavailable. Agent 0.61.166; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Changed",
+        text: "WordPress core downgrades now need an explicit instruction from WPMgr, and sites that disallow file changes no longer receive core updates. Plugin and theme rollbacks and updates are unchanged. Agent 0.61.162; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Changed",
+        text: "Undoing creation of an Elementor draft now also works after WPMgr has edited it, including an edit that failed and was put back. Changes by a person, autosaves and an open editor still stop the undo. Agent 0.61.163; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Changed",
+        text: "Reading an editable Elementor draft now reports open editors and unsaved changes without changing the site. An edit or undo refused because an editor is open is marked as safe to try again once its lock lapses; other conflicts are not. Agent 0.61.164; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Changed",
+        text: "AI request details are cleared 15 days after completion. Who made the request, when, its kind and its result stay, and the request card says when the details have been cleared.",
+      },
+      {
+        tag: "Fixed",
+        text: "Backup exclusions match folders named with digits. Files that change, disappear or cannot be read are skipped and reported, keeping the previous copy in incremental backups. Unfinished parts name the zip library's reason, duplicate commands leave a running backup alone, and two runs cannot work on the same backup. Hosts without a usable database or file lock get a clear refusal, and invalid UTF-8 file names no longer stop progress reports. Agent 0.61.167; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Fixed",
+        text: "Backups are never sent without saved exclusions after a settings read error, saving notification settings keeps backup exclusions, and the snapshot API returns stored backup progress again.",
+      },
+      {
+        tag: "Fixed",
+        text: "Black-and-white images convert to AVIF correctly, without repeated, colour-fringed thumbnails.",
+      },
+      {
+        tag: "Fixed",
+        text: "Cancelling the Update agent dialog leaves Sites usable. Site and organisation deletion works again when one database role owns the tables and runs the app, and site deletion is faster with clearer progress feedback.",
+      },
+      {
+        tag: "Fixed",
+        text: "Core updates and rollbacks report the WordPress version installed on disk. Sites with Composer-managed core skip core updates with instructions to update composer.json and redeploy, and failures before any core file is replaced report that core was not changed. Agent 0.61.162; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Fixed",
+        text: "Backup chunk uploads make up to three attempts for temporary storage failures, allow 120 seconds per attempt and request a fresh upload address once when needed. A final failure names the storage host and HTTP status and storage error code, or the network error. Agent 0.61.162; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Fixed",
+        text: "A site that refuses a signed command now names the check that refused it, such as a clock mismatch, malformed token or signature that did not verify. Agent 0.61.162; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Fixed",
+        text: "Deleting the plugin removes its saved options on that site and in multisite network settings, leaving other sites' options alone. Failed restores keep what automatic rollback needs, and ended restores clear their run settings. Agent 0.61.162; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Fixed",
+        text: "Framework names in wp-config.php comments no longer stop constants being added; a real require of the framework's config still leaves the file alone. Plugin and theme updates are reported as already up to date only when WordPress checked them, and refused or empty update and rollback requests leave another update's maintenance mode alone. Agent 0.61.162; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Fixed",
+        text: "Image address rewriting leaves unchanged content and post meta exactly as they were and preserves JSON escaping apart from the rewritten addresses. Agent 0.61.162; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Fixed",
+        text: "The plugin listing and WordPress admin text now correctly state that backup archive protection at rest comes from the storage destination. Re-enroll and Disconnect keep the site's age key for authenticator-app secrets. The privacy listing also describes the read results and draft and change previews carried by AI requests. Agent 0.61.162; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Fixed",
+        text: "Editing an Elementor draft after someone previews it now succeeds when only that page's generated style record changes. Changes outside the page still refuse the edit and put the page back. Agent 0.61.164; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Security",
+        text: "The marketing site moves to Next.js 16.4.1, the dashboard to DOMPurify 3.4.17 and Zod 4.6.7, and the API and media-encoder images to Go 1.26.10 for advisories published in October 2026.",
+      },
+    ],
+  },
+  {
     version: "0.61.183",
     date: "2026-10-09",
     summary:
