@@ -67,6 +67,12 @@ overrides:
   # so they move together.
   seroval: 1.6.8
   seroval-plugins: 1.6.8
+  # DOMPurify up to 3.4.16: a SAFE_FOR_TEMPLATES bypass in shadow-root content
+  # (GHSA-cg2g-xh64-v4q7, critical) and IN_PLACE hooks leaving detached
+  # handlers armed (GHSA-mrv2-3pqr-j5jr, high), both fixed in 3.4.17. The web app
+  # declares ^3.4.17 itself; this pin carries posthog-js's copy (it declares
+  # ^3.4.12, so 3.4.17 is inside its range).
+  dompurify: 3.4.17
 # Documented audit exceptions. Every entry must state WHY the advisory cannot be
 # fixed by pinning and WHAT would let us drop the exception, so this list stays
 # short and reviewable rather than becoming a place to silence real findings.
