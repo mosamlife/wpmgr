@@ -138,6 +138,10 @@ final class TaskRunner
 
     private bool $timingReported = false;
 
+    private bool $lockIdentityUnverified = false;
+
+    private bool $lockIdentityReported = false;
+
     private int $skippedSourcesCount = 0;
 
     /** @var list<string> Relative paths omitted from the snapshot. */
@@ -247,6 +251,8 @@ final class TaskRunner
     {
         $this->workerStartedAt = time();
         $this->timingReported = false;
+        $this->lockIdentityUnverified = false;
+        $this->lockIdentityReported = false;
         @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, PHPCompatibility.FunctionUse.ArgumentFunctionsReportCurrentValue.NeedsInspection, Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup loop must not hit max_execution_time; @-guarded, no-op when disabled
         @ignore_user_abort(true);
 
@@ -309,6 +315,8 @@ final class TaskRunner
         }
         /** @var resource|null $fileLockHandle */
         $fileLockHandle = $fileLock['handle'];
+        $identityUnverified = !empty($fileLock['identity_unverified']);
+        $this->lockIdentityUnverified = $identityUnverified;
         if (!$lockHeld && $fileLockHandle === null) {
             return $this->handleUnavailableGuards();
         }
@@ -356,7 +364,8 @@ final class TaskRunner
             //   phase past 'queued'                      => advanced
             // A task without either guard returns before this breadcrumb.
             if ($lockHeld || $fileLockHandle !== null) {
-                $subState['stage'] = 'runner_started';
+                $subState['stage'] = $this->lockIdentityUnverified ? 'lock_identity_unverified' : 'runner_started';
+                if ($this->lockIdentityUnverified) { $subState['lock_identity_unverified'] = true; }
                 $this->saveTaskState($currentPhase, $subState);
             }
 
@@ -504,7 +513,7 @@ final class TaskRunner
                 // Only the terminal owner removes its own path, while its
                 // flock is still held. Losers never reclaim a lock file.
                 try {
-                    if ($terminal) { $this->cleanupFileLock($fileLockHandle); }
+                    if ($terminal) { $this->cleanupFileLock($fileLockHandle, $identityUnverified); }
                 } finally {
                     $this->releaseFileLock($fileLockHandle);
                 }
@@ -556,6 +565,7 @@ final class TaskRunner
 
         /** @var resource $fileLockHandle */
         $fileLockHandle = $fileLock['handle'];
+        $identityUnverified = !empty($fileLock['identity_unverified']);
 
         try {
             $callback();
@@ -565,7 +575,7 @@ final class TaskRunner
             }
             // Reclaim the owner's path while its flock is still held.
             try {
-                $this->cleanupFileLock($fileLockHandle);
+                $this->cleanupFileLock($fileLockHandle, $identityUnverified);
             } finally {
                 $this->releaseFileLock($fileLockHandle);
             }
@@ -705,7 +715,7 @@ final class TaskRunner
      *     without flock() support). run() requires a held database guard
      *     in this case; reclamation requires a held file guard.
      *
-     * @return array{handle:resource|null,contended:bool}
+     * @return array{handle:resource|null,contended:bool,identity_unverified?:bool}
      */
     private function acquireFileLock(): array
     {
@@ -724,10 +734,11 @@ final class TaskRunner
 
     /**
      * Acquire an inode-checked, non-blocking file lock. A pathname change
-     * retries acquisition; repeated changes are treated as contention.
+     * retries acquisition. Repeated flock success with unverifiable identity
+     * permits a held-lock fallback whose pathname must never be unlinked.
      * Existing-only acquisition never creates a janitor candidate.
      *
-     * @return array{handle:resource|null,contended:bool}
+     * @return array{handle:resource|null,contended:bool,identity_unverified?:bool}
      */
     public static function acquireFileLockAtPath(string $path, bool $create = true): array
     {
@@ -743,6 +754,9 @@ final class TaskRunner
             if (self::fileLockMatchesPath($handle, $path)) {
                 if ($create) { @chmod($path, 0600); } // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- private coordination file permissions
                 return ['handle' => $handle, 'contended' => false];
+            }
+            if ($attempt === 2) {
+                return ['handle' => $handle, 'contended' => false, 'identity_unverified' => true];
             }
             flock($handle, LOCK_UN);
             fclose($handle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- release a stale inode before retrying
@@ -786,11 +800,12 @@ final class TaskRunner
      * held. A different inode belongs to another owner and is retained.
      *
      * @param resource $handle This invocation's held file lock.
+     * @param bool $identityUnverified Whether this acquisition used the identity fallback.
      */
-    private function cleanupFileLock($handle): void
+    private function cleanupFileLock($handle, bool $identityUnverified): void
     {
         $path = $this->fileLockPath();
-        if ($path !== '' && self::fileLockMatchesPath($handle, $path)) {
+        if (!$identityUnverified && $path !== '' && self::fileLockMatchesPath($handle, $path)) {
             wp_delete_file($path);
         }
     }
@@ -825,7 +840,7 @@ final class TaskRunner
                 }
                 $updated = $wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- atomic failure claim conditioned on the observed task phase and progress
                     $this->tableName(),
-                    ['phase' => self::PHASE_FAILED, 'sub_state' => json_encode($state), 'last_progress_at' => time()],
+                    ['phase' => self::PHASE_FAILED, 'sub_state' => self::encodeSubState($state), 'last_progress_at' => time()],
                     ['snapshot_id' => $this->snapshotId(), 'phase' => $phase, 'last_progress_at' => $task['last_progress_at']],
                     ['%s', '%s', '%d'],
                     ['%s', '%s', '%d']
@@ -895,13 +910,13 @@ final class TaskRunner
 
             $envelope = [];
             if (is_string($raw) && $raw !== '') {
-                $decoded = json_decode($raw, true);
+                $decoded = self::decodeStateJson($raw);
                 if (is_array($decoded)) {
                     $envelope = $decoded;
                 }
             }
             $envelope['stage'] = $stage;
-            $encoded = json_encode($envelope);
+            $encoded = self::encodeSubState($envelope);
             if ($encoded === false) {
                 return;
             }
@@ -1410,17 +1425,8 @@ final class TaskRunner
             // uploadChunks() (per its checkpoint contract) so no local file
             // is ever deleted on top of an unpersisted cursor.
             //
-            // GH #283 follow-up: saveTaskState() also has three SILENT
-            // no-op paths (no $wpdb, no resolvable table name, or a
-            // json_encode failure) that persist nothing and return
-            // normally, with no exception to propagate. Left unchecked,
-            // checkpointAndFlush() would see the checkpoint callback return
-            // without throwing and go on to delete this batch's local
-            // chunk files even though uploaded_hashes was never actually
-            // advanced, reproducing the exact "missing local chunk for
-            // upload" failure on the next resume. Treat a false return the
-            // same as a thrown exception: throw here so checkpointAndFlush()
-            // keeps every queued file on disk for the next resume.
+            // Local chunks remain until the checkpoint is acknowledged.
+            // Unavailable storage or encoding failures retain them for resume.
             function (array $partialUploadCursor) use (&$subState): void {
                 $subState['upload'] = $partialUploadCursor;
                 $persisted = $this->saveTaskState(self::PHASE_ENCRYPTING_UPLOADING, $subState);
@@ -1710,7 +1716,7 @@ final class TaskRunner
         if (!is_string($raw) || $raw === '') {
             return [];
         }
-        $decoded = json_decode($raw, true);
+        $decoded = self::decodeStateJson($raw);
         if (!is_array($decoded)) {
             return [];
         }
@@ -1726,7 +1732,7 @@ final class TaskRunner
             if (is_file($sidecarPath)) {
                 $sidecarRaw = @file_get_contents($sidecarPath);
                 if ($sidecarRaw !== false && $sidecarRaw !== '') {
-                    $full = json_decode($sidecarRaw, true);
+                    $full = self::decodeStateJson($sidecarRaw);
                     if (is_array($full)) {
                         $decoded = $full;
                     }
@@ -1735,6 +1741,54 @@ final class TaskRunner
         }
 
         return $decoded;
+    }
+
+    /** Encode resume state without changing filename bytes in keys or values. */
+    public static function encodeSubState(array $state): string
+    {
+        $json = json_encode($state);
+        if ($json === false && json_last_error() === JSON_ERROR_UTF8) {
+            $json = json_encode(['_wpmgr_byte_state' => 1, 'data' => self::mapStateBytes($state, true)]);
+        }
+        if ($json === false) { throw new \RuntimeException('TaskRunner: cannot encode task state: ' . esc_html(json_last_error_msg())); }
+        return $json;
+    }
+
+    /** @return array<string,mixed>|null */
+    private static function decodeStateJson(string $json): ?array
+    {
+        $state = json_decode($json, true);
+        if (!is_array($state)) { return null; }
+        if (($state['_wpmgr_byte_state'] ?? null) !== 1) { return $state; }
+        if (!isset($state['data']) || !is_array($state['data'])) { return null; }
+        try {
+            $decoded = self::mapStateBytes($state['data'], false);
+            foreach ($state as $key => $value) {
+                if ($key !== '_wpmgr_byte_state' && $key !== 'data') { $decoded[$key] = $value; }
+            }
+            return $decoded;
+        }
+        catch (\UnexpectedValueException $_) { return null; }
+    }
+
+    /** @return array<mixed> Reversible base64 strings, including array keys. */
+    private static function mapStateBytes(array $state, bool $encode): array
+    {
+        $result = [];
+        foreach ($state as $key => $value) {
+            if (is_string($key)) {
+                if (!$encode && !str_starts_with($key, 's:')) { throw new \UnexpectedValueException('Invalid byte-state key'); }
+                $key = $encode ? 's:' . base64_encode($key) : base64_decode(substr($key, 2), true);
+                if ($key === false) { throw new \UnexpectedValueException('Invalid byte-state key'); }
+            }
+            if (is_array($value)) { $value = self::mapStateBytes($value, $encode); }
+            elseif (is_string($value)) {
+                $value = $encode ? base64_encode($value) : base64_decode($value, true);
+                if ($value === false) { throw new \UnexpectedValueException('Invalid byte-state value'); }
+            }
+            $result[$key] = $value;
+        }
+        return $result;
     }
 
     /**
@@ -1808,7 +1862,7 @@ final class TaskRunner
             $this->snapshotId(),
             $this->kind(),
             $phase,
-            $subState === [] ? '{}' : json_encode($subState),
+            $subState === [] ? '{}' : self::encodeSubState($subState),
             $now,
             $now,
             0,
@@ -1867,27 +1921,16 @@ final class TaskRunner
      * is done AFTER the sidecar write to avoid a false-positive on the
      * pointer row (the pointer is tiny and should never fail).
      *
-     * GH #283 follow-up: the three early-return paths below (no $wpdb, no
-     * table name, json_encode failure) used to persist nothing and return
-     * NORMALLY, indistinguishable from a genuine durable write to any caller
-     * that only checks "did this throw". A caller relying on "no exception
-     * means durably persisted" (e.g. EncryptAndUpload's checkpoint contract)
-     * could then treat those chunks as safely deletable when nothing was
-     * ever written. The return value makes that distinction explicit: `true`
-     * only when the write genuinely reached durable storage (the DB row or
-     * the sidecar file), `false` on each of the three no-op paths. Existing
-     * callers that ignore the return value are unaffected (PHP permits
-     * discarding a return value); this is purely additive.
+     * Filename bytes in resume fields use a reversible JSON envelope when
+     * necessary. Display samples and diagnostics use UTF-8 replacement.
+     * A checkpoint is acknowledged only after the database accepts it.
      *
      * @param string              $phase    New phase.
      * @param array<string,mixed> $subState New sub_state to persist.
-     * @return bool True when the state was durably persisted (DB row or
-     *              sidecar file). False on a silent no-op path (no $wpdb, no
-     *              resolvable table name, or json_encode failure): the
-     *              caller should treat this exactly like a thrown exception
-     *              for any invariant that depends on durability.
-     * @throws \RuntimeException When the DB write fails AND we cannot fall
-     *                           back to the sidecar.
+     * @return bool True when the database accepts the checkpoint; false when
+     *              task storage is unavailable. Callers requiring durability
+     *              must reject a false result.
+     * @throws \RuntimeException On encoding or database-write failure.
      *
      * `protected` is a deliberate test seam: the ADR-051 prevMap-pipeline e2e
      * overrides this to a no-op so runArchivingFiles can be driven without a
@@ -1906,15 +1949,13 @@ final class TaskRunner
         }
 
         $now     = time();
-        $encoded = json_encode($subState);
-        if ($encoded === false || $encoded === '') {
-            // Last-resort: skip the write so the watchdog re-enters from the
-            // last good state. json_encode should never fail for the small
-            // part-cursor state we persist; if it does, logging is better
-            // than wiping the prior cursor with '{}'.
-            \WPMgr\Agent\Support\DebugLog::write('WPMgr TaskRunner: sub_state json_encode failed for phase ' . $phase . ' — skipping state write to preserve the prior cursor');
-            return false;
+        if (isset($subState['files']['skipped_sources'])) {
+            $subState['files']['skipped_sources'] = array_map(static fn ($path): string => json_decode(json_encode((string) $path, JSON_INVALID_UTF8_SUBSTITUTE), true), $subState['files']['skipped_sources']);
         }
+        if (isset($subState['last_error'])) {
+            $subState['last_error'] = json_decode(json_encode($subState['last_error'], JSON_INVALID_UTF8_SUBSTITUTE), true);
+        }
+        $encoded = self::encodeSubState($subState);
 
         $this->lastDbUpdate = $now;
 
@@ -1931,7 +1972,7 @@ final class TaskRunner
             if ($written !== false && $written === strlen($encoded)) {
                 @rename($tmpPath, $sidecarPath); // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- atomic same-filesystem swap; WP_Filesystem::move() is copy+delete (non-atomic) and breaks crash/watchdog-resume safety
                 // DB column holds only the pointer; the full cursor is on disk.
-                $pointer    = json_encode([self::SUBSTATE_SIDECAR_KEY => true, 'file' => $sidecarPath]);
+                $pointer    = self::encodeSubState([self::SUBSTATE_SIDECAR_KEY => true, 'file' => $sidecarPath]);
                 $rowEncoded = $pointer !== false ? $pointer : $encoded;
             } else {
                 wp_delete_file($tmpPath);
@@ -2023,6 +2064,11 @@ final class TaskRunner
     {
         if ($this->progressClient === null) {
             return;
+        }
+        if ($this->lockIdentityUnverified && !$this->lockIdentityReported) {
+            $detail['stage'] = $detail['stage'] ?? 'lock_identity_unverified';
+            $detail['lock_identity_unverified'] = true;
+            $this->lockIdentityReported = true;
         }
         if ($this->skippedSourcesCount > 0) {
             $detail['skipped_sources_count'] = $this->skippedSourcesCount;

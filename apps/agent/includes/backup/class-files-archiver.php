@@ -77,6 +77,9 @@ final class FilesArchiver
     /** @var array<string,bool> Paths omitted from this archive. */
     private array $skippedSources = [];
 
+    /** @var array<string,array{size:int,mtime:int}> Skipped existing sources retained from the parent. */
+    private array $carriedSources = [];
+
     private string $filesListPath = '';
 
     /** @var \Closure():\ZipArchive Creates each new or reopened archive handle. */
@@ -524,6 +527,7 @@ final class FilesArchiver
     public function archive(string $outDir, array $resume, callable $progress, ?array $prevMap = null): array
     {
         $this->skippedSources = [];
+        $this->carriedSources = [];
         // Lift caller-imposed time/abort guards. Watchdog handles
         // stall recovery; we want this loop to run as long as the SAPI
         // will let it.
@@ -790,10 +794,21 @@ final class FilesArchiver
         unset($state);
 
         if ($this->skippedSources !== []) {
+            if ($prevMap !== null) {
+                foreach (array_intersect_key($prevMap, $this->skippedSources) as $rel => $metadata) {
+                    $absolute = $this->sourceDir . DIRECTORY_SEPARATOR . $rel;
+                    clearstatcache(true, $absolute);
+                    if (file_exists($absolute) || is_link($absolute)) { $this->carriedSources[$rel] = $metadata; }
+                }
+                $filesCarried += count($this->carriedSources);
+                if ($this->carriedSources !== [] && $tombstonesFile !== '') {
+                    $tombstonesCount = $this->rewriteInventory($tombstonesFile, fn (string $rel): ?string => isset($this->carriedSources[$rel]) ? null : $rel);
+                }
+            }
             $totalFiles = $this->prunePathsCache($cachePath);
             $this->rewriteFilesList([]);
             if ($prevMap !== null) {
-                $pending = array_intersect_key($prevMap, $this->skippedSources);
+                $pending = array_diff_key(array_intersect_key($prevMap, $this->skippedSources), $this->carriedSources);
                 $path = $tombstonesFile !== '' ? $tombstonesFile : dirname($cachePath) . DIRECTORY_SEPARATOR . self::TOMBSTONES_LIST_NAME;
                 if ($pending !== [] && $tombstonesFile !== '') {
                     $handle = fopen($path, 'rb'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- streaming inventory read
@@ -988,12 +1003,28 @@ final class FilesArchiver
     /** @param array<string,array{size:int,mtime:int}> $sources Durable queued metadata. */
     private function rewriteFilesList(array $sources): void
     {
-        $this->rewriteInventory($this->filesListPath, function (string $line) use ($sources): ?string {
+        $pendingCarry = $this->carriedSources;
+        $this->rewriteInventory($this->filesListPath, function (string $line) use ($sources, &$pendingCarry): ?string {
             $rel = explode("\t", $line, 2)[0];
+            if (isset($pendingCarry[$rel])) {
+                $metadata = $pendingCarry[$rel];
+                unset($pendingCarry[$rel]);
+                return $rel . "\t" . $metadata['size'] . "\t" . $metadata['mtime'];
+            }
             if (isset($this->skippedSources[$rel])) { return null; }
             if (isset($sources[$rel])) { return $rel . "\t" . $sources[$rel]['size'] . "\t" . $sources[$rel]['mtime']; }
             return $line;
         });
+        if ($pendingCarry !== []) {
+            $handle = fopen($this->filesListPath, 'ab'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- append retained parent metadata to the streaming inventory
+            if ($handle === false) { throw new \RuntimeException('FilesArchiver: cannot append carried sources'); }
+            try {
+                foreach ($pendingCarry as $rel => $metadata) {
+                    $line = $rel . "\t" . $metadata['size'] . "\t" . $metadata['mtime'] . "\n";
+                    if (fwrite($handle, $line) !== strlen($line)) { throw new \RuntimeException('FilesArchiver: cannot write carried source'); } // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- streaming inventory append
+                }
+            } finally { fclose($handle); } // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- close the streaming inventory
+        }
     }
 
     private function prunePathsCache(string $path): int
@@ -1397,6 +1428,12 @@ final class FilesArchiver
         return '';
     }
 
+    /** @return list<string> UTF-8 display names; source bookkeeping retains exact bytes. */
+    private function skippedSourceSample(): array
+    {
+        return array_map(static fn ($path): string => json_decode(json_encode((string) $path, JSON_INVALID_UTF8_SUBSTITUTE), true), array_slice(array_keys($this->skippedSources), 0, 20));
+    }
+
     /**
      * Wrap the progress callback so a buggy callback can never abort the
      * archive run. Backup progress is observability, not correctness.
@@ -1413,7 +1450,7 @@ final class FilesArchiver
     private function emitProgress(callable $progress, array $detail): void
     {
         $detail['skipped_sources_count'] = count($this->skippedSources);
-        $detail['skipped_sources'] = array_map('strval', array_slice(array_keys($this->skippedSources), 0, 20));
+        $detail['skipped_sources'] = $this->skippedSourceSample();
         if (empty($detail['done'])) {
             foreach (['files_done', 'files_total'] as $field) {
                 if (isset($detail[$field])) { $detail[$field] = max(0, $detail[$field] - count($this->skippedSources)); }
@@ -1523,7 +1560,7 @@ final class FilesArchiver
             'prevmap_size'      => $prevMapSize,
             'incremental'       => $incremental,
             'skipped_sources_count' => count($this->skippedSources),
-            'skipped_sources' => array_map('strval', array_slice(array_keys($this->skippedSources), 0, 20)),
+            'skipped_sources' => $this->skippedSourceSample(),
         ];
     }
 }

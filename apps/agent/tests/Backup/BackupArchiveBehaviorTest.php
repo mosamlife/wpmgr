@@ -580,6 +580,193 @@ final class BackupArchiveBehaviorTest extends TestCase
         self::assertCount(20, end($events)['phase_detail']['skipped_sources']);
     }
 
+    public function testNonUtf8SkippedSourceCompletesAndReportsReplacementCharacter(): void
+    {
+        $events = [];
+        $manifest = null;
+        $params = $this->successfulBackupNetwork($events, $manifest);
+        file_put_contents($this->root . '/src/keep.txt', 'keep');
+        $bad = "uploads/caf\xe9.jpg";
+        file_put_contents($this->root . '/out/paths.cache', "uploads\t" . $bad . "\nwp-content\tkeep.txt\n");
+        file_put_contents($this->root . '/out/files.list', $bad . "\t1\t1\nkeep.txt\t4\t1\n");
+        $state = ['files' => ['cache_file' => $this->root . '/out/paths.cache', 'total_files' => 2, 'file_index' => 0]];
+        $GLOBALS['wpdb']->seedRow(self::SNAPSHOT, ['phase' => 'archiving_files', 'sub_state' => json_encode($state)]);
+        self::assertSame('completed', (new TaskRunner($params))->run());
+        self::assertNotNull($manifest);
+        self::assertNotEmpty($events);
+        self::assertSame('completed', end($events)['phase']);
+        self::assertSame(["uploads/caf\u{FFFD}.jpg"], end($events)['phase_detail']['skipped_sources']);
+        foreach ($GLOBALS['wpdb']->updates as $update) {
+            if (!isset($update['data']['sub_state'])) { continue; }
+            $saved = $update['data']['sub_state'];
+            self::assertStringNotContainsString($bad, $saved);
+            self::assertIsArray(json_decode($saved, true));
+        }
+    }
+
+    public function testProgressSubstitutesInvalidUtf8CurrentFileAndMessage(): void
+    {
+        $events = [];
+        $manifest = null;
+        $params = $this->successfulBackupNetwork($events, $manifest);
+        $client = new \WPMgr\Agent\Phpbu\ProgressClient($params['progress_endpoint'], self::SNAPSHOT, new \WPMgr\Agent\Signer(new Keystore()));
+        self::assertTrue($client->post('archiving_files', ['current_file' => "caf\xe9.jpg", 'message' => "source \xff"]));
+        self::assertSame("caf\u{FFFD}.jpg", $events[0]['phase_detail']['current_file']);
+        self::assertSame("source \u{FFFD}", $events[0]['phase_detail']['message']);
+    }
+
+    public function testArchiverSamplesAreUtf8BeforeProgressAndResultLeaveIt(): void
+    {
+        $bad = "caf\xe9.jpg";
+        file_put_contents($this->root . '/out/paths.cache', "wp-content\t" . $bad . "\n");
+        file_put_contents($this->root . '/out/files.list', $bad . "\t1\t1\n");
+        $details = [];
+        $result = (new FilesArchiver($this->root . '/src'))->archive($this->root . '/out', ['total_files' => 1], static function ($phase, $detail) use (&$details): void { $details[] = $detail; });
+        self::assertSame(["caf\u{FFFD}.jpg"], $result['skipped_sources']);
+        self::assertSame(["caf\u{FFFD}.jpg"], end($details)['skipped_sources']);
+    }
+
+    public function testStateRoundTripsExactFilenameBytesInlineAndThroughSidecar(): void
+    {
+        $wpdb = new FakeBackupTasksWpdb();
+        $GLOBALS['wpdb'] = $wpdb;
+        $wpdb->seedRow(self::SNAPSHOT);
+        $runner = new TaskRunner($this->params());
+        $save = new \ReflectionMethod($runner, 'saveTaskState');
+        foreach (['', str_repeat('padding', 12000)] as $padding) {
+            $state = ['params' => ['wp_content_path' => "/site/caf\xe9", 'exclude_paths' => ["caf\xe9"]],
+                'db' => ['output_path' => "/run/\xff/database.sql.gz"], 'files' => ['cache_file' => "/run/\xff/paths.cache", 'tombstones_file' => "/run/\xff/tombstones.list", 'tombstones' => ["bad\xff.txt"]],
+                'upload' => ['scratch_dir' => "/run/\xff"], 'encrypt' => ['entries' => [['path' => "bad\xff.txt"]]], 'keyed' => ["bad\xfe" => "value\xff"], 'padding' => $padding];
+            self::assertTrue($save->invoke($runner, 'archiving_files', $state));
+            $raw = $wpdb->rows[self::SNAPSHOT]['sub_state'];
+            self::assertNotNull(json_decode($raw, true));
+            self::assertSame($state, TaskRunner::decodeSubStateColumn($raw));
+        }
+    }
+
+    public function testCommandSeedPreservesExactResumePathBytes(): void
+    {
+        $GLOBALS['wpdb'] = new FakeBackupTasksWpdb();
+        $params = array_replace($this->params(), ['wp_content_path' => "/site/caf\xe9", 'scratch_dir' => "/site/caf\xe9/run", 'exclude_paths' => ["caf\xe9"]]);
+        $command = new \WPMgr\Agent\Commands\BackupCommand(new \WPMgr\Agent\Support\AgeIdentity(new Keystore()));
+        (new \ReflectionMethod($command, 'seedTaskRow'))->invoke($command, self::SNAPSHOT, 'files', $params);
+        self::assertSame(['params' => $params], TaskRunner::decodeSubStateColumn($GLOBALS['wpdb']->rows[self::SNAPSHOT]['sub_state']));
+    }
+
+    public function testWatchdogBreadcrumbPreservesByteEncodedState(): void
+    {
+        $GLOBALS['wpdb'] = new FakeBackupTasksWpdb();
+        $GLOBALS['wpdb']->seedRow(self::SNAPSHOT);
+        $runner = new TaskRunner($this->params());
+        $state = ['params' => ['wp_content_path' => "/site/caf\xe9"]];
+        self::assertTrue((new \ReflectionMethod($runner, 'saveTaskState'))->invoke($runner, 'archiving_files', $state));
+        (new \ReflectionMethod(Watchdog::class, 'stampStage'))->invoke(null, self::SNAPSHOT, 'dispatch_entered');
+        self::assertSame($state + ['stage' => 'dispatch_entered'], TaskRunner::decodeSubStateColumn($GLOBALS['wpdb']->rows[self::SNAPSHOT]['sub_state']));
+    }
+
+    public function testExistingUnreadableIncrementalSourceCarriesParentMetadata(): void
+    {
+        $this->assertExistingSkippedSourceCarriesParent(true);
+    }
+
+    public function testExistingRejectedIncrementalSourceCarriesParentMetadata(): void
+    {
+        $this->assertExistingSkippedSourceCarriesParent(false);
+    }
+
+    private function assertExistingSkippedSourceCarriesParent(bool $unreadableDuringClose): void
+    {
+        $source = $this->root . '/src/victim.txt';
+        file_put_contents($source, 'changed content');
+        file_put_contents($this->root . '/src/keep.txt', 'keep');
+        $parent = ['victim.txt' => ['size' => 3, 'mtime' => 1]];
+        $opts = $unreadableDuringClose ? [] : ['zip_factory' => static fn (): \ZipArchive => new class extends \ZipArchive {
+            public function addFile(string $filepath, string $entryname = '', int $start = 0, int $length = 0, int $flags = \ZipArchive::FL_OVERWRITE): bool
+            {
+                return $entryname === 'victim.txt' ? false : parent::addFile($filepath, $entryname, $start, $length, $flags);
+            }
+        }];
+        try {
+            $result = (new FilesArchiver($this->root . '/src', [], $opts))->archive($this->root . '/out', [], static function ($phase, $detail) use ($source, $unreadableDuringClose): void {
+                if ($unreadableDuringClose && ($detail['stage'] ?? '') === 'finalizing_part') { chmod($source, 0000); }
+            }, $parent);
+        } finally { chmod($source, 0600); }
+        self::assertSame(1, $result['files_carried']);
+        self::assertSame(0, $result['tombstones_count']);
+        self::assertSame('', $result['tombstones_file']);
+        self::assertSame(1, $result['skipped_sources_count']);
+        self::assertSame(['keep.txt'], $this->entries($result));
+        $baseline = FilesArchiver::loadPrevMap($this->root . '/out/files.list');
+        self::assertSame($parent['victim.txt'], $baseline['victim.txt']);
+        mkdir($this->root . '/next');
+        $next = (new FilesArchiver($this->root . '/src'))->archive($this->root . '/next', [], static function (): void {}, $baseline);
+        $zip = new \ZipArchive();
+        self::assertTrue($zip->open($this->root . '/next/' . $next['parts'][0]));
+        self::assertSame('changed content', $zip->getFromName('victim.txt'));
+        $zip->close();
+    }
+
+    public function testUnverifiedIdentityRunsAndReportsWithoutUnlinkingLock(): void
+    {
+        $events = [];
+        $manifest = null;
+        $params = $this->successfulBackupNetwork($events, $manifest);
+        file_put_contents($this->root . '/src/keep.txt', 'keep');
+        $checks = 0;
+        \Patchwork\redefine(TaskRunner::class . '::fileLockMatchesPath', static function () use (&$checks): bool { return ++$checks > 3; });
+        self::assertSame('completed', (new TaskRunner($params))->run());
+        self::assertSame(3, $checks);
+        $path = $this->root . '/' . self::SNAPSHOT . '.lock';
+        self::assertFileExists($path);
+        self::assertSame('lock_identity_unverified', $events[0]['phase_detail']['stage']);
+        $first = json_decode($GLOBALS['wpdb']->updates[0]['data']['sub_state'], true);
+        self::assertSame('lock_identity_unverified', $first['stage']);
+        touch($path, time() - BackupJanitor::RUNS_GC_AGE_SECONDS - 1);
+        $checks = 0;
+        BackupArchiveBehaviorJanitor::$base = $this->root;
+        BackupArchiveBehaviorJanitor::gcRuns();
+        self::assertSame(3, $checks);
+        self::assertFileExists($path);
+    }
+
+    public function testUnverifiedCleanupRemainsBoundToItsOwnAcquisition(): void
+    {
+        $GLOBALS['wpdb'] = new FakeBackupTasksWpdb();
+        $GLOBALS['wpdb']->lockResponses = [null];
+        $checks = 0;
+        \Patchwork\redefine(TaskRunner::class . '::fileLockMatchesPath', static function () use (&$checks): bool { return ++$checks > 3; });
+        $runner = new TaskRunner($this->params());
+        self::assertTrue($runner->withRunLock(static function () use ($runner): void {
+            self::assertFalse($runner->withRunLock(static function (): void {}));
+        }));
+        self::assertFileExists($this->root . '/' . self::SNAPSHOT . '.lock');
+        self::assertSame(3, $checks);
+    }
+
+    private function successfulBackupNetwork(array &$events, ?array &$manifest): array
+    {
+        $this->signing();
+        $GLOBALS['wpdb'] = new FakeBackupTasksWpdb();
+        $params = array_replace($this->params(true), ['presign_endpoint' => 'https://cp.invalid/presign', 'manifest_endpoint' => 'https://cp.invalid/manifest']);
+        Functions\when('wp_remote_request')->justReturn(['response' => ['code' => 200], 'body' => '']);
+        Functions\when('wp_remote_retrieve_body')->alias(static fn ($response) => $response['body']);
+        Functions\when('wp_remote_post')->alias(static function ($url, $args) use (&$events, &$manifest, $params) {
+            $body = json_decode($args['body'], true);
+            if ($url === $params['presign_endpoint']) {
+                $uploads = [];
+                foreach ($body['hashes'] as $hash) { $uploads[$hash] = 'https://storage.invalid/' . $hash; }
+                return ['response' => ['code' => 200], 'body' => json_encode(['uploads' => $uploads])];
+            }
+            if ($url === $params['manifest_endpoint']) {
+                $manifest = $body;
+                return ['response' => ['code' => 200], 'body' => '{"ok":true,"chunk_count":0,"stored_count":0}'];
+            }
+            $events[] = $body;
+            return ['response' => ['code' => 200], 'body' => '{}'];
+        });
+        return $params;
+    }
+
     public function testHealthyFlockRejectsOverlappingRunner(): void
     {
         $trace = $this->overlap(false);
@@ -764,7 +951,12 @@ final class BackupArchiveBehaviorTest extends TestCase
         $this->assertAcquireRetries(true, 1);
     }
 
-    public function testAcquireStopsAfterThreeReplacedInodes(): void
+    public function testAcquireRetriesTwiceThenKeepsVerifiedIdentity(): void
+    {
+        $this->assertAcquireRetries(true, 2);
+    }
+
+    public function testAcquireKeepsUnverifiedLockAfterThreeIdentityMismatches(): void
     {
         $this->assertAcquireRetries(true, 3);
     }
@@ -788,18 +980,19 @@ final class BackupArchiveBehaviorTest extends TestCase
         $lock = (new \ReflectionMethod($runner, 'acquireFileLock'))->invoke($runner);
         try {
             if ($disruptions === 3) {
-                self::assertNull($lock['handle']);
-                self::assertTrue($lock['contended']);
+                self::assertIsResource($lock['handle']);
+                self::assertFalse($lock['contended']);
+                self::assertTrue($lock['identity_unverified']);
                 self::assertCount(3, $opened);
             } else {
                 self::assertIsResource($lock['handle']);
                 self::assertFalse($lock['contended']);
-                self::assertCount(2, $opened);
+                self::assertCount($disruptions + 1, $opened);
                 clearstatcache(true, $path);
                 self::assertSame(stat($path)['ino'], fstat($lock['handle'])['ino']);
                 self::assertSame(stat($path)['dev'], fstat($lock['handle'])['dev']);
             }
-            foreach (array_slice($opened, 0, $disruptions) as $stale) { self::assertFalse(is_resource($stale)); }
+            foreach (array_slice($opened, 0, min(2, $disruptions)) as $stale) { self::assertFalse(is_resource($stale)); }
         } finally {
             if (is_resource($lock['handle'])) { flock($lock['handle'], LOCK_UN); fclose($lock['handle']); }
         }

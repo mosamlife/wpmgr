@@ -131,7 +131,7 @@ class BackupJanitor
                     // may be removed. A replacement receives its own age check.
                     clearstatcache(true, $lockFile);
                     $lockMtime = @filemtime($lockFile);
-                    if ($lockMtime !== false && ($now - $lockMtime) >= self::RUNS_GC_AGE_SECONDS
+                    if (empty($lock['identity_unverified']) && $lockMtime !== false && ($now - $lockMtime) >= self::RUNS_GC_AGE_SECONDS
                         && !$j->isActiveRun($snapshotId) && !is_link($lockFile)
                         && TaskRunner::fileLockMatchesPath($handle, $lockFile)) {
                         wp_delete_file($lockFile);

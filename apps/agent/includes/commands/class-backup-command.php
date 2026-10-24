@@ -507,7 +507,7 @@ final class BackupCommand implements CommandInterface
         /** @var \wpdb $wpdb */
         $table = $wpdb->prefix . Schema::BACKUP_TASKS_TABLE;
         $now   = time();
-        $subState = (string) wp_json_encode(['params' => $runnerParams]);
+        $subState = TaskRunner::encodeSubState(['params' => $runnerParams]);
 
         // @phpstan-ignore-next-line
         $wpdb->query($wpdb->prepare( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct INSERT IGNORE on plugin-owned table; no core helper exists

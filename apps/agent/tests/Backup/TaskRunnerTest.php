@@ -205,19 +205,7 @@ final class TaskRunnerTest extends TestCase
         $this->assertSame(TaskRunner::PHASE_FAILED, $phase);
     }
 
-    /**
-     * ADR-051: saveTaskState must persist the phase-cursor sub_state reliably.
-     * The old 0-files bug was triggered by json_encode() failing on non-UTF-8
-     * file paths that had been accumulated in a per-file scan cursor.
-     *
-     * Under ADR-051 the incremental cursor is just ~25 part-basename strings —
-     * always valid UTF-8 — and the sidecar spill is retired. This regression
-     * test asserts the current (simple) behavior: sub_state with a small-part
-     * cursor is written verbatim and is never wiped to '{}'. It also confirms
-     * the JSON encodes cleanly even when a file path has invalid UTF-8 bytes
-     * (which can still appear in the files.parts list if a part name came from
-     * a non-ASCII source dir on an unusual host).
-     */
+    /** Generated part cursors persist without dropping inventory fields. */
     public function test_save_task_state_persists_parts_cursor(): void
     {
         $wpdb = new CapturingWpdb();
@@ -226,8 +214,7 @@ final class TaskRunnerTest extends TestCase
         try {
             $runner = $this->buildRunner(TaskRunner::KIND_FULL);
 
-            // Simulate a typical sub_state after archiving_files: ~25 part names
-            // plus a files cursor. All ASCII — json_encode will always succeed.
+            // Generated part basenames are ASCII and retain their inventory fields.
             $subState = [
                 'files' => [
                     'done'          => true,
@@ -279,12 +266,7 @@ final class TaskRunnerTest extends TestCase
         }
     }
 
-    /**
-     * GH #283 follow-up: saveTaskState() has three silent no-op paths that
-     * persist nothing and return normally, with nothing to throw. Each one
-     * must now report false so a caller relying on "did this throw" alone
-     * (the old bug) can instead check the return value.
-     */
+    /** Unavailable task storage cannot acknowledge a checkpoint. */
     public function test_save_task_state_returns_false_when_wpdb_missing(): void
     {
         unset($GLOBALS['wpdb']);
@@ -297,11 +279,7 @@ final class TaskRunnerTest extends TestCase
         $this->assertFalse($result, 'no $wpdb at all is a silent no-op and must report false, not just "did not throw"');
     }
 
-    /**
-     * See test_save_task_state_returns_false_when_wpdb_missing for context.
-     * This covers the second silent path: $wpdb is present but the table
-     * name cannot be resolved (an empty prefix).
-     */
+    /** An unresolved table name cannot acknowledge a checkpoint. */
     public function test_save_task_state_returns_false_when_table_name_unresolvable(): void
     {
         $wpdb = new CapturingWpdb();
@@ -320,13 +298,8 @@ final class TaskRunnerTest extends TestCase
         }
     }
 
-    /**
-     * See test_save_task_state_returns_false_when_wpdb_missing for context.
-     * This covers the third silent path: json_encode() itself fails
-     * (malformed UTF8 bytes in sub_state, which json_encode rejects by
-     * default with no flags to coerce or escape it).
-     */
-    public function test_save_task_state_returns_false_when_json_encode_fails(): void
+    /** Resume filenames retain their exact bytes through task-state JSON. */
+    public function test_save_task_state_preserves_non_utf8_bytes(): void
     {
         $wpdb = new CapturingWpdb();
         $GLOBALS['wpdb'] = $wpdb;
@@ -335,11 +308,10 @@ final class TaskRunnerTest extends TestCase
             $runner     = $this->buildRunner(TaskRunner::KIND_FULL);
             $reflection = new ReflectionClass(TaskRunner::class);
             $save       = $reflection->getMethod('saveTaskState');
-            // "\xB1\x31" is not valid UTF8, so json_encode() returns false.
             $result = $save->invoke($runner, TaskRunner::PHASE_ENCRYPTING_UPLOADING, ['bad' => "\xB1\x31"]);
 
-            $this->assertFalse($result, 'a json_encode failure is a silent no-op and must report false, not just "did not throw"');
-            $this->assertNull($wpdb->lastSubState, 'nothing should have reached the DB update call');
+            $this->assertTrue($result);
+            $this->assertSame(['bad' => "\xB1\x31"], TaskRunner::decodeSubStateColumn($wpdb->lastSubState));
         } finally {
             unset($GLOBALS['wpdb']);
         }
