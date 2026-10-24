@@ -24,9 +24,19 @@ import (
 
 type gh954Repo struct {
 	*watchdogFakeRepo
-	settings       map[uuid.UUID]SiteBackupSettings
-	settingsErr    error
-	settingsWrites int
+	settings             map[uuid.UUID]SiteBackupSettings
+	settingsErr          error
+	settingsWrites       int
+	attemptErrorWriteErr error
+	attemptErrorWrites   int
+}
+
+func (r *gh954Repo) SetSnapshotAttemptError(ctx context.Context, tenantID, snapshotID uuid.UUID, msg string) (int64, error) {
+	r.attemptErrorWrites++
+	if r.attemptErrorWriteErr != nil {
+		return 0, r.attemptErrorWriteErr
+	}
+	return r.watchdogFakeRepo.SetSnapshotAttemptError(ctx, tenantID, snapshotID, msg)
 }
 
 func (r *gh954Repo) GetBackupSettings(_ context.Context, tenantID, siteID uuid.UUID) (SiteBackupSettings, error) {
@@ -226,7 +236,13 @@ func TestDispatchSettingsReadErrorIsRetried(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo.settingsErr = errors.New("settings database unavailable")
+	var logs bytes.Buffer
+	worker.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	hub := NewHub()
+	svc.SetHub(hub)
+	events, unsubscribe := hub.Subscribe(snap.ID)
+	defer unsubscribe()
+	repo.settingsErr = errors.New("settings database unavailable: private database detail")
 	readErr := repo.settingsErr
 	err = worker.Work(context.Background(), &river.Job[BackupArgs]{
 		JobRow: newJobRow(1, 25), Args: BackupArgs{TenantID: tenantID, SnapshotID: snap.ID},
@@ -241,6 +257,61 @@ func TestDispatchSettingsReadErrorIsRetried(t *testing.T) {
 	}
 	if got := repo.mustGet(t, snap.ID); got.Status != StatusRunning {
 		t.Errorf("snapshot status = %q, want running for retry", got.Status)
+	}
+	const wantReason = "Could not read this site's backup settings; retrying."
+	got := repo.mustGet(t, snap.ID)
+	if got.AttemptError != wantReason {
+		t.Errorf("snapshot attempt_error = %q, want %q", got.AttemptError, wantReason)
+	}
+	if got.Error != "" {
+		t.Errorf("retrying snapshot has a final error: %q", got.Error)
+	}
+	if repo.attemptErrorWrites != 1 {
+		t.Errorf("attempt-error recording calls = %d, want 1", repo.attemptErrorWrites)
+	}
+	var retrying *BackupEvent
+	for _, event := range drainEvents(events) {
+		if event.Phase == "retrying" {
+			event := event
+			retrying = &event
+		}
+	}
+	if retrying == nil || retrying.Status != StatusRunning || retrying.PhaseDetail["error"] != wantReason {
+		t.Errorf("retrying event = %+v, want safe reason on a running snapshot", retrying)
+	}
+	if !strings.Contains(logs.String(), readErr.Error()) || !strings.Contains(logs.String(), snap.ID.String()) {
+		t.Errorf("server log must include the underlying settings error and snapshot ID: %s", logs.String())
+	}
+}
+
+func TestDispatchSettingsRetrySurvivesAttemptErrorWriteFailure(t *testing.T) {
+	repo, svc, _, transport, worker := gh954Fixture(t)
+	tenantID, siteID := uuid.New(), uuid.New()
+	snap, err := svc.CreateBackup(context.Background(), tenantID, siteID, uuid.New(), KindFull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo.settingsErr = errors.New("settings read unavailable")
+	repo.attemptErrorWriteErr = errors.New("attempt error write unavailable")
+	var logs bytes.Buffer
+	worker.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	err = worker.Work(context.Background(), &river.Job[BackupArgs]{
+		JobRow: newJobRow(1, 25), Args: BackupArgs{TenantID: tenantID, SnapshotID: snap.ID},
+	})
+	if !errors.Is(err, repo.settingsErr) || errors.Is(err, repo.attemptErrorWriteErr) {
+		t.Errorf("retry must retain the settings read error, got %v", err)
+	}
+	if repo.attemptErrorWrites != 1 {
+		t.Errorf("attempt-error recording calls = %d, want 1", repo.attemptErrorWrites)
+	}
+	if len(transport.deliveries) != 0 {
+		t.Error("settings read failure must not dispatch a command")
+	}
+	if got := repo.mustGet(t, snap.ID); got.Status != StatusRunning {
+		t.Errorf("snapshot status = %q, want running for retry", got.Status)
+	}
+	if !strings.Contains(logs.String(), repo.settingsErr.Error()) || !strings.Contains(logs.String(), repo.attemptErrorWriteErr.Error()) {
+		t.Errorf("server log must include the read and recording errors: %s", logs.String())
 	}
 }
 

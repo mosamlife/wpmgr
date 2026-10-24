@@ -333,6 +333,16 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 	// A missing settings row uses defaults; other read errors must be retried.
 	scope, err := w.svc.scheduleBackupScope(ctx, a.TenantID, snap.SiteID)
 	if err != nil {
+		w.logger.Warn("backup settings lookup failed; retrying",
+			slog.String("snapshot_id", snap.ID.String()),
+			slog.String("tenant_id", snap.TenantID.String()),
+			slog.Any("error", err))
+		if werr := w.svc.RecordAttemptError(ctx, snap.TenantID, snap.ID, "Could not read this site's backup settings; retrying."); werr != nil {
+			w.logger.Warn("record backup attempt error failed",
+				slog.String("snapshot_id", snap.ID.String()),
+				slog.String("tenant_id", snap.TenantID.String()),
+				slog.Any("error", werr))
+		}
 		return fmt.Errorf("resolve backup settings: %w", err)
 	}
 
