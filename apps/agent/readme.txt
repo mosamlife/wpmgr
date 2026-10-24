@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.166
+Stable tag: 0.61.167
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -286,6 +286,14 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 == Changelog ==
 
 The entries below summarize the notable changes since 0.61.78. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+
+= 0.61.167 =
+* Fixed: Backup folder exclusions now match folders named with digits, such as 2024 under uploads.
+* Fixed: A file that changes, disappears or cannot be read while a backup runs is skipped and listed in the backup's report instead of failing the backup. In an incremental backup it keeps the previous snapshot's copy.
+* Fixed: A backup part that cannot be finished says why, with the zip library's reason and the part's name.
+* Fixed: Two runs can no longer work on the same backup at once. A host that offers neither a database lock nor a working file lock gets a clear message instead of an unsafe backup.
+* Fixed: A backup command delivered twice leaves the running backup and its start time alone.
+* Fixed: File names that are not valid UTF-8 no longer stop backup progress reports.
 
 = 0.61.166 =
 * Added: A connected AI can read the site's Elementor widgets and their settings, and add, change, duplicate, move and remove Elementor's own widgets on a page. Each edit follows the site's approval settings in WPMgr and can be undone.

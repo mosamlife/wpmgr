@@ -8,6 +8,7 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ### Added
 
+- Alert webhooks for uptime, application, security and vulnerability alerts now carry a readable `text` line, so Slack, Mattermost and Rocket.Chat incoming webhooks accept them directly. Every existing field and the signature are unchanged (#956).
 - An AI connected through WPMgr can now create a draft page or post in Elementor from an outline, with your approval for each request in WPMgr. The outline can use headings, paragraphs, lists, quotes, tables, separators, buttons, spacing, sections and columns, and images that are already in the site's media library. The draft is built from Elementor's own classic widgets, in containers or in sections and columns, whichever the site's Elementor is set up for. Nothing is published, and undo moves the draft to the trash while nobody has edited it (#844). Agent 0.61.161.
 - A page built in Elementor this way needs Elementor 3.20 to 4.3. A request for Elementor's Atomic editor is refused, and so are a button in the outline style and an image whose alt text differs from the one saved in the media library. After Elementor saves the page, WPMgr checks that it holds exactly the approved layout and that nothing outside the page changed, and moves the draft to the trash if not. The approval card shows the Elementor version and layout, and links to open the finished draft in Elementor or preview it (#844). Agent 0.61.161.
 - An AI connected through WPMgr can now read the structure of a page built in Elementor and edit a draft it created there. A read returns the page's elements with their kinds and the text, links, image descriptions and captions they hold. A published page or post built in Elementor, without a password, can be read this way too, but never changed. An edit is one batch of up to 25 changes to a draft the AI created: set an element's text, link, image description or caption, insert new elements from an outline, replace an element, remove one, or move one. Each edit waits for your approval in WPMgr, which shows each change and the page after it, and nothing is published. It needs Elementor 3.20 to 4.3 on the site and this agent version: WPMgr refuses the request on an older agent and says which version it needs (#894). Agent 0.61.163.
@@ -31,6 +32,17 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ### Fixed
 
+- Backup folder exclusions now match folders named with digits, such as 2024 under uploads (#954). Agent 0.61.167.
+- A file that changes, disappears or cannot be read while a backup runs is skipped and listed in the backup's report instead of failing the backup. In an incremental backup it keeps the previous snapshot's copy (#954). Agent 0.61.167.
+- A backup part that cannot be finished says why, with the zip library's reason and the part's name (#954). Agent 0.61.167.
+- Two runs can no longer work on the same backup at once. A host that offers neither a database lock nor a working file lock gets a clear message instead of an unsafe backup (#954). Agent 0.61.167.
+- A backup command delivered twice leaves the running backup and its start time alone (#954). Agent 0.61.167.
+- File names that are not valid UTF-8 no longer stop backup progress reports (#954). Agent 0.61.167.
+- A backup is never sent without its saved exclusions after a settings read error (#954).
+- Saving notification settings keeps saved backup exclusions (#954).
+- The snapshot API returns the backup's stored progress again (#954).
+- Black-and-white images now convert to AVIF correctly, so their thumbnails no longer show repeated, colour-fringed copies (#955).
+- Cancelling the Update agent dialog leaves the Sites page usable (#952).
 - Deleting a site or an organisation works again on installs where one database role owns the tables and runs the app (#938).
 - Deleting a site is now fast, and the dialog gives clearer feedback while the deletion is running (#940).
 - After a WordPress core update, or a core rollback, the agent now reports the version installed on disk. It used to report the old version as up to date after a core update that had really happened (#860). Agent 0.61.162.
@@ -47,6 +59,10 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 - The plugin's wordpress.org listing and the Re-enroll and Disconnect text in WordPress admin no longer say that backup archives are encrypted or stay decryptable. This plugin does not encrypt backup archives, so protection at rest comes from the storage destination. The site's age encryption key is still kept when you re-enroll or disconnect, and protects the authenticator-app secrets stored for the site's users (#862). Agent 0.61.162.
 - The privacy section of the wordpress.org listing now lists the data AI requests carry: the results of the reads an AI asks for, such as published page and post text, titles and excerpts, media details and what reviewed abilities on the site return, and previews of the drafts and changes it proposes (#896). Agent 0.61.162.
 - An edit of an Elementor draft that someone has previewed now goes through. Where Elementor keeps a record of which of its generated style files are up to date, saving a previewed page changes the page's own entry in that record. The agent counted that as a change outside the page, refused the edit and put the page back as it was. It now accepts a change to the page's own entry. A change to another page's entry, or to anything else outside the page, still refuses the edit and puts the page back (#915). Agent 0.61.164.
+
+### Security
+
+- The marketing site moves to Next.js 16.4.1, the dashboard to DOMPurify 3.4.17 and Zod 4.6.7, and the API and media-encoder images to Go 1.26.10, for advisories published in October 2026 (#958).
 
 ## [0.61.183] - 2026-10-09
 
