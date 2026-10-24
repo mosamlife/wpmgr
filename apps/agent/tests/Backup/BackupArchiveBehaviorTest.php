@@ -166,20 +166,26 @@ final class BackupArchiveBehaviorTest extends TestCase
         fwrite(STDOUT, "\nwatchdog resume entries=" . json_encode($packed) . " durable_files_cursor=null\n");
     }
 
-    public function testDeletedSourceReproducesReportedCloseFailure(): void
+    public function testDeletedSourceIsReportedAsSkipped(): void
     {
-        [$message, $warnings] = $this->deletedSourceFailure();
-        self::assertStringContainsString('FilesArchiver: zip close failed (', $message);
-        self::assertStringContainsString('uploads.g000.part001.zip', $message);
-        self::assertStringContainsString("Can't open file", implode('\n', $warnings));
-        fwrite(STDOUT, "\narchiver exception=" . $message . ' warnings=' . json_encode($warnings) . "\n");
+        file_put_contents($this->root . '/src/victim.txt', 'victim');
+        $result = (new FilesArchiver($this->root . '/src'))->archive($this->root . '/out', [], function ($phase, $detail): void {
+            if (($detail['stage'] ?? '') === 'finalizing_part') { unlink($this->root . '/src/victim.txt'); }
+        });
+        self::assertTrue($result['done']);
+        self::assertSame(['victim.txt'], $result['skipped_sources']);
+        self::assertSame(1, $result['skipped_sources_count']);
+        self::assertSame(0, $result['files_total']);
+        self::assertSame(0, $result['bytes_written']);
+        self::assertSame([], $result['parts']);
+        self::assertSame('', file_get_contents($this->root . '/out/files.list'));
     }
 
     public function testCloseFailureMustIncludeLibzipReason(): void
     {
-        [$message] = $this->deletedSourceFailure();
-        self::assertStringContainsString("Can't open file", $message, 'The close failure must preserve libzip diagnostics.');
-        self::assertStringContainsString('libzip status ' . \ZipArchive::ER_OPEN, $message);
+        [$message] = $this->destinationCloseFailure();
+        self::assertStringContainsString('Failure to create temporary file', $message, 'The close failure must preserve libzip diagnostics.');
+        self::assertStringContainsString('libzip status ' . \ZipArchive::ER_TMPOPEN, $message);
         self::assertStringEndsWith('for uploads.g000.part001.zip', $message);
         self::assertStringNotContainsString($this->root, $message);
     }
@@ -204,6 +210,309 @@ final class BackupArchiveBehaviorTest extends TestCase
         self::assertNotNull($result, 'Readable siblings must survive a disappearing source: ' . $failure);
         self::assertTrue($result['done']);
         self::assertContains('keep.txt', $this->entries($result));
+    }
+
+    public function testTruncatedSourceIsRebuiltWithCurrentContentsAndMetadata(): void
+    {
+        file_put_contents($this->root . '/src/victim.txt', 'abcdefgh');
+        file_put_contents($this->root . '/src/keep.txt', 'keep');
+        $result = (new FilesArchiver($this->root . '/src'))->archive($this->root . '/out', [], function ($phase, $detail): void {
+            if (($detail['stage'] ?? '') === 'finalizing_part') { file_put_contents($this->root . '/src/victim.txt', 'abc'); }
+        });
+        $zip = new \ZipArchive();
+        self::assertTrue($zip->open($this->root . '/out/' . $result['parts'][0]));
+        self::assertSame('abc', $zip->getFromName('victim.txt'));
+        $zip->close();
+        $baseline = FilesArchiver::loadPrevMap($this->root . '/out/files.list');
+        self::assertSame(3, $baseline['victim.txt']['size']);
+        self::assertSame(0, $result['skipped_sources_count']);
+        self::assertSame(2, $result['files_total']);
+        self::assertSame(array_sum(array_map(fn ($part) => filesize($this->root . '/out/' . $part), $result['parts'])), $result['bytes_written']);
+    }
+
+    public function testReadableSourceRejectedByAddFileIsSkipped(): void
+    {
+        $this->assertRejectedSourceSkipped(false);
+    }
+
+    public function testReadableSourceRejectedDuringRebuildIsSkipped(): void
+    {
+        $this->assertRejectedSourceSkipped(true);
+    }
+
+    private function assertRejectedSourceSkipped(bool $rebuild): void
+    {
+        file_put_contents($this->root . '/src/victim.txt', 'abcdefgh');
+        file_put_contents($this->root . '/src/keep.txt', 'keep');
+        $opened = 0;
+        $rejections = 0;
+        $factory = static function () use (&$opened, &$rejections, $rebuild): \ZipArchive {
+            $opened++;
+            return new class (!$rebuild || $opened > 1, $rejections) extends \ZipArchive {
+                public function __construct(private bool $reject, private int &$rejections) {}
+                public function addFile(string $filepath, string $entryname = '', int $start = 0, int $length = 0, int $flags = \ZipArchive::FL_OVERWRITE): bool
+                {
+                    if ($this->reject && $entryname === 'victim.txt') {
+                        self::assertReadableSource($filepath);
+                        $this->rejections++;
+                        return false;
+                    }
+                    return parent::addFile($filepath, $entryname, $start, $length, $flags);
+                }
+                private static function assertReadableSource(string $path): void
+                {
+                    \PHPUnit\Framework\Assert::assertFileExists($path);
+                    \PHPUnit\Framework\Assert::assertTrue(is_readable($path));
+                }
+            };
+        };
+        $reports = [];
+        $result = (new FilesArchiver($this->root . '/src', [], ['zip_factory' => $factory]))
+            ->archive($this->root . '/out', [], function ($phase, $detail) use ($rebuild, &$reports): void {
+                if ($rebuild && ($detail['stage'] ?? '') === 'finalizing_part') {
+                    file_put_contents($this->root . '/src/victim.txt', 'abc');
+                }
+                $reports[] = $detail;
+            });
+        self::assertSame(1, $result['skipped_sources_count']);
+        self::assertSame(1, $rejections);
+        self::assertTrue($result['done']);
+        self::assertSame(['victim.txt'], $result['skipped_sources']);
+        self::assertSame(['keep.txt'], $this->entries($result));
+        self::assertSame(1, $result['files_total']);
+        self::assertArrayNotHasKey('victim.txt', FilesArchiver::loadPrevMap($this->root . '/out/files.list'));
+        self::assertStringNotContainsString('victim.txt', file_get_contents($this->root . '/out/paths.cache'));
+        self::assertSame(1, $reports[array_key_last($reports)]['skipped_sources_count']);
+        self::assertSame(['victim.txt'], $reports[array_key_last($reports)]['skipped_sources']);
+    }
+
+    public function testEmptyPartWithFailedCloseIsDiscarded(): void
+    {
+        file_put_contents($this->root . '/src/victim.txt', 'victim');
+        $path = $this->root . '/out/wp-content.g000.part001.zip';
+        $zip = new class ($path) extends \ZipArchive {
+            public bool $closed = false;
+            public function __construct(private string $path) {}
+            public function addFile(string $filepath, string $entryname = '', int $start = 0, int $length = 0, int $flags = \ZipArchive::FL_OVERWRITE): bool
+            {
+                return false;
+            }
+            public function close(): bool
+            {
+                $this->closed = true;
+                parent::close();
+                file_put_contents($this->path, 'empty placeholder');
+                return false;
+            }
+        };
+        $result = (new FilesArchiver($this->root . '/src', [], ['zip_factory' => static fn (): \ZipArchive => $zip]))
+            ->archive($this->root . '/out', [], static function (): void {});
+        self::assertTrue($zip->closed);
+        self::assertTrue($result['done']);
+        self::assertSame([], $result['parts']);
+        self::assertSame(0, $result['bytes_written']);
+        self::assertSame(0, $result['files_total']);
+        self::assertSame(1, $result['skipped_sources_count']);
+        self::assertSame('', file_get_contents($this->root . '/out/paths.cache'));
+        self::assertSame('', file_get_contents($this->root . '/out/files.list'));
+        self::assertFileDoesNotExist($path);
+    }
+
+    public function testRebuildPreservesEntriesAlreadyInAResumedPart(): void
+    {
+        mkdir($this->root . '/src/uploads');
+        file_put_contents($this->root . '/src/uploads/victim.txt', 'victim');
+        file_put_contents($this->root . '/src/uploads/keep.txt', 'keep');
+        $zip = new \ZipArchive();
+        self::assertTrue($zip->open($this->root . '/out/uploads.g000.part001.zip', \ZipArchive::CREATE));
+        $zip->addFromString('uploads/earlier.txt', 'EARLIER');
+        $zip->addFromString('uploads/victim.txt', 'OLD');
+        $zip->close();
+        file_put_contents($this->root . '/out/paths.cache', "uploads\tuploads/earlier.txt\nuploads\tuploads/victim.txt\nuploads\tuploads/keep.txt\n");
+        file_put_contents($this->root . '/out/files.list', "uploads/earlier.txt\t7\t1\nuploads/victim.txt\t6\t1\nuploads/keep.txt\t4\t1\n");
+        $resume = ['total_files' => 3, 'file_index' => 1, 'components' => ['uploads' => ['current_part' => 1]]];
+        $result = (new FilesArchiver($this->root . '/src'))->archive($this->root . '/out', $resume, function ($phase, $detail): void {
+            if (($detail['stage'] ?? '') === 'finalizing_part') { unlink($this->root . '/src/uploads/victim.txt'); }
+        });
+        self::assertSame(['uploads/earlier.txt', 'uploads/keep.txt'], $this->entries($result));
+        self::assertTrue($zip->open($this->root . '/out/uploads.g000.part001.zip'));
+        self::assertSame('EARLIER', $zip->getFromName('uploads/earlier.txt'));
+        $zip->close();
+        self::assertSame(2, $result['files_total']);
+    }
+
+    public function testUnreadableQueuedSourceIsSkipped(): void
+    {
+        file_put_contents($this->root . '/src/victim.txt', 'victim');
+        file_put_contents($this->root . '/src/keep.txt', 'keep');
+        try {
+            $result = (new FilesArchiver($this->root . '/src'))->archive($this->root . '/out', [], function ($phase, $detail): void {
+                if (($detail['stage'] ?? '') === 'finalizing_part') { chmod($this->root . '/src/victim.txt', 0000); }
+            });
+            self::assertSame(['keep.txt'], $this->entries($result));
+            self::assertSame(1, $result['skipped_sources_count']);
+        } finally { chmod($this->root . '/src/victim.txt', 0600); }
+    }
+
+    public function testUnwritableDestinationRemainsFatalEvenWithAChangedSource(): void
+    {
+        foreach ([false, true] as $changed) {
+            file_put_contents($this->root . '/src/victim.txt', 'abcdefgh');
+            $failure = null;
+            try {
+                (new FilesArchiver($this->root . '/src'))->archive($this->root . '/out', [], function ($phase, $detail) use ($changed): void {
+                    if (($detail['stage'] ?? '') === 'finalizing_part') {
+                        if ($changed) { file_put_contents($this->root . '/src/victim.txt', 'x'); }
+                        chmod($this->root . '/out', 0500);
+                    }
+                });
+            } catch (\WPMgr\Agent\Backup\ZipCloseException $e) { $failure = $e; }
+            finally { chmod($this->root . '/out', 0700); }
+            self::assertInstanceOf(\WPMgr\Agent\Backup\ZipCloseException::class, $failure);
+            self::assertSame(\ZipArchive::ER_TMPOPEN, $failure->libzipStatus());
+            self::assertStringContainsString('Failure to create temporary file', $failure->getMessage());
+        }
+    }
+
+    public function testPersistentlyChangingSourceStopsAfterTwoRebuilds(): void
+    {
+        $source = $this->root . '/src/victim.txt';
+        file_put_contents($source, str_repeat('x', 64));
+        $length = 64;
+        $rebuilds = 0;
+        $failure = null;
+        try {
+            (new FilesArchiver($this->root . '/src'))->archive($this->root . '/out', [], static function ($phase, $detail) use ($source, &$length, &$rebuilds): void {
+                if (in_array($detail['stage'] ?? '', ['finalizing_part', 'rebuilding_part'], true)) {
+                    if ($detail['stage'] === 'rebuilding_part') { $rebuilds++; }
+                    file_put_contents($source, str_repeat('x', --$length));
+                }
+            });
+        } catch (\WPMgr\Agent\Backup\ZipCloseException $e) { $failure = $e; }
+        self::assertInstanceOf(\WPMgr\Agent\Backup\ZipCloseException::class, $failure);
+        self::assertSame(2, $rebuilds);
+        self::assertGreaterThan(0, $failure->libzipStatus());
+    }
+
+    public function testSkippedSourcesAreAbsentFromEveryIncrementalInventory(): void
+    {
+        $source = $this->root . '/src/victim.txt';
+        file_put_contents($source, 'victim');
+        file_put_contents($this->root . '/src/keep.txt', 'keep');
+        $mtime = filemtime($source);
+        $result = (new FilesArchiver($this->root . '/src'))->archive($this->root . '/out', [], static function ($phase, $detail) use ($source): void {
+            if (($detail['stage'] ?? '') === 'finalizing_part') { unlink($source); }
+        }, ['victim.txt' => ['size' => 0, 'mtime' => 0]]);
+        $baseline = FilesArchiver::loadPrevMap($this->root . '/out/files.list');
+        self::assertArrayNotHasKey('victim.txt', $baseline);
+        self::assertStringNotContainsString('victim.txt', file_get_contents($this->root . '/out/paths.cache'));
+        self::assertSame(['keep.txt'], $this->entries($result));
+        self::assertSame(1, $result['files_total']);
+        self::assertSame(1, $result['files_changed']);
+        self::assertSame(['victim.txt'], file($result['tombstones_file'], FILE_IGNORE_NEW_LINES));
+        self::assertSame(1, $result['tombstones_count']);
+        file_put_contents($source, 'victim');
+        touch($source, $mtime);
+        mkdir($this->root . '/next');
+        $next = (new FilesArchiver($this->root . '/src'))->archive($this->root . '/next', [], static function (): void {}, $baseline);
+        $zip = new \ZipArchive();
+        self::assertTrue($zip->open($this->root . '/next/' . $next['parts'][0]));
+        self::assertSame('victim', $zip->getFromName('victim.txt'));
+        $zip->close();
+        self::assertSame(1, $next['files_changed']);
+        self::assertSame(1, $next['files_carried']);
+    }
+
+    public function testSourceAlreadyMissingFromCachedDiscoveryIsExcluded(): void
+    {
+        file_put_contents($this->root . '/src/keep.txt', 'keep');
+        file_put_contents($this->root . '/out/paths.cache', "wp-content\tvictim.txt\nwp-content\tkeep.txt\n");
+        file_put_contents($this->root . '/out/files.list', "victim.txt\t6\t1\nkeep.txt\t4\t1\n");
+        $result = (new FilesArchiver($this->root . '/src'))->archive($this->root . '/out', ['total_files' => 2], static function (): void {});
+        self::assertSame(['keep.txt'], $this->entries($result));
+        self::assertSame(['victim.txt'], $result['skipped_sources']);
+        self::assertSame(1, $result['files_total']);
+        self::assertArrayNotHasKey('victim.txt', FilesArchiver::loadPrevMap($this->root . '/out/files.list'));
+        self::assertStringNotContainsString('victim.txt', file_get_contents($this->root . '/out/paths.cache'));
+    }
+
+    public function testRecoveryUsesOnlyTheCurrentTombstoneInventory(): void
+    {
+        file_put_contents($this->root . '/src/keep.txt', 'keep');
+        foreach ([false, true] as $currentDeletion) {
+            $out = $this->root . '/tombstones-' . (int) $currentDeletion;
+            mkdir($out);
+            file_put_contents($out . '/tombstones.list', "keep.txt\n");
+            $source = $this->root . '/src/victim.txt';
+            file_put_contents($source, 'victim');
+            $parent = ['victim.txt' => ['size' => 0, 'mtime' => 0]];
+            if ($currentDeletion) { $parent['already-gone.txt'] = ['size' => 1, 'mtime' => 0]; }
+            $result = (new FilesArchiver($this->root . '/src'))->archive($out, [], static function ($phase, $detail) use ($source): void {
+                if (($detail['stage'] ?? '') === 'finalizing_part') { unlink($source); }
+            }, $parent);
+            $expected = $currentDeletion ? ['already-gone.txt', 'victim.txt'] : ['victim.txt'];
+            self::assertSame($expected, file($result['tombstones_file'], FILE_IGNORE_NEW_LINES));
+            self::assertSame(count($expected), $result['tombstones_count']);
+        }
+    }
+
+    public function testSkippedSourcesReachProgressCompletionAndUploadedBaseline(): void
+    {
+        $this->signing();
+        file_put_contents($this->root . '/src/keep.txt', 'keep');
+        for ($i = 0; $i < 25; $i++) { file_put_contents($this->root . '/src/skip-' . $i . '.txt', 'skip'); }
+        $GLOBALS['wpdb'] = new FakeBackupTasksWpdb();
+        $params = array_replace($this->params(true), ['presign_endpoint' => 'https://cp.invalid/presign', 'manifest_endpoint' => 'https://cp.invalid/manifest']);
+        $events = [];
+        $uploadedBaseline = null;
+        $manifest = null;
+        $savedState = null;
+        $puts = [];
+        Functions\when('wp_remote_request')->alias(static function ($url, $args) use (&$puts) {
+            $puts[basename($url)] = $args['body'];
+            return ['response' => ['code' => 200], 'body' => ''];
+        });
+        Functions\when('wp_remote_retrieve_body')->alias(static fn ($response) => $response['body']);
+        Functions\when('wp_remote_post')->alias(function ($url, $args) use (&$events, &$uploadedBaseline, &$manifest, &$savedState, $params) {
+            $body = json_decode($args['body'], true);
+            if ($url === $params['presign_endpoint']) {
+                $uploadedBaseline = file_get_contents($this->root . '/out/files.list');
+                $uploads = [];
+                foreach ($body['hashes'] as $hash) { $uploads[$hash] = 'https://storage.invalid/' . $hash; }
+                return ['response' => ['code' => 200], 'body' => json_encode(['uploads' => $uploads])];
+            }
+            if ($url === $params['manifest_endpoint']) {
+                $manifest = $body;
+                $savedState = $GLOBALS['wpdb']->rows[self::SNAPSHOT]['sub_state'];
+                return ['response' => ['code' => 200], 'body' => json_encode(['ok' => true, 'chunk_count' => 0, 'stored_count' => 0])];
+            }
+            $events[] = $body;
+            if (($body['phase_detail']['stage'] ?? '') === 'finalizing_part') {
+                foreach (glob($this->root . '/src/skip-*.txt') as $source) { unlink($source); }
+            }
+            return ['response' => ['code' => 200], 'body' => '{}'];
+        });
+        self::assertSame('completed', (new TaskRunner($params))->run());
+        $done = end($events);
+        self::assertSame('completed', $done['phase']);
+        self::assertSame(25, $done['phase_detail']['skipped_sources_count']);
+        self::assertCount(20, $done['phase_detail']['skipped_sources']);
+        $archiveDone = array_values(array_filter($events, static fn ($event) => $event['phase'] === 'archiving_files' && ($event['phase_detail']['done'] ?? false)))[0];
+        self::assertSame(25, $archiveDone['phase_detail']['skipped_sources_count']);
+        self::assertSame(1, $archiveDone['phase_detail']['files_total']);
+        self::assertStringNotContainsString('skip-', $uploadedBaseline);
+        self::assertStringContainsString('keep.txt', $uploadedBaseline);
+        self::assertNotNull($manifest);
+        $baselineEntry = array_values(array_filter($manifest['entries'], static fn ($entry) => $entry['entry_kind'] === 'files-list'))[0];
+        $shipped = '';
+        foreach ($baselineEntry['chunks'] as $chunk) { $shipped .= $puts[$chunk['blake3']]; }
+        self::assertSame($uploadedBaseline, $shipped);
+        self::assertSame(strlen($shipped), $baselineEntry['size']);
+        $events = [];
+        $GLOBALS['wpdb']->seedRow(self::SNAPSHOT, ['phase' => 'submitting_manifest', 'sub_state' => $savedState]);
+        self::assertSame('completed', (new TaskRunner($params))->run());
+        self::assertSame(25, end($events)['phase_detail']['skipped_sources_count']);
+        self::assertCount(20, end($events)['phase_detail']['skipped_sources']);
     }
 
     public function testHealthyFlockRejectsOverlappingRunner(): void
@@ -335,7 +644,7 @@ final class BackupArchiveBehaviorTest extends TestCase
             $event = json_decode($args['body'], true);
             $events[] = $event;
             if (($event['phase_detail']['stage'] ?? '') === 'finalizing_part') {
-                unlink($this->root . '/src/victim.txt');
+                rename($this->root . '/out', $this->root . '/out-held');
             }
             return ['response' => ['code' => 200], 'body' => '{}'];
         });
@@ -346,9 +655,9 @@ final class BackupArchiveBehaviorTest extends TestCase
         $failure = end($events);
         self::assertSame('failed', $failure['phase']);
         self::assertSame('archiving_files', $failure['phase_detail']['stage']);
-        self::assertStringContainsString("zip close failed (Can't open file", $failure['phase_detail']['message']);
+        self::assertStringContainsString('zip close failed (Failure to create temporary file', $failure['phase_detail']['message']);
         self::assertSame('wp-content.g000.part001.zip', $failure['phase_detail']['part']);
-        self::assertSame(\ZipArchive::ER_OPEN, $failure['phase_detail']['libzip_status']);
+        self::assertSame(\ZipArchive::ER_TMPOPEN, $failure['phase_detail']['libzip_status']);
         self::assertStringNotContainsString($this->root, $failure['phase_detail']['message']);
         self::assertDirectoryDoesNotExist($this->root . '/out');
         self::assertArrayNotHasKey(self::SNAPSHOT, $wpdb->rows);
@@ -398,7 +707,7 @@ final class BackupArchiveBehaviorTest extends TestCase
         self::assertSame($params['timing'] + ['worker_started_at' => $events[0]['phase_detail']['timing']['worker_started_at']], $events[0]['phase_detail']['timing']);
     }
 
-    private function deletedSourceFailure(): array
+    private function destinationCloseFailure(): array
     {
         mkdir($this->root . '/src/uploads');
         $source = $this->root . '/src/uploads/victim.txt';
@@ -407,14 +716,15 @@ final class BackupArchiveBehaviorTest extends TestCase
         set_error_handler(static function ($errno, $message) use (&$warnings): bool { $warnings[] = $message; return true; });
         try {
             (new FilesArchiver($this->root . '/src'))->archive($this->root . '/out', [], static function ($phase, $detail) use ($source): void {
-                if (($detail['stage'] ?? '') === 'finalizing_part') { unlink($source); }
+                if (($detail['stage'] ?? '') === 'finalizing_part') { chmod(dirname($source, 3) . '/out', 0500); }
             });
         } catch (\RuntimeException $e) {
             return [$e->getMessage(), $warnings];
         } finally {
+            chmod($this->root . '/out', 0700);
             restore_error_handler();
         }
-        self::fail('Expected close failure after source removal.');
+        self::fail('Expected close failure for an unwritable destination.');
     }
 
     private function overlap(bool $degraded): array

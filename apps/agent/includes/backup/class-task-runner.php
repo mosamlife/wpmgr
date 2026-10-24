@@ -138,6 +138,11 @@ final class TaskRunner
 
     private bool $timingReported = false;
 
+    private int $skippedSourcesCount = 0;
+
+    /** @var list<string> Relative paths omitted from the snapshot. */
+    private array $skippedSources = [];
+
     /**
      * @param array{snapshot_id:string,kind:string,age_recipient:string,
      *              presign_endpoint:string,manifest_endpoint:string,
@@ -330,6 +335,7 @@ final class TaskRunner
             }
             $currentPhase = (string) $task['phase'];
             $subState     = (array) $task['sub_state'];
+            $this->retainSkippedSources((array) ($subState['files'] ?? []));
 
             // Terminal? Re-entry is a no-op.
             if ($currentPhase === self::PHASE_COMPLETED || $currentPhase === self::PHASE_FAILED) {
@@ -1993,6 +1999,7 @@ final class TaskRunner
      */
     private function onPhaseProgress(string $phase, array $detail): void
     {
+        $this->retainSkippedSources($detail);
         $this->touchProgressTimestamp();
         $this->postProgress($phase, $detail);
     }
@@ -2008,6 +2015,10 @@ final class TaskRunner
         if ($this->progressClient === null) {
             return;
         }
+        if ($this->skippedSourcesCount > 0) {
+            $detail['skipped_sources_count'] = $this->skippedSourcesCount;
+            $detail['skipped_sources'] = $this->skippedSources;
+        }
         if (!$this->timingReported && $this->workerStartedAt !== null && isset($this->params['timing'])) {
             $timing = $this->params['timing'];
             $detail['timing'] = [
@@ -2022,6 +2033,15 @@ final class TaskRunner
             $this->progressClient->post($phase, $detail);
         } catch (\Throwable $_) {
             // Swallow — progress is observability, not correctness.
+        }
+    }
+
+    /** @param array<string,mixed> $detail Archive state or progress detail. */
+    private function retainSkippedSources(array $detail): void
+    {
+        if (isset($detail['skipped_sources_count'])) {
+            $this->skippedSourcesCount = max(0, (int) $detail['skipped_sources_count']);
+            $this->skippedSources = array_slice(array_values(array_filter((array) ($detail['skipped_sources'] ?? []), 'is_string')), 0, 20);
         }
     }
 
