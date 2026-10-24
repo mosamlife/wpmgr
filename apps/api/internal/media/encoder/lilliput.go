@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"io"
 
 	"github.com/discord/lilliput"
 )
@@ -14,6 +16,9 @@ import (
 // sized for. 8192 covers the full-resolution camera originals we optimize; the
 // pixel guard (MaxSourcePixels) catches anything pathological.
 const maxImageDim = 8192
+
+// imageOpsBufferBytes is the backing capacity of each pooled framebuffer.
+var imageOpsBufferBytes = maxImageDim * maxImageDim * 4
 
 // outBufCap is the initial output buffer size handed to Transform. lilliput
 // grows it if needed; 50 MB matches the MaxSourceBytes guard so a worst-case
@@ -110,6 +115,11 @@ func (e *LilliputEncoder) Encode(ctx context.Context, req EncodeRequest) (Encode
 	if !ok {
 		return EncodeResult{}, ErrUnsupportedSource
 	}
+	// AVIF receives BGR or BGRA pixels. Expand single-channel sources while
+	// retaining the decoder's orientation and colour profile metadata.
+	if params.outputExt == ".avif" && header.PixelType().Channels() == 1 {
+		decoder = &bgrDecoder{Decoder: decoder}
+	}
 
 	// Acquire a pooled ImageOps context.
 	var ops *lilliput.ImageOps
@@ -200,6 +210,48 @@ func (e *LilliputEncoder) Encode(ctx context.Context, req EncodeRequest) (Encode
 		}
 		return EncodeResult{}, encCtx.Err()
 	}
+}
+
+// bgrDecoder expands greyscale pixels before ImageOps normalizes orientation.
+type bgrDecoder struct {
+	lilliput.Decoder
+	expanded bool
+	probe    lilliput.Framebuffer
+}
+
+func (d *bgrDecoder) DecodeTo(dst *lilliput.Framebuffer) error {
+	if d.expanded {
+		// Only still sources are expanded. Probe for EOF without pixel storage;
+		// further frames cannot be passed to the AVIF encoder through this adapter.
+		defer d.probe.Close()
+		if err := d.Decoder.DecodeTo(&d.probe); err == io.EOF {
+			return err
+		}
+		return ErrUnsupportedSource
+	}
+	header, err := d.Header()
+	if err != nil {
+		return err
+	}
+	pixels := int64(header.Width()) * int64(header.Height())
+	if pixels > int64(imageOpsBufferBytes)/3 {
+		return ErrDimensionsTooBig
+	}
+	// NewFramebuffer reserves four bytes per nominal pixel; DecodeTo sets the
+	// actual dimensions. Round the single-channel byte count up to that unit.
+	grey := lilliput.NewFramebuffer(int((pixels+3)/4), 1)
+	defer grey.Close()
+	if err := d.Decoder.DecodeTo(grey); err != nil {
+		return err
+	}
+	if err := dst.Create3Channel(grey.Width(), grey.Height()); err != nil {
+		return err
+	}
+	if err := dst.CopyToOffsetNoBlend(grey, image.Rect(0, 0, grey.Width(), grey.Height())); err != nil {
+		return err
+	}
+	d.expanded = true
+	return nil
 }
 
 // encodeOptionsFor maps resolved params to lilliput's EncodeOptions map. Only

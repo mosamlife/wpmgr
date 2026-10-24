@@ -73,6 +73,13 @@ overrides:
   # declares ^3.4.17 itself; this pin carries posthog-js's copy (it declares
   # ^3.4.12, so 3.4.17 is inside its range).
   dompurify: 3.4.17
+  # One copy of each Radix overlay internal (dismissable layer, focus scope,
+  # focus guards, portal). Each copy keeps its own record of the page's pointer
+  # events and focus traps, so a dialog opened from a menu built on another copy
+  # leaves the page unresponsive after it closes. The command palette's cmdk
+  # declares @radix-ui/react-dialog ^1.1.6; this keeps it on the dialog the
+  # dashboard itself uses.
+  cmdk>@radix-ui/react-dialog: ^1.3.1
 # Documented audit exceptions. Every entry must state WHY the advisory cannot be
 # fixed by pinning and WHAT would let us drop the exception, so this list stays
 # short and reviewable rather than becoming a place to silence real findings.

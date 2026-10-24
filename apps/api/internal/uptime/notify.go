@@ -119,6 +119,7 @@ type WebhookPoster interface {
 
 // WebhookPayload is the JSON body POSTed to an alert webhook.
 type WebhookPayload struct {
+	Text       string    `json:"text"`
 	Event      string    `json:"event"` // "uptime.down" | "uptime.recovery" | "uptime.app_down" | "uptime.app_recovery" | "uptime.app_down_aggregate" | "uptime.app_down_aggregate_update" | "uptime.app_recovery_aggregate"
 	TenantID   string    `json:"tenant_id"`
 	SiteID     string    `json:"site_id"`

@@ -128,6 +128,7 @@ func (d *Dispatcher) Fire(ctx context.Context, cfg AlertConfig, alert Alert) {
 		Error:      alert.Error,
 		FiredAt:    alert.FiredAt,
 	}
+	payload.Text = renderWebhookText(payload)
 	webhookResult, webhookErr := d.sendWebhook(ctx, cfg.WebhookURL, cfg.WebhookSecret, payload)
 	if webhookErr != nil {
 		d.logger.Warn("uptime alert webhook failed",
@@ -213,6 +214,7 @@ func (d *Dispatcher) FireSecurityEvent(ctx context.Context, cfg AlertConfig, ev 
 		Error:    ev.Summary,
 		FiredAt:  ev.FiredAt,
 	}
+	payload.Text = renderWebhookText(payload)
 	webhookResult, webhookErr := d.sendWebhook(ctx, cfg.WebhookURL, cfg.WebhookSecret, payload)
 	if webhookErr != nil {
 		d.logger.Warn("security alert webhook failed",
@@ -397,6 +399,7 @@ func (d *Dispatcher) FireAppAggregate(ctx context.Context, cfg AlertConfig, aler
 		AppEligibleCount:   alert.EligibleCount,
 		AppSuppressedSites: alert.SuppressedSites,
 	}
+	payload.Text = renderWebhookText(payload)
 	webhookResult, webhookErr := d.sendWebhook(ctx, cfg.WebhookURL, cfg.WebhookSecret, payload)
 	if webhookErr != nil {
 		d.logger.Warn("uptime app aggregate alert webhook failed",
