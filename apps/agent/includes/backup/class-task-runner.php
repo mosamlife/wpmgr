@@ -124,7 +124,8 @@ final class TaskRunner
      *            manifest_endpoint:string,progress_endpoint:string,chunk_bytes:int,
      *            scratch_dir:string,wp_content_path:string,db:array<string,string>,
      *            is_incremental?:bool,parent_snapshot_id?:string,base_snapshot_id?:string,
-     *            generation?:int,prev_files_list_chunks?:list<array<string,string>>}
+     *            generation?:int,prev_files_list_chunks?:list<array<string,string>>,
+     *            timing?:array{received_at:int,preflight_done_at:int,claimed_at:int}}
      */
     private array $params;
 
@@ -133,11 +134,21 @@ final class TaskRunner
 
     private ?ProgressClient $progressClient = null;
 
+    private ?int $workerStartedAt = null;
+
+    private bool $timingReported = false;
+
+    private int $skippedSourcesCount = 0;
+
+    /** @var list<string> Relative paths omitted from the snapshot. */
+    private array $skippedSources = [];
+
     /**
      * @param array{snapshot_id:string,kind:string,age_recipient:string,
      *              presign_endpoint:string,manifest_endpoint:string,
      *              progress_endpoint:string,chunk_bytes:int,scratch_dir:string,
-     *              wp_content_path:string,db:array<string,string>} $params
+     *              wp_content_path:string,db:array<string,string>,
+     *              timing?:array{received_at:int,preflight_done_at:int,claimed_at:int}} $params
      */
     public function __construct(array $params)
     {
@@ -221,10 +232,9 @@ final class TaskRunner
      * breadcrumb and returns WITHOUT mutating phase. If flock itself cannot
      * even be attempted (path unresolvable, or the filesystem/permissions
      * prevent opening the lock file — e.g. an exotic FS without flock()
-     * support), that degrades SAFELY to today's GET_LOCK-only behavior
-     * rather than blocking the run; the phase machine is already
-     * idempotent/re-entrant and the CP tolerates duplicate presigns via a
-     * 422, so that worst case is no worse than pre-#232 behavior.
+     * support), a held GET_LOCK permits the run to proceed. If neither
+     * guard is held, an existing active task receives only a lock_unavailable
+     * breadcrumb. The invocation never seeds, advances, fails or reclaims work.
      *
      * @return string Terminal phase reached this invocation. One of
      *                PHASE_COMPLETED, PHASE_FAILED, or — if a future phase
@@ -234,6 +244,8 @@ final class TaskRunner
      */
     public function run(): string
     {
+        $this->workerStartedAt = time();
+        $this->timingReported = false;
         @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, PHPCompatibility.FunctionUse.ArgumentFunctionsReportCurrentValue.NeedsInspection, Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup loop must not hit max_execution_time; @-guarded, no-op when disabled
         @ignore_user_abort(true);
 
@@ -296,6 +308,9 @@ final class TaskRunner
         }
         /** @var resource|null $fileLockHandle */
         $fileLockHandle = $fileLock['handle'];
+        if (!$lockHeld && $fileLockHandle === null) {
+            return $this->handleUnavailableGuards();
+        }
 
         // GH #232 lock-file GC follow-up: set to true at every point this
         // invocation reaches a TERMINAL outcome for the snapshot (already
@@ -320,8 +335,9 @@ final class TaskRunner
                     throw new \RuntimeException('TaskRunner: cannot create task row');
                 }
             }
-            $currentPhase = (string) $task['phase'];
-            $subState     = (array) $task['sub_state'];
+            $currentPhase = (string) ($task['phase'] ?? self::PHASE_QUEUED);
+            $subState     = (array) ($task['sub_state'] ?? []);
+            $this->retainSkippedSources((array) ($subState['files'] ?? []));
 
             // Terminal? Re-entry is a no-op.
             if ($currentPhase === self::PHASE_COMPLETED || $currentPhase === self::PHASE_FAILED) {
@@ -337,8 +353,7 @@ final class TaskRunner
             //   stage=dispatch_entered                  => hook fired, runner never advanced
             //   stage=runner_started                     => a lock held, first phase failed to persist
             //   phase past 'queued'                      => advanced
-            // Never stamped when BOTH guards were unavailable (a fully
-            // degraded environment — no lock semantics apply there at all).
+            // A task without either guard returns before this breadcrumb.
             if ($lockHeld || $fileLockHandle !== null) {
                 $subState['stage'] = 'runner_started';
                 $this->saveTaskState($currentPhase, $subState);
@@ -440,30 +455,29 @@ final class TaskRunner
                 // Swallow.
             }
             try {
-                $this->postProgress(self::PHASE_FAILED, [
+                $failureDetail = [
                     'stage'   => $currentPhase,
                     'message' => substr($e->getMessage(), 0, 240),
-                ]);
+                ];
+                if ($e instanceof ZipCloseException) {
+                    $failureDetail['part'] = $e->part();
+                    $failureDetail['libzip_status'] = $e->libzipStatus();
+                }
+                $this->postProgress(self::PHASE_FAILED, $failureDetail);
             } catch (\Throwable $_) {
                 // Swallow.
             }
 
-            // GH #279: GC the orphaned scratch dir + chunk/artifact files now
-            // that this run is genuinely terminal (the task row is about to
-            // be DELETEd below, so there will be no further watchdog
-            // re-entry to clean these up; cleanupOnCompleted() only ever ran
-            // on the COMPLETED path). Best-effort: a second exception here
-            // must never mask the original failure already captured above.
+            // Scratch reclamation requires a held guard. Cleanup failures
+            // must never mask the failure already persisted and reported.
             try {
                 $this->cleanupOnFailed();
             } catch (\Throwable $_) {
                 // Swallow.
             }
 
-            // Bug 2 fix: also DELETE the failed row so a delayed watchdog
-            // cron event can't re-enter and re-emit a stale phantom
-            // /presign call. The CP-side audit + the just-posted `failed`
-            // progress event have already recorded the failure for ops.
+            // Guarded failures remove their task row after reporting.
+            // A lock-unavailable failure remains terminal in task storage.
             try {
                 global $wpdb;
                 if (is_object($wpdb)) {
@@ -486,25 +500,12 @@ final class TaskRunner
                 $this->releaseLock();
             }
             if ($fileLockHandle !== null) {
-                // Release the flock FIRST (LOCK_UN + fclose) — only THEN,
-                // with the fd closed, unlink the lock file itself. Doing it
-                // in this order (never unlink-before-release) avoids any
-                // platform-specific flock-vs-unlink-on-an-open-fd subtlety.
-                $this->releaseFileLock($fileLockHandle);
-
-                // GH #232 lock-file GC follow-up: only the WINNER that
-                // brought this snapshot to a genuinely terminal state
-                // reclaims its own lock file — never on a contended-loser
-                // return (those exit above, before this finally is even
-                // reached) and never mid-run, so an in-flight winner's lock
-                // file is never removed out from under a legitimately
-                // waiting resumer. A crashed run that never reaches this
-                // `finally` at all (fatal/OOM/SIGKILL) leaks its lock file
-                // exactly like it always leaked its scratch dir before GH
-                // #151 — BackupJanitor::gcRuns() is the age-gated backstop
-                // for both.
-                if ($terminal) {
-                    $this->cleanupFileLock();
+                // Only the terminal owner removes its own path, while its
+                // flock is still held. Losers never reclaim a lock file.
+                try {
+                    if ($terminal) { $this->cleanupFileLock($fileLockHandle); }
+                } finally {
+                    $this->releaseFileLock($fileLockHandle);
                 }
             }
         }
@@ -515,59 +516,16 @@ final class TaskRunner
     // ==================================================================
 
     /**
-     * GH #256 (post-ship review, finding 1, TOCTOU): acquire run()'s own two
-     * mutual-exclusion guards (GET_LOCK then flock, the exact same order and
-     * the exact same per-snapshot names run() itself uses), invoke
-     * $callback while BOTH are held, and release both in a `finally`,
-     * regardless of whether $callback returns normally or throws.
+     * Reclaim snapshot state while holding the same guards run() uses.
+     * The file lock is required; database-lock contention also vetoes the
+     * callback. An unavailable database lock permits file-guarded reclamation.
+     * Every acquired guard remains held throughout the callback and is
+     * released even when it throws. Only the held inode's path is removed,
+     * before releasing the file lock.
      *
-     * This exists so a caller entirely OUTSIDE run() (Watchdog's terminal
-     * give-up paths and BackupJanitor::gcRuns(), both of which construct a
-     * throwaway TaskRunner purely to reclaim a snapshot's scratch directory
-     * once its task row/age is judged dead) can perform that reclaim using
-     * the same locks run() relies on for correctness, instead of a second,
-     * independently maintained liveness heuristic that could disagree with
-     * the real one. Making the lock itself the liveness signal, held for
-     * the FULL duration of the reclaim rather than merely probed beforehand,
-     * is what closes the race where a live runner is still writing chunks
-     * into the scratch directory while a give-up path deletes it out from
-     * under the process.
-     *
-     * The earlier shape of this guard (a bool-returning `isRunLockFree()`
-     * probe, checked by the caller, which then did its own file deletion
-     * AFTER this method had already released both locks) left exactly the
-     * TOCTOU window this method exists to close: on a multi-hour backup with
-     * thousands of chunk files, the caller's own glob-and-unlink sweep could
-     * easily still be running tens of milliseconds after the probe reported
-     * "free", by which time a resumed/re-entered runner could have started
-     * writing into the same directory again. Folding the actual reclaim work
-     * INTO the locked critical section, never a separate probe-then-act pair
-     * of calls, removes that window entirely.
-     *
-     * GH #256 finding 2 (fail-open): unlike run()'s own inline guard (left
-     * intentionally unchanged, see its doc), this method treats a flock
-     * guard that could not even be ATTEMPTED (acquireFileLock() returning
-     * `['handle' => null, 'contended' => false]`, meaning an unresolvable
-     * lock path, a wp_mkdir_p() failure, or a fopen() failure from
-     * permissions / open_basedir / a read-only filesystem) as NOT provably
-     * free, and never invokes $callback. That degraded outcome is a
-     * legitimate reason for run() to forge ahead without a flock guard
-     * (worst case: a wasted duplicate run, the phase machine is idempotent),
-     * but here the consequence of proceeding is a DELETE: absence of proof
-     * that no one else is running is not proof of absence, so this path
-     * refuses rather than gambles.
-     *
-     * @param callable(): void $callback Invoked only when BOTH guards were
-     *                                    acquired free of contention AND the
-     *                                    flock guard was genuinely attempted
-     *                                    (not degraded). Runs with both
-     *                                    guards held for its entire
-     *                                    duration.
-     * @return bool True when $callback ran. False when GET_LOCK reported
-     *              contention, the flock reported contention, or the flock
-     *              guard degraded to "could not be attempted"; in every
-     *              false case $callback was never invoked and the caller
-     *              must leave the snapshot's files untouched this pass.
+     * @param callable(): void $callback Reclamation performed under the lock.
+     * @return bool True when the callback ran; false on contention or when
+     *              the file lock could not be acquired.
      */
     public function withRunLock(callable $callback): bool
     {
@@ -604,21 +562,35 @@ final class TaskRunner
             if ($lockHeld) {
                 $this->releaseLock();
             }
-            // Release the flock FIRST (LOCK_UN + fclose); only THEN, with
-            // the fd closed, unlink the lock file itself (same ordering
-            // run()'s own `finally` uses; see cleanupFileLock()'s doc).
-            // $callback ran, which means this snapshot's scratch state is
-            // being reclaimed regardless of $callback's own outcome, and
-            // there is no future resume left to protect. The coordination
-            // file this call opened (or found already orphaned) is always
-            // reclaimed here rather than left behind as a fresh zero-byte
-            // file for BackupJanitor::gcRuns()'s own age-gated sweep to find
-            // later.
-            $this->releaseFileLock($fileLockHandle);
-            $this->cleanupFileLock();
+            // Reclaim the owner's path while its flock is still held.
+            try {
+                $this->cleanupFileLock($fileLockHandle);
+            } finally {
+                $this->releaseFileLock($fileLockHandle);
+            }
         }
 
         return true;
+    }
+
+    /** Probe guard support without claiming work or removing a coordination path. */
+    public function probeLockAvailability(): bool
+    {
+        $probeName = 'wpmgr_bk_probe_' . $this->snapshotId();
+        $token = $this->getLock($probeName);
+        $databaseAvailable = $token === '1' || $token === '0';
+        $handle = null;
+        try {
+            $file = $this->acquireFileLock();
+            $handle = $file['handle'];
+            // Contention proves the guard works; existing owners remain protected.
+            return $databaseAvailable || $handle !== null || $file['contended'];
+        } catch (\Throwable $_) {
+            return $databaseAvailable;
+        } finally {
+            if ($handle !== null) { $this->releaseFileLock($handle); }
+            if ($token === '1') { $this->releaseLock($probeName); }
+        }
     }
 
     /**
@@ -654,7 +626,7 @@ final class TaskRunner
      *                      failed — either way, run() still attempts the
      *                      authoritative flock() guard next.
      */
-    private function getLock(): ?string
+    private function getLock(?string $name = null): ?string
     {
         global $wpdb;
         if (!is_object($wpdb)) {
@@ -662,7 +634,7 @@ final class TaskRunner
         }
         /** @var \wpdb $wpdb */
         try {
-            $result = $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $this->lockName())); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- advisory run-lock probe; anti-double-fire correctness read, not a cacheable value
+            $result = $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $name ?? $this->lockName())); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- advisory run-lock probe; anti-double-fire correctness read, not a cacheable value
         } catch (\Throwable $e) {
             return null;
         }
@@ -674,7 +646,7 @@ final class TaskRunner
      * releases the lock automatically when this session's connection closes,
      * so a failed RELEASE_LOCK() here is never fatal.
      */
-    private function releaseLock(): void
+    private function releaseLock(?string $name = null): void
     {
         global $wpdb;
         if (!is_object($wpdb)) {
@@ -682,7 +654,7 @@ final class TaskRunner
         }
         /** @var \wpdb $wpdb */
         try {
-            $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $this->lockName())); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- advisory run-lock release; no core helper exists
+            $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $name ?? $this->lockName())); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- advisory run-lock release; no core helper exists
         } catch (\Throwable $e) {
             // Swallow — MySQL releases the lock automatically on connection close.
         }
@@ -749,8 +721,8 @@ final class TaskRunner
      *   - ['handle' => null,     'contended' => false]  — the guard could not
      *     even be attempted (no resolvable path, or the filesystem/
      *     permissions prevent opening the lock file — e.g. an exotic FS
-     *     without flock() support). Degrades SAFELY: the caller proceeds
-     *     exactly as it would have before this guard existed.
+     *     without flock() support). run() requires a held database guard
+     *     in this case; reclamation requires a held file guard.
      *
      * @return array{handle:resource|null,contended:bool}
      */
@@ -766,24 +738,65 @@ final class TaskRunner
             return ['handle' => null, 'contended' => false];
         }
 
-        // 'c': create the file if it does not exist yet, but never truncate
-        // an existing one — only flock()'s exclusivity matters here, the
-        // file's contents are never read or written by this guard.
-        $handle = @fopen($path, 'c'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- headless agent; WP_Filesystem has no flock()-equivalent API and is never initialized in this context; small, server-derived, empty coordination file
-        if ($handle === false) {
-            return ['handle' => null, 'contended' => false];
-        }
-        @chmod($path, 0600); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- explicit security perms on our own coordination file; WP_Filesystem would coerce to wider FS_CHMOD_FILE
+        return self::acquireFileLockAtPath($path);
+    }
 
-        if (!flock($handle, LOCK_EX | LOCK_NB)) {
-            // Genuinely contended: another live PHP process holds this exact
-            // snapshot's lock right now, regardless of its $wpdb connection
-            // state. This is the authoritative reject.
-            fclose($handle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- releasing our own failed-lock-attempt handle, not a WP_Filesystem-managed resource
-            return ['handle' => null, 'contended' => true];
+    /**
+     * Acquire an inode-checked, non-blocking file lock. A pathname change
+     * retries acquisition when a fresh handle verifies the pathname's identity.
+     * A fresh-handle mismatch makes the guard unavailable only while the
+     * pathname retains the same identity throughout the diagnosis.
+     * Existing-only acquisition never creates a janitor candidate.
+     *
+     * @return array{handle:resource|null,contended:bool}
+     */
+    public static function acquireFileLockAtPath(string $path, bool $create = true): array
+    {
+        for ($attempt = 0; $attempt < 3; $attempt++) {
+            $handle = @fopen($path, $create ? 'c' : 'r+'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- flock requires a native file handle
+            if ($handle === false) {
+                return ['handle' => null, 'contended' => $attempt > 0];
+            }
+            $wouldBlock = 0;
+            if (!@flock($handle, LOCK_EX | LOCK_NB, $wouldBlock)) {
+                fclose($handle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- native flock handle
+                return ['handle' => null, 'contended' => (bool) $wouldBlock];
+            }
+            if (self::fileLockMatchesPath($handle, $path)) {
+                if ($create) { @chmod($path, 0600); } // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- private coordination file permissions
+                return ['handle' => $handle, 'contended' => false];
+            }
+            clearstatcache(true, $path);
+            $before = @stat($path);
+            $fresh = @fopen($path, 'r+'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- diagnose identity using an existing pathname without creating it
+            $reliable = true;
+            if ($fresh !== false) {
+                try { $reliable = self::fileLockMatchesPath($fresh, $path); }
+                finally { fclose($fresh); } // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- close the diagnostic handle
+            }
+            clearstatcache(true, $path);
+            $after = @stat($path);
+            $stable = $before !== false && $after !== false
+                && $before['dev'] === $after['dev'] && $before['ino'] === $after['ino'];
+            flock($handle, LOCK_UN);
+            fclose($handle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- release a stale inode before retrying
+            if (!$reliable && $stable) { return ['handle' => null, 'contended' => false]; }
         }
+        return ['handle' => null, 'contended' => true];
+    }
 
-        return ['handle' => $handle, 'contended' => false];
+    /**
+     * Confirm that the pathname still names the held file's device and inode.
+     *
+     * @param resource $handle Locked file handle.
+     */
+    public static function fileLockMatchesPath($handle, string $path): bool
+    {
+        clearstatcache(true, $path);
+        $held = @fstat($handle);
+        $named = @stat($path);
+        return $held !== false && $named !== false
+            && $held['dev'] === $named['dev'] && $held['ino'] === $named['ino'];
     }
 
     /**
@@ -804,36 +817,37 @@ final class TaskRunner
     }
 
     /**
-     * Reclaim this run's own `<snapshot_id>.lock` coordination file — GH
-     * #232 follow-up: without this, one empty 0-byte file per snapshot
-     * accumulates in the runs base forever (thousands over time on an
-     * active fleet). Called from run()'s `finally`, AFTER
-     * releaseFileLock() has already run flock(LOCK_UN) + fclose() on this
-     * same handle — the fd is closed before the path is ever touched here,
-     * so there is no unlink-against-an-open-fd ordering subtlety. Only
-     * called when this invocation reached a genuinely TERMINAL outcome
-     * (see run()'s `$terminal` doc) — a run that crashes before reaching
-     * this `finally` at all (fatal/OOM/SIGKILL) still leaks its lock file,
-     * exactly like it always leaked its scratch dir before GH #151;
-     * BackupJanitor::gcRuns() is the age-gated backstop for both.
+     * Reclaim only the terminal owner's lock pathname while its flock is
+     * held. A different inode belongs to another owner and is retained.
      *
-     * Best-effort: a failed unlink here is cosmetic disk-hygiene, never a
-     * correctness concern — the file is empty and carries no state, and a
-     * lingering one is reclaimed by the janitor regardless.
+     * @param resource $handle This invocation's held file lock.
      */
-    private function cleanupFileLock(): void
+    private function cleanupFileLock($handle): void
     {
         $path = $this->fileLockPath();
-        if ($path === '' || !is_file($path)) {
-            return;
+        if ($path !== '' && self::fileLockMatchesPath($handle, $path)) {
+            wp_delete_file($path);
         }
-        wp_delete_file($path);
+    }
+
+    /** A guardless runner may record a breadcrumb, but cannot advance or fail work. */
+    private function handleUnavailableGuards(): string
+    {
+        try {
+            $task = $this->loadTask();
+            $phase = (string) ($task['phase'] ?? self::PHASE_QUEUED);
+            if ($task !== null && $phase !== self::PHASE_COMPLETED && $phase !== self::PHASE_FAILED) {
+                $this->recordLockContended('lock_unavailable');
+            }
+            return $phase;
+        } catch (\Throwable $_) {
+            return self::PHASE_QUEUED;
+        }
     }
 
     /**
-     * Record a `lock_contended` breadcrumb on the task row WITHOUT touching
-     * `phase` — called when getLock() reports we lost the race to another
-     * session that is provably already running this task.
+     * Record a lock breadcrumb without changing phase or progress time.
+     * Every breadcrumb compares the raw cursor bytes before writing.
      *
      * Reads the RAW sub_state column value directly (NOT through loadTask(),
      * which follows the sidecar-spill pointer and would rehydrate a
@@ -846,12 +860,14 @@ final class TaskRunner
      * Best-effort: a failure here must never throw — the caller (run()'s
      * loser path) already wraps this in its own try/catch, but every DB call
      * inside is additionally guarded so nothing here can escalate on its own.
+     *
+     * @param string $stage Coordination breadcrumb.
      */
-    private function recordLockContended(): void
+    private function recordLockContended(string $stage = 'lock_contended'): void
     {
         \WPMgr\Agent\Support\DebugLog::write(
-            'WPMgr TaskRunner: lock contended for snapshot ' . $this->snapshotId()
-            . ' — another session already holds the run-lock; skipping re-entry without mutating phase'
+            'WPMgr TaskRunner: ' . $stage . ' for snapshot ' . $this->snapshotId()
+            . ' — skipping re-entry without mutating phase'
         );
 
         global $wpdb;
@@ -873,24 +889,22 @@ final class TaskRunner
 
             $envelope = [];
             if (is_string($raw) && $raw !== '') {
-                $decoded = json_decode($raw, true);
+                $decoded = self::decodeStateJson($raw);
                 if (is_array($decoded)) {
                     $envelope = $decoded;
                 }
             }
-            $envelope['stage'] = 'lock_contended';
-            $encoded = json_encode($envelope);
+            $envelope['stage'] = $stage;
+            $encoded = self::encodeSubState($envelope);
             if ($encoded === false) {
                 return;
             }
 
-            $wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned table; breadcrumb-only write, phase column untouched
-                $table,
-                ['sub_state' => $encoded],
-                ['snapshot_id' => $this->snapshotId()],
-                ['%s'],
-                ['%s']
-            );
+            if (!is_string($raw)) { return; }
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- trusted plugin-owned table identifier; all values use placeholders
+            $sql = "UPDATE {$table} SET sub_state = %s WHERE snapshot_id = %s AND BINARY sub_state = %s";
+            $prepared = $wpdb->prepare($sql, $encoded, $this->snapshotId(), $raw); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- query uses placeholders for all values
+            $wpdb->query($prepared); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared -- byte-exact cursor compare-and-set on the plugin-owned table
         } catch (\Throwable $e) {
             // Swallow — a breadcrumb write failure must never surface from
             // the loser path.
@@ -1386,17 +1400,8 @@ final class TaskRunner
             // uploadChunks() (per its checkpoint contract) so no local file
             // is ever deleted on top of an unpersisted cursor.
             //
-            // GH #283 follow-up: saveTaskState() also has three SILENT
-            // no-op paths (no $wpdb, no resolvable table name, or a
-            // json_encode failure) that persist nothing and return
-            // normally, with no exception to propagate. Left unchecked,
-            // checkpointAndFlush() would see the checkpoint callback return
-            // without throwing and go on to delete this batch's local
-            // chunk files even though uploaded_hashes was never actually
-            // advanced, reproducing the exact "missing local chunk for
-            // upload" failure on the next resume. Treat a false return the
-            // same as a thrown exception: throw here so checkpointAndFlush()
-            // keeps every queued file on disk for the next resume.
+            // Local chunks remain until the checkpoint is acknowledged.
+            // Unavailable storage or encoding failures retain them for resume.
             function (array $partialUploadCursor) use (&$subState): void {
                 $subState['upload'] = $partialUploadCursor;
                 $persisted = $this->saveTaskState(self::PHASE_ENCRYPTING_UPLOADING, $subState);
@@ -1686,7 +1691,7 @@ final class TaskRunner
         if (!is_string($raw) || $raw === '') {
             return [];
         }
-        $decoded = json_decode($raw, true);
+        $decoded = self::decodeStateJson($raw);
         if (!is_array($decoded)) {
             return [];
         }
@@ -1702,7 +1707,7 @@ final class TaskRunner
             if (is_file($sidecarPath)) {
                 $sidecarRaw = @file_get_contents($sidecarPath);
                 if ($sidecarRaw !== false && $sidecarRaw !== '') {
-                    $full = json_decode($sidecarRaw, true);
+                    $full = self::decodeStateJson($sidecarRaw);
                     if (is_array($full)) {
                         $decoded = $full;
                     }
@@ -1713,10 +1718,58 @@ final class TaskRunner
         return $decoded;
     }
 
+    /** Encode resume state without changing filename bytes in keys or values. */
+    public static function encodeSubState(array $state): string
+    {
+        $json = json_encode($state);
+        if ($json === false && json_last_error() === JSON_ERROR_UTF8) {
+            $json = json_encode(['_wpmgr_byte_state' => 1, 'data' => self::mapStateBytes($state, true)]);
+        }
+        if ($json === false) { throw new \RuntimeException('TaskRunner: cannot encode task state: ' . esc_html(json_last_error_msg())); }
+        return $json;
+    }
+
+    /** @return array<string,mixed>|null */
+    private static function decodeStateJson(string $json): ?array
+    {
+        $state = json_decode($json, true);
+        if (!is_array($state)) { return null; }
+        if (($state['_wpmgr_byte_state'] ?? null) !== 1) { return $state; }
+        if (!isset($state['data']) || !is_array($state['data'])) { return null; }
+        try {
+            $decoded = self::mapStateBytes($state['data'], false);
+            foreach ($state as $key => $value) {
+                if ($key !== '_wpmgr_byte_state' && $key !== 'data') { $decoded[$key] = $value; }
+            }
+            return $decoded;
+        }
+        catch (\UnexpectedValueException $_) { return null; }
+    }
+
+    /** @return array<mixed> Reversible base64 strings, including array keys. */
+    private static function mapStateBytes(array $state, bool $encode): array
+    {
+        $result = [];
+        foreach ($state as $key => $value) {
+            if (is_string($key)) {
+                if (!$encode && !str_starts_with($key, 's:')) { throw new \UnexpectedValueException('Invalid byte-state key'); }
+                $key = $encode ? 's:' . base64_encode($key) : base64_decode(substr($key, 2), true);
+                if ($key === false) { throw new \UnexpectedValueException('Invalid byte-state key'); }
+            }
+            if (is_array($value)) { $value = self::mapStateBytes($value, $encode); }
+            elseif (is_string($value)) {
+                $value = $encode ? base64_encode($value) : base64_decode($value, true);
+                if ($value === false) { throw new \UnexpectedValueException('Invalid byte-state value'); }
+            }
+            $result[$key] = $value;
+        }
+        return $result;
+    }
+
     /**
      * Load the task row by snapshot_id. Returns null if the row doesn't exist.
      *
-     * @return array{phase:string,kind:string,sub_state:array<string,mixed>,resume_count:int,max_resumes:int}|null
+     * @return array{phase:string,kind:string,sub_state:array<string,mixed>,resume_count:int,max_resumes:int,last_progress_at:int}|null
      */
     private function loadTask(): ?array
     {
@@ -1731,7 +1784,7 @@ final class TaskRunner
         }
 
         // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- interpolated identifier is prefix+constant (trusted); value bound via %s placeholder
-        $sql = "SELECT phase, kind, sub_state, resume_count, max_resumes FROM {$table} WHERE snapshot_id = %s LIMIT 1";
+        $sql = "SELECT phase, kind, sub_state, resume_count, max_resumes, last_progress_at FROM {$table} WHERE snapshot_id = %s LIMIT 1";
         /** @phpstan-ignore-next-line — $wpdb is a runtime interface. */
         $prepared = $wpdb->prepare($sql, $this->snapshotId()); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- already prepared on the preceding line
         $row      = $wpdb->get_row($prepared, ARRAY_A); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.UnescapedDBParameter, PluginCheck.Security.DirectDB.UnescapedDBParameter -- direct query on plugin-owned table; value is the output of $wpdb->prepare()
@@ -1748,23 +1801,27 @@ final class TaskRunner
             'sub_state'    => $sub,
             'resume_count' => (int) ($row['resume_count'] ?? 0),
             'max_resumes'  => (int) ($row['max_resumes'] ?? 6),
+            'last_progress_at' => (int) ($row['last_progress_at'] ?? 0),
         ];
     }
 
     /**
-     * Insert a fresh task row in `queued` state. Caller-safe under retry: if
-     * the row already exists (snapshot_id PK) the INSERT is a no-op.
+     * Insert a task in the requested phase only when its snapshot has no row.
+     *
+     * @param string              $phase Initial phase; queued by default.
+     * @param array<string,mixed> $subState Initial task state.
+     * @return bool True only when this invocation inserted the row.
      */
-    private function seedTask(): void
+    private function seedTask(string $phase = self::PHASE_QUEUED, array $subState = []): bool
     {
         global $wpdb;
         if (!is_object($wpdb)) {
-            return;
+            return false;
         }
         /** @var \wpdb $wpdb */
         $table = $this->tableName();
         if ($table === '') {
-            return;
+            return false;
         }
         $now = time();
 
@@ -1779,15 +1836,15 @@ final class TaskRunner
             $sql, // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- identifier validated against information_schema / prefix+constant; values bound via placeholders
             $this->snapshotId(),
             $this->kind(),
-            self::PHASE_QUEUED,
-            '{}',
+            $phase,
+            $subState === [] ? '{}' : self::encodeSubState($subState),
             $now,
             $now,
             0,
             6
         );
         /** @phpstan-ignore-next-line */
-        $wpdb->query($prepared); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.UnescapedDBParameter, PluginCheck.Security.DirectDB.UnescapedDBParameter -- direct INSERT IGNORE on plugin-owned table; value is the output of $wpdb->prepare()
+        return $wpdb->query($prepared) === 1; // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.UnescapedDBParameter, PluginCheck.Security.DirectDB.UnescapedDBParameter -- direct INSERT IGNORE on plugin-owned table; value is the output of $wpdb->prepare()
     }
 
     /**
@@ -1839,27 +1896,16 @@ final class TaskRunner
      * is done AFTER the sidecar write to avoid a false-positive on the
      * pointer row (the pointer is tiny and should never fail).
      *
-     * GH #283 follow-up: the three early-return paths below (no $wpdb, no
-     * table name, json_encode failure) used to persist nothing and return
-     * NORMALLY, indistinguishable from a genuine durable write to any caller
-     * that only checks "did this throw". A caller relying on "no exception
-     * means durably persisted" (e.g. EncryptAndUpload's checkpoint contract)
-     * could then treat those chunks as safely deletable when nothing was
-     * ever written. The return value makes that distinction explicit: `true`
-     * only when the write genuinely reached durable storage (the DB row or
-     * the sidecar file), `false` on each of the three no-op paths. Existing
-     * callers that ignore the return value are unaffected (PHP permits
-     * discarding a return value); this is purely additive.
+     * Filename bytes in resume fields use a reversible JSON envelope when
+     * necessary. Display samples and diagnostics use UTF-8 replacement.
+     * A checkpoint is acknowledged only after the database accepts it.
      *
      * @param string              $phase    New phase.
      * @param array<string,mixed> $subState New sub_state to persist.
-     * @return bool True when the state was durably persisted (DB row or
-     *              sidecar file). False on a silent no-op path (no $wpdb, no
-     *              resolvable table name, or json_encode failure): the
-     *              caller should treat this exactly like a thrown exception
-     *              for any invariant that depends on durability.
-     * @throws \RuntimeException When the DB write fails AND we cannot fall
-     *                           back to the sidecar.
+     * @return bool True when the database accepts the checkpoint; false when
+     *              task storage is unavailable. Callers requiring durability
+     *              must reject a false result.
+     * @throws \RuntimeException On encoding or database-write failure.
      *
      * `protected` is a deliberate test seam: the ADR-051 prevMap-pipeline e2e
      * overrides this to a no-op so runArchivingFiles can be driven without a
@@ -1878,15 +1924,13 @@ final class TaskRunner
         }
 
         $now     = time();
-        $encoded = json_encode($subState);
-        if ($encoded === false || $encoded === '') {
-            // Last-resort: skip the write so the watchdog re-enters from the
-            // last good state. json_encode should never fail for the small
-            // part-cursor state we persist; if it does, logging is better
-            // than wiping the prior cursor with '{}'.
-            \WPMgr\Agent\Support\DebugLog::write('WPMgr TaskRunner: sub_state json_encode failed for phase ' . $phase . ' — skipping state write to preserve the prior cursor');
-            return false;
+        if (isset($subState['files']['skipped_sources'])) {
+            $subState['files']['skipped_sources'] = array_map(static fn ($path): string => json_decode(json_encode((string) $path, JSON_INVALID_UTF8_SUBSTITUTE), true), $subState['files']['skipped_sources']);
         }
+        if (isset($subState['last_error'])) {
+            $subState['last_error'] = json_decode(json_encode($subState['last_error'], JSON_INVALID_UTF8_SUBSTITUTE), true);
+        }
+        $encoded = self::encodeSubState($subState);
 
         $this->lastDbUpdate = $now;
 
@@ -1903,7 +1947,7 @@ final class TaskRunner
             if ($written !== false && $written === strlen($encoded)) {
                 @rename($tmpPath, $sidecarPath); // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- atomic same-filesystem swap; WP_Filesystem::move() is copy+delete (non-atomic) and breaks crash/watchdog-resume safety
                 // DB column holds only the pointer; the full cursor is on disk.
-                $pointer    = json_encode([self::SUBSTATE_SIDECAR_KEY => true, 'file' => $sidecarPath]);
+                $pointer    = self::encodeSubState([self::SUBSTATE_SIDECAR_KEY => true, 'file' => $sidecarPath]);
                 $rowEncoded = $pointer !== false ? $pointer : $encoded;
             } else {
                 wp_delete_file($tmpPath);
@@ -1980,6 +2024,7 @@ final class TaskRunner
      */
     private function onPhaseProgress(string $phase, array $detail): void
     {
+        $this->retainSkippedSources($detail);
         $this->touchProgressTimestamp();
         $this->postProgress($phase, $detail);
     }
@@ -1995,10 +2040,33 @@ final class TaskRunner
         if ($this->progressClient === null) {
             return;
         }
+        if ($this->skippedSourcesCount > 0) {
+            $detail['skipped_sources_count'] = $this->skippedSourcesCount;
+            $detail['skipped_sources'] = $this->skippedSources;
+        }
+        if (!$this->timingReported && $this->workerStartedAt !== null && isset($this->params['timing'])) {
+            $timing = $this->params['timing'];
+            $detail['timing'] = [
+                'received_at'       => (int) $timing['received_at'],
+                'preflight_done_at' => (int) $timing['preflight_done_at'],
+                'claimed_at'        => (int) $timing['claimed_at'],
+                'worker_started_at' => $this->workerStartedAt,
+            ];
+            $this->timingReported = true;
+        }
         try {
             $this->progressClient->post($phase, $detail);
         } catch (\Throwable $_) {
             // Swallow — progress is observability, not correctness.
+        }
+    }
+
+    /** @param array<string,mixed> $detail Archive state or progress detail. */
+    private function retainSkippedSources(array $detail): void
+    {
+        if (isset($detail['skipped_sources_count'])) {
+            $this->skippedSourcesCount = max(0, (int) $detail['skipped_sources_count']);
+            $this->skippedSources = array_slice(array_values(array_filter((array) ($detail['skipped_sources'] ?? []), 'is_string')), 0, 20);
         }
     }
 

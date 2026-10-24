@@ -121,6 +121,10 @@ final class BackupCommand implements CommandInterface
      */
     public function execute(array $claims, array $params): array
     {
+        // The request timestamp includes WordPress bootstrap work before dispatch.
+        $receivedAt = isset($_SERVER['REQUEST_TIME']) && (int) $_SERVER['REQUEST_TIME'] > 0
+            ? (int) $_SERVER['REQUEST_TIME']
+            : time();
         $snapshotId = $this->str($params, 'snapshot_id');
         $kind       = $this->str($params, 'kind');
         $recipient  = $this->str($params, 'age_recipient');
@@ -217,6 +221,21 @@ final class BackupCommand implements CommandInterface
             return $this->refuse('age recipient mismatch');
         }
 
+        // Check guard support before claiming work or persisting any task row.
+        $contentPath = defined('WP_CONTENT_DIR') ? (string) WP_CONTENT_DIR : '';
+        $guardProbe = new TaskRunner([
+            'snapshot_id' => $snapshotId,
+            'kind' => $kind,
+            'wp_content_path' => $contentPath,
+            'scratch_dir' => $contentPath !== '' ? rtrim($contentPath, '/\\') . '/wpmgr-agent/runs/' . $snapshotId : '',
+        ]);
+        if (!$guardProbe->probeLockAvailability()) {
+            if ($this->mayHaveInFlightWork($snapshotId)) {
+                return $this->refuse('Backup not started: this snapshot may already have a runner in flight.', 'runner_in_flight');
+            }
+            return $this->refuse('This host offers neither a database lock nor a working file lock in wp-content/wpmgr-agent. The backup cannot run safely. Ask your host to enable database locks or make that directory writable.', 'backup_lock_unavailable');
+        }
+
         // --- 1.5. Backup-readiness preflight (ADR-037 Sprint 1, 1B) -------
         //
         // Cheap defense-in-depth gate ahead of scratch creation + dedup claim.
@@ -227,6 +246,7 @@ final class BackupCommand implements CommandInterface
         // first progress event so the operator sees them in the UI without
         // blocking the run.
         $preflight = $this->preflightChecks();
+        $preflightDoneAt = time();
         if (!$preflight['ok']) {
             $this->writePreflightFailure($snapshotId, $preflight['failures']);
             return $this->refuse('preflight_failed: ' . implode(', ', $preflight['failures']));
@@ -237,7 +257,8 @@ final class BackupCommand implements CommandInterface
         // date) before touching the dedup table; same pattern the autologin
         // command uses to self-heal a stale install.
         Schema::ensureCurrent();
-        if (!$this->tryClaimDedup($snapshotId)) {
+        $claimedAt = null;
+        if (!$this->tryClaimDedup($snapshotId, $claimedAt)) {
             return $this->refuse('runner already in flight for this snapshot', 'runner_in_flight');
         }
 
@@ -298,6 +319,11 @@ final class BackupCommand implements CommandInterface
             'exclude_paths'          => $excludePaths,
             'exclude_extensions'     => $excludeExtensions,
             'exclude_file_size_mb'   => $excludeFileSizeMb,
+            'timing'                 => [
+                'received_at'       => $receivedAt,
+                'preflight_done_at' => $preflightDoneAt,
+                'claimed_at'        => $claimedAt,
+            ],
         ];
 
         // --- 4. Seed the task row (with params nested in sub_state) -------
@@ -404,19 +430,27 @@ final class BackupCommand implements CommandInterface
     }
 
     /**
-     * Atomically claim the snapshot_id in wpmgr_backup_runs. Returns true if
-     * we won the race. Loses if an active row exists within the dedup window.
+     * Claim the snapshot only when its task is terminal or absent and any
+     * prior claim has expired. Successful writes set the UTC claim timestamp.
      */
-    private function tryClaimDedup(string $snapshotId): bool
+    private function tryClaimDedup(string $snapshotId, ?int &$claimedAt = null): bool
     {
         global $wpdb;
         if (!is_object($wpdb)) {
+            $claimedAt = time();
             return true; // No DB seam — allow the run (single-process dev).
         }
         /** @var \wpdb $wpdb */
         $table  = $wpdb->prefix . Schema::BACKUP_RUNS_TABLE;
         $now    = time();
         $cutoff = $now - self::DEDUP_WINDOW_SECONDS;
+
+        // Active tasks retain their original claim and timing on redelivery.
+        $tasksTable = $wpdb->prefix . Schema::BACKUP_TASKS_TABLE;
+        $task = $wpdb->get_row($wpdb->prepare("SELECT phase FROM {$tasksTable} WHERE snapshot_id = %s", $snapshotId), ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- trusted plugin-owned table identifier; live task state governs command acceptance
+        if (is_array($task) && !in_array((string) ($task['phase'] ?? ''), [TaskRunner::PHASE_COMPLETED, TaskRunner::PHASE_FAILED], true)) {
+            return false;
+        }
 
         // @phpstan-ignore-next-line
         $existing = $wpdb->get_row($wpdb->prepare("SELECT pid, started_at FROM {$table} WHERE snapshot_id = %s", $snapshotId)); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- interpolated identifier is prefix+constant (trusted); direct query on plugin-owned dedup table; no core helper exists
@@ -425,10 +459,34 @@ final class BackupCommand implements CommandInterface
         }
         if (is_object($existing)) {
             $wpdb->update($table, ['pid' => getmypid() ?: 0, 'started_at' => $now], ['snapshot_id' => $snapshotId], ['%d', '%d'], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned dedup table; no core helper exists
+            $claimedAt = time();
             return true;
         }
         $inserted = $wpdb->insert($table, ['snapshot_id' => $snapshotId, 'pid' => getmypid() ?: 0, 'started_at' => $now], ['%s', '%d', '%d']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- direct insert on plugin-owned dedup table; no core helper exists
+        if ($inserted !== false) {
+            $claimedAt = time();
+        }
         return $inserted !== false;
+    }
+
+    /** Read-only veto for a redelivery whose owner may still hold an inaccessible guard. */
+    private function mayHaveInFlightWork(string $snapshotId): bool
+    {
+        global $wpdb;
+        if (!is_object($wpdb)) { return true; }
+        try {
+            $tasks = $wpdb->prefix . Schema::BACKUP_TASKS_TABLE;
+            $task = $wpdb->get_row($wpdb->prepare("SELECT phase FROM {$tasks} WHERE snapshot_id = %s", $snapshotId), ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- read-only lookup on the plugin-owned snapshot key
+            if (!empty($wpdb->last_error)) { return true; }
+            if (is_array($task)) {
+                return !in_array((string) ($task['phase'] ?? ''), [TaskRunner::PHASE_COMPLETED, TaskRunner::PHASE_FAILED], true);
+            }
+            $runs = $wpdb->prefix . Schema::BACKUP_RUNS_TABLE;
+            $claim = $wpdb->get_row($wpdb->prepare("SELECT pid, started_at FROM {$runs} WHERE snapshot_id = %s", $snapshotId)); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- a claim may precede its owner's task seed
+            return is_object($claim) || !empty($wpdb->last_error);
+        } catch (\Throwable $_) {
+            return true;
+        }
     }
 
     private function releaseDedup(string $snapshotId): void
@@ -484,7 +542,7 @@ final class BackupCommand implements CommandInterface
         /** @var \wpdb $wpdb */
         $table = $wpdb->prefix . Schema::BACKUP_TASKS_TABLE;
         $now   = time();
-        $subState = (string) wp_json_encode(['params' => $runnerParams]);
+        $subState = TaskRunner::encodeSubState(['params' => $runnerParams]);
 
         // @phpstan-ignore-next-line
         $wpdb->query($wpdb->prepare( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct INSERT IGNORE on plugin-owned table; no core helper exists

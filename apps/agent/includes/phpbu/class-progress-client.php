@@ -40,7 +40,7 @@ final class ProgressClient
      */
     public function post(string $phase, array $detail = []): bool
     {
-        $body = json_encode(['phase' => $phase, 'phase_detail' => (object) $detail]);
+        $body = json_encode(['phase' => $phase, 'phase_detail' => (object) $detail], JSON_INVALID_UTF8_SUBSTITUTE);
         if ($body === false) {
             return false;
         }

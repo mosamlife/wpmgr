@@ -2,6 +2,7 @@ package backup
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -857,9 +858,16 @@ func toAPISnapshot(s Snapshot) gen.BackupSnapshot {
 	// default and we just leave OptBackupSnapshotProgress unset (the frontend
 	// treats it as "no runner phase yet").
 	if len(s.Progress) > 0 && string(s.Progress) != "{}" {
-		var raw map[string]jx.Raw
-		if err := json.Unmarshal(s.Progress, &raw); err == nil && len(raw) > 0 {
-			out.Progress = gen.NewOptBackupSnapshotProgress(gen.BackupSnapshotProgress(raw))
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(s.Progress, &raw); err != nil {
+			slog.Warn("backup snapshot progress could not be decoded",
+				slog.String("snapshot_id", s.ID.String()), slog.Any("error", err))
+		} else if len(raw) > 0 {
+			progress := make(gen.BackupSnapshotProgress, len(raw))
+			for key, value := range raw {
+				progress[key] = jx.Raw(value)
+			}
+			out.Progress = gen.NewOptBackupSnapshotProgress(progress)
 		}
 	}
 	if s.ProgressUpdatedAt != nil {

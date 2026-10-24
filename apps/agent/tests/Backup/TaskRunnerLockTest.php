@@ -30,9 +30,8 @@
  *   1. Contended dispatch (GET_LOCK='0') never strands the row: the loser
  *      returns without mutating phase and writes only a lock_contended
  *      breadcrumb.
- *   2. GET_LOCK NULL (unsupported host): run() proceeds and completes
- *      exactly as it did before #232 — no lock semantics, no regression —
- *      AND, separately, a flock held by a live process still blocks a
+ *   2. GET_LOCK NULL (unsupported host): a held file lock permits run()
+ *      to complete. A flock held by a live process still blocks a
  *      second caller even when GET_LOCK is entirely unsupported.
  *   3. Concurrent-into-same-scratch is BLOCKED by flock even when GET_LOCK
  *      reports "free" (simulating the dead-connection scenario above): the
@@ -197,7 +196,7 @@ final class TaskRunnerLockTest extends TestCase
     // Test 2: GET_LOCK NULL (unsupported host) — no regression.
     // ------------------------------------------------------------------
 
-    public function test_get_lock_null_falls_through_and_completes_like_today(): void
+    public function test_run_completes_with_only_file_guard_when_database_lock_unavailable(): void
     {
         [$params, $recipient] = $this->buildParams();
         $this->stubNetworkSuccess($params['presign_endpoint'], $params['manifest_endpoint']);
@@ -452,6 +451,20 @@ final class TaskRunnerLockTest extends TestCase
         );
     }
 
+    public function test_run_completes_with_only_database_guard_when_file_guard_unavailable(): void
+    {
+        [$params] = $this->buildParams();
+        $this->stubNetworkSuccess($params['presign_endpoint'], $params['manifest_endpoint']);
+        $wpdb = new FakeBackupTasksWpdb();
+        $wpdb->lockResponses = ['1'];
+        $GLOBALS['wpdb'] = $wpdb;
+        $path = $this->root . '/' . self::SNAPSHOT_ID . '.lock';
+        mkdir($path);
+        $this->assertSame(TaskRunner::PHASE_COMPLETED, (new TaskRunner($params))->run());
+        $this->assertSame(1, $wpdb->releaseCallCount);
+        $this->assertDirectoryExists($path);
+    }
+
     /**
      * RELEASE_LOCK AND the flock must both fire via the `finally` even when
      * a phase handler throws (the failed/catch path) — not only on the
@@ -670,9 +683,8 @@ final class TaskRunnerLockTest extends TestCase
      * => false]`, here forced via a lock-file directory with no write
      * permission, the same class of failure as open_basedir or a
      * read-only filesystem) must be treated as NOT provably free on this
-     * reclaim-only path, unlike run()'s own inline guard (unchanged, and
-     * correct for its own purpose: proceeding without a flock guard there
-     * costs at most a wasted duplicate run). The callback must never run.
+     * reclaim-only path. Reclamation requires a held file guard, even when
+     * a database guard is available. The callback must never run.
      */
     public function test_with_run_lock_treats_a_degraded_flock_guard_as_not_free(): void
     {

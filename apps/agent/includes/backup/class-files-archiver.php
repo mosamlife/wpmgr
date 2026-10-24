@@ -74,6 +74,17 @@ use WPMgr\Agent\Support\LongRunningJob;
  */
 final class FilesArchiver
 {
+    /** @var array<string,bool> Paths omitted from this archive. */
+    private array $skippedSources = [];
+
+    /** @var array<string,array{size:int,mtime:int}> Skipped existing sources retained from the parent. */
+    private array $carriedSources = [];
+
+    private string $filesListPath = '';
+
+    /** @var \Closure():\ZipArchive Creates each new or reopened archive handle. */
+    private \Closure $zipFactory;
+
     /** Default part size before rotation (bytes). */
     public const DEFAULT_MAX_PART_BYTES = 200 * 1024 * 1024;
 
@@ -297,6 +308,7 @@ final class FilesArchiver
      * @param array<string,mixed> $opts      Optional overrides:
      *                                         max_part_bytes (int),
      *                                         max_part_entries (int),
+     *                                         zip_factory (\Closure():\ZipArchive),
      *                                         exclude_extensions (list<string>),
      *                                         exclude_file_size_mb (int),
      *                                         include_components (list<string> of
@@ -315,6 +327,7 @@ final class FilesArchiver
      */
     public function __construct(string $sourceDir, array $excludes = [], array $opts = [], int $generation = 0)
     {
+        $this->zipFactory = $opts['zip_factory'] ?? static fn (): \ZipArchive => new \ZipArchive();
         $this->generation = max(0, $generation);
         if (!class_exists(\ZipArchive::class)) {
             // V0 ships no PclZip fallback. Most managed WP hosts ship ext-zip;
@@ -340,7 +353,7 @@ final class FilesArchiver
             }
             $pathExcludes[$entry] = true;
         }
-        $this->pathExcludes = array_values(array_keys($pathExcludes));
+        $this->pathExcludes = array_map('strval', array_keys($pathExcludes));
 
         // Merge defaults + caller excludes, dedupe, drop empties. Segment
         // names only — slashes in entries would never match an exploded
@@ -353,7 +366,7 @@ final class FilesArchiver
             }
             $merged[$entry] = true;
         }
-        $this->excludes = array_values(array_keys($merged));
+        $this->excludes = array_map('strval', array_keys($merged));
 
         $this->maxPartBytes = isset($opts['max_part_bytes'])
             ? max(1, (int) $opts['max_part_bytes'])
@@ -378,7 +391,7 @@ final class FilesArchiver
                 $normExts[$ext] = true;
             }
         }
-        $this->excludeExtensions = array_values(array_keys($normExts));
+        $this->excludeExtensions = array_map('strval', array_keys($normExts));
 
         // A5 (#187): exclude by file size. 0 means disabled.
         $excludeMb = isset($opts['exclude_file_size_mb']) && is_numeric($opts['exclude_file_size_mb'])
@@ -513,6 +526,8 @@ final class FilesArchiver
      */
     public function archive(string $outDir, array $resume, callable $progress, ?array $prevMap = null): array
     {
+        $this->skippedSources = [];
+        $this->carriedSources = [];
         // Lift caller-imposed time/abort guards. Watchdog handles
         // stall recovery; we want this loop to run as long as the SAPI
         // will let it.
@@ -533,6 +548,7 @@ final class FilesArchiver
         $cachePath = isset($resume['cache_file']) && is_string($resume['cache_file']) && $resume['cache_file'] !== ''
             ? $resume['cache_file']
             : $outDir . DIRECTORY_SEPARATOR . self::PATHS_CACHE_NAME;
+        $this->filesListPath = dirname($cachePath) . DIRECTORY_SEPARATOR . self::FILES_LIST_NAME;
 
         $totalFiles = isset($resume['total_files']) ? (int) $resume['total_files'] : 0;
         // ADR-051 instrumentation: carry-forward count (unchanged files skipped from
@@ -647,9 +663,8 @@ final class FilesArchiver
             $currentRel = $rel;
             $abs        = $this->sourceDir . DIRECTORY_SEPARATOR . $rel;
 
-            // file_exists check: files that vanished between
-            // walk and pack are silently dropped, not fatal.
-            if (is_file($abs) && !is_link($abs)) {
+            $metadata = $this->sourceMetadata($rel);
+            if ($metadata !== null) {
                 // Lazy-open the active part for this component.
                 if ($compState[$compName]['zip'] === null) {
                     $this->openActivePart($compState[$compName], $compName, $outDir);
@@ -657,9 +672,18 @@ final class FilesArchiver
                 /** @var \ZipArchive $zip */
                 $zip = $compState[$compName]['zip'];
                 if ($zip->addFile($abs, $rel)) {
-                    $compState[$compName]['part_entries']++;
-                    $compState[$compName]['part_estimated_bytes'] += (int) @filesize($abs);
+                    $compState[$compName]['queued_sources'][$rel] = $metadata;
+                    $compState[$compName]['part_entries'] = $zip->numFiles;
+                    $compState[$compName]['part_estimated_bytes'] += $metadata['size'];
+                } else {
+                    $this->skipSource($compState[$compName], $rel);
                 }
+            } else {
+                // A resumed part retains its other durable entries when a source is omitted.
+                if ($compState[$compName]['zip'] === null && is_file($this->partPath($outDir, $compName, (int) $compState[$compName]['current_part']))) {
+                    $this->openActivePart($compState[$compName], $compName, $outDir);
+                }
+                $this->skipSource($compState[$compName], $rel);
             }
             $fileIndex++;
             $filesSinceProgress++;
@@ -683,7 +707,7 @@ final class FilesArchiver
                         'component'     => $compName,
                         'stage'         => 'finalizing_part',
                     ]);
-                    $closed = $this->closeActivePart($compState[$compName]);
+                    $closed = $this->closeActivePart($compState[$compName], $progress);
                     if ($closed['size'] > 0) {
                         $bytesWritten     += $closed['size'];
                         $partsCompleted[] = $closed['name'];
@@ -760,7 +784,7 @@ final class FilesArchiver
                 'component'     => $compName,
                 'stage'         => 'finalizing_part',
             ]);
-            $closed = $this->closeActivePart($state);
+            $closed = $this->closeActivePart($state, $progress);
             if ($closed['size'] > 0) {
                 $bytesWritten     += $closed['size'];
                 $partsCompleted[] = $closed['name'];
@@ -768,6 +792,46 @@ final class FilesArchiver
             }
         }
         unset($state);
+
+        if ($this->skippedSources !== []) {
+            if ($prevMap !== null) {
+                foreach (array_intersect_key($prevMap, $this->skippedSources) as $rel => $metadata) {
+                    $absolute = $this->sourceDir . DIRECTORY_SEPARATOR . $rel;
+                    clearstatcache(true, $absolute);
+                    if (file_exists($absolute) || is_link($absolute)) { $this->carriedSources[$rel] = $metadata; }
+                }
+                $filesCarried += count($this->carriedSources);
+                if ($this->carriedSources !== [] && $tombstonesFile !== '') {
+                    $tombstonesCount = $this->rewriteInventory($tombstonesFile, fn (string $rel): ?string => isset($this->carriedSources[$rel]) ? null : $rel);
+                }
+            }
+            $totalFiles = $this->prunePathsCache($cachePath);
+            $this->rewriteFilesList([]);
+            if ($prevMap !== null) {
+                $pending = array_diff_key(array_intersect_key($prevMap, $this->skippedSources), $this->carriedSources);
+                $path = $tombstonesFile !== '' ? $tombstonesFile : dirname($cachePath) . DIRECTORY_SEPARATOR . self::TOMBSTONES_LIST_NAME;
+                if ($pending !== [] && $tombstonesFile !== '') {
+                    $handle = fopen($path, 'rb'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- streaming inventory read
+                    if ($handle === false) { throw new \RuntimeException('FilesArchiver: cannot read tombstones'); }
+                    try {
+                        while (($line = fgets($handle)) !== false) { unset($pending[rtrim($line, "\r\n")]); }
+                        if (!feof($handle)) { throw new \RuntimeException('FilesArchiver: incomplete tombstone read'); }
+                    } finally { fclose($handle); } // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- streaming inventory read
+                }
+                if ($pending !== []) {
+                    $handle = fopen($path, $tombstonesFile === '' ? 'wb' : 'ab'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- streaming inventory append
+                    if ($handle === false) { throw new \RuntimeException('FilesArchiver: cannot append tombstones'); }
+                    try {
+                        foreach ($pending as $rel => $_) {
+                            $line = $rel . "\n";
+                            if (fwrite($handle, $line) !== strlen($line)) { throw new \RuntimeException('FilesArchiver: cannot write tombstone'); } // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- streaming inventory append
+                            $tombstonesCount++;
+                        }
+                    } finally { fclose($handle); } // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- streaming inventory append
+                    $tombstonesFile = $path;
+                }
+            }
+        }
 
         return $this->buildDoneResult($partsCompleted, $partKinds, $totalFiles, $bytesWritten, $progress, $cachePath, $tombstonesFile, $tombstonesCount, $filesCarried, $prevMapSize, ($prevMap !== null));
     }
@@ -788,13 +852,16 @@ final class FilesArchiver
     private function openActivePart(array &$state, string $compName, string $outDir): void
     {
         $partPath  = $this->partPath($outDir, $compName, (int) $state['current_part']);
-        $zip       = new \ZipArchive();
+        $zip       = ($this->zipFactory)();
         $openFlags = is_file($partPath) ? \ZipArchive::CREATE : (\ZipArchive::CREATE | \ZipArchive::OVERWRITE);
         if ($zip->open($partPath, $openFlags) !== true) {
             throw new \RuntimeException('FilesArchiver: cannot open zip part: ' . esc_html($partPath));
         }
         $state['zip']                  = $zip;
         $state['part_path']            = $partPath;
+        $state['open_flags']           = $openFlags;
+        $state['queued_sources']       = [];
+        $state['deleted_entries']      = [];
         // If reopening on resume, the existing zip's numFiles is the
         // entry-rotation cursor. Same for filesize as the byte estimate.
         $state['part_entries']         = $zip->numFiles;
@@ -813,7 +880,7 @@ final class FilesArchiver
      * @return array{name:string,size:int}
      * @throws \RuntimeException On zip close failure.
      */
-    private function closeActivePart(array &$state): array
+    private function closeActivePart(array &$state, ?callable $progress = null): array
     {
         /** @var \ZipArchive $zip */
         $zip      = $state['zip'];
@@ -824,22 +891,182 @@ final class FilesArchiver
             // Best-effort drop the empty placeholder. ZipArchive::close on an
             // empty new zip can still write a tiny central-directory stub;
             // unlink covers that.
-            $zip->close();
+            @$zip->close();
             if (is_file($partPath)) {
                 wp_delete_file($partPath);
             }
             $state['zip']       = null;
             $state['part_path'] = '';
+            $state['queued_sources'] = [];
+            $state['part_estimated_bytes'] = 0;
             return ['name' => '', 'size' => 0];
         }
 
-        if (!$zip->close()) {
-            throw new \RuntimeException('FilesArchiver: zip close failed for ' . esc_html($partPath));
+        if (!@$zip->close()) {
+            $failure = new ZipCloseException(basename($partPath), $zip->status, $zip->getStatusString());
+            for ($attempt = 1; $attempt <= 2; $attempt++) {
+                if (in_array($failure->libzipStatus(), [\ZipArchive::ER_TMPOPEN, \ZipArchive::ER_WRITE, \ZipArchive::ER_CLOSE, \ZipArchive::ER_RENAME], true)
+                    || !$this->hasSourceSuspects($state['queued_sources'])) {
+                    throw $failure; // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- ZipCloseException owns message escaping
+                }
+                if (($state['open_flags'] & \ZipArchive::OVERWRITE) === 0 && !is_file($partPath)) {
+                    throw $failure; // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an existing part is required to retain its durable entries
+                }
+                $zip = ($this->zipFactory)();
+                if ($zip->open($partPath, $state['open_flags']) !== true) { throw $failure; } // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- retains the libzip close diagnostic
+                $state['zip'] = $zip;
+                // Every rebuild retains this process's omissions from the part.
+                foreach ($state['deleted_entries'] as $rel => $_) {
+                    if ($zip->locateName((string) $rel) !== false && !$zip->deleteName((string) $rel)) {
+                        throw new ZipCloseException(basename($partPath), $zip->status, $zip->getStatusString()); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- ZipCloseException owns message escaping
+                    }
+                }
+                foreach ($state['queued_sources'] as $rel => $_) {
+                    $metadata = $this->sourceMetadata((string) $rel);
+                    if ($metadata === null) {
+                        $this->skipSource($state, (string) $rel);
+                        continue;
+                    }
+                    if (!$zip->addFile($this->sourceDir . DIRECTORY_SEPARATOR . $rel, (string) $rel)) {
+                        $this->skipSource($state, (string) $rel);
+                        continue;
+                    }
+                    $state['queued_sources'][$rel] = $metadata;
+                }
+                $state['part_entries'] = $zip->numFiles;
+                $state['part_estimated_bytes'] = array_sum(array_column($state['queued_sources'], 'size'));
+                if ($progress !== null) {
+                    $this->emitProgress($progress, ['stage' => 'rebuilding_part', 'part' => basename($partPath), 'rebuild_attempt' => $attempt]);
+                }
+                if (@$zip->close()) {
+                    $this->rewriteFilesList($state['queued_sources']);
+                    $failure = null;
+                    break;
+                }
+                $failure = new ZipCloseException(basename($partPath), $zip->status, $zip->getStatusString());
+            }
+            if ($failure !== null) { throw $failure; } // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- ZipCloseException owns message escaping
         }
+        if ($state['part_entries'] === 0) {
+            if (is_file($partPath)) { wp_delete_file($partPath); }
+            $state['zip'] = null;
+            $state['queued_sources'] = [];
+            $state['part_path'] = '';
+            return ['name' => '', 'size' => 0];
+        }
+        clearstatcache(true, $partPath);
         $size = (int) @filesize($partPath);
+        $state['part_estimated_bytes'] = $size;
         $state['zip']       = null;
         $state['part_path'] = '';
+        $state['queued_sources'] = [];
         return ['name' => basename($partPath), 'size' => $size];
+    }
+
+    /** @return array{size:int,mtime:int}|null */
+    private function sourceMetadata(string $relativePath): ?array
+    {
+        $path = $this->sourceDir . DIRECTORY_SEPARATOR . $relativePath;
+        clearstatcache(true, $path);
+        if (is_link($path) || !is_file($path) || !is_readable($path)) { return null; }
+        $size = @filesize($path);
+        return $size === false ? null : ['size' => (int) $size, 'mtime' => (int) @filemtime($path)];
+    }
+
+    /** @param array<string,array{size:int,mtime:int}> $sources Queued source metadata. */
+    private function hasSourceSuspects(array $sources): bool
+    {
+        foreach ($sources as $rel => $queued) {
+            $current = $this->sourceMetadata((string) $rel);
+            if ($current === null || $current['size'] !== $queued['size']) { return true; }
+        }
+        return false;
+    }
+
+    /** @param array<string,mixed> $state Open part state. */
+    private function skipSource(array &$state, string $relativePath): void
+    {
+        $this->skippedSources[$relativePath] = true;
+        unset($state['queued_sources'][$relativePath]);
+        $zip = $state['zip'];
+        if ($zip !== null) {
+            if ($zip->locateName($relativePath) !== false) {
+                if (!$zip->deleteName($relativePath)) {
+                    throw new ZipCloseException(basename($state['part_path']), $zip->status, $zip->getStatusString()); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- ZipCloseException owns message escaping
+                }
+                $state['deleted_entries'][$relativePath] = true;
+            }
+            $state['part_entries'] = $zip->numFiles;
+        }
+    }
+
+    /** @param array<string,array{size:int,mtime:int}> $sources Durable queued metadata. */
+    private function rewriteFilesList(array $sources): void
+    {
+        $pendingCarry = $this->carriedSources;
+        $this->rewriteInventory($this->filesListPath, function (string $line) use ($sources, &$pendingCarry): ?string {
+            $rel = explode("\t", $line, 2)[0];
+            if (isset($pendingCarry[$rel])) {
+                $metadata = $pendingCarry[$rel];
+                unset($pendingCarry[$rel]);
+                return $rel . "\t" . $metadata['size'] . "\t" . $metadata['mtime'];
+            }
+            if (isset($this->skippedSources[$rel])) { return null; }
+            if (isset($sources[$rel])) { return $rel . "\t" . $sources[$rel]['size'] . "\t" . $sources[$rel]['mtime']; }
+            return $line;
+        });
+        if ($pendingCarry !== []) {
+            $handle = fopen($this->filesListPath, 'ab'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- append retained parent metadata to the streaming inventory
+            if ($handle === false) { throw new \RuntimeException('FilesArchiver: cannot append carried sources'); }
+            try {
+                foreach ($pendingCarry as $rel => $metadata) {
+                    $line = $rel . "\t" . $metadata['size'] . "\t" . $metadata['mtime'] . "\n";
+                    if (fwrite($handle, $line) !== strlen($line)) { throw new \RuntimeException('FilesArchiver: cannot write carried source'); } // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- streaming inventory append
+                }
+            } finally { fclose($handle); } // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- close the streaming inventory
+        }
+    }
+
+    private function prunePathsCache(string $path): int
+    {
+        return $this->rewriteInventory($path, function (string $line): ?string {
+            $tab = strpos($line, "\t");
+            $rel = $tab === false ? $line : substr($line, $tab + 1);
+            return isset($this->skippedSources[$rel]) ? null : $line;
+        });
+    }
+
+    /** Replace a streaming inventory only after every retained row is written. */
+    private function rewriteInventory(string $path, callable $map): int
+    {
+        $input = @fopen($path, 'rb'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- streaming inventory rewrite
+        if ($input === false) { throw new \RuntimeException('FilesArchiver: cannot read inventory: ' . esc_html(basename($path))); }
+        $temporary = $path . '.rewrite';
+        $output = @fopen($temporary, 'wb'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- streaming inventory rewrite
+        if ($output === false) {
+            fclose($input); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- streaming inventory rewrite
+            throw new \RuntimeException('FilesArchiver: cannot rewrite inventory: ' . esc_html(basename($path)));
+        }
+        $count = 0;
+        try {
+            try {
+                while (($line = fgets($input)) !== false) {
+                    $mapped = $map(rtrim($line, "\r\n"));
+                    if ($mapped === null || $mapped === '') { continue; }
+                    $line = $mapped . "\n";
+                    if (fwrite($output, $line) !== strlen($line)) { throw new \RuntimeException('FilesArchiver: incomplete inventory write'); } // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- streaming inventory rewrite
+                    $count++;
+                }
+                if (!feof($input) || !fflush($output)) { throw new \RuntimeException('FilesArchiver: incomplete inventory rewrite'); } // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fflush -- durable inventory rewrite
+            } finally {
+                fclose($input); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- streaming inventory rewrite
+                fclose($output); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- streaming inventory rewrite
+            }
+            if (!@rename($temporary, $path)) { throw new \RuntimeException('FilesArchiver: cannot replace inventory'); } // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- atomic inventory replacement
+        } finally {
+            if (is_file($temporary)) { wp_delete_file($temporary); }
+        }
+        return $count;
     }
 
     /**
@@ -1201,6 +1428,12 @@ final class FilesArchiver
         return '';
     }
 
+    /** @return list<string> UTF-8 display names; source bookkeeping retains exact bytes. */
+    private function skippedSourceSample(): array
+    {
+        return array_map(static fn ($path): string => json_decode(json_encode((string) $path, JSON_INVALID_UTF8_SUBSTITUTE), true), array_slice(array_keys($this->skippedSources), 0, 20));
+    }
+
     /**
      * Wrap the progress callback so a buggy callback can never abort the
      * archive run. Backup progress is observability, not correctness.
@@ -1216,6 +1449,13 @@ final class FilesArchiver
      */
     private function emitProgress(callable $progress, array $detail): void
     {
+        $detail['skipped_sources_count'] = count($this->skippedSources);
+        $detail['skipped_sources'] = $this->skippedSourceSample();
+        if (empty($detail['done'])) {
+            foreach (['files_done', 'files_total'] as $field) {
+                if (isset($detail[$field])) { $detail[$field] = max(0, $detail[$field] - count($this->skippedSources)); }
+            }
+        }
         $this->lastProgressEmitAt = microtime(true);
         try {
             $progress('archiving_files', $detail);
@@ -1319,6 +1559,8 @@ final class FilesArchiver
             'files_carried'     => $filesCarried,
             'prevmap_size'      => $prevMapSize,
             'incremental'       => $incremental,
+            'skipped_sources_count' => count($this->skippedSources),
+            'skipped_sources' => $this->skippedSourceSample(),
         ];
     }
 }
