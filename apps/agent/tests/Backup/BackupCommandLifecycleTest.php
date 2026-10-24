@@ -14,6 +14,7 @@ use WPMgr\Agent\Support\ConnectionFinisher;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 require_once __DIR__ . '/FakeBackupTasksWpdb.php';
+require_once __DIR__ . '/FileLockStub.php';
 
 #[\PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses]
 #[\PHPUnit\Framework\Attributes\PreserveGlobalState(false)]
@@ -130,6 +131,27 @@ final class BackupCommandLifecycleTest extends TestCase
         self::assertSame([], $this->database->tasks->rows);
         self::assertSame(0, $registered);
         self::assertDirectoryDoesNotExist(WP_CONTENT_DIR . '/wpmgr-agent/runs/' . self::SNAPSHOT);
+    }
+
+    public function testUnsupportedFlockWithoutDatabaseSupportRefusesBeforeTaskSeed(): void
+    {
+        $this->database->tasks->lockResponses = [null];
+        $path = WP_CONTENT_DIR . '/wpmgr-agent/runs/' . self::SNAPSHOT . '.lock';
+        \Patchwork\redefine('WPMgr\\Agent\\Backup\\flock', static function ($handle, $operation, &$wouldBlock = null) use ($path) {
+            if (($operation & LOCK_EX) && stream_get_meta_data($handle)['uri'] === $path) {
+                $wouldBlock = 0;
+                return false;
+            }
+            return \Patchwork\relay();
+        });
+        $registered = 0;
+        Functions\when('register_shutdown_function')->alias(static function () use (&$registered): void { $registered++; });
+        $result = $this->command()->execute([], $this->params());
+        self::assertFalse($result['ok']);
+        self::assertSame('backup_lock_unavailable', $result['code']);
+        self::assertSame([], $this->database->runs);
+        self::assertSame([], $this->database->tasks->rows);
+        self::assertSame(0, $registered);
     }
 
     public function testDatabaseProbeAloneAcceptsAndReleasesProbeName(): void

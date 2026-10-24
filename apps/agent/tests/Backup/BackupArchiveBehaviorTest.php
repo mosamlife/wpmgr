@@ -16,6 +16,7 @@ use WPMgr\Agent\Settings;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 require_once __DIR__ . '/FakeBackupTasksWpdb.php';
+require_once __DIR__ . '/FileLockStub.php';
 
 #[\PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses]
 #[\PHPUnit\Framework\Attributes\PreserveGlobalState(false)]
@@ -834,7 +835,17 @@ final class BackupArchiveBehaviorTest extends TestCase
         $this->assertBreadcrumbPreservesNewOwnerCheckpoint('lock_unavailable');
     }
 
-    private function assertBreadcrumbPreservesNewOwnerCheckpoint(string $stage): void
+    public function testContendedBreadcrumbPreservesCaseOnlyOwnerCheckpoint(): void
+    {
+        $this->assertBreadcrumbPreservesNewOwnerCheckpoint('lock_contended', 'OLD');
+    }
+
+    public function testUnavailableBreadcrumbPreservesCaseOnlyOwnerCheckpoint(): void
+    {
+        $this->assertBreadcrumbPreservesNewOwnerCheckpoint('lock_unavailable', 'OLD');
+    }
+
+    private function assertBreadcrumbPreservesNewOwnerCheckpoint(string $stage, string $owner = 'new'): void
     {
         $wpdb = new FakeBackupTasksWpdb();
         $wpdb->lockResponses = [$stage === 'lock_contended' ? '0' : null];
@@ -844,17 +855,20 @@ final class BackupArchiveBehaviorTest extends TestCase
         $id = self::SNAPSHOT;
         $raced = false;
         $newTime = time() + 1;
-        \Patchwork\redefine(FakeBackupTasksWpdb::class . '::update', function ($table, $data, ...$args) use ($wpdb, $id, $stage, $newTime, &$raced) {
-            if (str_contains($data['sub_state'] ?? '', $stage)) {
+        $newState = json_encode(['owner' => $owner]);
+        \Patchwork\redefine(FakeBackupTasksWpdb::class . '::get_var', function ($prepared) use ($wpdb, $id, $newState, $newTime, &$raced) {
+            $raw = \Patchwork\relay();
+            $query = json_decode($prepared, true);
+            if (str_contains($query['sql'] ?? '', 'SELECT sub_state FROM')) {
                 $raced = true;
-                $wpdb->rows[$id]['sub_state'] = '{"owner":"new"}';
+                $wpdb->rows[$id]['sub_state'] = $newState;
                 $wpdb->rows[$id]['last_progress_at'] = $newTime;
             }
-            return \Patchwork\relay();
+            return $raw;
         });
         (new TaskRunner($this->params()))->run();
         self::assertTrue($raced);
-        self::assertSame('{"owner":"new"}', $wpdb->rows[$id]['sub_state']);
+        self::assertSame($newState, $wpdb->rows[$id]['sub_state']);
         self::assertSame($newTime, $wpdb->rows[$id]['last_progress_at']);
         self::assertSame('archiving_files', $wpdb->rows[$id]['phase']);
     }
@@ -891,6 +905,84 @@ final class BackupArchiveBehaviorTest extends TestCase
             self::assertSame([], $events);
             self::assertFileExists($this->root . '/out/owner-data');
         } finally { flock($holder, LOCK_UN); fclose($holder); }
+    }
+
+    public function testDiagnosticPathRemovalRetriesAndAcquiresCurrentInode(): void
+    {
+        $this->assertDiagnosticRemovalRetries(1);
+    }
+
+    public function testDiagnosticPathRemovalExhaustionIsContention(): void
+    {
+        $this->assertDiagnosticRemovalRetries(3);
+    }
+
+    private function assertDiagnosticRemovalRetries(int $disruptions): void
+    {
+        $path = $this->root . '/' . self::SNAPSHOT . '.lock';
+        $attempts = 0;
+        $opened = [];
+        \Patchwork\redefine('fopen', static function ($filename, ...$args) use ($path, $disruptions, &$attempts, &$opened) {
+            $handle = \Patchwork\relay();
+            if ($filename === $path && is_resource($handle)) {
+                $opened[] = $handle;
+                if ($args[0] === 'c') {
+                    $attempts++;
+                    if ($attempts <= $disruptions) {
+                        unlink($path);
+                        file_put_contents($path, 'replacement');
+                    }
+                } elseif ($args[0] === 'r+') {
+                    unlink($path);
+                }
+            }
+            return $handle;
+        });
+        $lock = TaskRunner::acquireFileLockAtPath($path);
+        try {
+            if ($disruptions === 3) {
+                self::assertNull($lock['handle']);
+                self::assertTrue($lock['contended'], 'Replacement during diagnosis must stay contention.');
+            } else {
+                self::assertIsResource($lock['handle']);
+                self::assertTrue(TaskRunner::fileLockMatchesPath($lock['handle'], $path));
+            }
+            self::assertSame(min(3, $disruptions + 1), $attempts);
+            foreach ($opened as $handle) {
+                if ($handle !== $lock['handle']) { self::assertFalse(is_resource($handle)); }
+            }
+        } finally {
+            if (is_resource($lock['handle'])) { flock($lock['handle'], LOCK_UN); fclose($lock['handle']); }
+        }
+    }
+
+    public function testUnsupportedFlockIsUnavailableAndClosesHandle(): void
+    {
+        $this->assertFlockFailure(false);
+    }
+
+    public function testWouldBlockFlockIsContentionAndClosesHandle(): void
+    {
+        $this->assertFlockFailure(true);
+    }
+
+    private function assertFlockFailure(bool $blocked): void
+    {
+        $path = $this->root . '/' . self::SNAPSHOT . '.lock';
+        $opened = null;
+        \Patchwork\redefine('WPMgr\\Agent\\Backup\\flock', static function ($handle, $operation, &$wouldBlock = null) use ($path, $blocked, &$opened) {
+            if (($operation & LOCK_EX) && stream_get_meta_data($handle)['uri'] === $path) {
+                $opened = $handle;
+                $wouldBlock = (int) $blocked;
+                return false;
+            }
+            return \Patchwork\relay();
+        });
+        $lock = TaskRunner::acquireFileLockAtPath($path);
+        self::assertNull($lock['handle']);
+        self::assertSame($blocked, $lock['contended']);
+        self::assertNotNull($opened);
+        self::assertFalse(is_resource($opened));
     }
 
     public function testFreshOpenIdentityMismatchDegradesAndReleasesHandles(): void

@@ -744,7 +744,8 @@ final class TaskRunner
     /**
      * Acquire an inode-checked, non-blocking file lock. A pathname change
      * retries acquisition when a fresh handle verifies the pathname's identity.
-     * An identity mismatch on the fresh handle makes the file guard unavailable.
+     * A fresh-handle mismatch makes the guard unavailable only while the
+     * pathname retains the same identity throughout the diagnosis.
      * Existing-only acquisition never creates a janitor candidate.
      *
      * @return array{handle:resource|null,contended:bool}
@@ -756,23 +757,30 @@ final class TaskRunner
             if ($handle === false) {
                 return ['handle' => null, 'contended' => $attempt > 0];
             }
-            if (!flock($handle, LOCK_EX | LOCK_NB)) {
+            $wouldBlock = 0;
+            if (!@flock($handle, LOCK_EX | LOCK_NB, $wouldBlock)) {
                 fclose($handle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- native flock handle
-                return ['handle' => null, 'contended' => true];
+                return ['handle' => null, 'contended' => (bool) $wouldBlock];
             }
             if (self::fileLockMatchesPath($handle, $path)) {
                 if ($create) { @chmod($path, 0600); } // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- private coordination file permissions
                 return ['handle' => $handle, 'contended' => false];
             }
+            clearstatcache(true, $path);
+            $before = @stat($path);
             $fresh = @fopen($path, 'r+'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- diagnose identity using an existing pathname without creating it
             $reliable = true;
             if ($fresh !== false) {
                 try { $reliable = self::fileLockMatchesPath($fresh, $path); }
                 finally { fclose($fresh); } // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- close the diagnostic handle
             }
+            clearstatcache(true, $path);
+            $after = @stat($path);
+            $stable = $before !== false && $after !== false
+                && $before['dev'] === $after['dev'] && $before['ino'] === $after['ino'];
             flock($handle, LOCK_UN);
             fclose($handle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- release a stale inode before retrying
-            if (!$reliable) { return ['handle' => null, 'contended' => false]; }
+            if (!$reliable && $stable) { return ['handle' => null, 'contended' => false]; }
         }
         return ['handle' => null, 'contended' => true];
     }
@@ -839,7 +847,7 @@ final class TaskRunner
 
     /**
      * Record a lock breadcrumb without changing phase or progress time.
-     * Every breadcrumb compares the raw cursor before writing.
+     * Every breadcrumb compares the raw cursor bytes before writing.
      *
      * Reads the RAW sub_state column value directly (NOT through loadTask(),
      * which follows the sidecar-spill pointer and would rehydrate a
@@ -892,14 +900,11 @@ final class TaskRunner
                 return;
             }
 
-            $where = ['snapshot_id' => $this->snapshotId(), 'sub_state' => $raw];
-            $wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned table; breadcrumb-only write, phase column untouched
-                $table,
-                ['sub_state' => $encoded],
-                $where,
-                ['%s'],
-                array_fill(0, count($where), '%s')
-            );
+            if (!is_string($raw)) { return; }
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- trusted plugin-owned table identifier; all values use placeholders
+            $sql = "UPDATE {$table} SET sub_state = %s WHERE snapshot_id = %s AND BINARY sub_state = %s";
+            $prepared = $wpdb->prepare($sql, $encoded, $this->snapshotId(), $raw); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- query uses placeholders for all values
+            $wpdb->query($prepared); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared -- byte-exact cursor compare-and-set on the plugin-owned table
         } catch (\Throwable $e) {
             // Swallow — a breadcrumb write failure must never surface from
             // the loser path.

@@ -151,7 +151,7 @@ final class FakeBackupTasksWpdb
             return 0;
         }
         foreach ($where as $key => $value) {
-            if (($this->rows[$id][$key] ?? null) !== $value) { return 0; }
+            if (!$this->equal($this->rows[$id][$key] ?? null, $value)) { return 0; }
         }
         $this->updates[] = ['table' => $table, 'data' => $data, 'where' => $where];
         foreach ($data as $k => $v) {
@@ -188,10 +188,21 @@ final class FakeBackupTasksWpdb
         return 0;
     }
 
-    /** Handles seedTask()'s / seedTaskRow()'s raw `INSERT IGNORE`. */
+    /** Handles task inserts and prepared cursor compare-and-set updates. */
     public function query(string $prepared): int
     {
         [$sql, $args] = $this->decode($prepared);
+
+        if (preg_match('/^UPDATE \S+ SET sub_state = %s WHERE snapshot_id = %s AND (BINARY )?sub_state = %s$/i', $sql, $match)) {
+            [$encoded, $id, $raw] = $args;
+            if (!isset($this->rows[$id])) { return 0; }
+            $current = $this->rows[$id]['sub_state'];
+            $matches = !empty($match[1]) ? $current === $raw : $this->equal($current, $raw);
+            if (!$matches) { return 0; }
+            $this->updates[] = ['table' => explode(' ', $sql)[1], 'data' => ['sub_state' => $encoded], 'where' => ['snapshot_id' => $id, 'sub_state' => $raw]];
+            $this->rows[$id]['sub_state'] = $encoded;
+            return 1;
+        }
 
         if (stripos($sql, 'INSERT IGNORE') !== false) {
             $id = (string) ($args[0] ?? '');
@@ -212,6 +223,12 @@ final class FakeBackupTasksWpdb
         }
 
         return 0;
+    }
+
+    /** Plain SQL equality follows a case-insensitive table collation. */
+    private function equal($left, $right): bool
+    {
+        return is_string($left) && is_string($right) ? strcasecmp($left, $right) === 0 : $left === $right;
     }
 
     /**
