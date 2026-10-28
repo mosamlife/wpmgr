@@ -145,6 +145,14 @@ final class CacheWriter
             return $buffer;
         }
 
+        // The buffer opens on init, ahead of every plugin's init callback, but
+        // only a page rendered through the template stage is a page: output a
+        // plugin answers between init and template_redirect (an age gate, a
+        // coming-soon screen, a download, a login form) is passed on untouched.
+        if (!self::reachedTemplateStage()) {
+            return $buffer;
+        }
+
         try {
             $ctx = $this->resolveContext($buffer);
             $optimized = false;
@@ -205,6 +213,17 @@ final class CacheWriter
         }
 
         return $buffer;
+    }
+
+    /**
+     * Whether WordPress reached template_redirect in this request, where the
+     * page itself starts rendering.
+     *
+     * @return bool
+     */
+    private static function reachedTemplateStage(): bool
+    {
+        return function_exists('did_action') && did_action('template_redirect') > 0;
     }
 
     /**
