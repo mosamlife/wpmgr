@@ -366,6 +366,10 @@ final class ArchiveResumeTest extends TestCase
             'uploads/wpmgr-update-inflight/plugin-acme.lock' => '',
             'wpmgr-update-watchdog/plugin-acme.json' => '{}',
             'uploads/wpmgr-file-extract-tmp/job/a.txt' => 'extraction in progress',
+            // GH #982: the Local destination's store, uploads-first and in wp-content.
+            'uploads/wpmgr-backups/earlier-snap/chunks/' . str_repeat('a', 64) . '.bin' => 'ciphertext',
+            'uploads/wpmgr-backups/.htaccess' => 'Require all denied',
+            'wpmgr-backups/legacy-snap/chunks/' . str_repeat('b', 64) . '.bin' => 'ciphertext',
         ];
         $site = [
             'index.php' => '<?php',
