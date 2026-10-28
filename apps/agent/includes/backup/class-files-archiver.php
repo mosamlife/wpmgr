@@ -68,6 +68,7 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Backup;
 
+use WPMgr\Agent\Support\ArrayShape;
 use WPMgr\Agent\Support\LongRunningJob;
 
 /**
@@ -958,8 +959,8 @@ final class FilesArchiver
         $parts = $resume['parts_completed'] ?? null;
         $kinds = $resume['part_kinds'] ?? null;
         $sizes = $resume['part_sizes'] ?? null;
-        if (!is_array($parts) || !is_array($kinds) || !is_array($sizes) || !array_is_list($parts) || !array_is_list($kinds)
-            || !array_is_list($sizes) || count($kinds) !== count($parts) || count($sizes) !== count($parts)) {
+        if (!is_array($parts) || !is_array($kinds) || !is_array($sizes) || !ArrayShape::isList($parts) || !ArrayShape::isList($kinds)
+            || !ArrayShape::isList($sizes) || count($kinds) !== count($parts) || count($sizes) !== count($parts)) {
             return null;
         }
         $highest = [];
