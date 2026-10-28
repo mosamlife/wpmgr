@@ -84,7 +84,7 @@ final class TotpProvider implements SiteTwoFactorProvider
     /** {@inheritDoc} */
     public function label(): string
     {
-        return 'Authenticator App (TOTP)';
+        return __('Authenticator App (TOTP)', 'wpmgr-agent');
     }
 
     /** {@inheritDoc} */
@@ -108,7 +108,7 @@ final class TotpProvider implements SiteTwoFactorProvider
     {
         $label = esc_html($this->label());
         $field = esc_attr('wpmgr_totp_code');
-        $placeholder = esc_attr('6-digit code');
+        $placeholder = esc_attr__('6-digit code', 'wpmgr-agent');
         return '<p><label for="' . $field . '">'
             . $label
             . '</label>'

@@ -213,4 +213,41 @@ final class EmailCodeProviderTest extends TestCase
         $result = $this->provider()->validate($user, ['wpmgr_email_code' => '1234567']); // 7 digits
         $this->assertFalse($result, '7-digit code must be rejected (needs 8)');
     }
+
+    // -------------------------------------------------------------------------
+    // Translation (GH #967): the label, the placeholder and the email pass
+    // through gettext, and the email keeps its placeholders when translated.
+    // -------------------------------------------------------------------------
+
+    public function test_label_placeholder_and_verification_email_are_translated(): void
+    {
+        // A catalogue that marks every string it is asked for, so a literal
+        // that bypasses gettext shows up without the marker.
+        $mark = static fn (string $text, string $domain = 'default'): string => '[' . $domain . '] ' . $text;
+        Functions\when('__')->alias($mark);
+        Functions\when('esc_attr__')->alias($mark);
+        Functions\when('esc_html__')->alias($mark);
+
+        $mail = null;
+        Functions\when('wp_mail')->alias(function ($to, $subject, $message) use (&$mail): bool {
+            $mail = [$to, $subject, $message];
+
+            return true;
+        });
+
+        $user     = $this->makeUser(1);
+        $provider = $this->provider();
+
+        $this->assertTrue($provider->sendCode($user));
+        $this->assertIsArray($mail);
+        $this->assertSame('[wpmgr-agent] [Test Site] Two-factor verification code', $mail[1], 'the subject is translated and keeps the site name');
+        $this->assertMatchesRegularExpression(
+            '/^\[wpmgr-agent\] Your two-factor verification code is: \d{8}\n\nThis code expires in 15 minutes\.$/',
+            (string) $mail[2],
+            'the body is translated and keeps the generated code'
+        );
+
+        $this->assertSame('[wpmgr-agent] Email Code', $provider->label());
+        $this->assertStringContainsString('placeholder="[wpmgr-agent] 8-digit code"', $provider->renderForm($user));
+    }
 }
