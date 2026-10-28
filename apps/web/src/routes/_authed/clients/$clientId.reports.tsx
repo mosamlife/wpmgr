@@ -86,6 +86,7 @@ const scheduleSchema = z.object({
   send_day: z.coerce.number().int().min(0).max(31),
   send_hour: z.coerce.number().int().min(0).max(23),
   recipients: z.string(),
+  overview: z.boolean(),
   uptime: z.boolean(),
   backups: z.boolean(),
   updates: z.boolean(),
@@ -112,11 +113,15 @@ function scheduleToValues(s: ClientReportSchedule): ScheduleValues {
     send_day: s.send_day,
     send_hour: s.send_hour,
     recipients: s.recipients.join(", "),
+    // A flag the response leaves out reads as on: every section is on by
+    // default on the server (DefaultSectionFlags in
+    // apps/api/internal/report/reportdata/reportdata.go).
+    overview: s.sections.overview ?? true,
     uptime: s.sections.uptime ?? true,
     backups: s.sections.backups ?? true,
     updates: s.sections.updates ?? true,
     performance: s.sections.performance ?? true,
-    email: s.sections.email ?? false,
+    email: s.sections.email ?? true,
     intro_text: s.intro_text ?? "",
     closing_text: s.closing_text ?? "",
     powered_by_removed: s.powered_by_removed ?? false,
@@ -227,6 +232,7 @@ function ScheduleCard({ clientId, schedule }: ScheduleCardProps) {
         send_hour: values.send_hour,
         recipients: parseRecipients(values.recipients),
         sections: {
+          overview: values.overview,
           uptime: values.uptime,
           backups: values.backups,
           updates: values.updates,
@@ -376,6 +382,7 @@ function ScheduleCard({ clientId, schedule }: ScheduleCardProps) {
             <div className="grid gap-3 sm:grid-cols-2">
               {(
                 [
+                  { name: "overview", label: "Overview" },
                   { name: "uptime", label: "Uptime" },
                   { name: "backups", label: "Backups" },
                   { name: "updates", label: "Updates" },
