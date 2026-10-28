@@ -136,8 +136,6 @@ final class TaskRunner
 
     private ?int $workerStartedAt = null;
 
-    private bool $timingReported = false;
-
     private int $skippedSourcesCount = 0;
 
     /** @var list<string> Relative paths omitted from the snapshot. */
@@ -245,7 +243,6 @@ final class TaskRunner
     public function run(): string
     {
         $this->workerStartedAt = time();
-        $this->timingReported = false;
         @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, PHPCompatibility.FunctionUse.ArgumentFunctionsReportCurrentValue.NeedsInspection, Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup loop must not hit max_execution_time; @-guarded, no-op when disabled
         @ignore_user_abort(true);
 
@@ -1150,7 +1147,18 @@ final class TaskRunner
         $archiver = new FilesArchiver($this->wpContentPath(), $extraExcludePaths, $archiverOpts, $generation);
         $result   = $archiver->archive($this->scratchDir(), $resume, function (string $phase, array $detail): void {
             $this->onPhaseProgress($phase, $detail);
-        }, $prevMap);
+        }, $prevMap, function (array $cursor) use (&$subState): void {
+            // GH #954: durable archive progress. A worker the host ends
+            // resumes after the last closed part instead of starting over.
+            $subState['files'] = $cursor;
+            try {
+                $this->saveTaskState(self::PHASE_ARCHIVING_FILES, $subState);
+            } catch (\Throwable $e) {
+                // The previous checkpoint stays authoritative: a resume
+                // deletes the parts closed since it and archives them again.
+                \WPMgr\Agent\Support\DebugLog::write('WPMgr TaskRunner: archive checkpoint not saved for snapshot ' . $this->snapshotId() . ': ' . $e->getMessage());
+            }
+        });
 
         // Track A (#187): include_core — archive the WordPress core source root
         // (ABSPATH: wp-admin, wp-includes, root PHP files including wp-config.php)
@@ -2044,15 +2052,16 @@ final class TaskRunner
             $detail['skipped_sources_count'] = $this->skippedSourcesCount;
             $detail['skipped_sources'] = $this->skippedSources;
         }
-        if (!$this->timingReported && $this->workerStartedAt !== null && isset($this->params['timing'])) {
+        // The control plane keeps only the latest report, so every report
+        // carries timing; worker_started_at names the worker that sent it.
+        if ($this->workerStartedAt !== null && isset($this->params['timing']) && is_array($this->params['timing'])) {
             $timing = $this->params['timing'];
             $detail['timing'] = [
-                'received_at'       => (int) $timing['received_at'],
-                'preflight_done_at' => (int) $timing['preflight_done_at'],
-                'claimed_at'        => (int) $timing['claimed_at'],
+                'received_at'       => (int) ($timing['received_at'] ?? 0),
+                'preflight_done_at' => (int) ($timing['preflight_done_at'] ?? 0),
+                'claimed_at'        => (int) ($timing['claimed_at'] ?? 0),
                 'worker_started_at' => $this->workerStartedAt,
             ];
-            $this->timingReported = true;
         }
         try {
             $this->progressClient->post($phase, $detail);
@@ -2129,7 +2138,8 @@ final class TaskRunner
         foreach (['plugins', 'themes', 'uploads', 'wp-content', 'core'] as $comp) {
             // Match BOTH the generation-namespaced `<comp>.gNNN.partMMM.zip`
             // and the legacy `<comp>.partMMM.zip` part filenames.
-            $zips = @glob($scratch . DIRECTORY_SEPARATOR . $comp . '.*part*.zip');
+            // Also the `<part>.zip.XXXXXX` output libzip leaves when a worker ends mid-close.
+            $zips = array_merge((array) @glob($scratch . DIRECTORY_SEPARATOR . $comp . '.*part*.zip'), (array) @glob($scratch . DIRECTORY_SEPARATOR . $comp . '.*part*.zip.*'));
             if (is_array($zips)) {
                 foreach ($zips as $f) {
                     wp_delete_file($f);
@@ -2245,7 +2255,8 @@ final class TaskRunner
         foreach (['plugins', 'themes', 'uploads', 'wp-content', 'core'] as $comp) {
             // Match BOTH the generation-namespaced `<comp>.gNNN.partMMM.zip`
             // and the legacy `<comp>.partMMM.zip` part filenames.
-            $zips = @glob($scratch . DIRECTORY_SEPARATOR . $comp . '.*part*.zip');
+            // Also the `<part>.zip.XXXXXX` output libzip leaves when a worker ends mid-close.
+            $zips = array_merge((array) @glob($scratch . DIRECTORY_SEPARATOR . $comp . '.*part*.zip'), (array) @glob($scratch . DIRECTORY_SEPARATOR . $comp . '.*part*.zip.*'));
             if (is_array($zips)) {
                 foreach ($zips as $f) {
                     wp_delete_file($f);

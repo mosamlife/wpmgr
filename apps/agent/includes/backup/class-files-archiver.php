@@ -50,9 +50,11 @@
  *   - On a fresh run we create `$outDir/paths.cache` and walk the source dir
  *     into it, then start packing. The cache has every entry tagged with the
  *     component bucket it belongs to (one tagged path per line).
- *   - On re-entry the caller hands us the cursor; we seek the cache to line
- *     `file_index` and resume.
- *   - Worst case loss on a watchdog kill is ~200 files of re-pack work.
+ *   - The caller's checkpoint callback receives a durable cursor after
+ *     discovery and after every closed part. A worker the host ends resumes
+ *     from that cursor: closed parts are kept, every other part file is
+ *     deleted first, and each component continues at the first line its
+ *     open part held. Worst case loss is one open part per component.
  *
  * Part rotation (per component, independently):
  *   - Same triggers as before: `estimated_part_bytes >= max_part_bytes`
@@ -79,6 +81,9 @@ final class FilesArchiver
 
     /** @var array<string,array{size:int,mtime:int}> Skipped existing sources retained from the parent. */
     private array $carriedSources = [];
+
+    /** @var array<string,array<string,bool>> Per component: skips inside its open part, not yet settled. */
+    private array $pendingSkips = [];
 
     private string $filesListPath = '';
 
@@ -108,6 +113,26 @@ final class FilesArchiver
         // no secrets). Excluded so a restored backup does not replay a stale
         // cool-down window that could suppress Redis on a healthy site.
         '.wpmgr-oc-state.json',
+        // Update locks and in-flight update markers: transient agent state
+        // that a restore must never bring back.
+        'wpmgr-update-inflight',
+        'wpmgr-update-watchdog',
+        // File-extraction temp root.
+        'wpmgr-file-extract-tmp',
+    ];
+
+    /**
+     * Segment prefixes reserved for the agent's own transient files, matched
+     * at the start of any path segment: restore staging and pre-restore trees
+     * (`.wpmgr-staging-*`, `.wpmgr-old-files-*`), atomic-write temp files
+     * (`.wpmgr-tmp-*`, `.wpmgr-ul-*`), state files and their temp copies, and
+     * the temp copy of the object-cache credentials file.
+     *
+     * @var list<string>
+     */
+    public const AGENT_RESERVED_PREFIXES = [
+        '.wpmgr-',
+        'wpmgr-object-cache-config.php.tmp.',
     ];
 
     /**
@@ -179,8 +204,14 @@ final class FilesArchiver
         'wp-content' => 'wp-content',
     ];
 
-    /** Save the resume cursor every N packed files. */
-    private const CHECKPOINT_EVERY_FILES = 200;
+    /** Marks a resume cursor as a durable checkpoint of this format. */
+    public const CHECKPOINT_VERSION = 2;
+
+    /** A closed part name: component, generation and part number. */
+    private const CLOSED_PART_NAME = '/^(plugins|themes|uploads|wp-content)\.g(\d{3,})\.part(\d{3,})\.zip$/D';
+
+    /** Any part file of the file components, or its libzip temporary output. */
+    private const STALE_PART_NAME = '/^(?:plugins|themes|uploads|wp-content)\.(?:g\d+\.)?part\d+\.zip(?:\.[A-Za-z0-9]{1,32})?$/D';
 
     /** Emit a progress callback every N packed files. */
     private const PROGRESS_EVERY_FILES = 50;
@@ -492,8 +523,8 @@ final class FilesArchiver
 
     /**
      * Walk the source dir and pack into per-component rotated part files
-     * inside $outDir. Resumable: if $resume carries cursors from a prior
-     * call, picks up where it left off.
+     * inside $outDir. Resumable: a durable checkpoint saved by an earlier
+     * call (see $checkpoint) continues after that call's last closed part.
      *
      * Returns a flat list of part filenames (one rotating sequence per
      * component) AND a parallel list of per-part component kinds so the
@@ -504,10 +535,22 @@ final class FilesArchiver
      * are packed. The files.list sidecar is always written (full picture of
      * all packed files). Tombstones are returned in result['tombstones'].
      *
+     * Durable progress (GH #954): after discovery, after every closed part
+     * and once every part is closed, $checkpoint receives the cursor a later
+     * call needs to continue: the closed parts with their kinds and sizes,
+     * each component's next part number and the first paths.cache line it
+     * still needs, the discovery counts, and the skipped sources whose lines
+     * are settled. A call resumed from that cursor first deletes every part
+     * file (and libzip temporary output) the cursor does not list, so the
+     * scratch dir never holds the parts of two passes, and it archives again
+     * the lines of any part that was open when the earlier call ended. A
+     * cursor that fails validation, or none at all, starts one fresh pass
+     * with no part of an earlier pass left on disk.
+     *
      * @param string                                          $outDir   Absolute scratch dir for the part
      *                                                                  archives (created if missing).
      * @param array<string,mixed>                             $resume   Empty for a fresh run; else the
-     *                                                                  cursor returned by a prior call.
+     *                                                                  last cursor $checkpoint received.
      * @param callable                                        $progress function(string $phase, array $detail): void.
      *                                                                  $phase is always 'archiving_files'.
      *                                                                  Per-tick $detail keys: files_done,
@@ -519,15 +562,18 @@ final class FilesArchiver
      * @param array<string,array{size:int,mtime:int}>|null   $prevMap  Previous-snapshot file map for
      *                                                                  incremental change detection (ADR-051).
      *                                                                  null = full-backup mode.
+     * @param callable|null                                   $checkpoint function(array $cursor): void, called
+     *                                                                  with the durable resume cursor. An
+     *                                                                  exception it throws ends the call.
      * @return array<string,mixed> On completion: `done: true` + parts list +
      *                              parallel `part_kinds` list + optional `tombstones` list.
-     *                              Otherwise the cursor for the next call.
      * @throws \RuntimeException On unrecoverable error.
      */
-    public function archive(string $outDir, array $resume, callable $progress, ?array $prevMap = null): array
+    public function archive(string $outDir, array $resume, callable $progress, ?array $prevMap = null, ?callable $checkpoint = null): array
     {
         $this->skippedSources = [];
         $this->carriedSources = [];
+        $this->pendingSkips   = [];
         // Lift caller-imposed time/abort guards. Watchdog handles
         // stall recovery; we want this loop to run as long as the SAPI
         // will let it.
@@ -537,239 +583,269 @@ final class FilesArchiver
         if (!is_dir($outDir) && !wp_mkdir_p($outDir) && !is_dir($outDir)) {
             throw new \RuntimeException('FilesArchiver: cannot create outDir: ' . esc_html($outDir));
         }
-        $outDir = rtrim((string) realpath($outDir), DIRECTORY_SEPARATOR);
+        $realOut = realpath($outDir);
+        $outDir  = $realOut === false ? '' : rtrim($realOut, DIRECTORY_SEPARATOR);
+        if ($outDir === '' || !is_dir($outDir)) {
+            // Never fall back to an empty base: every path below is built on it.
+            throw new \RuntimeException('FilesArchiver: cannot resolve outDir');
+        }
 
-        // ----- Phase 0: ensure the path-discovery cache exists. -----
+        // ----- Phase 0: the path-discovery cache. -----
         // The cache file format is one line per file: "<component>\t<relpath>".
         // The tab keeps the relpath bytes intact (no escaping needed; we never
         // pack literal tabs in WP filenames in practice, and a stray tab in a
         // user-uploaded filename would still parse — only the FIRST tab is the
-        // delimiter).
-        $cachePath = isset($resume['cache_file']) && is_string($resume['cache_file']) && $resume['cache_file'] !== ''
-            ? $resume['cache_file']
-            : $outDir . DIRECTORY_SEPARATOR . self::PATHS_CACHE_NAME;
-        $this->filesListPath = dirname($cachePath) . DIRECTORY_SEPARATOR . self::FILES_LIST_NAME;
-
-        $totalFiles = isset($resume['total_files']) ? (int) $resume['total_files'] : 0;
-        // ADR-051 instrumentation: carry-forward count (unchanged files skipped from
-        // the archive). Survives a watchdog re-entry via the resume cursor so the
-        // final progress payload reports it even after a mid-walk crash recovery.
-        $filesCarried = isset($resume['files_carried']) ? (int) $resume['files_carried'] : 0;
+        // delimiter). The cache and its sidecars always live in $outDir.
+        $cachePath           = $outDir . DIRECTORY_SEPARATOR . self::PATHS_CACHE_NAME;
+        $this->filesListPath = $outDir . DIRECTORY_SEPARATOR . self::FILES_LIST_NAME;
+        $incremental         = $prevMap !== null;
         // ADR-051 instrumentation: prevMap size (entries parsed from the parent's
         // files.list). prevMap===null => full mode; [] => base/empty signal.
-        $prevMapSize  = is_array($prevMap) ? count($prevMap) : 0;
-        // Tombstone tracking: on-disk path + count (never an in-memory array).
-        $tombstonesFile  = isset($resume['tombstones_file']) && is_string($resume['tombstones_file'])
-            ? $resume['tombstones_file']
-            : '';
-        $tombstonesCount = isset($resume['tombstones_count']) ? (int) $resume['tombstones_count'] : 0;
-        if (!is_file($cachePath) || $totalFiles === 0) {
-            // Fresh discovery walk. Truncate any stale cache.
-            $cacheResult     = $this->buildPathCache($cachePath, $prevMap);
-            $totalFiles      = $cacheResult['count'];
-            $filesCarried    = isset($cacheResult['carried']) ? (int) $cacheResult['carried'] : 0;
-            $tombstonesFile  = $cacheResult['tombstones_file'];
-            $tombstonesCount = $cacheResult['tombstones_count'];
-        }
+        $prevMapSize = is_array($prevMap) ? count($prevMap) : 0;
 
-        // ----- Phase 1: pack. -----
-        $fileIndex      = isset($resume['file_index']) ? (int) $resume['file_index'] : 0;
-        $bytesWritten   = isset($resume['bytes_written']) ? (int) $resume['bytes_written'] : 0;
-        /** @var list<string> $partsCompleted */
-        $partsCompleted = isset($resume['parts_completed']) && is_array($resume['parts_completed'])
-            ? array_values(array_map('strval', $resume['parts_completed']))
-            : [];
-        /** @var list<string> $partKinds — parallel to $partsCompleted, holds the entry_kind for each */
-        $partKinds      = isset($resume['part_kinds']) && is_array($resume['part_kinds'])
-            ? array_values(array_map('strval', $resume['part_kinds']))
-            : [];
+        $saved = $this->durableCheckpoint($resume, $outDir, $cachePath, $incremental);
+        if ($saved !== null) {
+            // Keep the closed parts the checkpoint lists; delete every other
+            // part file before any work, then continue after those parts.
+            $this->removeStaleParts($outDir, $saved['parts_completed']);
+            $run            = $saved['run'];
+            $partsCompleted = $saved['parts_completed'];
+            $partKinds      = $saved['part_kinds'];
+            $partSizes      = $saved['part_sizes'];
+            $currentParts   = array_column($saved['components'], 'current_part', 'name');
+            $resumeFrom     = array_column($saved['components'], 'resume_from', 'name');
+            $complete       = $saved['complete'];
+            foreach ($saved['skipped'] as $rel) {
+                $this->skippedSources[$rel] = true;
+            }
+        } else {
+            // One fresh pass: no part of an abandoned pass may share the
+            // scratch dir with it.
+            $this->removeStaleParts($outDir, []);
+            $totalFiles = isset($resume['total_files']) ? (int) $resume['total_files'] : 0;
+            // ADR-051 instrumentation: carry-forward count (unchanged files skipped from the archive).
+            $filesCarried    = isset($resume['files_carried']) ? (int) $resume['files_carried'] : 0;
+            // Tombstone tracking: on-disk path + count (never an in-memory array).
+            $tombstonesFile  = $this->ownTombstonesFile($resume['tombstones_file'] ?? '', $outDir);
+            $tombstonesCount = isset($resume['tombstones_count']) ? (int) $resume['tombstones_count'] : 0;
+            // A cursor without a checkpoint marker (hand-built) may name a
+            // cached discovery; a checkpoint that failed validation never does.
+            if (array_key_exists('checkpoint', $resume) || !is_file($cachePath) || $totalFiles <= 0) {
+                // Fresh discovery walk. Truncate any stale cache.
+                $cacheResult     = $this->buildPathCache($cachePath, $prevMap);
+                $totalFiles      = $cacheResult['count'];
+                $filesCarried    = isset($cacheResult['carried']) ? (int) $cacheResult['carried'] : 0;
+                $tombstonesFile  = $cacheResult['tombstones_file'];
+                $tombstonesCount = $cacheResult['tombstones_count'];
+            }
+            clearstatcache(true, $cachePath);
+            $run = [
+                'total_files'      => $totalFiles,
+                'cache_bytes'      => (int) @filesize($cachePath),
+                'files_carried'    => $filesCarried,
+                'tombstones_file'  => $tombstonesFile,
+                'tombstones_count' => $tombstonesCount,
+                'incremental'      => $incremental,
+            ];
+            $partsCompleted = [];
+            $partKinds      = [];
+            $partSizes      = [];
+            $currentParts   = array_fill_keys(array_keys(self::COMPONENT_PARTITIONS), 1);
+            $resumeFrom     = array_fill_keys(array_keys(self::COMPONENT_PARTITIONS), 0);
+            $complete       = false;
+        }
+        $totalFiles      = (int) $run['total_files'];
+        $filesCarried    = (int) $run['files_carried'];
+        $tombstonesFile  = (string) $run['tombstones_file'];
+        $tombstonesCount = (int) $run['tombstones_count'];
+        $bytesWritten    = (int) array_sum($partSizes);
 
         // Per-component current-part trackers. Each component gets its OWN
-        // rotating sequence: `<component>.partNNN.zip`. The trackers carry the
-        // current part number (1-indexed) and the open ZipArchive handle.
+        // rotating sequence: `<component>.gNNN.partMMM.zip`. The trackers carry
+        // the next part number (1-indexed), the open ZipArchive handle, and
+        // `pending_from`: the first paths.cache line held only by the open
+        // part, which is where a resume must start again for this component.
         //
         // We open lazily: the first time a component sees an entry, we open
-        // its first part. A component with zero matching entries emits zero
+        // its next part. A component with zero matching entries emits zero
         // part files (e.g. a site with no `mu-plugins`/`languages` ends up
         // with no `wp-content.partNNN.zip`).
         $compState = [];
-        foreach (self::COMPONENT_PARTITIONS as $compName => $_) {
+        foreach (self::COMPONENT_PARTITIONS as $compName => $cfg) {
             $compState[$compName] = [
-                'current_part'         => 1,
+                'component'            => $compName,
+                'current_part'         => (int) $currentParts[$compName],
                 'part_entries'         => 0,
                 'part_estimated_bytes' => 0,
                 'zip'                  => null,
                 'part_path'            => '',
-                'kind'                 => self::COMPONENT_PARTITIONS[$compName]['kind'],
+                'kind'                 => $cfg['kind'],
+                'pending_from'         => null,
+                'queued_sources'       => [],
             ];
-            // Restore from the prior cursor if present.
-            if (isset($resume['components'][$compName]) && is_array($resume['components'][$compName])) {
-                $cs = $resume['components'][$compName];
-                $compState[$compName]['current_part'] = isset($cs['current_part']) ? max(1, (int) $cs['current_part']) : 1;
-            }
         }
 
-        $cacheHandle = @fopen($cachePath, 'rb'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- streaming handle for chunked fread/fwrite over multi-GB archives; WP_Filesystem exposes only whole-file get/put which would OOM
-        if ($cacheHandle === false) {
-            throw new \RuntimeException('FilesArchiver: cannot reopen path cache: ' . esc_html($cachePath));
+        // The first line any component still needs; every line before a
+        // component's own resume_from is already in its closed parts or settled.
+        $fileIndex = (int) min($resumeFrom);
+        if ($saved === null && $checkpoint !== null) {
+            // A worker ended before its first closed part keeps this discovery.
+            $checkpoint($this->checkpointCursor($run, $compState, $fileIndex, $partsCompleted, $partKinds, $partSizes, false));
         }
 
-        // Seek to the requested line by counting newlines.
-        if ($fileIndex > 0) {
-            $skipped = 0;
-            while ($skipped < $fileIndex && ($line = fgets($cacheHandle)) !== false) {
-                $skipped++;
+        // ----- Phase 1: pack. -----
+        $currentRel = '';
+        if (!$complete) {
+            $cacheHandle = @fopen($cachePath, 'rb'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- streaming handle for chunked fread/fwrite over multi-GB archives; WP_Filesystem exposes only whole-file get/put which would OOM
+            if ($cacheHandle === false) {
+                throw new \RuntimeException('FilesArchiver: cannot reopen path cache: ' . esc_html($cachePath));
             }
-            if ($skipped < $fileIndex) {
-                // Cache shorter than the recorded cursor — should never
-                // happen, but recover by treating as already-done.
-                fclose($cacheHandle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- closes a streaming handle over multi-GB archives; WP_Filesystem has no streaming API
-                return $this->buildDoneResult($partsCompleted, $partKinds, $totalFiles, $bytesWritten, $progress, null, $tombstonesFile, $tombstonesCount, $filesCarried, $prevMapSize, ($prevMap !== null));
-            }
-        }
 
-        $filesSinceProgress   = 0;
-        $filesSinceCheckpoint = 0;
-        $currentRel           = '';
+            // Seek to the requested line by counting newlines.
+            $seeked = 0;
+            while ($seeked < $fileIndex && fgets($cacheHandle) !== false) {
+                $seeked++;
+            }
+            $fileIndex = $seeked;
 
-        // GH #279: start the wall-clock heartbeat window at the top of the
-        // pack loop, not at zero, so a resumed run doesn't immediately fire a
-        // heartbeat before it's had a chance to make any progress.
-        $this->lastProgressEmitAt = microtime(true);
+            $filesSinceProgress = 0;
 
-        while (($line = fgets($cacheHandle)) !== false) {
-            $line = rtrim($line, "\r\n");
-            if ($line === '') {
-                $fileIndex++;
-                continue;
-            }
-            // Split "<component>\t<relpath>". Defensive: a malformed line
-            // without a tab is treated as a wp-content (catch-all) entry.
-            $tabPos = strpos($line, "\t");
-            if ($tabPos === false) {
-                $compName = 'wp-content';
-                $rel      = $line;
-            } else {
-                $compName = substr($line, 0, $tabPos);
-                $rel      = substr($line, $tabPos + 1);
-            }
-            if (!isset($compState[$compName])) {
-                $compName = 'wp-content';
-            }
-            if ($rel === '') {
-                $fileIndex++;
-                continue;
-            }
-            $currentRel = $rel;
-            $abs        = $this->sourceDir . DIRECTORY_SEPARATOR . $rel;
+            // GH #279: start the wall-clock heartbeat window at the top of the
+            // pack loop, not at zero, so a resumed run doesn't immediately fire a
+            // heartbeat before it's had a chance to make any progress.
+            $this->lastProgressEmitAt = microtime(true);
 
-            $metadata = $this->sourceMetadata($rel);
-            if ($metadata !== null) {
-                // Lazy-open the active part for this component.
-                if ($compState[$compName]['zip'] === null) {
-                    $this->openActivePart($compState[$compName], $compName, $outDir);
+            while (($line = fgets($cacheHandle)) !== false) {
+                $lineIndex = $fileIndex;
+                $line      = rtrim($line, "\r\n");
+                if ($line === '') {
+                    $fileIndex++;
+                    continue;
                 }
-                /** @var \ZipArchive $zip */
-                $zip = $compState[$compName]['zip'];
-                if ($zip->addFile($abs, $rel)) {
-                    $compState[$compName]['queued_sources'][$rel] = $metadata;
-                    $compState[$compName]['part_entries'] = $zip->numFiles;
-                    $compState[$compName]['part_estimated_bytes'] += $metadata['size'];
+                // Split "<component>\t<relpath>". Defensive: a malformed line
+                // without a tab is treated as a wp-content (catch-all) entry.
+                $tabPos = strpos($line, "\t");
+                if ($tabPos === false) {
+                    $compName = 'wp-content';
+                    $rel      = $line;
+                } else {
+                    $compName = substr($line, 0, $tabPos);
+                    $rel      = substr($line, $tabPos + 1);
+                }
+                if (!isset($compState[$compName])) {
+                    $compName = 'wp-content';
+                }
+                if ($rel === '' || $lineIndex < $resumeFrom[$compName]) {
+                    // Already in this component's closed parts, or settled.
+                    $fileIndex++;
+                    continue;
+                }
+                $currentRel = $rel;
+                $abs        = $this->sourceDir . DIRECTORY_SEPARATOR . $rel;
+
+                $metadata = $this->sourceMetadata($rel);
+                if ($metadata !== null) {
+                    // Lazy-open the active part for this component.
+                    if ($compState[$compName]['zip'] === null) {
+                        $this->openActivePart($compState[$compName], $compName, $outDir, $partsCompleted);
+                    }
+                    /** @var \ZipArchive $zip */
+                    $zip = $compState[$compName]['zip'];
+                    if ($zip->addFile($abs, $rel)) {
+                        $compState[$compName]['queued_sources'][$rel] = $metadata;
+                        $compState[$compName]['part_entries'] = $zip->numFiles;
+                        $compState[$compName]['part_estimated_bytes'] += $metadata['size'];
+                        if ($compState[$compName]['pending_from'] === null) {
+                            $compState[$compName]['pending_from'] = $lineIndex;
+                        }
+                    } else {
+                        $this->skipSource($compState[$compName], $rel);
+                    }
                 } else {
                     $this->skipSource($compState[$compName], $rel);
                 }
-            } else {
-                // A resumed part retains its other durable entries when a source is omitted.
-                if ($compState[$compName]['zip'] === null && is_file($this->partPath($outDir, $compName, (int) $compState[$compName]['current_part']))) {
-                    $this->openActivePart($compState[$compName], $compName, $outDir);
-                }
-                $this->skipSource($compState[$compName], $rel);
-            }
-            $fileIndex++;
-            $filesSinceProgress++;
-            $filesSinceCheckpoint++;
+                $fileIndex++;
+                $filesSinceProgress++;
 
-            // Per-component rotation triggers.
-            if ($compState[$compName]['zip'] !== null) {
-                $needRotate = $compState[$compName]['part_entries'] >= $this->maxPartEntries
-                    || $compState[$compName]['part_estimated_bytes'] >= $this->maxPartBytes;
-                if ($needRotate) {
-                    // GH #279: ZipArchive::close() on a large part is a single
-                    // blocking finalize with no progress hook of its own; emit
-                    // a heartbeat immediately before it so a slow finalize
-                    // doesn't leave CP progress_updated_at stale.
-                    $this->emitProgress($progress, [
-                        'files_done'    => $fileIndex,
-                        'files_total'   => $totalFiles,
-                        'parts_done'    => count($partsCompleted),
-                        'bytes_written' => $bytesWritten,
-                        'current_file'  => $currentRel,
-                        'component'     => $compName,
-                        'stage'         => 'finalizing_part',
-                    ]);
-                    $closed = $this->closeActivePart($compState[$compName], $progress);
-                    if ($closed['size'] > 0) {
-                        $bytesWritten     += $closed['size'];
-                        $partsCompleted[] = $closed['name'];
-                        $partKinds[]      = $compState[$compName]['kind'];
+                // Per-component rotation triggers.
+                if ($compState[$compName]['zip'] !== null) {
+                    $needRotate = $compState[$compName]['part_entries'] >= $this->maxPartEntries
+                        || $compState[$compName]['part_estimated_bytes'] >= $this->maxPartBytes;
+                    if ($needRotate) {
+                        // GH #279: ZipArchive::close() on a large part is a single
+                        // blocking finalize with no progress hook of its own; emit
+                        // a heartbeat immediately before it so a slow finalize
+                        // doesn't leave CP progress_updated_at stale.
+                        $this->emitProgress($progress, [
+                            'files_done'    => $fileIndex,
+                            'files_total'   => $totalFiles,
+                            'parts_done'    => count($partsCompleted),
+                            'bytes_written' => $bytesWritten,
+                            'current_file'  => $currentRel,
+                            'component'     => $compName,
+                            'stage'         => 'finalizing_part',
+                        ]);
+                        $closed = $this->closeActivePart($compState[$compName], $progress);
+                        if ($closed['size'] > 0) {
+                            $bytesWritten     += $closed['size'];
+                            $partsCompleted[] = $closed['name'];
+                            $partKinds[]      = $compState[$compName]['kind'];
+                            $partSizes[]      = $closed['size'];
+                        }
+                        $this->settlePart($compState[$compName]);
+                        $this->emitProgress($progress, [
+                            'files_done'    => $fileIndex,
+                            'files_total'   => $totalFiles,
+                            'parts_done'    => count($partsCompleted),
+                            'bytes_written' => $bytesWritten,
+                            'current_file'  => $currentRel,
+                            'component'     => $compName,
+                        ]);
+                        gc_collect_cycles();
+
+                        $compState[$compName]['current_part']++;
+                        $compState[$compName]['part_entries']         = 0;
+                        $compState[$compName]['part_estimated_bytes'] = 0;
+                        if ($checkpoint !== null) {
+                            $checkpoint($this->checkpointCursor($run, $compState, $fileIndex, $partsCompleted, $partKinds, $partSizes, false));
+                        }
                     }
+                }
+
+                if ($filesSinceProgress >= self::PROGRESS_EVERY_FILES) {
                     $this->emitProgress($progress, [
                         'files_done'    => $fileIndex,
                         'files_total'   => $totalFiles,
                         'parts_done'    => count($partsCompleted),
+                        // The active part's bytes aren't visible on disk until
+                        // close(); report only the durable total here.
                         'bytes_written' => $bytesWritten,
                         'current_file'  => $currentRel,
-                        'component'     => $compName,
                     ]);
-                    gc_collect_cycles();
-
-                    $compState[$compName]['current_part']++;
-                    $compState[$compName]['part_entries']         = 0;
-                    $compState[$compName]['part_estimated_bytes'] = 0;
-                    $filesSinceCheckpoint = 0;
+                    $filesSinceProgress = 0;
                 }
-            }
 
-            if ($filesSinceProgress >= self::PROGRESS_EVERY_FILES) {
-                $this->emitProgress($progress, [
+                // GH #279: wall-clock heartbeat, IN ADDITION to the file-count
+                // trigger above. Guards the case where files are few but large;
+                // each addFile() call can take a while, so PROGRESS_EVERY_FILES
+                // may never be reached even though real wall-clock time is
+                // passing. No-ops (via the elapsed-time check) whenever a real
+                // emit -- rotation or file-count -- just fired this same tick.
+                $this->maybeEmitHeartbeat($progress, [
                     'files_done'    => $fileIndex,
                     'files_total'   => $totalFiles,
                     'parts_done'    => count($partsCompleted),
-                    // The active part's bytes aren't visible on disk until
-                    // close(); report only the durable total here.
                     'bytes_written' => $bytesWritten,
                     'current_file'  => $currentRel,
                 ]);
-                $filesSinceProgress = 0;
             }
 
-            // GH #279: wall-clock heartbeat, IN ADDITION to the file-count
-            // trigger above. Guards the case where files are few but large;
-            // each addFile() call can take a while, so PROGRESS_EVERY_FILES
-            // may never be reached even though real wall-clock time is
-            // passing. No-ops (via the elapsed-time check) whenever a real
-            // emit -- rotation or file-count -- just fired this same tick.
-            $this->maybeEmitHeartbeat($progress, [
-                'files_done'    => $fileIndex,
-                'files_total'   => $totalFiles,
-                'parts_done'    => count($partsCompleted),
-                'bytes_written' => $bytesWritten,
-                'current_file'  => $currentRel,
-            ]);
-
-            if ($filesSinceCheckpoint >= self::CHECKPOINT_EVERY_FILES) {
-                // Same semantics as before: we don't side-effect the caller's
-                // state; ZipArchive doesn't flush mid-stream; the cursor itself
-                // is returned only at function exit.
-                $filesSinceCheckpoint = 0;
-            }
+            fclose($cacheHandle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- closes a streaming handle over multi-GB archives; WP_Filesystem has no streaming API
         }
 
-        fclose($cacheHandle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- closes a streaming handle over multi-GB archives; WP_Filesystem has no streaming API
-
         // Close every still-open per-component active part.
-        foreach ($compState as $compName => &$state) {
-            if ($state['zip'] === null) {
+        foreach (array_keys($compState) as $compName) {
+            if ($compState[$compName]['zip'] === null) {
                 continue;
             }
             // GH #279: same rationale as the rotation-triggered close above.
@@ -784,14 +860,24 @@ final class FilesArchiver
                 'component'     => $compName,
                 'stage'         => 'finalizing_part',
             ]);
-            $closed = $this->closeActivePart($state, $progress);
+            $closed = $this->closeActivePart($compState[$compName], $progress);
             if ($closed['size'] > 0) {
                 $bytesWritten     += $closed['size'];
                 $partsCompleted[] = $closed['name'];
-                $partKinds[]      = $state['kind'];
+                $partKinds[]      = $compState[$compName]['kind'];
+                $partSizes[]      = $closed['size'];
+            }
+            $this->settlePart($compState[$compName]);
+            $compState[$compName]['current_part']++;
+            if ($checkpoint !== null) {
+                $checkpoint($this->checkpointCursor($run, $compState, $fileIndex, $partsCompleted, $partKinds, $partSizes, false));
             }
         }
-        unset($state);
+        if ($checkpoint !== null) {
+            // Every line is archived or settled: a resume from here only
+            // finishes the inventories below, which are safe to repeat.
+            $checkpoint($this->checkpointCursor($run, $compState, $fileIndex, $partsCompleted, $partKinds, $partSizes, true));
+        }
 
         if ($this->skippedSources !== []) {
             if ($prevMap !== null) {
@@ -809,7 +895,7 @@ final class FilesArchiver
             $this->rewriteFilesList([]);
             if ($prevMap !== null) {
                 $pending = array_diff_key(array_intersect_key($prevMap, $this->skippedSources), $this->carriedSources);
-                $path = $tombstonesFile !== '' ? $tombstonesFile : dirname($cachePath) . DIRECTORY_SEPARATOR . self::TOMBSTONES_LIST_NAME;
+                $path = $tombstonesFile !== '' ? $tombstonesFile : $outDir . DIRECTORY_SEPARATOR . self::TOMBSTONES_LIST_NAME;
                 if ($pending !== [] && $tombstonesFile !== '') {
                     $handle = fopen($path, 'rb'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- streaming inventory read
                     if ($handle === false) { throw new \RuntimeException('FilesArchiver: cannot read tombstones'); }
@@ -837,23 +923,221 @@ final class FilesArchiver
     }
 
     /**
-     * Open (or reopen for resume) the active part for the given component
-     * tracker. Mutates $state in-place.
+     * Validate a durable checkpoint against the scratch dir it describes.
+     * Every field is re-checked: the task row is input like any other. A
+     * cursor that fails any check yields null, and the caller starts one
+     * fresh pass instead.
      *
-     * Resume policy: ZipArchive::CREATE (no OVERWRITE) appends to an existing
-     * valid zip — that's how we survive watchdog re-entry into the same part
-     * for the same component.
+     * @param array<string,mixed> $resume Cursor handed to archive().
+     * @return array{run:array<string,mixed>,parts_completed:list<string>,part_kinds:list<string>,part_sizes:list<int>,components:list<array{name:string,current_part:int,resume_from:int}>,complete:bool,skipped:list<string>}|null
+     */
+    private function durableCheckpoint(array $resume, string $outDir, string $cachePath, bool $incremental): ?array
+    {
+        if (($resume['checkpoint'] ?? null) !== self::CHECKPOINT_VERSION || ($resume['incremental'] ?? null) !== $incremental) {
+            return null;
+        }
+        $total = $resume['total_files'] ?? null;
+        $bytes = $resume['cache_bytes'] ?? null;
+        $carried = $resume['files_carried'] ?? null;
+        $tombstonesCount = $resume['tombstones_count'] ?? null;
+        if (!is_int($total) || $total < 0 || !is_int($bytes) || $bytes < 0 || !is_int($carried) || $carried < 0
+            || !is_int($tombstonesCount) || $tombstonesCount < 0 || !is_file($cachePath)) {
+            return null;
+        }
+        $tombstonesFile = $resume['tombstones_file'] ?? null;
+        if (!is_string($tombstonesFile) || ($tombstonesFile !== '' && $tombstonesFile !== $outDir . DIRECTORY_SEPARATOR . self::TOMBSTONES_LIST_NAME)) {
+            return null;
+        }
+        $complete = ($resume['complete'] ?? null) === true;
+        clearstatcache(true, $cachePath);
+        // Only the end-of-run prune rewrites the cache, after every part closed.
+        if (!$complete && (int) @filesize($cachePath) !== $bytes) {
+            return null;
+        }
+
+        $parts = $resume['parts_completed'] ?? null;
+        $kinds = $resume['part_kinds'] ?? null;
+        $sizes = $resume['part_sizes'] ?? null;
+        if (!is_array($parts) || !is_array($kinds) || !is_array($sizes) || !array_is_list($parts) || !array_is_list($kinds)
+            || !array_is_list($sizes) || count($kinds) !== count($parts) || count($sizes) !== count($parts)) {
+            return null;
+        }
+        $highest = [];
+        $seen    = [];
+        foreach ($parts as $i => $name) {
+            if (!is_string($name) || isset($seen[$name]) || preg_match(self::CLOSED_PART_NAME, $name, $m) !== 1) {
+                return null;
+            }
+            $seen[$name] = true;
+            $component   = $m[1];
+            if ((int) $m[2] !== $this->generation || $kinds[$i] !== self::COMPONENT_PARTITIONS[$component]['kind'] || !is_int($sizes[$i]) || $sizes[$i] <= 0) {
+                return null;
+            }
+            $path = $outDir . DIRECTORY_SEPARATOR . $name;
+            clearstatcache(true, $path);
+            if (is_link($path) || !is_file($path) || (int) @filesize($path) !== $sizes[$i]) {
+                return null;
+            }
+            $highest[$component] = max($highest[$component] ?? 0, (int) $m[3]);
+        }
+
+        $components = $resume['components'] ?? null;
+        if (!is_array($components)) {
+            return null;
+        }
+        $cursor = [];
+        foreach (array_keys(self::COMPONENT_PARTITIONS) as $component) {
+            $entry = $components[$component] ?? null;
+            if (!is_array($entry) || !is_int($entry['current_part'] ?? null) || !is_int($entry['resume_from'] ?? null)
+                || $entry['current_part'] <= ($highest[$component] ?? 0) || $entry['resume_from'] < 0) {
+                // A next part number at or below a closed one would overwrite it.
+                return null;
+            }
+            $cursor[] = ['name' => $component, 'current_part' => $entry['current_part'], 'resume_from' => $entry['resume_from']];
+        }
+
+        $skipped = $resume['skipped'] ?? null;
+        if (!is_array($skipped)) {
+            return null;
+        }
+        foreach ($skipped as $rel) {
+            if (!is_string($rel) || $rel === '') {
+                return null;
+            }
+        }
+
+        return [
+            'run'             => [
+                'total_files'      => $total,
+                'cache_bytes'      => $bytes,
+                'files_carried'    => $carried,
+                'tombstones_file'  => $tombstonesFile,
+                'tombstones_count' => $tombstonesCount,
+                'incremental'      => $incremental,
+            ],
+            'parts_completed' => array_values($parts),
+            'part_kinds'      => array_values($kinds),
+            'part_sizes'      => array_values($sizes),
+            'components'      => $cursor,
+            'complete'        => $complete,
+            'skipped'         => array_values($skipped),
+        ];
+    }
+
+    /**
+     * The durable resume cursor after the parts closed so far. A component
+     * whose open part holds lines resumes at the first of them; every other
+     * component resumes at $fileIndex. Skips inside an open part are left out
+     * so a resume decides them again.
      *
-     * @param array<string,mixed> $state Per-component tracker (by reference).
+     * @param array<string,mixed>                $run       Discovery facts for the whole pass.
+     * @param array<string,array<string,mixed>>  $compState Per-component trackers.
+     * @param list<string>                       $parts     Closed part filenames.
+     * @param list<string>                       $kinds     Parallel entry kinds.
+     * @param list<int>                          $sizes     Parallel part sizes.
+     * @return array<string,mixed>
+     */
+    private function checkpointCursor(array $run, array $compState, int $fileIndex, array $parts, array $kinds, array $sizes, bool $complete): array
+    {
+        $components = [];
+        $start      = $fileIndex;
+        foreach ($compState as $name => $state) {
+            $from              = $state['pending_from'] ?? $fileIndex;
+            $components[$name] = ['current_part' => (int) $state['current_part'], 'resume_from' => (int) $from];
+            $start             = min($start, (int) $from);
+        }
+        $pending = [];
+        foreach ($this->pendingSkips as $skips) {
+            $pending += $skips;
+        }
+        $settled = array_map('strval', array_keys(array_diff_key($this->skippedSources, $pending)));
+
+        return $run + [
+            'checkpoint'            => self::CHECKPOINT_VERSION,
+            'complete'              => $complete,
+            'file_index'            => $start,
+            'components'            => $components,
+            'parts_completed'       => $parts,
+            'part_kinds'            => $kinds,
+            'part_sizes'            => $sizes,
+            'bytes_written'         => (int) array_sum($sizes),
+            'skipped'               => $settled,
+            'skipped_sources_count' => count($settled),
+            'skipped_sources'       => $this->skippedSourceSample($settled),
+        ];
+    }
+
+    /**
+     * Delete every part file and libzip temporary output of the file
+     * components in $outDir, except the closed parts named in $keep. Runs
+     * before any packing, so the scratch dir never holds two passes.
+     *
+     * @param list<string> $keep Closed part filenames to keep.
+     * @throws \RuntimeException When the dir cannot be listed or a stale part remains.
+     */
+    private function removeStaleParts(string $outDir, array $keep): void
+    {
+        $names = @scandir($outDir);
+        if ($names === false) {
+            throw new \RuntimeException('FilesArchiver: cannot list scratch dir');
+        }
+        $keep = array_flip($keep);
+        foreach ($names as $name) {
+            $name = (string) $name;
+            if (isset($keep[$name]) || preg_match(self::STALE_PART_NAME, $name) !== 1) {
+                continue;
+            }
+            $path = $outDir . DIRECTORY_SEPARATOR . $name;
+            if (is_dir($path) && !is_link($path)) {
+                continue;
+            }
+            wp_delete_file($path);
+            clearstatcache(true, $path);
+            if (file_exists($path) || is_link($path)) {
+                throw new \RuntimeException('FilesArchiver: cannot remove stale part: ' . esc_html($name));
+            }
+        }
+    }
+
+    /** A closed part settles its component: no line before the cursor is pending. */
+    private function settlePart(array &$state): void
+    {
+        $state['pending_from'] = null;
+        unset($this->pendingSkips[(string) $state['component']]);
+    }
+
+    /** Accept only this scratch dir's own tombstones.list from a cursor. */
+    private function ownTombstonesFile($path, string $outDir): string
+    {
+        if (!is_string($path) || $path === '' || basename($path) !== self::TOMBSTONES_LIST_NAME) {
+            return '';
+        }
+        $dir = realpath(dirname($path));
+        return $dir !== false && rtrim($dir, DIRECTORY_SEPARATOR) === $outDir ? $outDir . DIRECTORY_SEPARATOR . self::TOMBSTONES_LIST_NAME : '';
+    }
+
+    /**
+     * Open the next part for the given component tracker, always as a new,
+     * empty archive. Mutates $state in-place.
+     *
+     * Resume policy: a part is never reopened. A resume deletes every part
+     * its checkpoint does not list and archives that part's lines again, so
+     * a closed part is never written twice.
+     *
+     * @param array<string,mixed> $state    Per-component tracker (by reference).
      * @param string              $compName Component key (filename prefix).
      * @param string              $outDir   Absolute scratch dir.
-     * @throws \RuntimeException On zip open failure.
+     * @param list<string>        $closed   Closed part filenames of this pass.
+     * @throws \RuntimeException On zip open failure, or a part number that names a closed part.
      */
-    private function openActivePart(array &$state, string $compName, string $outDir): void
+    private function openActivePart(array &$state, string $compName, string $outDir, array $closed): void
     {
-        $partPath  = $this->partPath($outDir, $compName, (int) $state['current_part']);
+        $partPath = $this->partPath($outDir, $compName, (int) $state['current_part']);
+        if (in_array(basename($partPath), $closed, true)) {
+            throw new \RuntimeException('FilesArchiver: part number reuses a closed part: ' . esc_html(basename($partPath)));
+        }
         $zip       = ($this->zipFactory)();
-        $openFlags = is_file($partPath) ? \ZipArchive::CREATE : (\ZipArchive::CREATE | \ZipArchive::OVERWRITE);
+        $openFlags = \ZipArchive::CREATE | \ZipArchive::OVERWRITE;
         if ($zip->open($partPath, $openFlags) !== true) {
             throw new \RuntimeException('FilesArchiver: cannot open zip part: ' . esc_html($partPath));
         }
@@ -861,11 +1145,8 @@ final class FilesArchiver
         $state['part_path']            = $partPath;
         $state['open_flags']           = $openFlags;
         $state['queued_sources']       = [];
-        $state['deleted_entries']      = [];
-        // If reopening on resume, the existing zip's numFiles is the
-        // entry-rotation cursor. Same for filesize as the byte estimate.
-        $state['part_entries']         = $zip->numFiles;
-        $state['part_estimated_bytes'] = is_file($partPath) ? (int) @filesize($partPath) : 0;
+        $state['part_entries']         = 0;
+        $state['part_estimated_bytes'] = 0;
     }
 
     /**
@@ -909,18 +1190,10 @@ final class FilesArchiver
                     || !$this->hasSourceSuspects($state['queued_sources'])) {
                     throw $failure; // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- ZipCloseException owns message escaping
                 }
-                if (($state['open_flags'] & \ZipArchive::OVERWRITE) === 0 && !is_file($partPath)) {
-                    throw $failure; // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- an existing part is required to retain its durable entries
-                }
+                // A part is always new, so a rebuild starts from an empty archive.
                 $zip = ($this->zipFactory)();
                 if ($zip->open($partPath, $state['open_flags']) !== true) { throw $failure; } // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- retains the libzip close diagnostic
                 $state['zip'] = $zip;
-                // Every rebuild retains this process's omissions from the part.
-                foreach ($state['deleted_entries'] as $rel => $_) {
-                    if ($zip->locateName((string) $rel) !== false && !$zip->deleteName((string) $rel)) {
-                        throw new ZipCloseException(basename($partPath), $zip->status, $zip->getStatusString()); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- ZipCloseException owns message escaping
-                    }
-                }
                 foreach ($state['queued_sources'] as $rel => $_) {
                     $metadata = $this->sourceMetadata((string) $rel);
                     if ($metadata === null) {
@@ -939,7 +1212,7 @@ final class FilesArchiver
                     $this->emitProgress($progress, ['stage' => 'rebuilding_part', 'part' => basename($partPath), 'rebuild_attempt' => $attempt]);
                 }
                 if (@$zip->close()) {
-                    $this->rewriteFilesList($state['queued_sources']);
+                    $this->rewriteFilesList($state['queued_sources'], false);
                     $failure = null;
                     break;
                 }
@@ -987,31 +1260,36 @@ final class FilesArchiver
     private function skipSource(array &$state, string $relativePath): void
     {
         $this->skippedSources[$relativePath] = true;
+        if ($state['pending_from'] !== null) {
+            // Inside an open part: settled only when that part closes.
+            $this->pendingSkips[(string) $state['component']][$relativePath] = true;
+        }
         unset($state['queued_sources'][$relativePath]);
         $zip = $state['zip'];
         if ($zip !== null) {
-            if ($zip->locateName($relativePath) !== false) {
-                if (!$zip->deleteName($relativePath)) {
-                    throw new ZipCloseException(basename($state['part_path']), $zip->status, $zip->getStatusString()); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- ZipCloseException owns message escaping
-                }
-                $state['deleted_entries'][$relativePath] = true;
+            if ($zip->locateName($relativePath) !== false && !$zip->deleteName($relativePath)) {
+                throw new ZipCloseException(basename($state['part_path']), $zip->status, $zip->getStatusString()); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- ZipCloseException owns message escaping
             }
             $state['part_entries'] = $zip->numFiles;
         }
     }
 
-    /** @param array<string,array{size:int,mtime:int}> $sources Durable queued metadata. */
-    private function rewriteFilesList(array $sources): void
+    /**
+     * @param array<string,array{size:int,mtime:int}> $sources     Durable queued metadata.
+     * @param bool                                    $dropSkipped Drop skipped sources; only the end of the run does,
+     *                                                             since a resume may still archive a skip it repeats.
+     */
+    private function rewriteFilesList(array $sources, bool $dropSkipped = true): void
     {
         $pendingCarry = $this->carriedSources;
-        $this->rewriteInventory($this->filesListPath, function (string $line) use ($sources, &$pendingCarry): ?string {
+        $this->rewriteInventory($this->filesListPath, function (string $line) use ($sources, $dropSkipped, &$pendingCarry): ?string {
             $rel = explode("\t", $line, 2)[0];
             if (isset($pendingCarry[$rel])) {
                 $metadata = $pendingCarry[$rel];
                 unset($pendingCarry[$rel]);
                 return $rel . "\t" . $metadata['size'] . "\t" . $metadata['mtime'];
             }
-            if (isset($this->skippedSources[$rel])) { return null; }
+            if ($dropSkipped && isset($this->skippedSources[$rel])) { return null; }
             if (isset($sources[$rel])) { return $rel . "\t" . $sources[$rel]['size'] . "\t" . $sources[$rel]['mtime']; }
             return $line;
         });
@@ -1312,6 +1590,15 @@ final class FilesArchiver
 
         $segments = explode('/', $relativePath);
 
+        // The agent's own transient files, anchored at a segment start.
+        foreach ($segments as $segment) {
+            foreach (self::AGENT_RESERVED_PREFIXES as $prefix) {
+                if (strncmp($segment, $prefix, strlen($prefix)) === 0) {
+                    return true;
+                }
+            }
+        }
+
         // Segment-name exclusion (WPMgr defaults + caller excludes).
         if ($this->excludes !== []) {
             foreach ($segments as $segment) {
@@ -1428,10 +1715,13 @@ final class FilesArchiver
         return '';
     }
 
-    /** @return list<string> UTF-8 display names; source bookkeeping retains exact bytes. */
-    private function skippedSourceSample(): array
+    /**
+     * @param list<string>|null $paths Paths to sample; null samples every skipped source.
+     * @return list<string> UTF-8 display names; source bookkeeping retains exact bytes.
+     */
+    private function skippedSourceSample(?array $paths = null): array
     {
-        return array_map(static fn ($path): string => json_decode(json_encode((string) $path, JSON_INVALID_UTF8_SUBSTITUTE), true), array_slice(array_keys($this->skippedSources), 0, 20));
+        return array_map(static fn ($path): string => json_decode(json_encode((string) $path, JSON_INVALID_UTF8_SUBSTITUTE), true), array_slice($paths ?? array_keys($this->skippedSources), 0, 20));
     }
 
     /**

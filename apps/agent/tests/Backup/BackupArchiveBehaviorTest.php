@@ -1412,7 +1412,7 @@ final class BackupArchiveBehaviorTest extends TestCase
         fwrite(STDOUT, "\nfailure payload=" . json_encode($failure) . " scratch_removed=true task_removed=true\n");
     }
 
-    public function testTimingAppearsOnlyInFirstFreshOrResumedWorkerReport(): void
+    public function testTimingAppearsInEveryFreshOrResumedWorkerReport(): void
     {
         $this->signing();
         file_put_contents($this->root . '/src/keep.txt', 'keep');
@@ -1436,7 +1436,8 @@ final class BackupArchiveBehaviorTest extends TestCase
             self::assertIsInt($firstTiming['worker_started_at']);
             self::assertGreaterThanOrEqual($before, $firstTiming['worker_started_at']);
             self::assertLessThanOrEqual(time(), $firstTiming['worker_started_at']);
-            foreach (array_slice($events, 1) as $event) { self::assertArrayNotHasKey('timing', $event['phase_detail']); }
+            // The control plane keeps only the latest report, so every report carries timing.
+            foreach ($events as $event) { self::assertSame($firstTiming, $event['phase_detail']['timing'] ?? null); }
         }
     }
 
