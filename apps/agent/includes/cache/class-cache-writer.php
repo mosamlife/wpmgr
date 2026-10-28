@@ -334,6 +334,37 @@ final class CacheWriter
     }
 
     /**
+     * Whether the response says it must not be cached: DONOTCACHEPAGE defined
+     * true, or a Cache-Control header with a no-store or private directive
+     * (WordPress's nocache_headers() sends both since 6.8, and PHP sends
+     * no-store when a plugin starts a session). A cookie the response sets is
+     * not a veto by itself: translation plugins set a language cookie on every
+     * page.
+     *
+     * @param array<int,string> $headers Header lines as headers_list() gives them.
+     * @return bool
+     */
+    private static function responseForbidsStore(array $headers): bool
+    {
+        if (defined('DONOTCACHEPAGE') && (bool) constant('DONOTCACHEPAGE')) {
+            return true;
+        }
+        foreach ($headers as $line) {
+            $parts = explode(':', (string) $line, 2);
+            if (count($parts) !== 2 || strtolower(trim($parts[0])) !== 'cache-control') {
+                continue;
+            }
+            foreach (explode(',', $parts[1]) as $directive) {
+                $name = strtolower(trim(explode('=', $directive, 2)[0]));
+                if ($name === 'no-store' || $name === 'private') {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
      * Cheap gate: is this a key that we both cache AND optimize (a non-logged-in
      * HTML doc)? Logged-in caching, if enabled, is stored verbatim — the
      * optimizer skips personalised responses internally too, but this avoids
@@ -402,6 +433,11 @@ final class CacheWriter
     public function maybeWrite(string $buffer, array $ctx, bool $optimized = false): bool
     {
         if (!$this->config->enabled) {
+            return false;
+        }
+
+        // The response itself says it must not be cached.
+        if (!empty($ctx['response_forbids_store'])) {
             return false;
         }
 
@@ -515,6 +551,7 @@ final class CacheWriter
 
         return [
             'store_key'         => $this->storeKey,
+            'response_forbids_store' => self::responseForbidsStore(headers_list()),
             'url'               => $uri,
             'uri_path'          => $uri,
             'host'              => $host,
