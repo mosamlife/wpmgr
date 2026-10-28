@@ -39,6 +39,13 @@ func (e *rptEnqueuer) EnqueueGenerate(_ context.Context, a report.GenerateArgs) 
 	return nil
 }
 
+// HasActiveGenerateJob: this fake queues nothing anywhere, so no report has a
+// job. The cases that need River's own answer use report.NewRiverEnqueuer over a
+// River client (report_generate_now_live_job_integration_test.go).
+func (e *rptEnqueuer) HasActiveGenerateJob(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
+	return false, nil
+}
+
 // rptSeedReport inserts a report row in the given status, last touched at
 // updatedAt, and returns its id.
 func rptSeedReport(t *testing.T, pool *db.Pool, tenant, client uuid.UUID, status string, updatedAt time.Time) uuid.UUID {

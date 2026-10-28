@@ -18,11 +18,16 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
-// Enqueuer schedules report generation jobs (River). Declared as an interface
-// so the service is unit-testable with a fake (mirrors backup.Enqueuer pattern).
-// Wired after the River client starts via SetEnqueuer.
+// Enqueuer schedules report generation jobs (River) and says whether a report
+// still has one. Declared as an interface so the service is unit-testable with a
+// fake (mirrors backup.Enqueuer pattern). Wired after the River client starts
+// via SetEnqueuer.
 type Enqueuer interface {
 	EnqueueGenerate(ctx context.Context, args GenerateArgs) error
+	// HasActiveGenerateJob reports whether a generate job for the report is still
+	// queued, waiting for a retry or running: a job that can still complete or
+	// fail the report's row. It says nothing about the row itself.
+	HasActiveGenerateJob(ctx context.Context, tenantID, reportID uuid.UUID) (bool, error)
 }
 
 // MailerEnabled is the subset of mailer.Service needed to check whether the
@@ -161,7 +166,10 @@ func (s *Service) UpsertSchedule(ctx context.Context, in UpsertScheduleInput) (S
 //
 // Abuse guard: if a pending or generating report already exists for this client
 // the existing report is returned (same 202 body) rather than creating a
-// duplicate job. This prevents queue flooding from repeated calls.
+// duplicate job. This prevents queue flooding from repeated calls. A report
+// untouched for staleReportAfter is replaced only when no job for it is still
+// queued or running; one whose job is only waiting in the queue is returned like
+// any other report in flight.
 //
 // If the River enqueue fails after row creation, the row is marked failed so
 // it doesn't remain in a forever-pending state.
@@ -189,12 +197,27 @@ func (s *Service) GenerateNow(ctx context.Context, tenantID, clientID uuid.UUID,
 	// FIX-4 abuse guard: return the existing in-flight report rather than
 	// creating a new one. This bounds per-client queue depth to 1 on-demand job.
 	//
-	// A row nothing has touched for staleReportAfter belongs to a job that died
-	// without finishing it. It is marked failed and the request goes through;
-	// returning it would refuse "Generate now" for this client for ever.
+	// A row nothing has touched for staleReportAfter may belong to a job that
+	// died without finishing it. Then it is marked failed and the request goes
+	// through; returning it would refuse "Generate now" for this client for ever.
+	//
+	// Untouched is not dead. A job still waiting in a busy queue has touched
+	// nothing either, and failing the row of a scheduled report leaves the client
+	// without that period's email, because the replacement does not notify. So
+	// the row is failed only when no job for it is queued or running, and a
+	// report that still has one is returned like any other in flight.
 	existing, found, err := s.repo.GetActiveReport(ctx, tenantID, clientID)
 	if err == nil && found {
 		if !reportIsStale(existing, now) {
+			return existing, nil
+		}
+		live, liveErr := s.reportHasLiveJob(ctx, tenantID, existing.ID)
+		if liveErr != nil {
+			// Not knowing is not the same as the job being gone: the row is left as
+			// it is and the request fails, so a retry can decide.
+			return GeneratedReport{}, domain.Internal("report_job_check_failed", "failed to check whether the report's job is still queued").WithCause(liveErr)
+		}
+		if live {
 			return existing, nil
 		}
 		_, _ = s.repo.FailReport(ctx, tenantID, existing.ID, "report generation did not finish")
@@ -230,11 +253,22 @@ func (s *Service) GenerateNow(ctx context.Context, tenantID, clientID uuid.UUID,
 	return rpt, nil
 }
 
-// reportIsStale reports whether the job behind an in-flight report row is dead:
-// the row has not been touched for staleReportAfter. A row without an update
+// reportIsStale reports whether an in-flight report row has gone untouched for
+// staleReportAfter, which makes its job suspect: it died, or it is still waiting
+// in the queue. reportHasLiveJob tells the two apart. A row without an update
 // time proves nothing and is not stale.
 func reportIsStale(r GeneratedReport, now time.Time) bool {
 	return !r.UpdatedAt.IsZero() && now.Sub(r.UpdatedAt) > staleReportAfter
+}
+
+// reportHasLiveJob reports whether a generate job for the report is still queued
+// or running. A service with no queue wired has queued nothing, so nothing is
+// waiting.
+func (s *Service) reportHasLiveJob(ctx context.Context, tenantID, reportID uuid.UUID) (bool, error) {
+	if s.enqueuer == nil {
+		return false, nil
+	}
+	return s.enqueuer.HasActiveGenerateJob(ctx, tenantID, reportID)
 }
 
 // ---------------------------------------------------------------------------

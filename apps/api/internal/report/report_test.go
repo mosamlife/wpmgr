@@ -122,7 +122,17 @@ func (r *stubRepo) GetActiveReport(ctx context.Context, tenantID, clientID uuid.
 type fakeEnqueuer struct {
 	calls []GenerateArgs
 	err   error
+
+	// active names the reports that still have a queued or running job; any
+	// other report has none. activeErr fails the lookup. asked records every
+	// report the lookup was made for.
+	active    map[uuid.UUID]bool
+	activeErr error
+	asked     []activeJobQuery
 }
+
+// activeJobQuery is one HasActiveGenerateJob call.
+type activeJobQuery struct{ tenantID, reportID uuid.UUID }
 
 func (f *fakeEnqueuer) EnqueueGenerate(_ context.Context, args GenerateArgs) error {
 	if f.err != nil {
@@ -130,6 +140,14 @@ func (f *fakeEnqueuer) EnqueueGenerate(_ context.Context, args GenerateArgs) err
 	}
 	f.calls = append(f.calls, args)
 	return nil
+}
+
+func (f *fakeEnqueuer) HasActiveGenerateJob(_ context.Context, tenantID, reportID uuid.UUID) (bool, error) {
+	f.asked = append(f.asked, activeJobQuery{tenantID: tenantID, reportID: reportID})
+	if f.activeErr != nil {
+		return false, f.activeErr
+	}
+	return f.active[reportID], nil
 }
 
 // ---------------------------------------------------------------------------
