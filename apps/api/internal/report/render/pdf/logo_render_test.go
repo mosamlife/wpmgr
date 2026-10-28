@@ -90,13 +90,12 @@ func TestPDFRendersWithoutALogoItCannotDraw(t *testing.T) {
 
 	logos := map[string][]byte{
 		// The library reads past the end of the data and panics.
-		"png cut short": truncatedPNG(t),
-		// The library inflates the data and records an error on the document.
+		"png cut short":       truncatedPNG(t),
 		"alpha png cut short": truncatedAlphaPNG(t),
-		// A whole PNG the library does not take: it records an error.
+		// The library records an error on the document: a whole PNG it does
+		// not take, and bytes that are not an image (read as a JPEG).
 		"interlaced png": interlacedPNG(t),
-		// Bytes that are not an image are read as a JPEG.
-		"not an image": []byte("<html>not a picture</html>"),
+		"not an image":   []byte("<html>not a picture</html>"),
 	}
 	for name, logo := range logos {
 		t.Run(name, func(t *testing.T) {
