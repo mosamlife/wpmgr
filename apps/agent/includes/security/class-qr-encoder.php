@@ -37,20 +37,20 @@ final class QrEncoder
     /**
      * Error correction codewords per block, level M, indexed by version (ISO/IEC 18004 Table 9).
      *
-     * @var list<int>
+     * @var array<int,int>
      */
     private const ECC_PER_BLOCK_M = [
-        0, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26,
+        1 => 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26,
         26, 26, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28,
     ];
 
     /**
      * Number of error correction blocks, level M, indexed by version (ISO/IEC 18004 Table 9).
      *
-     * @var list<int>
+     * @var array<int,int>
      */
     private const BLOCKS_M = [
-        0, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14,
+        1 => 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14,
         16, 17, 17, 18, 20, 21, 23, 25, 26, 28, 29, 31, 33, 35, 37, 38, 40, 43, 45, 47, 49,
     ];
 
@@ -100,7 +100,7 @@ final class QrEncoder
      * Encode $data into the final module matrix (1 = dark), or [] when it does not fit.
      *
      * @param string $data
-     * @return list<list<int>>
+     * @return array<int, array<int, int>>
      */
     private static function encode(string $data): array
     {
@@ -351,7 +351,7 @@ final class QrEncoder
             }
         }
 
-        return $remainder;
+        return array_values($remainder);
     }
 
     /**
@@ -376,7 +376,7 @@ final class QrEncoder
             $poly = $next;
         }
 
-        return $poly;
+        return array_values($poly);
     }
 
     /**
@@ -489,7 +489,7 @@ final class QrEncoder
     /**
      * Write both copies of the format information.
      *
-     * @param list<list<int>> $modules
+     * @param array<int, array<int, int>> $modules
      * @param int             $bits
      * @return void
      */
@@ -514,7 +514,7 @@ final class QrEncoder
      * modules: data placement and masking touch only the unreserved ones.
      *
      * @param int $version
-     * @return array{list<list<int>>, list<list<bool>>}
+     * @return array{array<int, array<int, int>>, array<int, array<int, bool>>}
      */
     private static function functionPatterns(int $version): array
     {
@@ -585,8 +585,8 @@ final class QrEncoder
     /**
      * Set a function module and mark it reserved.
      *
-     * @param list<list<int>>  $modules
-     * @param list<list<bool>> $reserved
+     * @param array<int, array<int, int>>  $modules
+     * @param array<int, array<int, bool>> $reserved
      * @param int              $row
      * @param int              $col
      * @param int              $dark
@@ -632,8 +632,8 @@ final class QrEncoder
      * timing column and every reserved module. Leftover modules stay light
      * (the remainder bits).
      *
-     * @param list<list<int>>  $modules
-     * @param list<list<bool>> $reserved
+     * @param array<int, array<int, int>>  $modules
+     * @param array<int, array<int, bool>> $reserved
      * @param list<int>        $codewords
      * @return void
      */
@@ -667,10 +667,10 @@ final class QrEncoder
     /**
      * Return a copy with mask pattern $mask applied to every non-reserved module.
      *
-     * @param list<list<int>>  $modules
-     * @param list<list<bool>> $reserved
+     * @param array<int, array<int, int>>  $modules
+     * @param array<int, array<int, bool>> $reserved
      * @param int              $mask
-     * @return list<list<int>>
+     * @return array<int, array<int, int>>
      */
     private static function applyMask(array $modules, array $reserved, int $mask): array
     {
@@ -711,7 +711,7 @@ final class QrEncoder
     /**
      * Mask evaluation penalty (the four rules of ISO/IEC 18004 section 7.8.3).
      *
-     * @param list<list<int>> $m
+     * @param array<int, array<int, int>> $m
      * @return int
      */
     private static function penalty(array $m): int
@@ -762,7 +762,7 @@ final class QrEncoder
      * One path with crispEdges leaves no anti-aliased seams between modules,
      * and the fixed width and height keep the symbol square.
      *
-     * @param list<list<int>> $matrix
+     * @param array<int, array<int, int>> $matrix
      * @param int             $pixels Rendered width and height in pixels.
      * @return string
      */
