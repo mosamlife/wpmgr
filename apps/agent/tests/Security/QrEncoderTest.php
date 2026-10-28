@@ -535,10 +535,17 @@ final class QrEncoderTest extends TestCase
         return [$a, $b];
     }
 
-    /** Locate zbarimg, or mark the calling test skipped with the reason. */
+    /**
+     * Locate zbarimg, or mark the calling test skipped with the reason.
+     * WPMGR_TEST_ZBARIMG names the binary explicitly (and lets the skip path be exercised).
+     */
     private static function zbarimg(): string
     {
-        foreach (['/opt/homebrew/bin/zbarimg', '/usr/local/bin/zbarimg', '/usr/bin/zbarimg'] as $candidate) {
+        $override   = getenv('WPMGR_TEST_ZBARIMG');
+        $candidates = is_string($override) && $override !== ''
+            ? [$override]
+            : ['/opt/homebrew/bin/zbarimg', '/usr/local/bin/zbarimg', '/usr/bin/zbarimg'];
+        foreach ($candidates as $candidate) {
             if (is_executable($candidate)) {
                 return $candidate;
             }
