@@ -131,10 +131,11 @@
  * change) posts back to the login URL the request is running on: on a site
  * that renames its login page, wp_login_url() can point at a path that
  * redirects the POST (dropping its body) or answers it with a 404. The target
- * is an absolute URL on the site's own origin (from wp_login_url(), never the
- * Host header) with this request's path and filtered, percent-encoded query.
- * A password step run outside the login screen posts to wp_login_url(), where
- * the verify handler runs. See verifyActionUrl().
+ * is an absolute URL whose origin and base path come from the site's public
+ * URLs (never the Host header, never a path a reverse proxy rewrote); the
+ * request supplies only a renamed login slug and the filtered, percent-encoded
+ * query. A password step run outside the login screen posts to
+ * wp_login_url(), where the verify handler runs. See verifyActionUrl().
  *
  * SESSION BINDING:
  * Every submit (code, method switch, setup step, forced change) must carry
@@ -242,6 +243,9 @@ final class Site2faModule
      * the redirect). Every key starting with wpmgr_2fa is dropped as well.
      */
     private const DROPPED_QUERY_KEYS = ['action', 'log', 'pwd', 'redirect_to'];
+
+    /** Bytes setcookie() refuses in a cookie path or domain (a ValueError in PHP 8). */
+    private const COOKIE_ILLEGAL_BYTES = ",; \t\r\n\013\014";
 
     /** Minimum cookie token length for trusted-device tokens. */
     private const DEVICE_TOKEN_BYTES = 32;
@@ -456,6 +460,23 @@ final class Site2faModule
                 continue;
             }
             if ($provider->isConfiguredFor($user)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether the user has a non-email method configured that the policy
+     * allows for them (see SecurityPolicy::allowedMethodsFor()).
+     *
+     * @param \WP_User $user
+     * @return bool
+     */
+    private function hasAllowedNonEmailMethodConfigured(\WP_User $user): bool
+    {
+        foreach ($this->resolveProvidersFor($user) as $provider) {
+            if ($provider->key() !== 'email') {
                 return true;
             }
         }
@@ -1353,8 +1374,10 @@ final class Site2faModule
 
         $providers = $this->resolveProvidersFor($user);
 
-        // Check if the required user needs enrollment (no deliberate 2FA method set up yet).
-        if ($isRequired && !$hasNonEmailEnrolled) {
+        // Check if the required user needs enrollment. A user who must use 2FA
+        // is always challenged with a method the policy allows them, or sent to
+        // set one up: only an allowed non-email method counts as enrolled here.
+        if ($isRequired && !$this->hasAllowedNonEmailMethodConfigured($user)) {
             $graceCount = (int) get_user_meta($userId, self::META_GRACE_COUNT, true);
             $graceMax   = $this->policy->twoFactorGraceLogins;
 
@@ -1731,7 +1754,11 @@ final class Site2faModule
         }
 
         $domain = defined('COOKIE_DOMAIN') ? (string) constant('COOKIE_DOMAIN') : '';
-        $paths  = self::bindCookiePaths();
+        if (strpbrk($domain, self::COOKIE_ILLEGAL_BYTES) !== false) {
+            $domain = '';
+        }
+
+        $paths = self::bindCookiePaths();
         foreach ($paths as $path) {
             setcookie(self::COOKIE_BIND, $value, self::bindCookieOptions($expires, $path, $domain));
         }
@@ -1744,20 +1771,42 @@ final class Site2faModule
 
     /**
      * COOKIEPATH and, when it differs, SITECOOKIEPATH: the paths WordPress
-     * sets its test cookie on.
+     * sets its test cookie on, taken from the public home and site URLs. One
+     * of them is a prefix of every form target (see verifyActionUrl()): a
+     * renamed slug lives under the home path, wp-login.php under the site path.
+     * Where the constants are not defined the same paths are derived from
+     * home_url() and site_url().
      *
      * @return list<string>
      */
     private static function bindCookiePaths(): array
     {
-        $cookiePath = defined('COOKIEPATH') ? (string) constant('COOKIEPATH') : '/';
-        $paths      = [$cookiePath !== '' ? $cookiePath : '/'];
+        $homePath = defined('COOKIEPATH')
+            ? (string) constant('COOKIEPATH')
+            : self::urlPathWithSlash(function_exists('home_url') ? (string) home_url('/') : '/');
+        $sitePath = defined('SITECOOKIEPATH')
+            ? (string) constant('SITECOOKIEPATH')
+            : self::urlPathWithSlash(function_exists('site_url') ? (string) site_url('/') : '/');
 
-        $sitePath = defined('SITECOOKIEPATH') ? (string) constant('SITECOOKIEPATH') : '';
-        if ($sitePath !== '' && $sitePath !== $paths[0]) {
-            $paths[] = $sitePath;
+        $paths = [];
+        foreach ([$homePath, $sitePath] as $path) {
+            if ($path !== '' && $path[0] === '/' && strpbrk($path, self::COOKIE_ILLEGAL_BYTES) === false && !in_array($path, $paths, true)) {
+                $paths[] = $path;
+            }
         }
-        return $paths;
+        return $paths !== [] ? $paths : ['/'];
+    }
+
+    /**
+     * The path of a URL with one trailing slash, as WordPress builds COOKIEPATH.
+     *
+     * @param string $url
+     * @return string
+     */
+    private static function urlPathWithSlash(string $url): string
+    {
+        $path = function_exists('wp_parse_url') ? wp_parse_url($url, PHP_URL_PATH) : null;
+        return rtrim(is_string($path) ? $path : '', '/') . '/';
     }
 
     /**
@@ -1789,7 +1838,7 @@ final class Site2faModule
         $path = function_exists('wp_login_url') && function_exists('wp_parse_url')
             ? wp_parse_url((string) wp_login_url(), PHP_URL_PATH)
             : null;
-        if (!is_string($path) || $path === '' || $path[0] !== '/' || strpbrk($path, ";, \t\r\n\013\014") !== false) {
+        if (!is_string($path) || $path === '' || $path[0] !== '/' || strpbrk($path, self::COOKIE_ILLEGAL_BYTES) !== false) {
             return '/wp-login.php';
         }
         return $path;
@@ -2518,9 +2567,9 @@ final class Site2faModule
                 // Even though the step is now server-authoritative (finding 1A fix),
                 // this defense-in-depth check ensures completeLogin() is never reached
                 // unless a non-email method was actually activated. If somehow the
-                // session reached DONE without enrollment, re-render the intro step
-                // rather than issuing a cookie.
-                if (!$this->hasNonEmailMethodConfigured($user)) {
+                // session reached DONE without enrollment in a method the policy
+                // allows, re-render the intro step rather than issuing a cookie.
+                if (!$this->hasAllowedNonEmailMethodConfigured($user)) {
                     $session['setup_step'] = self::SETUP_STEP_INTRO;
                     $this->storeSession($userId, $session);
                     $this->renderSetupScreen($user, $session);
@@ -2791,7 +2840,11 @@ final class Site2faModule
             return $fallback;
         }
 
-        $target = $this->currentLoginTarget($siteOrigin);
+        $target = self::publicLoginTarget($siteOrigin);
+        if ($target === null) {
+            return $fallback;
+        }
+
         $pieces = $target['params'];
         foreach ($extra as $key => $value) {
             $pieces[] = rawurlencode($key) . '=' . rawurlencode($value);
@@ -2834,47 +2887,100 @@ final class Site2faModule
     }
 
     /**
-     * Path and carried query pieces of the login request being answered.
+     * Public path and carried query pieces of the login this request is
+     * running, or null when they cannot be told (the caller then falls back to
+     * wp_login_url()).
      *
-     * Both come from REQUEST_URI. When this request is the bare core
-     * wp-login.php, the query pieces may come from the Referer instead, but
-     * only from a Referer on the site's own origin and this request's path: a
-     * login renamer can post its form there and keep its slug only in the page
-     * the visitor came from. The path never comes from the Referer.
+     * The origin and base path come from the site's public URLs, which carry
+     * a base path a reverse proxy may strip before the request reaches
+     * WordPress. REQUEST_URI supplies only what those cannot:
+     *  - for core's wp-login.php, nothing but the query: the target is the
+     *    public site URL plus wp-login.php;
+     *  - for a renamed login slug, the slug: the request path below the public
+     *    home path (removed when the backend sees it, as WP::parse_request()
+     *    does), under the public home URL.
      *
-     * Falls back to the path of wp_login_url() only when REQUEST_URI carries
-     * no usable path.
+     * When the request is the bare core wp-login.php, the query pieces may
+     * come from the Referer instead, but only from a Referer on the site's own
+     * origin and the public login path: a login renamer can post its form
+     * there and keep its slug only in the page the visitor came from.
      *
      * @param string $siteOrigin Normalised origin of wp_login_url().
-     * @return array{path:string,params:list<string>}
+     * @return array{path:string,params:list<string>}|null
      */
-    private function currentLoginTarget(string $siteOrigin): array
+    private static function publicLoginTarget(string $siteOrigin): ?array
     {
-        $target = null;
-        if (isset($_SERVER['REQUEST_URI']) && is_string($_SERVER['REQUEST_URI']) && function_exists('esc_url_raw')) {
-            $target = self::splitRequestTarget(esc_url_raw(wp_unslash($_SERVER['REQUEST_URI'])));
+        if (!isset($_SERVER['REQUEST_URI']) || !is_string($_SERVER['REQUEST_URI']) || !function_exists('esc_url_raw')) {
+            return null;
         }
-        if ($target === null) {
-            $fallback = function_exists('wp_login_url') ? (string) wp_login_url() : '/wp-login.php';
-            $target   = self::splitRequestTarget($fallback) ?? ['path' => '/wp-login.php', 'query' => ''];
-        }
-
-        $params = self::filterQueryPieces($target['query']);
-        if ($params === [] && self::isCoreLoginScript($target['path'])) {
-            $params = self::refererQueryPieces($target['path'], $siteOrigin);
+        $request = self::splitRequestTarget(esc_url_raw(wp_unslash($_SERVER['REQUEST_URI'])));
+        if ($request === null) {
+            return null;
         }
 
-        return ['path' => $target['path'], 'params' => $params];
+        $isCoreScript = self::isCoreLoginScript($request['path']);
+        if ($isCoreScript) {
+            $siteUrl = function_exists('site_url') ? (string) site_url('', 'login') : '';
+            $public  = rtrim($siteUrl, '/') . '/wp-login.php';
+        } else {
+            $homeUrl = function_exists('home_url') ? (string) home_url('/') : '';
+            $slug    = self::pathBelowHome($request['path'], $homeUrl);
+            if ($slug === null) {
+                return null;
+            }
+            $public = rtrim($homeUrl, '/') . '/' . $slug;
+        }
+
+        $publicTarget = self::splitRequestTarget($public);
+        if ($publicTarget === null || self::originOf($public) !== $siteOrigin) {
+            return null;
+        }
+
+        $params = self::filterQueryPieces($request['query']);
+        if ($params === [] && $isCoreScript) {
+            $params = self::refererQueryPieces($publicTarget['path'], $siteOrigin);
+        }
+
+        return ['path' => $publicTarget['path'], 'params' => $params];
     }
 
     /**
-     * Query pieces of a Referer on the site's own origin and this request's path.
+     * A normalised request path below the public home path, without a leading
+     * slash, or null when a dot segment could climb out of it.
      *
-     * @param string $currentPath Normalised path of this request.
-     * @param string $siteOrigin  Normalised origin of wp_login_url().
+     * @param string $requestPath Normalised path of this request.
+     * @param string $homeUrl     home_url('/').
+     * @return string|null
+     */
+    private static function pathBelowHome(string $requestPath, string $homeUrl): ?string
+    {
+        $homePath = function_exists('wp_parse_url') ? wp_parse_url($homeUrl, PHP_URL_PATH) : null;
+        $prefix   = trim(is_string($homePath) ? $homePath : '', '/');
+        $relative = ltrim($requestPath, '/');
+
+        $length = strlen($prefix);
+        if ($length > 0 && strncasecmp($relative, $prefix, $length) === 0
+            && (strlen($relative) === $length || $relative[$length] === '/')
+        ) {
+            $relative = ltrim(substr($relative, $length), '/');
+        }
+
+        foreach (explode('/', rawurldecode($relative)) as $segment) {
+            if ($segment === '.' || $segment === '..') {
+                return null;
+            }
+        }
+        return $relative;
+    }
+
+    /**
+     * Query pieces of a Referer on the site's own origin and the public login path.
+     *
+     * @param string $publicPath Normalised public path of the login.
+     * @param string $siteOrigin Normalised origin of wp_login_url().
      * @return list<string>
      */
-    private static function refererQueryPieces(string $currentPath, string $siteOrigin): array
+    private static function refererQueryPieces(string $publicPath, string $siteOrigin): array
     {
         if (!isset($_SERVER['HTTP_REFERER']) || !is_string($_SERVER['HTTP_REFERER']) || !function_exists('esc_url_raw')) {
             return [];
@@ -2892,7 +2998,7 @@ final class Site2faModule
         $target = self::splitRequestTarget(
             (string) ($parts['path'] ?? '/') . (isset($parts['query']) ? '?' . $parts['query'] : '')
         );
-        if ($target === null || $target['path'] !== $currentPath) {
+        if ($target === null || $target['path'] !== $publicPath) {
             return [];
         }
 

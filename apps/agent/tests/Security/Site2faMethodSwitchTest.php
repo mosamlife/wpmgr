@@ -59,12 +59,17 @@ final class Site2faMethodSwitchTest extends TestCase
         parent::set_up();
         Monkey\setUp();
 
+        // Every request here is the login screen, where the verify handler
+        // runs: Brain Monkey records this, so did_action('login_init') is 1.
+        do_action('login_init');
+
         $this->userMeta         = [];
         $this->rendered         = [];
         $this->mailSent         = [];
         $this->authCookieIssued = false;
         $_POST = [];
         $_GET  = [];
+        unset($_COOKIE[Site2faModule::COOKIE_BIND]);
         foreach (self::SERVER_KEYS as $key) {
             unset($_SERVER[$key]);
         }
@@ -108,7 +113,6 @@ final class Site2faMethodSwitchTest extends TestCase
         Functions\when('wp_destroy_all_sessions')->justReturn(null);
         Functions\when('wp_clear_auth_cookie')->justReturn(null);
         Functions\when('wp_allowed_protocols')->justReturn(['http', 'https', 'mailto']);
-        Functions\when('do_action')->justReturn(null);
         Functions\when('wp_set_auth_cookie')->alias(function () {
             $this->authCookieIssued = true;
         });
@@ -128,6 +132,7 @@ final class Site2faMethodSwitchTest extends TestCase
     {
         $_POST = [];
         $_GET  = [];
+        unset($_COOKIE[Site2faModule::COOKIE_BIND]);
         foreach (self::SERVER_KEYS as $key) {
             unset($_SERVER[$key]);
         }
@@ -197,7 +202,8 @@ final class Site2faMethodSwitchTest extends TestCase
 
     /**
      * Mint a 2FA session the way interceptIfRequired() does and put its signed
-     * fields in $_POST, as the challenge form would.
+     * fields in $_POST, as the challenge form would, from the browser that
+     * holds the session's bind cookie.
      *
      * @param array<string,string> $extra Further POST fields.
      */
@@ -207,6 +213,12 @@ final class Site2faMethodSwitchTest extends TestCase
         $session = $create->invoke($module, self::USER_ID, '/wp-admin/', false, '2fa');
         $hmac    = (new \ReflectionMethod($module, 'computeSessionHmac'))
             ->invoke($module, self::USER_ID, $session['id'], $session['created_at'], $session['uuid']);
+
+        // setcookie() never reaches $_COOKIE in a test: give the session a
+        // known bind token and present it, as the browser would.
+        $bind = bin2hex(random_bytes(32));
+        $this->userMeta[self::USER_ID][Site2faModule::META_SESSION]['bind_hash'] = hash('sha256', $bind);
+        $_COOKIE[Site2faModule::COOKIE_BIND] = $bind;
 
         $_SERVER['REQUEST_METHOD'] = 'POST';
         $_POST = array_merge([
@@ -497,7 +509,11 @@ final class Site2faMethodSwitchTest extends TestCase
         }
 
         $this->assertNull($died, '#964: a stray GET must not end on a wp_die() page');
-        $this->assertSame('/my-login?wpmgr_2fa_notice=interrupted', $redirect, '#964: a stray GET goes back to the login form it came from, with the notice flag');
+        $this->assertSame(
+            'https://example.test/my-login?wpmgr_2fa_notice=interrupted',
+            $redirect,
+            '#964: a stray GET goes back to the login form it came from, on the site origin, with the notice flag'
+        );
     }
 
     public function test_login_form_shows_the_notice_only_for_its_flag(): void
