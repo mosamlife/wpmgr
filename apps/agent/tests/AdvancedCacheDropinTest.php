@@ -441,7 +441,7 @@ final class AdvancedCacheDropinTest extends TestCase
             'mobile agent, mobile bucket on'  => [['cache_mobile' => true], $uri('/about/', ['HTTP_USER_AGENT' => 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)']), [], []],
             'desktop agent, mobile bucket on' => [['cache_mobile' => true], $uri('/about/', ['HTTP_USER_AGENT' => 'Mozilla/5.0 (X11; Linux x86_64)']), [], []],
             'mobile agent, mobile bucket off' => [[], $uri('/about/', ['HTTP_USER_AGENT' => 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)']), [], []],
-            'agent with control characters'   => [['cache_mobile' => true], $uri('/about/', ['HTTP_USER_AGENT' => "Foo\x01 Mobile\x7f"]), [], []],
+            'agent split by control characters' => [['cache_mobile' => true], $uri('/about/', ['HTTP_USER_AGENT' => "Mozilla/5.0 (Mo\x01bi\x7fle)"]), [], []],
             'mobile token past 512 bytes'     => [['cache_mobile' => true], $uri('/about/', ['HTTP_USER_AGENT' => str_repeat('x', 600) . ' Mobile']), [], []],
             'include cookie'                  => [['include_cookies' => ['geo']], $uri('/about/'), ['geo' => 'FR'], []],
             'include cookie to be slugged'    => [['include_cookies' => ['geo']], $uri('/about/'), ['geo' => 'us/ca%2F<b>'], []],
