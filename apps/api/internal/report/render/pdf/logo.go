@@ -27,9 +27,9 @@ func byteReader(b []byte) *bytes.Reader { return bytes.NewReader(b) }
 const (
 	maxLogoBytes = 2 << 20 // 2 MB
 	maxLogoDim   = 4000    // pixels per dimension
-	// maxAlphaLogoDim is the limit per dimension for a PNG with transparency.
-	// Every other logo may be up to maxLogoDim.
-	maxAlphaLogoDim = 2000
+	// maxAlphaLogoPixels is the limit on width times height for a PNG with
+	// transparency. Every logo is also limited to maxLogoDim a side.
+	maxAlphaLogoPixels = 4_000_000
 )
 
 // FetchAndValidateLogo fetches and validates the logo at rawURL.
@@ -94,10 +94,10 @@ func FetchAndValidateLogo(ctx context.Context, client *httpclient.Client, rawURL
 	if cfg.Width > maxLogoDim || cfg.Height > maxLogoDim {
 		return nil, fmt.Errorf("logo dimensions %dx%d exceed %d px cap", cfg.Width, cfg.Height, maxLogoDim)
 	}
-	// PNG logos with transparency are limited to 2000x2000 pixels.
-	if format == "png" && hasAlpha(cfg.ColorModel) && (cfg.Width > maxAlphaLogoDim || cfg.Height > maxAlphaLogoDim) {
-		return nil, fmt.Errorf("logo dimensions %dx%d exceed %d px cap for a PNG with transparency",
-			cfg.Width, cfg.Height, maxAlphaLogoDim)
+	// PNG logos with transparency are limited to 4 million pixels.
+	if format == "png" && hasAlpha(cfg.ColorModel) && int64(cfg.Width)*int64(cfg.Height) > maxAlphaLogoPixels {
+		return nil, fmt.Errorf("logo dimensions %dx%d exceed the %d pixel limit for a PNG with transparency",
+			cfg.Width, cfg.Height, maxAlphaLogoPixels)
 	}
 
 	// Then the end of the file. A header can be intact on a file whose body was
