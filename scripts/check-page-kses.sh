@@ -196,7 +196,9 @@ sha256_of() {
 #     any run, so a run reading it is never disturbed;
 #   - only a core that FAILS core_verified is replaced, by one run at a time
 #     under a per-core lock, and only after that run has looked at it again
-#     under the lock.
+#     under the lock. The lock is a directory whose pid file is created
+#     exclusively (take_dir): mkdir alone does not give one winner on every
+#     image.
 # A run that loses the race keeps the winner's copy and drops its own.
 
 # core_verified <dir> <sha256>
@@ -213,6 +215,37 @@ pid_alive() {
   ps -p "$1" >/dev/null 2>&1
 }
 
+# take_dir <dir>
+# Makes <dir> and records this run's pid in <dir>/pid, for one run at a time.
+# True when this run holds <dir>; false when another run does, or got there first.
+# mkdir cannot decide that. The mkdir of the Ubuntu 26.04 runner image (uutils
+# coreutils) exits 0 for each of two runs that make the same new directory at
+# the same instant, so both would think they held it. What decides is the
+# creation of <dir>/pid by the shell itself (noclobber: one open with O_EXCL, no
+# program started), which succeeds for exactly one run. A run that loses leaves
+# the directory and the file in it alone: they are the winner's.
+# A directory it cannot record its pid in is reported and left where it is: it
+# cannot be shown to be this run's alone, and a lock that cannot be judged is
+# never treated as free.
+take_dir() {
+  local d="$1"
+  mkdir "$d" 2>/dev/null || return 1
+  if ! (
+    set -C
+    : >"$d/pid"
+  ) 2>/dev/null; then
+    if [ -e "$d/pid" ]; then
+      return 1
+    fi
+    rmdir "$d" 2>/dev/null || true
+    die "cannot record the owner of the lock $d"
+  fi
+  if printf '%s\n' "$$" >"$d/pid" && [ "$(cat "$d/pid" 2>/dev/null || true)" = "$$" ]; then
+    return 0
+  fi
+  die "cannot record the owner of the lock $d. If no run is using $cache, remove it with: rm -rf $d"
+}
+
 # reclaim_lock <lock dir> <reclaim dir> <pid>
 # Removes the lock when its owner is still the gone process the caller saw.
 # Waiters that saw the same dead owner take turns on a second lock and judge the
@@ -222,7 +255,7 @@ pid_alive() {
 # Returns 0 only when the lock is gone afterwards.
 reclaim_lock() {
   local ld="$1" rd="$2" seen="$3" now
-  mkdir "$rd" 2>/dev/null || return 1
+  take_dir "$rd" || return 1
   now="$(cat "$ld/pid" 2>/dev/null || true)"
   if [ "$now" = "$seen" ] && ! pid_alive "$now"; then
     rm -rf "$ld"
@@ -234,10 +267,10 @@ reclaim_lock() {
 
 # lock_core <sha256>
 # Takes the lock on one cached core, polling once a second at most
-# $lock_wait times. mkdir either creates the directory or fails, so only one run
-# can hold it. The owner's pid is recorded inside; that is how a lock left by a
-# run that was killed is told from one in use. Pids mean something on one
-# machine, so the cache must not be shared between machines or containers.
+# $lock_wait times. take_dir decides who holds it, so only one run can. The
+# owner's pid is recorded inside; that is how a lock left by a run that was
+# killed is told from one in use. Pids mean something on one machine, so the
+# cache must not be shared between machines or containers.
 # A lock it cannot take, or cannot prove stale, is reported and the run fails:
 # it never waits without a bound, and never treats a lock it cannot judge as free.
 lock_core() {
@@ -245,13 +278,9 @@ lock_core() {
   case "$ld" in "$cache"/.lock.*) ;; *) die "unexpected lock dir: $ld" ;; esac
   command -v ps >/dev/null 2>&1 || die "ps not found (needed to tell a lock in use from a stale one)"
   while :; do
-    if mkdir "$ld" 2>/dev/null; then
-      if printf '%s\n' "$$" >"$ld/pid" && [ "$(cat "$ld/pid" 2>/dev/null || true)" = "$$" ]; then
-        lock_held="$ld"
-        return 0
-      fi
-      rm -rf "$ld"
-      die "cannot record the owner of the lock $ld"
+    if take_dir "$ld"; then
+      lock_held="$ld"
+      return 0
     fi
     owner="$(cat "$ld/pid" 2>/dev/null || true)"
     case "$owner" in *[!0-9]*) owner="" ;; esac
