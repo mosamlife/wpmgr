@@ -503,7 +503,7 @@ final class Site2faModule
      * renderInterstitial(), renderSetupScreen() (and every
      * buildSetup*Html() step it calls), renderProfileSection(), and every
      * SiteTwoFactorProvider::renderForm() implementation (Totp/Email/
-     * BackupCodes) -- including the inline TOTP QR <svg>/<rect> emitted by
+     * BackupCodes) -- including the inline TOTP QR <svg>/<rect>/<path> emitted by
      * QrEncoder::toSvg(). Each value placed into the markup is still
      * esc_html()/esc_attr()/esc_url()'d at assembly time (belt-and-
      * suspenders); wp_kses() here is the visible escape-at-output-boundary
@@ -553,12 +553,17 @@ final class Site2faModule
             // input: only the secret + issuer name feed it, and both go
             // through rawurlencode() before QR encoding.
             'svg'    => [
-                'xmlns'      => true,
-                'width'      => true,
-                'height'     => true,
-                'viewbox'    => true,
-                'role'       => true,
-                'aria-label' => true,
+                'xmlns'           => true,
+                'width'           => true,
+                'height'          => true,
+                'viewbox'         => true,
+                'shape-rendering' => true,
+                'role'            => true,
+                'aria-label'      => true,
+            ],
+            'path'   => [
+                'd'    => true,
+                'fill' => true,
             ],
             'rect'   => [
                 'x'      => true,
@@ -1976,8 +1981,9 @@ final class Site2faModule
         // Progressive-reveal manual key.
         $html .= '<p>';
         $html .= '<strong>' . esc_html__('Manual entry key:', 'wpmgr-agent') . '</strong><br>';
+        // Groups of four, space-separated, so the key wraps on narrow screens.
         $html .= '<code id="wpmgr-totp-secret" style="font-size:14px;letter-spacing:2px">';
-        $html .= esc_html($secret);
+        $html .= esc_html(implode(' ', str_split($secret, 4)));
         $html .= '</code>';
         $html .= '</p>';
 

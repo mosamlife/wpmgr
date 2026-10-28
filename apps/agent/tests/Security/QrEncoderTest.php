@@ -348,8 +348,13 @@ final class QrEncoderTest extends TestCase
         $accounts = ['alice', 'bob%40example.com', 'site-admin', 'a.very.long.administrator.name%40subdomain.example.org', 'editor_42', 'ops%2Bbackup%40mail.example.net'];
         $secrets  = ['JBSWY3DPEHPK3PXP', 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', 'MFRGGZDFMZTWQ2LKNNWG23TPOBYXE43UOV3HO6DZPI'];
 
-        $uris = [];
-        $i    = 0;
+        // The shortest realistic URIs (60-62 bytes) land on version 4.
+        $uris = [
+            'otpauth://totp/Ab%3Aalice2?secret=JBSWY3DPEHPK3PXP&issuer=Ab',
+            'otpauth://totp/Abc%3Aalice?secret=JBSWY3DPEHPK3PXP&issuer=Abc',
+            'otpauth://totp/Abc%3Aalice1?secret=JBSWY3DPEHPK3PXP&issuer=Abc',
+        ];
+        $i = 0;
         foreach ($issuers as $issuer) {
             foreach ($accounts as $account) {
                 $secret = $secrets[$i % 3];
@@ -366,6 +371,12 @@ final class QrEncoderTest extends TestCase
                     $uris[] = $uri;
                 }
             }
+        }
+
+        // Version 11 (214-251 bytes), including both of its boundaries.
+        $base = 'otpauth://totp/Long%20Issuer%20Name%3Aadministrator%40example.org?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=Long%20Issuer%20Name&image=';
+        foreach ([214, 230, 251] as $len) {
+            $uris[] = str_pad($base, $len, 'https%3A%2F%2Fcdn.example.org%2Flogo.png');
         }
         return $uris;
     }
