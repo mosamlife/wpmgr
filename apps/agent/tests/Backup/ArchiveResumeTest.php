@@ -234,6 +234,105 @@ final class ArchiveResumeTest extends TestCase
         self::assertSame(1, $result['skipped_sources_count']);
     }
 
+    public function testPendingSkipIsDecidedAgainOnResume(): void
+    {
+        $order = $this->interleavedTree();
+        $victim = $this->root . '/src/plugins/acme/readme.txt';
+        chmod($victim, 0000);
+        try {
+            // The skip happens while the plugins part is open, so it is not settled.
+            $saved = $this->interruptAfter(2, ['total_files' => count($order)]);
+        } finally {
+            chmod($victim, 0600);
+        }
+        self::assertNotContains('plugins/acme/readme.txt', $saved['skipped']);
+
+        $result = $this->archiver()->archive($this->root . '/out', $saved, static function (): void {});
+
+        $expected = $order;
+        sort($expected);
+        self::assertSame($expected, $this->entries($result['parts'], $this->root . '/out'), 'the source readable again is archived');
+        $listed = array_keys(FilesArchiver::loadPrevMap($this->root . '/out/files.list'));
+        sort($listed);
+        self::assertSame($expected, $listed, 'files.list lists exactly the archived files');
+        self::assertSame(0, $result['skipped_sources_count']);
+    }
+
+    public function testFileDeletedDuringTheRunIsTombstonedAfterResume(): void
+    {
+        $order = $this->interleavedTree();
+        $deleted = 'themes/acme/style.css';
+        $parent = [$deleted => ['size' => 120, 'mtime' => 1]];
+        unlink($this->root . '/src/' . $deleted);
+        $saved = null;
+        try {
+            $this->archiver()->archive($this->root . '/out', ['total_files' => count($order)], static function (): void {}, $parent,
+                static function (array $cursor) use (&$saved): void {
+                    if (count($cursor['parts_completed']) === 2) { $saved = $cursor; throw new ArchiveWorkerEnded('host ended the worker'); }
+                });
+            self::fail('the first worker must be ended');
+        } catch (ArchiveWorkerEnded $e) {
+            // The host ended the worker.
+        }
+        self::assertContains($deleted, $saved['skipped']);
+
+        $result = $this->archiver()->archive($this->root . '/out', $saved, static function (): void {}, $parent);
+
+        self::assertSame([$deleted], file($result['tombstones_file'], FILE_IGNORE_NEW_LINES), 'a restore of the chain must not bring the file back');
+        self::assertSame(1, $result['tombstones_count']);
+        self::assertArrayNotHasKey($deleted, FilesArchiver::loadPrevMap($this->root . '/out/files.list'));
+    }
+
+    public function testOlderCheckpointAgainstThePrunedFileListStartsOver(): void
+    {
+        $order = $this->interleavedTree();
+        $victim = $this->root . '/src/index.php';
+        chmod($victim, 0000);
+        try {
+            $older = null;
+            $done = $this->archiver()->archive($this->root . '/out', ['total_files' => count($order)], static function (): void {}, null,
+                static function (array $cursor) use (&$older): void {
+                    if ($older === null && count($cursor['parts_completed']) === 1) { $older = $cursor; }
+                });
+            // The run finished and pruned the skipped line from paths.cache,
+            // but every save after the first part was lost before it ended.
+            self::assertTrue($done['done']);
+            self::assertSame(count($order) - 1, $done['files_total']);
+            $result = $this->archiver()->archive($this->root . '/out', $older, static function (): void {});
+        } finally {
+            chmod($victim, 0600);
+        }
+        $expected = array_values(array_diff($order, ['index.php']));
+        sort($expected);
+        self::assertSame($expected, $this->entries($result['parts'], $this->root . '/out'), 'every file exactly once');
+        $this->assertDiskHoldsOnly($result['parts']);
+    }
+
+    public function testFailedCheckpointSaveNeverFailsTheBackup(): void
+    {
+        foreach (['index.php', 'plugins/acme/acme.php', 'uploads/a.jpg'] as $rel) {
+            $path = $this->root . '/src/' . $rel;
+            if (!is_dir(dirname($path))) { mkdir(dirname($path), 0700, true); }
+            file_put_contents($path, $rel);
+        }
+        // Task storage accepts the phase saves but refuses every checkpoint.
+        $GLOBALS['wpdb'] = new class {
+            public string $prefix = 'wp_';
+            public int $refused = 0;
+            /** @param array<string,mixed> $data */
+            public function update(string $table, array $data, array $where, $format = null, $whereFormat = null)
+            {
+                if (str_contains((string) ($data['sub_state'] ?? ''), '"checkpoint"')) { $this->refused++; return false; }
+                return 1;
+            }
+        };
+        $runner = new TaskRunner($this->params());
+        $subState = (new \ReflectionMethod($runner, 'runArchivingFiles'))->invoke($runner, ['params' => $this->params()]);
+        self::assertTrue($subState['files']['done']);
+        self::assertCount(3, $subState['files']['parts']);
+        self::assertGreaterThan(0, $GLOBALS['wpdb']->refused, 'every checkpoint save was refused');
+    }
+
     public function testResumeKeepsItsDiscoveryWhileTheSiteAddsFiles(): void
     {
         mkdir($this->root . '/src/uploads');
