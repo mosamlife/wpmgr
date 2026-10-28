@@ -7,6 +7,7 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import type {
+  EmailConnection,
   EmailProviderCatalog,
   RemoveSiteEmailConfigResult,
   SiteEmailConfig,
@@ -39,21 +40,31 @@ import { Route as EmailRoute } from "./$siteId.email";
 
 configure({ asyncUtilTimeout: 4000 });
 
-const { getConfigMock, listProvidersMock, deleteConfigMock, syncMock, toastSuccess, toastWarning, toastError } =
-  vi.hoisted(() => ({
-    getConfigMock: vi.fn(),
-    listProvidersMock: vi.fn(),
-    deleteConfigMock: vi.fn(),
-    syncMock: vi.fn(),
-    toastSuccess: vi.fn(),
-    toastWarning: vi.fn(),
-    toastError: vi.fn(),
-  }));
+const {
+  getConfigMock,
+  listProvidersMock,
+  listConnectionsMock,
+  deleteConfigMock,
+  syncMock,
+  toastSuccess,
+  toastWarning,
+  toastError,
+} = vi.hoisted(() => ({
+  getConfigMock: vi.fn(),
+  listProvidersMock: vi.fn(),
+  listConnectionsMock: vi.fn(),
+  deleteConfigMock: vi.fn(),
+  syncMock: vi.fn(),
+  toastSuccess: vi.fn(),
+  toastWarning: vi.fn(),
+  toastError: vi.fn(),
+}));
 
 vi.mock("@wpmgr/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@wpmgr/api")>()),
   getSiteEmailConfig: getConfigMock,
   listEmailProviders: listProvidersMock,
+  listEmailConnections: listConnectionsMock,
   deleteSiteEmailConfig: deleteConfigMock,
   syncSiteEmailConfig: syncMock,
 }));
@@ -110,6 +121,23 @@ function emailConfig(over: Partial<SiteEmailConfig> = {}): SiteEmailConfig {
     retention_days: 30,
     config: { host: "smtp.site.example.test" },
     mappings: {},
+    created_at: "2026-10-01T00:00:00Z",
+    updated_at: "2026-10-02T00:00:00Z",
+    ...over,
+  };
+}
+
+/** A named connection of the site's own provider, as the connections list returns it. */
+function connection(over: Partial<EmailConnection> = {}): EmailConnection {
+  return {
+    id: "conn-backup",
+    tenant_id: "t1",
+    config_id: "cfg-site",
+    connection_key: "backup",
+    provider: "ses",
+    from_address: "backup@example.test",
+    from_name: "Backup Sender",
+    secret_set: true,
     created_at: "2026-10-01T00:00:00Z",
     updated_at: "2026-10-02T00:00:00Z",
     ...over,
@@ -201,6 +229,12 @@ function renderEmailTab() {
 
 const REMOVE = { name: "Remove provider" } as const;
 
+// The two refusals that find the page out of date, in RemoveSiteConfig's words:
+// the not-found message (apps/api/internal/email/service.go line 580) and
+// removeChangedMessage (line 523).
+const GONE = "This site has no email provider of its own to remove.";
+const CHANGED = "The email settings changed while removing them; nothing was removed.";
+
 /** Waits for the page, then opens the confirmation. */
 async function openConfirmation() {
   fireEvent.click(await screen.findByRole("button", REMOVE));
@@ -223,6 +257,8 @@ beforeEach(() => {
   );
   listProvidersMock.mockReset();
   listProvidersMock.mockImplementation(() => ok(PROVIDERS));
+  listConnectionsMock.mockReset();
+  listConnectionsMock.mockImplementation(() => ok({ connections: [] }));
   deleteConfigMock.mockReset();
   syncMock.mockReset();
   syncMock.mockImplementation(() => ok({ ok: true }));
@@ -542,11 +578,6 @@ describe("a refused removal shows the server's message and never a success", () 
 });
 
 describe("a refusal that finds the page out of date also brings the page up to date", () => {
-  // The two sentences are RemoveSiteConfig's, in apps/api/internal/email/service.go:
-  // removeChangedMessage (line 523) and the not-found message (line 580).
-  const GONE = "This site has no email provider of its own to remove.";
-  const CHANGED = "The email settings changed while removing them; nothing was removed.";
-
   it("404 email_site_config_not_found: the provider was already removed elsewhere", async () => {
     // Someone else removed it first; the server now holds only the organisation default.
     stored = OWN;
@@ -617,5 +648,54 @@ describe("a refusal that finds the page out of date also brings the page up to d
     fireEvent.change(within(second).getByRole("textbox"), { target: { value: "Generic SMTP" } });
     expect(within(second).getByRole("button", REMOVE)).toBeDisabled();
     expect(deleteConfigMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a refusal that finds the page out of date also drops the connections that went with the provider", () => {
+  // A site's connections are rows of its own provider's config and go with it:
+  // config_id REFERENCES site_email_config (id) ON DELETE CASCADE, at line 26 of
+  // apps/api/migrations/20260625000000_m62_email_v1_completion.sql.
+  const DELETE_BACKUP = { name: "Delete connection backup" } as const;
+
+  const STALE: Array<[string, number, string, string, SiteEmailConfig]> = [
+    ["404 email_site_config_not_found", 404, "email_site_config_not_found", GONE, ORG_DEFAULT],
+    [
+      "409 email_config_changed",
+      409,
+      "email_config_changed",
+      CHANGED,
+      emailConfig({ from_address: "changed@example.test", updated_at: "2026-10-03T00:00:00Z" }),
+    ],
+  ];
+
+  it.each(STALE)("%s: the Routing tab reads the connections again instead of showing the cached list", async (_name, status, code, message, after) => {
+    // `connections` is what GET /sites/{siteId}/email/connections answers right now.
+    let connections = [connection()];
+    listConnectionsMock.mockImplementation(() => ok({ connections }));
+    deleteConfigMock.mockImplementation(() => {
+      // The settings were changed or removed, and the connections with them,
+      // before this request landed.
+      stored = after;
+      connections = [];
+      return fail(status, code, message);
+    });
+    renderEmailTab();
+
+    // Routing is opened once so its connections are cached, then left again.
+    fireEvent.click(await screen.findByRole("tab", { name: "Routing" }));
+    expect(await screen.findByRole("button", DELETE_BACKUP)).toBeInTheDocument();
+    expect(listConnectionsMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("tab", { name: "Provider" }));
+
+    confirmRemoval(await openConfirmation());
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+
+    // Routing now shows what the server holds. A cached list is fresh for a
+    // minute, so only a refresh by the refusal can have replaced it.
+    fireEvent.click(screen.getByRole("tab", { name: "Routing" }));
+    expect(await screen.findByText(/No named connections yet/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", DELETE_BACKUP)).toBeNull();
+    expect(listConnectionsMock).toHaveBeenCalledTimes(2);
   });
 });

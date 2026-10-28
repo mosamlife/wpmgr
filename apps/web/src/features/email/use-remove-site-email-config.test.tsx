@@ -199,6 +199,13 @@ describe("useRemoveSiteEmailConfig", () => {
     });
 
     expect(isInvalidated(queryClient, emailKeys.siteConfig(SITE_ID))).toBe(true);
+    // The connections are rows of the config and went with it
+    // (ON DELETE CASCADE, apps/api/migrations/20260625000000_m62_email_v1_completion.sql
+    // line 26), so a list cached before the refusal is out of date as well.
+    expect(isInvalidated(queryClient, emailKeys.connections(SITE_ID))).toBe(true);
+    // Nothing of the organisation or of another site is touched.
+    expect(isInvalidated(queryClient, emailKeys.orgConfig())).toBe(false);
+    expect(isInvalidated(queryClient, emailKeys.siteConfig(OTHER_SITE_ID))).toBe(false);
   });
 
   it.each(REFUSED)("%i %s changes nothing on the server, so it is not an out-of-date page and nothing is refetched", async (status, code, message) => {
@@ -213,6 +220,7 @@ describe("useRemoveSiteEmailConfig", () => {
     });
 
     expect(isInvalidated(queryClient, emailKeys.siteConfig(SITE_ID))).toBe(false);
+    expect(isInvalidated(queryClient, emailKeys.connections(SITE_ID))).toBe(false);
   });
 
   it("does not mistake another 409 for a changed config", async () => {

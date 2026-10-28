@@ -3,6 +3,7 @@ import {
   useMutation,
   useInfiniteQuery,
   useQueryClient,
+  type QueryClient,
   type UseQueryResult,
   type UseMutationResult,
   type UseInfiniteQueryResult,
@@ -311,9 +312,9 @@ export function useSyncEmailConfig(
  *  - 409 email_config_changed: the settings were saved while they were being
  *    removed, so the saved settings stand.
  * Both come from RemoveSiteConfig in apps/api/internal/email/service.go. The
- * config is read again for these two and for no other refusal: every other one
- * leaves the server exactly as the page already shows it. The message is the
- * server's own.
+ * config and its connections are read again for these two and for no other
+ * refusal: every other one leaves the server exactly as the page already shows
+ * it. The message is the server's own.
  */
 export class EmailConfigStaleError extends Error {
   constructor(message: string) {
@@ -351,6 +352,21 @@ export function removalNeedsSync(
 ): boolean {
   if (result.fallback === "unknown") return true;
   return result.fallback === "org_default" && !result.org_default_synced;
+}
+
+/**
+ * Marks out of date what a removal leaves behind: the site's config and its
+ * connections, which went with the config row (ON DELETE CASCADE, in
+ * apps/api/migrations/20260625000000_m62_email_v1_completion.sql). A finished
+ * removal and a refusal that found the page out of date both end here, so the
+ * two cannot drift apart again. Resolves once the queries being shown have been
+ * read again.
+ */
+function refreshSiteEmailConfig(queryClient: QueryClient, siteId: string) {
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: emailKeys.siteConfig(siteId) }),
+    queryClient.invalidateQueries({ queryKey: emailKeys.connections(siteId) }),
+  ]);
 }
 
 /**
@@ -397,17 +413,13 @@ export function useRemoveSiteEmailConfig(
       } else {
         toast.success("Email provider removed", { description: result.detail });
       }
-      // The connections went with the config row (cascade).
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: emailKeys.siteConfig(siteId) }),
-        queryClient.invalidateQueries({ queryKey: emailKeys.connections(siteId) }),
-      ]);
+      await refreshSiteEmailConfig(queryClient, siteId);
     },
     onError: async (err) => {
+      // Another request already removed or changed the provider, so the page
+      // is out of date in everything a removal touches, connections included.
       if (err instanceof EmailConfigStaleError) {
-        await queryClient.invalidateQueries({
-          queryKey: emailKeys.siteConfig(siteId),
-        });
+        await refreshSiteEmailConfig(queryClient, siteId);
       }
     },
   });
