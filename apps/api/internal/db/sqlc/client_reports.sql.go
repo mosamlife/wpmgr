@@ -436,6 +436,7 @@ WHERE tenant_id  = $1
   AND site_id    = $2
   AND finished_at >= $3
   AND finished_at  < $4
+  AND target_type IN ('plugin','theme','core')
 GROUP BY target_type
 `
 
@@ -453,6 +454,9 @@ type GetUpdateReportStatsRow struct {
 }
 
 // Update section: succeeded/failed tasks grouped by target_type in [from, to).
+// Only plugin, theme and core tasks count (GH #969): the agent's own
+// self-update tasks, and any other target_type, are not updates a client
+// report describes, so they are in neither column.
 func (q *Queries) GetUpdateReportStats(ctx context.Context, arg GetUpdateReportStatsParams) ([]GetUpdateReportStatsRow, error) {
 	rows, err := q.db.Query(ctx, getUpdateReportStats,
 		arg.TenantID,
@@ -624,6 +628,83 @@ func (q *Queries) ListDueReportSchedules(ctx context.Context, rowLimit int32) ([
 			&i.ClientName,
 			&i.ClientContactEmail,
 			&i.ClientTimezone,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReportUpdateItems = `-- name: ListReportUpdateItems :many
+SELECT site_id, target_type, target_slug, from_version, to_version, status, finished_at
+FROM update_tasks
+WHERE tenant_id   = $1
+  AND site_id     = ANY($2::uuid[])
+  AND finished_at >= $3
+  AND finished_at  < $4
+  AND target_type IN ('plugin','theme','core')
+  AND status      IN ('succeeded','failed','rolled_back')
+ORDER BY site_id, finished_at, id
+LIMIT $5
+`
+
+type ListReportUpdateItemsParams struct {
+	TenantID uuid.UUID          `json:"tenant_id"`
+	SiteIds  []uuid.UUID        `json:"site_ids"`
+	FromTime pgtype.Timestamptz `json:"from_time"`
+	ToTime   pgtype.Timestamptz `json:"to_time"`
+	RowLimit int32              `json:"row_limit"`
+}
+
+type ListReportUpdateItemsRow struct {
+	SiteID      uuid.UUID          `json:"site_id"`
+	TargetType  string             `json:"target_type"`
+	TargetSlug  string             `json:"target_slug"`
+	FromVersion string             `json:"from_version"`
+	ToVersion   string             `json:"to_version"`
+	Status      string             `json:"status"`
+	FinishedAt  pgtype.Timestamptz `json:"finished_at"`
+}
+
+// Update section version table (GH #969): one row per finished plugin, theme
+// or core task on the given sites in [from, to), oldest first within a site.
+// Same population as GetUpdateReportStats, so the table and the counts agree:
+// succeeded, failed and rolled_back only, agent self-updates excluded.
+//
+// Runs under InAgentTx, where RLS admits every tenant's update_tasks rows, so
+// tenant_id = @tenant_id is the tenant boundary: a site id belonging to
+// another tenant in @site_ids matches nothing. @row_limit caps the result.
+//
+// from_version and to_version may each be the empty string (version unknown),
+// and a rollback records from_version = to_version. `, id` is the project
+// ORDER BY tiebreaker.
+func (q *Queries) ListReportUpdateItems(ctx context.Context, arg ListReportUpdateItemsParams) ([]ListReportUpdateItemsRow, error) {
+	rows, err := q.db.Query(ctx, listReportUpdateItems,
+		arg.TenantID,
+		arg.SiteIds,
+		arg.FromTime,
+		arg.ToTime,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListReportUpdateItemsRow
+	for rows.Next() {
+		var i ListReportUpdateItemsRow
+		if err := rows.Scan(
+			&i.SiteID,
+			&i.TargetType,
+			&i.TargetSlug,
+			&i.FromVersion,
+			&i.ToVersion,
+			&i.Status,
+			&i.FinishedAt,
 		); err != nil {
 			return nil, err
 		}

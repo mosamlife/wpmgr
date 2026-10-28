@@ -2259,6 +2259,9 @@ type Querier interface {
 	// Verify a device trust cookie token (hashed before lookup comparison).
 	GetTrustedDeviceByTokenHash(ctx context.Context, tokenHash string) (TrustedDevice, error)
 	// Update section: succeeded/failed tasks grouped by target_type in [from, to).
+	// Only plugin, theme and core tasks count (GH #969): the agent's own
+	// self-update tasks, and any other target_type, are not updates a client
+	// report describes, so they are in neither column.
 	GetUpdateReportStats(ctx context.Context, arg GetUpdateReportStatsParams) ([]GetUpdateReportStatsRow, error)
 	GetUpdateRun(ctx context.Context, arg GetUpdateRunParams) (UpdateRun, error)
 	GetUpdateTask(ctx context.Context, arg GetUpdateTaskParams) (UpdateTask, error)
@@ -3207,6 +3210,19 @@ type Querier interface {
 	// always p.AllowedSiteIDs (RLS double-gate via app.site_scope on
 	// backup_snapshots). `, id` tiebreaker follows the project ORDER BY convention.
 	ListRecentCompletedSnapshotsForSites(ctx context.Context, arg ListRecentCompletedSnapshotsForSitesParams) ([]ListRecentCompletedSnapshotsForSitesRow, error)
+	// Update section version table (GH #969): one row per finished plugin, theme
+	// or core task on the given sites in [from, to), oldest first within a site.
+	// Same population as GetUpdateReportStats, so the table and the counts agree:
+	// succeeded, failed and rolled_back only, agent self-updates excluded.
+	//
+	// Runs under InAgentTx, where RLS admits every tenant's update_tasks rows, so
+	// tenant_id = @tenant_id is the tenant boundary: a site id belonging to
+	// another tenant in @site_ids matches nothing. @row_limit caps the result.
+	//
+	// from_version and to_version may each be the empty string (version unknown),
+	// and a rollback records from_version = to_version. `, id` is the project
+	// ORDER BY tiebreaker.
+	ListReportUpdateItems(ctx context.Context, arg ListReportUpdateItemsParams) ([]ListReportUpdateItemsRow, error)
 	// Keyset cursor pagination: composite predicate (created_at, id) < (cursor_at, cursor_id)
 	// because batch inserts can share created_at and a bare compare skips co-timestamped rows
 	// (standing keyset-cursor-composite rule).
