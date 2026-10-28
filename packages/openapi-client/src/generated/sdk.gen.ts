@@ -306,6 +306,9 @@ import type {
   DeleteSiteDestinationData,
   DeleteSiteDestinationErrors,
   DeleteSiteDestinationResponses,
+  DeleteSiteEmailConfigData,
+  DeleteSiteEmailConfigErrors,
+  DeleteSiteEmailConfigResponses,
   DeleteSiteEmailSuppressionData,
   DeleteSiteEmailSuppressionErrors,
   DeleteSiteEmailSuppressionResponses,
@@ -8006,6 +8009,35 @@ export const putOrgEmailConfig = <ThrowOnError extends boolean = false>(
       ...options.headers,
     },
   });
+
+/**
+ * Remove the site's own email provider
+ *
+ * Removes the site's OWN email config (GH #968), so the site falls back
+ * to the organisation's default email config when there is one, and to
+ * WordPress's own mailer when there is not. The organisation default
+ * itself is never touched.
+ *
+ * The site's agent is told first, with the signed `clear_email_config`
+ * command, and the row is deleted only after the agent confirms it
+ * cleared its stored email settings and credentials. When the
+ * organisation has a default it is then pushed to the site. In every
+ * failure below nothing is removed.
+ *
+ * The row's webhook route token goes with it, so provider callbacks for
+ * mail sent before the removal no longer resolve.
+ *
+ * Requires `site.email.manage` permission (operator+) and site access.
+ *
+ */
+export const deleteSiteEmailConfig = <ThrowOnError extends boolean = false>(
+  options: Options<DeleteSiteEmailConfigData, ThrowOnError>,
+) =>
+  (options.client ?? client).delete<
+    DeleteSiteEmailConfigResponses,
+    DeleteSiteEmailConfigErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/email/config", ...options });
 
 /**
  * Get per-site email config (with org-wide fallback)

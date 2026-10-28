@@ -24332,6 +24332,26 @@ type DeleteSiteDestinationUnauthorized Error
 
 func (*DeleteSiteDestinationUnauthorized) deleteSiteDestinationRes() {}
 
+type DeleteSiteEmailConfigConflict Error
+
+func (*DeleteSiteEmailConfigConflict) deleteSiteEmailConfigRes() {}
+
+type DeleteSiteEmailConfigForbidden Error
+
+func (*DeleteSiteEmailConfigForbidden) deleteSiteEmailConfigRes() {}
+
+type DeleteSiteEmailConfigNotFound Error
+
+func (*DeleteSiteEmailConfigNotFound) deleteSiteEmailConfigRes() {}
+
+type DeleteSiteEmailConfigServiceUnavailable Error
+
+func (*DeleteSiteEmailConfigServiceUnavailable) deleteSiteEmailConfigRes() {}
+
+type DeleteSiteEmailConfigUnauthorized Error
+
+func (*DeleteSiteEmailConfigUnauthorized) deleteSiteEmailConfigRes() {}
+
 type DeleteSiteEmailSuppressionForbidden Error
 
 func (*DeleteSiteEmailSuppressionForbidden) deleteSiteEmailSuppressionRes() {}
@@ -53414,6 +53434,120 @@ func (*RemoveClientMemberNotFound) removeClientMemberRes() {}
 type RemoveClientMemberUnauthorized Error
 
 func (*RemoveClientMemberUnauthorized) removeClientMemberRes() {}
+
+// Outcome of removing a site's own email provider (GH #968). The site's agent confirmed it cleared its
+// email config and the site's own config row was deleted; these fields say where the site's mail goes
+// now.
+// Ref: #/components/schemas/RemoveSiteEmailConfigResult
+type RemoveSiteEmailConfigResult struct {
+	// Provider slug of the config that was removed.
+	RemovedProvider string `json:"removed_provider"`
+	// What the site uses now. `org_default`: the organisation has a default email config and the site uses
+	// it. `wordpress`: there is no organisation default, so the site sends through WordPress's own mailer.
+	// `unknown`: the provider was removed but the organisation default could not be read; read the site's
+	// email config again.
+	Fallback RemoveSiteEmailConfigResultFallback `json:"fallback"`
+	// True when `fallback` is `org_default` and the organisation default reached the site's agent. When
+	// false with `org_default`, the site sends through WordPress's own mailer until the default is synced
+	// (POST /sites/{siteId}/email/sync).
+	OrgDefaultSynced bool `json:"org_default_synced"`
+	// One sentence for the operator describing the outcome.
+	Detail string `json:"detail"`
+}
+
+// GetRemovedProvider returns the value of RemovedProvider.
+func (s *RemoveSiteEmailConfigResult) GetRemovedProvider() string {
+	return s.RemovedProvider
+}
+
+// GetFallback returns the value of Fallback.
+func (s *RemoveSiteEmailConfigResult) GetFallback() RemoveSiteEmailConfigResultFallback {
+	return s.Fallback
+}
+
+// GetOrgDefaultSynced returns the value of OrgDefaultSynced.
+func (s *RemoveSiteEmailConfigResult) GetOrgDefaultSynced() bool {
+	return s.OrgDefaultSynced
+}
+
+// GetDetail returns the value of Detail.
+func (s *RemoveSiteEmailConfigResult) GetDetail() string {
+	return s.Detail
+}
+
+// SetRemovedProvider sets the value of RemovedProvider.
+func (s *RemoveSiteEmailConfigResult) SetRemovedProvider(val string) {
+	s.RemovedProvider = val
+}
+
+// SetFallback sets the value of Fallback.
+func (s *RemoveSiteEmailConfigResult) SetFallback(val RemoveSiteEmailConfigResultFallback) {
+	s.Fallback = val
+}
+
+// SetOrgDefaultSynced sets the value of OrgDefaultSynced.
+func (s *RemoveSiteEmailConfigResult) SetOrgDefaultSynced(val bool) {
+	s.OrgDefaultSynced = val
+}
+
+// SetDetail sets the value of Detail.
+func (s *RemoveSiteEmailConfigResult) SetDetail(val string) {
+	s.Detail = val
+}
+
+func (*RemoveSiteEmailConfigResult) deleteSiteEmailConfigRes() {}
+
+// What the site uses now. `org_default`: the organisation has a default email config and the site uses
+// it. `wordpress`: there is no organisation default, so the site sends through WordPress's own mailer.
+// `unknown`: the provider was removed but the organisation default could not be read; read the site's
+// email config again.
+type RemoveSiteEmailConfigResultFallback string
+
+const (
+	RemoveSiteEmailConfigResultFallbackOrgDefault RemoveSiteEmailConfigResultFallback = "org_default"
+	RemoveSiteEmailConfigResultFallbackWordpress  RemoveSiteEmailConfigResultFallback = "wordpress"
+	RemoveSiteEmailConfigResultFallbackUnknown    RemoveSiteEmailConfigResultFallback = "unknown"
+)
+
+// AllValues returns all RemoveSiteEmailConfigResultFallback values.
+func (RemoveSiteEmailConfigResultFallback) AllValues() []RemoveSiteEmailConfigResultFallback {
+	return []RemoveSiteEmailConfigResultFallback{
+		RemoveSiteEmailConfigResultFallbackOrgDefault,
+		RemoveSiteEmailConfigResultFallbackWordpress,
+		RemoveSiteEmailConfigResultFallbackUnknown,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RemoveSiteEmailConfigResultFallback) MarshalText() ([]byte, error) {
+	switch s {
+	case RemoveSiteEmailConfigResultFallbackOrgDefault:
+		return []byte(s), nil
+	case RemoveSiteEmailConfigResultFallbackWordpress:
+		return []byte(s), nil
+	case RemoveSiteEmailConfigResultFallbackUnknown:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RemoveSiteEmailConfigResultFallback) UnmarshalText(data []byte) error {
+	switch RemoveSiteEmailConfigResultFallback(data) {
+	case RemoveSiteEmailConfigResultFallbackOrgDefault:
+		*s = RemoveSiteEmailConfigResultFallbackOrgDefault
+		return nil
+	case RemoveSiteEmailConfigResultFallbackWordpress:
+		*s = RemoveSiteEmailConfigResultFallbackWordpress
+		return nil
+	case RemoveSiteEmailConfigResultFallbackUnknown:
+		*s = RemoveSiteEmailConfigResultFallbackUnknown
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 type RenameOrgForbidden Error
 

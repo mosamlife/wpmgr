@@ -14889,6 +14889,42 @@ func (s RegisterRequestPlan) Validate() error {
 	}
 }
 
+func (s *RemoveSiteEmailConfigResult) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Fallback.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "fallback",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s RemoveSiteEmailConfigResultFallback) Validate() error {
+	switch s {
+	case "org_default":
+		return nil
+	case "wordpress":
+		return nil
+	case "unknown":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
 func (s *RenameOrgReq) Validate() error {
 	if s == nil {
 		return validate.ErrNilPointer
