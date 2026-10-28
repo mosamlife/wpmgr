@@ -662,7 +662,7 @@ final class CacheManager
     private static function claimKeySchemePurge(): bool
     {
         global $wpdb;
-        if (!isset($wpdb) || !is_object($wpdb) || !isset($wpdb->options) || !is_string($wpdb->options)) {
+        if (!isset($wpdb)) {
             return false;
         }
         $name = self::OPTION_PURGED_FOR_KEYS;
