@@ -94,6 +94,10 @@ type Schedule struct {
 	LastRunAt        *time.Time
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+	// Timezone is the IANA timezone on the client's record, which SendHour is
+	// in. It is read from the client when a schedule is returned, not stored
+	// on the schedule.
+	Timezone string
 }
 
 // GeneratedReport is the domain model for one generated_reports row.

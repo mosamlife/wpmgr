@@ -30,6 +30,8 @@ type stubRepo struct {
 	getActiveReport func(ctx context.Context, tenantID, clientID uuid.UUID) (GeneratedReport, bool, error)
 	getTenantName   func(ctx context.Context, tenantID uuid.UUID) (string, error)
 	getClientInfo   func(ctx context.Context, tenantID, clientID uuid.UUID) (ClientInfo, error)
+	// getClientTimezone stands in for the client's timezone; unset is "".
+	getClientTimezone func(ctx context.Context, tenantID, clientID uuid.UUID) (string, error)
 }
 
 func (r *stubRepo) GetSchedule(ctx context.Context, tenantID, clientID uuid.UUID) (Schedule, bool, error) {
@@ -91,6 +93,12 @@ func (r *stubRepo) GetClientInfo(ctx context.Context, tenantID, clientID uuid.UU
 		return r.getClientInfo(ctx, tenantID, clientID)
 	}
 	return ClientInfo{}, nil
+}
+func (r *stubRepo) GetClientTimezone(ctx context.Context, tenantID, clientID uuid.UUID) (string, error) {
+	if r.getClientTimezone != nil {
+		return r.getClientTimezone(ctx, tenantID, clientID)
+	}
+	return "", nil
 }
 func (r *stubRepo) GetActiveReport(ctx context.Context, tenantID, clientID uuid.UUID) (GeneratedReport, bool, error) {
 	if r.getActiveReport != nil {

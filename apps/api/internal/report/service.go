@@ -100,9 +100,14 @@ func (s *Service) GetSchedule(ctx context.Context, tenantID, clientID uuid.UUID)
 	}
 	if !found {
 		// Return defaults without creating a row.
-		return defaultSchedule(clientID, tenantID), false, nil
+		sched = defaultSchedule(clientID, tenantID)
 	}
-	return sched, true, nil
+	tz, err := s.repo.GetClientTimezone(ctx, tenantID, clientID)
+	if err != nil {
+		return Schedule{}, false, err
+	}
+	sched.Timezone = tz
+	return sched, found, nil
 }
 
 // UpsertSchedule validates and upserts a report schedule.
@@ -125,13 +130,23 @@ func (s *Service) UpsertSchedule(ctx context.Context, in UpsertScheduleInput) (S
 		base = stored.Sections
 	}
 	in.Sections = in.SectionsPatch.Apply(base)
+	// The send hour is in the client's timezone, the one the scanner computes
+	// every later run in, so the first run is computed in it too.
+	tz, err := s.repo.GetClientTimezone(ctx, in.TenantID, in.ClientID)
+	if err != nil {
+		return Schedule{}, err
+	}
 	if in.Enabled {
-		next := nextRunAt(in.Cadence, in.SendDay, in.SendHour, "UTC")
-		in.NextRunAt = next
+		in.NextRunAt = nextRunAt(in.Cadence, in.SendDay, in.SendHour, "UTC")
 	} else {
 		in.NextRunAt = nil
 	}
-	return s.repo.UpsertSchedule(ctx, in)
+	saved, err := s.repo.UpsertSchedule(ctx, in)
+	if err != nil {
+		return Schedule{}, err
+	}
+	saved.Timezone = tz
+	return saved, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -357,10 +372,13 @@ func validateScheduleInput(in UpsertScheduleInput) ([]string, error) {
 	if in.SendHour < 0 || in.SendHour > 23 {
 		return nil, domain.Validation("invalid_send_hour", "send_hour must be 0-23")
 	}
-	if len(in.IntroText) > maxIntroClosingLen {
+	// Characters, not bytes: the limit is the spec's maxLength and the message
+	// below says characters, and a byte count would turn away text in any
+	// script that takes more than one byte a character.
+	if utf8.RuneCountInString(in.IntroText) > maxIntroClosingLen {
 		return nil, domain.Validation("intro_text_too_long", fmt.Sprintf("intro_text must be %d characters or fewer", maxIntroClosingLen))
 	}
-	if len(in.ClosingText) > maxIntroClosingLen {
+	if utf8.RuneCountInString(in.ClosingText) > maxIntroClosingLen {
 		return nil, domain.Validation("closing_text_too_long", fmt.Sprintf("closing_text must be %d characters or fewer", maxIntroClosingLen))
 	}
 	// Validate and de-duplicate recipients; return cleaned slice to the caller.
@@ -423,9 +441,6 @@ func defaultSchedule(clientID, tenantID uuid.UUID) Schedule {
 		Sections:   DefaultSectionFlags(),
 	}
 }
-
-// validatePeriodLabel is unused at the moment but kept for future reference.
-var _ = utf8.ValidString
 
 // GenerateNowInput is the parsed+validated body for POST /reports.
 type GenerateNowInput struct {

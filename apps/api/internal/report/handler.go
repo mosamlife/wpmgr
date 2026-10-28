@@ -66,8 +66,8 @@ type scheduleResponseDTO struct {
 	IntroText                string       `json:"intro_text"`
 	ClosingText              string       `json:"closing_text"`
 	PoweredByRemoved         bool         `json:"powered_by_removed"`
-	NextRunAt                *time.Time   `json:"next_run_at"`
-	LastRunAt                *time.Time   `json:"last_run_at"`
+	NextRunAt                *time.Time   `json:"next_run_at,omitempty"`
+	LastRunAt                *time.Time   `json:"last_run_at,omitempty"`
 	InstanceMailerConfigured bool         `json:"instance_mailer_configured"`
 }
 
@@ -320,6 +320,7 @@ func toScheduleDTO(s Schedule, mailerConfigured bool) scheduleResponseDTO {
 		Cadence:                  s.Cadence,
 		SendDay:                  s.SendDay,
 		SendHour:                 s.SendHour,
+		Timezone:                 s.Timezone,
 		Recipients:               s.Recipients,
 		Sections:                 s.Sections,
 		IntroText:                s.IntroText,

@@ -51,6 +51,11 @@ type Repo interface {
 	// (name, company, logo_url, accent color, timezone) under InAgentTx.
 	// Returns ErrNotFound when no client row exists for the given tenant.
 	GetClientInfo(ctx context.Context, tenantID, clientID uuid.UUID) (ClientInfo, error)
+
+	// GetClientTimezone returns the IANA timezone on the client's record,
+	// which the schedule's send hour is in, or "" when the client has no row.
+	// Operator path, under InTenantTx.
+	GetClientTimezone(ctx context.Context, tenantID, clientID uuid.UUID) (string, error)
 }
 
 type pgRepo struct {
@@ -415,6 +420,25 @@ func (r *pgRepo) GetClientInfo(ctx context.Context, tenantID, clientID uuid.UUID
 		return nil
 	})
 	return out, err
+}
+
+func (r *pgRepo) GetClientTimezone(ctx context.Context, tenantID, clientID uuid.UUID) (string, error) {
+	var tz string
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		row, qerr := sqlc.New(tx).GetClientWithTimezone(ctx, sqlc.GetClientWithTimezoneParams{
+			ID:       clientID,
+			TenantID: tenantID,
+		})
+		if qerr != nil {
+			if errors.Is(qerr, pgx.ErrNoRows) {
+				return nil
+			}
+			return domain.Internal("report_client_timezone_failed", "failed to load the client's timezone").WithCause(qerr)
+		}
+		tz = row.Timezone
+		return nil
+	})
+	return tz, err
 }
 
 // getActiveReportQuery selects the most recent pending or generating report
