@@ -20244,6 +20244,9 @@ func (s *ClientReportScheduleCadence) UnmarshalText(data []byte) error {
 // the zero value of its type, runs the checks below on that value, and saves it. That holds for the
 // five required fields too, since the server does not reject a body for leaving one out.
 //
+// A value that fails a check below is rejected with HTTP 422 and the error `code` named; a field of
+// the wrong JSON type, or a body that is not JSON, is rejected with 422 and `invalid_body`.
+//
 //   - `enabled`: `true` turns scheduled sending on and sets `next_run_at`; `false` turns it off and
 //     clears `next_run_at`. Missing: `false`, so the schedule is switched off.
 //   - `cadence`: `weekly` or `monthly`; anything else is rejected with `invalid_cadence`. Missing:
@@ -20266,7 +20269,7 @@ func (s *ClientReportScheduleCadence) UnmarshalText(data []byte) error {
 //     with `intro_text_too_long` or `closing_text_too_long`, so text outside ASCII fits fewer than 2000
 //     characters. Missing: empty, which clears the stored text.
 //   - `powered_by_removed`: `true` leaves the "Prepared with WPMgr" footer out of the client's reports
-//     and `false` shows it. Missing: `false`, so the footer is shown again.
+//     and report emails, and `false` shows it. Missing: `false`, so the footer is shown again.
 //
 // Ref: #/components/schemas/ClientReportScheduleUpdate
 type ClientReportScheduleUpdate struct {
