@@ -577,7 +577,7 @@ final class Site2faModule
      * renderInterstitial(), renderSetupScreen() (and every
      * buildSetup*Html() step it calls), renderProfileSection(), and every
      * SiteTwoFactorProvider::renderForm() implementation (Totp/Email/
-     * BackupCodes) -- including the inline TOTP QR <svg>/<rect> emitted by
+     * BackupCodes) -- including the inline TOTP QR <svg>/<rect>/<path> emitted by
      * QrEncoder::toSvg(). Each value placed into the markup is still
      * esc_html()/esc_attr()/esc_url()'d at assembly time (belt-and-
      * suspenders); wp_kses() here is the visible escape-at-output-boundary
@@ -635,6 +635,11 @@ final class Site2faModule
                 'viewbox'    => true,
                 'role'       => true,
                 'aria-label' => true,
+                'shape-rendering' => true,
+            ],
+            'path'   => [
+                'd'    => true,
+                'fill' => true,
             ],
             'rect'   => [
                 'x'      => true,
@@ -2247,7 +2252,7 @@ final class Site2faModule
             // encoding). This fragment is returned up to renderSetupScreen(),
             // whose echo runs the whole assembled form through wp_kses()
             // (see allowedFormKses(), which allow-lists svg/rect).
-            $html .= '<div style="margin:16px 0;text-align:center">' . $qrSvg . '</div>';
+            $html .= '<div style="margin:16px -24px;text-align:center;overflow:auto">' . $qrSvg . '</div>';
         } else {
             $html .= '<p>' . esc_html__('QR code unavailable. Please use the manual entry key below.', 'wpmgr-agent') . '</p>';
         }
@@ -2255,8 +2260,9 @@ final class Site2faModule
         // Progressive-reveal manual key.
         $html .= '<p>';
         $html .= '<strong>' . esc_html__('Manual entry key:', 'wpmgr-agent') . '</strong><br>';
+        // Groups of four, space-separated, so the key wraps on narrow screens.
         $html .= '<code id="wpmgr-totp-secret" style="font-size:14px;letter-spacing:2px">';
-        $html .= esc_html($secret);
+        $html .= esc_html(implode(' ', str_split($secret, 4)));
         $html .= '</code>';
         $html .= '</p>';
 

@@ -231,6 +231,8 @@ final class Site2faKsesEscapingTest extends TestCase
         // The inline TOTP QR code (QrEncoder::toSvg()).
         $this->assertArrayHasKey('svg', $allowed);
         $this->assertArrayHasKey('rect', $allowed);
+        $this->assertArrayHasKey('path', $allowed);
+        $this->assertArrayHasKey('d', $allowed['path']);
 
         $this->assertArrayHasKey('action', $allowed['form']);
         $this->assertArrayHasKey('method', $allowed['form']);
@@ -321,9 +323,15 @@ final class Site2faKsesEscapingTest extends TestCase
         );
 
         $this->assertStringContainsString('<form', $html);
-        // The QR code -- the reason svg/rect are in the allowlist at all.
+        // The QR code -- the reason svg/rect/path are in the allowlist at all.
         $this->assertStringContainsString('<svg', $html);
         $this->assertStringContainsString('<rect', $html);
+        $this->assertStringContainsString('<path d="M', $html);
+
+        // The manual entry key is shown in space-separated groups of four.
+        $this->assertSame(1, preg_match('#<code id="wpmgr-totp-secret"[^>]*>([^<]*)</code>#', $html, $key));
+        $this->assertMatchesRegularExpression('/^[A-Z2-7]{4}( [A-Z2-7]{4})*( [A-Z2-7]{1,3})?$/', $key[1]);
+        $this->assertStringContainsString(' ', $key[1]);
     }
 
     public function test_render_setup_screen_backup_step_escapes_via_wp_kses_and_keeps_data_uri_download(): void
