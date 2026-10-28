@@ -107,6 +107,9 @@ func (h *Handler) SetMetricsStore(ms MetricsStore) {
 func (h *Handler) SetReportSources(src report.Sources) {
 	cp := src
 	cp.GetFleetStatsBySite = nil // enforce: email source never exposed in portal
+	// The summary shows update counts only, so the per-site version-table
+	// query (GH #969) would be read and thrown away on every request.
+	cp.ListReportUpdateItems = nil
 	h.reportSources = &cp
 }
 
