@@ -223,9 +223,9 @@ final class CacheKey
      * drop-in itself over a corpus of requests and requires the two to agree.
      *
      * Every input is the value as the web server sent it, with the slashes
-     * WordPress added taken off and nothing else done to it. Sanitising one
-     * first changes the key (sanitize_text_field() strips percent-encoded
-     * octets, which moves every non-ASCII path onto a shorter one).
+     * WordPress added taken off and nothing else done to it: the key is a
+     * function of exactly what the drop-in reads, so a value that has been
+     * sanitised first is not an input.
      *
      * @param array{uri?:string,host?:string,user_agent?:string,cookies?:array<mixed>,query?:array<mixed>} $request The request as it arrived.
      * @param CacheConfig $config Page-cache settings.

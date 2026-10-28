@@ -220,15 +220,15 @@ final class CacheManager
      * The request as the drop-in read it, for working out the key it would have
      * handed over. WordPress adds slashes to the superglobals before any plugin
      * loads and the drop-in runs ahead of that, so the slashes come off again
-     * and nothing else is done to a value: sanitising one would change the key.
-     * Nothing here is output, stored or put in a query; the key function
-     * validates every part of it.
+     * and nothing else is done to a value: the key is a function of exactly what
+     * the drop-in read. Nothing here is output, stored or put in a query; the key
+     * function validates every part of it.
      *
      * @return array{uri:string,host:string,user_agent:string,cookies:array<mixed>,query:array<mixed>}
      */
     private static function arrivedRequest(): array
     {
-        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- the unsanitised value is the key input; CacheKey::forRequest() validates it whole and uses only its normalised form, and sanitising it first would change the key
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- the unsanitised value is the key input; CacheKey::forRequest() validates it whole and uses only its normalised form
         $uri = wp_unslash( isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '/' );
         // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- validated whole by CacheKey::normalizeHost() against an anchored allow-list before use
         $host = wp_unslash( isset( $_SERVER['HTTP_HOST'] ) ? (string) $_SERVER['HTTP_HOST'] : '' );

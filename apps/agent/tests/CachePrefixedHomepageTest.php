@@ -219,8 +219,7 @@ final class CachePrefixedHomepageTest extends TestCase
      * key over. The page is still stored, under the key the drop-in's rule
      * gives for the request as it arrived: the file the web-server rules look
      * for. A path the browser percent-encodes, a path that is not ASCII and a
-     * path that is not lower case each keep their own key and never land on the
-     * homepage's.
+     * path that is not lower case each get the key of their own path.
      *
      * @dataProvider provide_requests_and_the_keys_the_dropin_rule_gives
      *
@@ -241,7 +240,7 @@ final class CachePrefixedHomepageTest extends TestCase
         $this->assertSame(self::HTML_IT, $visitor, 'the visitor still receives the page');
         $this->assertSame([$key], $this->storedPages(), "$uri must be stored under the drop-in rule's key and nowhere else");
         if ($key !== 'example.com/index.html.gz') {
-            $this->assertFileDoesNotExist($this->root . '/example.com/index.html.gz', "$uri must never be stored under the homepage key");
+            $this->assertFileDoesNotExist($this->root . '/example.com/index.html.gz', "$uri must not be stored under the homepage key");
         }
     }
 
@@ -282,9 +281,9 @@ final class CachePrefixedHomepageTest extends TestCase
 
     /**
      * The derived key follows the request as it was when the buffer opened,
-     * the same as the drop-in's key follows the request as it arrived: a
-     * plugin that rewrites REQUEST_URI while the page is built does not move
-     * the page onto another page's key.
+     * the same as the drop-in's key follows the request as it arrived: a URI
+     * rewritten while the page is built does not change where the page is
+     * stored.
      */
     public function test_a_derived_key_is_fixed_when_the_buffer_opens(): void
     {
