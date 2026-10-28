@@ -11,13 +11,15 @@
 # to the same bar: a verified core is reused and never replaced, a corrupt one
 # is replaced, runs that reach the publishing rename together or find the same
 # corrupt core both end with one verified core, and a lock nobody will release
-# is reclaimed or reported within a bound. Run it BEFORE the real check so a
-# guard that fails open cannot pass.
+# is reclaimed or reported within a bound. A lock is held by the run that
+# created its pid file, so a mkdir that says yes to two runs (the mkdir of the
+# Ubuntu 26.04 runner image does, when two start together) still leaves one
+# holder. Run it BEFORE the real check so a guard that fails open cannot pass.
 #
 # It runs against the real pinned cores, so the first run downloads them (the
 # real check then reuses the same cache). A cache dir can be chosen with
 # PAGE_KSES_CACHE. The cache cases that are about the cache alone use a
-# miniature core and stand-ins for curl, mv and php, and need no network.
+# miniature core and stand-ins for curl, mkdir, mv and php, and need no network.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
