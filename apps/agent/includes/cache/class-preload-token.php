@@ -37,7 +37,9 @@ final class PreloadToken
     /**
      * The site's token, created and stored on first use. '' when it can be
      * neither read nor stored, in which case no request is treated as a
-     * preload: the drop-in only recognises a well-formed token.
+     * preload: the drop-in only recognises a well-formed token. It never
+     * throws: it is called while the drop-in is rendered, and a token that
+     * cannot be had must not stop the page cache from being installed.
      *
      * @return string 64 lower-case hex characters, or ''.
      */
@@ -47,18 +49,20 @@ final class PreloadToken
             return '';
         }
 
-        $stored = get_option(self::OPTION, '');
-        if (self::isWellFormed($stored)) {
-            return $stored;
-        }
-
         try {
-            $fresh = bin2hex(random_bytes(self::BYTES));
-        } catch (\Throwable $e) {
-            return ''; // no CSPRNG available: better no token than a weak one
-        }
+            $stored = get_option(self::OPTION, '');
+            if (self::isWellFormed($stored)) {
+                return $stored;
+            }
 
-        return update_option(self::OPTION, $fresh, false) ? $fresh : '';
+            // random_bytes() throws when no CSPRNG is available: better no
+            // token than a weak one.
+            $fresh = bin2hex(random_bytes(self::BYTES));
+
+            return update_option(self::OPTION, $fresh, false) ? $fresh : '';
+        } catch (\Throwable $e) {
+            return '';
+        }
     }
 
     /**

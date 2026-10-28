@@ -54,10 +54,10 @@ final class CacheManager
 
     /**
      * The key scheme stored pages are written under. Since scheme 2 each page
-     * is stored under the key the drop-in serves it from. Pages written under
-     * an earlier scheme may sit under another page's key, so the first boot on
-     * a new scheme removes every stored page, once. Raise it whenever a change
-     * means pages already on disk may be under the wrong key.
+     * is stored under the key the drop-in serves it from. The first boot on a
+     * new scheme removes every stored page, once, so only pages written under
+     * the current scheme are served. Raise it whenever a change means pages
+     * already on disk may not be under the key they would be stored under now.
      */
     public const KEY_SCHEME = '2';
 
@@ -533,7 +533,7 @@ final class CacheManager
 
     /**
      * Remove every stored page once, the first time this key scheme boots, so
-     * nothing stored by an earlier release under another page's key is served.
+     * only pages stored under the current scheme are served.
      * Runs where something could serve a stored page: the page cache is on, or
      * our drop-in is still installed (a pushed setting that switches the cache
      * off leaves it there). Elsewhere there is nothing to clear, and a purge

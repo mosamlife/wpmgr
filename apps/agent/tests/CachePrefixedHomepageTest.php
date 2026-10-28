@@ -179,9 +179,7 @@ final class CachePrefixedHomepageTest extends TestCase
     /**
      * The writer stores the page under exactly the key the drop-in serves it
      * from, whatever the path looks like: a prefixed homepage, a
-     * percent-encoded or non-ASCII slug (#981). A sanitised copy of the URI
-     * would drop the %XX sequences and file the page under another page's
-     * key, often the homepage.
+     * percent-encoded or non-ASCII slug (#981).
      *
      * @dataProvider provide_requests_and_the_keys_the_dropin_chose
      *
@@ -660,9 +658,8 @@ final class CachePrefixedHomepageTest extends TestCase
     // ---------------------------------------------------------------------
 
     /**
-     * Pages stored before this release may sit under another page's key, so
-     * the first boot of this release removes every stored page, once: a page
-     * stored after that is kept by every later boot.
+     * The first boot of this release removes every page stored before it,
+     * once: a page stored after that is kept by every later boot.
      */
     public function test_first_boot_of_this_release_purges_once(): void
     {

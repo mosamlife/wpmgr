@@ -91,6 +91,20 @@ final class CachePreloadTokenTest extends TestCase
         $this->assertSame($token, $this->optionStore[PreloadToken::OPTION]);
     }
 
+    /**
+     * A token that cannot be stored means no token, never an exception: the
+     * drop-in is still rendered, and no request is treated as a preload.
+     */
+    public function test_a_token_that_cannot_be_stored_is_no_token(): void
+    {
+        Functions\when('update_option')->alias(static function (): bool {
+            throw new \RuntimeException('options table unavailable');
+        });
+
+        $this->assertSame('', PreloadToken::get());
+        $this->assertSame('', (new CacheConfig(['enabled' => true]))->toDropinArray()['preload_token'] ?? null);
+    }
+
     public function test_the_dropin_config_carries_the_token(): void
     {
         $token = PreloadToken::get();

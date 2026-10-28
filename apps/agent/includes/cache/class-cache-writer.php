@@ -242,9 +242,12 @@ final class CacheWriter
                 // Fire-and-forget: swallow.
             }
 
-            // Optimize ONLY when this request is actually cacheable (a MISS we
-            // are about to store): the optimization pipeline is the same shape
-            // we cache, so a non-cacheable request is served verbatim.
+            // Optimize a whole page the cacheability rules accept: the
+            // optimization pipeline is the same shape we cache, so a
+            // non-cacheable request is served verbatim. Whether the page is
+            // then stored also depends on the drop-in's key, on what the
+            // response says about caching and on the settings as they are now;
+            // a page refused there is still served optimized.
             if ($this->config->enabled
                 && $this->isOptimizable($ctx)
                 && $this->cacheability->isRequestCacheable($ctx + ['body' => $buffer])

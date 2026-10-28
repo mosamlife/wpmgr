@@ -277,8 +277,8 @@ final class AdvancedCacheDropinTest extends TestCase
     /**
      * The drop-in works out the cache key once, from the request as it
      * arrived, and hands it to the writer, which stores under exactly that
-     * key. A path that is percent-encoded or not ASCII therefore keys on the
-     * page itself (#981), never on the shorter path a sanitiser leaves.
+     * key. A path that is percent-encoded or not ASCII keys on the page
+     * itself (#981).
      *
      * @dataProvider provide_requests_and_their_keys
      *
