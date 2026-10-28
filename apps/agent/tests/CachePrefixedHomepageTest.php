@@ -233,6 +233,36 @@ final class CachePrefixedHomepageTest extends TestCase
     }
 
     /**
+     * The failure the test above rules out, executed the other way round: a
+     * translator whose buffer is already open when the capture opens (the
+     * order a capture bound to template_redirect has with a translator bound
+     * to init) is OUTSIDE the capture. The visitor on a cache miss still sees
+     * the translated page, because the translator runs after the capture has
+     * handed its bytes on, but what the capture stored is the page before the
+     * translator touched it, and that is what every later hit would serve.
+     */
+    public function test_a_capture_opened_after_a_translator_stores_the_untranslated_page(): void
+    {
+        $manager = $this->enabledManager();
+        $_SERVER['REQUEST_URI'] = '/en/';
+
+        ob_start();
+        $levelsBefore = ob_get_level();
+        ob_start(static fn (string $page): string => str_replace('Benvenuti nella home', 'Welcome home', $page));
+        $manager->startBuffer();
+        echo self::HTML_IT;
+        while (ob_get_level() > $levelsBefore) {
+            ob_end_flush();
+        }
+        $visitor = (string) ob_get_clean();
+
+        $this->assertStringContainsString('Welcome home', $visitor, 'the visitor on a miss still sees the translated page');
+        $stored = $this->storedBody('example.com/en/index.html.gz');
+        $this->assertStringContainsString('Benvenuti nella home', $stored, 'the capture inside the translator stores the page before it is translated');
+        $this->assertStringNotContainsString('Welcome home', $stored);
+    }
+
+    /**
      * The capture buffer has to open ahead of every init callback a plugin
      * registers at the default priority, which is what puts it on the outside.
      */
