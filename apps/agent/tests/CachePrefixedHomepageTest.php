@@ -1008,12 +1008,16 @@ final class CachePrefixedHomepageTest extends TestCase
         $this->warm('example.com/index.html.gz', self::HTML_IT);
         $this->wpdb->writesFail = true;
         Functions\when('update_option')->justReturn(false);
-        Monkey\Actions\expectDone('wpmgr_purge_everything:before')->never();
+        $purges = 0;
+        Monkey\Actions\expectDone('wpmgr_purge_everything:before')->zeroOrMoreTimes()->whenHappen(function () use (&$purges): void {
+            $purges++;
+        });
 
         for ($request = 0; $request < 4; $request++) {
             (new CacheManager())->maybeRefreshDropin();
         }
 
+        $this->assertSame(0, $purges, 'no request may purge while the record cannot be written');
         $this->assertArrayNotHasKey(CacheManager::OPTION_PURGED_FOR_KEYS, $this->optionStore);
         $this->assertCount(4, $this->wpdb->writes, 'every request must have tried to claim the purge');
     }
@@ -1047,13 +1051,14 @@ final class CachePrefixedHomepageTest extends TestCase
      */
     public function test_the_options_table_double_admits_one_claim(): void
     {
-        $insert = "INSERT IGNORE INTO wp_options (option_name, option_value, autoload) VALUES (%s, %s, 'yes')";
-        $update = 'UPDATE wp_options SET option_value = %s WHERE option_name = %s AND option_value = %s';
+        $insert = 'INSERT IGNORE INTO %i (option_name, option_value, autoload) VALUES (%s, %s, %s)';
+        $update = 'UPDATE %i SET option_value = %s WHERE option_name = %s AND option_value = %s';
+        $table  = $this->wpdb->options;
 
-        $this->assertSame(1, $this->wpdb->query($this->wpdb->prepare($insert, 'name', 'a')));
-        $this->assertSame(0, $this->wpdb->query($this->wpdb->prepare($insert, 'name', 'a')), 'the second insert of a name changes nothing');
-        $this->assertSame(1, $this->wpdb->query($this->wpdb->prepare($update, 'b', 'name', 'a')));
-        $this->assertSame(0, $this->wpdb->query($this->wpdb->prepare($update, 'c', 'name', 'a')), 'an update from a value that is no longer stored changes nothing');
+        $this->assertSame(1, $this->wpdb->query($this->wpdb->prepare($insert, $table, 'name', 'a', 'yes')));
+        $this->assertSame(0, $this->wpdb->query($this->wpdb->prepare($insert, $table, 'name', 'a', 'yes')), 'the second insert of a name changes nothing');
+        $this->assertSame(1, $this->wpdb->query($this->wpdb->prepare($update, $table, 'b', 'name', 'a')));
+        $this->assertSame(0, $this->wpdb->query($this->wpdb->prepare($update, $table, 'c', 'name', 'a')), 'an update from a value that is no longer stored changes nothing');
         $this->assertSame('b', $this->optionStore['name']);
     }
 

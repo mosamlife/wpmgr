@@ -662,25 +662,30 @@ final class CacheManager
     private static function claimKeySchemePurge(): bool
     {
         global $wpdb;
-        if (!isset($wpdb)) {
+        if (!isset($wpdb) || !is_object($wpdb) || !isset($wpdb->options) || !is_string($wpdb->options)) {
             return false;
         }
+        /** @var \wpdb $wpdb */
         $name = self::OPTION_PURGED_FOR_KEYS;
 
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- the claim must be one INSERT IGNORE on the unique option name, so that exactly one caller creates the row; the options cache is dropped below
-        $rows = $wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'yes')", $name, self::KEY_SCHEME));
+        // A statement that cannot be prepared is a claim that failed.
+        $insert = $wpdb->prepare('INSERT IGNORE INTO %i (option_name, option_value, autoload) VALUES (%s, %s, %s)', $wpdb->options, $name, self::KEY_SCHEME, 'yes');
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared -- the claim must be one INSERT IGNORE on the unique option name, so that exactly one caller creates the row; the options cache is dropped below; $insert is the $wpdb->prepare() output on the line above
+        $rows = is_string($insert) ? $wpdb->query($insert) : false;
         if ($rows !== 1) {
             // A row exists. Read it as stored, past the options cache, and
             // replace it only from the value read: of the calls that read the
             // same older scheme, one UPDATE changes the row and the rest find
             // it changed.
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- the value as stored, never a cached or filtered option value
-            $recorded = $wpdb->get_var($wpdb->prepare("SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", $name));
+            $select = $wpdb->prepare('SELECT option_value FROM %i WHERE option_name = %s', $wpdb->options, $name);
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared -- the value as stored, never a cached or filtered option value; $select is the $wpdb->prepare() output on the line above
+            $recorded = is_string($select) ? $wpdb->get_var($select) : null;
             if (!is_string($recorded) || $recorded === self::KEY_SCHEME) {
                 return false;
             }
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- the replacement must be one UPDATE conditional on the value read, so only one caller changes the row; update_option() is not conditional
-            $rows = $wpdb->query($wpdb->prepare("UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s", self::KEY_SCHEME, $name, $recorded));
+            $update = $wpdb->prepare('UPDATE %i SET option_value = %s WHERE option_name = %s AND option_value = %s', $wpdb->options, self::KEY_SCHEME, $name, $recorded);
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared -- the replacement must be one UPDATE conditional on the value read, so only one caller changes the row; update_option() is not conditional; $update is the $wpdb->prepare() output on the line above
+            $rows = is_string($update) ? $wpdb->query($update) : false;
             if ($rows !== 1) {
                 return false;
             }

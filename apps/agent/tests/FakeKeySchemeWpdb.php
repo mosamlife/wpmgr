@@ -73,28 +73,30 @@ final class FakeKeySchemeWpdb
     {
         [$sql, $args] = self::decode($prepared);
 
-        if ($sql === "INSERT IGNORE INTO {$this->options} (option_name, option_value, autoload) VALUES (%s, %s, 'yes')") {
-            $this->writes[] = 'INSERT ' . $args[0];
+        if ($sql === "INSERT IGNORE INTO %i (option_name, option_value, autoload) VALUES (%s, %s, %s)") {
+            $this->assertOptionsTable($args[0]);
+            $this->writes[] = 'INSERT ' . $args[1];
             if ($this->writesFail) {
                 return false;
             }
-            if (array_key_exists($args[0], $this->rows)) {
+            if (array_key_exists($args[1], $this->rows)) {
                 return 0;
             }
-            $this->rows[$args[0]] = $args[1];
+            $this->rows[$args[1]] = $args[2];
 
             return 1;
         }
 
-        if ($sql === "UPDATE {$this->options} SET option_value = %s WHERE option_name = %s AND option_value = %s") {
-            $this->writes[] = 'UPDATE ' . $args[1];
+        if ($sql === 'UPDATE %i SET option_value = %s WHERE option_name = %s AND option_value = %s') {
+            $this->assertOptionsTable($args[0]);
+            $this->writes[] = 'UPDATE ' . $args[2];
             if ($this->writesFail) {
                 return false;
             }
-            if (!array_key_exists($args[1], $this->rows) || (string) $this->rows[$args[1]] !== $args[2]) {
+            if (!array_key_exists($args[2], $this->rows) || (string) $this->rows[$args[2]] !== $args[3]) {
                 return 0;
             }
-            $this->rows[$args[1]] = $args[0];
+            $this->rows[$args[2]] = $args[1];
 
             return 1;
         }
@@ -103,7 +105,7 @@ final class FakeKeySchemeWpdb
     }
 
     /**
-     * Run SELECT option_value FROM <options> WHERE option_name = %s
+     * Run SELECT option_value FROM %i WHERE option_name = %s
      *
      * @param string $prepared Output of prepare().
      * @return string|null The stored value, or null when there is no row.
@@ -111,11 +113,25 @@ final class FakeKeySchemeWpdb
     public function get_var(string $prepared): ?string
     {
         [$sql, $args] = self::decode($prepared);
-        if ($sql !== "SELECT option_value FROM {$this->options} WHERE option_name = %s") {
+        if ($sql !== 'SELECT option_value FROM %i WHERE option_name = %s') {
             throw new \LogicException('statement is not one the key-scheme claim issues: ' . $sql);
         }
+        $this->assertOptionsTable($args[0]);
 
-        return array_key_exists($args[0], $this->rows) ? (string) $this->rows[$args[0]] : null;
+        return array_key_exists($args[1], $this->rows) ? (string) $this->rows[$args[1]] : null;
+    }
+
+    /**
+     * The identifier bound to %i must be this options table.
+     *
+     * @param string $table Identifier as bound.
+     * @return void
+     */
+    private function assertOptionsTable(string $table): void
+    {
+        if ($table !== $this->options) {
+            throw new \LogicException('statement names a table other than the options table: ' . $table);
+        }
     }
 
     /**
