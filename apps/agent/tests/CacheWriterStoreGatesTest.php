@@ -9,9 +9,11 @@
  *
  *  - output produced before template_redirect (an age gate, a coming-soon
  *    page, a download answered on init) is passed through and never stored;
- *  - a response that is not HTML, carries Content-Disposition, or grows past
- *    the size limit is passed through as it is produced, so it is never held
- *    in memory in full, and is not stored;
+ *  - a response that is not HTML, or carries Content-Disposition, is not
+ *    stored; a response that reaches one chunk is passed through as it is
+ *    produced, so it is never held in memory in full, and is not stored;
+ *  - output is never held back across chunks, so a plugin that takes the
+ *    buffer (ob_get_clean) loses nothing that was already on its way;
  *  - a buffer a plugin throws away (ob_end_clean, ob_get_clean) is not stored;
  *  - Cache-Control no-store or private, and DONOTCACHEPAGE, mean not stored;
  *  - the Bypass URLs and the enabled flag are read again when the page is
@@ -30,6 +32,7 @@ namespace WPMgr\Agent\Tests;
 
 use Brain\Monkey;
 use Brain\Monkey\Functions;
+use WPMgr\Agent\Cache\CacheConfig;
 use WPMgr\Agent\Cache\CacheManager;
 use WPMgr\Agent\Cache\CacheWriter;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
@@ -179,7 +182,7 @@ final class CacheWriterStoreGatesTest extends TestCase
     /**
      * A download streamed on init through a front-end GET, with no buffer
      * clearing: it passes through as it is produced. Memory held by the
-     * capture stays near one chunk instead of the whole file, every byte
+     * capture stays within a few chunks instead of the whole file, every byte
      * reaches the visitor, and nothing is stored.
      */
     public function test_a_download_streamed_on_init_is_not_held_in_memory(): void
@@ -209,7 +212,7 @@ final class CacheWriterStoreGatesTest extends TestCase
         }
         ob_end_clean();
 
-        $this->assertLessThan(4 << 20, $held, sprintf('the capture held %.1f MB of a 64 MB download', $held / 1048576));
+        $this->assertLessThan(3 * CacheWriter::CHUNK_BYTES, $held, sprintf('the capture held %.1f MB of a 64 MB download', $held / 1048576));
         $this->assertSame(64 << 20, $sent, 'every byte must reach the visitor');
         $this->assertFalse($this->stored());
     }
@@ -238,7 +241,7 @@ final class CacheWriterStoreGatesTest extends TestCase
         }
         ob_end_clean();
 
-        $this->assertLessThan(4 << 20, $held, sprintf('the capture held %.1f MB of a non-HTML response', $held / 1048576));
+        $this->assertLessThan(3 * CacheWriter::CHUNK_BYTES, $held, sprintf('the capture held %.1f MB of a non-HTML response', $held / 1048576));
         $this->assertFalse($this->stored());
     }
 
@@ -305,14 +308,14 @@ final class CacheWriterStoreGatesTest extends TestCase
     }
 
     /**
-     * A large page, bigger than one chunk but under the limit, is still held
-     * whole, stored whole and delivered whole.
+     * A large page, over a megabyte and under one chunk, reaches the final
+     * flush in one piece: it is delivered whole and stored whole.
      */
-    public function test_a_large_page_under_the_limit_is_stored_whole(): void
+    public function test_a_large_page_under_one_chunk_is_stored_whole(): void
     {
         $body = '<!DOCTYPE html><html><body>' . str_repeat('<p>large page</p>', 200000) . '</body></html>';
-        $this->assertGreaterThan(CacheWriter::CHUNK_BYTES, strlen($body), 'the page must span several chunks');
-        $this->assertLessThan(CacheWriter::MAX_PAGE_BYTES, strlen($body));
+        $this->assertGreaterThan(1 << 20, strlen($body), 'the page must be larger than a megabyte');
+        $this->assertLessThan(CacheWriter::CHUNK_BYTES, strlen($body));
 
         $visitor = $this->respond(static function () use ($body): void {
             foreach (str_split($body, 65536) as $piece) {
@@ -327,23 +330,129 @@ final class CacheWriterStoreGatesTest extends TestCase
     }
 
     /**
-     * A page past the limit is passed through and not stored, and the visitor
-     * still receives all of it, in order.
+     * A page of one chunk or more is passed through as it is produced and not
+     * stored, and the visitor still receives all of it, in order. The largest
+     * page that is stored is one byte short of a chunk.
+     *
+     * @dataProvider provide_page_sizes_around_one_chunk
+     *
+     * @param int  $size   Page size in bytes.
+     * @param bool $stored Whether a page of that size is stored.
      */
-    public function test_a_page_past_the_limit_is_delivered_but_not_stored(): void
+    public function test_only_a_page_smaller_than_one_chunk_is_stored(int $size, bool $stored): void
     {
         ini_set('memory_limit', '1024M');
-        $body = '<!DOCTYPE html><html><body>' . str_repeat('x', CacheWriter::MAX_PAGE_BYTES + (2 << 20)) . '</body></html>';
+        $head = '<!DOCTYPE html><html><body>';
+        $tail = '</body></html>';
+        $body = $head . str_repeat('x', $size - strlen($head) - strlen($tail)) . $tail;
+        $this->assertSame($size, strlen($body));
 
         $visitor = $this->respond(static function () use ($body): void {
-            foreach (str_split($body, 1 << 20) as $piece) {
+            foreach (str_split($body, 65536) as $piece) {
                 echo $piece;
             }
         });
 
         $this->assertSame(strlen($body), strlen($visitor));
         $this->assertSame(md5($body), md5($visitor), 'the visitor must receive every byte, in order');
+        $this->assertSame($stored, $this->stored());
+    }
+
+    /**
+     * @return array<string,array{0:int,1:bool}>
+     */
+    public static function provide_page_sizes_around_one_chunk(): array
+    {
+        return [
+            'one byte short of a chunk' => [CacheWriter::CHUNK_BYTES - 1, true],
+            'exactly one chunk'         => [CacheWriter::CHUNK_BYTES, false],
+            'two chunks and a bit'      => [(2 * CacheWriter::CHUNK_BYTES) + 4097, false],
+        ];
+    }
+
+    /**
+     * Output is never held across chunk boundaries: whatever the buffer hands
+     * over before the final flush is returned whole, for any response. A
+     * plugin that takes the buffer with ob_get_clean() therefore discards
+     * nothing that was already on its way to the visitor.
+     */
+    public function test_a_chunk_is_returned_whole_and_nothing_is_held(): void
+    {
+        $writer = new CacheWriter(new CacheConfig(['enabled' => true]), $this->root, self::KEY);
+        $chunk  = '<!DOCTYPE html><html><body>' . str_repeat('x', 4096);
+
+        $this->assertSame($chunk, $writer->handle($chunk, PHP_OUTPUT_HANDLER_START), 'the first chunk must be returned whole');
+        $this->assertSame('second', $writer->handle('second', PHP_OUTPUT_HANDLER_WRITE));
+        $this->assertSame('rest</body></html>', $writer->handle('rest</body></html>', PHP_OUTPUT_HANDLER_FINAL));
+        $this->assertFalse($this->stored(), 'a response that was handed on in chunks is not a page that is stored');
+    }
+
+    /**
+     * A plugin that opened its own buffer before init takes the top buffer,
+     * which is the capture, with ob_get_clean() at shutdown and sends the page
+     * on. The visitor receives the page whole, and a page the plugin took is
+     * not stored. The page here is larger than a megabyte and smaller than one
+     * chunk.
+     */
+    public function test_a_page_a_plugin_takes_from_the_capture_buffer_is_delivered_whole(): void
+    {
+        $page = '<!DOCTYPE html><html><body>' . str_repeat('<p>row</p>', 220000) . '<span>END-MARKER</span></body></html>';
+        $this->assertGreaterThan(1 << 20, strlen($page));
+        $this->assertLessThan(CacheWriter::CHUNK_BYTES, strlen($page));
+
+        $visitor = $this->respondWithAPluginTakingTheTopBuffer(
+            $page,
+            static fn (string $taken): string => strtoupper(substr($taken, 0, 15)) . substr($taken, 15)
+        );
+
+        $this->assertSame(strtoupper(substr($page, 0, 15)) . substr($page, 15), $visitor, 'the page the plugin rewrote must reach the visitor whole');
+        $this->assertFalse($this->stored(), 'a page the plugin took from the buffer must not be stored');
+    }
+
+    /**
+     * The same takeover on a page of more than one chunk: the part already
+     * handed on and the part the plugin takes arrive in order, every byte of
+     * them, and the page is not stored.
+     */
+    public function test_a_page_over_one_chunk_a_plugin_takes_from_the_capture_buffer_is_delivered_whole(): void
+    {
+        ini_set('memory_limit', '1024M');
+        $page = '<!DOCTYPE html><html><body>' . str_repeat('<p>row</p>', 520000) . '<span>END-MARKER</span></body></html>';
+        $this->assertGreaterThan(CacheWriter::CHUNK_BYTES, strlen($page));
+
+        $visitor = $this->respondWithAPluginTakingTheTopBuffer($page, static fn (string $taken): string => $taken);
+
+        $this->assertSame(strlen($page), strlen($visitor));
+        $this->assertSame(md5($page), md5($visitor), 'the visitor must receive every byte, in order');
         $this->assertFalse($this->stored());
+    }
+
+    /**
+     * Render a page through the capture buffer with a plugin's own buffer below
+     * it, the way a plugin that opened a buffer before init leaves things: at
+     * shutdown the plugin calls ob_get_clean(), which takes the top buffer (the
+     * capture), and sends on what it got, after $rewrite.
+     *
+     * @param string                  $page    The page, produced in 64 KB pieces.
+     * @param callable(string):string $rewrite What the plugin sends on for what it took.
+     */
+    private function respondWithAPluginTakingTheTopBuffer(string $page, callable $rewrite): string
+    {
+        $manager = new CacheManager();
+        ob_start();                       // the network
+        $network = ob_get_level();
+        ob_start();                       // the plugin's buffer, opened before init
+        $manager->startBuffer();          // the capture, on top from init on
+        foreach (str_split($page, 65536) as $piece) {
+            echo $piece;                  // the template renders
+        }
+        $taken = (string) ob_get_clean(); // the plugin, at shutdown
+        echo $rewrite($taken);
+        while (ob_get_level() > $network) {
+            ob_end_flush();
+        }
+
+        return (string) ob_get_clean();
     }
 
     // ---------------------------------------------------------------------
