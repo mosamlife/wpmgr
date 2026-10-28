@@ -338,12 +338,16 @@ final class QrEncoderTest extends TestCase
     public function test_a_500_character_site_name_round_trips_through_zbarimg(): void
     {
         [$zbarimg, $magick] = self::tools();
-        $name = substr(str_repeat('Northwind Traders Regional Intranet ', 15), 0, 500);
-        $uri  = 'otpauth://totp/' . rawurlencode($name . ':administrator') . '?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'
+        // 500 characters, several of which percent-encode to 3 to 9 bytes.
+        $name = mb_substr(str_repeat('Café & Bistro — Intranet ', 20), 0, 500, 'UTF-8');
+        $this->assertSame(500, mb_strlen($name, 'UTF-8'));
+        $uri = 'otpauth://totp/' . rawurlencode($name . ':administrator') . '?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'
             . '&issuer=' . rawurlencode($name) . '&algorithm=SHA1&digits=6&period=30';
 
         $svg = QrEncoder::toSvg($uri, 256);
-        $this->assertGreaterThanOrEqual(30, intdiv(self::svgSize($svg)[2] - 8 - 17, 4), 'a 500-character name needs version 30 or more');
+        [$width, , $total] = self::svgSize($svg);
+        $this->assertGreaterThanOrEqual(32, intdiv($total - 8 - 17, 4), 'a 500-character name needs version 32 or more');
+        $this->assertGreaterThanOrEqual(4 * $total, $width, 'drawn at 4 px per module or more');
         $this->assertSame($uri, self::decode($zbarimg, $magick, $svg));
     }
 
