@@ -999,10 +999,12 @@ jobs:
       # all three packages:
       #   zbar-tools    zbarimg, the decoder
       #   imagemagick   magick, the rasteriser
-      #   librsvg2-bin  rsvg-convert. Ubuntu's ImageMagick has no SVG reader of
-      #                 its own and hands SVG to that delegate, so without it
+      #   librsvg2-bin  rsvg-convert, which ImageMagick uses for SVG when its
+      #                 extra-coders library is not installed. Without either,
       #                 every rasterisation fails with "delegate failed
-      #                 rsvg-convert".
+      #                 rsvg-convert". The runner image carries that library
+      #                 and ImageMagick then draws SVG itself; the package is
+      #                 named here so the job does not depend on that.
       #
       # A package that fails to install fails this step (bash -e), and the
       # version lines put the exact tools behind a run's result into its log.
