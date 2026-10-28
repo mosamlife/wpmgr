@@ -14,8 +14,8 @@
 // migrates as such an owner, seeds rows in two tenants as wpmgr_app through
 // InTenantTx and the report repository, boots the real runner as the owner,
 // and compares every row before and after as the bootstrap superuser, which
-// sees every row. The superuser only reads; it writes nothing and applies no
-// migration.
+// sees every row. Apart from provisioning the owner role, the superuser only
+// reads: it seeds no row and applies no migration.
 package tests
 
 import (
