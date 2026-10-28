@@ -63,6 +63,20 @@ final class CacheWriter
     private bool $optimizerResolved = false;
 
     /**
+     * The request URI as it ARRIVED, captured when the buffer was opened. Null
+     * reads the live value at flush time (tests, and callers that never
+     * captured one).
+     *
+     * The page is stored under the path the request came in on, because that
+     * is the path the serving drop-in looks it up under. A plugin may rewrite
+     * $_SERVER['REQUEST_URI'] while the page is built (to hand WordPress a
+     * URL without a language prefix, say); reading it back at flush time would
+     * file the page under the rewritten path, where the drop-in never looks and
+     * where it overwrites the page that really belongs there.
+     */
+    private ?string $requestUri;
+
+    /**
      * @param CacheConfig       $config       Page-cache config.
      * @param string            $cacheRoot    Absolute cache root.
      * @param CacheKey|null     $key          Injected for tests.
@@ -70,16 +84,20 @@ final class CacheWriter
      * @param Optimizer|null    $optimizer    Phase-4 optimizer (tests/override).
      *                                         When omitted it is lazily loaded
      *                                         from the persisted perf config.
+     * @param string|null       $requestUri   Request URI captured when the buffer
+     *                                         was opened; null reads it at flush.
      */
     public function __construct(
         CacheConfig $config,
         string $cacheRoot,
         ?CacheKey $key = null,
         ?Cacheability $cacheability = null,
-        ?Optimizer $optimizer = null
+        ?Optimizer $optimizer = null,
+        ?string $requestUri = null
     ) {
         $this->config       = $config;
         $this->cacheRoot    = rtrim($cacheRoot, '/\\');
+        $this->requestUri   = $requestUri;
         $this->key          = $key ?? new CacheKey();
         // When no Cacheability is injected (live path) we build one, passing the
         // persisted woo_supported probe result so the write path and the drop-in
@@ -313,7 +331,9 @@ final class CacheWriter
      */
     private function resolveContext(string $buffer): array
     {
-        $uri    = sanitize_text_field( wp_unslash( isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '/' ) );
+        // The path captured when the buffer opened wins over the live value: see
+        // the $requestUri property for why the live one is not trusted here.
+        $uri    = $this->requestUri ?? sanitize_text_field( wp_unslash( isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '/' ) );
         $host   = sanitize_text_field( wp_unslash( isset( $_SERVER['HTTP_HOST'] ) ? (string) $_SERVER['HTTP_HOST'] : '' ) );
         $method = sanitize_text_field( wp_unslash( isset( $_SERVER['REQUEST_METHOD'] ) ? (string) $_SERVER['REQUEST_METHOD'] : 'GET' ) );
         $ua     = sanitize_text_field( wp_unslash( isset( $_SERVER['HTTP_USER_AGENT'] ) ? (string) $_SERVER['HTTP_USER_AGENT'] : '' ) );

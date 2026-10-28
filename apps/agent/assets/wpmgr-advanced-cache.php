@@ -38,7 +38,7 @@ if (!defined('ABSPATH')) {
  * finds in the on-disk copy; a mismatch triggers a transparent reinstall so
  * existing sites always run the current drop-in logic without manual intervention.
  */
-define('WPMGR_PAGE_CACHE_DROPIN_VERSION', '0.46.0');
+define('WPMGR_PAGE_CACHE_DROPIN_VERSION', '0.47.0');
 
 if (!defined('WP_CACHE')) {
     return;
@@ -399,15 +399,35 @@ unset($wpmgr_segments, $wpmgr_segment);
 // cache. This runs BEFORE locating an existing cache file so an already-warmed
 // file cannot be served for a URL the operator marked as non-cacheable.
 // Matches are case-insensitive substring containment, identical to the PHP
-// cacheability path, so the pre-WP fast path and the write layer agree.
+// cacheability path, so the pre-WP fast path and the write layer agree. The
+// subject block is duplicated verbatim in Cacheability::matchesBypassUrl()
+// (this file cannot call that class); tests/CachePrefixedHomepageTest.php keeps
+// the two byte-identical.
 $wpmgr_bypass_urls = isset($wpmgr_config['bypass_urls']) && is_array($wpmgr_config['bypass_urls'])
     ? $wpmgr_config['bypass_urls'] : array();
 if (!empty($wpmgr_bypass_urls) && $wpmgr_uri !== '') {
+    // WPMGR-BYPASS-URL-SHARED BEGIN
+    // WordPress answers a page with or without the trailing slash of its
+    // path, and a homepage under a path prefix (a language, a subsite) has
+    // no redirect between the two spellings: /en and /en/ are one page. A
+    // Bypass URL written either way has to cover both, so the subject also
+    // carries a slash at the end of its path part, before any query or
+    // fragment. An entry is tested against the subject AND against the
+    // string as it arrived, so nothing that matched before stops matching.
+    $wpmgr_subject = $wpmgr_uri;
+    $wpmgr_cut     = strcspn($wpmgr_subject, '?#');
+    if ($wpmgr_cut === 0 || substr($wpmgr_subject, $wpmgr_cut - 1, 1) !== '/') {
+        $wpmgr_subject = substr($wpmgr_subject, 0, $wpmgr_cut) . '/' . substr($wpmgr_subject, $wpmgr_cut);
+    }
+    unset($wpmgr_cut);
+    // WPMGR-BYPASS-URL-SHARED END
     foreach ($wpmgr_bypass_urls as $wpmgr_bypass_url) {
         if ($wpmgr_bypass_url === '') {
             continue;
         }
-        if (stripos($wpmgr_uri, (string) $wpmgr_bypass_url) !== false) {
+        if (stripos($wpmgr_uri, (string) $wpmgr_bypass_url) !== false
+            || stripos($wpmgr_subject, (string) $wpmgr_bypass_url) !== false
+        ) {
             return false;
         }
     }

@@ -56,6 +56,9 @@ final class CacheManager
     /** Cached config for this request. */
     private ?CacheConfig $config = null;
 
+    /** Whether the capture buffer has been opened for this request. */
+    private bool $bufferOpen = false;
+
     /**
      * @param WpCacheConstant|null $wpCache  WP_CACHE editor.
      * @param DropinInstaller|null $dropin   Drop-in installer.
@@ -110,28 +113,49 @@ final class CacheManager
             (new AutoPurge($this->purgeEngine(), $this->preloadEngine()))->registerHooks();
         }
 
-        // Output-buffer writer: open as early as template_redirect for front-end
-        // GET requests — INCLUDING preload / RUCSS-compute self-fetches (which
-        // carry the x-wpmgr-preload header). The drop-in already serves those
-        // requests fresh (no HIT), and this buffer is exactly what (a) writes the
-        // freshly rendered page to the disk cache — so preload actually WARMS the
-        // cache — and (b) runs the optimization + RUCSS pipeline. Skipping it on
-        // preload made preload a no-op for warming AND made "Compute Used-CSS now"
-        // never trigger the optimizer (the buffer-bound optimizer never ran). The
-        // warmer still receives the rendered HTML — the buffer returns it verbatim.
+        // Output-buffer writer: open it before any other plugin's init callback,
+        // for front-end GET requests — INCLUDING preload / RUCSS-compute
+        // self-fetches (which carry the x-wpmgr-preload header). The drop-in
+        // already serves those requests fresh (no HIT), and this buffer is
+        // exactly what (a) writes the freshly rendered page to the disk cache —
+        // so preload actually WARMS the cache — and (b) runs the optimization +
+        // RUCSS pipeline. Skipping it on preload made preload a no-op for
+        // warming AND made "Compute Used-CSS now" never trigger the optimizer
+        // (the buffer-bound optimizer never ran). The warmer still receives the
+        // rendered HTML — the buffer returns it verbatim.
+        //
+        // Why before init, and not at template_redirect: output buffers unwind
+        // innermost first, so a buffer opened EARLIER wraps one opened later
+        // and receives that one's finished output. A plugin that rewrites the
+        // page in its own buffer (a translator, a minifier) opens it at init or
+        // later; a capture buffer opened after it would store the page as it
+        // was BEFORE the rewrite, and every cache hit would then serve that
+        // unrewritten page, for instance the default language on a translated
+        // URL. Opening at the lowest init priority puts the capture on the
+        // outside of every buffer a plugin opens from init onward.
         if (function_exists('add_action')) {
-            add_action('template_redirect', [$this, 'startBuffer'], 0);
+            add_action('init', [$this, 'startBuffer'], PHP_INT_MIN);
         }
     }
 
     /**
-     * Open the page-cache output buffer (bound to template_redirect).
+     * Open the page-cache output buffer (bound to init at the lowest priority).
+     *
+     * The request path is captured here, before any plugin gets the chance to
+     * rewrite $_SERVER['REQUEST_URI'], and handed to the writer: the page is
+     * stored under the path the drop-in will look it up under.
      *
      * @return void
      */
     public function startBuffer(): void
     {
-        $writer = new CacheWriter($this->config(), $this->cacheRoot());
+        if ($this->bufferOpen || !$this->isBufferCandidate()) {
+            return;
+        }
+        $this->bufferOpen = true;
+
+        $requestUri = sanitize_text_field( wp_unslash( isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '/' ) );
+        $writer     = new CacheWriter($this->config(), $this->cacheRoot(), null, null, null, $requestUri);
         // Full-page output buffer with a callback handler: this is the standard
         // page-cache capture pattern. PHP finalizes the buffer at request end,
         // invoking CacheWriter::handle() with the complete response. The buffer
@@ -139,6 +163,42 @@ final class CacheManager
         // handler receives the full page output — an in-scope ob_get_clean() is
         // not applicable here because the response is not yet complete.
         ob_start([$writer, 'handle']);
+    }
+
+    /**
+     * Whether this request could ever have a page stored from it. The buffer
+     * now opens at init rather than at template_redirect, so it must not be
+     * opened for requests that are never stored (they would only have their
+     * streaming output held back): anything but GET, the admin area and
+     * admin-ajax, cron, WP-CLI, XML-RPC, the REST API and the login screen.
+     * Everything refused here is also refused by the writer at flush time, so
+     * no storable page is lost to this gate.
+     *
+     * @return bool
+     */
+    private function isBufferCandidate(): bool
+    {
+        if (defined('WP_CLI') && WP_CLI) {
+            return false;
+        }
+        if (defined('XMLRPC_REQUEST') && XMLRPC_REQUEST) {
+            return false;
+        }
+        $method = sanitize_text_field( wp_unslash( isset( $_SERVER['REQUEST_METHOD'] ) ? (string) $_SERVER['REQUEST_METHOD'] : 'GET' ) );
+        if (strtoupper($method) !== 'GET') {
+            return false;
+        }
+        if (function_exists('is_admin') && is_admin()) {
+            return false;
+        }
+        if (function_exists('wp_doing_ajax') && wp_doing_ajax()) {
+            return false;
+        }
+        if (function_exists('wp_doing_cron') && wp_doing_cron()) {
+            return false;
+        }
+        $uri = sanitize_text_field( wp_unslash( isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '/' ) );
+        return preg_match('#/wp-json(?:/|$|\?)|[?&]rest_route=|/wp-login\.php#i', $uri) !== 1;
     }
 
     /**
@@ -460,6 +520,17 @@ final class CacheManager
         if ($config->enabled) {
             $this->dropin->install($config->toDropinArray());
             $this->htaccessApply($config);
+
+            // A Bypass URL added now covers pages that may already be cached. The
+            // list is read by PHP only, and a web server serving a cached file
+            // straight from disk (the Apache rewrite block, the nginx snippet)
+            // never reads it, so the file would keep being served. Remove what
+            // is cached; the writer now refuses to store the covered pages. A
+            // push that adds no entry (the same list again, a removal, any other
+            // setting) leaves the cache alone.
+            if (self::addedEntries($current->bypassUrls, $config->bypassUrls) !== []) {
+                $this->purgeEngine()->purgeEverything();
+            }
         }
 
         // Re-arm the refresh schedule to the (possibly new) interval.
@@ -532,6 +603,29 @@ final class CacheManager
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
+
+    /**
+     * Entries present in the new list and absent from the old one, compared
+     * case-insensitively (Bypass URLs match case-insensitively).
+     *
+     * @param list<string> $before Previous list.
+     * @param list<string> $after  New list.
+     * @return list<string> Entries that were added.
+     */
+    private static function addedEntries(array $before, array $after): array
+    {
+        $known = [];
+        foreach ($before as $entry) {
+            $known[strtolower($entry)] = true;
+        }
+        $added = [];
+        foreach ($after as $entry) {
+            if (!isset($known[strtolower($entry)])) {
+                $added[] = $entry;
+            }
+        }
+        return $added;
+    }
 
     /**
      * Persist a config and refresh the request-cached copy.
