@@ -64,7 +64,9 @@ beforeEach(() => {
   // built into a Request outside a browser, so the test gives it an origin.
   client.setConfig({
     baseUrl: "http://wpmgr.test",
-    fetch: (request: Request) => {
+    fetch: (input: RequestInfo | URL, init?: RequestInit) => {
+      // The generated client always hands fetch a Request.
+      const request = input instanceof Request ? input : new Request(input, init);
       seen.push(request);
       return answer(request);
     },
