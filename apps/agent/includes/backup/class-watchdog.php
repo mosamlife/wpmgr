@@ -14,8 +14,9 @@
  *     `sub_state`. Only a resume whose previous worker saved no progress
  *     counts toward `max_resumes` (GH #983).
  *   - A task is given up on age only without progress: past 2h it runs on
- *     while its durable checkpoint advanced within the last hour, and 24h
- *     ends it regardless. Every give-up is reported to the control plane.
+ *     while its durable checkpoint advanced within the last hour or a live
+ *     runner holds its run-lock, and 24h ends it regardless. Every give-up
+ *     is reported to the control plane.
  *   - If active but still posting progress, reschedule the watchdog
  *     itself for another +120s. Belt-and-suspenders: even if the
  *     runner never crashes, the watchdog stays alive long enough to
@@ -156,7 +157,8 @@ final class Watchdog
      * deletes the row, and reports the reason to the control plane):
      *   1. Age: past HARD_CEILING_SECONDS whatever the progress; past
      *      AGE_GUARD_SECONDS only when the durable progress record has not
-     *      advanced within PROGRESS_WINDOW_SECONDS.
+     *      advanced within PROGRESS_WINDOW_SECONDS and no live runner holds
+     *      the run-lock.
      *   2. Late phase: encrypting_uploading / submitting_manifest silent for
      *      LATE_PHASE_STALL_SECONDS while no live runner holds the run-lock.
      *   3. Resume cap: a resume whose previous worker saved no progress
@@ -203,8 +205,9 @@ final class Watchdog
         // durable progress record keeps advancing, and only
         // HARD_CEILING_SECONDS ends a task whatever it does, so a zombie row
         // (or one whose backup completed on the CP while its local row
-        // survived a killed runner) still ends.
-        $ageReason = self::ageGiveUpReason($row, $subState);
+        // survived a killed runner) still ends. Below that ceiling a live
+        // run-lock holder always wins over the age rule.
+        $ageReason = self::ageGiveUpReasonUnlessLive($row, $subState);
         if ($ageReason !== null) {
             $startedAt = (int) ($row['started_at'] ?? 0);
             self::giveUp($row, $subState, sprintf(
@@ -348,6 +351,25 @@ final class Watchdog
             return null;
         }
         return self::NO_PROGRESS_REASON;
+    }
+
+    /**
+     * GH #983: ageGiveUpReason(), except that below HARD_CEILING_SECONDS a
+     * live runner holding the run-lock always wins. The progress record does
+     * not move during one DB dump, one encrypt pass or the discovery walk,
+     * so a quiet record never proves its runner dead; only the ceiling ends
+     * a task whose runner is still alive.
+     *
+     * @param array<string,mixed> $row      Task row.
+     * @param array<string,mixed> $subState Decoded sub_state.
+     */
+    private static function ageGiveUpReasonUnlessLive(array $row, array $subState): ?string
+    {
+        $reason = self::ageGiveUpReason($row, $subState);
+        if ($reason === null || $reason === self::HARD_CEILING_REASON) {
+            return $reason;
+        }
+        return self::runLockHeld($subState) ? null : $reason;
     }
 
     /**
@@ -573,7 +595,7 @@ final class Watchdog
         // refused here. GH #256: giveUp() reclaims scratch under the
         // run-lock before the row (the only record of where it lives) goes.
         $subState  = self::decodeSubState($row['sub_state'] ?? '');
-        $ageReason = $phase !== TaskRunner::PHASE_QUEUED ? self::ageGiveUpReason($row, $subState) : null;
+        $ageReason = $phase !== TaskRunner::PHASE_QUEUED ? self::ageGiveUpReasonUnlessLive($row, $subState) : null;
         if ($ageReason !== null) {
             $startedAt = (int) ($row['started_at'] ?? 0);
             self::giveUp($row, $subState, sprintf(
@@ -589,8 +611,7 @@ final class Watchdog
             return;
         }
         // Lift PHP's per-request caps — this cron worker may run for minutes.
-        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup dispatch must not hit max_execution_time; @-guarded
-        @ignore_user_abort(true);
+        LongRunningJob::extendLimits();
         try {
             (new TaskRunner($params))->run();
         } catch (\Throwable $e) {

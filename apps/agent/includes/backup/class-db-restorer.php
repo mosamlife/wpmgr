@@ -109,8 +109,7 @@ final class DbRestorer
             throw new \RuntimeException('DbRestorer: sourcePrefix empty');
         }
 
-        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running restore loop must not hit max_execution_time; @-guarded, no-op when disabled
-        @ignore_user_abort(true);
+        LongRunningJob::extendLimits();
 
         $mysqli = $this->connect();
 
@@ -259,8 +258,7 @@ final class DbRestorer
             throw new \RuntimeException('DbRestorer::swap: empty prefix');
         }
 
-        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running restore swap loop must not hit max_execution_time; @-guarded, no-op when disabled
-        @ignore_user_abort(true);
+        LongRunningJob::extendLimits();
 
         $mysqli = $this->connect();
         try {
@@ -334,8 +332,7 @@ final class DbRestorer
      */
     public function rewriteAllTables(string $tmpPrefix, string $sourcePrefix, array $replacements, array $resume, callable $checkpoint, callable $progress): array
     {
-        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running URL-rewrite loop must not hit max_execution_time; @-guarded, no-op when disabled
-        @ignore_user_abort(true);
+        LongRunningJob::extendLimits();
 
         $mysqli = $this->connect();
         try {

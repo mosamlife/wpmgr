@@ -292,8 +292,7 @@ final class TaskRunner
     public function run(): string
     {
         $this->workerStartedAt = time();
-        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, PHPCompatibility.FunctionUse.ArgumentFunctionsReportCurrentValue.NeedsInspection, Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup loop must not hit max_execution_time; @-guarded, no-op when disabled
-        @ignore_user_abort(true);
+        LongRunningJob::extendLimits();
         $this->startWorkerClock();
 
         $currentPhase = self::PHASE_QUEUED;
@@ -554,7 +553,10 @@ final class TaskRunner
         if (!$handedOver) {
             return $currentPhase;
         }
-        unset($task, $subState);
+        // The caught hand-over exception goes too: when zend.exception_ignore_args
+        // is off, its trace holds everything this worker passed into its archive
+        // pass, which would stay alive through the whole next worker.
+        unset($task, $subState, $e);
         return Watchdog::handOver($this->snapshotId()) ?? $currentPhase;
     }
 

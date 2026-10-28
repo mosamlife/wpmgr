@@ -35,6 +35,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Backup;
 
+use WPMgr\Agent\Backup\Destinations\LocalDestination;
+use WPMgr\Agent\Support\LongRunningJob;
 use ZipArchive;
 
 /**
@@ -104,10 +106,6 @@ final class FilesRestorer
         'wpmgr-snapshots',
         'wpmgr-object-cache-config.php',
         '.wpmgr-oc-state.json',
-        // GH #982: the Local destination's own store. An older snapshot may
-        // still hold a copy; the live store is kept instead (see
-        // PRESERVE_FROM_LIVE), so no restore rolls the local backups back.
-        'wpmgr-backups',
     ];
 
     /** Emit a progress event every N extracted entries. */
@@ -201,25 +199,16 @@ final class FilesRestorer
         'db.php',
         'object-cache.php',
         'advanced-cache.php',
-        // GH #982: the Local destination's store (uploads-first, and the
-        // wp-content location it falls back to), so a restore never deletes
-        // the local backups, including the one it is restoring from.
-        'uploads/wpmgr-backups',
-        'wpmgr-backups',
     ];
 
     /**
-     * PRESERVE_FROM_LIVE entries carried forward by hard link where the
-     * filesystem allows it: their files are written once and never changed,
-     * so a link costs no space however large the store is. Anything that
-     * cannot be linked is copied.
+     * GH #982: the Local destination's store paths, relative to wp-content,
+     * as LocalDestination::storePathsInContent() resolves them. Resolved once
+     * per restorer.
      *
-     * @var list<string>
+     * @var list<string>|null
      */
-    private const PRESERVE_BY_LINK = [
-        'uploads/wpmgr-backups',
-        'wpmgr-backups',
-    ];
+    private ?array $storePaths = null;
 
     /**
      * Stage every zip part into `<wpContentParent>/.wpmgr-staging-<short>/`.
@@ -306,7 +295,9 @@ final class FilesRestorer
 
                     // Drop-in / config / WPMgr-scratch exclude list — anchored
                     // match (exact path or exact segment; never substring).
-                    if (self::isExcluded($entryName)) {
+                    // GH #982: an older snapshot's copy of the Local store is
+                    // never extracted; swap() keeps the live store instead.
+                    if (self::isExcluded($entryName) || $this->isStoreEntry($entryName)) {
                         continue;
                     }
 
@@ -449,6 +440,10 @@ final class FilesRestorer
         // level files (`wp-config.php`, `.htaccess`, `.user.ini`) live above
         // the swap surface and are preserved by virtue of not being touched.
         self::preserveFromLive($targetDir, $stagingDir);
+        // GH #982: the Local destination's live store. Unlike the entries
+        // above, a store that cannot be kept in full stops the restore here,
+        // before anything is moved.
+        $this->keepLiveStore($targetDir, $stagingDir, null);
 
         // 1) Move live target aside. If $oldFiles already exists (a watchdog
         // mid-swap re-entry), the previous attempt already moved the live
@@ -550,6 +545,7 @@ final class FilesRestorer
         // (catch-all others) component is being swapped — we handle them
         // there.
         self::preserveFromLiveScoped($targetDir, $stagingDir, $components);
+        $this->keepLiveStore($targetDir, $stagingDir, $components);
 
         foreach ($components as $comp) {
             if (isset(self::COMPONENT_SUBDIRS[$comp])) {
@@ -1173,7 +1169,7 @@ final class FilesRestorer
 
             try {
                 if (is_dir($src) && !is_link($src)) {
-                    self::copyRecursive($src, $dst, in_array($rel, self::PRESERVE_BY_LINK, true));
+                    self::copyRecursive($src, $dst);
                 } else {
                     @copy($src, $dst);
                 }
@@ -1231,7 +1227,7 @@ final class FilesRestorer
 
             try {
                 if (is_dir($src) && !is_link($src)) {
-                    self::copyRecursive($src, $dst, in_array($rel, self::PRESERVE_BY_LINK, true));
+                    self::copyRecursive($src, $dst);
                 } else {
                     @copy($src, $dst);
                 }
@@ -1247,7 +1243,7 @@ final class FilesRestorer
      * silently swallows individual `copy()` failures — the caller logs the
      * outer entry failure.
      */
-    private static function copyRecursive(string $src, string $dst, bool $link = false): void
+    private static function copyRecursive(string $src, string $dst): void
     {
         if (!is_dir($src)) {
             return;
@@ -1271,10 +1267,155 @@ final class FilesRestorer
                 continue;
             }
             if (is_dir($sp)) {
-                self::copyRecursive($sp, $dp, $link);
-            } elseif (is_file($sp) && !($link && @link($sp, $dp))) {
+                self::copyRecursive($sp, $dp);
+            } elseif (is_file($sp)) {
                 @copy($sp, $dp);
             }
+        }
+    }
+
+    /**
+     * GH #982: the Local destination's store paths, relative to wp-content.
+     *
+     * @return list<string>
+     */
+    private function storePaths(): array
+    {
+        if ($this->storePaths === null) {
+            $this->storePaths = LocalDestination::storePathsInContent();
+        }
+        return $this->storePaths;
+    }
+
+    /** Whether an archive entry lies in the Local destination's store. Anchored: exact path or path prefix. */
+    private function isStoreEntry(string $entryName): bool
+    {
+        $normalized = ltrim(str_replace('\\', '/', $entryName), '/');
+        foreach ($this->storePaths() as $store) {
+            if ($normalized === $store || strncmp($normalized, $store . '/', strlen($store) + 1) === 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * GH #982: carry the Local destination's live store into staging before
+     * the swap, by hard link where the host allows it (a store file is
+     * written once, so a link costs no space) and by copy otherwise. stage()
+     * never extracts a store path, so this is the only copy the restored
+     * tree gets: any store file that cannot be kept stops the restore here,
+     * before the live tree is moved. A symlink in the store is never
+     * followed; the swap does not touch what it points to.
+     *
+     * @param string            $liveRoot    Absolute live wp-content path.
+     * @param string            $stagingRoot Absolute staging dir.
+     * @param list<string>|null $components  Components being swapped, or null for the whole tree.
+     * @throws \RuntimeException When a store file could not be kept.
+     */
+    private function keepLiveStore(string $liveRoot, string $stagingRoot, ?array $components): void
+    {
+        $liveRoot    = rtrim($liveRoot, DIRECTORY_SEPARATOR);
+        $stagingRoot = rtrim($stagingRoot, DIRECTORY_SEPARATOR);
+        $canLink     = function_exists('link');
+        $failed      = [];
+        foreach ($this->storePaths() as $rel) {
+            if ($components !== null && !in_array(self::componentOf($rel), $components, true)) {
+                continue;
+            }
+            $src = $liveRoot . DIRECTORY_SEPARATOR . $rel;
+            if (is_link($src) || !is_dir($src)) {
+                continue;
+            }
+            $failed = array_merge($failed, self::keepTree($src, $stagingRoot . DIRECTORY_SEPARATOR . $rel, $rel, $canLink));
+        }
+        if ($failed === []) {
+            return;
+        }
+        foreach (array_slice($failed, 0, 20) as $rel) {
+            \WPMgr\Agent\Support\DebugLog::write('WPMgr FilesRestorer: could not keep Local store file ' . $rel);
+        }
+        throw new \RuntimeException(sprintf( // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; message goes to log/SSE, not browser
+            'FilesRestorer: %d file(s) of the local backup store could not be kept, first %s; the restore stopped before replacing any file. Free disk space and run it again.',
+            count($failed),
+            esc_html($failed[0])
+        ));
+    }
+
+    /**
+     * Link or copy every regular file under $src to the same place under
+     * $dst. Idempotent across a re-entered swap: a file already kept at its
+     * full size is left as it is.
+     *
+     * @return list<string> Paths, relative to wp-content, that could not be kept.
+     */
+    private static function keepTree(string $src, string $dst, string $rel, bool $canLink): array
+    {
+        if (!is_dir($dst) && !wp_mkdir_p($dst) && !is_dir($dst)) {
+            return [$rel];
+        }
+        $items = @scandir($src);
+        if ($items === false) {
+            return [$rel];
+        }
+        $failed = [];
+        foreach ($items as $name) {
+            if ($name === '.' || $name === '..') {
+                continue;
+            }
+            $sp = $src . DIRECTORY_SEPARATOR . $name;
+            $dp = $dst . DIRECTORY_SEPARATOR . $name;
+            if (is_link($sp)) {
+                continue;
+            }
+            if (is_dir($sp)) {
+                $failed = array_merge($failed, self::keepTree($sp, $dp, $rel . '/' . $name, $canLink));
+            } elseif (is_file($sp) && !self::keepFile($sp, $dp, $canLink)) {
+                $failed[] = $rel . '/' . $name;
+            }
+        }
+        return $failed;
+    }
+
+    /** Link (or copy) one store file into staging, and confirm it arrived whole. */
+    private static function keepFile(string $sp, string $dp, bool $canLink): bool
+    {
+        $size = @filesize($sp);
+        if ($size === false) {
+            return false;
+        }
+        if (is_file($dp) && !is_link($dp)) {
+            clearstatcache(true, $dp);
+            if (@filesize($dp) === $size) {
+                return true;
+            }
+            wp_delete_file($dp); // A partial copy from an interrupted earlier attempt.
+        }
+        if (file_exists($dp) || is_link($dp)) {
+            return false;
+        }
+        if ($canLink && @link($sp, $dp)) {
+            return true;
+        }
+        if (!@copy($sp, $dp)) {
+            return false;
+        }
+        clearstatcache(true, $dp);
+        return @filesize($dp) === $size;
+    }
+
+    /** The swap component a wp-content-relative path belongs to (by its first segment). */
+    private static function componentOf(string $rel): string
+    {
+        switch (explode('/', ltrim($rel, '/'))[0]) {
+            case 'plugins':
+                return 'plugin';
+            case 'themes':
+                return 'theme';
+            case 'uploads':
+                return 'upload';
+            default:
+                return 'wp-content';
         }
     }
 
@@ -1336,9 +1477,9 @@ final class FilesRestorer
      */
     private static function diskUsageFallback(string $path): int
     {
-        $total = @disk_total_space($path);
-        $free  = @disk_free_space($path);
-        if (!is_numeric($total) || !is_numeric($free) || $total <= 0) {
+        $total = LongRunningJob::diskTotalSpace($path);
+        $free  = LongRunningJob::diskFreeSpace($path);
+        if ($total === null || $free === null || $total <= 0) {
             return 0;
         }
         $used = (int) $total - (int) $free;

@@ -2,7 +2,8 @@
 /**
  * LongRunningJob — the shared bounded time limit for the agent's
  * long-running background loops (backup/restore/dump/media/db-clean/
- * diagnostics routines).
+ * diagnostics routines), and the guarded calls the backup and restore code
+ * makes to functions a host may disable.
  *
  * S4 (issue #131 adversarial review, see UpdateCommand::APPLY_TIME_LIMIT_SECONDS)
  * established why these loops must call `set_time_limit(N)` with a bounded,
@@ -18,10 +19,11 @@
  * own RECOVERABLE fatal before something else (a shorter FPM timeout, if
  * configured) tears the process down with no recovery at all.
  *
- * Every call site keeps its existing `@`-guard and in-method placement
- * (this constant only replaces the literal `0` argument) -- `set_time_limit()`
- * is a no-op under most CLI SAPIs and when disabled via `disable_functions`,
- * so the `@` suppression remains load-bearing.
+ * Hosts may list set_time_limit, ignore_user_abort, disk_free_space or
+ * disk_total_space in disable_functions. On PHP 8 such a function is
+ * undefined, and calling it throws an Error that `@` does not silence, so the
+ * backup and restore code calls them only through the methods below, which
+ * check function_exists() first.
  *
  * @package WPMgr\Agent\Support
  */
@@ -31,7 +33,8 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Support;
 
 /**
- * Holds the single shared bounded time-limit constant for long-running jobs.
+ * Holds the single shared bounded time-limit constant for long-running jobs,
+ * and the guarded host calls they make.
  */
 final class LongRunningJob
 {
@@ -44,4 +47,46 @@ final class LongRunningJob
      * not a shared utility.
      */
     public const TIME_LIMIT_SECONDS = 900;
+
+    /**
+     * Restart this worker's time limit at TIME_LIMIT_SECONDS and keep it
+     * running if the client disconnects. A host that disables either
+     * function keeps its own limit; the watchdog resumes a worker that limit
+     * ends.
+     */
+    public static function extendLimits(): void
+    {
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(self::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup/restore loop must not hit max_execution_time; bounded, never 0
+        }
+        if (function_exists('ignore_user_abort')) {
+            @ignore_user_abort(true); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- a background worker must outlive the request that started it
+        }
+    }
+
+    /**
+     * Free bytes on the filesystem holding $path, or null when the host
+     * disables the probe or it fails.
+     */
+    public static function diskFreeSpace(string $path): ?float
+    {
+        if ($path === '' || !function_exists('disk_free_space')) {
+            return null;
+        }
+        $bytes = @disk_free_space($path); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- host probe; a failure is reported as null
+        return is_float($bytes) || is_int($bytes) ? (float) $bytes : null;
+    }
+
+    /**
+     * Total bytes of the filesystem holding $path, or null when the host
+     * disables the probe or it fails.
+     */
+    public static function diskTotalSpace(string $path): ?float
+    {
+        if ($path === '' || !function_exists('disk_total_space')) {
+            return null;
+        }
+        $bytes = @disk_total_space($path); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- host probe; a failure is reported as null
+        return is_float($bytes) || is_int($bytes) ? (float) $bytes : null;
+    }
 }

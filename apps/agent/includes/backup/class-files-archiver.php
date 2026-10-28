@@ -68,6 +68,7 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Backup;
 
+use WPMgr\Agent\Backup\Destinations\LocalDestination;
 use WPMgr\Agent\Support\ArrayShape;
 use WPMgr\Agent\Support\LongRunningJob;
 
@@ -120,8 +121,6 @@ final class FilesArchiver
         'wpmgr-update-watchdog',
         // File-extraction temp root.
         'wpmgr-file-extract-tmp',
-        // GH #982: the Local destination's own store of earlier snapshots.
-        'wpmgr-backups',
     ];
 
     /**
@@ -386,8 +385,12 @@ final class FilesArchiver
 
         // Normalize default runtime/staging roots as anchored path prefixes.
         // Caller-provided exclude_paths intentionally stay segment-based below.
+        // GH #982: the Local destination's own store of earlier snapshots,
+        // exactly where the agent resolves it. FilesRestorer keeps exactly
+        // these paths from the live site, so the store is never rolled back
+        // and never lost.
         $pathExcludes = [];
-        foreach (self::DEFAULT_PATH_EXCLUDES as $entry) {
+        foreach (array_merge(self::DEFAULT_PATH_EXCLUDES, LocalDestination::storePathsInContent()) as $entry) {
             $entry = str_replace('\\', '/', (string) $entry);
             $entry = trim($entry, "/ \t\n\r\0\x0B");
             if ($entry === '') {
@@ -588,8 +591,7 @@ final class FilesArchiver
         // Lift caller-imposed time/abort guards. Watchdog handles
         // stall recovery; we want this loop to run as long as the SAPI
         // will let it.
-        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup/restore loop must not hit max_execution_time; @-guarded
-        @ignore_user_abort(true);
+        LongRunningJob::extendLimits();
 
         if (!is_dir($outDir) && !wp_mkdir_p($outDir) && !is_dir($outDir)) {
             throw new \RuntimeException('FilesArchiver: cannot create outDir: ' . esc_html($outDir));

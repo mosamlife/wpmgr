@@ -174,6 +174,64 @@ final class WatchdogProgressGuardTest extends TestCase
         self::assertCount(1, $this->failedPosts());
     }
 
+    // ---- A live lock holder wins over the age rule below the ceiling -------
+
+    public function testLiveRunnerPastTwoHoursInALongDbDumpKeepsItsRow(): void
+    {
+        $this->assertLiveLongPassKeepsItsRow(TaskRunner::PHASE_DUMPING_DB, [1, 0, 0, 0, 0]);
+    }
+
+    public function testLiveRunnerPastTwoHoursInALongEncryptPassKeepsItsRow(): void
+    {
+        $this->assertLiveLongPassKeepsItsRow(TaskRunner::PHASE_ENCRYPTING_UPLOADING, [3, 7, 1000, 0, 0]);
+    }
+
+    public function testTaskPastTheHardCeilingIsGivenUpEvenWhileItsRunnerHoldsTheLock(): void
+    {
+        $wpdb = $this->seed(['phase' => TaskRunner::PHASE_DUMPING_DB, 'started_at' => time() - Watchdog::HARD_CEILING_SECONDS - 60, 'last_progress_at' => time()], time() - 2 * 3600);
+        $this->holdLiveRunnerLock();
+
+        Watchdog::resumeIfStalled(self::ID);
+
+        self::assertArrayNotHasKey(self::ID, $wpdb->rows);
+        self::assertCount(1, $this->failedPosts());
+        self::assertStringContainsString('after 24 hours', $this->failedPosts()[0]);
+    }
+
+    /**
+     * Nothing moves the progress record during one DB dump or one encrypt
+     * pass, so a task 2.5 hours old whose current pass began 62 minutes ago
+     * has no recent progress record while its runner is alive and holds the
+     * run-lock. That runner must be left to finish, by resume and by dispatch;
+     * once it is gone, the same row is given up for lack of progress.
+     *
+     * @param list<int> $mark
+     */
+    private function assertLiveLongPassKeepsItsRow(string $phase, array $mark): void
+    {
+        $now  = time();
+        $wpdb = new FakeBackupTasksWpdb();
+        $state = [
+            'params'   => $this->params(),
+            'progress' => ['mark' => $mark, 'at' => $now - 3720, 'seq' => 5],
+            'worker'   => ['seq' => 5, 'started_at' => $now - 3720],
+        ];
+        $wpdb->seedRow(self::ID, ['phase' => $phase, 'sub_state' => (string) json_encode($state), 'started_at' => $now - 9000, 'last_progress_at' => $now]);
+        $GLOBALS['wpdb'] = $wpdb;
+        $this->holdLiveRunnerLock();
+
+        Watchdog::resumeIfStalled(self::ID);
+        self::assertArrayHasKey(self::ID, $wpdb->rows, $phase . ': a live runner past 2h is not given up by resume');
+        Watchdog::dispatch(self::ID);
+        self::assertArrayHasKey(self::ID, $wpdb->rows, $phase . ': a live runner past 2h is not given up by dispatch');
+        self::assertSame([], $this->failedPosts());
+
+        flock($this->liveLock, LOCK_UN);
+        Watchdog::resumeIfStalled(self::ID);
+        self::assertArrayNotHasKey(self::ID, $wpdb->rows, $phase . ': without a live runner the age rule still applies');
+        self::assertSame(['Backup stopped: it saved no progress for over an hour. Check the site\'s free disk space and PHP error log, then run the backup again.'], $this->failedPosts());
+    }
+
     // ---- helpers -----------------------------------------------------------
 
     /**

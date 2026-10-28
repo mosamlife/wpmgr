@@ -14,6 +14,7 @@ namespace WPMgr\Agent\Tests\Backup;
 
 use Brain\Monkey;
 use Brain\Monkey\Functions;
+use WPMgr\Agent\Backup\FilesArchiver;
 use WPMgr\Agent\Backup\TaskRunner;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -214,6 +215,42 @@ final class TaskRunnerHandoverTest extends TestCase
         sort($files);
         self::assertSame($files, $archived, 'every file is archived exactly once across both workers');
         fwrite(STDOUT, "\nhand-over workers=" . json_encode($workers) . ' parts=' . json_encode($done['parts']) . "\n");
+    }
+
+    public function testHandOverReleasesThePreviousWorkersArchiveStateBeforeTheNextWorkerStarts(): void
+    {
+        // Keep call arguments in exception traces, as a development php.ini or
+        // no php.ini at all does: the hand-over exception's trace then holds
+        // everything the previous worker passed into its archive pass.
+        $ignoreArgs = (string) ini_get('zend.exception_ignore_args');
+        ini_set('zend.exception_ignore_args', '0');
+        try {
+            $this->tree(['plugins/acme/acme.php', 'uploads/a.jpg', 'themes/t/style.css']);
+            $this->seed();
+            $passArgument = null;
+            \Patchwork\redefine('WPMgr\Agent\Backup\TaskRunner::shouldHandOver', function () use (&$passArgument): bool { // Instance method: the closure must not be static.
+                foreach (debug_backtrace(DEBUG_BACKTRACE_PROVIDE_OBJECT) as $frame) {
+                    if (($frame['class'] ?? '') === FilesArchiver::class && $frame['function'] === 'archive') {
+                        // The progress callback this worker handed to its archive pass.
+                        $passArgument = \WeakReference::create($frame['args'][2]);
+                    }
+                }
+                return true;
+            });
+            $heldAtHandOver = null;
+            \Patchwork\redefine('WPMgr\Agent\Backup\Watchdog::handOver', function () use (&$passArgument, &$heldAtHandOver): ?string {
+                gc_collect_cycles();
+                $heldAtHandOver = $passArgument instanceof \WeakReference && $passArgument->get() !== null;
+                return null;
+            });
+
+            (new TaskRunner($this->params()))->run();
+
+            self::assertInstanceOf(\WeakReference::class, $passArgument, 'the worker handed over from inside its archive pass');
+            self::assertFalse($heldAtHandOver, 'nothing of the previous worker\'s archive pass is still held when the next worker starts');
+        } finally {
+            ini_set('zend.exception_ignore_args', $ignoreArgs);
+        }
     }
 
     public function testWorkerWithinItsTimeBudgetDoesNotHandOver(): void

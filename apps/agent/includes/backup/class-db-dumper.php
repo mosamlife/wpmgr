@@ -114,8 +114,7 @@ final class DbDumper
      */
     public function dump(string $outPath, array $resume, callable $progress): array
     {
-        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running DB dump must not hit max_execution_time; @-guarded
-        @ignore_user_abort(true);
+        LongRunningJob::extendLimits();
 
         if (!empty($resume['done'])) {
             return $resume; // Idempotent re-entry — watchdog replays.
@@ -198,7 +197,7 @@ final class DbDumper
             // — all three look identical without this.
             $exists  = @file_exists($outPath) ? 'yes' : 'no';
             $readable= @is_readable($outPath) ? 'yes' : 'no';
-            $diskSpace = @disk_free_space(dirname($outPath));
+            $diskSpace = LongRunningJob::diskFreeSpace(dirname($outPath));
             throw new \RuntimeException(sprintf( // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; message goes to server log/SSE, not browser output
                 'WPMgr Agent: DB dump produced empty output (path=%s exists=%s readable=%s free_disk=%s)',
                 esc_html($outPath),
