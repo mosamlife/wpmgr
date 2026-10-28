@@ -184,6 +184,13 @@ type UpsertScheduleInput struct {
 	NextRunAt *time.Time
 }
 
+// ScheduleMerge turns the schedule stored for a client into the one to write;
+// found is false when the client has not saved a schedule yet. The repo calls it
+// inside the transaction that writes its result, under the client's save lock,
+// so it sees every save that finished before it and none that runs alongside.
+// It must not do I/O.
+type ScheduleMerge func(stored Schedule, found bool) UpsertScheduleInput
+
 // CreateReportInput is the input for creating a new pending report row.
 type CreateReportInput struct {
 	TenantID    uuid.UUID

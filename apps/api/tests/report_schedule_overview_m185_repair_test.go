@@ -138,7 +138,7 @@ func m185SeedViaRepo(t *testing.T, app *db.Pool, tenant uuid.UUID, label string,
 	t.Helper()
 	client := m185SeedClient(t, app, tenant, label)
 	next := time.Now().Add(72 * time.Hour).UTC().Truncate(time.Second)
-	if _, err := report.NewRepo(app).UpsertSchedule(context.Background(), report.UpsertScheduleInput{
+	in := report.UpsertScheduleInput{
 		TenantID:         tenant,
 		ClientID:         client,
 		Enabled:          true,
@@ -151,7 +151,9 @@ func m185SeedViaRepo(t *testing.T, app *db.Pool, tenant uuid.UUID, label string,
 		ClosingText:      "closing for " + label,
 		PoweredByRemoved: true,
 		NextRunAt:        &next,
-	}); err != nil {
+	}
+	if _, err := report.NewRepo(app).UpsertSchedule(context.Background(), tenant, client,
+		func(report.Schedule, bool) report.UpsertScheduleInput { return in }); err != nil {
 		t.Fatalf("seed schedule %s through the report repository: %v", label, err)
 	}
 	return m185Seed{tenant: tenant, client: client, label: label}

@@ -40,7 +40,14 @@ func (r *stubRepo) GetSchedule(ctx context.Context, tenantID, clientID uuid.UUID
 	}
 	return Schedule{}, false, nil
 }
-func (r *stubRepo) UpsertSchedule(ctx context.Context, in UpsertScheduleInput) (Schedule, error) {
+func (r *stubRepo) UpsertSchedule(ctx context.Context, tenantID, clientID uuid.UUID, merge ScheduleMerge) (Schedule, error) {
+	// Like the real repo: the stored schedule goes through merge, and what merge
+	// returns is what is written (upsertSchedule sees it).
+	stored, found, err := r.GetSchedule(ctx, tenantID, clientID)
+	if err != nil {
+		return Schedule{}, err
+	}
+	in := merge(stored, found)
 	if r.upsertSchedule != nil {
 		return r.upsertSchedule(ctx, in)
 	}

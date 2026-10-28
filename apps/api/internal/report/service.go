@@ -118,18 +118,6 @@ func (s *Service) UpsertSchedule(ctx context.Context, in UpsertScheduleInput) (S
 	}
 	// FIX-3: use the cleaned (deduped, canonicalized) recipients, not the raw input.
 	in.Recipients = cleaned
-	// GH #972: a section the request did not send keeps its stored value. The
-	// settings form has no Overview control, so replacing the stored flags
-	// with the request's turned Overview off on every save.
-	base := DefaultSectionFlags()
-	stored, found, err := s.repo.GetSchedule(ctx, in.TenantID, in.ClientID)
-	if err != nil {
-		return Schedule{}, err
-	}
-	if found {
-		base = stored.Sections
-	}
-	in.Sections = in.SectionsPatch.Apply(base)
 	// The send hour is in the client's timezone, the one the scanner computes
 	// every later run in, so the first run is computed in it too.
 	tz, err := s.repo.GetClientTimezone(ctx, in.TenantID, in.ClientID)
@@ -141,7 +129,21 @@ func (s *Service) UpsertSchedule(ctx context.Context, in UpsertScheduleInput) (S
 	} else {
 		in.NextRunAt = nil
 	}
-	saved, err := s.repo.UpsertSchedule(ctx, in)
+	// GH #972: a section the request did not send keeps its stored value. The
+	// settings form has no Overview control, so replacing the stored flags
+	// with the request's turned Overview off on every save.
+	//
+	// The stored sections are read, merged over and written back in one
+	// transaction, one save of the client at a time. Read apart from the write,
+	// two saves that each change a different section undo each other.
+	saved, err := s.repo.UpsertSchedule(ctx, in.TenantID, in.ClientID, func(stored Schedule, found bool) UpsertScheduleInput {
+		base := DefaultSectionFlags()
+		if found {
+			base = stored.Sections
+		}
+		in.Sections = in.SectionsPatch.Apply(base)
+		return in
+	})
 	if err != nil {
 		return Schedule{}, err
 	}
