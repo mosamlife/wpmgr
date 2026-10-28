@@ -104,6 +104,10 @@ final class FilesRestorer
         'wpmgr-snapshots',
         'wpmgr-object-cache-config.php',
         '.wpmgr-oc-state.json',
+        // GH #982: the Local destination's own store. An older snapshot may
+        // still hold a copy; the live store is kept instead (see
+        // PRESERVE_FROM_LIVE), so no restore rolls the local backups back.
+        'wpmgr-backups',
     ];
 
     /** Emit a progress event every N extracted entries. */
@@ -197,6 +201,24 @@ final class FilesRestorer
         'db.php',
         'object-cache.php',
         'advanced-cache.php',
+        // GH #982: the Local destination's store (uploads-first, and the
+        // wp-content location it falls back to), so a restore never deletes
+        // the local backups, including the one it is restoring from.
+        'uploads/wpmgr-backups',
+        'wpmgr-backups',
+    ];
+
+    /**
+     * PRESERVE_FROM_LIVE entries carried forward by hard link where the
+     * filesystem allows it: their files are written once and never changed,
+     * so a link costs no space however large the store is. Anything that
+     * cannot be linked is copied.
+     *
+     * @var list<string>
+     */
+    private const PRESERVE_BY_LINK = [
+        'uploads/wpmgr-backups',
+        'wpmgr-backups',
     ];
 
     /**
@@ -1151,7 +1173,7 @@ final class FilesRestorer
 
             try {
                 if (is_dir($src) && !is_link($src)) {
-                    self::copyRecursive($src, $dst);
+                    self::copyRecursive($src, $dst, in_array($rel, self::PRESERVE_BY_LINK, true));
                 } else {
                     @copy($src, $dst);
                 }
@@ -1209,7 +1231,7 @@ final class FilesRestorer
 
             try {
                 if (is_dir($src) && !is_link($src)) {
-                    self::copyRecursive($src, $dst);
+                    self::copyRecursive($src, $dst, in_array($rel, self::PRESERVE_BY_LINK, true));
                 } else {
                     @copy($src, $dst);
                 }
@@ -1225,7 +1247,7 @@ final class FilesRestorer
      * silently swallows individual `copy()` failures — the caller logs the
      * outer entry failure.
      */
-    private static function copyRecursive(string $src, string $dst): void
+    private static function copyRecursive(string $src, string $dst, bool $link = false): void
     {
         if (!is_dir($src)) {
             return;
@@ -1249,8 +1271,8 @@ final class FilesRestorer
                 continue;
             }
             if (is_dir($sp)) {
-                self::copyRecursive($sp, $dp);
-            } elseif (is_file($sp)) {
+                self::copyRecursive($sp, $dp, $link);
+            } elseif (is_file($sp) && !($link && @link($sp, $dp))) {
                 @copy($sp, $dp);
             }
         }

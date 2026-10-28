@@ -120,6 +120,8 @@ final class FilesArchiver
         'wpmgr-update-watchdog',
         // File-extraction temp root.
         'wpmgr-file-extract-tmp',
+        // GH #982: the Local destination's own store of earlier snapshots.
+        'wpmgr-backups',
     ];
 
     /**
