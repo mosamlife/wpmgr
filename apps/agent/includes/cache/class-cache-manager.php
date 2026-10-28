@@ -179,8 +179,11 @@ final class CacheManager
         // invoking CacheWriter::handle() with the complete response. The buffer
         // is intentionally held open for the entire request lifecycle so the
         // handler receives the full page output — an in-scope ob_get_clean() is
-        // not applicable here because the response is not yet complete.
-        ob_start([$writer, 'handle']);
+        // not applicable here because the response is not yet complete. The
+        // chunk size bounds what is held: a response that is not a page that
+        // is stored (not HTML, a download, too large) is passed through as it
+        // is produced.
+        ob_start([$writer, 'handle'], CacheWriter::CHUNK_BYTES);
     }
 
     /**

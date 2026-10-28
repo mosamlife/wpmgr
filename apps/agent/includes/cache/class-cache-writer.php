@@ -51,6 +51,22 @@ final class CacheWriter
      */
     public const KEY_CONSTANT = 'WPMGR_PAGE_CACHE_KEY';
 
+    /**
+     * Chunk size the capture buffer is opened with. PHP hands the buffer to
+     * {@see handle()} each time it reaches this size, which is what lets a
+     * response that is not a page be passed through as it is produced instead
+     * of being held in memory in full. A page smaller than this reaches the
+     * handler in one piece, exactly as with an unchunked buffer. PHP allocates
+     * the buffer at this size when it opens, so it is kept to one megabyte.
+     */
+    public const CHUNK_BYTES = 1048576;
+
+    /**
+     * Largest page that is stored. A response that grows past it is passed
+     * through as it is produced and not stored, so at most this much is held.
+     */
+    public const MAX_PAGE_BYTES = 8388608;
+
     private CacheConfig $config;
 
     /** The drop-in's key for this request, or null when it handed none over. */
@@ -72,6 +88,20 @@ final class CacheWriter
 
     /** Whether {@see $optimizer} has been resolved yet (lazy). */
     private bool $optimizerResolved = false;
+
+    /**
+     * Page bytes taken over from the capture buffer at chunk boundaries, while
+     * the response can still be a page that is stored.
+     */
+    private string $held = '';
+
+    /**
+     * Set once the response is known not to be a page that is stored (it is
+     * not HTML, carries Content-Disposition, grew past the limit, started
+     * before the template stage, or was flushed part-way): from then on output
+     * is passed through as it arrives and nothing is stored or optimized.
+     */
+    private bool $passThrough = false;
 
     /**
      * The request URI captured when the buffer was opened, for the URL rules
@@ -140,16 +170,47 @@ final class CacheWriter
      */
     public function handle(string $buffer, int $phase = PHP_OUTPUT_HANDLER_FINAL): string
     {
-        // Only act on the final flush so we capture the complete document.
-        if (($phase & PHP_OUTPUT_HANDLER_FINAL) === 0 && ($phase & PHP_OUTPUT_HANDLER_END) === 0) {
+        $final = ($phase & PHP_OUTPUT_HANDLER_FINAL) !== 0; // PHP_OUTPUT_HANDLER_END is the same bit
+
+        // ob_clean(): the caller throws away everything output so far, which
+        // includes what this writer was holding. PHP discards the return value.
+        if (!$final && ($phase & PHP_OUTPUT_HANDLER_CLEAN) !== 0) {
+            $this->held = '';
+            return '';
+        }
+
+        if ($this->passThrough) {
             return $buffer;
         }
 
-        // The buffer opens on init, ahead of every plugin's init callback, but
-        // only a page rendered through the template stage is a page: output a
-        // plugin answers between init and template_redirect (an age gate, a
-        // coming-soon screen, a download, a login form) is passed on untouched.
-        if (!self::reachedTemplateStage()) {
+        if (!$final) {
+            // ob_flush() sends what is buffered now, so the rest of the page
+            // will not reach the final flush with it; otherwise the buffer
+            // outgrew one chunk. Either way the response is passed through
+            // unless it can still be a page that is stored, which is then held
+            // here until the final flush.
+            if (($phase & PHP_OUTPUT_HANDLER_FLUSH) !== 0
+                || !$this->canStillBePage(strlen($this->held) + strlen($buffer))
+            ) {
+                $this->passThrough = true;
+                $out        = $this->held . $buffer;
+                $this->held = '';
+                return $out;
+            }
+            $this->held .= $buffer;
+            return '';
+        }
+
+        $buffer     = $this->held . $buffer;
+        $this->held = '';
+
+        // Only a whole HTML page rendered through the template stage is
+        // optimized or stored. The buffer opens on init, ahead of every
+        // plugin's init callback, so output a plugin answers between init and
+        // template_redirect (an age gate, a coming-soon screen, a download, a
+        // login form) is passed on untouched, and so is anything that is not
+        // an HTML page or is past the size limit.
+        if (!$this->canStillBePage(strlen($buffer))) {
             return $buffer;
         }
 
@@ -224,6 +285,49 @@ final class CacheWriter
     private static function reachedTemplateStage(): bool
     {
         return function_exists('did_action') && did_action('template_redirect') > 0;
+    }
+
+    /**
+     * Whether a response of this many bytes so far can still be a page that is
+     * stored: within the size limit, rendered through the template stage, and
+     * an HTML page by its headers.
+     *
+     * @param int $bytes Response size so far.
+     * @return bool
+     */
+    private function canStillBePage(int $bytes): bool
+    {
+        return $bytes <= self::MAX_PAGE_BYTES
+            && self::reachedTemplateStage()
+            && self::headersDescribeAPage(headers_list());
+    }
+
+    /**
+     * Whether the response headers describe an HTML page: no Content-Disposition
+     * (a download, inline or not), and a Content-Type of text/html or
+     * application/xhtml+xml. No Content-Type header means PHP's default,
+     * text/html.
+     *
+     * @param array<int,string> $headers Header lines as headers_list() gives them.
+     * @return bool
+     */
+    private static function headersDescribeAPage(array $headers): bool
+    {
+        $type = 'text/html';
+        foreach ($headers as $line) {
+            $parts = explode(':', (string) $line, 2);
+            if (count($parts) !== 2) {
+                continue;
+            }
+            $name = strtolower(trim($parts[0]));
+            if ($name === 'content-disposition') {
+                return false;
+            }
+            if ($name === 'content-type') {
+                $type = strtolower(trim(explode(';', $parts[1], 2)[0]));
+            }
+        }
+        return $type === 'text/html' || $type === 'application/xhtml+xml';
     }
 
     /**
