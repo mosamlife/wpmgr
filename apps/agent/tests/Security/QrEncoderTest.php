@@ -12,9 +12,11 @@
  *     separators, timing patterns, every alignment pattern, the dark module,
  *     both format information copies and both version information blocks
  *     must be exactly where the standard puts them, whatever mask was chosen.
- *  3. A round trip through an independent decoder (zbarimg): every encoded
- *     otpauth:// URI must decode back byte for byte. When zbarimg is not
- *     installed the round trip is marked skipped, never passed.
+ *  3. A round trip through independent tools: the shipped SVG is rasterised
+ *     by ImageMagick at the size it declares and decoded by zbarimg, and every
+ *     otpauth:// URI must come back byte for byte. When either tool is missing
+ *     the round trip is marked skipped locally and fails under CI; it is never
+ *     passed.
  *
  * @package WPMgr\Agent\Tests\Security
  */
@@ -274,14 +276,26 @@ final class QrEncoderTest extends TestCase
         $this->assertSame('', QrEncoder::toSvg(str_repeat('A', 2332), 256));
     }
 
+    public function test_every_version_is_drawn_at_four_pixels_per_module_or_more(): void
+    {
+        foreach (self::versionSweep() as $version => $data) {
+            $svg = QrEncoder::toSvg($data, 256);
+            [$width, $height, $total] = self::svgSize($svg);
+            $this->assertSame(17 + 4 * $version + 8, $total, "v{$version} viewBox is the symbol plus the quiet zone");
+            $this->assertSame($width, $height, "v{$version} is square");
+            // The requested 256 px holds while it gives 4 px per module; past that the symbol grows.
+            $this->assertSame(max(256, 4 * $total), $width, "v{$version} rendered width");
+        }
+    }
+
     // -------------------------------------------------------------------------
     // 3. Round trip through an independent decoder
     // -------------------------------------------------------------------------
 
     public function test_otpauth_uris_round_trip_through_zbarimg(): void
     {
-        $zbarimg = self::zbarimg();
-        $corpus  = self::corpus();
+        [$zbarimg, $magick] = self::tools();
+        $corpus = self::corpus();
         $this->assertGreaterThanOrEqual(30, count($corpus));
 
         $versions = [];
@@ -294,7 +308,7 @@ final class QrEncoderTest extends TestCase
             $matrix = self::matrixFromSvg($svg);
             $versions[intdiv(count($matrix) - 17, 4)] = true;
 
-            $out = self::decode($zbarimg, $svg);
+            $out = self::decode($zbarimg, $magick, $svg);
             if ($out === $uri) {
                 $decoded++;
             } else {
@@ -308,17 +322,29 @@ final class QrEncoderTest extends TestCase
         $this->assertArrayHasKey(11, $versions, 'corpus reaches version 11');
     }
 
-    public function test_every_version_from_1_to_40_round_trips_through_zbarimg(): void
+    public function test_every_version_from_1_to_40_round_trips_through_zbarimg_at_its_shown_size(): void
     {
-        $zbarimg  = self::zbarimg();
+        [$zbarimg, $magick] = self::tools();
         $failures = [];
         foreach (self::versionSweep() as $version => $data) {
-            $out = self::decode($zbarimg, QrEncoder::toSvg($data, 256));
+            $out = self::decode($zbarimg, $magick, QrEncoder::toSvg($data, 256));
             if ($out !== $data) {
                 $failures[] = "v{$version} (" . strlen($data) . ' bytes)';
             }
         }
         $this->assertSame([], $failures, 'versions that did not decode byte for byte');
+    }
+
+    public function test_a_500_character_site_name_round_trips_through_zbarimg(): void
+    {
+        [$zbarimg, $magick] = self::tools();
+        $name = substr(str_repeat('Northwind Traders Regional Intranet ', 15), 0, 500);
+        $uri  = 'otpauth://totp/' . rawurlencode($name . ':administrator') . '?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'
+            . '&issuer=' . rawurlencode($name) . '&algorithm=SHA1&digits=6&period=30';
+
+        $svg = QrEncoder::toSvg($uri, 256);
+        $this->assertGreaterThanOrEqual(30, intdiv(self::svgSize($svg)[2] - 8 - 17, 4), 'a 500-character name needs version 30 or more');
+        $this->assertSame($uri, self::decode($zbarimg, $magick, $svg));
     }
 
     // -------------------------------------------------------------------------
@@ -536,57 +562,100 @@ final class QrEncoderTest extends TestCase
     }
 
     /**
-     * Locate zbarimg, or mark the calling test skipped with the reason.
-     * WPMGR_TEST_ZBARIMG names the binary explicitly (and lets the skip path be exercised).
+     * Width, height and viewBox size of the encoder's SVG.
+     *
+     * @return array{int,int,int}
      */
-    private static function zbarimg(): string
+    private static function svgSize(string $svg): array
     {
-        $override   = getenv('WPMGR_TEST_ZBARIMG');
-        $candidates = is_string($override) && $override !== ''
-            ? [$override]
-            : ['/opt/homebrew/bin/zbarimg', '/usr/local/bin/zbarimg', '/usr/bin/zbarimg'];
+        if (preg_match('/^<svg [^>]*width="(\d+)" height="(\d+)" viewBox="0 0 (\d+) \3"/', $svg, $m) !== 1) {
+            throw new \RuntimeException('SVG has no width, height and square viewBox: ' . substr($svg, 0, 200));
+        }
+        return [(int) $m[1], (int) $m[2], (int) $m[3]];
+    }
+
+    /**
+     * The decoder and the rasteriser, or the calling test is skipped locally and
+     * FAILS under CI (the CI environment variable set): a round trip CI never
+     * runs proves nothing. WPMGR_TEST_ZBARIMG / WPMGR_TEST_MAGICK name a binary
+     * explicitly, which also lets the missing-tool paths be exercised.
+     *
+     * @return array{string,string}
+     */
+    private static function tools(): array
+    {
+        return [
+            self::tool('zbarimg', 'WPMGR_TEST_ZBARIMG', ['zbarimg'], 'brew install zbar / apt-get install zbar-tools'),
+            self::tool('ImageMagick', 'WPMGR_TEST_MAGICK', ['magick', 'convert'], 'brew install imagemagick / apt-get install imagemagick'),
+        ];
+    }
+
+    /**
+     * @param list<string> $names Executable names, in order of preference.
+     */
+    private static function tool(string $label, string $envVar, array $names, string $install): string
+    {
+        $override = getenv($envVar);
+        if (is_string($override) && $override !== '') {
+            $candidates = [$override];
+        } else {
+            $dirs       = array_merge(explode(PATH_SEPARATOR, (string) getenv('PATH')), ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']);
+            $candidates = [];
+            foreach ($names as $name) {
+                foreach ($dirs as $dir) {
+                    if ($dir !== '') {
+                        $candidates[] = rtrim($dir, '/') . '/' . $name;
+                    }
+                }
+            }
+        }
         foreach ($candidates as $candidate) {
-            if (is_executable($candidate)) {
+            if (is_file($candidate) && is_executable($candidate)) {
                 return $candidate;
             }
         }
-        self::markTestSkipped('zbarimg is not installed, so the QR round trip cannot run (brew install zbar / apt-get install zbar-tools).');
+
+        $reason = "{$label} is not installed, so the QR round trip cannot run ({$install}).";
+        if ((string) getenv('CI') !== '') {
+            self::fail($reason . ' CI must install it: a skipped round trip is not a pass.');
+        }
+        self::markTestSkipped($reason);
     }
 
-    /** Rasterise the SVG to a PBM and return what zbarimg decodes from it, or null. */
-    private static function decode(string $zbarimg, string $svg): ?string
+    /**
+     * Rasterise the SVG exactly as shipped, at the size it declares, and return
+     * what zbarimg decodes from the image, or null when it decodes nothing.
+     */
+    private static function decode(string $zbarimg, string $magick, string $svg): ?string
     {
-        if (preg_match('/viewBox="0 0 (\d+) (\d+)"/', $svg, $vb) !== 1) {
-            return null;
-        }
-        $matrix = self::matrixFromSvg($svg);
-        $size   = count($matrix);
-        $total  = (int) $vb[1];
-        $scale  = 4;
-        $px     = $total * $scale;
+        [$width] = self::svgSize($svg);
+        $base    = tempnam(sys_get_temp_dir(), 'wpmgr-qr-');
+        $svgFile = $base . '.svg';
+        $pngFile = $base . '.png';
+        file_put_contents($svgFile, $svg);
 
-        $rows = [];
-        for ($y = 0; $y < $px; $y++) {
-            $r    = intdiv($y, $scale) - self::QUIET;
-            $line = '';
-            for ($x = 0; $x < $px; $x++) {
-                $c     = intdiv($x, $scale) - self::QUIET;
-                $line .= ($r >= 0 && $c >= 0 && $r < $size && $c < $size && $matrix[$r][$c] === 1) ? '1' : '0';
+        try {
+            // 96 dpi: one SVG user unit (CSS px) is one image pixel.
+            $log  = [];
+            $code = 0;
+            exec(escapeshellarg($magick) . ' -density 96 ' . escapeshellarg($svgFile) . ' ' . escapeshellarg($pngFile) . ' 2>&1', $log, $code);
+            $info = is_file($pngFile) ? getimagesize($pngFile) : false;
+            if ($code !== 0 || $info === false) {
+                throw new \RuntimeException("ImageMagick could not rasterise the SVG (exit {$code}): " . implode("\n", $log));
             }
-            $rows[] = $line;
-        }
+            if (abs($info[0] - $width) > 1 || abs($info[1] - $width) > 1) {
+                throw new \RuntimeException("ImageMagick drew {$info[0]}x{$info[1]} px for a {$width} px SVG");
+            }
 
-        $file = tempnam(sys_get_temp_dir(), 'wpmgr-qr-') . '.pbm';
-        file_put_contents($file, "P1\n{$px} {$px}\n" . implode("\n", $rows) . "\n");
-        $out  = [];
-        $code = 0;
-        exec(escapeshellarg($zbarimg) . ' --raw -q -Sdisable -Sqrcode.enable ' . escapeshellarg($file) . ' 2>/dev/null', $out, $code);
-        unlink($file);
-        unlink(substr($file, 0, -4));
-
-        if ($code !== 0 || $out === []) {
-            return null;
+            $out = [];
+            exec(escapeshellarg($zbarimg) . ' --raw -q -Sdisable -Sqrcode.enable ' . escapeshellarg($pngFile) . ' 2>/dev/null', $out, $code);
+            return ($code === 0 && $out !== []) ? implode("\n", $out) : null;
+        } finally {
+            foreach ([$base, $svgFile, $pngFile] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
         }
-        return implode("\n", $out);
     }
 }

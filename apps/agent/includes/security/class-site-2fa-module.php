@@ -1973,7 +1973,7 @@ final class Site2faModule
             // encoding). This fragment is returned up to renderSetupScreen(),
             // whose echo runs the whole assembled form through wp_kses()
             // (see allowedFormKses(), which allow-lists svg/rect).
-            $html .= '<div style="margin:16px 0;text-align:center">' . $qrSvg . '</div>';
+            $html .= '<div style="margin:16px -24px;text-align:center;overflow:auto">' . $qrSvg . '</div>';
         } else {
             $html .= '<p>' . esc_html__('QR code unavailable. Please use the manual entry key below.', 'wpmgr-agent') . '</p>';
         }

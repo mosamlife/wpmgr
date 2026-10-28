@@ -57,6 +57,9 @@ final class QrEncoder
     /** Quiet zone width in modules. */
     private const QUIET_ZONE = 4;
 
+    /** Smallest rendered module, in pixels; larger symbols grow instead of shrinking below it. */
+    private const MIN_MODULE_PX = 4;
+
     /**
      * GF(256) antilog table: $gfExp[i] = alpha^i, for i in 0..254.
      *
@@ -80,7 +83,9 @@ final class QrEncoder
      * Encode $data and return an inline SVG string at the given pixel size.
      *
      * @param string $data   Data to encode (bytes, encoded in byte mode).
-     * @param int    $pixels Rendered width and height in pixels.
+     * @param int    $pixels Requested width and height in pixels, raised to
+     *                       MIN_MODULE_PX per module (quiet zone included) when
+     *                       the symbol needs more.
      * @return string Inline SVG markup, or '' when $data exceeds the version 40-M capacity.
      */
     public static function toSvg(string $data, int $pixels = 256): string
@@ -768,8 +773,9 @@ final class QrEncoder
      */
     private static function renderSvg(array $matrix, int $pixels): string
     {
-        $size  = count($matrix);
-        $total = $size + 2 * self::QUIET_ZONE;
+        $size   = count($matrix);
+        $total  = $size + 2 * self::QUIET_ZONE;
+        $pixels = max($pixels, self::MIN_MODULE_PX * $total);
 
         $path = '';
         for ($row = 0; $row < $size; $row++) {
