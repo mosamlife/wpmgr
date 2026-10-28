@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
@@ -33,6 +35,15 @@ func TestSiteEmailLockSerialisesOneSiteAcrossConnections(t *testing.T) {
 	locker := func(wait time.Duration) *pgSiteLocker {
 		return &pgSiteLocker{pool: app, wait: wait, poll: 20 * time.Millisecond}
 	}
+	// take locks a site and registers the release, so a failed assertion
+	// cannot leave a pinned connection that stops the harness closing its pool.
+	take := func(l *pgSiteLocker, c context.Context, site uuid.UUID) (func(), error) {
+		release, err := l.lockSite(c, site)
+		if err == nil {
+			t.Cleanup(release)
+		}
+		return release, err
+	}
 
 	// The service built on the real pool uses the Postgres locker.
 	svc := NewService(NewRepo(app), nil, nil)
@@ -40,7 +51,7 @@ func TestSiteEmailLockSerialisesOneSiteAcrossConnections(t *testing.T) {
 		t.Fatalf("a Service on a real pool uses %T, want *pgSiteLocker", svc.locks)
 	}
 
-	holdA, err := locker(time.Second).lockSite(ctx, f.siteA)
+	holdA, err := take(locker(time.Second), ctx, f.siteA)
 	if err != nil {
 		t.Fatalf("first operation on site A: %v", err)
 	}
@@ -51,7 +62,7 @@ func TestSiteEmailLockSerialisesOneSiteAcrossConnections(t *testing.T) {
 	// A second operation on site A waits, and gets errSiteEmailBusy once the
 	// wait runs out.
 	start := time.Now()
-	if _, err := locker(300*time.Millisecond).lockSite(ctx, f.siteA); !errors.Is(err, errSiteEmailBusy) {
+	if _, err := take(locker(300*time.Millisecond), ctx, f.siteA); !errors.Is(err, errSiteEmailBusy) {
 		t.Fatalf("second operation on site A = %v, want errSiteEmailBusy", err)
 	}
 	if waited := time.Since(start); waited < 300*time.Millisecond {
@@ -60,7 +71,7 @@ func TestSiteEmailLockSerialisesOneSiteAcrossConnections(t *testing.T) {
 
 	// An operation on site B does not wait for site A.
 	start = time.Now()
-	holdB, err := locker(300*time.Millisecond).lockSite(ctx, f.siteB)
+	holdB, err := take(locker(300*time.Millisecond), ctx, f.siteB)
 	if err != nil {
 		t.Fatalf("site B waited on site A: %v", err)
 	}
@@ -108,7 +119,7 @@ func TestSiteEmailLockSerialisesOneSiteAcrossConnections(t *testing.T) {
 
 	// A holder whose request was cancelled still unlocks.
 	cctx, cancel := context.WithCancel(ctx)
-	release, err := locker(time.Second).lockSite(cctx, f.siteA)
+	release, err := take(locker(time.Second), cctx, f.siteA)
 	if err != nil {
 		t.Fatalf("lock under a live context: %v", err)
 	}
@@ -118,7 +129,7 @@ func TestSiteEmailLockSerialisesOneSiteAcrossConnections(t *testing.T) {
 	if got := advisoryLocks(); got != 0 {
 		t.Fatalf("%d advisory lock(s) left after every release, want 0", got)
 	}
-	again, err := locker(200*time.Millisecond).lockSite(ctx, f.siteA)
+	again, err := take(locker(200*time.Millisecond), ctx, f.siteA)
 	if err != nil {
 		t.Fatalf("site A after a cancelled holder released it: %v", err)
 	}
