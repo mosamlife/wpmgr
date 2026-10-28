@@ -383,6 +383,11 @@ final class Site2faLoginUrlTest extends TestCase
     // -------------------------------------------------------------------------
 
     /**
+     * Values are given as WordPress hands them over: wp_magic_quotes() slashes
+     * $_SERVER, so a raw backslash in the request arrives doubled and the
+     * module's wp_unslash() restores it. An unslashed backslash here would be
+     * deleted by that wp_unslash() and the case would test nothing.
+     *
      * @return array<string,array{0:string,1:string}>
      */
     public static function provideHostileRequestTargets(): array
@@ -390,7 +395,7 @@ final class Site2faLoginUrlTest extends TestCase
         return [
             'network-path reference'  => ['//evil.test/my-login', '/evil.test/my-login?action=wpmgr_2fa_verify'],
             'three slashes'           => ['///evil.test/my-login', '/evil.test/my-login?action=wpmgr_2fa_verify'],
-            'backslash after slash'   => ['/\\evil.test/my-login', '/evil.test/my-login?action=wpmgr_2fa_verify'],
+            'backslash after slash'   => [addslashes('/\\evil.test/my-login'), '/evil.test/my-login?action=wpmgr_2fa_verify'],
             'tab between the slashes' => ["/\t/evil.test/my-login", '/evil.test/my-login?action=wpmgr_2fa_verify'],
             'absolute-form target'    => ['https://evil.test/my-login', '/my-login?action=wpmgr_2fa_verify'],
             'fragment'                => ['/my-login?x=1#frag', '/my-login?x=1&action=wpmgr_2fa_verify'],
