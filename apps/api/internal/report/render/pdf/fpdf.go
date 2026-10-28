@@ -392,7 +392,66 @@ func drawUpdatesRow(f *fpdflib.Fpdf, u *reportdata.UpdateSection) {
 		row += fmt.Sprintf("  ·  %d failed", u.Failed)
 	}
 	f.CellFormat(contentW, 5, row, "", 1, "L", false, 0, "")
+	drawUpdateItemsTable(f, u)
 	f.Ln(2)
+}
+
+// updateTableCols are the version table's columns; the widths sum to contentW.
+var updateTableCols = []struct {
+	title string
+	w     float64
+}{
+	{"Name", 62}, {"Type", 20}, {"From", 26}, {"To", 26}, {"Result", 22}, {"Date", 24},
+}
+
+// drawUpdateItemsTable is the PDF twin of the version table in
+// report.html.tmpl (GH #969): the same rows, the same labels, the same
+// "and N more changes" line, which both take from reportdata.
+func drawUpdateItemsTable(f *fpdflib.Fpdf, u *reportdata.UpdateSection) {
+	if len(u.Items) > 0 {
+		f.Ln(1)
+		f.SetFont("dejavu", "B", 8.5)
+		f.SetTextColor(107, 114, 128)
+		f.SetDrawColor(229, 231, 235)
+		for _, c := range updateTableCols {
+			f.CellFormat(c.w, 5, c.title, "B", 0, "L", false, 0, "")
+		}
+		f.Ln(5)
+		f.SetFont("dejavu", "", 8.5)
+		for _, it := range u.Items {
+			cells := []string{it.Name, it.TypeLabel(), it.FromLabel(), it.ToLabel(), it.StatusLabel(), it.Date.Format("2 Jan 2006")}
+			for i, c := range updateTableCols {
+				switch {
+				case i == 4 && it.Status == reportdata.UpdateStatusFailed:
+					f.SetTextColor(220, 38, 38)
+				case i == 4 && it.Status == reportdata.UpdateStatusRolledBack:
+					f.SetTextColor(202, 138, 4)
+				default:
+					f.SetTextColor(55, 65, 81)
+				}
+				f.CellFormat(c.w, 4.8, fitCell(f, cells[i], c.w-1), "", 0, "L", false, 0, "")
+			}
+			f.Ln(4.8)
+		}
+	}
+	if more := u.MoreItemsLabel(); more != "" {
+		f.SetFont("dejavu", "", 8.5)
+		f.SetTextColor(107, 114, 128)
+		f.CellFormat(contentW, 5, more, "", 1, "L", false, 0, "")
+	}
+}
+
+// fitCell shortens s with an ellipsis until it fits w millimetres in the
+// current font, so a long name cannot run into the next column.
+func fitCell(f *fpdflib.Fpdf, s string, w float64) string {
+	if f.GetStringWidth(s) <= w {
+		return s
+	}
+	r := []rune(s)
+	for len(r) > 0 && f.GetStringWidth(string(r)+"…") > w {
+		r = r[:len(r)-1]
+	}
+	return string(r) + "…"
 }
 
 func drawPerfRow(f *fpdflib.Fpdf, p *reportdata.PerfSection) {

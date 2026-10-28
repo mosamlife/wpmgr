@@ -113,6 +113,18 @@ func (s *Service) UpsertSchedule(ctx context.Context, in UpsertScheduleInput) (S
 	}
 	// FIX-3: use the cleaned (deduped, canonicalized) recipients, not the raw input.
 	in.Recipients = cleaned
+	// GH #972: a section the request did not send keeps its stored value. The
+	// settings form has no Overview control, so replacing the stored flags
+	// with the request's turned Overview off on every save.
+	base := DefaultSectionFlags()
+	stored, found, err := s.repo.GetSchedule(ctx, in.TenantID, in.ClientID)
+	if err != nil {
+		return Schedule{}, err
+	}
+	if found {
+		base = stored.Sections
+	}
+	in.Sections = in.SectionsPatch.Apply(base)
 	if in.Enabled {
 		next := nextRunAt(in.Cadence, in.SendDay, in.SendHour, "UTC")
 		in.NextRunAt = next
@@ -178,12 +190,13 @@ func (s *Service) GenerateNow(ctx context.Context, tenantID, clientID uuid.UUID,
 	// immediately so it doesn't remain forever-pending.
 	if s.enqueuer != nil {
 		if enqErr := s.enqueuer.EnqueueGenerate(ctx, GenerateArgs{
-			TenantID:    tenantID,
-			ClientID:    clientID,
-			ReportID:    rpt.ID,
-			PeriodStart: start,
-			PeriodEnd:   end,
-			Notify:      in.Notify,
+			TenantID:         tenantID,
+			ClientID:         clientID,
+			ReportID:         rpt.ID,
+			PeriodStart:      start,
+			PeriodEnd:        end,
+			Notify:           in.Notify,
+			SectionsOverride: in.Sections,
 		}); enqErr != nil {
 			// Best-effort fail the row so callers can see it errored.
 			_, _ = s.repo.FailReport(ctx, tenantID, rpt.ID, "enqueue failed: "+enqErr.Error())
@@ -404,6 +417,8 @@ var _ = utf8.ValidString
 type GenerateNowInput struct {
 	PeriodStart time.Time
 	PeriodEnd   time.Time
-	Sections    SectionFlags
-	Notify      bool
+	// Sections is the request's optional override of the client's stored
+	// report sections (GH #971); nil uses the stored sections unchanged.
+	Sections *SectionFlagsPatch
+	Notify   bool
 }

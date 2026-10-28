@@ -34,6 +34,10 @@ type GenerateArgs struct {
 	PeriodStart time.Time  `json:"period_start"`
 	PeriodEnd   time.Time  `json:"period_end"`
 	Notify      bool       `json:"notify"`
+	// SectionsOverride is an on-demand request's override of the client's
+	// stored sections (GH #971). Nil, which every scheduled run and the
+	// dashboard's "Generate now" send, uses the stored sections unchanged.
+	SectionsOverride *SectionFlagsPatch `json:"sections_override,omitempty"`
 }
 
 // Kind implements river.JobArgs.
@@ -105,14 +109,20 @@ func (w *GenerateWorker) Work(ctx context.Context, job *river.Job[GenerateArgs])
 		return err
 	}
 
-	// Retrieve schedule for branding / section flags.
-	var sched *Schedule
-	if args.ScheduleID != nil {
-		s, found, err := w.repo.GetSchedule(ctx, args.TenantID, args.ClientID)
-		if err == nil && found {
-			sched = &s
+	// The client's report settings: sections, intro and closing text, and the
+	// "Prepared with WPMgr" switch. Read for EVERY run, scheduled or on demand
+	// (GH #971), and a failed read fails the attempt rather than falling back
+	// to the defaults, which would print the branding the agency removed.
+	sched, err := reportSettingsFor(ctx, w.repo, args)
+	if err != nil {
+		w.logger.Error("report generate: read report settings failed",
+			slog.String("report_id", args.ReportID.String()),
+			slog.Any("error", err))
+		if isFinal {
+			_, _ = w.repo.FailReport(ctx, args.TenantID, args.ReportID, err.Error())
+			publishReportCompleted(ctx, w.svc.publisher, args.TenantID, args.ClientID, args.ReportID, StatusFailed)
 		}
-		_ = err
+		return err
 	}
 
 	// Get client info + agency name.
@@ -236,6 +246,30 @@ func (w *GenerateWorker) Work(ctx context.Context, job *river.Job[GenerateArgs])
 		slog.String("report_id", args.ReportID.String()),
 		slog.String("client_id", args.ClientID.String()))
 	return nil
+}
+
+// reportSettingsFor returns the report settings a run for this client uses:
+// the client's report_schedules row, which holds them all (sections, intro and
+// closing text, PoweredByRemoved). There is at most one row per client (UNIQUE
+// (client_id)), so a scheduled run and an on-demand run read the same
+// settings. An on-demand request's SectionsOverride is applied over the stored
+// sections. Nil, nil means the client has no settings saved and the request
+// overrides nothing: the report uses the defaults.
+func reportSettingsFor(ctx context.Context, repo Repo, args GenerateArgs) (*Schedule, error) {
+	s, found, err := repo.GetSchedule(ctx, args.TenantID, args.ClientID)
+	if err != nil {
+		return nil, fmt.Errorf("report generate: get report settings: %w", err)
+	}
+	if !found {
+		if args.SectionsOverride == nil {
+			return nil, nil
+		}
+		s = defaultSchedule(args.ClientID, args.TenantID)
+	}
+	if args.SectionsOverride != nil {
+		s.Sections = args.SectionsOverride.Apply(s.Sections)
+	}
+	return &s, nil
 }
 
 func (w *GenerateWorker) sendNotification(ctx context.Context, args GenerateArgs, rd ReportData, htmlKey, pdfKey string) {

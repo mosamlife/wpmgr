@@ -1935,9 +1935,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// Build aggregator Sources — adapters that bridge the report aggregator's
 		// from/to range API onto the existing metrics/rum/email stores.
 		reportSources := reportpkg.Sources{
-			ListClientSites: func(ctx context.Context, tenantID, clientID uuid.UUID) ([]site.Site, error) {
-				return siteSvc.List(ctx, site.ListInput{TenantID: tenantID, ClientID: &clientID})
-			},
+			// GH #970: every one of the client's sites, not List's first page.
+			ListClientSites: siteSvc.ListAllForClient,
 			QueryUptimeAggregateRange: func(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time) (metrics.Aggregate, error) {
 				return metricsStore.QueryAggregate(ctx, tenantID, siteID, to.Sub(from))
 			},
@@ -1975,6 +1974,25 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 						SiteID:   siteID,
 						FromTime: pgtype.Timestamptz{Time: from, Valid: true},
 						ToTime:   pgtype.Timestamptz{Time: to, Valid: true},
+					})
+					return qerr
+				})
+				return rows, err
+			},
+			// GH #969 version table. Called once per site with that one site's
+			// id, which ListClientSites returned for this client: under
+			// InAgentTx the tenant_id predicate is the tenant boundary and the
+			// site id list is the client boundary.
+			ListReportUpdateItems: func(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time, limit int32) ([]sqlc.ListReportUpdateItemsRow, error) {
+				var rows []sqlc.ListReportUpdateItemsRow
+				err := pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+					var qerr error
+					rows, qerr = sqlc.New(tx).ListReportUpdateItems(ctx, sqlc.ListReportUpdateItemsParams{
+						TenantID: tenantID,
+						SiteIds:  []uuid.UUID{siteID},
+						FromTime: pgtype.Timestamptz{Time: from, Valid: true},
+						ToTime:   pgtype.Timestamptz{Time: to, Valid: true},
+						RowLimit: limit,
 					})
 					return qerr
 				})
