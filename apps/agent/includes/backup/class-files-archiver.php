@@ -681,6 +681,9 @@ final class FilesArchiver
         // the next part number (1-indexed), the open ZipArchive handle, and
         // `pending_from`: the first paths.cache line held only by the open
         // part, which is where a resume must start again for this component.
+        // `saved_from` is the line this call resumed the component from; every
+        // line before it is in a closed part or settled, so no checkpoint of
+        // this call moves the component's cursor back below it.
         //
         // We open lazily: the first time a component sees an entry, we open
         // its next part. A component with zero matching entries emits zero
@@ -697,6 +700,7 @@ final class FilesArchiver
                 'part_path'            => '',
                 'kind'                 => $cfg['kind'],
                 'pending_from'         => null,
+                'saved_from'           => (int) $resumeFrom[$compName],
                 'queued_sources'       => [],
             ];
         }
@@ -1050,8 +1054,10 @@ final class FilesArchiver
     /**
      * The durable resume cursor after the parts closed so far. A component
      * whose open part holds lines resumes at the first of them; every other
-     * component resumes at $fileIndex. Skips inside an open part are left out
-     * so a resume decides them again.
+     * component resumes at $fileIndex. Neither is ever below the line this
+     * call resumed the component from, so a saved cursor never moves
+     * backwards over lines already in a closed part. Skips inside an open
+     * part are left out so a resume decides them again.
      *
      * @param array<string,mixed>                $run       Discovery facts for the whole pass.
      * @param array<string,array<string,mixed>>  $compState Per-component trackers.
@@ -1065,8 +1071,8 @@ final class FilesArchiver
         $components = [];
         $start      = $fileIndex;
         foreach ($compState as $name => $state) {
-            $from              = $state['pending_from'] ?? $fileIndex;
-            $components[$name] = ['current_part' => (int) $state['current_part'], 'resume_from' => (int) $from];
+            $from              = max((int) $state['saved_from'], (int) ($state['pending_from'] ?? $fileIndex));
+            $components[$name] = ['current_part' => (int) $state['current_part'], 'resume_from' => $from];
             $start             = min($start, (int) $from);
         }
         $pending = [];

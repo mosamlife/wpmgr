@@ -107,6 +107,44 @@ final class ArchiveResumeTest extends TestCase
         fwrite(STDOUT, "\nresumed parts=" . json_encode($result['parts']) . ' checkpoints=' . count($checkpoints) . "\n");
     }
 
+    public function testSavedCursorNeverMovesBackAcrossThreeWorkersWhileASourceGrows(): void
+    {
+        // A small root file, then uploads that fill one part.
+        $order = ['index.php', 'uploads/u00.jpg', 'uploads/u01.jpg', 'uploads/u02.jpg', 'uploads/u03.jpg', 'uploads/u04.jpg'];
+        $cache = '';
+        foreach ($order as $i => $rel) {
+            $path = $this->root . '/src/' . $rel;
+            if (!is_dir(dirname($path))) { mkdir(dirname($path), 0700, true); }
+            file_put_contents($path, str_repeat(chr(65 + $i), $rel === 'index.php' ? 10 : 120));
+            $cache .= (str_starts_with($rel, 'uploads/') ? 'uploads' : 'wp-content') . "\t" . $rel . "\n";
+        }
+        file_put_contents($this->root . '/out/paths.cache', $cache);
+
+        // Worker 1 closes the first uploads part while the root file's part is still open.
+        $first = $this->interruptAfter(1, ['total_files' => count($order)]);
+        self::assertSame(['uploads.g000.part001.zip'], $first['parts_completed']);
+        self::assertSame(0, $first['components']['wp-content']['resume_from'], 'the root file is only in an open part');
+        self::assertSame(4, $first['components']['uploads']['resume_from'], 'the closed part holds the first three uploads');
+
+        // The root file grows past the part size, so worker 2 closes its part
+        // before it reaches the saved uploads cursor, and is then ended.
+        file_put_contents($this->root . '/src/index.php', str_repeat('Z', 400));
+        $second = $this->interruptAfter(2, $first);
+        self::assertSame(['uploads.g000.part001.zip', 'wp-content.g000.part001.zip'], $second['parts_completed']);
+
+        // Worker 3 finishes from worker 2's cursor.
+        $result = $this->archiver()->archive($this->root . '/out', $second, static function (): void {});
+
+        $expected = $order;
+        sort($expected);
+        self::assertSame($expected, $this->entries($result['parts'], $this->root . '/out'), 'every file exactly once: a closed part is never archived again');
+        foreach ($first['components'] as $component => $cursor) {
+            self::assertGreaterThanOrEqual($cursor['resume_from'], $second['components'][$component]['resume_from'], $component . ': a saved cursor never moves backwards');
+        }
+        $this->assertDiskHoldsOnly($result['parts']);
+        fwrite(STDOUT, "\ncursors worker1=" . json_encode(array_column($first['components'], 'resume_from')) . ' worker2=' . json_encode(array_column($second['components'], 'resume_from')) . ' parts=' . json_encode($result['parts']) . "\n");
+    }
+
     public function testPartialAndAbandonedPartsAreRemovedBeforeTheResumedWorkerArchives(): void
     {
         $order = $this->interleavedTree();
