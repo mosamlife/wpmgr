@@ -170,15 +170,26 @@ final class CacheManager
      * now opens at init rather than at template_redirect, so it must not be
      * opened for requests that are never stored (they would only have their
      * streaming output held back): anything but GET, the admin area and
-     * admin-ajax, cron, WP-CLI, XML-RPC, the REST API and the login screen.
-     * Everything refused here is also refused by the writer at flush time, so
-     * no storable page is lost to this gate.
+     * admin-ajax, cron, WP-CLI, XML-RPC, the REST API and the login screen, and
+     * every script other than the front controller. Everything refused here is
+     * also refused by the writer at flush time, so no storable page is lost to
+     * this gate.
      *
      * @return bool
      */
     private function isBufferCandidate(): bool
     {
         if (defined('WP_CLI') && WP_CLI) {
+            return false;
+        }
+        // Only the front controller renders pages that are stored. The other
+        // scripts that load WordPress (the multisite signup and activation
+        // pages, the editor and feed helpers) never reached template_redirect,
+        // where this buffer used to open, so they were never stored: opening it
+        // earlier must not start storing them. An unset value (an unusual
+        // bootstrap) leaves the decision to the checks below.
+        $pagenow = isset($GLOBALS['pagenow']) && is_string($GLOBALS['pagenow']) ? $GLOBALS['pagenow'] : '';
+        if ($pagenow !== '' && $pagenow !== 'index.php') {
             return false;
         }
         if (defined('XMLRPC_REQUEST') && XMLRPC_REQUEST) {

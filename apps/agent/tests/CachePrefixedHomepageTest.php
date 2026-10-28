@@ -310,6 +310,68 @@ final class CachePrefixedHomepageTest extends TestCase
         $this->assertSame(1, $opened);
     }
 
+    /**
+     * Number of output buffers startBuffer() leaves open; the sink keeps the
+     * test runner's own buffering out of the count.
+     */
+    private function buffersOpenedBy(CacheManager $manager): int
+    {
+        ob_start();
+        $levelsBefore = ob_get_level();
+        $manager->startBuffer();
+        $opened = ob_get_level() - $levelsBefore;
+        while (ob_get_level() > $levelsBefore) {
+            ob_end_clean();
+        }
+        ob_end_clean();
+
+        return $opened;
+    }
+
+    /**
+     * The scripts that load WordPress without going through the front
+     * controller (the multisite signup and activation pages, the editor
+     * helpers) never reached template_redirect, where the buffer used to open,
+     * so they were never stored. Opening it at init must not start storing
+     * them: a signup form carries a nonce that only its own visitor can use.
+     *
+     * @dataProvider provide_scripts_that_are_not_the_front_controller
+     *
+     * @param string $script Script name as WordPress reports it in $pagenow.
+     */
+    public function test_a_script_other_than_the_front_controller_gets_no_buffer(string $script): void
+    {
+        $manager = $this->enabledManager();
+        $GLOBALS['pagenow']     = $script;
+        $_SERVER['REQUEST_URI'] = '/' . $script;
+
+        $this->assertSame(0, $this->buffersOpenedBy($manager), "$script must not open a capture buffer");
+    }
+
+    /**
+     * @return array<string,array{0:string}>
+     */
+    public static function provide_scripts_that_are_not_the_front_controller(): array
+    {
+        return [
+            'multisite signup'     => ['wp-signup.php'],
+            'multisite activation' => ['wp-activate.php'],
+            'cron'                 => ['wp-cron.php'],
+        ];
+    }
+
+    /**
+     * The front controller is the one script that does get the buffer.
+     */
+    public function test_the_front_controller_gets_a_buffer(): void
+    {
+        $manager = $this->enabledManager();
+        $GLOBALS['pagenow']     = 'index.php';
+        $_SERVER['REQUEST_URI'] = '/en/';
+
+        $this->assertSame(1, $this->buffersOpenedBy($manager));
+    }
+
     // ---------------------------------------------------------------------
     // Bypass URLs: matching.
     // ---------------------------------------------------------------------
