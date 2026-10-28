@@ -107,7 +107,52 @@ func (h *Handler) SetMetricsStore(ms MetricsStore) {
 func (h *Handler) SetReportSources(src report.Sources) {
 	cp := src
 	cp.GetFleetStatsBySite = nil // enforce: email source never exposed in portal
+	// The summary shows update counts only, so the per-site version-table
+	// query (GH #969) would be read and thrown away on every request.
+	cp.ListReportUpdateItems = nil
 	h.reportSources = &cp
+}
+
+const (
+	// sitePageSize is the most rows one site.Service.List call returns; a
+	// larger Limit is clamped to it, not refused.
+	sitePageSize = 200
+	// maxSitePages bounds the walk, so a list that ignored its offset could
+	// not loop for ever.
+	maxSitePages = 100
+)
+
+// listAllSites reads every site the principal can see, one page at a time.
+// Every page is requested with the same principal, which is what restricts the
+// rows to the sites it may see; only the offset changes. The summary uses it
+// to look up each report site's connection state and last backup, and a single
+// call stops at one page, so every site past the first 200 looked disconnected
+// with no backup.
+func listAllSites(ctx context.Context, sites SiteService, tenantID uuid.UUID, principal site.ScopedPrincipal) ([]site.Site, error) {
+	seen := make(map[uuid.UUID]struct{})
+	out := []site.Site{}
+	for page := 0; page < maxSitePages; page++ {
+		rows, err := sites.List(ctx, site.ListInput{
+			TenantID:  tenantID,
+			Limit:     sitePageSize,
+			Offset:    int32(page * sitePageSize),
+			Principal: principal,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range rows {
+			if _, dup := seen[s.ID]; dup {
+				continue
+			}
+			seen[s.ID] = struct{}{}
+			out = append(out, s)
+		}
+		if len(rows) < sitePageSize {
+			return out, nil
+		}
+	}
+	return nil, fmt.Errorf("portal: more than %d sites in scope", sitePageSize*maxSitePages)
 }
 
 // Register mounts portal routes on the authenticated v1 group.
@@ -346,12 +391,7 @@ func (h *Handler) summary(c *gin.Context) {
 	// Load sites list (name/URL/status/last_backup_at) for label and status
 	// joins. This is the same RLS-scoped list listSites uses.
 	// -----------------------------------------------------------------------
-	allSites, err := h.sites.List(c.Request.Context(), site.ListInput{
-		TenantID:  p.TenantID,
-		Limit:     500,
-		Offset:    0,
-		Principal: p,
-	})
+	allSites, err := listAllSites(c.Request.Context(), h.sites, p.TenantID, p)
 	if err != nil {
 		httpx.Error(c, domain.Internal("portal_summary_sites_failed", "failed to list sites").WithCause(err))
 		return

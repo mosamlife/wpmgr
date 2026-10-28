@@ -22,7 +22,14 @@ import (
 type Repo interface {
 	// Schedule management — run under InTenantTx.
 	GetSchedule(ctx context.Context, tenantID, clientID uuid.UUID) (Schedule, bool, error)
-	UpsertSchedule(ctx context.Context, in UpsertScheduleInput) (Schedule, error)
+	// UpsertSchedule saves a client's report schedule. The read of the stored
+	// schedule, merge and the write are one tenant transaction, serialised per
+	// client by an advisory lock, so two overlapping saves cannot undo each
+	// other's change; the lock is on the client, not the row, so it covers the
+	// first save too. merge is called once, inside the transaction, with the
+	// stored schedule, and the schedule it returns is written for tenantID and
+	// clientID whatever ids it carries.
+	UpsertSchedule(ctx context.Context, tenantID, clientID uuid.UUID, merge ScheduleMerge) (Schedule, error)
 
 	// Due-scan — run under InAgentTx (cross-tenant).
 	ListDueSchedules(ctx context.Context, limit int32) ([]DueSchedule, error)
@@ -51,6 +58,11 @@ type Repo interface {
 	// (name, company, logo_url, accent color, timezone) under InAgentTx.
 	// Returns ErrNotFound when no client row exists for the given tenant.
 	GetClientInfo(ctx context.Context, tenantID, clientID uuid.UUID) (ClientInfo, error)
+
+	// GetClientTimezone returns the IANA timezone on the client's record,
+	// which the schedule's send hour is in, or "" when the client has no row.
+	// Operator path, under InTenantTx.
+	GetClientTimezone(ctx context.Context, tenantID, clientID uuid.UUID) (string, error)
 }
 
 type pgRepo struct {
@@ -70,28 +82,68 @@ func (r *pgRepo) GetSchedule(ctx context.Context, tenantID, clientID uuid.UUID) 
 	var out Schedule
 	var found bool
 	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-		row, qerr := sqlc.New(tx).GetReportSchedule(ctx, sqlc.GetReportScheduleParams{
-			ClientID: clientID,
-			TenantID: tenantID,
-		})
-		if qerr != nil {
-			if errors.Is(qerr, pgx.ErrNoRows) {
-				found = false
-				return nil
-			}
-			return domain.Internal("report_schedule_get_failed", "failed to load report schedule").WithCause(qerr)
-		}
-		found = true
-		var parseErr error
-		out, parseErr = rowToSchedule(row)
-		return parseErr
+		var gerr error
+		out, found, gerr = getScheduleTx(ctx, tx, tenantID, clientID)
+		return gerr
 	})
 	return out, found, err
 }
 
-func (r *pgRepo) UpsertSchedule(ctx context.Context, in UpsertScheduleInput) (Schedule, error) {
+// getScheduleTx reads a client's schedule inside a tenant transaction. found is
+// false when the client has none.
+func getScheduleTx(ctx context.Context, tx pgx.Tx, tenantID, clientID uuid.UUID) (Schedule, bool, error) {
+	row, qerr := sqlc.New(tx).GetReportSchedule(ctx, sqlc.GetReportScheduleParams{
+		ClientID: clientID,
+		TenantID: tenantID,
+	})
+	if qerr != nil {
+		if errors.Is(qerr, pgx.ErrNoRows) {
+			return Schedule{}, false, nil
+		}
+		return Schedule{}, false, domain.Internal("report_schedule_get_failed", "failed to load report schedule").WithCause(qerr)
+	}
+	out, parseErr := rowToSchedule(row)
+	if parseErr != nil {
+		return Schedule{}, false, parseErr
+	}
+	return out, true, nil
+}
+
+// scheduleSaveLockKey is the first half of the advisory-lock key that serialises
+// saves of one client's report schedule; the second half is the client id.
+const scheduleSaveLockKey = "report_schedule"
+
+// lockScheduleSave takes the transaction-scoped advisory lock for one client's
+// schedule saves. It must be the first statement after the tenant is set,
+// ahead of the read the save merges over: under READ COMMITTED the read that
+// follows the wait then sees whatever the save ahead of it committed. The lock
+// is on the client rather than on the row, which does not exist before the
+// first save.
+func lockScheduleSave(ctx context.Context, tx pgx.Tx, clientID uuid.UUID) error {
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+		scheduleSaveLockKey, clientID.String(),
+	); err != nil {
+		return domain.Internal("report_schedule_lock_failed", "failed to lock the report schedule for saving").WithCause(err)
+	}
+	return nil
+}
+
+func (r *pgRepo) UpsertSchedule(ctx context.Context, tenantID, clientID uuid.UUID, merge ScheduleMerge) (Schedule, error) {
 	var out Schedule
-	err := r.pool.InTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		if err := lockScheduleSave(ctx, tx, clientID); err != nil {
+			return err
+		}
+		stored, found, err := getScheduleTx(ctx, tx, tenantID, clientID)
+		if err != nil {
+			return err
+		}
+		in := merge(stored, found)
+		// The write is for the client that was locked and read, whatever ids the
+		// merge carried.
+		in.TenantID, in.ClientID = tenantID, clientID
+
 		recipJSON, err := json.Marshal(in.Recipients)
 		if err != nil {
 			return domain.Internal("report_schedule_marshal_failed", "failed to marshal recipients").WithCause(err)
@@ -417,13 +469,33 @@ func (r *pgRepo) GetClientInfo(ctx context.Context, tenantID, clientID uuid.UUID
 	return out, err
 }
 
+func (r *pgRepo) GetClientTimezone(ctx context.Context, tenantID, clientID uuid.UUID) (string, error) {
+	var tz string
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		row, qerr := sqlc.New(tx).GetClientWithTimezone(ctx, sqlc.GetClientWithTimezoneParams{
+			ID:       clientID,
+			TenantID: tenantID,
+		})
+		if qerr != nil {
+			if errors.Is(qerr, pgx.ErrNoRows) {
+				return nil
+			}
+			return domain.Internal("report_client_timezone_failed", "failed to load the client's timezone").WithCause(qerr)
+		}
+		tz = row.Timezone
+		return nil
+	})
+	return tz, err
+}
+
 // getActiveReportQuery selects the most recent pending or generating report
 // for a client. No sqlc wrapper — avoids a regen cycle for this single extra
 // query whose filter (status IN (...)) doesn't fit the existing ListReports
 // keyset shape.
 const getActiveReportQuery = `
 SELECT id, tenant_id, client_id, schedule_id, period_start, period_end,
-       status, html_blob_key, pdf_blob_key, error, created_at, completed_at
+       status, html_blob_key, pdf_blob_key, error, created_at, updated_at,
+       completed_at
 FROM generated_reports
 WHERE tenant_id = $1
   AND client_id = $2
@@ -458,6 +530,7 @@ func (r *pgRepo) GetActiveReport(ctx context.Context, tenantID, clientID uuid.UU
 				&pdfKey,
 				&errMsg,
 				&out.CreatedAt,
+				&out.UpdatedAt,
 				&completedAt,
 			); scanErr != nil {
 				return domain.Internal("report_active_scan_failed", "failed to scan active report").WithCause(scanErr)
@@ -569,6 +642,7 @@ func rowToReport(row sqlc.GeneratedReport) GeneratedReport {
 		PDFBlobKey:  row.PdfBlobKey,
 		Error:       row.Error,
 		CreatedAt:   row.CreatedAt,
+		UpdatedAt:   row.UpdatedAt,
 	}
 	if row.ScheduleID.Valid {
 		id := uuid.UUID(row.ScheduleID.Bytes)
@@ -579,4 +653,51 @@ func rowToReport(row sqlc.GeneratedReport) GeneratedReport {
 		r.CompletedAt = &t
 	}
 	return r
+}
+
+// ---------------------------------------------------------------------------
+// Aggregator update sources (wired in cmd/wpmgr/main.go)
+// ---------------------------------------------------------------------------
+
+// UpdateReportStatsSource is the production Sources.GetUpdateReportStats. It
+// runs under InAgentTx, where RLS admits every tenant's update_tasks rows, so
+// the query's tenant_id predicate is the tenant boundary.
+func UpdateReportStatsSource(pool *db.Pool) func(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time) ([]sqlc.GetUpdateReportStatsRow, error) {
+	return func(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time) ([]sqlc.GetUpdateReportStatsRow, error) {
+		var rows []sqlc.GetUpdateReportStatsRow
+		err := pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+			var qerr error
+			rows, qerr = sqlc.New(tx).GetUpdateReportStats(ctx, sqlc.GetUpdateReportStatsParams{
+				TenantID: tenantID,
+				SiteID:   siteID,
+				FromTime: pgtype.Timestamptz{Time: from, Valid: true},
+				ToTime:   pgtype.Timestamptz{Time: to, Valid: true},
+			})
+			return qerr
+		})
+		return rows, err
+	}
+}
+
+// ListReportUpdateItemsSource is the production Sources.ListReportUpdateItems
+// (GH #969 version table). It is called once per site with that one site's
+// id, which ListClientSites returned for this client: under InAgentTx the
+// tenant_id predicate is the tenant boundary and the site id list is the
+// client boundary.
+func ListReportUpdateItemsSource(pool *db.Pool) func(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time, limit int32) ([]sqlc.ListReportUpdateItemsRow, error) {
+	return func(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time, limit int32) ([]sqlc.ListReportUpdateItemsRow, error) {
+		var rows []sqlc.ListReportUpdateItemsRow
+		err := pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+			var qerr error
+			rows, qerr = sqlc.New(tx).ListReportUpdateItems(ctx, sqlc.ListReportUpdateItemsParams{
+				TenantID: tenantID,
+				SiteIds:  []uuid.UUID{siteID},
+				FromTime: pgtype.Timestamptz{Time: from, Valid: true},
+				ToTime:   pgtype.Timestamptz{Time: to, Valid: true},
+				RowLimit: limit,
+			})
+			return qerr
+		})
+		return rows, err
+	}
 }

@@ -18,11 +18,16 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
-// Enqueuer schedules report generation jobs (River). Declared as an interface
-// so the service is unit-testable with a fake (mirrors backup.Enqueuer pattern).
-// Wired after the River client starts via SetEnqueuer.
+// Enqueuer schedules report generation jobs (River) and says whether a report
+// still has one. Declared as an interface so the service is unit-testable with a
+// fake (mirrors backup.Enqueuer pattern). Wired after the River client starts
+// via SetEnqueuer.
 type Enqueuer interface {
 	EnqueueGenerate(ctx context.Context, args GenerateArgs) error
+	// HasActiveGenerateJob reports whether a generate job for the report is still
+	// queued, waiting for a retry or running: a job that can still complete or
+	// fail the report's row. It says nothing about the row itself.
+	HasActiveGenerateJob(ctx context.Context, tenantID, reportID uuid.UUID) (bool, error)
 }
 
 // MailerEnabled is the subset of mailer.Service needed to check whether the
@@ -100,9 +105,14 @@ func (s *Service) GetSchedule(ctx context.Context, tenantID, clientID uuid.UUID)
 	}
 	if !found {
 		// Return defaults without creating a row.
-		return defaultSchedule(clientID, tenantID), false, nil
+		sched = defaultSchedule(clientID, tenantID)
 	}
-	return sched, true, nil
+	tz, err := s.repo.GetClientTimezone(ctx, tenantID, clientID)
+	if err != nil {
+		return Schedule{}, false, err
+	}
+	sched.Timezone = tz
+	return sched, found, nil
 }
 
 // UpsertSchedule validates and upserts a report schedule.
@@ -113,13 +123,37 @@ func (s *Service) UpsertSchedule(ctx context.Context, in UpsertScheduleInput) (S
 	}
 	// FIX-3: use the cleaned (deduped, canonicalized) recipients, not the raw input.
 	in.Recipients = cleaned
+	// The send hour is in the client's timezone, the one the scanner computes
+	// every later run in, so the first run is computed in it too.
+	tz, err := s.repo.GetClientTimezone(ctx, in.TenantID, in.ClientID)
+	if err != nil {
+		return Schedule{}, err
+	}
 	if in.Enabled {
-		next := nextRunAt(in.Cadence, in.SendDay, in.SendHour, "UTC")
-		in.NextRunAt = next
+		in.NextRunAt = nextRunAt(in.Cadence, in.SendDay, in.SendHour, tz)
 	} else {
 		in.NextRunAt = nil
 	}
-	return s.repo.UpsertSchedule(ctx, in)
+	// GH #972: a section the request did not send keeps its stored value. The
+	// settings form has no Overview control, so replacing the stored flags
+	// with the request's turned Overview off on every save.
+	//
+	// The stored sections are read, merged over and written back in one
+	// transaction, one save of the client at a time. Read apart from the write,
+	// two saves that each change a different section undo each other.
+	saved, err := s.repo.UpsertSchedule(ctx, in.TenantID, in.ClientID, func(stored Schedule, found bool) UpsertScheduleInput {
+		base := DefaultSectionFlags()
+		if found {
+			base = stored.Sections
+		}
+		in.Sections = in.SectionsPatch.Apply(base)
+		return in
+	})
+	if err != nil {
+		return Schedule{}, err
+	}
+	saved.Timezone = tz
+	return saved, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -132,7 +166,10 @@ func (s *Service) UpsertSchedule(ctx context.Context, in UpsertScheduleInput) (S
 //
 // Abuse guard: if a pending or generating report already exists for this client
 // the existing report is returned (same 202 body) rather than creating a
-// duplicate job. This prevents queue flooding from repeated calls.
+// duplicate job. This prevents queue flooding from repeated calls. A report
+// untouched for staleReportAfter is replaced only when no job for it is still
+// queued or running; one whose job is only waiting in the queue is returned like
+// any other report in flight.
 //
 // If the River enqueue fails after row creation, the row is marked failed so
 // it doesn't remain in a forever-pending state.
@@ -159,9 +196,32 @@ func (s *Service) GenerateNow(ctx context.Context, tenantID, clientID uuid.UUID,
 
 	// FIX-4 abuse guard: return the existing in-flight report rather than
 	// creating a new one. This bounds per-client queue depth to 1 on-demand job.
+	//
+	// A row nothing has touched for staleReportAfter may belong to a job that
+	// died without finishing it. Then it is marked failed and the request goes
+	// through; returning it would refuse "Generate now" for this client for ever.
+	//
+	// Untouched is not dead. A job still waiting in a busy queue has touched
+	// nothing either, and failing the row of a scheduled report leaves the client
+	// without that period's email: the replacement is an on-demand report, which
+	// notifies only when the request asks it to. So the row is failed only when
+	// no job for it is queued or running, and a report that still has one is
+	// returned like any other in flight.
 	existing, found, err := s.repo.GetActiveReport(ctx, tenantID, clientID)
 	if err == nil && found {
-		return existing, nil
+		if !reportIsStale(existing, now) {
+			return existing, nil
+		}
+		live, liveErr := s.reportHasLiveJob(ctx, tenantID, existing.ID)
+		if liveErr != nil {
+			// Not knowing is not the same as the job being gone: the row is left as
+			// it is and the request fails, so a retry can decide.
+			return GeneratedReport{}, domain.Internal("report_job_check_failed", "failed to check whether the report's job is still queued").WithCause(liveErr)
+		}
+		if live {
+			return existing, nil
+		}
+		_, _ = s.repo.FailReport(ctx, tenantID, existing.ID, "report generation did not finish")
 	}
 
 	rpt, err := s.repo.CreateReport(ctx, CreateReportInput{
@@ -178,12 +238,13 @@ func (s *Service) GenerateNow(ctx context.Context, tenantID, clientID uuid.UUID,
 	// immediately so it doesn't remain forever-pending.
 	if s.enqueuer != nil {
 		if enqErr := s.enqueuer.EnqueueGenerate(ctx, GenerateArgs{
-			TenantID:    tenantID,
-			ClientID:    clientID,
-			ReportID:    rpt.ID,
-			PeriodStart: start,
-			PeriodEnd:   end,
-			Notify:      in.Notify,
+			TenantID:         tenantID,
+			ClientID:         clientID,
+			ReportID:         rpt.ID,
+			PeriodStart:      start,
+			PeriodEnd:        end,
+			Notify:           in.Notify,
+			SectionsOverride: in.Sections,
 		}); enqErr != nil {
 			// Best-effort fail the row so callers can see it errored.
 			_, _ = s.repo.FailReport(ctx, tenantID, rpt.ID, "enqueue failed: "+enqErr.Error())
@@ -191,6 +252,24 @@ func (s *Service) GenerateNow(ctx context.Context, tenantID, clientID uuid.UUID,
 		}
 	}
 	return rpt, nil
+}
+
+// reportIsStale reports whether an in-flight report row has gone untouched for
+// staleReportAfter, which makes its job suspect: it died, or it is still waiting
+// in the queue. reportHasLiveJob tells the two apart. A row without an update
+// time proves nothing and is not stale.
+func reportIsStale(r GeneratedReport, now time.Time) bool {
+	return !r.UpdatedAt.IsZero() && now.Sub(r.UpdatedAt) > staleReportAfter
+}
+
+// reportHasLiveJob reports whether a generate job for the report is still queued
+// or running. A service with no queue wired has queued nothing, so nothing is
+// waiting.
+func (s *Service) reportHasLiveJob(ctx context.Context, tenantID, reportID uuid.UUID) (bool, error) {
+	if s.enqueuer == nil {
+		return false, nil
+	}
+	return s.enqueuer.HasActiveGenerateJob(ctx, tenantID, reportID)
 }
 
 // ---------------------------------------------------------------------------
@@ -330,10 +409,13 @@ func validateScheduleInput(in UpsertScheduleInput) ([]string, error) {
 	if in.SendHour < 0 || in.SendHour > 23 {
 		return nil, domain.Validation("invalid_send_hour", "send_hour must be 0-23")
 	}
-	if len(in.IntroText) > maxIntroClosingLen {
+	// Characters, not bytes: the limit is the spec's maxLength and the message
+	// below says characters, and a byte count would turn away text in any
+	// script that takes more than one byte a character.
+	if utf8.RuneCountInString(in.IntroText) > maxIntroClosingLen {
 		return nil, domain.Validation("intro_text_too_long", fmt.Sprintf("intro_text must be %d characters or fewer", maxIntroClosingLen))
 	}
-	if len(in.ClosingText) > maxIntroClosingLen {
+	if utf8.RuneCountInString(in.ClosingText) > maxIntroClosingLen {
 		return nil, domain.Validation("closing_text_too_long", fmt.Sprintf("closing_text must be %d characters or fewer", maxIntroClosingLen))
 	}
 	// Validate and de-duplicate recipients; return cleaned slice to the caller.
@@ -397,13 +479,12 @@ func defaultSchedule(clientID, tenantID uuid.UUID) Schedule {
 	}
 }
 
-// validatePeriodLabel is unused at the moment but kept for future reference.
-var _ = utf8.ValidString
-
 // GenerateNowInput is the parsed+validated body for POST /reports.
 type GenerateNowInput struct {
 	PeriodStart time.Time
 	PeriodEnd   time.Time
-	Sections    SectionFlags
-	Notify      bool
+	// Sections is the request's optional override of the client's stored
+	// report sections (GH #971); nil uses the stored sections unchanged.
+	Sections *SectionFlagsPatch
+	Notify   bool
 }

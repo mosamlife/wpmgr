@@ -7,6 +7,8 @@
 package reportdata
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -192,6 +194,108 @@ type UpdateSection struct {
 	Core    int64 `json:"core"`
 	Failed  int64 `json:"failed"`
 	Total   int64 `json:"total"`
+
+	// Items is the version table (GH #969): what changed on this site in the
+	// period, oldest first, at most UpdateItemsPerSite rows. Successful updates
+	// of one plugin, theme or core are folded into one row; every failed or
+	// rolled-back attempt is a row of its own. Empty when nothing changed or
+	// the change list could not be read; the counts above stand either way.
+	Items []UpdateItem `json:"items,omitempty"`
+	// MoreItems is how many further rows the table had beyond Items.
+	MoreItems int `json:"more_items,omitempty"`
+	// MoreItemsAtLeast is true when the change list was cut at the data
+	// source, so MoreItems is a lower bound and the true number is higher.
+	MoreItemsAtLeast bool `json:"more_items_at_least,omitempty"`
+}
+
+// UpdateItemsPerSite is the most version-table rows one site shows.
+const UpdateItemsPerSite = 50
+
+// Update item statuses, as recorded on the update task.
+const (
+	UpdateStatusSucceeded  = "succeeded"
+	UpdateStatusFailed     = "failed"
+	UpdateStatusRolledBack = "rolled_back"
+)
+
+// UpdateItem is one row of the version table.
+type UpdateItem struct {
+	Type string `json:"type"` // plugin|theme|core
+	Slug string `json:"slug"`
+	// Name is the component's name from the site's current inventory, or the
+	// slug when the inventory does not list it.
+	Name string `json:"name"`
+	// FromVersion and ToVersion are "" when the version was not recorded;
+	// renderers print that as "unknown" (FromLabel, ToLabel).
+	FromVersion string    `json:"from_version"`
+	ToVersion   string    `json:"to_version"`
+	Status      string    `json:"status"` // succeeded|failed|rolled_back
+	Date        time.Time `json:"date"`
+}
+
+// VersionLabel is how a recorded version prints: as itself, or "unknown"
+// when none was recorded.
+func VersionLabel(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "unknown"
+	}
+	return v
+}
+
+// FromLabel is the printed from-version.
+func (i UpdateItem) FromLabel() string { return VersionLabel(i.FromVersion) }
+
+// ToLabel is the printed to-version.
+func (i UpdateItem) ToLabel() string { return VersionLabel(i.ToVersion) }
+
+// TypeLabel is the printed component kind.
+func (i UpdateItem) TypeLabel() string {
+	switch i.Type {
+	case "plugin":
+		return "Plugin"
+	case "theme":
+		return "Theme"
+	case "core":
+		return "Core"
+	default:
+		return i.Type
+	}
+}
+
+// StatusLabel is the printed outcome.
+func (i UpdateItem) StatusLabel() string {
+	switch i.Status {
+	case UpdateStatusSucceeded:
+		return "Updated"
+	case UpdateStatusFailed:
+		return "Failed"
+	case UpdateStatusRolledBack:
+		return "Rolled back"
+	default:
+		return i.Status
+	}
+}
+
+// MoreItemsLabel is the line printed under a cut table, or "" when nothing
+// was cut. Both renderers print exactly this string.
+func (u UpdateSection) MoreItemsLabel() string {
+	if u.MoreItems <= 0 && !u.MoreItemsAtLeast {
+		return ""
+	}
+	if u.MoreItemsAtLeast {
+		if u.MoreItems <= 0 {
+			return "and more changes not listed"
+		}
+		return fmt.Sprintf("and at least %d more %s", u.MoreItems, changesWord(u.MoreItems))
+	}
+	return fmt.Sprintf("and %d more %s", u.MoreItems, changesWord(u.MoreItems))
+}
+
+func changesWord(n int) string {
+	if n == 1 {
+		return "change"
+	}
+	return "changes"
 }
 
 // PerfSection holds Core Web Vitals p75 for one site (all-devices aggregate).

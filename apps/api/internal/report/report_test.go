@@ -30,6 +30,8 @@ type stubRepo struct {
 	getActiveReport func(ctx context.Context, tenantID, clientID uuid.UUID) (GeneratedReport, bool, error)
 	getTenantName   func(ctx context.Context, tenantID uuid.UUID) (string, error)
 	getClientInfo   func(ctx context.Context, tenantID, clientID uuid.UUID) (ClientInfo, error)
+	// getClientTimezone stands in for the client's timezone; unset is "".
+	getClientTimezone func(ctx context.Context, tenantID, clientID uuid.UUID) (string, error)
 }
 
 func (r *stubRepo) GetSchedule(ctx context.Context, tenantID, clientID uuid.UUID) (Schedule, bool, error) {
@@ -38,7 +40,14 @@ func (r *stubRepo) GetSchedule(ctx context.Context, tenantID, clientID uuid.UUID
 	}
 	return Schedule{}, false, nil
 }
-func (r *stubRepo) UpsertSchedule(ctx context.Context, in UpsertScheduleInput) (Schedule, error) {
+func (r *stubRepo) UpsertSchedule(ctx context.Context, tenantID, clientID uuid.UUID, merge ScheduleMerge) (Schedule, error) {
+	// Like the real repo: the stored schedule goes through merge, and what merge
+	// returns is what is written (upsertSchedule sees it).
+	stored, found, err := r.GetSchedule(ctx, tenantID, clientID)
+	if err != nil {
+		return Schedule{}, err
+	}
+	in := merge(stored, found)
 	if r.upsertSchedule != nil {
 		return r.upsertSchedule(ctx, in)
 	}
@@ -72,7 +81,8 @@ func (r *stubRepo) FailReport(ctx context.Context, tenantID, id uuid.UUID, errMs
 	return GeneratedReport{ID: id, Status: StatusFailed}, nil
 }
 func (r *stubRepo) GetReport(ctx context.Context, tenantID, clientID, id uuid.UUID) (GeneratedReport, error) {
-	return GeneratedReport{}, nil
+	// A report row waiting for its job: what a worker finds on the first attempt.
+	return GeneratedReport{ID: id, TenantID: tenantID, ClientID: clientID, Status: StatusPending}, nil
 }
 func (r *stubRepo) ListReports(ctx context.Context, in ListReportsInput) (ListReportsResult, error) {
 	return ListReportsResult{}, nil
@@ -92,6 +102,12 @@ func (r *stubRepo) GetClientInfo(ctx context.Context, tenantID, clientID uuid.UU
 	}
 	return ClientInfo{}, nil
 }
+func (r *stubRepo) GetClientTimezone(ctx context.Context, tenantID, clientID uuid.UUID) (string, error) {
+	if r.getClientTimezone != nil {
+		return r.getClientTimezone(ctx, tenantID, clientID)
+	}
+	return "", nil
+}
 func (r *stubRepo) GetActiveReport(ctx context.Context, tenantID, clientID uuid.UUID) (GeneratedReport, bool, error) {
 	if r.getActiveReport != nil {
 		return r.getActiveReport(ctx, tenantID, clientID)
@@ -106,7 +122,17 @@ func (r *stubRepo) GetActiveReport(ctx context.Context, tenantID, clientID uuid.
 type fakeEnqueuer struct {
 	calls []GenerateArgs
 	err   error
+
+	// active names the reports that still have a queued or running job; any
+	// other report has none. activeErr fails the lookup. asked records every
+	// report the lookup was made for.
+	active    map[uuid.UUID]bool
+	activeErr error
+	asked     []activeJobQuery
 }
+
+// activeJobQuery is one HasActiveGenerateJob call.
+type activeJobQuery struct{ tenantID, reportID uuid.UUID }
 
 func (f *fakeEnqueuer) EnqueueGenerate(_ context.Context, args GenerateArgs) error {
 	if f.err != nil {
@@ -114,6 +140,14 @@ func (f *fakeEnqueuer) EnqueueGenerate(_ context.Context, args GenerateArgs) err
 	}
 	f.calls = append(f.calls, args)
 	return nil
+}
+
+func (f *fakeEnqueuer) HasActiveGenerateJob(_ context.Context, tenantID, reportID uuid.UUID) (bool, error) {
+	f.asked = append(f.asked, activeJobQuery{tenantID: tenantID, reportID: reportID})
+	if f.activeErr != nil {
+		return false, f.activeErr
+	}
+	return f.active[reportID], nil
 }
 
 // ---------------------------------------------------------------------------

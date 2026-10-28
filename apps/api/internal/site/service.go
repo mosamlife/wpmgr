@@ -3,6 +3,7 @@ package site
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/url"
 	"regexp"
@@ -243,6 +244,53 @@ func (s *Service) List(ctx context.Context, in ListInput) ([]Site, error) {
 	}
 
 	return sites, nil
+}
+
+// clientSitesPageSize is the page ListAllForClient reads, the largest List
+// accepts; clientSitesMaxPages bounds the walk, so a repo that ignored the
+// offset could not loop forever.
+const (
+	clientSitesPageSize = 200
+	clientSitesMaxPages = 100
+)
+
+// ListAllForClient returns EVERY non-archived site assigned to clientID, in
+// List's default order, reading as many pages as that takes (GH #970). It
+// exists for the client report, which must cover all of a client's sites;
+// List caps one call at a page and reported a client's first 50 sites.
+//
+// It reads through the same repo query and tenant transaction as List but
+// skips List's uptime enrichment, which the report computes for itself. A
+// site that appears on two pages (one was added between reads) is kept once.
+func (s *Service) ListAllForClient(ctx context.Context, tenantID, clientID uuid.UUID) ([]Site, error) {
+	if tenantID == uuid.Nil {
+		return nil, domain.Forbidden("tenant_required", "a tenant context is required")
+	}
+	seen := make(map[uuid.UUID]struct{})
+	out := []Site{}
+	for page := 0; page < clientSitesMaxPages; page++ {
+		rows, err := s.repo.List(ctx, ListInput{
+			TenantID: tenantID,
+			ClientID: &clientID,
+			Limit:    clientSitesPageSize,
+			Offset:   int32(page * clientSitesPageSize),
+			Sort:     string(DefaultListSort),
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			if _, dup := seen[r.ID]; dup {
+				continue
+			}
+			seen[r.ID] = struct{}{}
+			out = append(out, r)
+		}
+		if len(rows) < clientSitesPageSize {
+			return out, nil
+		}
+	}
+	return nil, fmt.Errorf("site: client %s has more than %d sites", clientID, clientSitesPageSize*clientSitesMaxPages)
 }
 
 // ListAllSiteIDs returns every non-archived site ID for the tenant in a single

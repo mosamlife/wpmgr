@@ -13,6 +13,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/email"
 	"github.com/mosamlife/wpmgr/apps/api/internal/metrics"
+	"github.com/mosamlife/wpmgr/apps/api/internal/report/reportdata"
 	"github.com/mosamlife/wpmgr/apps/api/internal/rum"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	"github.com/mosamlife/wpmgr/apps/api/internal/update"
@@ -57,6 +58,11 @@ type Sources struct {
 	GetLatestCompletedAt func(ctx context.Context, tenantID, siteID uuid.UUID) (*time.Time, error)
 	// Update data.
 	GetUpdateReportStats func(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time) ([]sqlc.GetUpdateReportStatsRow, error)
+	// ListReportUpdateItems returns one site's finished update tasks in
+	// [from, to), oldest first, at most limit rows (GH #969 version table).
+	// It is called once per site with that site's id only. When nil, the
+	// Updates section carries its counts and no table.
+	ListReportUpdateItems func(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time, limit int32) ([]sqlc.ListReportUpdateItemsRow, error)
 	// RUM / performance data.
 	GetDailyRollups func(ctx context.Context, siteID, tenantID uuid.UUID, sinceDay time.Time) ([]rum.DailyRollup, error)
 	// Email data.
@@ -326,7 +332,8 @@ func overlapForIntervals(intervals []PauseInterval, from, to time.Time) (pauseOv
 // BuildReportData aggregates all section data for the given client and period.
 // A failing section source degrades that section to nil + slog.Warn — it does
 // NOT fail the whole report. Only sections enabled by the schedule flags are
-// populated.
+// populated. The list of the client's sites is not a section: when it cannot
+// be read there is nothing to report, and the error is returned.
 func BuildReportData(ctx context.Context, sources Sources, in BuildInput) (ReportData, error) {
 	sections := DefaultSectionFlags()
 	if in.Schedule != nil {
@@ -358,13 +365,15 @@ func BuildReportData(ctx context.Context, sources Sources, in BuildInput) (Repor
 		Sections:      sections,
 	}
 
-	// Enumerate sites assigned to this client.
+	// Enumerate sites assigned to this client. A failed read is an error, not
+	// an empty report: a report with no sites would be stored and sent as the
+	// client's real report. The generate job fails the attempt and River
+	// retries it.
 	sites, err := sources.ListClientSites(ctx, in.TenantID, in.ClientID)
 	if err != nil {
 		slog.Warn("report aggregator: list client sites failed",
 			slog.String("client_id", in.ClientID.String()), slog.Any("error", err))
-		rd.Sites = []SiteReport{}
-		return rd, nil
+		return ReportData{}, fmt.Errorf("report aggregator: list client sites: %w", err)
 	}
 
 	// Pre-fetch email stats for all sites in one query.
@@ -453,7 +462,7 @@ func BuildReportData(ctx context.Context, sources Sources, in BuildInput) (Repor
 
 		// Updates section.
 		if sections.Updates && sources.GetUpdateReportStats != nil {
-			us2 := buildUpdateSection(ctx, sources, in.TenantID, s.ID, in.PeriodStart, in.PeriodEnd)
+			us2 := buildUpdateSection(ctx, sources, in.TenantID, s, in.PeriodStart, in.PeriodEnd)
 			if us2 != nil {
 				sr.Updates = us2
 				totals.UpdatesApplied += us2.Total
@@ -580,7 +589,8 @@ func buildBackupSection(ctx context.Context, src Sources, tenantID, siteID uuid.
 	return bs
 }
 
-func buildUpdateSection(ctx context.Context, src Sources, tenantID, siteID uuid.UUID, from, to time.Time) *UpdateSection {
+func buildUpdateSection(ctx context.Context, src Sources, tenantID uuid.UUID, s site.Site, from, to time.Time) *UpdateSection {
+	siteID := s.ID
 	rows, err := src.GetUpdateReportStats(ctx, tenantID, siteID, from, to)
 	if err != nil {
 		slog.Warn("report aggregator: update stats failed",
@@ -600,7 +610,107 @@ func buildUpdateSection(ctx context.Context, src Sources, tenantID, siteID uuid.
 		us.Failed += row.Failed
 	}
 	us.Total = us.Plugins + us.Themes + us.Core
+
+	if src.ListReportUpdateItems != nil {
+		items, ierr := src.ListReportUpdateItems(ctx, tenantID, siteID, from, to, updateItemsFetchCap+1)
+		if ierr != nil {
+			// The counts above are still true; only the table is missing.
+			slog.Warn("report aggregator: update items failed",
+				slog.String("site_id", siteID.String()), slog.Any("error", ierr))
+		} else {
+			cut := len(items) > updateItemsFetchCap
+			if cut {
+				items = items[:updateItemsFetchCap]
+			}
+			us.Items, us.MoreItems = capUpdateItems(foldUpdateItems(items, componentNamer(s)), reportdata.UpdateItemsPerSite)
+			us.MoreItemsAtLeast = cut
+		}
+	}
 	return us
+}
+
+// updateItemsFetchCap is how many update tasks one site's version table reads.
+// It is far above what a site does in the longest report window (92 days), so
+// reaching it means the list was cut and the overflow count is a lower bound.
+const updateItemsFetchCap = 1000
+
+// foldUpdateItems turns one site's update tasks into version-table rows.
+//
+// Successful updates of the same (type, slug) become ONE row, running from the
+// first task's from-version to the last task's to-version and dated by the
+// last. Every failed or rolled-back attempt is a row of its own. Rows are
+// ordered by their date, oldest first.
+func foldUpdateItems(rows []sqlc.ListReportUpdateItemsRow, name func(typ, slug string) string) []UpdateItem {
+	ordered := make([]sqlc.ListReportUpdateItemsRow, len(rows))
+	copy(ordered, rows)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].FinishedAt.Time.Before(ordered[j].FinishedAt.Time)
+	})
+
+	type key struct{ typ, slug string }
+	folded := make(map[key]int)
+	items := make([]UpdateItem, 0, len(ordered))
+	for _, r := range ordered {
+		var at time.Time
+		if r.FinishedAt.Valid {
+			at = r.FinishedAt.Time.UTC()
+		}
+		if r.Status == reportdata.UpdateStatusSucceeded {
+			k := key{r.TargetType, r.TargetSlug}
+			if i, ok := folded[k]; ok {
+				items[i].ToVersion = r.ToVersion
+				items[i].Date = at
+				continue
+			}
+			folded[k] = len(items)
+		}
+		items = append(items, UpdateItem{
+			Type:        r.TargetType,
+			Slug:        r.TargetSlug,
+			Name:        name(r.TargetType, r.TargetSlug),
+			FromVersion: r.FromVersion,
+			ToVersion:   r.ToVersion,
+			Status:      r.Status,
+			Date:        at,
+		})
+	}
+	sort.SliceStable(items, func(i, j int) bool { return items[i].Date.Before(items[j].Date) })
+	return items
+}
+
+// capUpdateItems keeps the first max rows and returns how many were dropped.
+func capUpdateItems(items []UpdateItem, max int) ([]UpdateItem, int) {
+	if len(items) <= max {
+		return items, 0
+	}
+	return items[:max], len(items) - max
+}
+
+// componentNamer names a version-table row from the site's CURRENT inventory,
+// falling back to the slug when the inventory does not list it (removed since,
+// or never reported). Core is not in the inventory and is named "WordPress".
+func componentNamer(s site.Site) func(typ, slug string) string {
+	plugins, themes := s.ParsedComponents()
+	names := make(map[string]string, len(plugins)+len(themes))
+	for _, c := range plugins {
+		if c.Name != "" {
+			names[update.TargetPlugin+"/"+c.Slug] = c.Name
+		}
+	}
+	for _, c := range themes {
+		if c.Name != "" {
+			names[update.TargetTheme+"/"+c.Slug] = c.Name
+		}
+	}
+	return func(typ, slug string) string {
+		if typ == update.TargetCore {
+			return "WordPress"
+		}
+		if n, ok := names[typ+"/"+slug]; ok {
+			return n
+		}
+		return slug
+	}
 }
 
 func buildPerfSection(ctx context.Context, src Sources, tenantID, siteID uuid.UUID, from, to time.Time) *PerfSection {
