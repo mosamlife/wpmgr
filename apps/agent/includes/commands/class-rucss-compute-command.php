@@ -191,7 +191,8 @@ final class RucssComputeCommand implements CommandInterface
 
     /**
      * Perform the self-fetch that forces a fresh render through the optimizer
-     * RUCSS stage. Returns true on a 2xx/3xx response, false on error.
+     * RUCSS stage. Returns true on a 2xx response, false on anything else; a
+     * redirect is not followed and rendered nothing.
      *
      * @param string $url    URL to fetch.
      * @param bool   $reheat Whether this is a CP post-compute re-warm self-fetch.
@@ -223,11 +224,13 @@ final class RucssComputeCommand implements CommandInterface
     /**
      * Issue one same-host self-fetch with the given User-Agent (which selects the
      * desktop vs mobile cache bucket) and the preload/compute bypass headers.
+     * The request carries the site's token, so a redirect is never followed:
+     * the token goes to the URL that was asked for and nowhere else.
      *
      * @param string $url       URL to fetch.
      * @param string $userAgent UA selecting the cache bucket.
      * @param bool   $reheat    Whether this is a CP post-compute re-warm.
-     * @return bool True on a 2xx/3xx response.
+     * @return bool True on a 2xx response.
      */
     private function fetchUA(string $url, string $userAgent, bool $reheat): bool
     {
@@ -248,7 +251,7 @@ final class RucssComputeCommand implements CommandInterface
 
         $response = wp_remote_get($url, [
             'timeout'            => 15,
-            'redirection'        => 2,
+            'redirection'        => 0,
             'blocking'           => true,
             'sslverify'          => true,
             // Engage WP's SSRF guard (blocks loopback / private-IP / non-standard
@@ -266,7 +269,7 @@ final class RucssComputeCommand implements CommandInterface
             ? (int) wp_remote_retrieve_response_code($response)
             : 0;
 
-        return $code >= 200 && $code < 400;
+        return $code >= 200 && $code < 300;
     }
 
     /**

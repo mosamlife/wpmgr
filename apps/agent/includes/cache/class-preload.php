@@ -244,7 +244,10 @@ final class Preload
     }
 
     /**
-     * Perform the warming HTTP request via wp_remote_get.
+     * Perform the warming HTTP request via wp_remote_get. The request carries
+     * the site's token, so a redirect is never followed: the token goes to the
+     * URL that was asked for and nowhere else, and a redirect response is
+     * nothing to warm (not a failure, so it is not retried).
      *
      * @param string $url       URL.
      * @param string $userAgent UA to present.
@@ -259,7 +262,7 @@ final class Preload
 
         $response = wp_remote_get($url, [
             'timeout'           => 10,
-            'redirection'       => 2,
+            'redirection'       => 0,
             'blocking'          => true,
             'sslverify'         => true,
             // Engage WP's SSRF guard (blocks loopback/private-IP/non-standard
