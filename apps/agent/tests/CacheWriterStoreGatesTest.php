@@ -336,10 +336,11 @@ final class CacheWriterStoreGatesTest extends TestCase
      *
      * @dataProvider provide_page_sizes_around_one_chunk
      *
-     * @param int  $size   Page size in bytes.
-     * @param bool $stored Whether a page of that size is stored.
+     * @param int  $size       Page size in bytes.
+     * @param bool $stored     Whether a page of that size is stored.
+     * @param int  $pieceBytes Size of the pieces the page is echoed in; 0 echoes it in one piece.
      */
-    public function test_only_a_page_smaller_than_one_chunk_is_stored(int $size, bool $stored): void
+    public function test_only_a_page_smaller_than_one_chunk_is_stored(int $size, bool $stored, int $pieceBytes): void
     {
         ini_set('memory_limit', '1024M');
         $head = '<!DOCTYPE html><html><body>';
@@ -347,10 +348,8 @@ final class CacheWriterStoreGatesTest extends TestCase
         $body = $head . str_repeat('x', $size - strlen($head) - strlen($tail)) . $tail;
         $this->assertSame($size, strlen($body));
 
-        $visitor = $this->respond(static function () use ($body): void {
-            foreach (str_split($body, 65536) as $piece) {
-                echo $piece;
-            }
+        $visitor = $this->respond(static function () use ($body, $pieceBytes): void {
+            self::echoPage($body, $pieceBytes);
         });
 
         $this->assertSame(strlen($body), strlen($visitor));
@@ -359,15 +358,52 @@ final class CacheWriterStoreGatesTest extends TestCase
     }
 
     /**
-     * @return array<string,array{0:int,1:bool}>
+     * @return array<string,array{0:int,1:bool,2:int}>
      */
     public static function provide_page_sizes_around_one_chunk(): array
     {
-        return [
+        $sizes = [
             'one byte short of a chunk' => [CacheWriter::CHUNK_BYTES - 1, true],
             'exactly one chunk'         => [CacheWriter::CHUNK_BYTES, false],
             'two chunks and a bit'      => [(2 * CacheWriter::CHUNK_BYTES) + 4097, false],
         ];
+
+        $cases = [];
+        foreach ($sizes as $label => [$size, $stored]) {
+            foreach (self::provide_how_a_page_is_echoed() as $shape => [$pieceBytes]) {
+                $cases[$label . ', ' . $shape] = [$size, $stored, $pieceBytes];
+            }
+        }
+
+        return $cases;
+    }
+
+    /**
+     * The two shapes a template's output takes: many pieces, as a theme
+     * renders a page, and a single echo of the whole page.
+     *
+     * @return array<string,array{0:int}> Piece size in bytes; 0 is one piece.
+     */
+    public static function provide_how_a_page_is_echoed(): array
+    {
+        return [
+            'in 64 KB pieces' => [65536],
+            'in one echo'     => [0],
+        ];
+    }
+
+    /**
+     * Echo a page in pieces of the given size, or whole when the size is 0.
+     *
+     * @param string $page       The page.
+     * @param int    $pieceBytes Piece size in bytes; 0 echoes the page in one piece.
+     * @return void
+     */
+    private static function echoPage(string $page, int $pieceBytes): void
+    {
+        foreach (str_split($page, $pieceBytes > 0 ? $pieceBytes : max(1, strlen($page))) as $piece) {
+            echo $piece;
+        }
     }
 
     /**
@@ -393,8 +429,12 @@ final class CacheWriterStoreGatesTest extends TestCase
      * on. The visitor receives the page whole, and a page the plugin took is
      * not stored. The page here is larger than a megabyte and smaller than one
      * chunk.
+     *
+     * @dataProvider provide_how_a_page_is_echoed
+     *
+     * @param int $pieceBytes Size of the pieces the page is echoed in; 0 echoes it in one piece.
      */
-    public function test_a_page_a_plugin_takes_from_the_capture_buffer_is_delivered_whole(): void
+    public function test_a_page_a_plugin_takes_from_the_capture_buffer_is_delivered_whole(int $pieceBytes): void
     {
         $page = '<!DOCTYPE html><html><body>' . str_repeat('<p>row</p>', 220000) . '<span>END-MARKER</span></body></html>';
         $this->assertGreaterThan(1 << 20, strlen($page));
@@ -402,6 +442,7 @@ final class CacheWriterStoreGatesTest extends TestCase
 
         $visitor = $this->respondWithAPluginTakingTheTopBuffer(
             $page,
+            $pieceBytes,
             static fn (string $taken): string => strtoupper(substr($taken, 0, 15)) . substr($taken, 15)
         );
 
@@ -413,14 +454,18 @@ final class CacheWriterStoreGatesTest extends TestCase
      * The same takeover on a page of more than one chunk: the part already
      * handed on and the part the plugin takes arrive in order, every byte of
      * them, and the page is not stored.
+     *
+     * @dataProvider provide_how_a_page_is_echoed
+     *
+     * @param int $pieceBytes Size of the pieces the page is echoed in; 0 echoes it in one piece.
      */
-    public function test_a_page_over_one_chunk_a_plugin_takes_from_the_capture_buffer_is_delivered_whole(): void
+    public function test_a_page_over_one_chunk_a_plugin_takes_from_the_capture_buffer_is_delivered_whole(int $pieceBytes): void
     {
         ini_set('memory_limit', '1024M');
         $page = '<!DOCTYPE html><html><body>' . str_repeat('<p>row</p>', 520000) . '<span>END-MARKER</span></body></html>';
         $this->assertGreaterThan(CacheWriter::CHUNK_BYTES, strlen($page));
 
-        $visitor = $this->respondWithAPluginTakingTheTopBuffer($page, static fn (string $taken): string => $taken);
+        $visitor = $this->respondWithAPluginTakingTheTopBuffer($page, $pieceBytes, static fn (string $taken): string => $taken);
 
         $this->assertSame(strlen($page), strlen($visitor));
         $this->assertSame(md5($page), md5($visitor), 'the visitor must receive every byte, in order');
@@ -433,19 +478,18 @@ final class CacheWriterStoreGatesTest extends TestCase
      * shutdown the plugin calls ob_get_clean(), which takes the top buffer (the
      * capture), and sends on what it got, after $rewrite.
      *
-     * @param string                  $page    The page, produced in 64 KB pieces.
-     * @param callable(string):string $rewrite What the plugin sends on for what it took.
+     * @param string                  $page       The page.
+     * @param int                     $pieceBytes Size of the pieces the page is echoed in; 0 echoes it in one piece.
+     * @param callable(string):string $rewrite    What the plugin sends on for what it took.
      */
-    private function respondWithAPluginTakingTheTopBuffer(string $page, callable $rewrite): string
+    private function respondWithAPluginTakingTheTopBuffer(string $page, int $pieceBytes, callable $rewrite): string
     {
         $manager = new CacheManager();
         ob_start();                       // the network
         $network = ob_get_level();
         ob_start();                       // the plugin's buffer, opened before init
         $manager->startBuffer();          // the capture, on top from init on
-        foreach (str_split($page, 65536) as $piece) {
-            echo $piece;                  // the template renders
-        }
+        self::echoPage($page, $pieceBytes); // the template renders
         $taken = (string) ob_get_clean(); // the plugin, at shutdown
         echo $rewrite($taken);
         while (ob_get_level() > $network) {
