@@ -215,6 +215,24 @@ pid_alive() {
   ps -p "$1" >/dev/null 2>&1
 }
 
+# quoted <path...>
+# The paths as a shell reads them back, joined by spaces. Every command this
+# script prints for an operator to paste names its paths this way: a cache dir
+# with a space in it would otherwise be split into words, and rm would be handed
+# other paths than the lock.
+quoted() {
+  local out
+  out="$(printf '%q ' "$@")"
+  printf '%s' "${out% }"
+}
+
+# no_owner_recorded <dir>
+# Reports a lock dir this run could not record its pid in, and stops. It names
+# the command that clears the dir and removes nothing itself.
+no_owner_recorded() {
+  die "cannot record the owner of the lock $1. If no run is using $cache, remove it with: rm -rf $(quoted "$1")"
+}
+
 # take_dir <dir>
 # Makes <dir> and records this run's pid in <dir>/pid, for one run at a time.
 # True when this run holds <dir>; false when another run does, or got there first.
@@ -222,28 +240,35 @@ pid_alive() {
 # coreutils) exits 0 for each of two runs that make the same new directory at
 # the same instant, so both would think they held it. What decides is the
 # creation of <dir>/pid by the shell itself (noclobber: one open with O_EXCL, no
-# program started), which succeeds for exactly one run. A run that loses leaves
-# the directory and the file in it alone: they are the winner's.
-# A directory it cannot record its pid in is reported and left where it is: it
-# cannot be shown to be this run's alone, and a lock that cannot be judged is
-# never treated as free.
+# program started), which succeeds for exactly one run.
+# A create that fails because the pid file is there, or because <dir> is gone
+# (the run that held it gave it back after mkdir said yes), is another run's
+# doing: the answer is false and the caller waits its turn. A run that loses
+# leaves the directory and the file in it alone: they are the winner's.
+# A <dir> that is there with no pid file in it, after the create has been tried
+# again, is this run's own fault: it is reported and left where it is. Nothing
+# here removes <dir>. That mkdir said yes does not show that this run made it,
+# so it may be another run's, and a lock that cannot be judged is never treated
+# as free.
 take_dir() {
-  local d="$1"
+  local d="$1" tries=0
   mkdir "$d" 2>/dev/null || return 1
-  if ! (
+  until (
     set -C
     : >"$d/pid"
-  ) 2>/dev/null; then
-    if [ -e "$d/pid" ]; then
-      return 1
-    fi
-    rmdir "$d" 2>/dev/null || true
-    die "cannot record the owner of the lock $d"
-  fi
+  ) 2>/dev/null; do
+    [ ! -e "$d/pid" ] || return 1
+    [ -d "$d" ] || return 1
+    # A create into a directory that was not there a moment ago fails the same
+    # way, and a third run may have made it new since: ask again before taking
+    # an empty directory for a fault.
+    tries=$((tries + 1))
+    [ "$tries" -lt 3 ] || no_owner_recorded "$d"
+  done
   if printf '%s\n' "$$" >"$d/pid" && [ "$(cat "$d/pid" 2>/dev/null || true)" = "$$" ]; then
     return 0
   fi
-  die "cannot record the owner of the lock $d. If no run is using $cache, remove it with: rm -rf $d"
+  no_owner_recorded "$d"
 }
 
 # reclaim_lock <lock dir> <reclaim dir> <pid>
@@ -299,7 +324,7 @@ lock_core() {
     fi
     polls=$((polls + 1))
     if [ "$polls" -ge "$lock_wait" ]; then
-      die "gave up waiting for the lock $ld after $polls poll(s): $alive. If no run is using $cache, remove it with: rm -rf $ld $rd"
+      die "gave up waiting for the lock $ld after $polls poll(s): $alive. If no run is using $cache, remove it with: rm -rf $(quoted "$ld" "$rd")"
     fi
     sleep 1
   done
