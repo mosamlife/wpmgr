@@ -24,7 +24,10 @@ import (
 // agency types a URL, and the worker fetches it. Reading only an image's header
 // proves nothing about its body, so a file cut short in transit, or cut on
 // purpose, used to pass the fetch and then fail the whole report when the PDF
-// library read the pixels.
+// library read the pixels. The fetch now also checks that the file runs to its
+// end. It reads the structure of the file for that and decodes no pixel
+// (logo_alloc_test.go holds the proof), so a cut file is found by where its
+// chunks or segments stop and not by what its pixels would be.
 
 // gradientImage is an image with real pixel data, so a cut file really loses
 // pixels. With translucent set, some pixels are not opaque and the PNG encoder
@@ -182,12 +185,26 @@ func TestFetchAndValidateLogoRefusesAnImageWhoseBodyIsCut(t *testing.T) {
 		"png":       {"image/png", truncatedPNG(t)},
 		"alpha png": {"image/png", truncatedAlphaPNG(t)},
 		"jpeg":      {"image/jpeg", truncatedJPEG(t)},
+		// Cut where every byte before the cut is a whole chunk or segment: only
+		// the missing end marks the file as cut.
+		"png without its last chunk":   {"image/png", pngWithoutIEND(t)},
+		"jpeg without its last marker": {"image/jpeg", jpegWithoutEOI(t, encodeJPEG(t, noisyImage(96, 96)))},
+		// A thumbnail inside a segment ends with an end marker of its own, which
+		// does not make the file whole.
+		"jpeg with a thumbnail, cut in the scan": {"image/jpeg", func() []byte {
+			full := withThumbnail(t, encodeJPEG(t, noisyImage(96, 96)))
+			return cutTo(t, full, len(full)*3/4)
+		}()},
+		"jpeg with a thumbnail, without its last marker": {"image/jpeg", jpegWithoutEOI(t, withThumbnail(t, encodeJPEG(t, noisyImage(96, 96))))},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			got, err := FetchAndValidateLogo(context.Background(), logoClient(), serveLogo(t, tc.contentType, tc.body))
 			if err == nil {
 				t.Fatalf("an image whose body is cut short was accepted (%d bytes)", len(got))
+			}
+			if !strings.Contains(err.Error(), "cut short") {
+				t.Errorf("error %q is not the refusal of a file cut short", err)
 			}
 			if got != nil {
 				t.Errorf("returned %d bytes alongside an error", len(got))

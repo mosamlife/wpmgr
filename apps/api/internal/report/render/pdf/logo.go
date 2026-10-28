@@ -138,6 +138,9 @@ func pngReachesIEND(data []byte) bool {
 // end-of-image marker are ignored, as a decoder ignores them.
 func jpegReachesEOI(data []byte) bool {
 	pos := 2 // the start-of-image marker, which DecodeConfig has checked
+	if len(data) < pos {
+		return false
+	}
 	for {
 		// The next marker is a 0xFF and the byte after it, past any fill bytes.
 		i := bytes.IndexByte(data[pos:], 0xFF)
