@@ -232,6 +232,38 @@ func (q *Queries) DeleteEmailSuppression(ctx context.Context, arg DeleteEmailSup
 	return result.RowsAffected(), nil
 }
 
+const deleteSiteEmailConfig = `-- name: DeleteSiteEmailConfig :execrows
+DELETE FROM site_email_config
+WHERE tenant_id = $1
+  AND site_id   = $2
+  AND site_id IS NOT NULL
+`
+
+type DeleteSiteEmailConfigParams struct {
+	TenantID uuid.UUID   `json:"tenant_id"`
+	SiteID   pgtype.UUID `json:"site_id"`
+}
+
+// GH #968: removes ONE site's own config row, so the site stops using the
+// provider it chose and falls back to the org-wide default (GetOrgEmailConfig)
+// when there is one. The row's secrets go with it; its named connections go by
+// cascade (site_email_connection.config_id is ON DELETE CASCADE, m62). The
+// site's email log stays: it references sites, not this row.
+//
+// Never the org-wide default. site_id = @site_id cannot match a NULL site_id,
+// and the explicit IS NOT NULL keeps that true if the comparison is loosened.
+// Runs under scopedTenantTx. :execrows, not :exec, for the reason
+// DeleteEmailSuppression gives: the m112 site-scope delete policy refuses a
+// site-scoped collaborator with zero rows affected rather than an error, and a
+// row already gone is also zero, so the caller needs the count.
+func (q *Queries) DeleteSiteEmailConfig(ctx context.Context, arg DeleteSiteEmailConfigParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteSiteEmailConfig, arg.TenantID, arg.SiteID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getConnectionSecretCiphertexts = `-- name: GetConnectionSecretCiphertexts :many
 SELECT connection_key, provider_secret_encrypted
 FROM site_email_connection

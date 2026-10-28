@@ -1077,6 +1077,19 @@ type Querier interface {
 	DeleteReport(ctx context.Context, arg DeleteReportParams) (int64, error)
 	DeleteShare(ctx context.Context, arg DeleteShareParams) (int64, error)
 	DeleteSite(ctx context.Context, arg DeleteSiteParams) (int64, error)
+	// GH #968: removes ONE site's own config row, so the site stops using the
+	// provider it chose and falls back to the org-wide default (GetOrgEmailConfig)
+	// when there is one. The row's secrets go with it; its named connections go by
+	// cascade (site_email_connection.config_id is ON DELETE CASCADE, m62). The
+	// site's email log stays: it references sites, not this row.
+	//
+	// Never the org-wide default. site_id = @site_id cannot match a NULL site_id,
+	// and the explicit IS NOT NULL keeps that true if the comparison is loosened.
+	// Runs under scopedTenantTx. :execrows, not :exec, for the reason
+	// DeleteEmailSuppression gives: the m112 site-scope delete policy refuses a
+	// site-scoped collaborator with zero rows affected rather than an error, and a
+	// row already gone is also zero, so the caller needs the count.
+	DeleteSiteEmailConfig(ctx context.Context, arg DeleteSiteEmailConfigParams) (int64, error)
 	// The second half of a replace: drops the site's rows the latest refresh did
 	// not report. Pass the checked_at the upsert used.
 	DeleteStaleSiteAbilityInventory(ctx context.Context, arg DeleteStaleSiteAbilityInventoryParams) (int64, error)
