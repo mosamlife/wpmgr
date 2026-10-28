@@ -114,17 +114,45 @@
  *
  * Fix: every session minted by createSession() also mints a random "bind"
  * token, stores only its SHA-256 hash in session['bind_hash'], and sets an
- * HttpOnly/SameSite=Lax cookie (COOKIE_BIND) carrying the raw token, scoped to
- * the login path and expiring with the session. maybeResumeInterstitial() now
- * requires hasValidBindCookie() to hash_equals()-match BEFORE rendering ANY
- * pending screen (setup, 2FA verify, or forced-change); a missing or
- * mismatched cookie falls through to the normal login page instead of
- * re-rendering anything. A session minted before this fix (no bind_hash key)
- * is treated as unsafe to resume -- never as implicitly trusted -- the user
- * simply logs in again to mint a bound session. The existing HMAC token on the
- * verify/setup SUBMIT path (computeSessionHmac/verifySessionHmac) is
- * unchanged: this adds the render-time browser binding the resume path was
- * missing, it does not replace the HMAC.
+ * HttpOnly/SameSite=Lax cookie (COOKIE_BIND) carrying the raw token, scoped
+ * like WordPress's test cookie and expiring with the session.
+ * maybeResumeInterstitial() requires hasValidBindCookie() to
+ * hash_equals()-match BEFORE rendering ANY pending screen (setup, 2FA verify,
+ * or forced-change); a missing or mismatched cookie falls through to the
+ * normal login page instead of re-rendering anything. A session minted before
+ * this fix (no bind_hash key) is treated as unsafe to resume -- never as
+ * implicitly trusted -- the user simply logs in again to mint a bound session.
+ * handleVerifySubmit() requires the same match on every SUBMIT, in addition to
+ * the HMAC token (computeSessionHmac/verifySessionHmac), which it does not
+ * replace.
+ *
+ * FORM TARGET (#965):
+ * On the login screen every interstitial form (2FA challenge, setup, forced
+ * change) posts back to the login URL the request is running on: on a site
+ * that renames its login page, wp_login_url() can point at a path that
+ * redirects the POST (dropping its body) or answers it with a 404. The target
+ * is an absolute URL whose origin and base path come from the site's public
+ * URLs (never the Host header, never a path a reverse proxy rewrote); the
+ * request supplies only a renamed login slug and the filtered, percent-encoded
+ * query. A password step run outside the login screen posts to
+ * wp_login_url(), where the verify handler runs. See verifyActionUrl().
+ *
+ * SESSION BINDING:
+ * Every submit (code, method switch, setup step, forced change) must carry
+ * the bind cookie minted with its session; see handleVerifySubmit().
+ *
+ * METHOD SWITCH (#964):
+ * The "Or use:" alternatives are submit buttons inside the signed form, so a
+ * switch carries the session fields and is honoured only after the full
+ * session and signature check. A switch re-renders the chosen method and is
+ * not a code attempt; only a method the screen offers this user is accepted,
+ * and one session sends at most MAX_EMAIL_SENDS email codes.
+ *
+ * WHO IS CHALLENGED (#966):
+ * A user for whom 2FA is required is challenged, with email as an allowed
+ * method and fallback. A user for whom it is optional is challenged only when
+ * they enrolled a non-email method themselves: the email provider counts as
+ * configured for anyone with an address, so it is never evidence of enrollment.
  *
  * LOCKOUT-PROOFING:
  * - If define('WPMGR_DISABLE_SITE_2FA', true) is in wp-config, 2FA and
@@ -192,6 +220,32 @@ final class Site2faModule
      * the sliding SESSION_TTL window. Prevents session-recreation resets.
      */
     private const MAX_CROSS_REQUEST_ATTEMPTS = 15;
+
+    /** Email codes one interstitial session may send, across every render. */
+    private const MAX_EMAIL_SENDS = 3;
+
+    /** Query flag the login form carries after a stray request to the verify action. */
+    private const NOTICE_PARAM = 'wpmgr_2fa_notice';
+
+    /** The one value NOTICE_PARAM carries. */
+    private const NOTICE_INTERRUPTED = 'interrupted';
+
+    /**
+     * Bytes a form-target path keeps as they are: RFC 3986 pchar and "/",
+     * minus ":" , ";" and the apostrophe. Every other byte is percent-encoded,
+     * so the scheme's colon is the only raw ":" in a form target.
+     */
+    private const PATH_SAFE_BYTES = 'A-Za-z0-9\-._~!$&()*+,=@\/%';
+
+    /**
+     * Query keys a form target never carries: the login action (the target
+     * sets its own), the login credentials and redirect_to (the session holds
+     * the redirect). Every key starting with wpmgr_2fa is dropped as well.
+     */
+    private const DROPPED_QUERY_KEYS = ['action', 'log', 'pwd', 'redirect_to'];
+
+    /** Bytes setcookie() refuses in a cookie path or domain (a ValueError in PHP 8). */
+    private const COOKIE_ILLEGAL_BYTES = ",; \t\r\n\013\014";
 
     /** Minimum cookie token length for trusted-device tokens. */
     private const DEVICE_TOKEN_BYTES = 32;
@@ -279,6 +333,9 @@ final class Site2faModule
             // Re-show the interstitial if the user lands on a login page while a
             // pending session exists (prevents navigating around it).
             add_action('login_init', [$this, 'maybeResumeInterstitial']);
+
+            // Explain the login form a stray GET on the verify action lands on.
+            add_filter('login_message', [$this, 'filterLoginMessage']);
         }
 
         // H1 fix: block application-password auth for 2FA-required users.
@@ -403,6 +460,23 @@ final class Site2faModule
                 continue;
             }
             if ($provider->isConfiguredFor($user)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether the user has a non-email method configured that the policy
+     * allows for them (see SecurityPolicy::allowedMethodsFor()).
+     *
+     * @param \WP_User $user
+     * @return bool
+     */
+    private function hasAllowedNonEmailMethodConfigured(\WP_User $user): bool
+    {
+        foreach ($this->resolveProvidersFor($user) as $provider) {
+            if ($provider->key() !== 'email') {
                 return true;
             }
         }
@@ -534,7 +608,9 @@ final class Site2faModule
             'ul'     => [],
             'li'     => [],
             'div'    => ['style' => true],
-            'button' => ['type' => true, 'name' => true, 'value' => true, 'class' => true],
+            // formnovalidate: the method-switch buttons must submit past the
+            // required, still-empty code field (see renderInterstitial()).
+            'button' => ['type' => true, 'name' => true, 'value' => true, 'class' => true, 'formnovalidate' => true],
             'input'  => [
                 'type'         => true,
                 'name'         => true,
@@ -604,8 +680,7 @@ final class Site2faModule
         $uuid      = (string) ($session['uuid'] ?? '');
         $hmac      = $this->computeSessionHmac($userId, $sessionId, $createdAt, $uuid);
 
-        $loginUrl  = function_exists('wp_login_url') ? wp_login_url() : '/wp-login.php';
-        $verifyUrl = add_query_arg(['action' => 'wpmgr_2fa_verify'], $loginUrl);
+        $verifyUrl = $this->verifyActionUrl();
 
         $heading = $reason === 'expiry'
             ? esc_html__('Your password has expired. Please choose a new password.', 'wpmgr-agent')
@@ -855,6 +930,15 @@ final class Site2faModule
      */
     public function handleVerifySubmit(): void
     {
+        // Anything but a POST carries none of the signed session fields: it is
+        // a refresh, a bookmark or a stale link. Send it back to the login form
+        // it came from, with a notice, rather than to a dead-end error page.
+        $method = self::requestMethod();
+        if ($method !== '' && $method !== 'POST') {
+            wp_safe_redirect(esc_url_raw($this->loginFormUrl(self::NOTICE_INTERRUPTED)));
+            exit;
+        }
+
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- interstitial uses HMAC session signing, not WP nonces (section 3.2 design; the nonce concept does not apply: no WP session exists yet to mint a nonce against)
         $userId    = isset($_POST['wpmgr_2fa_user_id']) ? absint(wp_unslash($_POST['wpmgr_2fa_user_id'])) : 0;
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- same
@@ -875,10 +959,21 @@ final class Site2faModule
             wp_die(esc_html__('User not found.', 'wpmgr-agent'), '', ['response' => 400]);
         }
 
-        // Verify signed session.
+        // Every session is bound to the browser that passed the password step:
+        // its bind cookie is set when the session is minted. Without that
+        // cookie the session fields prove nothing, whoever sends them, so the
+        // login restarts, clearing nothing and counting nothing. This runs
+        // before the signature check, so a request without the cookie cannot
+        // end the pending session either. It covers every submit: code,
+        // method switch, setup step and forced password change.
         $session = $this->loadSession($userId);
-        if ($session === null
-            || !hash_equals($session['id'], $sessionId)
+        if ($session === null || !$this->hasValidBindCookie($session)) {
+            wp_safe_redirect(esc_url_raw($this->loginFormUrl(self::NOTICE_INTERRUPTED)));
+            exit;
+        }
+
+        // Verify signed session.
+        if (!hash_equals($session['id'], $sessionId)
             || !$this->verifySessionHmac($userId, $sessionId, $session['created_at'], $session['uuid'], $hmac)
         ) {
             $this->clearSession($userId);
@@ -922,9 +1017,20 @@ final class Site2faModule
 
         // --- Standard 2FA code verification path ---
 
-        // Find and validate the chosen provider.
-        $provider = $this->findProvider($providerKey);
-        if ($provider === null || !$provider->isConfiguredFor($user)) {
+        // Method switch (#964): a submit button inside this signed form, so it
+        // is honoured only here, after every session, signature and attempt
+        // check above. It re-renders the chosen method; it is not a code attempt.
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- same
+        if (isset($_POST['wpmgr_2fa_switch'])) { // phpcs:ignore WordPress.Security.NonceVerification.Missing -- same
+            // phpcs:ignore WordPress.Security.NonceVerification.Missing -- same
+            $switchTo = is_string($_POST['wpmgr_2fa_switch']) ? sanitize_key(wp_unslash($_POST['wpmgr_2fa_switch'])) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- same
+            $this->switchProvider($userId, $user, $session, $switchTo);
+            return;
+        }
+
+        // Only a method the screen offers this user may answer the challenge.
+        $provider = $this->findOfferedProvider($user, $providerKey);
+        if ($provider === null) {
             $this->renderInterstitial($user, $session, esc_html__('Invalid provider selected.', 'wpmgr-agent'));
             return;
         }
@@ -935,6 +1041,8 @@ final class Site2faModule
         if (!$provider->validate($user, $providerInput)) {
             // Increment both the per-session counter and the cross-request counter.
             $session['attempts'] = $attempts + 1;
+            // Re-render the method the user was answering with.
+            $session['provider'] = $provider->key();
             $this->storeSession($userId, $session);
             $this->incrementCrossRequestAttempts($userId);
             $this->renderInterstitial(
@@ -1233,6 +1341,12 @@ final class Site2faModule
      * mandatory (no skip offered). After grace, the email fallback is removed as the
      * default funnel — the user must complete setup to proceed.
      *
+     * OPTIONAL USERS (#966):
+     * A user for whom 2FA is not required is challenged only when they enrolled
+     * a non-email method themselves. The email provider reports itself
+     * configured for anyone with an address, so allowing email must not turn
+     * into an email challenge for every user outside the enforced roles.
+     *
      * @param \WP_User $user
      * @return void
      */
@@ -1246,20 +1360,24 @@ final class Site2faModule
         }
 
         $isRequired = $this->policy->requires2fa($user);
-        $providers  = $this->resolveProvidersFor($user);
-
-        // 2FA is optional and user has nothing enrolled -- no interstitial.
-        if (!$isRequired && $providers === []) {
-            return;
-        }
 
         // Determine whether the user has any NON-EMAIL method configured (deliberate enrollment).
         // The email provider is always "configured" for any user with an email address and
         // therefore does not count as deliberate enrollment.
         $hasNonEmailEnrolled = $this->hasNonEmailMethodConfigured($user);
 
-        // Check if the required user needs enrollment (no deliberate 2FA method set up yet).
-        if ($isRequired && !$hasNonEmailEnrolled) {
+        // 2FA is optional for this user and they never enrolled a method of
+        // their own -- no interstitial.
+        if (!$isRequired && !$hasNonEmailEnrolled) {
+            return;
+        }
+
+        $providers = $this->resolveProvidersFor($user);
+
+        // Check if the required user needs enrollment. A user who must use 2FA
+        // is always challenged with a method the policy allows them, or sent to
+        // set one up: only an allowed non-email method counts as enrolled here.
+        if ($isRequired && !$this->hasAllowedNonEmailMethodConfigured($user)) {
             $graceCount = (int) get_user_meta($userId, self::META_GRACE_COUNT, true);
             $graceMax   = $this->policy->twoFactorGraceLogins;
 
@@ -1376,6 +1494,88 @@ final class Site2faModule
             }
         }
         return null;
+    }
+
+    /**
+     * The methods the 2FA challenge offers this user: the allowed, configured
+     * ones, or the email fallback when there are none (a required user who has
+     * not enrolled yet).
+     *
+     * @param \WP_User $user
+     * @return list<SiteTwoFactorProvider>
+     */
+    private function offeredProvidersFor(\WP_User $user): array
+    {
+        $providers = $this->resolveProvidersFor($user);
+        if ($providers === []) {
+            $email = $this->findProvider('email');
+            if ($email !== null) {
+                $providers = [$email];
+            }
+        }
+        return $providers;
+    }
+
+    /**
+     * The offered method with this key, or null when the screen does not offer it.
+     *
+     * @param \WP_User $user
+     * @param string   $key
+     * @return SiteTwoFactorProvider|null
+     */
+    private function findOfferedProvider(\WP_User $user, string $key): ?SiteTwoFactorProvider
+    {
+        foreach ($this->offeredProvidersFor($user) as $provider) {
+            if ($provider->key() === $key) {
+                return $provider;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The method to show: the one this session switched to, while it is still
+     * offered, otherwise the first offered method.
+     *
+     * @param list<SiteTwoFactorProvider> $offered
+     * @param array<string,mixed>         $session
+     * @return SiteTwoFactorProvider|null
+     */
+    private static function activeProvider(array $offered, array $session): ?SiteTwoFactorProvider
+    {
+        $chosen = isset($session['provider']) && is_string($session['provider']) ? $session['provider'] : '';
+        foreach ($offered as $provider) {
+            if ($provider->key() === $chosen) {
+                return $provider;
+            }
+        }
+        return $offered[0] ?? null;
+    }
+
+    /**
+     * Re-render the challenge with another offered method (#964).
+     *
+     * Reached only from handleVerifySubmit() after the session, signature and
+     * attempt checks. Neither outcome counts as a code attempt; a method the
+     * screen does not offer this user is refused and the current one stays.
+     *
+     * @param int                 $userId
+     * @param \WP_User            $user
+     * @param array<string,mixed> $session
+     * @param string              $providerKey Sanitized key of the requested method.
+     * @return void
+     */
+    private function switchProvider(int $userId, \WP_User $user, array $session, string $providerKey): void
+    {
+        $target = $this->findOfferedProvider($user, $providerKey);
+        if ($target === null) {
+            $this->renderInterstitial($user, $session, esc_html__('That verification method is not available for your account.', 'wpmgr-agent'));
+            return;
+        }
+
+        $session['provider'] = $target->key();
+        $this->storeSession($userId, $session);
+        $this->renderInterstitial($user, $session);
     }
 
     /**
@@ -1507,28 +1707,19 @@ final class Site2faModule
 
     /**
      * Set the browser-binding cookie for a newly minted interstitial session.
-     * HttpOnly + SameSite=Lax + Secure-when-SSL; scoped to the login path and
-     * expiring alongside the session (SESSION_TTL).
+     * HttpOnly + SameSite=Lax + Secure-when-SSL, expiring with the session.
+     *
+     * Scoped the way WordPress scopes its own test cookie (COOKIEPATH, plus
+     * SITECOOKIEPATH when it differs, on COOKIE_DOMAIN), so it reaches every
+     * login URL of the site: a renamed slug, wp-login.php, and wp-login.php
+     * after a password step on a front-end page.
      *
      * @param string $token Raw bind token (its hash is what session['bind_hash'] stores).
      * @return void
      */
     private function setBindCookie(string $token): void
     {
-        if (headers_sent()) {
-            return;
-        }
-        setcookie(
-            self::COOKIE_BIND,
-            $token,
-            [
-                'expires'  => time() + self::SESSION_TTL,
-                'path'     => $this->loginPath(),
-                'httponly' => true,
-                'secure'   => is_ssl(),
-                'samesite' => 'Lax',
-            ]
-        );
+        $this->writeBindCookie($token, time() + self::SESSION_TTL);
     }
 
     /**
@@ -1540,37 +1731,117 @@ final class Site2faModule
      */
     private function clearBindCookie(): void
     {
-        if (headers_sent()) {
-            return;
-        }
-        setcookie(
-            self::COOKIE_BIND,
-            '',
-            [
-                'expires'  => time() - self::SESSION_TTL,
-                'path'     => $this->loginPath(),
-                'httponly' => true,
-                'secure'   => is_ssl(),
-                'samesite' => 'Lax',
-            ]
-        );
+        $this->writeBindCookie('', time() - self::SESSION_TTL);
     }
 
     /**
-     * Resolve the path component of the site's login URL, used to scope the
-     * browser-binding cookie so it is only ever sent back to wp-login.php.
+     * Write (or, with a past expiry, delete) the bind cookie on every path it
+     * lives on.
+     *
+     * Releases before #965 scoped the cookie to the login path only. Being the
+     * longer path, such a cookie is sent first and PHP keeps the first value,
+     * so it would shadow the current one until it expired: it is deleted here
+     * on every write.
+     *
+     * @param string $value
+     * @param int    $expires
+     * @return void
+     */
+    private function writeBindCookie(string $value, int $expires): void
+    {
+        if (headers_sent()) {
+            return;
+        }
+
+        $domain = defined('COOKIE_DOMAIN') ? (string) constant('COOKIE_DOMAIN') : '';
+        if (strpbrk($domain, self::COOKIE_ILLEGAL_BYTES) !== false) {
+            $domain = '';
+        }
+
+        $paths = self::bindCookiePaths();
+        foreach ($paths as $path) {
+            setcookie(self::COOKIE_BIND, $value, self::bindCookieOptions($expires, $path, $domain));
+        }
+
+        $legacy = $this->loginPath();
+        if (!in_array($legacy, $paths, true)) {
+            setcookie(self::COOKIE_BIND, '', self::bindCookieOptions(time() - self::SESSION_TTL, $legacy, ''));
+        }
+    }
+
+    /**
+     * COOKIEPATH and, when it differs, SITECOOKIEPATH: the paths WordPress
+     * sets its test cookie on, taken from the public home and site URLs. One
+     * of them is a prefix of every form target (see verifyActionUrl()): a
+     * renamed slug lives under the home path, wp-login.php under the site path.
+     * Where the constants are not defined the same paths are derived from
+     * home_url() and site_url().
+     *
+     * @return list<string>
+     */
+    private static function bindCookiePaths(): array
+    {
+        $homePath = defined('COOKIEPATH')
+            ? (string) constant('COOKIEPATH')
+            : self::urlPathWithSlash(function_exists('home_url') ? (string) home_url('/') : '/');
+        $sitePath = defined('SITECOOKIEPATH')
+            ? (string) constant('SITECOOKIEPATH')
+            : self::urlPathWithSlash(function_exists('site_url') ? (string) site_url('/') : '/');
+
+        $paths = [];
+        foreach ([$homePath, $sitePath] as $path) {
+            if ($path !== '' && $path[0] === '/' && strpbrk($path, self::COOKIE_ILLEGAL_BYTES) === false && !in_array($path, $paths, true)) {
+                $paths[] = $path;
+            }
+        }
+        return $paths !== [] ? $paths : ['/'];
+    }
+
+    /**
+     * The path of a URL with one trailing slash, as WordPress builds COOKIEPATH.
+     *
+     * @param string $url
+     * @return string
+     */
+    private static function urlPathWithSlash(string $url): string
+    {
+        $path = function_exists('wp_parse_url') ? wp_parse_url($url, PHP_URL_PATH) : null;
+        return rtrim(is_string($path) ? $path : '', '/') . '/';
+    }
+
+    /**
+     * @param int    $expires
+     * @param string $path
+     * @param string $domain '' for a host-only cookie.
+     * @return array<string,mixed>
+     */
+    private static function bindCookieOptions(int $expires, string $path, string $domain): array
+    {
+        return [
+            'expires'  => $expires,
+            'path'     => $path,
+            'domain'   => $domain,
+            'httponly' => true,
+            'secure'   => function_exists('is_ssl') && is_ssl(),
+            'samesite' => 'Lax',
+        ];
+    }
+
+    /**
+     * Path of the site's login URL, where releases before #965 scoped the bind
+     * cookie (see writeBindCookie()). Always a usable cookie path.
      *
      * @return string
      */
     private function loginPath(): string
     {
-        if (function_exists('wp_login_url') && function_exists('wp_parse_url')) {
-            $parsed = wp_parse_url(wp_login_url());
-            if (is_array($parsed) && isset($parsed['path']) && is_string($parsed['path']) && $parsed['path'] !== '') {
-                return $parsed['path'];
-            }
+        $path = function_exists('wp_login_url') && function_exists('wp_parse_url')
+            ? wp_parse_url((string) wp_login_url(), PHP_URL_PATH)
+            : null;
+        if (!is_string($path) || $path === '' || $path[0] !== '/' || strpbrk($path, self::COOKIE_ILLEGAL_BYTES) !== false) {
+            return '/wp-login.php';
         }
-        return '/wp-login.php';
+        return $path;
     }
 
     /**
@@ -1616,19 +1887,9 @@ final class Site2faModule
      */
     private function renderInterstitial(\WP_User $user, array $session, string $error = ''): void
     {
-        $providers = $this->resolveProvidersFor($user);
-
-        // Grace fallback: inject email provider for required-but-unenrolled.
-        if ($providers === []) {
-            foreach ($this->providers as $p) {
-                if ($p->key() === 'email') {
-                    $providers = [$p];
-                    break;
-                }
-            }
-        }
-
-        $activeProvider = $providers[0] ?? null;
+        // Includes the email fallback for a required user not enrolled yet.
+        $providers      = $this->offeredProvidersFor($user);
+        $activeProvider = self::activeProvider($providers, $session);
         if ($activeProvider === null) {
             // Nothing to show -- fail open.
             return;
@@ -1640,10 +1901,24 @@ final class Site2faModule
         $uuid      = (string) ($session['uuid'] ?? '');
         $hmac      = $this->computeSessionHmac($userId, $sessionId, $createdAt, $uuid);
 
-        $activeProvider->preRender($user);
+        // Email sends are capped per session across every render (first
+        // render, switches, re-renders after a wrong code). A send is counted
+        // before it is attempted, so a failing mailer still uses one up.
+        $notice = '';
+        if ($activeProvider->key() === 'email') {
+            $sends = (int) ($session['email_sends'] ?? 0);
+            if ($sends >= self::MAX_EMAIL_SENDS) {
+                $notice = esc_html__('No new code was sent: this login has already sent the most email codes it may. Use the latest code you received, choose another method, or log in again.', 'wpmgr-agent');
+            } else {
+                $session['email_sends'] = $sends + 1;
+                $this->storeSession($userId, $session);
+                $activeProvider->preRender($user);
+            }
+        } else {
+            $activeProvider->preRender($user);
+        }
 
-        $loginUrl   = function_exists('wp_login_url') ? wp_login_url() : '/wp-login.php';
-        $verifyUrl  = add_query_arg(['action' => 'wpmgr_2fa_verify'], $loginUrl);
+        $verifyUrl = $this->verifyActionUrl();
 
         if (function_exists('login_header')) {
             login_header(
@@ -1664,6 +1939,10 @@ final class Site2faModule
             $formHtml .= '<p class="message" style="color:#d63638">' . esc_html($error) . '</p>';
         }
 
+        if ($notice !== '') {
+            $formHtml .= '<p class="message">' . esc_html($notice) . '</p>';
+        }
+
         $formHtml .= $activeProvider->renderForm($user);
 
         if ($this->policy->twoFactorRememberDeviceDays > 0) {
@@ -1681,26 +1960,27 @@ final class Site2faModule
             $formHtml .= '</label></p>';
         }
 
-        // Provider switcher tabs (if multiple providers available).
-        if (count($providers) > 1) {
-            $formHtml .= '<p>' . esc_html__('Or use:', 'wpmgr-agent') . ' ';
-            foreach ($providers as $p) {
-                if ($p->key() === $activeProvider->key()) {
-                    continue;
-                }
-                $switchUrl = add_query_arg(
-                    ['action' => 'wpmgr_2fa_verify', 'wpmgr_2fa_provider' => $p->key()],
-                    $loginUrl
-                );
-                $formHtml .= '<a href="' . esc_url($switchUrl) . '">' . esc_html($p->label()) . '</a> ';
-            }
-            $formHtml .= '</p>';
-        }
-
         $formHtml .= '<p class="submit">';
         $formHtml .= '<input type="submit" name="wp-submit" id="wp-submit" class="button button-primary button-large" value="';
         $formHtml .= esc_attr__('Verify', 'wpmgr-agent') . '">';
         $formHtml .= '</p>';
+
+        // Method switch (#964): submit buttons inside this signed form, so a
+        // switch carries the session fields. They come after Verify because
+        // Enter in the code field submits the form's first submit button, and
+        // formnovalidate lets them submit past the empty, required code field.
+        if (count($providers) > 1) {
+            $formHtml .= '<p style="clear:both;padding-top:8px">' . esc_html__('Or use:', 'wpmgr-agent') . ' ';
+            foreach ($providers as $p) {
+                if ($p->key() === $activeProvider->key()) {
+                    continue;
+                }
+                $formHtml .= '<button type="submit" name="wpmgr_2fa_switch" value="' . esc_attr($p->key()) . '" class="button-link" formnovalidate>';
+                $formHtml .= esc_html($p->label()) . '</button> ';
+            }
+            $formHtml .= '</p>';
+        }
+
         $formHtml .= '</form>';
 
         // Escape-at-output-boundary: every dynamic value above was already
@@ -1742,8 +2022,7 @@ final class Site2faModule
         $uuid      = (string) ($session['uuid'] ?? '');
         $hmac      = $this->computeSessionHmac($userId, $sessionId, $createdAt, $uuid);
 
-        $loginUrl  = function_exists('wp_login_url') ? wp_login_url() : '/wp-login.php';
-        $verifyUrl = add_query_arg(['action' => 'wpmgr_2fa_verify'], $loginUrl);
+        $verifyUrl = $this->verifyActionUrl();
 
         if (function_exists('login_header')) {
             login_header(esc_html__('Two-Factor Setup', 'wpmgr-agent'), '', null);
@@ -2288,9 +2567,9 @@ final class Site2faModule
                 // Even though the step is now server-authoritative (finding 1A fix),
                 // this defense-in-depth check ensures completeLogin() is never reached
                 // unless a non-email method was actually activated. If somehow the
-                // session reached DONE without enrollment, re-render the intro step
-                // rather than issuing a cookie.
-                if (!$this->hasNonEmailMethodConfigured($user)) {
+                // session reached DONE without enrollment in a method the policy
+                // allows, re-render the intro step rather than issuing a cookie.
+                if (!$this->hasAllowedNonEmailMethodConfigured($user)) {
                     $session['setup_step'] = self::SETUP_STEP_INTRO;
                     $this->storeSession($userId, $session);
                     $this->renderSetupScreen($user, $session);
@@ -2509,6 +2788,418 @@ final class Site2faModule
         // and enrollment happens via the login interstitial. We do not initiate a QR
         // from the save hook because we have no reliable way to display the QR result
         // back on the profile page within this hook.
+    }
+
+    // -------------------------------------------------------------------------
+    // The login URL in use (#965)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Where every interstitial form posts, with action=wpmgr_2fa_verify.
+     *
+     * On the login screen this is the login URL the request is running on:
+     * the site's own scheme and host, taken from wp_login_url() and never from
+     * the request's Host header, then this request's path and filtered query.
+     * Every carried query key and value is percent-encoded and the path keeps
+     * no raw ":", so the scheme's colon is the only one in the URL and
+     * wp_kses() passes the absolute action attribute through unchanged.
+     *
+     * Anywhere else, for a password step run from a front-end page, it is
+     * wp_login_url(): the verify handler runs on login_init, so only the login
+     * screen can complete the challenge.
+     *
+     * @return string Unescaped; escape with esc_url() at output.
+     */
+    private function verifyActionUrl(): string
+    {
+        return $this->loginTargetUrl(['action' => 'wpmgr_2fa_verify']);
+    }
+
+    /**
+     * The login form this request is running on, carrying a notice flag.
+     *
+     * @param string $notice One of the NOTICE_* values.
+     * @return string Unescaped absolute URL.
+     */
+    private function loginFormUrl(string $notice): string
+    {
+        return $this->loginTargetUrl([self::NOTICE_PARAM => $notice]);
+    }
+
+    /**
+     * @param array<string,string> $extra Query arguments appended last.
+     * @return string
+     */
+    private function loginTargetUrl(array $extra): string
+    {
+        $loginUrl = function_exists('wp_login_url') ? (string) wp_login_url() : '/wp-login.php';
+        $fallback = self::appendQueryArgs($loginUrl, $extra);
+
+        $siteOrigin = self::originOf($loginUrl);
+        if ($siteOrigin === null || !self::isLoginScreenRequest()) {
+            return $fallback;
+        }
+
+        $target = self::publicLoginTarget($siteOrigin);
+        if ($target === null) {
+            return $fallback;
+        }
+
+        $pieces = $target['params'];
+        foreach ($extra as $key => $value) {
+            $pieces[] = rawurlencode($key) . '=' . rawurlencode($value);
+        }
+        $url = self::originPrefix($siteOrigin) . $target['path'] . '?' . implode('&', $pieces);
+
+        // Defense in depth: a form target that does not name the site's own
+        // origin is never emitted.
+        return self::originOf($url) === $siteOrigin ? $url : $fallback;
+    }
+
+    /**
+     * Whether this request is the login screen, where the verify handler runs.
+     *
+     * @return bool
+     */
+    private static function isLoginScreenRequest(): bool
+    {
+        return function_exists('did_action') && did_action('login_init') > 0;
+    }
+
+    /**
+     * wp_login_url() plus query arguments, built the way the form target was
+     * built before #965.
+     *
+     * @param string               $url
+     * @param array<string,string> $args
+     * @return string
+     */
+    private static function appendQueryArgs(string $url, array $args): string
+    {
+        if (function_exists('add_query_arg')) {
+            return (string) add_query_arg($args, $url);
+        }
+        $pieces = [];
+        foreach ($args as $key => $value) {
+            $pieces[] = rawurlencode($key) . '=' . rawurlencode($value);
+        }
+        return $url . (str_contains($url, '?') ? '&' : '?') . implode('&', $pieces);
+    }
+
+    /**
+     * Public path and carried query pieces of the login this request is
+     * running, or null when they cannot be told (the caller then falls back to
+     * wp_login_url()).
+     *
+     * The origin and base path come from the site's public URLs, which carry
+     * a base path a reverse proxy may strip before the request reaches
+     * WordPress. REQUEST_URI supplies only what those cannot:
+     *  - for core's wp-login.php, nothing but the query: the target is the
+     *    public site URL plus wp-login.php;
+     *  - for a renamed login slug, the slug: the request path below the public
+     *    home path (removed when the backend sees it, as WP::parse_request()
+     *    does), under the public home URL.
+     *
+     * When the request is the bare core wp-login.php, the query pieces may
+     * come from the Referer instead, but only from a Referer on the site's own
+     * origin and the public login path: a login renamer can post its form
+     * there and keep its slug only in the page the visitor came from.
+     *
+     * @param string $siteOrigin Normalised origin of wp_login_url().
+     * @return array{path:string,params:list<string>}|null
+     */
+    private static function publicLoginTarget(string $siteOrigin): ?array
+    {
+        if (!isset($_SERVER['REQUEST_URI']) || !is_string($_SERVER['REQUEST_URI']) || !function_exists('esc_url_raw')) {
+            return null;
+        }
+        $request = self::splitRequestTarget(esc_url_raw(wp_unslash($_SERVER['REQUEST_URI'])));
+        if ($request === null) {
+            return null;
+        }
+
+        $isCoreScript = self::isCoreLoginScript($request['path']);
+        if ($isCoreScript) {
+            $siteUrl = function_exists('site_url') ? (string) site_url('', 'login') : '';
+            $public  = rtrim($siteUrl, '/') . '/wp-login.php';
+        } else {
+            $homeUrl = function_exists('home_url') ? (string) home_url('/') : '';
+            $slug    = self::pathBelowHome($request['path'], $homeUrl);
+            if ($slug === null) {
+                return null;
+            }
+            $public = rtrim($homeUrl, '/') . '/' . $slug;
+        }
+
+        $publicTarget = self::splitRequestTarget($public);
+        if ($publicTarget === null || self::originOf($public) !== $siteOrigin) {
+            return null;
+        }
+
+        $params = self::filterQueryPieces($request['query']);
+        if ($params === [] && $isCoreScript) {
+            $params = self::refererQueryPieces($publicTarget['path'], $siteOrigin);
+        }
+
+        return ['path' => $publicTarget['path'], 'params' => $params];
+    }
+
+    /**
+     * A normalised request path below the public home path, without a leading
+     * slash, or null when a dot segment could climb out of it.
+     *
+     * @param string $requestPath Normalised path of this request.
+     * @param string $homeUrl     home_url('/').
+     * @return string|null
+     */
+    private static function pathBelowHome(string $requestPath, string $homeUrl): ?string
+    {
+        $homePath = function_exists('wp_parse_url') ? wp_parse_url($homeUrl, PHP_URL_PATH) : null;
+        $prefix   = trim(is_string($homePath) ? $homePath : '', '/');
+        $relative = ltrim($requestPath, '/');
+
+        $length = strlen($prefix);
+        if ($length > 0 && strncasecmp($relative, $prefix, $length) === 0
+            && (strlen($relative) === $length || $relative[$length] === '/')
+        ) {
+            $relative = ltrim(substr($relative, $length), '/');
+        }
+
+        foreach (explode('/', rawurldecode($relative)) as $segment) {
+            if ($segment === '.' || $segment === '..') {
+                return null;
+            }
+        }
+        return $relative;
+    }
+
+    /**
+     * Query pieces of a Referer on the site's own origin and the public login path.
+     *
+     * @param string $publicPath Normalised public path of the login.
+     * @param string $siteOrigin Normalised origin of wp_login_url().
+     * @return list<string>
+     */
+    private static function refererQueryPieces(string $publicPath, string $siteOrigin): array
+    {
+        if (!isset($_SERVER['HTTP_REFERER']) || !is_string($_SERVER['HTTP_REFERER']) || !function_exists('esc_url_raw')) {
+            return [];
+        }
+
+        $referer = esc_url_raw(wp_unslash($_SERVER['HTTP_REFERER']));
+        if (self::originOf($referer) !== $siteOrigin) {
+            return [];
+        }
+
+        $parts = wp_parse_url($referer);
+        if (!is_array($parts)) {
+            return [];
+        }
+        $target = self::splitRequestTarget(
+            (string) ($parts['path'] ?? '/') . (isset($parts['query']) ? '?' . $parts['query'] : '')
+        );
+        if ($target === null || $target['path'] !== $publicPath) {
+            return [];
+        }
+
+        return self::filterQueryPieces($target['query']);
+    }
+
+    /**
+     * Normalised "scheme://host:port" of an http or https URL, or null.
+     *
+     * @param string $url
+     * @return string|null
+     */
+    private static function originOf(string $url): ?string
+    {
+        $parts = function_exists('wp_parse_url') ? wp_parse_url($url) : false;
+        if (!is_array($parts) || !isset($parts['scheme'], $parts['host'])) {
+            return null;
+        }
+
+        $scheme = strtolower((string) $parts['scheme']);
+        $host   = strtolower((string) $parts['host']);
+        if (($scheme !== 'http' && $scheme !== 'https') || $host === '' || preg_match('/[^a-z0-9.\-\[\]:]/', $host) === 1) {
+            return null;
+        }
+
+        $port = isset($parts['port']) ? (int) $parts['port'] : ($scheme === 'https' ? 443 : 80);
+        return $scheme . '://' . $host . ':' . $port;
+    }
+
+    /**
+     * An origin from originOf() as a URL prefix, without the scheme's default port.
+     *
+     * @param string $origin
+     * @return string
+     */
+    private static function originPrefix(string $origin): string
+    {
+        if (str_starts_with($origin, 'https://') && str_ends_with($origin, ':443')) {
+            return substr($origin, 0, -4);
+        }
+        if (str_starts_with($origin, 'http://') && str_ends_with($origin, ':80')) {
+            return substr($origin, 0, -3);
+        }
+        return $origin;
+    }
+
+    /**
+     * Split a request target or URL into a normalised path and its raw query,
+     * or null when it carries no usable path.
+     *
+     * Any scheme and authority are discarded, so the result never names a
+     * host. Bytes outside PATH_SAFE_BYTES are percent-encoded and a leading run
+     * of slashes collapses to one. Collapsing comes after encoding: a
+     * sanitizer that deletes bytes can turn "/\host" into "//host".
+     *
+     * @param string $target
+     * @return array{path:string,query:string}|null
+     */
+    private static function splitRequestTarget(string $target): ?array
+    {
+        $target = (string) preg_replace('#^[a-z][a-z0-9+.\-]*://[^/?\#]*#i', '', $target);
+
+        $hash = strpos($target, '#');
+        if ($hash !== false) {
+            $target = substr($target, 0, $hash);
+        }
+
+        $q     = strpos($target, '?');
+        $path  = $q === false ? $target : substr($target, 0, $q);
+        $query = $q === false ? '' : substr($target, $q + 1);
+
+        if ($path === '' || $path[0] !== '/') {
+            return null;
+        }
+
+        $path = '/' . ltrim(self::encodeUnsafeBytes($path, self::PATH_SAFE_BYTES), '/');
+        return ['path' => $path, 'query' => $query];
+    }
+
+    /**
+     * Keep the query pieces a form target may carry, each rebuilt from its
+     * decoded key and value with every byte outside the RFC 3986 unreserved
+     * set percent-encoded, so no raw ":" or "/" is ever carried. A valueless
+     * "slug" piece stays valueless.
+     *
+     * Dropped: DROPPED_QUERY_KEYS and every key starting with wpmgr_2fa, with
+     * keys compared as PHP would register them.
+     *
+     * @param string $query Raw query string, without the "?".
+     * @return list<string>
+     */
+    private static function filterQueryPieces(string $query): array
+    {
+        $kept = [];
+        foreach (explode('&', $query) as $piece) {
+            $name = self::queryPieceName($piece);
+            if ($name === '' || in_array($name, self::DROPPED_QUERY_KEYS, true) || str_starts_with($name, 'wpmgr_2fa')) {
+                continue;
+            }
+            $eq     = strpos($piece, '=');
+            $kept[] = $eq === false
+                ? rawurlencode(urldecode($piece))
+                : rawurlencode(urldecode(substr($piece, 0, $eq))) . '=' . rawurlencode(urldecode(substr($piece, $eq + 1)));
+        }
+        return $kept;
+    }
+
+    /**
+     * The variable name PHP registers for one raw "key=value" query piece,
+     * lower-cased: decoded, cut at a NUL, leading spaces dropped, cut at an
+     * array bracket, with ".", " " and an unmatched "[" turned into "_".
+     *
+     * @param string $piece
+     * @return string
+     */
+    private static function queryPieceName(string $piece): string
+    {
+        $eq   = strpos($piece, '=');
+        $name = urldecode($eq === false ? $piece : substr($piece, 0, $eq));
+
+        $nul = strpos($name, "\0");
+        if ($nul !== false) {
+            $name = substr($name, 0, $nul);
+        }
+        $name = ltrim($name, ' ');
+
+        $open = strpos($name, '[');
+        if ($open !== false && strpos($name, ']', $open) !== false) {
+            $name = substr($name, 0, $open);
+        }
+
+        return strtolower(strtr($name, ' .[', '___'));
+    }
+
+    /**
+     * Whether a normalised path names core's login script (at any install depth).
+     *
+     * @param string $path
+     * @return bool
+     */
+    private static function isCoreLoginScript(string $path): bool
+    {
+        $slash = strrpos($path, '/');
+        return substr($path, $slash === false ? 0 : $slash + 1) === 'wp-login.php';
+    }
+
+    /**
+     * Percent-encode every byte outside $safeClass, and every "%" that does
+     * not open a valid escape.
+     *
+     * @param string $value
+     * @param string $safeClass A PCRE character-class body.
+     * @return string
+     */
+    private static function encodeUnsafeBytes(string $value, string $safeClass): string
+    {
+        $value = (string) preg_replace('/%(?![0-9A-Fa-f]{2})/', '%25', $value);
+        return (string) preg_replace_callback(
+            '/[^' . $safeClass . ']/',
+            static fn (array $m): string => rawurlencode($m[0]),
+            $value
+        );
+    }
+
+    /**
+     * Upper-cased request method, or '' when the SAPI did not provide one.
+     *
+     * @return string
+     */
+    private static function requestMethod(): string
+    {
+        if (!isset($_SERVER['REQUEST_METHOD']) || !is_string($_SERVER['REQUEST_METHOD'])) {
+            return '';
+        }
+        return strtoupper(sanitize_text_field(wp_unslash($_SERVER['REQUEST_METHOD'])));
+    }
+
+    /**
+     * Tell a visitor sent back from the verify action why they are on the
+     * login form again (see handleVerifySubmit()).
+     *
+     * Shows a fixed message for the one known flag value; the request value
+     * itself is never echoed. Hooked to login_message.
+     *
+     * @param mixed $message Login message HTML built so far.
+     * @return mixed
+     */
+    public function filterLoginMessage(mixed $message): mixed
+    {
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only display flag; selects a fixed message, changes no state
+        $flag = isset($_GET[self::NOTICE_PARAM]) && is_string($_GET[self::NOTICE_PARAM])
+            ? sanitize_key(wp_unslash($_GET[self::NOTICE_PARAM])) // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- same
+            : '';
+        if ($flag !== self::NOTICE_INTERRUPTED) {
+            return $message;
+        }
+
+        $notice = '<p class="message">'
+            . esc_html__('Your two-factor verification was interrupted. Please log in again.', 'wpmgr-agent')
+            . '</p>';
+        return (is_string($message) ? $message : '') . $notice;
     }
 
     /**
