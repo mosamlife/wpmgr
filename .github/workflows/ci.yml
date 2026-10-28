@@ -992,6 +992,21 @@ jobs:
       - name: Install dependencies
         run: composer install --prefer-dist --no-interaction --no-progress
 
+      # The QR round-trip tests in tests/Security/QrEncoderTest.php decode the
+      # shipped setup-screen QR code with an independent decoder: ImageMagick
+      # rasterises it and zbarimg reads it back. Neither tool is in the runner
+      # image, so the round trip was skipped on every run and the encoder's one
+      # independent check never executed in CI.
+      #
+      # A package that fails to install fails this step (bash -e), and the
+      # version lines put the exact tools behind a run's result into its log.
+      - name: Install QR round-trip tools (zbar, ImageMagick)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zbar-tools imagemagick
+          dpkg-query -W zbar-tools imagemagick
+          zbarimg --version
+
       # The list of every test this configuration must run, written before the
       # run so the completeness check below has something to count against.
       - name: List the tests the run must execute
