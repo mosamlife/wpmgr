@@ -152,11 +152,13 @@ final class BackupArchiveBehaviorTest extends TestCase
             'sub_state' => json_encode(['params' => $params])]);
         $GLOBALS['wpdb'] = $wpdb;
         $packed = null;
+        $parts = null;
         $savedCursor = null;
-        Functions\when('wp_remote_post')->alias(function ($url, $args) use (&$packed, &$savedCursor, $wpdb) {
+        Functions\when('wp_remote_post')->alias(function ($url, $args) use (&$packed, &$parts, &$savedCursor, $wpdb) {
             $event = json_decode($args['body'], true);
             if ($event['phase'] === 'archiving_files' && ($event['phase_detail']['done'] ?? false)) {
                 $packed = $this->entries($event['phase_detail']);
+                $parts = $event['phase_detail']['parts'];
                 $state = json_decode($wpdb->rows[self::SNAPSHOT]['sub_state'], true);
                 $savedCursor = $state['files'] ?? null;
             }
@@ -164,8 +166,11 @@ final class BackupArchiveBehaviorTest extends TestCase
         });
         Watchdog::resumeIfStalled(self::SNAPSHOT);
         self::assertSame($expected, $packed);
-        self::assertNull($savedCursor);
-        fwrite(STDOUT, "\nwatchdog resume entries=" . json_encode($packed) . " durable_files_cursor=null\n");
+        // GH #954: the task row holds a durable checkpoint naming every closed part.
+        self::assertSame(FilesArchiver::CHECKPOINT_VERSION, $savedCursor['checkpoint'] ?? null);
+        self::assertTrue($savedCursor['complete']);
+        self::assertSame($parts, $savedCursor['parts_completed']);
+        fwrite(STDOUT, "\nwatchdog resume entries=" . json_encode($packed) . ' durable_files_cursor=' . json_encode($savedCursor['parts_completed']) . "\n");
     }
 
     public function testDeletedSourceIsReportedAsSkipped(): void
@@ -404,27 +409,36 @@ final class BackupArchiveBehaviorTest extends TestCase
         self::assertFileDoesNotExist($path);
     }
 
-    public function testRebuildPreservesEntriesAlreadyInAResumedPart(): void
+    public function testRebuildAfterResumeKeepsTheSavedPartAndRebuildsOnlyTheOpenOne(): void
     {
         mkdir($this->root . '/src/uploads');
+        file_put_contents($this->root . '/src/uploads/earlier.txt', 'EARLIER');
         file_put_contents($this->root . '/src/uploads/victim.txt', 'victim');
         file_put_contents($this->root . '/src/uploads/keep.txt', 'keep');
-        $zip = new \ZipArchive();
-        self::assertTrue($zip->open($this->root . '/out/uploads.g000.part001.zip', \ZipArchive::CREATE));
-        $zip->addFromString('uploads/earlier.txt', 'EARLIER');
-        $zip->addFromString('uploads/victim.txt', 'OLD');
-        $zip->close();
         file_put_contents($this->root . '/out/paths.cache', "uploads\tuploads/earlier.txt\nuploads\tuploads/victim.txt\nuploads\tuploads/keep.txt\n");
         file_put_contents($this->root . '/out/files.list', "uploads/earlier.txt\t7\t1\nuploads/victim.txt\t6\t1\nuploads/keep.txt\t4\t1\n");
-        $resume = ['total_files' => 3, 'file_index' => 1, 'components' => ['uploads' => ['current_part' => 1]]];
-        $result = (new FilesArchiver($this->root . '/src'))->archive($this->root . '/out', $resume, function ($phase, $detail): void {
+        $saved = null;
+        try {
+            (new FilesArchiver($this->root . '/src', [], ['max_part_bytes' => 7]))->archive($this->root . '/out', ['total_files' => 3], static function (): void {}, null,
+                static function (array $cursor) use (&$saved): void {
+                    if ($cursor['parts_completed'] !== []) { $saved = $cursor; throw new \LogicException('worker ended'); }
+                });
+        } catch (\LogicException $e) {
+            // The host ended the first worker after its first closed part.
+        }
+        self::assertSame(['uploads.g000.part001.zip'], $saved['parts_completed']);
+        $savedHash = sha1_file($this->root . '/out/uploads.g000.part001.zip');
+        $closes = 0;
+        $factory = static function () use (&$closes): \ZipArchive { return new ScriptedCloseZipArchive([1], $closes); };
+        $result = (new FilesArchiver($this->root . '/src', [], ['zip_factory' => $factory]))->archive($this->root . '/out', $saved, function ($phase, $detail): void {
             if (($detail['stage'] ?? '') === 'finalizing_part') { unlink($this->root . '/src/uploads/victim.txt'); }
         });
+        self::assertSame(2, $closes, 'the open part failed once and was rebuilt once');
+        self::assertSame($savedHash, sha1_file($this->root . '/out/uploads.g000.part001.zip'), 'a saved part is never reopened');
         self::assertSame(['uploads/earlier.txt', 'uploads/keep.txt'], $this->entries($result));
-        self::assertTrue($zip->open($this->root . '/out/uploads.g000.part001.zip'));
-        self::assertSame('EARLIER', $zip->getFromName('uploads/earlier.txt'));
-        $zip->close();
+        self::assertSame(['uploads.g000.part001.zip', 'uploads.g000.part002.zip'], $result['parts']);
         self::assertSame(2, $result['files_total']);
+        self::assertArrayNotHasKey('uploads/victim.txt', FilesArchiver::loadPrevMap($this->root . '/out/files.list'));
     }
 
     public function testUnreadableQueuedSourceIsSkipped(): void
@@ -440,35 +454,12 @@ final class BackupArchiveBehaviorTest extends TestCase
         } finally { chmod($this->root . '/src/victim.txt', 0600); }
     }
 
-    public function testResumedRebuildReplaysDeletionsMadeBeforeClose(): void
-    {
-        $result = $this->resumedPartWithAnEarlyDeletion(false);
-        self::assertTrue($result['done']);
-        self::assertSame(['uploads/earlier.txt', 'uploads/keep.txt', 'uploads/victim.txt'], $this->entries($result));
-        $baseline = FilesArchiver::loadPrevMap($this->root . '/out/files.list');
-        self::assertArrayNotHasKey('uploads/missing.txt', $baseline);
-        $paths = array_keys($baseline);
-        sort($paths);
-        self::assertSame(['uploads/earlier.txt', 'uploads/keep.txt', 'uploads/victim.txt'], $paths);
-        self::assertSame(3, $baseline['uploads/victim.txt']['size']);
-        self::assertSame("uploads\tuploads/earlier.txt\nuploads\tuploads/victim.txt\nuploads\tuploads/keep.txt\n", file_get_contents($this->root . '/out/paths.cache'));
-        self::assertSame(['uploads/missing.txt'], file($result['tombstones_file'], FILE_IGNORE_NEW_LINES));
-        self::assertSame(1, $result['tombstones_count']);
-        self::assertSame(1, $result['skipped_sources_count']);
-        self::assertSame(3, $result['files_total']);
-    }
-
-    public function testResumedRebuildDeletionFailureIsFatal(): void
-    {
-        $this->expectException(\WPMgr\Agent\Backup\ZipCloseException::class);
-        $this->resumedPartWithAnEarlyDeletion(true);
-    }
-
-    private function resumedPartWithAnEarlyDeletion(bool $rejectReplay): array
+    public function testUnsavedPartOnDiskNeverContributesEntries(): void
     {
         mkdir($this->root . '/src/uploads');
         file_put_contents($this->root . '/src/uploads/victim.txt', 'abcdefgh');
         file_put_contents($this->root . '/src/uploads/keep.txt', 'keep');
+        // A part an earlier pass left behind, holding entries the source no longer has.
         $zip = new \ZipArchive();
         self::assertTrue($zip->open($this->root . '/out/uploads.g000.part001.zip', \ZipArchive::CREATE));
         $zip->addFromString('uploads/earlier.txt', 'EARLIER');
@@ -476,37 +467,20 @@ final class BackupArchiveBehaviorTest extends TestCase
         $zip->close();
         file_put_contents($this->root . '/out/paths.cache', "uploads\tuploads/earlier.txt\nuploads\tuploads/missing.txt\nuploads\tuploads/victim.txt\nuploads\tuploads/keep.txt\n");
         file_put_contents($this->root . '/out/files.list', "uploads/earlier.txt\t7\t1\nuploads/missing.txt\t3\t1\nuploads/victim.txt\t8\t1\nuploads/keep.txt\t4\t1\n");
-        $opens = 0;
-        $closes = 0;
-        $deletions = [];
-        $factory = static function () use (&$opens, &$closes, &$deletions, $rejectReplay): \ZipArchive {
-            $opens++;
-            return new class ($opens > 1 && $rejectReplay, $deletions, $closes) extends ScriptedCloseZipArchive {
-                public function __construct(private bool $reject, private array &$deletions, int &$closes)
-                {
-                    parent::__construct([1, 2], $closes);
-                }
-                public function deleteName(string $name): bool
-                {
-                    $this->deletions[] = $name;
-                    return $this->reject ? false : parent::deleteName($name);
-                }
-            };
-        };
-        $resume = ['total_files' => 4, 'file_index' => 1, 'components' => ['uploads' => ['current_part' => 1]]];
-        $deletedBeforeClose = null;
-        $result = (new FilesArchiver($this->root . '/src', [], ['zip_factory' => $factory]))->archive($this->root . '/out', $resume,
-            function ($phase, $detail) use (&$deletions, &$deletedBeforeClose): void {
-                if (($detail['stage'] ?? '') === 'finalizing_part') {
-                    $deletedBeforeClose = $deletions;
-                    file_put_contents($this->root . '/src/uploads/victim.txt', 'abcdef');
-                } elseif (($detail['stage'] ?? '') === 'rebuilding_part' && $detail['rebuild_attempt'] === 1) {
-                    file_put_contents($this->root . '/src/uploads/victim.txt', 'abc');
-                }
-            }, ['uploads/missing.txt' => ['size' => 3, 'mtime' => 1]]);
-        self::assertSame(['uploads/missing.txt'], $deletedBeforeClose);
-        self::assertSame(3, $opens);
-        return $result;
+        // A hand-built cursor carries no checkpoint, so it saves no part and no line.
+        $resume = ['total_files' => 4, 'file_index' => 2, 'parts_completed' => [], 'components' => ['uploads' => ['current_part' => 1]]];
+        $result = (new FilesArchiver($this->root . '/src'))->archive($this->root . '/out', $resume, static function (): void {},
+            ['uploads/missing.txt' => ['size' => 3, 'mtime' => 1]]);
+        self::assertTrue($result['done']);
+        self::assertSame(['uploads/keep.txt', 'uploads/victim.txt'], $this->entries($result));
+        $baseline = array_keys(FilesArchiver::loadPrevMap($this->root . '/out/files.list'));
+        sort($baseline);
+        self::assertSame(['uploads/keep.txt', 'uploads/victim.txt'], $baseline);
+        self::assertSame("uploads\tuploads/victim.txt\nuploads\tuploads/keep.txt\n", file_get_contents($this->root . '/out/paths.cache'));
+        self::assertSame(['uploads/missing.txt'], file($result['tombstones_file'], FILE_IGNORE_NEW_LINES));
+        self::assertSame(1, $result['tombstones_count']);
+        self::assertSame(2, $result['skipped_sources_count']);
+        self::assertSame(2, $result['files_total']);
     }
 
     public function testUnwritableDestinationRemainsFatalEvenWithAChangedSource(): void
@@ -733,7 +707,11 @@ final class BackupArchiveBehaviorTest extends TestCase
             self::assertTrue($save->invoke($runner, 'archiving_files', $state));
             $raw = $wpdb->rows[self::SNAPSHOT]['sub_state'];
             self::assertNotNull(json_decode($raw, true));
-            self::assertSame($state, TaskRunner::decodeSubStateColumn($raw));
+            $saved = TaskRunner::decodeSubStateColumn($raw);
+            // GH #983: every save also carries the durable progress record.
+            self::assertIsArray(TaskRunner::progressRecord($saved['progress'] ?? null));
+            unset($saved['progress']);
+            self::assertSame($state, $saved);
         }
     }
 
@@ -754,7 +732,11 @@ final class BackupArchiveBehaviorTest extends TestCase
         $state = ['params' => ['wp_content_path' => "/site/caf\xe9"]];
         self::assertTrue((new \ReflectionMethod($runner, 'saveTaskState'))->invoke($runner, 'archiving_files', $state));
         (new \ReflectionMethod(Watchdog::class, 'stampStage'))->invoke(null, self::SNAPSHOT, 'dispatch_entered');
-        self::assertSame($state + ['stage' => 'dispatch_entered'], TaskRunner::decodeSubStateColumn($GLOBALS['wpdb']->rows[self::SNAPSHOT]['sub_state']));
+        $saved = TaskRunner::decodeSubStateColumn($GLOBALS['wpdb']->rows[self::SNAPSHOT]['sub_state']);
+        // GH #983: every save also carries the durable progress record.
+        self::assertIsArray(TaskRunner::progressRecord($saved['progress'] ?? null));
+        unset($saved['progress']);
+        self::assertSame($state + ['stage' => 'dispatch_entered'], $saved);
     }
 
     public function testExistingUnreadableIncrementalSourceCarriesParentMetadata(): void
@@ -1349,9 +1331,11 @@ final class BackupArchiveBehaviorTest extends TestCase
         try { Watchdog::resumeIfStalled(self::SNAPSHOT); }
         finally { flock($holder, LOCK_UN); fclose($holder); }
         self::assertSame('dumping_db', $wpdb->rows[self::SNAPSHOT]['phase']);
-        self::assertSame(1, $wpdb->rows[self::SNAPSHOT]['resume_count']);
+        // GH #983: a silent runner that still holds the run-lock is alive, so
+        // the watchdog neither resumes over it nor counts the stall.
+        self::assertSame(0, $wpdb->rows[self::SNAPSHOT]['resume_count']);
         self::assertFileDoesNotExist($this->root . '/out/database.sql.gz');
-        fwrite(STDOUT, "\nsilent dump stall: resume_count=1 phase=dumping_db second_worker_blocked=true\n");
+        fwrite(STDOUT, "\nsilent dump stall: resume_count=0 phase=dumping_db second_worker_blocked=true\n");
     }
 
     public function testRequestSweepRunsBackupBeforeReturningToRequest(): void
@@ -1412,7 +1396,7 @@ final class BackupArchiveBehaviorTest extends TestCase
         fwrite(STDOUT, "\nfailure payload=" . json_encode($failure) . " scratch_removed=true task_removed=true\n");
     }
 
-    public function testTimingAppearsOnlyInFirstFreshOrResumedWorkerReport(): void
+    public function testTimingAppearsInEveryFreshOrResumedWorkerReport(): void
     {
         $this->signing();
         file_put_contents($this->root . '/src/keep.txt', 'keep');
@@ -1436,7 +1420,8 @@ final class BackupArchiveBehaviorTest extends TestCase
             self::assertIsInt($firstTiming['worker_started_at']);
             self::assertGreaterThanOrEqual($before, $firstTiming['worker_started_at']);
             self::assertLessThanOrEqual(time(), $firstTiming['worker_started_at']);
-            foreach (array_slice($events, 1) as $event) { self::assertArrayNotHasKey('timing', $event['phase_detail']); }
+            // The control plane keeps only the latest report, so every report carries timing.
+            foreach ($events as $event) { self::assertSame($firstTiming, $event['phase_detail']['timing'] ?? null); }
         }
     }
 
