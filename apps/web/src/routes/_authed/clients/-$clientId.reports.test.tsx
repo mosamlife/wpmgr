@@ -182,7 +182,9 @@ async function expectSwitches(
 async function saveSchedule(): Promise<SchedulePutOptions> {
   fireEvent.click(screen.getByRole("button", { name: "Save schedule" }));
   await waitFor(() => expect(putSchedule).toHaveBeenCalledTimes(1));
-  return putSchedule.mock.calls[0][0];
+  const call = putSchedule.mock.calls[0];
+  if (!call) throw new Error("the schedule PUT was not called");
+  return call[0];
 }
 
 /** Waits for the save to finish: the form is reset to the saved values. */
@@ -204,10 +206,12 @@ describe("client report schedule form: section switches", () => {
       SECTIONS.map(([, label]) => `Include ${label} section`),
     );
     // Each switch has a visible label bound to it, as the existing five do.
-    SECTIONS.forEach(([, label], i) => {
+    SECTIONS.forEach(([, label]) => {
+      const sw = screen.getByRole("switch", { name: `Include ${label} section` });
+      expect(sw.id).not.toBe("");
       expect(screen.getByText(label, { selector: "label" })).toHaveAttribute(
         "for",
-        switches[i].id,
+        sw.id,
       );
     });
   });
