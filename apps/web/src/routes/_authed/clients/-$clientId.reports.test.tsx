@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { configure, fireEvent, screen, waitFor } from "@testing-library/react";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -39,6 +39,13 @@ import { Route as ReportsRoute } from "./$clientId.reports";
 //     site Uptime, Backups, Updates, Performance, Email
 //     (apps/api/internal/report/render/html/templates/report.html.tmpl and
 //     apps/api/internal/report/render/pdf/fpdf.go).
+
+// The first test in this file loads the route's lazy chunk, and under the load of
+// the whole suite that takes longer than the one second a findBy waits by
+// default. A wait ends the moment its element is there, so the longer limit
+// costs time only when the element never appears. It stays inside the five
+// seconds a test is given, so a missing element still fails with its own message.
+configure({ asyncUtilTimeout: 4000 });
 
 interface ScheduleGetOptions {
   path: { clientId: string };
