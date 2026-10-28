@@ -322,6 +322,52 @@ if (!function_exists('esc_html')) {
 }
 
 // ---------------------------------------------------------------------------
+// Translation functions (identity)
+//
+// The agent wraps every visible string in gettext functions, so a code path
+// under test reaches them without the test mentioning translation at all.
+// Each stub returns its text unchanged, which is what WordPress does for a
+// locale with no catalogue. A test that needs a translated result redefines the
+// function for itself (Functions\when('__')->alias(...)).
+// ---------------------------------------------------------------------------
+
+if (!function_exists('__')) {
+    /**
+     * @param string $text   Text to translate.
+     * @param string $domain Text domain (ignored).
+     * @return string
+     */
+    function __(string $text, string $domain = 'default'): string
+    {
+        return $text;
+    }
+}
+
+if (!function_exists('esc_attr__')) {
+    /**
+     * @param string $text   Text to translate.
+     * @param string $domain Text domain (ignored).
+     * @return string
+     */
+    function esc_attr__(string $text, string $domain = 'default'): string
+    {
+        return $text;
+    }
+}
+
+if (!function_exists('esc_html__')) {
+    /**
+     * @param string $text   Text to translate.
+     * @param string $domain Text domain (ignored).
+     * @return string
+     */
+    function esc_html__(string $text, string $domain = 'default'): string
+    {
+        return $text;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // WP option store (default: no stored value)
 // ---------------------------------------------------------------------------
 
