@@ -137,6 +137,8 @@ type Service struct {
 	// m103 (GH #247): supplies the digest's "new vulnerabilities" section.
 	// Nil is safe — buildDigestData skips the section entirely.
 	vulnDigest VulnDigestSource
+	// locks is the per-site email lock (GH #968); see SiteEmailLockKey.
+	locks siteLocker
 }
 
 // NewService builds the email service. enc may be nil (all secret-write paths
@@ -146,7 +148,11 @@ func NewService(repo *Repo, enc Encryptor, log *slog.Logger) *Service {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Service{repo: repo, enc: enc, log: log}
+	var locks siteLocker = newLocalSiteLocker(siteLockWait)
+	if repo != nil && repo.pool != nil {
+		locks = &pgSiteLocker{pool: repo.pool, wait: siteLockWait, poll: siteLockPoll}
+	}
+	return &Service{repo: repo, enc: enc, log: log, locks: locks}
 }
 
 // SetAgentClient wires the CP->agent command client + site-URL resolver.
@@ -241,6 +247,19 @@ func (s *Service) GetOrgConfig(ctx context.Context, tenantID uuid.UUID) (Config,
 func (s *Service) UpsertSiteConfig(ctx context.Context, in UpsertInput) (Config, error) {
 	if err := s.validateUpsert(in); err != nil {
 		return Config{}, err
+	}
+
+	// The site's email lock is held across the write and the push (GH #968),
+	// so a removal either finishes before this save writes, or starts after
+	// its push has landed. A save that only pushed under the lock could write
+	// its row, lose it to a removal, and then push it to a site the removal
+	// had just cleared.
+	if in.SiteID != nil {
+		release, lockErr := s.lockSiteForChange(ctx, *in.SiteID)
+		if lockErr != nil {
+			return Config{}, lockErr
+		}
+		defer release()
 	}
 
 	ri, err := s.buildRepoInput(ctx, in)
@@ -362,20 +381,32 @@ func (s *Service) SendTest(ctx context.Context, tenantID, siteID uuid.UUID, in T
 	// agent never hits "no email config — run sync_email_config first" on the
 	// test path. Failures here surface as a clear TestSendResult rather than
 	// the opaque downstream error from the agent.
+	//
+	// The read and the pre-sync run under the site's email lock (GH #968), so
+	// the pre-sync can never land on a site a removal has just cleared. The
+	// lock is released before the test send, which changes no config.
+	release, lockErr := s.lockSiteForChange(ctx, siteID)
+	if lockErr != nil {
+		return TestSendResult{OK: false, Detail: lockErr.Message}, nil
+	}
 	cfg, cfgErr := s.GetConfig(ctx, tenantID, siteID)
 	if cfgErr != nil {
+		release()
 		return TestSendResult{OK: false, Detail: "could not load email config for agent sync: " + cfgErr.Error()}, nil
 	}
 	// Resolve the effective secret: per-site first, then the org secret for a
 	// site that still shares the org's endpoint.
 	syncSecret, decryptFailed := s.resolveSitePushSecret(ctx, tenantID, siteID, cfg, nil)
 	if decryptFailed {
+		release()
 		// Report the real problem instead of pre-syncing a config the site
 		// cannot authenticate with and then testing it (GH #380).
 		return TestSendResult{OK: false, Detail: secretDecryptFailedDetail}, nil
 	}
 	syncReq := s.buildAgentConfigReq(cfg, syncSecret)
-	if _, syncErr := s.agent.SyncEmailConfig(ctx, siteID, siteURL, syncReq); syncErr != nil {
+	_, syncErr := s.agent.SyncEmailConfig(ctx, siteID, siteURL, syncReq)
+	release()
+	if syncErr != nil {
 		return TestSendResult{OK: false, Detail: "could not sync config to agent: " + syncErr.Error()}, nil
 	}
 
@@ -415,6 +446,15 @@ func (s *Service) SyncConfigToAgent(ctx context.Context, tenantID, siteID uuid.U
 			Detail: "agent command client not configured; cannot sync",
 		}, nil
 	}
+
+	// The read and the push run under the site's email lock (GH #968): a push
+	// of the row as read, landing after a removal cleared the site, would
+	// leave the site holding a provider the dashboard says is gone.
+	release, lockErr := s.lockSiteForChange(ctx, siteID)
+	if lockErr != nil {
+		return TestSendResult{OK: false, Detail: lockErr.Message}, nil
+	}
+	defer release()
 
 	// Resolve effective config (per-site → org fallback).
 	cfg, err := s.GetConfig(ctx, tenantID, siteID)
@@ -507,6 +547,17 @@ type RemoveSiteConfigResult struct {
 // agree, and the caller is told nothing was removed. A row deleted in between
 // is the outcome asked for, and the fallback still runs.
 func (s *Service) RemoveSiteConfig(ctx context.Context, tenantID, siteID uuid.UUID) (RemoveSiteConfigResult, error) {
+	// 0. The site's email lock, held across every step below. Every other
+	// operation that pushes this site's email config takes it too, so none is
+	// in flight while the agent is cleared, and none starts until the
+	// fallback has been pushed. A push of the row as it already stood would
+	// not move updated_at, so step 3's compare cannot catch it.
+	release, lockErr := s.lockSiteForChange(ctx, siteID)
+	if lockErr != nil {
+		return RemoveSiteConfigResult{}, lockErr
+	}
+	defer release()
+
 	// 1. The row as it is now.
 	cfg, err := s.repo.GetSiteConfig(ctx, tenantID, siteID)
 	if err != nil {
