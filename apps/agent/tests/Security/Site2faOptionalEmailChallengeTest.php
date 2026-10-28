@@ -120,6 +120,10 @@ final class Site2faOptionalEmailChallengeTest extends TestCase
     protected function tear_down(): void
     {
         $_POST = [];
+        // A login completed by a test sets the module's process-wide re-entry
+        // guard; an exception mid-completion could leave it set and silence
+        // onWpLogin() for every later test. Keep each test self-contained.
+        (new \ReflectionProperty(Site2faModule::class, 'verifying'))->setValue(null, false);
         Monkey\tearDown();
         parent::tear_down();
     }
@@ -285,6 +289,7 @@ final class Site2faOptionalEmailChallengeTest extends TestCase
         (new BackupCodesProvider())->generateAndStore($admin);
 
         $authCookie = false;
+        Functions\when('get_userdata')->justReturn($admin);
         Functions\when('wp_set_auth_cookie')->alias(function () use (&$authCookie) {
             $authCookie = true;
         });
