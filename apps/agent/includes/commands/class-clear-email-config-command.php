@@ -27,7 +27,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  *   Content-Type: application/json
  *   Body: {} (no field is read; a body that carries some changes nothing)
  *
- * Response (HTTP 200 in every case; the outcome is in the body):
+ * Response (HTTP 200 for any authorized request; the outcome is in the body):
  *   {
  *     "ok": bool,        // equals "cleared"
  *     "cleared": bool,   // true only when every item below is observed gone
@@ -121,8 +121,15 @@ final class ClearEmailConfigCommand implements CommandInterface {
 			'connection_secrets' => self::is_stored( Keystore::OPTION_EMAIL_CONN_SECRETS ),
 		);
 
-		// The settings first: see ORDER above.
-		delete_option( EmailConfig::OPTION );
+		// The settings first: see ORDER above. A delete that throws (a listener on
+		// the option hooks can) is no more a verdict than a keystore that throws:
+		// the stored row is read back and that decides.
+		try {
+			delete_option( EmailConfig::OPTION );
+		} catch ( \Throwable $e ) {
+			// Reported from the read-back below.
+			unset( $e );
+		}
 		if ( self::is_stored( EmailConfig::OPTION ) ) {
 			return self::result( false, 'email config not cleared; the stored settings could not be removed and nothing else was changed', $existed );
 		}

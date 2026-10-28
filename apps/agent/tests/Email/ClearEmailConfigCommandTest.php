@@ -56,6 +56,12 @@ class ClearEmailConfigCommandTest extends TestCase
     /** @var list<string> Option names whose delete_option() is refused: the row stays and false is returned. */
     private array $refuseDelete = [];
 
+    /** @var list<string> Option names whose delete_option() throws before the row is touched. */
+    private array $throwBeforeDelete = [];
+
+    /** @var list<string> Option names whose delete_option() removes the row and then throws. */
+    private array $throwAfterDelete = [];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -68,9 +74,11 @@ class ClearEmailConfigCommandTest extends TestCase
         $this->keyFile = sys_get_temp_dir() . '/wpmgr-agent-clearmail-' . bin2hex(random_bytes(8)) . '.key';
         file_put_contents($this->keyFile, random_bytes(32));
 
-        $this->deleted      = [];
-        $this->written      = [];
-        $this->refuseDelete = [];
+        $this->deleted           = [];
+        $this->written           = [];
+        $this->refuseDelete      = [];
+        $this->throwBeforeDelete = [];
+        $this->throwAfterDelete  = [];
         // Pin the keystore's master key to this test's own file so the run is
         // independent of the salts and WPMGR_AGENT_KEY_FILE other tests define.
         $this->options = [
@@ -92,11 +100,17 @@ class ClearEmailConfigCommandTest extends TestCase
         });
         Functions\when('delete_option')->alias(function ($name) {
             $this->deleted[] = (string) $name;
+            if (in_array($name, $this->throwBeforeDelete, true)) {
+                throw new \RuntimeException('a delete_option listener threw');
+            }
             if (in_array($name, $this->refuseDelete, true)) {
                 return false;
             }
             $existed = array_key_exists($name, $this->options);
             unset($this->options[$name]);
+            if (in_array($name, $this->throwAfterDelete, true)) {
+                throw new \RuntimeException('a deleted_option listener threw');
+            }
             return $existed;
         });
         Functions\when('wp_json_encode')->alias(static fn ($d) => json_encode($d));
@@ -337,6 +351,37 @@ class ClearEmailConfigCommandTest extends TestCase
         $this->assertNoEmailRowsRemain('after the retry');
     }
 
+    public function test_a_settings_delete_that_throws_before_removing_the_row_is_reported_and_touches_nothing_else(): void
+    {
+        $keystore = $this->seedConfiguredSite();
+        $this->throwBeforeDelete = [EmailConfig::OPTION];
+
+        // The exception must not escape: it would reach the control plane as an
+        // opaque 500 instead of the answer it needs.
+        $result = (new ClearEmailConfigCommand($keystore))->execute([], []);
+
+        $this->assertFalse($result['ok']);
+        $this->assertFalse($result['cleared']);
+        $this->assertStringContainsString('settings', $result['detail']);
+        $this->assertArrayHasKey(EmailConfig::OPTION, $this->options);
+        $this->assertSame('smtp-password', $keystore->get_email_secret());
+        $this->assertSame('sendgrid-api-key', $keystore->get_connection_secret('backup'));
+        $this->assertSame([EmailConfig::OPTION], $this->deleted);
+    }
+
+    public function test_a_settings_delete_that_throws_after_removing_the_row_still_clears_the_credentials(): void
+    {
+        $keystore = $this->seedConfiguredSite();
+        $this->throwAfterDelete = [EmailConfig::OPTION];
+
+        $result = (new ClearEmailConfigCommand($keystore))->execute([], []);
+
+        // The row is gone, which is what was asked; a listener's fault afterwards
+        // does not change that.
+        $this->assertTrue($result['cleared']);
+        $this->assertNoEmailRowsRemain('after a listener threw once the settings were already removed');
+    }
+
     public function test_a_keystore_that_throws_is_reported_not_swallowed(): void
     {
         $this->seedConfiguredSite();
@@ -519,6 +564,11 @@ class ClearEmailConfigCommandTest extends TestCase
 
     private function mintToken(string $cmd, ?string $signingKey = null): string
     {
+        $key = $signingKey ?? $this->cpSecret;
+        if ($key === '') {
+            $this->fail('no signing key: routerFor() must run before a token is minted');
+        }
+
         $segments = [
             $this->b64((string) json_encode(['alg' => 'EdDSA', 'typ' => 'JWT'])),
             $this->b64((string) json_encode([
@@ -528,7 +578,7 @@ class ClearEmailConfigCommandTest extends TestCase
                 'exp' => time() + 30,
             ])),
         ];
-        $segments[] = $this->b64(sodium_crypto_sign_detached(implode('.', $segments), $signingKey ?? $this->cpSecret));
+        $segments[] = $this->b64(sodium_crypto_sign_detached(implode('.', $segments), $key));
 
         return implode('.', $segments);
     }
