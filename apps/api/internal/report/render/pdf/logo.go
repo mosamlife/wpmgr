@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"image"
+	"image/color"
 	_ "image/jpeg" // register jpeg decoder
 	_ "image/png"  // register png decoder
 	"io"
@@ -26,6 +27,9 @@ func byteReader(b []byte) *bytes.Reader { return bytes.NewReader(b) }
 const (
 	maxLogoBytes = 2 << 20 // 2 MB
 	maxLogoDim   = 4000    // pixels per dimension
+	// maxAlphaLogoDim is the limit per dimension for a PNG with transparency.
+	// Every other logo may be up to maxLogoDim.
+	maxAlphaLogoDim = 2000
 )
 
 // FetchAndValidateLogo fetches and validates the logo at rawURL.
@@ -90,6 +94,11 @@ func FetchAndValidateLogo(ctx context.Context, client *httpclient.Client, rawURL
 	if cfg.Width > maxLogoDim || cfg.Height > maxLogoDim {
 		return nil, fmt.Errorf("logo dimensions %dx%d exceed %d px cap", cfg.Width, cfg.Height, maxLogoDim)
 	}
+	// PNG logos with transparency are limited to 2000x2000 pixels.
+	if format == "png" && hasAlpha(cfg.ColorModel) && (cfg.Width > maxAlphaLogoDim || cfg.Height > maxAlphaLogoDim) {
+		return nil, fmt.Errorf("logo dimensions %dx%d exceed %d px cap for a PNG with transparency",
+			cfg.Width, cfg.Height, maxAlphaLogoDim)
+	}
 
 	// Then the end of the file. A header can be intact on a file whose body was
 	// cut short, and a file cut short is not a logo. Only the structure of the
@@ -106,6 +115,22 @@ func FetchAndValidateLogo(ctx context.Context, client *httpclient.Client, rawURL
 	}
 
 	return data, nil
+}
+
+// hasAlpha reports whether the colour model that a PNG header gives has
+// transparency: the models of an image with an alpha channel, or a palette
+// with an entry that is not fully opaque. The standard library names the models
+// of an opaque image RGBA and RGBA64; they are not these.
+func hasAlpha(m color.Model) bool {
+	if palette, ok := m.(color.Palette); ok {
+		for _, c := range palette {
+			if _, _, _, a := c.RGBA(); a != 0xffff {
+				return true
+			}
+		}
+		return false
+	}
+	return m == color.NRGBAModel || m == color.NRGBA64Model
 }
 
 // pngReachesIEND reports whether the chunks of a PNG run unbroken from the

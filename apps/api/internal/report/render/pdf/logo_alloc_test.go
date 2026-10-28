@@ -18,18 +18,32 @@ import (
 // fetch reads a logo's header and the shape of its file, and never decodes its
 // pixels.
 
-// deepPNG is a w x h PNG of 16-bit RGBA pixels, all zero. Zeros compress to
+// deepPNG is a w x h PNG of 16-bit RGB pixels, all zero. Zeros compress to
 // almost nothing, so the file is small while the decoded image is not. The
 // pixel data is written a row at a time, so building the fixture does not
-// need the memory it stands for.
+// need the memory it stands for. It has no alpha channel, so it is within the
+// limits of an opaque PNG at the largest size.
 func deepPNG(t *testing.T, w, h int) []byte {
 	t.Helper()
+	return flatPNG(t, w, h, 2, 16)
+}
+
+// flatPNG is a w x h PNG of the given colour type and bit depth whose samples
+// are all zero. Colour type 3 is a palette, whose PLTE chunk, and tRNS chunk if
+// it has one, the caller passes in before: the chunks go between the header
+// and the data. The pixel data is written a row at a time.
+func flatPNG(t *testing.T, w, h int, colorType, depth byte, before ...[]byte) []byte {
+	t.Helper()
+	samples := map[byte]int{0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[colorType]
+	if samples == 0 {
+		t.Fatalf("test setup: colour type %d is not one this builder writes", colorType)
+	}
 	var idat bytes.Buffer
 	zw, err := zlib.NewWriterLevel(&idat, zlib.BestSpeed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	row := make([]byte, 1+8*w) // a filter byte, then 8 bytes a pixel
+	row := make([]byte, 1+(w*samples*int(depth)+7)/8) // a filter byte, then the samples
 	for y := 0; y < h; y++ {
 		if _, err := zw.Write(row); err != nil {
 			t.Fatal(err)
@@ -41,10 +55,13 @@ func deepPNG(t *testing.T, w, h int) []byte {
 
 	ihdr := binary.BigEndian.AppendUint32(nil, uint32(w))
 	ihdr = binary.BigEndian.AppendUint32(ihdr, uint32(h))
-	ihdr = append(ihdr, 16, 6, 0, 0, 0) // 16 bits, RGBA, deflate, adaptive filter, no interlace
+	ihdr = append(ihdr, depth, colorType, 0, 0, 0) // deflate, adaptive filter, no interlace
 
 	b := []byte("\x89PNG\r\n\x1a\n")
 	b = append(b, pngChunk("IHDR", ihdr)...)
+	for _, chunk := range before {
+		b = append(b, chunk...)
+	}
 	b = append(b, pngChunk("IDAT", idat.Bytes())...)
 	return append(b, pngChunk("IEND", nil)...)
 }
@@ -109,14 +126,14 @@ func allocated(f func()) uint64 {
 // to look like a header.
 func TestLogoFixturesAreTheImagesTheyStandFor(t *testing.T) {
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(deepPNG(t, maxLogoDim, maxLogoDim)))
-	if err != nil || format != "png" || cfg.Width != maxLogoDim || cfg.Height != maxLogoDim || cfg.ColorModel != color.NRGBA64Model {
+	if err != nil || format != "png" || cfg.Width != maxLogoDim || cfg.Height != maxLogoDim || cfg.ColorModel != color.RGBA64Model {
 		t.Errorf("16-bit png: config %+v, format %q, err %v", cfg, format, err)
 	}
 	img, _, err := image.Decode(bytes.NewReader(deepPNG(t, 64, 48)))
 	if err != nil {
 		t.Fatalf("a small 16-bit png does not decode: %v", err)
 	}
-	if _, ok := img.(*image.NRGBA64); !ok || img.Bounds().Dx() != 64 || img.Bounds().Dy() != 48 {
+	if _, ok := img.(*image.RGBA64); !ok || img.Bounds().Dx() != 64 || img.Bounds().Dy() != 48 {
 		t.Errorf("a small 16-bit png decoded to %T %v", img, img.Bounds())
 	}
 
