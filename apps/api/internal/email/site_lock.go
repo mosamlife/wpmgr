@@ -191,13 +191,18 @@ func (l *pgSiteLocker) lockSite(ctx context.Context, tenantID, siteID uuid.UUID)
 			return nil, ctx.Err()
 		case <-timer.C:
 		}
+		// A sleep that ran to the end of the wait leaves no time for a try:
+		// one with no time left could only fail to get a connection.
+		if !time.Now().Before(deadline) {
+			return nil, errSiteEmailBusy
+		}
 	}
 }
 
 // tryLock makes one try. It returns the pinned connection when the site's
 // lock is held, or nil and no error when the slot or the lock was taken, with
 // everything it took given back. It waits for a connection until deadline at
-// most.
+// most; a pool with none free by then is an error, not a busy site.
 func (l *pgSiteLocker) tryLock(ctx context.Context, tenantID, siteID uuid.UUID, deadline time.Time) (*pgxpool.Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -218,7 +223,7 @@ func (l *pgSiteLocker) tryLock(ctx context.Context, tenantID, siteID uuid.UUID, 
 		return nil, err
 	}
 	var got bool
-	if err := conn.QueryRow(actx,
+	if err := conn.QueryRow(ctx,
 		`SELECT pg_try_advisory_lock(hashtext($1), hashtext($2))`,
 		SiteEmailLockKey, siteID.String(),
 	).Scan(&got); err != nil {
