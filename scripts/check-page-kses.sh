@@ -246,10 +246,10 @@ no_owner_recorded() {
 # doing: the answer is false and the caller waits its turn. A run that loses
 # leaves the directory and the file in it alone: they are the winner's.
 # A <dir> that is there with no pid file in it, after the create has been tried
-# again, is this run's own fault: it is reported and left where it is. Nothing
-# here removes <dir>. That mkdir said yes does not show that this run made it,
-# so it may be another run's, and a lock that cannot be judged is never treated
-# as free.
+# again, is a fault and not another run's doing: it is reported and left where
+# it is. Nothing here removes <dir>. That mkdir said yes does not show that this
+# run made it, so it may be another run's, and a lock that cannot be judged is
+# never treated as free.
 take_dir() {
   local d="$1" tries=0
   mkdir "$d" 2>/dev/null || return 1

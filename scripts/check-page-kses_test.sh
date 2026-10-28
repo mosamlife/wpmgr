@@ -83,6 +83,7 @@ pastes() {
     *) bad "$name (no command to paste; the last line printed was: ${LAST_OUT##*$'\n'})"; return ;;
   esac
   cmd="${LAST_OUT##*remove it with: }"
+  # shellcheck disable=SC2329 # rm is run by the pasted line, through eval
   got="$( ( rm() { shift; printf '[%s]\n' "$@"; }; eval "$cmd" ) 2>&1 )"
   want="$(printf '[%s]\n' "$@")"
   if [ "$got" = "$want" ]; then
@@ -811,11 +812,11 @@ expect "a lock directory that mkdir said yes for and its holder then gave back i
 if [ -e "$S/mkdir.said-yes" ]; then ok "  and mkdir did say yes for a directory that was not there"; else bad "  and mkdir did say yes for a directory that was not there"; fi
 if [ "$(marker_of "$C/$sha_mini")" = "$sha_mini" ] && only_the_core "$C" "$sha_mini"; then ok "  and the core is replaced and no lock is left"; else bad "  and the core is replaced and no lock is left ($(ls -A "$C"))"; fi
 
-# A directory that is there, with no pid file in it and none this run can make: a fault of this
-# run's own, so it is reported. It is not removed. That mkdir said yes does not show this run made
-# it, and an empty directory is what another run's looks like in the moment before it makes its pid
-# file. (Root can write into a directory with mode 555, so this case needs a user the mode bits
-# apply to, and says so when it is run as another.)
+# A directory that is there, with no pid file in it and none this run can make: a fault and not
+# another run's doing, so it is reported. It is not removed. That mkdir said yes does not show this
+# run made it, and an empty directory is what another run's looks like in the moment before it makes
+# its pid file. (Root can write into a directory with mode 555, so this case needs a user the mode
+# bits apply to, and says so when it is run as another.)
 newcache dir-unwritable
 corrupt_mini "$C"
 mkdir "$C/.lock.$sha_mini"
@@ -829,7 +830,7 @@ else
   pastes "  and the command it prints clears that directory" "$C/.lock.$sha_mini"
   if [ -d "$C/.lock.$sha_mini" ] && [ "$(marker_of "$C/$sha_mini")" = "$wrong" ]; then ok "  and it left the directory where it was, and the core alone"; else bad "  and it left the directory where it was, and the core alone ($(ls -A "$C"))"; fi
 fi
-chmod 755 "$C/.lock.$sha_mini"
+chmod 755 "$C/.lock.$sha_mini" 2>/dev/null || true # (it is gone when the guard removed it, and the case above is red)
 
 # The pid file was made, and what was written to it does not come back (a full disk does that). The
 # run holds nothing it can show it holds, so it reports the directory and leaves it where it is: it
