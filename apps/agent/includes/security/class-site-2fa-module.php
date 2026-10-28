@@ -553,13 +553,13 @@ final class Site2faModule
             // input: only the secret + issuer name feed it, and both go
             // through rawurlencode() before QR encoding.
             'svg'    => [
-                'xmlns'           => true,
-                'width'           => true,
-                'height'          => true,
-                'viewbox'         => true,
+                'xmlns'      => true,
+                'width'      => true,
+                'height'     => true,
+                'viewbox'    => true,
+                'role'       => true,
+                'aria-label' => true,
                 'shape-rendering' => true,
-                'role'            => true,
-                'aria-label'      => true,
             ],
             'path'   => [
                 'd'    => true,
