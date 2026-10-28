@@ -137,7 +137,7 @@ func (s *Service) UpsertSchedule(ctx context.Context, in UpsertScheduleInput) (S
 		return Schedule{}, err
 	}
 	if in.Enabled {
-		in.NextRunAt = nextRunAt(in.Cadence, in.SendDay, in.SendHour, "UTC")
+		in.NextRunAt = nextRunAt(in.Cadence, in.SendDay, in.SendHour, tz)
 	} else {
 		in.NextRunAt = nil
 	}
