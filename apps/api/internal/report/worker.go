@@ -50,9 +50,10 @@ const (
 	// generateMaxAttempts is how many times River runs a report job.
 	generateMaxAttempts = 3
 	// staleReportAfter is how long a pending or generating report row may go
-	// untouched before the job behind it is taken to be dead: every attempt
-	// has had its whole timeout. Each attempt touches the row when it starts,
-	// so a live job is never idle for this long.
+	// untouched before its job is suspected dead: every attempt has had its
+	// whole timeout. Each attempt touches the row when it starts, so a job that
+	// has been running is never idle for this long; a job still waiting in the
+	// queue is, and GenerateNow asks the queue before it fails the row.
 	staleReportAfter = generateJobTimeout * generateMaxAttempts
 	// failReportTimeout bounds the update that marks a report failed, which
 	// runs after the attempt's own context may be done.
@@ -150,12 +151,12 @@ func (w *GenerateWorker) failReport(ctx context.Context, args GenerateArgs, caus
 
 // generate runs one attempt. Work decides what a failure does to the row.
 func (w *GenerateWorker) generate(ctx context.Context, args GenerateArgs) error {
-	// A job can start long after GenerateNow gave up on it: a queue that was only
-	// backed up leaves the row untouched past staleReportAfter, so the row was
-	// failed and a new report queued. This job must not bring that row back.
-	// Whatever is not waiting for a job or being run by one has nothing to do,
-	// and the job ends clean so River neither retries it nor marks the report
-	// failed. A row that cannot be read fails the attempt like any other error.
+	// A job can start after its row was ended by something else: failed and
+	// replaced by a new report, or finished by an earlier attempt of the same
+	// job. It must not bring that row back. Whatever is not waiting for a job or being run by one
+	// has nothing to do, and the job ends clean so River neither retries it nor
+	// marks the report failed. A row that cannot be read fails the attempt like
+	// any other error.
 	row, err := w.repo.GetReport(ctx, args.TenantID, args.ClientID, args.ReportID)
 	if err != nil {
 		w.logger.Error("report generate: read report failed",
