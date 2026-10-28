@@ -473,6 +473,7 @@ func deleteConfigRequest(t *testing.T, f *removeFixture) (*httptest.ResponseReco
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/sites/"+f.siteID.String()+"/email/config", nil)
 	engine.ServeHTTP(w, req)
+	t.Logf("DELETE /email/config -> %d %s", w.Code, strings.TrimSpace(w.Body.String()))
 	return w, rec
 }
 
