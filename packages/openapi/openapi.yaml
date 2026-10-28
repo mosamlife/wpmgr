@@ -11494,6 +11494,10 @@ paths:
             `clear_email_config`; update the agent. `email_config_changed`:
             the settings were saved while they were being removed, so the
             saved settings stand and were sent back to the site.
+            `email_change_in_progress`: another change that sends this site's
+            email settings to it, or removes them, was still running when the
+            wait for it ran out; nothing was changed, and trying again in a
+            moment works.
           content:
             application/json:
               schema:
@@ -11502,7 +11506,9 @@ paths:
           description: >
             `email_agent_clear_failed`: the site did not confirm it stopped
             using the provider (unreachable, refused, or it reported what it
-            could not remove); the message says why. `email_agent_unwired`:
+            could not remove); the message says why, and says the site may
+            already have stopped using it whenever the command may have run.
+            The stored settings are kept either way. `email_agent_unwired`:
             agent commands are not configured on this control plane.
             `email_delete_site_config_failed`: the site stopped using the
             provider but its stored settings could not be removed; send the
