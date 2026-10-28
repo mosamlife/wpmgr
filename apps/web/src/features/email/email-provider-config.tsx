@@ -6,8 +6,11 @@ import {
   ExternalLink,
   RefreshCw,
   Building2,
+  Trash2,
+  AlertTriangle,
 } from "lucide-react";
 
+import { DestructiveConfirm } from "@/components/dialogs/destructive-confirm";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,8 +30,19 @@ import type {
   PutEmailConfigRequest,
   EmailProviderSpec,
   EmailProviderField,
+  RemoveSiteEmailConfigResult,
+  SiteEmailConfig,
 } from "@wpmgr/api";
-import { useProviders, usePutEmailConfig, useEmailConfig, useOrgEmailConfig, useSyncEmailConfig } from "./use-email";
+import {
+  useProviders,
+  usePutEmailConfig,
+  useEmailConfig,
+  useOrgEmailConfig,
+  useSyncEmailConfig,
+  useRemoveSiteEmailConfig,
+  removalNeedsSync,
+  EmailConfigStaleError,
+} from "./use-email";
 import { EmailWebhookConfigCard } from "./email-webhook-config";
 
 // ---------------------------------------------------------------------------
@@ -407,6 +421,7 @@ export function EmailProviderConfig({ siteId }: EmailProviderConfigProps) {
   const providersQuery = useProviders();
   const save = usePutEmailConfig(siteId);
   const sync = useSyncEmailConfig(siteId);
+  const remove = useRemoveSiteEmailConfig(siteId);
 
   // Local state mirrors the server config. We derive it from the query data
   // once it loads. Per-field "saving" state is tracked per field so row-level
@@ -436,32 +451,74 @@ export function EmailProviderConfig({ siteId }: EmailProviderConfigProps) {
     provider: string;
     config: Record<string, unknown>;
   } | null>(null);
+  // The provider named by the open "Remove provider" confirmation. The label is
+  // kept after the dialog closes so it does not go blank during its exit.
+  const [removeDialog, setRemoveDialog] = useState({ open: false, label: "" });
+  // The outcome of the last removal, kept while it is still waiting for a sync.
+  const [removal, setRemoval] = useState<RemoveSiteEmailConfigResult | null>(
+    null,
+  );
+  // Set once a removal, or a refusal that found this page out of date, is done:
+  // the form is then seeded again from the server (see below).
+  const [reseedPending, setReseedPending] = useState(false);
+
+  /**
+   * Seeds every field from the server's answer. `null` is "no config at all",
+   * the empty form a site that was never configured starts with (the useState
+   * defaults above).
+   */
+  function seedFrom(cfg: SiteEmailConfig | null) {
+    setSelectedProvider(cfg?.provider ?? "");
+    setFromAddress(cfg?.from_address ?? "");
+    setFromName(cfg?.from_name ?? "");
+    setForceFromEmail(cfg?.force_from_email ?? false);
+    setForceFromName(cfg?.force_from_name ?? false);
+    setReturnPath(cfg?.return_path ?? false);
+    setLogEmails(cfg?.log_emails ?? false);
+    setStoreBody(cfg?.store_body ?? false);
+    setRetentionDays(cfg?.retention_days ?? 14);
+    setProviderConfig(cfg?.config ?? {});
+    setSecretValue("");
+    setReplacingSecret(false);
+    setOrgBaseline(
+      cfg?.inherited === true
+        ? { provider: cfg.provider ?? "", config: cfg.config ?? {} }
+        : null,
+    );
+  }
 
   // Populate local state from server data once on first load
   const serverConfig = configQuery.data;
   if (serverConfig && !initialized) {
-    setSelectedProvider(serverConfig.provider ?? "");
-    setFromAddress(serverConfig.from_address ?? "");
-    setFromName(serverConfig.from_name ?? "");
-    setForceFromEmail(serverConfig.force_from_email ?? false);
-    setForceFromName(serverConfig.force_from_name ?? false);
-    setReturnPath(serverConfig.return_path ?? false);
-    setLogEmails(serverConfig.log_emails ?? false);
-    setStoreBody(serverConfig.store_body ?? false);
-    setRetentionDays(serverConfig.retention_days ?? 14);
-    setProviderConfig(serverConfig.config ?? {});
-    if (serverConfig.inherited === true) {
-      setOrgBaseline({
-        provider: serverConfig.provider ?? "",
-        config: serverConfig.config ?? {},
-      });
-    }
+    seedFrom(serverConfig);
     setInitialized(true);
+  }
+
+  // The cached config is the server's current answer only while it is neither
+  // being read again nor failed to be.
+  const configSettled = !configQuery.isFetching && !configQuery.isError;
+
+  // After a removal the form has to show what the server holds now, not the
+  // settings that were just removed: the organisation's, or nothing at all.
+  // useRemoveSiteEmailConfig settles only once the config has been read again,
+  // so the answer is current as soon as it is settled. A failed read waits
+  // here for the retry.
+  if (reseedPending && configSettled && configQuery.data !== undefined) {
+    setReseedPending(false);
+    seedFrom(configQuery.data);
+    setInitialized(configQuery.data !== null);
   }
 
   // True while the stored credential shown on this page belongs to the
   // organisation rather than to this site.
   const inherited = serverConfig?.inherited === true;
+  // The site has a provider of its own, which is the only thing a removal can
+  // remove. An inherited config is the organisation's and is never touched.
+  const ownsProvider = Boolean(serverConfig) && !inherited;
+  // A site with a provider of its own again has nothing left to sync.
+  if (removal !== null && configSettled && ownsProvider) {
+    setRemoval(null);
+  }
   const endpointDiverged =
     orgBaseline !== null &&
     endpointDivergedFromOrg(
@@ -507,6 +564,34 @@ export function EmailProviderConfig({ siteId }: EmailProviderConfigProps) {
     return body;
   }
 
+  function openRemoveConfirmation(label: string) {
+    // A refusal from an earlier try must not greet the next one.
+    remove.reset();
+    setRemoveDialog({ open: true, label });
+  }
+
+  async function confirmRemoval() {
+    try {
+      const result = await remove.mutateAsync();
+      setRemoval(result);
+      setReseedPending(true);
+      setRemoveDialog((prev) => ({ ...prev, open: false }));
+    } catch (err) {
+      // The dialog stays open and shows the server's message (remove.error).
+      // A refusal that found this page out of date also has the form seeded
+      // again from what the server holds now.
+      if (err instanceof EmailConfigStaleError) setReseedPending(true);
+    }
+  }
+
+  function syncAfterRemoval() {
+    sync.mutate(undefined, {
+      onSuccess: (result) => {
+        if (result?.ok) setRemoval(null);
+      },
+    });
+  }
+
   const isPending = configQuery.isPending || providersQuery.isPending;
   const isError = configQuery.isError || providersQuery.isError;
 
@@ -542,9 +627,40 @@ export function EmailProviderConfig({ siteId }: EmailProviderConfigProps) {
   const currentProviderSpec = providers.find(
     (p) => p.slug === selectedProvider,
   );
+  // What a removal removes is the provider the site has SAVED, which is not
+  // necessarily the one picked in the form and not yet saved.
+  const savedProviderLabel = serverConfig
+    ? (providers.find((p) => p.slug === serverConfig.provider)?.label ??
+      serverConfig.provider)
+    : "";
 
   return (
     <div className="space-y-6">
+      {/* The site's own provider was removed, and the organisation default has
+          not reached it yet. Shown only while the site is inheriting it. */}
+      {removal !== null && removalNeedsSync(removal) && inherited ? (
+        <div
+          role="status"
+          aria-label="Email provider removed"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--color-warning)]/40 bg-warning-subtle p-3 text-sm text-warning-subtle-fg"
+        >
+          <div className="flex min-w-0 items-start gap-2.5">
+            <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+            <p>{removal.detail}</p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={syncAfterRemoval}
+            disabled={sync.isPending}
+          >
+            <RefreshCw aria-hidden="true" className="mr-1.5 size-4" />
+            {sync.isPending ? "Syncing…" : "Sync to site"}
+          </Button>
+        </div>
+      ) : null}
+
       {/* First-run hint: no per-site row and no org default yet. */}
       {!serverConfig ? (
         <div className="rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-muted)]/40 px-4 py-3 text-sm text-[var(--color-muted-foreground)]">
@@ -589,6 +705,28 @@ export function EmailProviderConfig({ siteId }: EmailProviderConfigProps) {
               {currentProviderSpec.label} docs
               <ExternalLink aria-hidden="true" className="size-3.5" />
             </a>
+          ) : null}
+          {/* Only a provider the site owns can be removed; an inherited one
+              is the organisation's. */}
+          {ownsProvider ? (
+            <div className="flex flex-col gap-3 border-t border-[var(--color-border)] pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-[var(--color-muted-foreground)]">
+                Stop using {savedProviderLabel} for this site. It then uses your
+                organisation&rsquo;s default email settings if there are any,
+                otherwise WordPress&rsquo;s own mailer.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shrink-0 text-[var(--color-destructive)] hover:text-[var(--color-destructive)]"
+                onClick={() => openRemoveConfirmation(savedProviderLabel)}
+                disabled={save.isPending}
+              >
+                <Trash2 aria-hidden="true" className="mr-1.5 size-4" />
+                Remove provider
+              </Button>
+            </div>
           ) : null}
         </CardContent>
       </Card>
@@ -765,6 +903,35 @@ export function EmailProviderConfig({ siteId }: EmailProviderConfigProps) {
           {save.isPending ? "Saving…" : "Save email settings"}
         </Button>
       </div>
+
+      {/* Removing a provider deletes what is saved for this site, so the
+          operator types the provider's name first. */}
+      <DestructiveConfirm
+        open={removeDialog.open}
+        onClose={() => setRemoveDialog((prev) => ({ ...prev, open: false }))}
+        onConfirm={confirmRemoval}
+        title={`Remove ${removeDialog.label} from this site`}
+        resourceName={removeDialog.label}
+        confirmLabel="Remove provider"
+        cancelLabel="Keep provider"
+        isPending={remove.isPending}
+        pendingLabel="Removing…"
+        errorMessage={remove.isError ? remove.error.message : null}
+        consequencesBody={
+          <div className="space-y-2">
+            <p>
+              This site stops sending mail through {removeDialog.label}. It then
+              uses your organisation&rsquo;s default email settings if there are
+              any, otherwise WordPress&rsquo;s own mailer.
+            </p>
+            <p>
+              What is saved for this site is deleted: the credential, sender
+              details, log settings, connections and webhook address. The
+              site&rsquo;s email log is kept.
+            </p>
+          </div>
+        }
+      />
     </div>
   );
 }
