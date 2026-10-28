@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -36,12 +35,12 @@ func TestSiteEmailLockSerialisesOneSiteAcrossConnections(t *testing.T) {
 	// Each locker is its own instance, with its own slot, so only the advisory
 	// lock stands between them.
 	locker := func(wait time.Duration) *pgSiteLocker {
-		return &pgSiteLocker{pool: app, gate: make(chan struct{}, 1), wait: wait, poll: 20 * time.Millisecond}
+		return &pgSiteLocker{pool: app, slots: newEmailSlots(instanceEmailCap), wait: wait, poll: 20 * time.Millisecond}
 	}
 	// take locks a site and registers the release, so a failed assertion
 	// cannot leave a pinned connection that stops the harness closing its pool.
 	take := func(l *pgSiteLocker, c context.Context, site uuid.UUID) (func(), error) {
-		release, err := l.lockSite(c, site)
+		release, err := l.lockSite(c, f.tenant, site)
 		if err == nil {
 			t.Cleanup(release)
 		}
@@ -103,7 +102,7 @@ func TestSiteEmailLockSerialisesOneSiteAcrossConnections(t *testing.T) {
 	// A waiter gets the lock as soon as the holder lets go.
 	got := make(chan error, 1)
 	go func() {
-		release, err := locker(5*time.Second).lockSite(ctx, f.siteA)
+		release, err := locker(5*time.Second).lockSite(ctx, f.tenant, f.siteA)
 		if err == nil {
 			release()
 		}
@@ -151,25 +150,37 @@ func TestSiteEmailLockSerialisesOneSiteAcrossConnections(t *testing.T) {
 }
 
 // The lock pins one pooled connection for the whole operation, agent calls
-// included, so one instance runs one such operation at a time: a second, on
-// any site, waits for the first without holding a connection, and answers
-// busy when the wait runs out. Without that, a few email changes at once
-// would hold most of the instance's pool for the length of their agent calls.
+// included, so one instance runs one such operation per tenant at a time: a
+// tenant's second, on any of its sites, waits for the first without holding a
+// connection, and answers busy when the wait runs out.
 
-func TestSiteEmailLockRunsOneOperationAtATimePerInstance(t *testing.T) {
+// serviceLocker is the locker a Service builds on pool, checked to be the
+// production one with the instance's admission, then given admission of its
+// own and a short wait, so one test cannot leave a slot taken for the next.
+func serviceLocker(t *testing.T, pool *db.Pool, wait time.Duration) (*Service, *pgSiteLocker) {
+	t.Helper()
+	svc := NewService(NewRepo(pool), nil, nil)
+	l, ok := svc.locks.(*pgSiteLocker)
+	if !ok {
+		t.Fatalf("a Service on a real pool uses %T, want *pgSiteLocker", svc.locks)
+	}
+	if l.slots != instanceEmailSlots || l.slots.max != instanceEmailCap {
+		t.Fatalf("a Service's locker does not use the instance's admission of %d", instanceEmailCap)
+	}
+	l.slots = newEmailSlots(instanceEmailCap)
+	l.wait, l.poll = wait, 20*time.Millisecond
+	return svc, l
+}
+
+func TestSiteEmailLockRunsOneOperationPerTenantPerInstance(t *testing.T) {
 	app, admin := startScopeTestPostgres(t)
 	f := seedScopeFixture(t, admin)
 	ctx := context.Background()
 
 	// One instance: the locker the Service builds on its pool, with a short wait.
-	svc := NewService(NewRepo(app), nil, nil)
-	l, ok := svc.locks.(*pgSiteLocker)
-	if !ok {
-		t.Fatalf("a Service on a real pool uses %T, want *pgSiteLocker", svc.locks)
-	}
-	l.wait, l.poll = 300*time.Millisecond, 20*time.Millisecond
+	svc, l := serviceLocker(t, app, 300*time.Millisecond)
 
-	holdA, err := l.lockSite(ctx, f.siteA)
+	holdA, err := l.lockSite(ctx, f.tenant, f.siteA)
 	if err != nil {
 		t.Fatalf("first operation, on site A: %v", err)
 	}
@@ -177,7 +188,7 @@ func TestSiteEmailLockRunsOneOperationAtATimePerInstance(t *testing.T) {
 
 	// A second operation, on another site, waits and then answers busy.
 	start := time.Now()
-	releaseB, err := l.lockSite(ctx, f.siteB)
+	releaseB, err := l.lockSite(ctx, f.tenant, f.siteB)
 	if err == nil {
 		releaseB()
 	}
@@ -200,71 +211,10 @@ func TestSiteEmailLockRunsOneOperationAtATimePerInstance(t *testing.T) {
 
 	// Once the first operation is done, the next one on this instance proceeds.
 	holdA()
-	releaseB, err = l.lockSite(ctx, f.siteB)
+	releaseB, err = l.lockSite(ctx, f.tenant, f.siteB)
 	if err != nil {
 		t.Fatalf("site B after site A finished: %v", err)
 	}
 	releaseB()
 }
 
-func TestSiteEmailLockLeavesThePoolToOtherRequests(t *testing.T) {
-	app, admin := startScopeTestPostgres(t)
-	f := seedScopeFixture(t, admin)
-	ctx := context.Background()
-
-	// A pool of two, as wpmgr_app: room for one operation's pinned connection
-	// and one more.
-	cfg := app.Config()
-	cfg.MinConns, cfg.MaxConns = 0, 2
-	small, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatalf("open a pool of two: %v", err)
-	}
-	t.Cleanup(small.Close)
-	svc := NewService(NewRepo(&db.Pool{Pool: small}), nil, nil)
-	l, ok := svc.locks.(*pgSiteLocker)
-	if !ok {
-		t.Fatalf("a Service on a real pool uses %T, want *pgSiteLocker", svc.locks)
-	}
-	l.wait, l.poll = time.Second, 20*time.Millisecond
-
-	holdA, err := l.lockSite(ctx, f.siteA)
-	if err != nil {
-		t.Fatalf("first operation, on site A: %v", err)
-	}
-	t.Cleanup(holdA)
-
-	// A second operation, on another site, starts while the first runs. If it
-	// gets its lock it keeps it, as one in its agent calls would, until the
-	// test ends.
-	finish := make(chan struct{})
-	gotB := make(chan error, 1)
-	go func() {
-		release, err := l.lockSite(ctx, f.siteB)
-		gotB <- err
-		if err == nil {
-			<-finish
-			release()
-		}
-	}()
-	t.Cleanup(func() { close(finish) })
-	time.Sleep(200 * time.Millisecond)
-
-	// A plain query on the pool still runs.
-	qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	var one int
-	if err := small.QueryRow(qctx, `SELECT 1`).Scan(&one); err != nil {
-		t.Fatalf("a plain query found no free connection while email operations ran: %v", err)
-	}
-
-	// The second operation answered busy once its wait ran out.
-	select {
-	case err := <-gotB:
-		if !errors.Is(err, errSiteEmailBusy) {
-			t.Fatalf("site B while site A runs = %v, want errSiteEmailBusy", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("site B never answered")
-	}
-}

@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,10 +29,19 @@ import (
 )
 
 // removeLog records, in order, what the agent and the repository were asked
-// to do.
-type removeLog struct{ events []string }
+// to do. add is safe from several goroutines: a send test's send runs after
+// it gives the lock up, alongside the removal that takes it. Read events once
+// those goroutines are done.
+type removeLog struct {
+	mu     sync.Mutex
+	events []string
+}
 
-func (l *removeLog) add(e string) { l.events = append(l.events, e) }
+func (l *removeLog) add(e string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.events = append(l.events, e)
+}
 
 // orderedAgent is the agent half of the order proofs. A sync is logged with
 // the from address it carried, so a test can tell which config was pushed.

@@ -21,37 +21,88 @@ import (
 // their own.
 // It is taken as pg_try_advisory_lock(hashtext(key), hashtext(site id)) on one
 // pinned connection, so it excludes across every API instance. That connection
-// stays out of the pool for the whole operation, agent calls included, so one
-// instance runs one such operation at a time: see instanceEmailGate.
+// stays out of the pool for the whole operation, agent calls included, so each
+// instance admits only a few such operations at once: see emailSlots.
 //
 // Without it a push of the row as it already stood, in flight when a removal
 // runs, lands on the site after the removal cleared it: the dashboard says the
 // provider is gone while the site still holds it and its credential.
 const SiteEmailLockKey = "email_site_config"
 
-// siteLockWait bounds how long an operation waits to start: for this
-// instance's slot, then for the site's lock, under one deadline. A removal
-// holds both across two agent calls.
+// siteLockWait bounds how long an operation waits to start, for a slot on
+// this instance and for the site's lock together. A removal holds the lock
+// across two agent calls, each bounded by lockedAgentCallTimeout.
 const siteLockWait = 10 * time.Second
 
-// siteLockPoll is how often a waiting operation asks for the lock again. The
-// pooled connection goes back to the pool between asks, so a waiter holds no
-// connection while it waits.
+// siteLockPoll is how often a waiting operation tries again. Between tries it
+// holds neither a slot nor a pooled connection.
 const siteLockPoll = 100 * time.Millisecond
 
-// instanceEmailGate is this process's one slot for an operation that holds the
-// site lock. Each such operation keeps a pooled connection for its whole
-// length, and the pool is small (db.ConnectApp: MaxConns 5 per instance), so a
-// few at once would leave every other request on the instance waiting for a
-// connection. A waiter for the slot holds no connection. Across instances the
-// advisory lock alone excludes, and only per site.
-var instanceEmailGate = make(chan struct{}, 1)
+// instanceEmailCap is how many operations holding a site's email lock one
+// instance runs at once, across every tenant. Each keeps a pooled connection
+// for its whole length, and the pool holds five (db.ConnectApp), so two
+// always stay free for every other request on the instance.
+const instanceEmailCap = 3
+
+// lockedAgentCallTimeout bounds one agent call made while the site's email
+// lock is held: the removal's clear and its follow-up push, a save's push,
+// Sync to site, and the send-test pre-sync. The lock, its slot and its
+// connection are held for as long as the call runs, so a slow site is cut
+// off well inside the shared client's own limit, and a removal holds the lock
+// for at most two such calls.
+const lockedAgentCallTimeout = 15 * time.Second
+
+// instanceEmailSlots is this process's admission for operations that hold a
+// site's email lock: one per tenant, instanceEmailCap in all.
+var instanceEmailSlots = newEmailSlots(instanceEmailCap)
+
+// emailSlots admits operations that hold a site's email lock on one instance:
+// at most one per tenant, so a tenant's slow site holds back only that
+// tenant's own email changes here, and at most max in all, so the pinned
+// connections never take the whole pool. A slot is taken without waiting and
+// is held only while its operation holds, or is in one try for, the site's
+// lock.
+type emailSlots struct {
+	mu      sync.Mutex
+	max     int
+	tenants map[uuid.UUID]struct{}
+}
+
+func newEmailSlots(max int) *emailSlots {
+	return &emailSlots{max: max, tenants: map[uuid.UUID]struct{}{}}
+}
+
+// tryTake takes tenantID's slot when the tenant holds none here and the
+// instance has one free, and reports whether it did. It never waits.
+func (s *emailSlots) tryTake(tenantID uuid.UUID) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, held := s.tenants[tenantID]; held || len(s.tenants) >= s.max {
+		return false
+	}
+	s.tenants[tenantID] = struct{}{}
+	return true
+}
+
+// give hands tenantID's slot back.
+func (s *emailSlots) give(tenantID uuid.UUID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.tenants, tenantID)
+}
+
+// inUse is how many slots are taken.
+func (s *emailSlots) inUse() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.tenants)
+}
 
 // errSiteEmailBusy is returned by a siteLocker when the wait ran out.
 var errSiteEmailBusy = errors.New("email: another email change is in progress")
 
 // siteBusyMessage is the operator's answer when the wait ran out, for this
-// site's lock or for this instance's slot. Nothing was changed.
+// site's lock or for a slot on this instance. Nothing was changed.
 const siteBusyMessage = "Another email change is in progress. Try again in a moment."
 
 // siteBusyError is the 409 for a wait that ran out.
@@ -62,17 +113,18 @@ func siteBusyError() *domain.Error {
 // siteLocker takes the per-site email lock.
 type siteLocker interface {
 	// lockSite returns once the site's lock is held, errSiteEmailBusy when the
-	// bounded wait ran out, or the error that stopped it. release must be
-	// called exactly once, on every exit; extra calls are no-ops.
-	lockSite(ctx context.Context, siteID uuid.UUID) (release func(), err error)
+	// bounded wait ran out, or the error that stopped it. tenantID is the
+	// site's tenant. release must be called exactly once, on every exit;
+	// extra calls are no-ops.
+	lockSite(ctx context.Context, tenantID, siteID uuid.UUID) (release func(), err error)
 }
 
 // lockSiteForChange takes the site's lock and turns a failure into the domain
 // error a caller returns as is: 409 when the wait ran out, 503 otherwise. In
 // both cases nothing has been changed. The error is returned as the concrete
 // type so a caller can read its Message; callers return it only when non-nil.
-func (s *Service) lockSiteForChange(ctx context.Context, siteID uuid.UUID) (func(), *domain.Error) {
-	release, err := s.locks.lockSite(ctx, siteID)
+func (s *Service) lockSiteForChange(ctx context.Context, tenantID, siteID uuid.UUID) (func(), *domain.Error) {
+	release, err := s.locks.lockSite(ctx, tenantID, siteID)
 	if err == nil {
 		return release, nil
 	}
@@ -83,6 +135,16 @@ func (s *Service) lockSiteForChange(ctx context.Context, siteID uuid.UUID) (func
 		"Could not start the email change for this site; nothing was changed. Try again.").WithCause(err)
 }
 
+// lockedAgentCtx bounds one agent call made under the site's email lock by
+// lockedAgentCallTimeout, or by the Service's override in a test.
+func (s *Service) lockedAgentCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	d := s.lockedCallTimeout
+	if d <= 0 {
+		d = lockedAgentCallTimeout
+	}
+	return context.WithTimeout(ctx, d)
+}
+
 // pgSiteLocker is the production siteLocker: a session-level Postgres advisory
 // lock held on one pinned pooled connection for the whole operation. A
 // session lock, not a transaction lock, because the operation spans agent
@@ -90,76 +152,33 @@ func (s *Service) lockSiteForChange(ctx context.Context, siteID uuid.UUID) (func
 // idle-in-transaction timeout.
 type pgSiteLocker struct {
 	pool *db.Pool
-	// gate is the instance's slot, instanceEmailGate in production. It is
-	// taken before a connection is and given back after the connection is.
-	// It must not be nil: a nil gate turns every operation away as busy.
-	gate chan struct{}
-	wait time.Duration
-	poll time.Duration
+	// slots is the instance's admission, instanceEmailSlots in production. A
+	// slot is taken before a connection is and given back after it is.
+	slots *emailSlots
+	wait  time.Duration
+	poll  time.Duration
 }
 
-func (l *pgSiteLocker) lockSite(ctx context.Context, siteID uuid.UUID) (func(), error) {
+// lockSite tries, every poll until the wait runs out: a slot without waiting,
+// then a connection, then the site's lock. A try that does not get the lock
+// gives the connection and the slot back before it sleeps, so a waiter holds
+// neither, and a site locked from another instance holds back nothing here.
+func (l *pgSiteLocker) lockSite(ctx context.Context, tenantID, siteID uuid.UUID) (func(), error) {
 	deadline := time.Now().Add(l.wait)
-	if err := l.enterGate(ctx, deadline); err != nil {
-		return nil, err
-	}
-	locked := false
-	defer func() {
-		if !locked {
-			<-l.gate
-		}
-	}()
-	conn, err := l.lockOnConn(ctx, siteID, deadline)
-	if err != nil {
-		return nil, err
-	}
-	locked = true
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			defer func() { <-l.gate }()
-			unlockSiteConn(ctx, conn, siteID)
-		})
-	}, nil
-}
-
-// enterGate takes the instance's slot, waiting until deadline at most.
-func (l *pgSiteLocker) enterGate(ctx context.Context, deadline time.Time) error {
-	timer := time.NewTimer(time.Until(deadline))
-	defer timer.Stop()
-	select {
-	case l.gate <- struct{}{}:
-		return nil
-	case <-timer.C:
-		return errSiteEmailBusy
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// lockOnConn takes the site's lock on a pooled connection and returns that
-// connection pinned, asking again every poll until deadline.
-func (l *pgSiteLocker) lockOnConn(ctx context.Context, siteID uuid.UUID, deadline time.Time) (*pgxpool.Conn, error) {
 	for {
-		conn, err := l.pool.Acquire(ctx)
+		conn, err := l.tryLock(ctx, tenantID, siteID, deadline)
 		if err != nil {
 			return nil, err
 		}
-		var got bool
-		if err := conn.QueryRow(ctx,
-			`SELECT pg_try_advisory_lock(hashtext($1), hashtext($2))`,
-			SiteEmailLockKey, siteID.String(),
-		).Scan(&got); err != nil {
-			// The server may have taken the lock before the reply was lost, so
-			// the session is closed rather than pooled: ending it drops every
-			// lock it holds.
-			discardLockConn(ctx, conn)
-			return nil, err
+		if conn != nil {
+			var once sync.Once
+			return func() {
+				once.Do(func() {
+					defer l.slots.give(tenantID)
+					unlockSiteConn(ctx, conn, siteID)
+				})
+			}, nil
 		}
-		if got {
-			return conn, nil
-		}
-		conn.Release()
 
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
@@ -173,6 +192,48 @@ func (l *pgSiteLocker) lockOnConn(ctx context.Context, siteID uuid.UUID, deadlin
 		case <-timer.C:
 		}
 	}
+}
+
+// tryLock makes one try. It returns the pinned connection when the site's
+// lock is held, or nil and no error when the slot or the lock was taken, with
+// everything it took given back. It waits for a connection until deadline at
+// most.
+func (l *pgSiteLocker) tryLock(ctx context.Context, tenantID, siteID uuid.UUID, deadline time.Time) (*pgxpool.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !l.slots.tryTake(tenantID) {
+		return nil, nil
+	}
+	locked := false
+	defer func() {
+		if !locked {
+			l.slots.give(tenantID)
+		}
+	}()
+	actx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	conn, err := l.pool.Acquire(actx)
+	if err != nil {
+		return nil, err
+	}
+	var got bool
+	if err := conn.QueryRow(actx,
+		`SELECT pg_try_advisory_lock(hashtext($1), hashtext($2))`,
+		SiteEmailLockKey, siteID.String(),
+	).Scan(&got); err != nil {
+		// The server may have taken the lock before the reply was lost, so
+		// the session is closed rather than pooled: ending it drops every
+		// lock it holds.
+		discardLockConn(ctx, conn)
+		return nil, err
+	}
+	if !got {
+		conn.Release()
+		return nil, nil
+	}
+	locked = true
+	return conn, nil
 }
 
 // unlockSiteConn releases the site's lock and returns the connection to the
@@ -204,8 +265,8 @@ func discardLockConn(ctx context.Context, conn *pgxpool.Conn) {
 
 // localSiteLocker is a siteLocker for one process. It is what a Service built
 // without a database pool uses, which is only ever a unit test; production
-// always has the pool and uses pgSiteLocker. It holds no connection, so it has
-// no instance slot.
+// always has the pool and uses pgSiteLocker. It holds no connection, so it
+// takes no slot, and it excludes per site only.
 type localSiteLocker struct {
 	wait time.Duration
 	mu   sync.Mutex
@@ -216,7 +277,7 @@ func newLocalSiteLocker(wait time.Duration) *localSiteLocker {
 	return &localSiteLocker{wait: wait, held: map[uuid.UUID]chan struct{}{}}
 }
 
-func (l *localSiteLocker) lockSite(ctx context.Context, siteID uuid.UUID) (func(), error) {
+func (l *localSiteLocker) lockSite(ctx context.Context, _, siteID uuid.UUID) (func(), error) {
 	timer := time.NewTimer(l.wait)
 	defer timer.Stop()
 	for {

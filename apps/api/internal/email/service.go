@@ -139,6 +139,9 @@ type Service struct {
 	vulnDigest VulnDigestSource
 	// locks is the per-site email lock (GH #968); see SiteEmailLockKey.
 	locks siteLocker
+	// lockedCallTimeout overrides lockedAgentCallTimeout when positive; only
+	// tests set it.
+	lockedCallTimeout time.Duration
 }
 
 // NewService builds the email service. enc may be nil (all secret-write paths
@@ -150,7 +153,7 @@ func NewService(repo *Repo, enc Encryptor, log *slog.Logger) *Service {
 	}
 	var locks siteLocker = newLocalSiteLocker(siteLockWait)
 	if repo != nil && repo.pool != nil {
-		locks = &pgSiteLocker{pool: repo.pool, gate: instanceEmailGate, wait: siteLockWait, poll: siteLockPoll}
+		locks = &pgSiteLocker{pool: repo.pool, slots: instanceEmailSlots, wait: siteLockWait, poll: siteLockPoll}
 	}
 	return &Service{repo: repo, enc: enc, log: log, locks: locks}
 }
@@ -255,7 +258,7 @@ func (s *Service) UpsertSiteConfig(ctx context.Context, in UpsertInput) (Config,
 	// its row, lose it to a removal, and then push it to a site the removal
 	// had just cleared.
 	if in.SiteID != nil {
-		release, lockErr := s.lockSiteForChange(ctx, *in.SiteID)
+		release, lockErr := s.lockSiteForChange(ctx, in.TenantID, *in.SiteID)
 		if lockErr != nil {
 			return Config{}, lockErr
 		}
@@ -298,7 +301,10 @@ func (s *Service) UpsertSiteConfig(ctx context.Context, in UpsertInput) (Config,
 			return saved, nil
 		}
 		req := s.buildAgentConfigReq(saved, secret)
-		if _, syncErr := s.agent.SyncEmailConfig(ctx, *in.SiteID, siteURL, req); syncErr != nil {
+		pushCtx, cancelPush := s.lockedAgentCtx(ctx)
+		_, syncErr := s.agent.SyncEmailConfig(pushCtx, *in.SiteID, siteURL, req)
+		cancelPush()
+		if syncErr != nil {
 			s.log.Warn("email: config stored but agent sync failed",
 				slog.String("site_id", in.SiteID.String()),
 				slog.Any("error", syncErr),
@@ -385,13 +391,14 @@ func (s *Service) SendTest(ctx context.Context, tenantID, siteID uuid.UUID, in T
 	// The read and the pre-sync run under the site's email lock (GH #968), so
 	// the pre-sync can never land on a site a removal has just cleared. The
 	// lock is released before the test send, which changes no config.
-	release, lockErr := s.lockSiteForChange(ctx, siteID)
+	release, lockErr := s.lockSiteForChange(ctx, tenantID, siteID)
 	if lockErr != nil {
 		return TestSendResult{OK: false, Detail: lockErr.Message}, nil
 	}
 	// Released by hand below, before the test send. The deferred call is a
 	// no-op then, and releases on a panic, which would otherwise keep the
-	// instance's slot (instanceEmailGate) until the process restarts.
+	// tenant's slot on this instance (instanceEmailSlots) until the process
+	// restarts.
 	defer release()
 	cfg, cfgErr := s.GetConfig(ctx, tenantID, siteID)
 	if cfgErr != nil {
@@ -408,7 +415,9 @@ func (s *Service) SendTest(ctx context.Context, tenantID, siteID uuid.UUID, in T
 		return TestSendResult{OK: false, Detail: secretDecryptFailedDetail}, nil
 	}
 	syncReq := s.buildAgentConfigReq(cfg, syncSecret)
-	_, syncErr := s.agent.SyncEmailConfig(ctx, siteID, siteURL, syncReq)
+	syncCtx, cancelSync := s.lockedAgentCtx(ctx)
+	_, syncErr := s.agent.SyncEmailConfig(syncCtx, siteID, siteURL, syncReq)
+	cancelSync()
 	release()
 	if syncErr != nil {
 		return TestSendResult{OK: false, Detail: "could not sync config to agent: " + syncErr.Error()}, nil
@@ -454,7 +463,7 @@ func (s *Service) SyncConfigToAgent(ctx context.Context, tenantID, siteID uuid.U
 	// The read and the push run under the site's email lock (GH #968): a push
 	// of the row as read, landing after a removal cleared the site, would
 	// leave the site holding a provider the dashboard says is gone.
-	release, lockErr := s.lockSiteForChange(ctx, siteID)
+	release, lockErr := s.lockSiteForChange(ctx, tenantID, siteID)
 	if lockErr != nil {
 		return TestSendResult{OK: false, Detail: lockErr.Message}, nil
 	}
@@ -482,7 +491,9 @@ func (s *Service) SyncConfigToAgent(ctx context.Context, tenantID, siteID uuid.U
 	}
 
 	req := s.buildAgentConfigReq(cfg, secret)
-	if _, syncErr := s.agent.SyncEmailConfig(ctx, siteID, siteURL, req); syncErr != nil {
+	syncCtx, cancelSync := s.lockedAgentCtx(ctx)
+	defer cancelSync()
+	if _, syncErr := s.agent.SyncEmailConfig(syncCtx, siteID, siteURL, req); syncErr != nil {
 		return TestSendResult{OK: false, Detail: syncErr.Error()}, nil
 	}
 	return TestSendResult{OK: true, Detail: "email config synced to site agent"}, nil
@@ -556,7 +567,7 @@ func (s *Service) RemoveSiteConfig(ctx context.Context, tenantID, siteID uuid.UU
 	// in flight while the agent is cleared, and none starts until the
 	// fallback has been pushed. A push of the row as it already stood would
 	// not move updated_at, so step 3's compare cannot catch it.
-	release, lockErr := s.lockSiteForChange(ctx, siteID)
+	release, lockErr := s.lockSiteForChange(ctx, tenantID, siteID)
 	if lockErr != nil {
 		return RemoveSiteConfigResult{}, lockErr
 	}
@@ -581,7 +592,10 @@ func (s *Service) RemoveSiteConfig(ctx context.Context, tenantID, siteID uuid.UU
 	}
 
 	// 2. The agent first.
-	if _, err := s.agent.ClearEmailConfig(ctx, siteID, siteURL); err != nil {
+	clearCtx, cancelClear := s.lockedAgentCtx(ctx)
+	_, err = s.agent.ClearEmailConfig(clearCtx, siteID, siteURL)
+	cancelClear()
+	if err != nil {
 		if agentcmd.IsUnknownCommand(err) {
 			return RemoveSiteConfigResult{}, domain.Conflict("email_agent_outdated", removeAgentOutdatedMessage)
 		}
@@ -727,7 +741,9 @@ func (s *Service) pushChangedRow(ctx context.Context, tenantID, siteID uuid.UUID
 	if decryptFailed {
 		return pushChangedFailedNote
 	}
-	if _, err := s.agent.SyncEmailConfig(ctx, siteID, siteURL, s.buildAgentConfigReq(cur, secret)); err != nil {
+	pushCtx, cancelPush := s.lockedAgentCtx(ctx)
+	defer cancelPush()
+	if _, err := s.agent.SyncEmailConfig(pushCtx, siteID, siteURL, s.buildAgentConfigReq(cur, secret)); err != nil {
 		s.log.Warn("email: could not send the changed email config back to the site's agent",
 			slog.String("site_id", siteID.String()),
 			slog.Any("error", err),
@@ -754,7 +770,9 @@ func (s *Service) pushOrgDefaultToSite(ctx context.Context, tenantID, siteID uui
 	if decryptFailed {
 		return errors.New(secretDecryptFailedDetail)
 	}
-	_, err := s.agent.SyncEmailConfig(ctx, siteID, siteURL, s.buildAgentConfigReq(orgCfg, orgSecret))
+	pushCtx, cancelPush := s.lockedAgentCtx(ctx)
+	defer cancelPush()
+	_, err := s.agent.SyncEmailConfig(pushCtx, siteID, siteURL, s.buildAgentConfigReq(orgCfg, orgSecret))
 	return err
 }
 
@@ -1908,7 +1926,7 @@ func (s *Service) UpsertConnection(ctx context.Context, in ConnectionUpsertInput
 	// the one the route resolved: a removal that finished first leaves the
 	// site resolving to the organisation default or to nothing.
 	if in.SiteID != nil {
-		release, lockErr := s.lockSiteForChange(ctx, *in.SiteID)
+		release, lockErr := s.lockSiteForChange(ctx, in.TenantID, *in.SiteID)
 		if lockErr != nil {
 			return Connection{}, lockErr
 		}
