@@ -150,6 +150,27 @@ func (w *GenerateWorker) failReport(ctx context.Context, args GenerateArgs, caus
 
 // generate runs one attempt. Work decides what a failure does to the row.
 func (w *GenerateWorker) generate(ctx context.Context, args GenerateArgs) error {
+	// A job can start long after GenerateNow gave up on it: a queue that was only
+	// backed up leaves the row untouched past staleReportAfter, so the row was
+	// failed and a new report queued. This job must not bring that row back.
+	// Whatever is not waiting for a job or being run by one has nothing to do,
+	// and the job ends clean so River neither retries it nor marks the report
+	// failed. A row that cannot be read fails the attempt like any other error.
+	row, err := w.repo.GetReport(ctx, args.TenantID, args.ClientID, args.ReportID)
+	if err != nil {
+		w.logger.Error("report generate: read report failed",
+			slog.String("report_id", args.ReportID.String()),
+			slog.Any("error", err))
+		return err
+	}
+	if row.Status != StatusPending && row.Status != StatusGenerating {
+		w.logger.Info("report generate: report is no longer in flight, nothing to do",
+			slog.String("report_id", args.ReportID.String()),
+			slog.String("client_id", args.ClientID.String()),
+			slog.String("status", row.Status))
+		return nil
+	}
+
 	// Mark as generating.
 	if _, err := w.repo.MarkGenerating(ctx, args.TenantID, args.ReportID); err != nil {
 		w.logger.Error("report generate: mark generating failed",

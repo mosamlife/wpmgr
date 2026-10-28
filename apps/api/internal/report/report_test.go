@@ -74,7 +74,8 @@ func (r *stubRepo) FailReport(ctx context.Context, tenantID, id uuid.UUID, errMs
 	return GeneratedReport{ID: id, Status: StatusFailed}, nil
 }
 func (r *stubRepo) GetReport(ctx context.Context, tenantID, clientID, id uuid.UUID) (GeneratedReport, error) {
-	return GeneratedReport{}, nil
+	// A report row waiting for its job: what a worker finds on the first attempt.
+	return GeneratedReport{ID: id, TenantID: tenantID, ClientID: clientID, Status: StatusPending}, nil
 }
 func (r *stubRepo) ListReports(ctx context.Context, in ListReportsInput) (ListReportsResult, error) {
 	return ListReportsResult{}, nil
