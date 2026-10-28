@@ -490,6 +490,26 @@ final class CachePrefixedHomepageTest extends TestCase
     }
 
     /**
+     * The path is read once, when the hooks are first registered. Registering
+     * them again after another plugin changed the path does not take the
+     * changed path as the one the request arrived with.
+     */
+    public function test_registering_the_hooks_again_keeps_the_path_the_plugin_loaded_with(): void
+    {
+        $manager = $this->enabledManager();
+        $_SERVER['REQUEST_URI'] = '/en/';
+        $manager->registerHooks();          // the plugin loads
+        $_SERVER['REQUEST_URI'] = '/';      // plugins_loaded: the prefix is stripped
+        $manager->registerHooks();
+
+        $this->renderThroughCaptureBuffer($manager, static function (): void {
+            echo self::HTML_IT;
+        });
+
+        $this->assertSame([], $this->storedPages(), 'the path the plugin loaded with must still be the one compared against');
+    }
+
+    /**
      * A key from the drop-in is the file it serves the request from, whatever
      * path the plugin loaded with: the path captured at load plays no part.
      */

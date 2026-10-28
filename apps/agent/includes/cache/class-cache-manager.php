@@ -245,8 +245,8 @@ final class CacheManager
      * handed over. WordPress adds slashes to the superglobals once the plugins
      * have loaded and the drop-in runs ahead of all of that, so the slashes come
      * off again and nothing else is done to a value: the key is a function of
-     * exactly what the drop-in read. Nothing here is output, stored or put in a query; the key
-     * function validates every part of it.
+     * exactly what the drop-in read. Nothing here is output, stored or put in a
+     * query; the key function validates every part of it.
      *
      * @return array{uri:string,host:string,user_agent:string,cookies:array<mixed>,query:array<mixed>}
      */
