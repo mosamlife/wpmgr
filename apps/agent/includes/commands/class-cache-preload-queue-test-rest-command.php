@@ -109,6 +109,8 @@ final class CachePreloadQueueTestRestCommand implements CommandInterface
             'reject_unsafe_urls' => true,
             'headers'            => [
                 'Content-Type'         => 'application/json',
+                // Mirrors the runner loopback, which carries no preload token:
+                // a POST is never answered from the page cache.
                 Preload::PRELOAD_HEADER => '1',
             ],
             'body'               => $body,

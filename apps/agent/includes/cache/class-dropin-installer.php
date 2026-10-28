@@ -180,6 +180,22 @@ final class DropinInstaller
     }
 
     /**
+     * Whether our drop-in (any version) is on disk at this host's drop-in path.
+     * A foreign or unreadable file is not ours.
+     *
+     * @return bool
+     */
+    public function isInstalled(): bool
+    {
+        $path = $this->dropinPath();
+        if ($path === '' || !@is_file($path)) {
+            return false;
+        }
+        $existing = @file_get_contents($path);
+        return $existing !== false && strpos($existing, self::SIGNATURE) !== false;
+    }
+
+    /**
      * Render the drop-in source with the live config inlined.
      *
      * @param array<string,mixed> $config Serialisable cache config.

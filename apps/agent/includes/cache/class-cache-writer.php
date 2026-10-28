@@ -5,16 +5,21 @@
  * disk cache under the deterministic CacheKey path.
  *
  * Flow:
- *   1. ob_start(handler) is opened early (template_redirect) when the request is
- *      a candidate (anonymous-or-allowed, GET, not admin/ajax, no bypass cookie).
+ *   1. ob_start(handler) is opened early (init) when the request is a candidate
+ *      (GET, the front controller, not admin/ajax/cron/REST/login).
  *   2. At buffer flush the handler receives the full body; it re-checks full
- *      cacheability (status 200, full HTML doc, password not required) and the
- *      cache key (logged-in caching gate), then gzencode + atomic write.
+ *      cacheability (status 200, full HTML doc, password not required), then
+ *      gzencode + atomic write.
  *   3. The body is ALWAYS returned unmodified so the live response is unaffected
  *      whether or not it was cached.
  *
- * The written file name is byte-identical to what the serving drop-in computes
- * for the same request — both use CacheKey.
+ * The page is stored under the key it is handed: the one the serving drop-in
+ * chose for this request (the WPMGR_PAGE_CACHE_KEY constant), the file the
+ * drop-in serves the request from, or, on a site where the drop-in does not run,
+ * the one its rule gives for the request, which CacheManager works out when it
+ * opens the buffer (CacheKey::forRequest()). The writer never works out a key of
+ * its own, so it cannot disagree with the one the page is served from, and it
+ * stores nothing when it is handed none.
  *
  * Standard WordPress disk-cache writer technique.
  *
@@ -41,9 +46,36 @@ final class CacheWriter
 
     /** Suffix appended when the optimizer transformed the buffer. */
     private const FOOTPRINT_OPTIMIZED_SUFFIX = ' (optimized)';
+
+    /**
+     * Constant the serving drop-in defines with the cache key it chose for this
+     * request: the path of the file it serves the request from, relative to the
+     * cache root ("{host}/{path}/{name}.html.gz").
+     */
+    public const KEY_CONSTANT = 'WPMGR_PAGE_CACHE_KEY';
+
+    /**
+     * The largest chunk the capture buffer is opened with: 4 MB. A request with
+     * 32 MB or more of memory left, or with memory_limit -1, gets it. See
+     * {@see chunkBytes()}.
+     */
+    public const MAX_CHUNK_BYTES = 4194304;
+
+    /**
+     * The smallest chunk the capture buffer is opened with: 512 KB. See
+     * {@see chunkBytes()}.
+     */
+    public const MIN_CHUNK_BYTES = 524288;
+
+    /**
+     * The chunk is this fraction of the memory the request has left: one eighth.
+     */
+    private const FREE_MEMORY_SHARE = 8;
+
     private CacheConfig $config;
 
-    private CacheKey $key;
+    /** The key this request's page is stored under, or null when there is none. */
+    private ?string $storeKey;
 
     private Cacheability $cacheability;
 
@@ -63,24 +95,46 @@ final class CacheWriter
     private bool $optimizerResolved = false;
 
     /**
+     * Set once part of the response has left the buffer before the final flush
+     * (it reached one chunk, or was flushed part-way): from then on output is
+     * passed through as it arrives, and nothing is stored or optimized, since
+     * the final flush no longer carries the whole page.
+     */
+    private bool $passThrough = false;
+
+    /**
+     * The request URI captured when the buffer was opened, for the URL rules
+     * (Bypass URLs, the never-cached paths). Null reads the live value at
+     * flush time (tests, and callers that never captured one). It plays no
+     * part in where the page is stored: that is the drop-in's key.
+     */
+    private ?string $requestUri;
+
+    /**
      * @param CacheConfig       $config       Page-cache config.
      * @param string            $cacheRoot    Absolute cache root.
-     * @param CacheKey|null     $key          Injected for tests.
+     * @param string|null       $storeKey     The key to store this request's page
+     *                                         under (the drop-in's, or the one its
+     *                                         rule gives); null stores nothing.
      * @param Cacheability|null $cacheability Injected for tests.
      * @param Optimizer|null    $optimizer    Phase-4 optimizer (tests/override).
      *                                         When omitted it is lazily loaded
      *                                         from the persisted perf config.
+     * @param string|null       $requestUri   Request URI captured when the buffer
+     *                                         was opened; null reads it at flush.
      */
     public function __construct(
         CacheConfig $config,
         string $cacheRoot,
-        ?CacheKey $key = null,
+        ?string $storeKey = null,
         ?Cacheability $cacheability = null,
-        ?Optimizer $optimizer = null
+        ?Optimizer $optimizer = null,
+        ?string $requestUri = null
     ) {
         $this->config       = $config;
         $this->cacheRoot    = rtrim($cacheRoot, '/\\');
-        $this->key          = $key ?? new CacheKey();
+        $this->requestUri   = $requestUri;
+        $this->storeKey     = $storeKey;
         // When no Cacheability is injected (live path) we build one, passing the
         // persisted woo_supported probe result so the write path and the drop-in
         // serve path agree: Woo cookies are only promoted out of bypass when BOTH
@@ -104,6 +158,66 @@ final class CacheWriter
     }
 
     /**
+     * The chunk size the capture buffer is opened with in this request, in
+     * bytes: one eighth of the memory the request has left under memory_limit,
+     * kept between {@see MIN_CHUNK_BYTES} and {@see MAX_CHUNK_BYTES}, and
+     * {@see MAX_CHUNK_BYTES} when memory_limit is -1.
+     *
+     * PHP hands the buffer to {@see handle()} as soon as it holds this many
+     * bytes, and the response is then passed through as it is produced, never
+     * held in memory in full. A page smaller than the chunk reaches the handler
+     * in one piece, at the final flush, and is the only kind of response that
+     * is stored: the chunk is also the size from which a page is no longer
+     * stored. PHP reserves the whole chunk against memory_limit when the buffer
+     * opens, which is why it is sized from what the request has left and not
+     * fixed. The memory in use is the memory PHP has obtained from the system,
+     * the figure memory_limit is enforced against.
+     *
+     * @return int
+     */
+    public static function chunkBytes(): int
+    {
+        return self::chunkBytesFor(self::memoryLimitBytes(), memory_get_usage(true));
+    }
+
+    /**
+     * {@see chunkBytes()} for a given memory_limit and memory in use.
+     *
+     * @param int $limitBytes memory_limit in bytes, as WordPress reads it; -1 is no limit.
+     * @param int $usedBytes  Memory in use, in bytes.
+     * @return int
+     */
+    public static function chunkBytesFor(int $limitBytes, int $usedBytes): int
+    {
+        if ($limitBytes === -1) {
+            return self::MAX_CHUNK_BYTES;
+        }
+
+        return max(
+            self::MIN_CHUNK_BYTES,
+            min(self::MAX_CHUNK_BYTES, intdiv($limitBytes - $usedBytes, self::FREE_MEMORY_SHARE))
+        );
+    }
+
+    /**
+     * memory_limit in bytes, read the way WordPress reads it
+     * (wp_convert_hr_to_bytes(): "128M", "1G", a plain byte count, "-1"). 0 when
+     * it cannot be read, which counts as no memory left and gives the smallest
+     * chunk.
+     *
+     * @return int
+     */
+    private static function memoryLimitBytes(): int
+    {
+        $configured = ini_get('memory_limit');
+        if (!is_string($configured) || !function_exists('wp_convert_hr_to_bytes')) {
+            return 0;
+        }
+
+        return (int) wp_convert_hr_to_bytes($configured);
+    }
+
+    /**
      * The ob_start() callback. On a cacheable MISS it runs the Phase-4 optimizer
      * over the buffered HTML, writes the OPTIMIZED bytes to the gzip cache, and
      * returns those same optimized bytes so the live visitor and the cache are
@@ -116,8 +230,39 @@ final class CacheWriter
      */
     public function handle(string $buffer, int $phase = PHP_OUTPUT_HANDLER_FINAL): string
     {
-        // Only act on the final flush so we capture the complete document.
-        if (($phase & PHP_OUTPUT_HANDLER_FINAL) === 0 && ($phase & PHP_OUTPUT_HANDLER_END) === 0) {
+        // ob_clean(), ob_end_clean(), ob_get_clean(): the caller throws away
+        // what is in the buffer, and PHP discards the return value. When the
+        // buffer ends this way the visitor receives something else entirely,
+        // so the discarded page is neither optimized nor stored. Nothing is
+        // held between calls, so the buffer's own content is all there is to
+        // discard.
+        if (($phase & PHP_OUTPUT_HANDLER_CLEAN) !== 0) {
+            return '';
+        }
+
+        if ($this->passThrough) {
+            return $buffer;
+        }
+
+        if (($phase & PHP_OUTPUT_HANDLER_FINAL) === 0) { // PHP_OUTPUT_HANDLER_END is the same bit
+            // Either the buffer reached one chunk, or ob_flush() sent it on:
+            // the output leaves now, whatever the response is, and the rest of
+            // it will not reach the final flush with it, so the response is
+            // not stored. Nothing is ever held back here, which is what keeps
+            // a buffer that a plugin takes later from losing output that was
+            // already on its way to the visitor.
+            $this->passThrough = true;
+            return $buffer;
+        }
+
+        // The final flush of a response that never reached one chunk: the
+        // whole of it, held by PHP itself. Only a whole HTML page rendered
+        // through the template stage is optimized or stored. The buffer opens
+        // on init, ahead of every plugin's init callback, so output a plugin
+        // answers between init and template_redirect (an age gate, a
+        // coming-soon screen, a download, a login form) is passed on
+        // untouched, and so is anything that is not an HTML page.
+        if (!$this->canBeAPage()) {
             return $buffer;
         }
 
@@ -146,9 +291,12 @@ final class CacheWriter
                 // Fire-and-forget: swallow.
             }
 
-            // Optimize ONLY when this request is actually cacheable (a MISS we
-            // are about to store): the optimization pipeline is the same shape
-            // we cache, so a non-cacheable request is served verbatim.
+            // Optimize a whole page the cacheability rules accept: the
+            // optimization pipeline is the same shape we cache, so a
+            // non-cacheable request is served verbatim. Whether the page is
+            // then stored also depends on the drop-in's key, on what the
+            // response says about caching and on the settings as they are now;
+            // a page refused there is still served optimized.
             if ($this->config->enabled
                 && $this->isOptimizable($ctx)
                 && $this->cacheability->isRequestCacheable($ctx + ['body' => $buffer])
@@ -181,6 +329,88 @@ final class CacheWriter
         }
 
         return $buffer;
+    }
+
+    /**
+     * Whether WordPress reached template_redirect in this request, where the
+     * page itself starts rendering.
+     *
+     * @return bool
+     */
+    private static function reachedTemplateStage(): bool
+    {
+        return function_exists('did_action') && did_action('template_redirect') > 0;
+    }
+
+    /**
+     * Whether the response can be a page that is stored: rendered through the
+     * template stage, and an HTML page by its headers.
+     *
+     * @return bool
+     */
+    private function canBeAPage(): bool
+    {
+        return self::reachedTemplateStage()
+            && self::headersDescribeAPage(headers_list());
+    }
+
+    /**
+     * Whether the response headers describe an HTML page: no Content-Disposition
+     * (a download, inline or not), and a Content-Type of text/html or
+     * application/xhtml+xml. No Content-Type header means PHP's default,
+     * text/html.
+     *
+     * @param array<int,string> $headers Header lines as headers_list() gives them.
+     * @return bool
+     */
+    private static function headersDescribeAPage(array $headers): bool
+    {
+        $type = 'text/html';
+        foreach ($headers as $line) {
+            $parts = explode(':', (string) $line, 2);
+            if (count($parts) !== 2) {
+                continue;
+            }
+            $name = strtolower(trim($parts[0]));
+            if ($name === 'content-disposition') {
+                return false;
+            }
+            if ($name === 'content-type') {
+                $type = strtolower(trim(explode(';', $parts[1], 2)[0]));
+            }
+        }
+        return $type === 'text/html' || $type === 'application/xhtml+xml';
+    }
+
+    /**
+     * Whether the response says it must not be cached: DONOTCACHEPAGE defined
+     * true, or a Cache-Control header with a no-store or private directive
+     * (WordPress's nocache_headers() sends both since 6.8, and PHP sends
+     * no-store when a plugin starts a session). A cookie the response sets is
+     * not a veto by itself: translation plugins set a language cookie on every
+     * page.
+     *
+     * @param array<int,string> $headers Header lines as headers_list() gives them.
+     * @return bool
+     */
+    private static function responseForbidsStore(array $headers): bool
+    {
+        if (defined('DONOTCACHEPAGE') && (bool) constant('DONOTCACHEPAGE')) {
+            return true;
+        }
+        foreach ($headers as $line) {
+            $parts = explode(':', (string) $line, 2);
+            if (count($parts) !== 2 || strtolower(trim($parts[0])) !== 'cache-control') {
+                continue;
+            }
+            foreach (explode(',', $parts[1]) as $directive) {
+                $name = strtolower(trim(explode('=', $directive, 2)[0]));
+                if ($name === 'no-store' || $name === 'private') {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -255,38 +485,39 @@ final class CacheWriter
             return false;
         }
 
+        // The response itself says it must not be cached.
+        if (!empty($ctx['response_forbids_store'])) {
+            return false;
+        }
+
         $ctx['body'] = $buffer;
         if (!$this->cacheability->isRequestCacheable($ctx)) {
             return false;
         }
 
-        // A host the cache does not key on is not stored under a placeholder:
-        // the serve side declines the same hosts by the same rule, so a bucket
-        // written here for one of them could never be read back by the request
-        // that produced it, and would be readable by unrelated ones.
-        if (CacheKey::normalizeHost((string) ($ctx['host'] ?? '')) === '') {
+        // The page is stored under the key it was handed, the file the drop-in
+        // serves this request from, or not at all. A request the drop-in would
+        // never serve from the cache (an uncacheable host, too many
+        // cache-varying query keys, a logged-in visitor without logged-in
+        // caching) gets no key, from the drop-in or from its rule, so a missing
+        // key covers those too.
+        $path = self::keyPath($this->cacheRoot, $ctx['store_key'] ?? null);
+        if ($path === null) {
             return false;
         }
 
-        $fileName = $this->key->build(
-            (array) ($ctx['cookies'] ?? []),
-            (array) ($ctx['query'] ?? []),
-            (string) ($ctx['user_agent'] ?? ''),
-            $this->config->cacheLoggedIn,
-            $this->config->cacheMobile,
-            $this->config->includeCookies,
-            $this->config->includeQueries
-        );
-        if ($fileName === null) {
-            return false; // logged-in but logged-in caching disabled
+        // The settings this request started with may be out of date by now: a
+        // push that added a Bypass URL, or switched the cache off, while the
+        // page was rendering has already cleared the cache, and storing the
+        // page now would put back what it removed. Read them again and honour
+        // the current ones.
+        $current = self::currentConfig();
+        if ($current !== null
+            && (!$current->enabled
+                || (new Cacheability([], $current->bypassUrls))->matchesBypassUrl((string) ($ctx['url'] ?? '')))
+        ) {
+            return false;
         }
-
-        $path = $this->key->path(
-            $this->cacheRoot,
-            (string) ($ctx['host'] ?? ''),
-            (string) ($ctx['uri_path'] ?? '/'),
-            $fileName
-        );
 
         // Append the footprint marker BEFORE gzencode so it appears in both the
         // cached file bytes and the live served response. Only appended on an
@@ -304,6 +535,61 @@ final class CacheWriter
     }
 
     /**
+     * The page-cache settings as they are stored now, read past the copy this
+     * request cached when it started. Null when none are stored (nothing to
+     * compare against: the settings the request started with stand).
+     *
+     * @return CacheConfig|null
+     */
+    private static function currentConfig(): ?CacheConfig
+    {
+        if (!function_exists('get_option')) {
+            return null;
+        }
+        if (function_exists('wp_cache_delete')) {
+            wp_cache_delete(CacheManager::OPTION_CONFIG, 'options');
+        }
+        $stored = get_option(CacheManager::OPTION_CONFIG, null);
+        return is_array($stored) ? new CacheConfig($stored) : null;
+    }
+
+    /**
+     * The absolute file a drop-in key names, or null when the key is not the
+     * shape the drop-in produces: "{host bucket}/{path segments}/{name}.html.gz",
+     * with a lower-case bucket, no empty or dot-only segment, no backslash and
+     * no control character. The key is read from a constant and is not trusted
+     * because of where it came from; the write below also checks the resolved
+     * directory against the cache root.
+     *
+     * @param string $cacheRoot Absolute cache root, no trailing slash.
+     * @param mixed  $key       Key as handed over.
+     * @return string|null
+     */
+    private static function keyPath(string $cacheRoot, $key): ?string
+    {
+        if ($cacheRoot === '' || !is_string($key) || $key === '' || strlen($key) > 4096
+            || strpbrk($key, '\\') !== false || preg_match('/[\x00-\x1F\x7F]/', $key) === 1
+        ) {
+            return null;
+        }
+        $segments = explode('/', $key);
+        $bucket   = (string) array_shift($segments);
+        $file     = (string) array_pop($segments);
+        if (strpos($bucket, '..') !== false
+            || preg_match('/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(_[0-9]{1,5})?$/', $bucket) !== 1
+            || preg_match('/^index[a-z0-9_-]*\.html\.gz$/', $file) !== 1
+        ) {
+            return null;
+        }
+        foreach ($segments as $segment) {
+            if (trim($segment, '.') === '') {
+                return null; // empty, '.', '..' or a longer dot run
+            }
+        }
+        return $cacheRoot . '/' . $key;
+    }
+
+    /**
      * Resolve the request context from PHP superglobals + WP functions for the
      * live request path. Kept separate from {@see maybeWrite()} so tests can
      * bypass it entirely.
@@ -313,7 +599,9 @@ final class CacheWriter
      */
     private function resolveContext(string $buffer): array
     {
-        $uri    = sanitize_text_field( wp_unslash( isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '/' ) );
+        // The path captured when the buffer opened wins over the live value: see
+        // the $requestUri property for why the live one is not trusted here.
+        $uri    = $this->requestUri ?? sanitize_text_field( wp_unslash( isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '/' ) );
         $host   = sanitize_text_field( wp_unslash( isset( $_SERVER['HTTP_HOST'] ) ? (string) $_SERVER['HTTP_HOST'] : '' ) );
         $method = sanitize_text_field( wp_unslash( isset( $_SERVER['REQUEST_METHOD'] ) ? (string) $_SERVER['REQUEST_METHOD'] : 'GET' ) );
         $ua     = sanitize_text_field( wp_unslash( isset( $_SERVER['HTTP_USER_AGENT'] ) ? (string) $_SERVER['HTTP_USER_AGENT'] : '' ) );
@@ -344,6 +632,8 @@ final class CacheWriter
         $wcCartEmpty = $this->resolveWcCartEmpty();
 
         return [
+            'store_key'         => $this->storeKey,
+            'response_forbids_store' => self::responseForbidsStore(headers_list()),
             'url'               => $uri,
             'uri_path'          => $uri,
             'host'              => $host,

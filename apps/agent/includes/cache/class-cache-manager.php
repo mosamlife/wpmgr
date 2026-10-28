@@ -15,8 +15,15 @@
  *   stats()         — page count + bytes for the heartbeat.
  *
  * The config is stored as a single wp-option (autoload off). On the request path
- * the manager reads it cheaply once and, if caching is enabled, opens the output
- * buffer as early as template_redirect.
+ * the manager reads it cheaply once and, if caching is enabled, binds startBuffer()
+ * to init at the lowest priority, so the capture buffer opens ahead of every
+ * other plugin's init callback and is the outer buffer: it receives the page as
+ * the visitor does, after any buffer a plugin opens later has rewritten it. The
+ * writer it hands the buffer to stores a page only if it was rendered through
+ * template_redirect, and stores it under the key the serving drop-in handed over
+ * for the request, or under the key the drop-in's rule gives when the drop-in did
+ * not run (WP_CACHE off, another plugin's advanced-cache.php, an alternate drop-in
+ * file name).
  *
  * @package WPMgr\Agent\Cache
  */
@@ -45,6 +52,22 @@ final class CacheManager
      */
     public const OPTION_STATS = 'wpmgr_cache_stats';
 
+    /**
+     * Records which key scheme the stored pages were last cleared for (see
+     * {@see KEY_SCHEME}). Autoloaded, so the check costs nothing once it holds
+     * the current scheme.
+     */
+    public const OPTION_PURGED_FOR_KEYS = 'wpmgr_cache_purged_for_keys';
+
+    /**
+     * The key scheme stored pages are written under. Since scheme 2 each page
+     * is stored under the key the drop-in serves it from. The first boot on a
+     * new scheme removes every stored page, once, so only pages written under
+     * the current scheme are served. Raise it whenever a change means pages
+     * already on disk may not be under the key they would be stored under now.
+     */
+    public const KEY_SCHEME = '2';
+
     private WpCacheConstant $wpCache;
 
     private DropinInstaller $dropin;
@@ -55,6 +78,18 @@ final class CacheManager
 
     /** Cached config for this request. */
     private ?CacheConfig $config = null;
+
+    /** Whether the capture buffer has been opened for this request. */
+    private bool $bufferOpen = false;
+
+    /**
+     * The request URI as it stood when the hooks were registered: at plugin
+     * load, ahead of every plugins_loaded callback and ahead of the slashes
+     * WordPress adds to the superglobals. Null until then. It decides only
+     * whether a key is worked out for a request the drop-in handed none over
+     * (see {@see storeKey()}).
+     */
+    private ?string $uriAtLoad = null;
 
     /**
      * @param WpCacheConstant|null $wpCache  WP_CACHE editor.
@@ -83,6 +118,12 @@ final class CacheManager
      */
     public function registerHooks(): void
     {
+        // The request path as it arrived, read before anything else here and
+        // before another plugin's plugins_loaded callback can change it. The
+        // first read stands.
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- read before WordPress adds slashes to the superglobals (it does so after plugins_loaded), so there are none to remove; only compared with the unslashed value when the buffer opens, never output, stored or put in a query
+        $this->uriAtLoad ??= isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '/';
+
         $config = $this->config();
 
         // The role cookie + refresh cron schedule are armed regardless so a
@@ -110,35 +151,173 @@ final class CacheManager
             (new AutoPurge($this->purgeEngine(), $this->preloadEngine()))->registerHooks();
         }
 
-        // Output-buffer writer: open as early as template_redirect for front-end
-        // GET requests — INCLUDING preload / RUCSS-compute self-fetches (which
-        // carry the x-wpmgr-preload header). The drop-in already serves those
-        // requests fresh (no HIT), and this buffer is exactly what (a) writes the
-        // freshly rendered page to the disk cache — so preload actually WARMS the
-        // cache — and (b) runs the optimization + RUCSS pipeline. Skipping it on
-        // preload made preload a no-op for warming AND made "Compute Used-CSS now"
-        // never trigger the optimizer (the buffer-bound optimizer never ran). The
-        // warmer still receives the rendered HTML — the buffer returns it verbatim.
+        // Output-buffer writer: open it before any other plugin's init callback,
+        // for front-end GET requests — INCLUDING preload / RUCSS-compute
+        // self-fetches (which carry the x-wpmgr-preload header). The drop-in
+        // already serves those requests fresh (no HIT), and this buffer is
+        // exactly what (a) writes the freshly rendered page to the disk cache —
+        // so preload actually WARMS the cache — and (b) runs the optimization +
+        // RUCSS pipeline. Skipping it on preload made preload a no-op for
+        // warming AND made "Compute Used-CSS now" never trigger the optimizer
+        // (the buffer-bound optimizer never ran). The warmer still receives the
+        // rendered HTML — the buffer returns it verbatim.
+        //
+        // Why before init, and not at template_redirect: output buffers unwind
+        // innermost first, so a buffer opened EARLIER wraps one opened later
+        // and receives that one's finished output. A plugin that rewrites the
+        // page in its own buffer (a translator, a minifier) opens it at init or
+        // later; a capture buffer opened after it would store the page as it
+        // was BEFORE the rewrite, and every cache hit would then serve that
+        // unrewritten page, for instance the default language on a translated
+        // URL. Opening at the lowest init priority puts the capture on the
+        // outside of every buffer a plugin opens from init onward.
         if (function_exists('add_action')) {
-            add_action('template_redirect', [$this, 'startBuffer'], 0);
+            add_action('init', [$this, 'startBuffer'], PHP_INT_MIN);
         }
     }
 
     /**
-     * Open the page-cache output buffer (bound to template_redirect).
+     * Open the page-cache output buffer (bound to init at the lowest priority).
+     *
+     * The writer is handed the key the page is stored under, fixed now, before
+     * any other plugin's init callback runs (see {@see storeKey()}): the key the
+     * drop-in chose, or the key its rule gives when the drop-in did not run, or
+     * none, in which case nothing is stored (the rule declines the request, or
+     * its path changed after this plugin loaded). The request URI captured here
+     * only feeds the URL rules (Bypass URLs and the never-cached paths).
      *
      * @return void
      */
     public function startBuffer(): void
     {
-        $writer = new CacheWriter($this->config(), $this->cacheRoot());
+        if ($this->bufferOpen || !$this->isBufferCandidate()) {
+            return;
+        }
+        $this->bufferOpen = true;
+
+        $requestUri = sanitize_text_field( wp_unslash( isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '/' ) );
+        $writer     = new CacheWriter($this->config(), $this->cacheRoot(), $this->storeKey(), null, null, $requestUri);
         // Full-page output buffer with a callback handler: this is the standard
         // page-cache capture pattern. PHP finalizes the buffer at request end,
         // invoking CacheWriter::handle() with the complete response. The buffer
         // is intentionally held open for the entire request lifecycle so the
         // handler receives the full page output — an in-scope ob_get_clean() is
-        // not applicable here because the response is not yet complete.
-        ob_start([$writer, 'handle']);
+        // not applicable here because the response is not yet complete. The
+        // chunk size bounds what is held: a response that reaches it (a
+        // download, a very large page) is passed through as it is produced and
+        // is not stored, and output is never held back across chunks. PHP
+        // reserves the whole chunk against memory_limit as the buffer opens,
+        // so the chunk is sized from the memory this request has left
+        // (CacheWriter::chunkBytes()).
+        ob_start([$writer, 'handle'], CacheWriter::chunkBytes());
+    }
+
+    /**
+     * The key this request's page is stored under, relative to the cache root.
+     *
+     * A key the drop-in handed over always wins, even one the writer will
+     * refuse: it is the file the drop-in serves the request from. When it handed
+     * none over, the drop-in did not run on this request (WP_CACHE is off,
+     * another plugin owns advanced-cache.php, ours sits under another file
+     * name), or it declined the request. The key is then the one the drop-in's
+     * rule gives for the request as it stands now (see CacheKey::forRequest()),
+     * which is the file the web-server rules look a stored page up by; the rule
+     * declines the same requests the drop-in does, and then nothing is stored.
+     * Nothing is stored either when the request path is no longer the one this
+     * plugin loaded with: the drop-in read the path as it arrived, ahead of
+     * every plugin, so a key worked out from a changed path is not the file the
+     * request is served from.
+     *
+     * @return string|null
+     */
+    private function storeKey(): ?string
+    {
+        if (defined(CacheWriter::KEY_CONSTANT)) {
+            $handed = constant(CacheWriter::KEY_CONSTANT);
+            return is_string($handed) ? $handed : '';
+        }
+        $arrived = self::arrivedRequest();
+        if ($this->uriAtLoad !== null && $this->uriAtLoad !== $arrived['uri']) {
+            return null;
+        }
+        return CacheKey::forRequest($arrived, $this->config());
+    }
+
+    /**
+     * The request as the drop-in read it, for working out the key it would have
+     * handed over. WordPress adds slashes to the superglobals once the plugins
+     * have loaded and the drop-in runs ahead of all of that, so the slashes come
+     * off again and nothing else is done to a value: the key is a function of
+     * exactly what the drop-in read. Nothing here is output, stored or put in a
+     * query; the key function validates every part of it.
+     *
+     * @return array{uri:string,host:string,user_agent:string,cookies:array<mixed>,query:array<mixed>}
+     */
+    private static function arrivedRequest(): array
+    {
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- the unsanitised value is the key input; CacheKey::forRequest() validates it whole and uses only its normalised form
+        $uri = wp_unslash( isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '/' );
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- validated whole by CacheKey::normalizeHost() against an anchored allow-list before use
+        $host = wp_unslash( isset( $_SERVER['HTTP_HOST'] ) ? (string) $_SERVER['HTTP_HOST'] : '' );
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- only matched against the mobile pattern after control characters are stripped and the length is capped; never stored or output
+        $agent = wp_unslash( isset( $_SERVER['HTTP_USER_AGENT'] ) ? (string) $_SERVER['HTTP_USER_AGENT'] : '' );
+        $cookies = wp_unslash( $_COOKIE ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.NonceVerification.Recommended -- cache-key input only; each value is slugified to [a-z0-9-_] by CacheKey::sanitizeSegment, as in the drop-in; no output, no SQL, no state change
+        $query   = wp_unslash( $_GET ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- cache-key input only; key names and values are hashed for routing, as in the drop-in; no state change, no form processing
+
+        return [
+            'uri'        => is_string($uri) ? $uri : '/',
+            'host'       => is_string($host) ? $host : '',
+            'user_agent' => is_string($agent) ? $agent : '',
+            'cookies'    => is_array($cookies) ? $cookies : [],
+            'query'      => is_array($query) ? $query : [],
+        ];
+    }
+
+    /**
+     * Whether this request could ever have a page stored from it. The buffer
+     * now opens at init rather than at template_redirect, so it must not be
+     * opened for requests that are never stored (they would only have their
+     * streaming output held back): anything but GET, the admin area and
+     * admin-ajax, cron, WP-CLI, XML-RPC, the REST API and the login screen, and
+     * every script other than the front controller. Everything refused here is
+     * also refused by the writer at flush time, so no storable page is lost to
+     * this gate.
+     *
+     * @return bool
+     */
+    private function isBufferCandidate(): bool
+    {
+        if (defined('WP_CLI') && WP_CLI) {
+            return false;
+        }
+        // Only the front controller renders pages that are stored. The other
+        // scripts that load WordPress (the multisite signup and activation
+        // pages, the editor and feed helpers) never reached template_redirect,
+        // where this buffer used to open, so they were never stored: opening it
+        // earlier must not start storing them. An unset value (an unusual
+        // bootstrap) leaves the decision to the checks below.
+        $pagenow = isset($GLOBALS['pagenow']) && is_string($GLOBALS['pagenow']) ? $GLOBALS['pagenow'] : '';
+        if ($pagenow !== '' && $pagenow !== 'index.php') {
+            return false;
+        }
+        if (defined('XMLRPC_REQUEST') && XMLRPC_REQUEST) {
+            return false;
+        }
+        $method = sanitize_text_field( wp_unslash( isset( $_SERVER['REQUEST_METHOD'] ) ? (string) $_SERVER['REQUEST_METHOD'] : 'GET' ) );
+        if (strtoupper($method) !== 'GET') {
+            return false;
+        }
+        if (function_exists('is_admin') && is_admin()) {
+            return false;
+        }
+        if (function_exists('wp_doing_ajax') && wp_doing_ajax()) {
+            return false;
+        }
+        if (function_exists('wp_doing_cron') && wp_doing_cron()) {
+            return false;
+        }
+        $uri = sanitize_text_field( wp_unslash( isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '/' ) );
+        return preg_match('#/wp-json(?:/|$|\?)|[?&]rest_route=|/wp-login\.php#i', $uri) !== 1;
     }
 
     /**
@@ -425,17 +604,105 @@ final class CacheManager
      * Idempotent: a no-op when the installed version already matches the template,
      * when the drop-in is absent, or when the drop-in belongs to another plugin.
      *
+     * Then, once per key scheme, it removes the pages stored before it (see
+     * {@see KEY_SCHEME}).
+     *
      * @return void
      */
     public function maybeRefreshDropin(): void
     {
-        if (!$this->config()->enabled) {
-            return; // page caching is off — nothing to refresh
+        $config = $this->config();
+        if ($config->enabled && $this->dropin->needsRefresh()) {
+            $this->dropin->install($config->toDropinArray());
         }
-        if (!$this->dropin->needsRefresh()) {
+        $this->maybePurgeForKeyScheme($config);
+    }
+
+    /**
+     * Remove every stored page once, the first time this key scheme boots, so
+     * only pages stored under the current scheme are served.
+     * Runs where something could serve a stored page: the page cache is on, or
+     * our drop-in is still installed (a pushed setting that switches the cache
+     * off leaves it there). Elsewhere there is nothing to clear, and a purge
+     * would still clear host and edge caches through the integrations, so the
+     * scheme is only recorded.
+     *
+     * The run is claimed before anything is purged ({@see claimKeySchemePurge()}),
+     * and only the request that claimed it purges: requests that find the scheme
+     * not recorded at the same moment purge once between them, and a record that
+     * cannot be written leaves nobody to purge, instead of every request doing so.
+     *
+     * @param CacheConfig $config Current config.
+     * @return void
+     */
+    private function maybePurgeForKeyScheme(CacheConfig $config): void
+    {
+        if (!function_exists('get_option')) {
             return;
         }
-        $this->dropin->install($this->config()->toDropinArray());
+        if ((string) get_option(self::OPTION_PURGED_FOR_KEYS, '') === self::KEY_SCHEME) {
+            return;
+        }
+        if (!self::claimKeySchemePurge()) {
+            return;
+        }
+        if ($config->enabled || $this->dropin->isInstalled()) {
+            $this->purgeEngine()->purgeEverything();
+        }
+    }
+
+    /**
+     * Record the current key scheme as handled, and report whether this call is
+     * the one that recorded it. Exactly one of any number of concurrent calls
+     * is: the row is created with an INSERT IGNORE on the unique option name,
+     * or, when an older scheme is recorded, replaced by an UPDATE conditional on
+     * the value read from the table, so a second statement finds nothing left
+     * to change. False when another call recorded it first, and when the table
+     * cannot be written.
+     *
+     * @return bool True only when this call recorded the scheme.
+     */
+    private static function claimKeySchemePurge(): bool
+    {
+        global $wpdb;
+        if (!isset($wpdb) || !is_object($wpdb) || !isset($wpdb->options) || !is_string($wpdb->options)) {
+            return false;
+        }
+        /** @var \wpdb $wpdb */
+        $name = self::OPTION_PURGED_FOR_KEYS;
+
+        // A statement that cannot be prepared is a claim that failed.
+        $insert = $wpdb->prepare('INSERT IGNORE INTO %i (option_name, option_value, autoload) VALUES (%s, %s, %s)', $wpdb->options, $name, self::KEY_SCHEME, 'yes');
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared -- the claim must be one INSERT IGNORE on the unique option name, so that exactly one caller creates the row; the options cache is dropped below; $insert is the $wpdb->prepare() output on the line above
+        $rows = is_string($insert) ? $wpdb->query($insert) : false;
+        if ($rows !== 1) {
+            // A row exists. Read it as stored, past the options cache, and
+            // replace it only from the value read: of the calls that read the
+            // same older scheme, one UPDATE changes the row and the rest find
+            // it changed.
+            $select = $wpdb->prepare('SELECT option_value FROM %i WHERE option_name = %s', $wpdb->options, $name);
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared -- the value as stored, never a cached or filtered option value; $select is the $wpdb->prepare() output on the line above
+            $recorded = is_string($select) ? $wpdb->get_var($select) : null;
+            if (!is_string($recorded) || $recorded === self::KEY_SCHEME) {
+                return false;
+            }
+            $update = $wpdb->prepare('UPDATE %i SET option_value = %s WHERE option_name = %s AND option_value = %s', $wpdb->options, self::KEY_SCHEME, $name, $recorded);
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared -- the replacement must be one UPDATE conditional on the value read, so only one caller changes the row; update_option() is not conditional; $update is the $wpdb->prepare() output on the line above
+            $rows = is_string($update) ? $wpdb->query($update) : false;
+            if ($rows !== 1) {
+                return false;
+            }
+        }
+
+        // The row was written past the options cache: drop the entries that
+        // would still answer with the old record, so later reads find the row.
+        if (function_exists('wp_cache_delete')) {
+            foreach ([$name, 'alloptions', 'notoptions'] as $key) {
+                wp_cache_delete($key, 'options');
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -460,6 +727,23 @@ final class CacheManager
         if ($config->enabled) {
             $this->dropin->install($config->toDropinArray());
             $this->htaccessApply($config);
+
+            // A Bypass URL added now covers pages that may already be cached. The
+            // list is read by PHP only, and a web server serving a cached file
+            // straight from disk (the Apache rewrite block, the nginx snippet)
+            // never reads it, so the file would keep being served. Remove what
+            // is cached; the writer now refuses to store the covered pages. A
+            // push that adds no entry (the same list again, a removal, any other
+            // setting) leaves the cache alone.
+            if (self::addedEntries($current->bypassUrls, $config->bypassUrls) !== []) {
+                $this->purgeEngine()->purgeEverything();
+            }
+        } elseif ($current->enabled) {
+            // A push that switches the cache off leaves the drop-in and the
+            // server rules in place, and both would keep serving what is
+            // stored. Clear it; the writer stores nothing while the cache is
+            // off.
+            $this->purgeEngine()->purgeEverything();
         }
 
         // Re-arm the refresh schedule to the (possibly new) interval.
@@ -532,6 +816,29 @@ final class CacheManager
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
+
+    /**
+     * Entries present in the new list and absent from the old one, compared
+     * case-insensitively (Bypass URLs match case-insensitively).
+     *
+     * @param list<string> $before Previous list.
+     * @param list<string> $after  New list.
+     * @return list<string> Entries that were added.
+     */
+    private static function addedEntries(array $before, array $after): array
+    {
+        $known = [];
+        foreach ($before as $entry) {
+            $known[strtolower($entry)] = true;
+        }
+        $added = [];
+        foreach ($after as $entry) {
+            if (!isset($known[strtolower($entry)])) {
+                $added[] = $entry;
+            }
+        }
+        return $added;
+    }
 
     /**
      * Persist a config and refresh the request-cached copy.

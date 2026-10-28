@@ -511,15 +511,44 @@ final class Cacheability
 
     /**
      * Whether a URL contains any configured bypass keyword (case-insensitive
-     * substring).
+     * substring), spelled with or without the trailing slash of its path.
+     *
+     * The advanced-cache drop-in applies the same rule before WordPress loads
+     * and cannot call this class, so the block that builds the subject is
+     * duplicated there verbatim; tests/CachePrefixedHomepageTest.php keeps the
+     * two copies byte-identical.
      *
      * @param string $url URL to test.
      * @return bool
      */
     public function matchesBypassUrl(string $url): bool
     {
+        if ($this->bypassUrls === []) {
+            return false;
+        }
+
+        // Bridge through the drop-in's variable name so the two copies of the
+        // block below are byte-identical once dedented.
+        $wpmgr_uri = $url;
+
+        // WPMGR-BYPASS-URL-SHARED BEGIN
+        // WordPress answers a page with or without the trailing slash of its
+        // path, and a homepage under a path prefix (a language, a subsite) has
+        // no redirect between the two spellings: /en and /en/ are one page. A
+        // Bypass URL written either way has to cover both, so the subject also
+        // carries a slash at the end of its path part, before any query or
+        // fragment. An entry is tested against the subject AND against the
+        // string as it arrived, so nothing that matched before stops matching.
+        $wpmgr_subject = $wpmgr_uri;
+        $wpmgr_cut     = strcspn($wpmgr_subject, '?#');
+        if ($wpmgr_cut === 0 || substr($wpmgr_subject, $wpmgr_cut - 1, 1) !== '/') {
+            $wpmgr_subject = substr($wpmgr_subject, 0, $wpmgr_cut) . '/' . substr($wpmgr_subject, $wpmgr_cut);
+        }
+        unset($wpmgr_cut);
+        // WPMGR-BYPASS-URL-SHARED END
+
         foreach ($this->bypassUrls as $keyword) {
-            if (stripos($url, $keyword) !== false) {
+            if (stripos($wpmgr_uri, $keyword) !== false || stripos($wpmgr_subject, $keyword) !== false) {
                 return true;
             }
         }

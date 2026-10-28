@@ -187,6 +187,11 @@ final class CacheConfig
             // exists. Baked in so the drop-in reads it without any DB/WP calls.
             'cron_kick_enabled'     => $this->cronKickEnabled,
             'cron_kick_interval'    => $this->cronKickInterval,
+            // The site's own token: a request carrying it in the preload
+            // header is one of the agent's self-fetches, rendered fresh and
+            // stored. Kept in its own option, never in toArray(), so a config
+            // push from the control plane cannot replace it.
+            'preload_token'         => PreloadToken::get(),
         ];
     }
 

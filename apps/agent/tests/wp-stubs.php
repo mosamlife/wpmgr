@@ -196,6 +196,36 @@ if (!function_exists('wp_strip_all_tags')) {
 }
 
 // ---------------------------------------------------------------------------
+// Memory
+// ---------------------------------------------------------------------------
+
+if (!function_exists('wp_convert_hr_to_bytes')) {
+    /**
+     * Converts a shorthand byte value ("128M", "1G", "512K", "-1") to bytes —
+     * mirrors the real WP implementation.
+     *
+     * @param string $value Shorthand byte value.
+     * @return int
+     */
+    function wp_convert_hr_to_bytes(string $value): int
+    {
+        $value = strtolower(trim($value));
+        $bytes = (int) $value;
+
+        if (str_contains($value, 'g')) {
+            $bytes *= 1073741824;
+        } elseif (str_contains($value, 'm')) {
+            $bytes *= 1048576;
+        } elseif (str_contains($value, 'k')) {
+            $bytes *= 1024;
+        }
+
+        // Large (float) values run into the maximum integer size.
+        return (int) min($bytes, PHP_INT_MAX);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Input sanitization
 // ---------------------------------------------------------------------------
 

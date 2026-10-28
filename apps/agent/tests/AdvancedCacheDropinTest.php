@@ -19,6 +19,7 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Tests;
 
 use WPMgr\Agent\Cache\CacheConfig;
+use WPMgr\Agent\Cache\CacheKey;
 use WPMgr\Agent\Cache\DropinInstaller;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -216,6 +217,319 @@ final class AdvancedCacheDropinTest extends TestCase
         }
 
         return $out;
+    }
+
+    /** Printed by the key harness when the drop-in handed no key over. */
+    private const NO_KEY = '__WPMGR_NO_KEY__';
+
+    /**
+     * Run the drop-in in a child process and return the cache key it hands to
+     * the writer (the WPMGR_PAGE_CACHE_KEY constant), or null when it hands
+     * over none. A HIT exits before the key is printed, so callers keep the
+     * bucket empty unless they test a hit.
+     *
+     * @param array<string,mixed>  $config  Drop-in config array.
+     * @param array<string,mixed>  $server  $_SERVER overrides.
+     * @param array<string,string> $cookies $_COOKIE.
+     * @param array<string,mixed>  $get     $_GET.
+     * @return string|null
+     */
+    private function dropinKey(array $config, array $server = [], array $cookies = [], array $get = []): ?string
+    {
+        $template  = dirname(__DIR__) . '/assets/wpmgr-advanced-cache.php';
+        $installer = new DropinInstaller($this->tempDir, $template);
+        $rendered  = $installer->render($config);
+        $this->assertNotEmpty($rendered);
+
+        $renderedPath = $this->tempDir . '/advanced-cache.php';
+        file_put_contents($renderedPath, $rendered);
+
+        $server = array_merge([
+            'REQUEST_METHOD' => 'GET',
+            'REQUEST_URI'    => '/',
+            'HTTP_HOST'      => 'example.com',
+            'HTTPS'          => 'on',
+        ], $server);
+
+        $harnessPath = $this->tempDir . '/key-harness.php';
+        $harness     = "<?php\n"
+            . 'define(\'ABSPATH\', ' . var_export($this->tempDir . '/', true) . ");\n"
+            . "define('WP_CACHE', true);\n"
+            . 'define(\'WP_CONTENT_DIR\', ' . var_export($this->tempDir, true) . ");\n"
+            . '$_SERVER = ' . var_export($server, true) . ";\n"
+            . '$_GET = ' . var_export($get, true) . ";\n\$_POST = [];\n"
+            . '$_COOKIE = ' . var_export($cookies, true) . ";\n"
+            . 'include ' . var_export($renderedPath, true) . ";\n"
+            . "echo \"\\n__KEY__\" . (defined('WPMGR_PAGE_CACHE_KEY') ? WPMGR_PAGE_CACHE_KEY : "
+            . var_export(self::NO_KEY, true) . ");\n";
+        file_put_contents($harnessPath, $harness);
+
+        $cmd = escapeshellarg(PHP_BINARY) . ' -d error_reporting=E_ALL ' . escapeshellarg($harnessPath) . ' 2>&1';
+        $out = shell_exec($cmd);
+        $this->assertIsString($out, 'drop-in child process produced no output at all');
+
+        $pos = strrpos($out, "\n__KEY__");
+        $this->assertNotFalse($pos, 'the drop-in did not return to the harness: ' . $out);
+        $key = substr($out, $pos + strlen("\n__KEY__"));
+
+        return $key === self::NO_KEY ? null : $key;
+    }
+
+    /**
+     * The drop-in works out the cache key once, from the request as it
+     * arrived, and hands it to the writer, which stores under exactly that
+     * key. A path that is percent-encoded or not ASCII keys on the page
+     * itself (#981).
+     *
+     * @dataProvider provide_requests_and_their_keys
+     *
+     * @param string $uri Request URI as the browser sends it.
+     * @param string $key Key the page must be stored and served under.
+     */
+    public function test_dropin_hands_the_writer_the_key_it_serves_from(string $uri, string $key): void
+    {
+        $this->assertSame($key, $this->dropinKey((new CacheConfig([]))->toDropinArray(), ['REQUEST_URI' => $uri]));
+    }
+
+    /**
+     * @return array<string,array{0:string,1:string}>
+     */
+    public static function provide_requests_and_their_keys(): array
+    {
+        return [
+            'root'                    => ['/', 'example.com/index.html.gz'],
+            'page'                    => ['/about/', 'example.com/about/index.html.gz'],
+            'prefixed homepage'       => ['/en', 'example.com/en/index.html.gz'],
+            'percent-encoded utf8'    => ['/caf%C3%A9/', 'example.com/café/index.html.gz'],
+            'percent-encoded cyrillic' => ['/%D0%BC%D0%B8%D1%80/', 'example.com/мир/index.html.gz'],
+            'literal utf8'            => ['/日本語/page/2/', 'example.com/日本語/page/2/index.html.gz'],
+            'marketing query'         => ['/about/?utm_source=x', 'example.com/about/index.html.gz'],
+        ];
+    }
+
+    /**
+     * The key carries every variant the drop-in serves by: the mobile bucket,
+     * an include-cookie value, a cache-varying query.
+     */
+    public function test_dropin_key_carries_the_variant(): void
+    {
+        $config = (new CacheConfig(['cache_mobile' => true, 'include_cookies' => ['geo']]))->toDropinArray();
+        $key    = $this->dropinKey(
+            $config,
+            ['REQUEST_URI' => '/about/?color=red', 'HTTP_USER_AGENT' => 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)'],
+            ['geo' => 'FR'],
+            ['color' => 'red']
+        );
+
+        $this->assertSame('example.com/about/index-fr-mobile-' . md5(serialize(['color' => 'red'])) . '.html.gz', $key);
+    }
+
+    /**
+     * Nothing is handed over for a request the drop-in would never serve from
+     * the cache, so the writer stores nothing for it either.
+     *
+     * @dataProvider provide_requests_without_a_key
+     *
+     * @param array<string,mixed>  $server  $_SERVER overrides.
+     * @param array<string,string> $cookies $_COOKIE.
+     */
+    public function test_dropin_hands_over_no_key_for_a_request_it_never_serves(array $server, array $cookies): void
+    {
+        $config = (new CacheConfig(['bypass_urls' => ['/checkout']]))->toDropinArray();
+        $this->assertNull($this->dropinKey($config, $server, $cookies));
+    }
+
+    /**
+     * @return array<string,array{0:array<string,mixed>,1:array<string,string>}>
+     */
+    public static function provide_requests_without_a_key(): array
+    {
+        return [
+            'post'             => [['REQUEST_METHOD' => 'POST', 'REQUEST_URI' => '/about/'], []],
+            'bypass url'       => [['REQUEST_URI' => '/checkout/'], []],
+            'bypass cookie'    => [['REQUEST_URI' => '/about/'], ['wordpress_logged_in_abc' => 'x']],
+            'uncacheable host' => [['REQUEST_URI' => '/about/', 'HTTP_HOST' => 'victim..com'], []],
+            // The drop-in reads at most 2048 bytes of the URI. A longer one is
+            // looked up by its prefix, and a page stored under that prefix
+            // would answer requests for a different page.
+            'overlong uri'     => [['REQUEST_URI' => '/' . str_repeat('a', 2100) . '/'], []],
+        ];
+    }
+
+    /**
+     * A site where the drop-in does not run still stores its pages, under the
+     * key CacheKey::forRequest() derives. That derivation and the drop-in are
+     * two implementations of one rule, so this runs the drop-in itself, in a
+     * child process as WordPress would include it, and requires the derivation
+     * to agree with the key it hands over: the same key, or none from both.
+     *
+     * @dataProvider provide_requests_for_key_parity
+     *
+     * @param array<string,mixed>  $settings Page-cache settings.
+     * @param array<string,mixed>  $server   $_SERVER overrides.
+     * @param array<string,string> $cookies  $_COOKIE.
+     * @param array<string,mixed>  $get      $_GET.
+     */
+    public function test_derived_key_matches_the_key_the_dropin_hands_over(array $settings, array $server, array $cookies, array $get): void
+    {
+        $config   = new CacheConfig($settings);
+        $expected = $this->dropinKey($config->toDropinArray(), $server, $cookies, $get);
+        $server   = array_merge(['REQUEST_URI' => '/', 'HTTP_HOST' => 'example.com'], $server);
+
+        $derived = CacheKey::forRequest([
+            'uri'        => (string) $server['REQUEST_URI'],
+            'host'       => (string) $server['HTTP_HOST'],
+            'user_agent' => (string) ($server['HTTP_USER_AGENT'] ?? ''),
+            'cookies'    => $cookies,
+            'query'      => $get,
+        ], $config);
+
+        $this->assertSame($expected, $derived, 'the derived key and the drop-in\'s key must agree for ' . var_export($server['REQUEST_URI'], true));
+    }
+
+    /**
+     * Every shape of request the key rule has an opinion about: paths that are
+     * encoded, not ASCII, not lower case or not clean, hosts that do and do not
+     * name a bucket, every variant a key carries, and every request the drop-in
+     * declines. A key and a null both count, and both must match.
+     *
+     * @return array<string,array{0:array<string,mixed>,1:array<string,mixed>,2:array<string,string>,3:array<string,mixed>}>
+     */
+    public static function provide_requests_for_key_parity(): array
+    {
+        $uri     = static fn (string $u, array $extra = []): array => ['REQUEST_URI' => $u] + $extra;
+        $filters = [];
+        foreach (range('a', 'm') as $letter) {
+            $filters['filter_' . $letter] = '1';
+        }
+
+        return [
+            'root'                            => [[], $uri('/'), [], []],
+            'empty uri'                       => [[], $uri(''), [], []],
+            'page'                            => [[], $uri('/about/'), [], []],
+            'no trailing slash'               => [[], $uri('/about'), [], []],
+            'prefixed homepage'               => [[], $uri('/en'), [], []],
+            'percent-encoded utf8'            => [[], $uri('/caf%C3%A9/'), [], []],
+            'percent-encoded cyrillic'        => [[], $uri('/%D0%BC%D0%B8%D1%80/'), [], []],
+            'literal utf8'                    => [[], $uri('/日本語/page/2/'), [], []],
+            'mixed case'                      => [[], $uri('/About/Us/'), [], []],
+            'upper case percent-encoding'     => [[], $uri('/%C3%89COLE/'), [], []],
+            'dot segments'                    => [[], $uri('/a/./b/../c/'), [], []],
+            'traversal'                       => [[], $uri('/a/../../../etc'), [], []],
+            'dot run'                         => [[], $uri('/....'), [], []],
+            'encoded traversal'               => [[], $uri('/%2e%2e/%2e%2e/x'), [], []],
+            'repeated slashes'                => [[], $uri('//a///b//'), [], []],
+            'backslash'                       => [[], $uri('/x\\y/z'), [], []],
+            'encoded nul'                     => [[], $uri('/a%00b/'), [], []],
+            'control characters'              => [[], $uri("/a\x01b\x7f/c\n/"), [], []],
+            'fragment in the path'            => [[], $uri('/page#section'), [], []],
+            'query is not part of the path'   => [[], $uri('/about/?x=1&y=/z/'), [], ['x' => '1', 'y' => '/z/']],
+            'marketing query only'            => [[], $uri('/about/?utm_source=x'), [], ['utm_source' => 'x']],
+            'varying query'                   => [[], $uri('/shop/?lang=fr&orderby=price'), [], ['lang' => 'fr', 'orderby' => 'price']],
+            'query in another order'          => [[], $uri('/shop/?orderby=price&lang=fr'), [], ['orderby' => 'price', 'lang' => 'fr']],
+            'twelve query keys'               => [[], $uri('/shop/'), [], array_slice($filters, 0, 12, true)],
+            'thirteen query keys'             => [[], $uri('/shop/'), [], $filters],
+            'host with a port'                => [[], $uri('/about/', ['HTTP_HOST' => 'example.com:8443']), [], []],
+            'upper case host'                 => [[], $uri('/about/', ['HTTP_HOST' => 'EXAMPLE.com']), [], []],
+            'subdomain host'                  => [[], $uri('/about/', ['HTTP_HOST' => 'blog.example.co.uk']), [], []],
+            'host with a double dot'          => [[], $uri('/about/', ['HTTP_HOST' => 'victim..com']), [], []],
+            'host with a path'                => [[], $uri('/about/', ['HTTP_HOST' => 'example.com/x']), [], []],
+            'no host'                         => [[], $uri('/about/', ['HTTP_HOST' => '']), [], []],
+            'uri of exactly 2048 bytes'       => [[], $uri('/' . str_repeat('a', 2046) . '/'), [], []],
+            'uri of 2049 bytes'               => [[], $uri('/' . str_repeat('a', 2047) . '/'), [], []],
+            'overlong uri'                    => [[], $uri('/' . str_repeat('a', 2100) . '/'), [], []],
+            'mobile agent, mobile bucket on'  => [['cache_mobile' => true], $uri('/about/', ['HTTP_USER_AGENT' => 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)']), [], []],
+            'desktop agent, mobile bucket on' => [['cache_mobile' => true], $uri('/about/', ['HTTP_USER_AGENT' => 'Mozilla/5.0 (X11; Linux x86_64)']), [], []],
+            'mobile agent, mobile bucket off' => [[], $uri('/about/', ['HTTP_USER_AGENT' => 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)']), [], []],
+            'agent split by control characters' => [['cache_mobile' => true], $uri('/about/', ['HTTP_USER_AGENT' => "Mozilla/5.0 (Mo\x01bi\x7fle)"]), [], []],
+            'mobile token past 512 bytes'     => [['cache_mobile' => true], $uri('/about/', ['HTTP_USER_AGENT' => str_repeat('x', 600) . ' Mobile']), [], []],
+            'include cookie'                  => [['include_cookies' => ['geo']], $uri('/about/'), ['geo' => 'FR'], []],
+            'include cookie to be slugged'    => [['include_cookies' => ['geo']], $uri('/about/'), ['geo' => 'us/ca%2F<b>'], []],
+            'include cookie, empty value'     => [['include_cookies' => ['geo']], $uri('/about/'), ['geo' => ''], []],
+            'two include cookies'             => [['include_cookies' => ['geo', 'currency']], $uri('/about/'), ['currency' => 'eur', 'geo' => 'fr'], []],
+            'everything at once'              => [
+                ['cache_mobile' => true, 'include_cookies' => ['geo']],
+                $uri('/Shop/Caf%C3%A9/?lang=fr', ['HTTP_USER_AGENT' => 'Mozilla/5.0 (Android 13; Mobile)']),
+                ['geo' => 'FR'],
+                ['lang' => 'fr'],
+            ],
+            'bypass url'                      => [['bypass_urls' => ['/checkout']], $uri('/checkout/'), [], []],
+            'bypass url, other spelling'      => [['bypass_urls' => ['/checkout/']], $uri('/checkout'), [], []],
+            'bypass url, percent-encoded'     => [['bypass_urls' => ['/%d0%bc%d0%b8%d1%80']], $uri('/%D0%BC%D0%B8%D1%80/'), [], []],
+            'bypass url, only in the query'   => [['bypass_urls' => ['preview=true']], $uri('/about/?preview=true'), [], ['preview' => 'true']],
+            'bypass url that does not match'  => [['bypass_urls' => ['/checkout']], $uri('/about/'), [], []],
+            'default bypass cookie'           => [[], $uri('/about/'), ['woocommerce_cart_hash' => 'abc'], []],
+            'logged-in cookie'                => [[], $uri('/about/'), ['wordpress_logged_in_abc' => 'x'], []],
+            'operator bypass cookie'          => [['bypass_cookies' => ['vip_']], $uri('/about/'), ['VIP_member' => '1'], []],
+            'unrelated cookie'                => [[], $uri('/about/'), ['theme' => 'dark'], []],
+        ];
+    }
+
+    /**
+     * A request carrying the preload header but not the site's token is an
+     * ordinary visitor request: a stored page answers it.
+     *
+     * @dataProvider provide_preload_headers_without_the_token
+     *
+     * @param array<string,mixed> $config Drop-in config overrides.
+     * @param string              $value  Header value sent.
+     */
+    public function test_preload_header_without_the_token_is_an_ordinary_request(array $config, string $value): void
+    {
+        $this->warmCacheFile('example.com', '/about', 'index', 'STORED-PAGE-BODY');
+
+        $out = $this->serveDropin(
+            array_merge((new CacheConfig([]))->toDropinArray(), $config),
+            ['REQUEST_URI' => '/about/', 'HTTP_X_WPMGR_PRELOAD' => $value]
+        );
+
+        $this->assertStringContainsString('STORED-PAGE-BODY', $out, 'a header without the token must not skip the cache');
+    }
+
+    /**
+     * @return array<string,array{0:array<string,mixed>,1:string}>
+     */
+    public static function provide_preload_headers_without_the_token(): array
+    {
+        $token = str_repeat('ab', 32);
+        return [
+            'header only, as sent before tokens' => [['preload_token' => $token], '1'],
+            'wrong token'                        => [['preload_token' => $token], str_repeat('cd', 32)],
+            'token prefix'                       => [['preload_token' => $token], substr($token, 0, 32)],
+            'site has no token'                  => [['preload_token' => ''], ''],
+            'site has a malformed token'         => [['preload_token' => 'short'], 'short'],
+        ];
+    }
+
+    /**
+     * A request carrying the site's own token is a preload: it is rendered
+     * fresh even when a page is stored, and the drop-in still hands over the
+     * key so the fresh render replaces the stored page.
+     */
+    public function test_preload_with_the_sites_token_renders_fresh_under_its_key(): void
+    {
+        $this->warmCacheFile('example.com', '/about', 'index', 'STORED-PAGE-BODY');
+        $token  = str_repeat('ab', 32);
+        $config = array_merge((new CacheConfig([]))->toDropinArray(), ['preload_token' => $token]);
+        $server = ['REQUEST_URI' => '/about/', 'HTTP_X_WPMGR_PRELOAD' => $token];
+
+        $out = $this->serveDropin($config, $server);
+        $this->assertStringNotContainsString('STORED-PAGE-BODY', $out, 'a preload must not be answered from the cache');
+        $this->assertStringContainsString(self::MISS, $out);
+
+        $this->assertSame('example.com/about/index.html.gz', $this->dropinKey($config, $server));
+    }
+
+    /**
+     * A preload is still subject to every rule a visitor is: a Bypass URL
+     * means nothing is stored for it.
+     */
+    public function test_preload_of_a_bypassed_url_hands_over_no_key(): void
+    {
+        $token  = str_repeat('ab', 32);
+        $config = array_merge((new CacheConfig(['bypass_urls' => ['/about']]))->toDropinArray(), ['preload_token' => $token]);
+
+        $this->assertNull($this->dropinKey($config, ['REQUEST_URI' => '/about/', 'HTTP_X_WPMGR_PRELOAD' => $token]));
     }
 
     /**
@@ -522,6 +836,119 @@ final class AdvancedCacheDropinTest extends TestCase
         );
 
         $this->assertFalse($result, "host '..' must bypass the cache, never key outside the root");
+    }
+
+    /**
+     * A homepage served under a path prefix (a language, a subsite) is a page
+     * of its own: `/`, `/en/` and `/en` must each be answered from the file
+     * stored for that path, and `/en` and `/en/` are one page (a homepage has
+     * no trailing-slash redirect in WordPress), so they share one file.
+     *
+     * Both buckets are warmed with a body that names them, so a collapse of the
+     * prefixed homepage onto the root one (or the reverse) shows in the bytes
+     * served and not merely in whether something was served.
+     *
+     * @dataProvider provide_prefixed_homepage_requests
+     *
+     * @param string $uri      Request URI as the browser sends it.
+     * @param string $expected Body marker of the bucket that must answer.
+     * @param string $other    Body marker of the bucket that must NOT answer.
+     */
+    public function test_prefixed_homepage_is_served_from_its_own_bucket(string $uri, string $expected, string $other): void
+    {
+        $this->warmCacheFile('example.com', '', 'index', 'ROOT-HOMEPAGE-BODY');
+        $this->warmCacheFile('example.com', '/en', 'index', 'EN-HOMEPAGE-BODY');
+
+        $out = $this->serveDropin((new CacheConfig([]))->toDropinArray(), ['REQUEST_URI' => $uri]);
+
+        $this->assertStringContainsString($expected, $out, "$uri must be answered from its own bucket");
+        $this->assertStringNotContainsString($other, $out, "$uri must not be answered from the other homepage's bucket");
+    }
+
+    /**
+     * @return array<string,array{0:string,1:string,2:string}>
+     */
+    public static function provide_prefixed_homepage_requests(): array
+    {
+        return [
+            'root'                       => ['/', 'ROOT-HOMEPAGE-BODY', 'EN-HOMEPAGE-BODY'],
+            'prefixed with slash'        => ['/en/', 'EN-HOMEPAGE-BODY', 'ROOT-HOMEPAGE-BODY'],
+            'prefixed without slash'     => ['/en', 'EN-HOMEPAGE-BODY', 'ROOT-HOMEPAGE-BODY'],
+            'prefixed with query noise'  => ['/en/?utm_source=x', 'EN-HOMEPAGE-BODY', 'ROOT-HOMEPAGE-BODY'],
+            'prefixed upper case'        => ['/EN/', 'EN-HOMEPAGE-BODY', 'ROOT-HOMEPAGE-BODY'],
+        ];
+    }
+
+    /**
+     * A Bypass URL must stop the matching page being served from a warmed file,
+     * whichever way the visitor spells the path. WordPress answers `/en` and
+     * `/en/` with the same homepage, so an entry written with a trailing slash
+     * has to cover the request without one (a language switcher links both).
+     *
+     * @dataProvider provide_prefixed_homepage_bypass
+     *
+     * @param string $entry Bypass URL entry as an operator types it.
+     * @param string $uri   Request URI as the browser sends it.
+     */
+    public function test_bypass_url_covers_the_prefixed_homepage_however_it_is_spelled(string $entry, string $uri): void
+    {
+        $this->warmCacheFile('example.com', '/en', 'index', 'EN-HOMEPAGE-BODY');
+
+        $out = $this->serveDropin((new CacheConfig(['bypass_urls' => [$entry]]))->toDropinArray(), ['REQUEST_URI' => $uri]);
+
+        $this->assertStringNotContainsString(
+            'EN-HOMEPAGE-BODY',
+            $out,
+            "bypass entry '$entry' must stop the warmed file being served for $uri"
+        );
+        $this->assertStringContainsString(self::MISS, $out, "bypass entry '$entry' must hand $uri to WordPress");
+    }
+
+    /**
+     * @return array<string,array{0:string,1:string}>
+     */
+    public static function provide_prefixed_homepage_bypass(): array
+    {
+        return [
+            'slash entry, slash request'           => ['/en/', '/en/'],
+            'slash entry, bare request'            => ['/en/', '/en'],
+            'slash entry, bare request with query' => ['/en/', '/en?x=1'],
+            'bare entry, slash request'            => ['/en', '/en/'],
+            'bare entry, bare request'             => ['/en', '/en'],
+            'slash entry, upper case request'      => ['/en/', '/EN'],
+            'slash entry, page below the prefix'   => ['/en/', '/en/about/'],
+        ];
+    }
+
+    /**
+     * The matching rule above must not become a blanket rule: a Bypass URL for
+     * the English homepage leaves the root homepage and unrelated paths cached.
+     *
+     * @dataProvider provide_unrelated_paths
+     *
+     * @param string $uri  Request URI that must keep being served from cache.
+     * @param string $path Bucket-relative directory its page is stored under.
+     */
+    public function test_bypass_url_for_the_prefixed_homepage_leaves_other_pages_cached(string $uri, string $path): void
+    {
+        $this->warmCacheFile('example.com', $path, 'index', 'STILL-CACHED-BODY');
+
+        $out = $this->serveDropin((new CacheConfig(['bypass_urls' => ['/en/']]))->toDropinArray(), ['REQUEST_URI' => $uri]);
+
+        $this->assertStringContainsString('STILL-CACHED-BODY', $out, "$uri must not be caught by a bypass entry for /en/");
+    }
+
+    /**
+     * @return array<string,array{0:string,1:string}>
+     */
+    public static function provide_unrelated_paths(): array
+    {
+        return [
+            'root homepage'          => ['/', ''],
+            'unrelated page'         => ['/contact/', '/contact'],
+            'segment that starts en' => ['/enterprise/', '/enterprise'],
+            'segment that ends en'   => ['/men', '/men'],
+        ];
     }
 
     /**

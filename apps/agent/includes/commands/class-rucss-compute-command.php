@@ -26,6 +26,7 @@ namespace WPMgr\Agent\Commands;
 
 use WPMgr\Agent\Cache\CacheManager;
 use WPMgr\Agent\Cache\Preload;
+use WPMgr\Agent\Cache\PreloadToken;
 use WPMgr\Agent\Optimizer\PerfConfig;
 
 /**
@@ -56,8 +57,8 @@ final class RucssComputeCommand implements CommandInterface
      * @param CacheManager|null $cache Page-cache orchestrator. When provided, the
      *        target URL's cached page is deleted immediately before the self-fetch
      *        so the request falls through to PHP. This is required because the
-     *        request-header cache bypass (x-wpmgr-preload) is only honoured by the
-     *        PHP drop-in — the nginx/Apache static fast-path serves the on-disk
+     *        preload header (x-wpmgr-preload, carrying the site's token) is only
+     *        honoured by the PHP drop-in — the nginx/Apache static fast-path serves the on-disk
      *        .html.gz BEFORE PHP boots, so without a real purge the optimizer's
      *        RUCSS stage never runs and no bundle is posted to the CP.
      */
@@ -190,7 +191,8 @@ final class RucssComputeCommand implements CommandInterface
 
     /**
      * Perform the self-fetch that forces a fresh render through the optimizer
-     * RUCSS stage. Returns true on a 2xx/3xx response, false on error.
+     * RUCSS stage. Returns true on a 2xx response, false on anything else; a
+     * redirect is not followed and rendered nothing.
      *
      * @param string $url    URL to fetch.
      * @param bool   $reheat Whether this is a CP post-compute re-warm self-fetch.
@@ -222,18 +224,21 @@ final class RucssComputeCommand implements CommandInterface
     /**
      * Issue one same-host self-fetch with the given User-Agent (which selects the
      * desktop vs mobile cache bucket) and the preload/compute bypass headers.
+     * The request carries the site's token, so a redirect is never followed:
+     * the token goes to the URL that was asked for and nowhere else.
      *
      * @param string $url       URL to fetch.
      * @param string $userAgent UA selecting the cache bucket.
      * @param bool   $reheat    Whether this is a CP post-compute re-warm.
-     * @return bool True on a 2xx/3xx response.
+     * @return bool True on a 2xx response.
      */
     private function fetchUA(string $url, string $userAgent, bool $reheat): bool
     {
         $headers = [
-            // Bypass the disk cache so the optimizer's RUCSS stage runs on
-            // a guaranteed fresh render (same mechanism as the preload warmer).
-            Preload::PRELOAD_HEADER => '1',
+            // The site's own preload token: the drop-in renders this request
+            // fresh so the optimizer's RUCSS stage runs (same mechanism as the
+            // preload warmer).
+            Preload::PRELOAD_HEADER => PreloadToken::get(),
             // Signal to the Optimizer that this is an RUCSS-compute pass so
             // it can short-circuit other expensive transforms if needed.
             self::RUCSS_HEADER     => '1',
@@ -246,7 +251,7 @@ final class RucssComputeCommand implements CommandInterface
 
         $response = wp_remote_get($url, [
             'timeout'            => 15,
-            'redirection'        => 2,
+            'redirection'        => 0,
             'blocking'           => true,
             'sslverify'          => true,
             // Engage WP's SSRF guard (blocks loopback / private-IP / non-standard
@@ -264,7 +269,7 @@ final class RucssComputeCommand implements CommandInterface
             ? (int) wp_remote_retrieve_response_code($response)
             : 0;
 
-        return $code >= 200 && $code < 400;
+        return $code >= 200 && $code < 300;
     }
 
     /**
