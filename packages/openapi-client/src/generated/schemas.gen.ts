@@ -11083,6 +11083,34 @@ export const EmailTestRequestSchema = {
   },
 } as const;
 
+export const RemoveSiteEmailConfigResultSchema = {
+  type: "object",
+  description:
+    "Outcome of removing a site's own email provider (GH #968). The site's agent confirmed it cleared its email config and the site's own config row was deleted; these fields say where the site's mail goes now.\n",
+  required: ["removed_provider", "fallback", "org_default_synced", "detail"],
+  properties: {
+    removed_provider: {
+      type: "string",
+      description: "Provider slug of the config that was removed.",
+    },
+    fallback: {
+      type: "string",
+      enum: ["org_default", "wordpress", "unknown"],
+      description:
+        "What the site uses now. `org_default`: the organisation has a default email config and the site uses it. `wordpress`: there is no organisation default, so the site sends through WordPress's own mailer. `unknown`: the provider was removed but the organisation default could not be read; read the site's email config again.\n",
+    },
+    org_default_synced: {
+      type: "boolean",
+      description:
+        "True when `fallback` is `org_default` and the organisation default reached the site's agent. When false with `org_default`, the site sends through WordPress's own mailer until the default is synced (POST /sites/{siteId}/email/sync).\n",
+    },
+    detail: {
+      type: "string",
+      description: "One sentence for the operator describing the outcome.",
+    },
+  },
+} as const;
+
 export const EmailTestResultSchema = {
   type: "object",
   description:

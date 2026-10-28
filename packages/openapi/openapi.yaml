@@ -11434,6 +11434,17 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            `email_change_in_progress`: another change that sends a site's
+            email settings to it, or removes them, was still running when the
+            wait for it ran out: one for this site, or one for any site on the
+            same API instance. Nothing was saved, and trying again in a moment
+            works.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "422":
           description: Validation failed
           content:
@@ -11442,6 +11453,78 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           description: Service unavailable (e.g. crypto not configured)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: deleteSiteEmailConfig
+      summary: Remove the site's own email provider
+      description: |
+        Removes the site's OWN email config (GH #968), so the site falls back
+        to the organisation's default email config when there is one, and to
+        WordPress's own mailer when there is not. The organisation default
+        itself is never touched.
+
+        The site's agent is told first, with the signed `clear_email_config`
+        command, and the row is deleted only after the agent confirms it
+        cleared its stored email settings and credentials. When the
+        organisation has a default it is then pushed to the site. In every
+        failure below nothing is removed.
+
+        The row's webhook route token goes with it, so provider callbacks for
+        mail sent before the removal no longer resolve.
+
+        Requires `site.email.manage` permission (operator+) and site access.
+      tags: [email]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: The site's own provider was removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemoveSiteEmailConfigResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: >
+            The site has no email config of its own
+            (`email_site_config_not_found`; a site using the organisation
+            default has nothing to remove), or the site was not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            `email_agent_outdated`: the site's agent is too old for
+            `clear_email_config`; update the agent. `email_config_changed`:
+            the settings were saved while they were being removed, so the
+            saved settings stand and were sent back to the site.
+            `email_change_in_progress`: another change that sends a site's
+            email settings to it, or removes them, was still running when the
+            wait for it ran out: one for this site, or one for any site on the
+            same API instance. Nothing was changed, and trying again in a
+            moment works.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            `email_agent_clear_failed`: the site did not confirm it stopped
+            using the provider (unreachable, refused, or it reported what it
+            could not remove); the message says why, and says the site may
+            already have stopped using it whenever the command may have run.
+            The stored settings are kept either way. `email_agent_unwired`:
+            agent commands are not configured on this control plane.
+            `email_delete_site_config_failed`: the site stopped using the
+            provider but its stored settings could not be removed; send the
+            request again to finish.
           content:
             application/json:
               schema:
@@ -12443,6 +12526,19 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            `email_change_in_progress`: another change that sends a site's
+            email settings to it, or removes them, was still running when the
+            wait for it ran out: one for this site, or one for any site on the
+            same API instance. Nothing was saved, and trying again in a moment
+            works. `email_config_changed`: the site's email settings were
+            removed or replaced while this connection was being saved; nothing
+            was saved. Reload them and try again.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
     delete:
@@ -22968,6 +23064,37 @@ components:
           type: string
           description: >
             Plain-text body. Defaults to a standard test message when omitted.
+
+    RemoveSiteEmailConfigResult:
+      type: object
+      description: >
+        Outcome of removing a site's own email provider (GH #968). The site's
+        agent confirmed it cleared its email config and the site's own config
+        row was deleted; these fields say where the site's mail goes now.
+      required: [removed_provider, fallback, org_default_synced, detail]
+      properties:
+        removed_provider:
+          type: string
+          description: Provider slug of the config that was removed.
+        fallback:
+          type: string
+          enum: [org_default, wordpress, unknown]
+          description: >
+            What the site uses now. `org_default`: the organisation has a
+            default email config and the site uses it. `wordpress`: there is no
+            organisation default, so the site sends through WordPress's own
+            mailer. `unknown`: the provider was removed but the organisation
+            default could not be read; read the site's email config again.
+        org_default_synced:
+          type: boolean
+          description: >
+            True when `fallback` is `org_default` and the organisation default
+            reached the site's agent. When false with `org_default`, the site
+            sends through WordPress's own mailer until the default is synced
+            (POST /sites/{siteId}/email/sync).
+        detail:
+          type: string
+          description: One sentence for the operator describing the outcome.
 
     EmailTestResult:
       type: object

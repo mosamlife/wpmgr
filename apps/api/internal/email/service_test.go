@@ -227,6 +227,18 @@ func (r *fakeRepo) UpsertOrgConfig(_ context.Context, in upsertRepoInput) (Confi
 	return cfg, nil
 }
 
+// DeleteSiteConfig mirrors DeleteSiteEmailConfig's compare-and-delete: the
+// site's own row goes only while its UpdatedAt still equals the value read.
+func (r *fakeRepo) DeleteSiteConfig(_ context.Context, tenantID, siteID uuid.UUID, expectedUpdatedAt time.Time) (int64, error) {
+	key := siteKey(tenantID, siteID)
+	cfg, ok := r.site[key]
+	if !ok || !cfg.UpdatedAt.Equal(expectedUpdatedAt) {
+		return 0, nil
+	}
+	delete(r.site, key)
+	return 1, nil
+}
+
 func (r *fakeRepo) ListSiteConfigs(_ context.Context, tenantID uuid.UUID, _, _ int32) ([]Config, error) {
 	var out []Config
 	for _, cfg := range r.site {
@@ -748,6 +760,9 @@ type fakeAgentClient struct {
 
 	resendCalled  int
 	resendLastReq agentcmd.ResendEmailRequest
+
+	clearCalled int
+	clearErr    error
 }
 
 func (f *fakeAgentClient) SyncEmailConfig(_ context.Context, _ uuid.UUID, _ string, req agentcmd.EmailConfigRequest) (agentcmd.EmailConfigResult, error) {
@@ -771,6 +786,16 @@ func (f *fakeAgentClient) ResendEmail(_ context.Context, _ uuid.UUID, _ string, 
 	f.resendCalled++
 	f.resendLastReq = req
 	return agentcmd.ResendEmailResult{OK: true}, nil
+}
+
+// ClearEmailConfig answers cleared=true unless clearErr is set
+// (remove_config_test.go drives the GH #968 paths through it).
+func (f *fakeAgentClient) ClearEmailConfig(_ context.Context, _ uuid.UUID, _ string) (agentcmd.ClearEmailConfigResult, error) {
+	f.clearCalled++
+	if f.clearErr != nil {
+		return agentcmd.ClearEmailConfigResult{}, f.clearErr
+	}
+	return agentcmd.ClearEmailConfigResult{OK: true, Cleared: true, Detail: "email config cleared"}, nil
 }
 
 // fakeSiteLookup always resolves to "https://example.com".

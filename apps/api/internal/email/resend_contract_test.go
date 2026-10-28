@@ -128,6 +128,12 @@ func (f *fakeResendAgent) SendTestEmail(_ context.Context, _ uuid.UUID, _ string
 	return agentcmd.SendTestEmailResult{OK: true}, nil
 }
 
+// ClearEmailConfig is not on the resend path; it fails so a test that reached
+// it by mistake would see it.
+func (f *fakeResendAgent) ClearEmailConfig(_ context.Context, _ uuid.UUID, _ string) (agentcmd.ClearEmailConfigResult, error) {
+	return agentcmd.ClearEmailConfigResult{}, errors.New("fakeResendAgent: clear_email_config is not part of the resend contract")
+}
+
 func (f *fakeResendAgent) ResendEmail(_ context.Context, _ uuid.UUID, _ string, req agentcmd.ResendEmailRequest) (agentcmd.ResendEmailResult, error) {
 	f.calls++
 	f.lastReq = req
@@ -933,6 +939,10 @@ func (f *perSeqResendAgent) SyncEmailConfig(_ context.Context, _ uuid.UUID, _ st
 
 func (f *perSeqResendAgent) SendTestEmail(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.SendTestEmailRequest) (agentcmd.SendTestEmailResult, error) {
 	return agentcmd.SendTestEmailResult{OK: true}, nil
+}
+
+func (f *perSeqResendAgent) ClearEmailConfig(_ context.Context, _ uuid.UUID, _ string) (agentcmd.ClearEmailConfigResult, error) {
+	return agentcmd.ClearEmailConfigResult{}, errors.New("perSeqResendAgent: clear_email_config is not part of the resend contract")
 }
 
 func (f *perSeqResendAgent) ResendEmail(_ context.Context, _ uuid.UUID, _ string, req agentcmd.ResendEmailRequest) (agentcmd.ResendEmailResult, error) {

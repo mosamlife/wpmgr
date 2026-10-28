@@ -6839,6 +6839,31 @@ export type EmailTestRequest = {
 };
 
 /**
+ * Outcome of removing a site's own email provider (GH #968). The site's agent confirmed it cleared its email config and the site's own config row was deleted; these fields say where the site's mail goes now.
+ *
+ */
+export type RemoveSiteEmailConfigResult = {
+  /**
+   * Provider slug of the config that was removed.
+   */
+  removed_provider: string;
+  /**
+   * What the site uses now. `org_default`: the organisation has a default email config and the site uses it. `wordpress`: there is no organisation default, so the site sends through WordPress's own mailer. `unknown`: the provider was removed but the organisation default could not be read; read the site's email config again.
+   *
+   */
+  fallback: "org_default" | "wordpress" | "unknown";
+  /**
+   * True when `fallback` is `org_default` and the organisation default reached the site's agent. When false with `org_default`, the site sends through WordPress's own mailer until the default is synced (POST /sites/{siteId}/email/sync).
+   *
+   */
+  org_default_synced: boolean;
+  /**
+   * One sentence for the operator describing the outcome.
+   */
+  detail: string;
+};
+
+/**
  * Result of a test-send dispatch. `ok` may be false when the agent returns an error or when the agent does not yet implement the command (Phase 1 expected behaviour — see endpoint description).
  *
  */
@@ -21068,6 +21093,54 @@ export type PutOrgEmailConfigResponses = {
 export type PutOrgEmailConfigResponse =
   PutOrgEmailConfigResponses[keyof PutOrgEmailConfigResponses];
 
+export type DeleteSiteEmailConfigData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/email/config";
+};
+
+export type DeleteSiteEmailConfigErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * The site has no email config of its own (`email_site_config_not_found`; a site using the organisation default has nothing to remove), or the site was not found.
+   *
+   */
+  404: Error;
+  /**
+   * `email_agent_outdated`: the site's agent is too old for `clear_email_config`; update the agent. `email_config_changed`: the settings were saved while they were being removed, so the saved settings stand and were sent back to the site. `email_change_in_progress`: another change that sends a site's email settings to it, or removes them, was still running when the wait for it ran out: one for this site, or one for any site on the same API instance. Nothing was changed, and trying again in a moment works.
+   *
+   */
+  409: Error;
+  /**
+   * `email_agent_clear_failed`: the site did not confirm it stopped using the provider (unreachable, refused, or it reported what it could not remove); the message says why, and says the site may already have stopped using it whenever the command may have run. The stored settings are kept either way. `email_agent_unwired`: agent commands are not configured on this control plane. `email_delete_site_config_failed`: the site stopped using the provider but its stored settings could not be removed; send the request again to finish.
+   *
+   */
+  503: Error;
+};
+
+export type DeleteSiteEmailConfigError =
+  DeleteSiteEmailConfigErrors[keyof DeleteSiteEmailConfigErrors];
+
+export type DeleteSiteEmailConfigResponses = {
+  /**
+   * The site's own provider was removed
+   */
+  200: RemoveSiteEmailConfigResult;
+};
+
+export type DeleteSiteEmailConfigResponse =
+  DeleteSiteEmailConfigResponses[keyof DeleteSiteEmailConfigResponses];
+
 export type GetSiteEmailConfigData = {
   body?: never;
   path: {
@@ -21127,6 +21200,11 @@ export type PutSiteEmailConfigErrors = {
    * Insufficient permission
    */
   403: Error;
+  /**
+   * `email_change_in_progress`: another change that sends a site's email settings to it, or removes them, was still running when the wait for it ran out: one for this site, or one for any site on the same API instance. Nothing was saved, and trying again in a moment works.
+   *
+   */
+  409: Error;
   /**
    * Validation failed
    */
@@ -22069,6 +22147,11 @@ export type PutEmailConnectionErrors = {
    * Resource not found
    */
   404: Error;
+  /**
+   * `email_change_in_progress`: another change that sends a site's email settings to it, or removes them, was still running when the wait for it ran out: one for this site, or one for any site on the same API instance. Nothing was saved, and trying again in a moment works. `email_config_changed`: the site's email settings were removed or replaced while this connection was being saved; nothing was saved. Reload them and try again.
+   *
+   */
+  409: Error;
   /**
    * Validation failed
    */
