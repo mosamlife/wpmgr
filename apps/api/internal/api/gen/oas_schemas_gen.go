@@ -29834,10 +29834,6 @@ func (s *ForgotPasswordReq) SetEmail(val string) {
 	s.Email = val
 }
 
-type GenerateClientReportBadRequest Error
-
-func (*GenerateClientReportBadRequest) generateClientReportRes() {}
-
 type GenerateClientReportForbidden Error
 
 func (*GenerateClientReportForbidden) generateClientReportRes() {}
@@ -29910,9 +29906,17 @@ func (s *GenerateClientReportRequest) SetNotify(val OptBool) {
 	s.Notify = val
 }
 
+type GenerateClientReportServiceUnavailable Error
+
+func (*GenerateClientReportServiceUnavailable) generateClientReportRes() {}
+
 type GenerateClientReportUnauthorized Error
 
 func (*GenerateClientReportUnauthorized) generateClientReportRes() {}
+
+type GenerateClientReportUnprocessableEntity Error
+
+func (*GenerateClientReportUnprocessableEntity) generateClientReportRes() {}
 
 type GetAIConnectionUsageForbidden Error
 

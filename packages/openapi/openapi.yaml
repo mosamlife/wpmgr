@@ -13287,14 +13287,30 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ClientReport"
-        "400":
-          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          description: |
+            The request failed validation. The error `code` is `invalid_period`
+            when `period_start` is not before `period_end`, `period_too_long`
+            when the period is longer than 92 days, and `invalid_body` when the
+            body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: |
+            The error `code` is `object_storage_required`: this instance has no
+            object storage configured, so it cannot store a report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/v1/clients/{clientId}/reports/{reportId}:
     get:

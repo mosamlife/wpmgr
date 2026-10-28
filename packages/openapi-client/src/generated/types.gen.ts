@@ -22913,10 +22913,6 @@ export type GenerateClientReportData = {
 
 export type GenerateClientReportErrors = {
   /**
-   * Validation error
-   */
-  400: Error;
-  /**
    * Not authenticated
    */
   401: Error;
@@ -22928,6 +22924,20 @@ export type GenerateClientReportErrors = {
    * Resource not found
    */
   404: Error;
+  /**
+   * The request failed validation. The error `code` is `invalid_period`
+   * when `period_start` is not before `period_end`, `period_too_long`
+   * when the period is longer than 92 days, and `invalid_body` when the
+   * body is not valid JSON.
+   *
+   */
+  422: Error;
+  /**
+   * The error `code` is `object_storage_required`: this instance has no
+   * object storage configured, so it cannot store a report.
+   *
+   */
+  503: Error;
 };
 
 export type GenerateClientReportError =
