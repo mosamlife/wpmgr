@@ -160,12 +160,12 @@ func TestPDFRendersACharacterAboveU10000InEveryTextField(t *testing.T) {
 }
 
 // Every string in the data at once, so a text field added later that reaches
-// the PDF cannot reintroduce the crash without this test seeing it. The pause
-// reason is the one field left out: the fixture has none, so its line is not
-// part of the document built here.
+// the PDF cannot reintroduce the crash without this test seeing it. That
+// includes the pause reason: marking it gives the paused site a Reason line,
+// which is drawn in the oblique face.
 func TestPDFRendersACharacterAboveU10000InEveryString(t *testing.T) {
 	data := pdfFullFixture()
-	markStrings(reflect.ValueOf(&data).Elem(), planeMarker, map[string]bool{"MonitoringPausedReason": true})
+	markStrings(reflect.ValueOf(&data).Elem(), planeMarker, nil)
 	out, err, p := renderCatching(data, nil)
 	if p != nil {
 		t.Fatalf("Render panicked: %v", p)
