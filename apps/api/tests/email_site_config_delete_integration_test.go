@@ -258,16 +258,19 @@ func TestDeleteSiteEmailConfigCannotReachAnotherTenant(t *testing.T) {
 	count := siteEmailRowCounter(t, pool)
 
 	if n := deleteSiteEmailConfigAsMember(t, pool, f.tenant, f.otherTenant, f.otherSite); n != 0 {
-		t.Fatalf("a member of one organisation deleted %d config rows of another by naming its tenant and site", n)
+		t.Fatalf("a member naming another organisation's tenant and site deleted %d rows, want 0", n)
 	}
 	if n := deleteSiteEmailConfigAsMember(t, pool, f.tenant, f.tenant, f.otherSite); n != 0 {
-		t.Fatalf("a member of one organisation deleted %d config rows of another by naming its site", n)
+		t.Fatalf("a member naming another organisation's site under their own tenant deleted %d rows, want 0", n)
 	}
 	if got := count(countSiteEmailConfigByID, f.otherConfig); got != 1 {
 		t.Fatalf("the other organisation's config: %d rows, want 1", got)
 	}
 	if got := count(countSiteEmailConnectionsByConf, f.otherConfig); got != 1 {
 		t.Fatalf("the other organisation's connections: %d rows, want 1", got)
+	}
+	if got := count(`SELECT count(*) FROM site_email_config WHERE tenant_id = $1`, f.tenant); got != 3 {
+		t.Fatalf("the acting organisation's own configs: %d rows, want its default, site A and site B", got)
 	}
 
 	// Control: the zero above comes from RLS, not from ids that match nothing.
