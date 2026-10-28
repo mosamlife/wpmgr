@@ -823,7 +823,7 @@ mkdir "$C/.lock.$sha_mini"
 chmod 555 "$C/.lock.$sha_mini"
 if ( : >"$C/.lock.$sha_mini/probe" ) 2>/dev/null; then
   rm -f "$C/.lock.$sha_mini/probe"
-  bad "setup: this user can create a file in a directory with mode 555 (root?), so a pid file cannot be made to fail to be created"
+  bad "setup: this user can create a file in a directory with mode 555 (root?), so the case that needs a pid file to fail to be created cannot run; run the self-test as a user that is not root"
 else
   expect "a lock directory its pid file cannot be created in is reported, not waited on" nonzero "${hermetic[@]}" PATH="$shim_liar:$PATH" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S" PAGE_KSES_LOCK_WAIT=5
   said "  and it says the owner cannot be recorded" "cannot record the owner of the lock $C/.lock.$sha_mini"
