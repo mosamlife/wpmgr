@@ -559,6 +559,7 @@ final class Lifecycle
             \WPMgr\Agent\Cache\CacheManager::OPTION_LAST_ERROR,
             \WPMgr\Agent\Cache\CacheManager::OPTION_STATS,
             \WPMgr\Agent\Cache\PreloadToken::OPTION,
+            \WPMgr\Agent\Cache\CacheManager::OPTION_PURGED_FOR_KEYS,
             \WPMgr\Agent\Cache\NginxHelper::OPTION_NGINX_NOTICE,
             'wpmgr_cache_preload_queue',
             // H8: object-cache options.

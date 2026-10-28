@@ -45,6 +45,22 @@ final class CacheManager
      */
     public const OPTION_STATS = 'wpmgr_cache_stats';
 
+    /**
+     * Records which key scheme the stored pages were last cleared for (see
+     * {@see KEY_SCHEME}). Autoloaded, so the check costs nothing once it holds
+     * the current scheme.
+     */
+    public const OPTION_PURGED_FOR_KEYS = 'wpmgr_cache_purged_for_keys';
+
+    /**
+     * The key scheme stored pages are written under. Since scheme 2 each page
+     * is stored under the key the drop-in serves it from. Pages written under
+     * an earlier scheme may sit under another page's key, so the first boot on
+     * a new scheme removes every stored page, once. Raise it whenever a change
+     * means pages already on disk may be under the wrong key.
+     */
+    public const KEY_SCHEME = '2';
+
     private WpCacheConstant $wpCache;
 
     private DropinInstaller $dropin;
@@ -498,17 +514,44 @@ final class CacheManager
      * Idempotent: a no-op when the installed version already matches the template,
      * when the drop-in is absent, or when the drop-in belongs to another plugin.
      *
+     * Then, once per key scheme, it removes the pages stored before it (see
+     * {@see KEY_SCHEME}).
+     *
      * @return void
      */
     public function maybeRefreshDropin(): void
     {
-        if (!$this->config()->enabled) {
-            return; // page caching is off — nothing to refresh
+        $config = $this->config();
+        if ($config->enabled && $this->dropin->needsRefresh()) {
+            $this->dropin->install($config->toDropinArray());
         }
-        if (!$this->dropin->needsRefresh()) {
+        $this->maybePurgeForKeyScheme($config);
+    }
+
+    /**
+     * Remove every stored page once, the first time this key scheme boots, so
+     * nothing stored by an earlier release under another page's key is served.
+     * Runs where something could serve a stored page: the page cache is on, or
+     * our drop-in is still installed (a pushed setting that switches the cache
+     * off leaves it there). Elsewhere there is nothing to clear, and a purge
+     * would still clear host and edge caches through the integrations, so the
+     * scheme is only recorded.
+     *
+     * @param CacheConfig $config Current config.
+     * @return void
+     */
+    private function maybePurgeForKeyScheme(CacheConfig $config): void
+    {
+        if (!function_exists('get_option') || !function_exists('update_option')) {
             return;
         }
-        $this->dropin->install($this->config()->toDropinArray());
+        if ((string) get_option(self::OPTION_PURGED_FOR_KEYS, '') === self::KEY_SCHEME) {
+            return;
+        }
+        if ($config->enabled || $this->dropin->isInstalled()) {
+            $this->purgeEngine()->purgeEverything();
+        }
+        update_option(self::OPTION_PURGED_FOR_KEYS, self::KEY_SCHEME, true);
     }
 
     /**

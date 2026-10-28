@@ -655,6 +655,61 @@ final class CachePrefixedHomepageTest extends TestCase
         $this->assertFileDoesNotExist($other, 'the purge on a new Bypass URL clears the cache, which re-warms on its own');
     }
 
+    // ---------------------------------------------------------------------
+    // Upgrade: pages stored by an earlier release are removed, once.
+    // ---------------------------------------------------------------------
+
+    /**
+     * Pages stored before this release may sit under another page's key, so
+     * the first boot of this release removes every stored page, once: a page
+     * stored after that is kept by every later boot.
+     */
+    public function test_first_boot_of_this_release_purges_once(): void
+    {
+        $manager = $this->enabledManager();
+        $old     = $this->warm('example.com/index.html.gz', self::HTML_IT);
+
+        $manager->maybeRefreshDropin();
+        $this->assertFileDoesNotExist($old, 'a page stored by an earlier release must be removed on the first boot');
+
+        $new = $this->warm('example.com/en/index.html.gz', self::HTML_IT);
+        $manager->maybeRefreshDropin();
+        (new CacheManager())->maybeRefreshDropin();
+        $this->assertFileExists($new, 'later boots must not purge again');
+    }
+
+    /**
+     * A site whose page cache is off and whose drop-in is gone has nothing
+     * that serves stored pages: it is not purged (a purge also clears host and
+     * edge caches through the integrations), and it is not asked again.
+     */
+    public function test_a_site_without_the_page_cache_is_not_purged_on_upgrade(): void
+    {
+        $this->optionStore[CacheManager::OPTION_CONFIG] = ['enabled' => false];
+        $kept = $this->warm('example.com/index.html.gz', self::HTML_IT);
+        Monkey\Actions\expectDone('wpmgr_purge_everything:before')->never();
+
+        (new CacheManager())->maybeRefreshDropin();
+
+        $this->assertFileExists($kept);
+        $this->assertArrayHasKey(CacheManager::OPTION_PURGED_FOR_KEYS, $this->optionStore, 'the upgrade is recorded as handled');
+    }
+
+    /**
+     * A page cache switched off by a pushed setting leaves the drop-in in
+     * place, still serving what is stored, so that site is purged too.
+     */
+    public function test_a_site_whose_dropin_is_still_installed_is_purged_on_upgrade(): void
+    {
+        $this->optionStore[CacheManager::OPTION_CONFIG] = ['enabled' => false];
+        file_put_contents($this->base . '/advanced-cache.php', "<?php\n// WPMgr Page Cache drop-in (advanced-cache.php).\n");
+        $old = $this->warm('example.com/index.html.gz', self::HTML_IT);
+
+        (new CacheManager())->maybeRefreshDropin();
+
+        $this->assertFileDoesNotExist($old);
+    }
+
     /**
      * Pushing the same configuration again, or one that adds no Bypass URL,
      * must not throw the cache away: settings are pushed for many reasons.

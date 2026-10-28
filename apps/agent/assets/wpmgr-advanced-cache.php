@@ -38,7 +38,7 @@ if (!defined('ABSPATH')) {
  * finds in the on-disk copy; a mismatch triggers a transparent reinstall so
  * existing sites always run the current drop-in logic without manual intervention.
  */
-define('WPMGR_PAGE_CACHE_DROPIN_VERSION', '0.47.0');
+define('WPMGR_PAGE_CACHE_DROPIN_VERSION', '0.48.0');
 
 if (!defined('WP_CACHE')) {
     return;
