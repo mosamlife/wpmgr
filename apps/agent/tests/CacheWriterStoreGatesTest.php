@@ -147,7 +147,7 @@ final class CacheWriterStoreGatesTest extends TestCase
      * opens on init; the shutdown flush closes it) and return what reached the
      * visitor.
      *
-     * @param callable                    $render Produces the response; may open or close buffers.
+     * @param callable                         $render Produces the response; may open or close buffers.
      * @param callable(CacheManager):void|null $open   Opens the capture buffer; startBuffer() when omitted.
      */
     private function respond(callable $render, ?callable $open = null): string
@@ -641,9 +641,8 @@ final class CacheWriterStoreGatesTest extends TestCase
     }
 
     /**
-     * A request with little memory left opens the smallest chunk, 512 KB, so
-     * that the buffer does not take what the page needs to render. Through
-     * the same code path init uses.
+     * A request with little memory left opens the smallest chunk, 512 KB,
+     * through the same code path init uses.
      */
     public function test_a_request_with_little_free_memory_opens_the_512_kb_chunk(): void
     {
@@ -660,9 +659,8 @@ final class CacheWriterStoreGatesTest extends TestCase
 
     /**
      * Between the two the chunk follows the memory left: an eighth of 16 MB is
-     * 2 MB. The buffer itself is not counted in what is left, and neither is
-     * anything a few allocations between the limit being set and the buffer
-     * opening may take, hence the margin.
+     * 2 MB. A few allocations can happen between the limit being set and the
+     * buffer opening, hence the margin.
      */
     public function test_a_request_with_some_free_memory_opens_a_chunk_of_an_eighth_of_it(): void
     {
