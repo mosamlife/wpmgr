@@ -26,6 +26,7 @@ namespace WPMgr\Agent\Commands;
 
 use WPMgr\Agent\Cache\CacheManager;
 use WPMgr\Agent\Cache\Preload;
+use WPMgr\Agent\Cache\PreloadToken;
 use WPMgr\Agent\Optimizer\PerfConfig;
 
 /**
@@ -56,8 +57,8 @@ final class RucssComputeCommand implements CommandInterface
      * @param CacheManager|null $cache Page-cache orchestrator. When provided, the
      *        target URL's cached page is deleted immediately before the self-fetch
      *        so the request falls through to PHP. This is required because the
-     *        request-header cache bypass (x-wpmgr-preload) is only honoured by the
-     *        PHP drop-in — the nginx/Apache static fast-path serves the on-disk
+     *        preload header (x-wpmgr-preload, carrying the site's token) is only
+     *        honoured by the PHP drop-in — the nginx/Apache static fast-path serves the on-disk
      *        .html.gz BEFORE PHP boots, so without a real purge the optimizer's
      *        RUCSS stage never runs and no bundle is posted to the CP.
      */
@@ -231,9 +232,10 @@ final class RucssComputeCommand implements CommandInterface
     private function fetchUA(string $url, string $userAgent, bool $reheat): bool
     {
         $headers = [
-            // Bypass the disk cache so the optimizer's RUCSS stage runs on
-            // a guaranteed fresh render (same mechanism as the preload warmer).
-            Preload::PRELOAD_HEADER => '1',
+            // The site's own preload token: the drop-in renders this request
+            // fresh so the optimizer's RUCSS stage runs (same mechanism as the
+            // preload warmer).
+            Preload::PRELOAD_HEADER => PreloadToken::get(),
             // Signal to the Optimizer that this is an RUCSS-compute pass so
             // it can short-circuit other expensive transforms if needed.
             self::RUCSS_HEADER     => '1',

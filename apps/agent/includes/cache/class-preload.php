@@ -8,8 +8,9 @@
  * enabled) a mobile user-agent so both cache buckets are populated; the device
  * fan-out happens at ENQUEUE time (one row per (url, device)).
  *
- * The warm request carries the `x-wpmgr-preload: 1` header so the serving drop-in
- * bypasses the disk cache and lets WordPress render fresh HTML that the
+ * The warm request carries the site's own token in the `x-wpmgr-preload` header
+ * (see PreloadToken), by which the serving drop-in recognises a preload: it
+ * skips the disk cache and lets WordPress render fresh HTML that the
  * CacheWriter then stores. A 429 / empty / 5xx response THROWS so the queue's
  * retry/backoff machinery defers the URL rather than hammering a struggling
  * origin.
@@ -34,7 +35,11 @@ final class Preload
     /** WP cron hook the fallback-drain warmer runs under. */
     public const HOOK = 'wpmgr_cache_preload';
 
-    /** Header that marks a request as a preload (drop-in bypasses cache for it). */
+    /**
+     * Header that marks a request as a preload. Its value is the site's own
+     * token ({@see PreloadToken}); without it the drop-in treats the request
+     * as an ordinary visitor request.
+     */
     public const PRELOAD_HEADER = 'x-wpmgr-preload';
 
     /** Desktop UA used when warming. */
@@ -261,7 +266,7 @@ final class Preload
             // port) even for on-host URLs — defence-in-depth.
             'reject_unsafe_urls' => true,
             'user-agent'        => $userAgent,
-            'headers'           => [self::PRELOAD_HEADER => '1'],
+            'headers'           => [self::PRELOAD_HEADER => PreloadToken::get()],
         ]);
 
         if (function_exists('is_wp_error') && is_wp_error($response)) {
