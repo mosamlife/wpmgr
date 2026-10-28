@@ -94,6 +94,28 @@ final class LocalStoreRestoreTest extends TestCase
         $this->assertCustomUploadsStoreKept($targetDir);
     }
 
+    public function testWpContentRestoreLeavesInPlaceAnUploadsFolderTheSnapshotLacks(): void
+    {
+        $this->useCustomUploadsFolder();
+        $fx        = $this->makeRestoreRoot('custom-absent');
+        $targetDir = $fx['targetDir'];
+        $this->writeLiveFile($targetDir, 'media/wpmgr-backups/live-snap/chunks/a.bin', 'LIVE_CHUNK');
+        $this->writeLiveFile($targetDir, 'media/photo.jpg', 'LIVE_PHOTO');
+        $this->writeLiveFile($targetDir, 'mu-plugins/site.php', 'LIVE_MU');
+        // The snapshot holds nothing under media/, so a wp-content restore never touches it.
+        $zipPath = $fx['scratchDir'] . '/wp-content.part001.zip';
+        $this->buildFixtureZip($zipPath, ['mu-plugins/site.php' => 'RESTORED_MU']);
+        $restorer   = new FilesRestorer();
+        $restoreId  = $this->makeRestoreId();
+        $stagingDir = $restorer->stage([$zipPath], $targetDir, $restoreId, $this->noopRestoreProgress());
+
+        $restorer->swapComponents($stagingDir, $targetDir, ['wp-content'], $restoreId, $this->noopRestoreProgress());
+
+        $this->assertSame('RESTORED_MU', file_get_contents($targetDir . '/mu-plugins/site.php'), 'the restore itself happened');
+        $this->assertSame('LIVE_PHOTO', file_get_contents($targetDir . '/media/photo.jpg'), 'keeping the store never replaces the folder around it');
+        $this->assertSame('LIVE_CHUNK', file_get_contents($targetDir . '/media/wpmgr-backups/live-snap/chunks/a.bin'));
+    }
+
     public function testBackupExcludesExactlyTheStoreInACustomUploadsFolder(): void
     {
         $this->useCustomUploadsFolder();

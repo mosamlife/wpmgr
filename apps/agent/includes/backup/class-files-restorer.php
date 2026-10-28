@@ -1320,8 +1320,17 @@ final class FilesRestorer
         $canLink     = function_exists('link');
         $failed      = [];
         foreach ($this->storePaths() as $rel) {
-            if ($components !== null && !in_array(self::componentOf($rel), $components, true)) {
-                continue;
+            if ($components !== null) {
+                if (!in_array(self::componentOf($rel), $components, true)) {
+                    continue;
+                }
+                // A component swap replaces only the top-level items staging
+                // holds. A store under one that staging lacks stays in place,
+                // and creating that item in staging would make the swap
+                // replace everything else the live one holds.
+                if (!file_exists($stagingRoot . DIRECTORY_SEPARATOR . explode('/', $rel)[0])) {
+                    continue;
+                }
             }
             $src = $liveRoot . DIRECTORY_SEPARATOR . $rel;
             if (is_link($src) || !is_dir($src)) {
