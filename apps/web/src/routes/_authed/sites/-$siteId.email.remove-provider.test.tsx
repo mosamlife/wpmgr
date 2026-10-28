@@ -542,24 +542,28 @@ describe("a refused removal shows the server's message and never a success", () 
 });
 
 describe("a refusal that finds the page out of date also brings the page up to date", () => {
+  // The two sentences are RemoveSiteConfig's, in apps/api/internal/email/service.go:
+  // removeChangedMessage (line 523) and the not-found message (line 580).
+  const GONE = "This site has no email provider of its own to remove.";
+  const CHANGED = "The email settings changed while removing them; nothing was removed.";
+
   it("404 email_site_config_not_found: the provider was already removed elsewhere", async () => {
     // Someone else removed it first; the server now holds only the organisation default.
     stored = OWN;
     deleteConfigMock.mockImplementation(() => {
       stored = ORG_DEFAULT;
-      return fail(404, "email_site_config_not_found", "This site has no email provider of its own to remove.");
+      return fail(404, "email_site_config_not_found", GONE);
     });
     renderEmailTab();
     const dialog = await openConfirmation();
 
     confirmRemoval(dialog);
 
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      "This site has no email provider of its own to remove.",
-    );
-    expect(toastSuccess).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Keep provider" }));
+    // The question the confirmation asked is over, so it closes by itself, and
+    // the server's sentence is on the page to say why.
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await screen.findByRole("alert")).toHaveTextContent(GONE);
+    expect(toastSuccess).not.toHaveBeenCalled();
     expect(await screen.findByText(/These are your organisation.s email settings/)).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Provider" })).toHaveValue("ses");
     expect(screen.queryByRole("button", REMOVE)).toBeNull();
@@ -568,21 +572,50 @@ describe("a refusal that finds the page out of date also brings the page up to d
   it("409 email_config_changed: the settings saved meanwhile are what the page shows", async () => {
     deleteConfigMock.mockImplementation(() => {
       stored = emailConfig({ from_address: "changed@example.test", updated_at: "2026-10-03T00:00:00Z" });
-      return fail(409, "email_config_changed", "The email settings changed while removing them; nothing was removed.");
+      return fail(409, "email_config_changed", CHANGED);
     });
     renderEmailTab();
     const dialog = await openConfirmation();
 
     confirmRemoval(dialog);
 
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      "The email settings changed while removing them; nothing was removed.",
-    );
-    expect(toastSuccess).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Keep provider" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await screen.findByRole("alert")).toHaveTextContent(CHANGED);
+    expect(toastSuccess).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByLabelText("From address")).toHaveValue("changed@example.test"));
     // It is still the site's own provider, so it can still be removed.
     expect(screen.getByRole("button", REMOVE)).toBeInTheDocument();
+  });
+
+  it("409 email_config_changed after the provider was switched: the next confirmation names the new provider and starts empty", async () => {
+    deleteConfigMock.mockImplementation(() => {
+      // Someone else switched the site to SendGrid while this confirmation was open.
+      stored = emailConfig({ provider: "sendgrid", config: {}, updated_at: "2026-10-03T00:00:00Z" });
+      return fail(409, "email_config_changed", CHANGED);
+    });
+    renderEmailTab();
+    const first = await openConfirmation();
+
+    confirmRemoval(first);
+
+    // The question was about Generic SMTP, which the site no longer has, so it
+    // is closed rather than left standing with its name and its typed answer.
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await screen.findByRole("alert")).toHaveTextContent(CHANGED);
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Provider" })).toHaveValue("sendgrid"));
+    expect(deleteConfigMock).toHaveBeenCalledTimes(1);
+
+    // A new removal opens a new question, about the provider the site has now.
+    const second = await openConfirmation();
+    expect(within(second).getByRole("heading", { name: /Remove SendGrid from this site/ })).toBeInTheDocument();
+    expect(second).not.toHaveTextContent("Generic SMTP");
+    expect(within(second).getByRole("textbox")).toHaveValue("");
+    expect(within(second).queryByRole("alert")).toBeNull();
+    // The earlier refusal is spent: nothing of it greets the new question.
+    expect(screen.queryByText(CHANGED)).toBeNull();
+    // The name typed for the old provider does not remove the new one.
+    fireEvent.change(within(second).getByRole("textbox"), { target: { value: "Generic SMTP" } });
+    expect(within(second).getByRole("button", REMOVE)).toBeDisabled();
+    expect(deleteConfigMock).toHaveBeenCalledTimes(1);
   });
 });

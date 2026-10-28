@@ -577,10 +577,18 @@ export function EmailProviderConfig({ siteId }: EmailProviderConfigProps) {
       setReseedPending(true);
       setRemoveDialog((prev) => ({ ...prev, open: false }));
     } catch (err) {
-      // The dialog stays open and shows the server's message (remove.error).
-      // A refusal that found this page out of date also has the form seeded
-      // again from what the server holds now.
-      if (err instanceof EmailConfigStaleError) setReseedPending(true);
+      if (err instanceof EmailConfigStaleError) {
+        // This page was out of date: the server holds something else now, and
+        // the config has been read again. The confirmation was about the
+        // provider this page used to show, so it is closed rather than left
+        // standing with that name and the answer typed for it; the next removal
+        // opens a new one about what is saved now. The server's message moves
+        // to the page (staleRefusal), and the form is seeded again.
+        setReseedPending(true);
+        setRemoveDialog((prev) => ({ ...prev, open: false }));
+      }
+      // Any other refusal changed nothing: the dialog stays open and shows the
+      // server's message (remove.error), ready for another try.
     }
   }
 
@@ -633,6 +641,11 @@ export function EmailProviderConfig({ siteId }: EmailProviderConfigProps) {
     ? (providers.find((p) => p.slug === serverConfig.provider)?.label ??
       serverConfig.provider)
     : "";
+  // The server's message for a removal refused because this page was out of
+  // date. The confirmation it came from is closed, so the page says it. It
+  // lasts until the next removal is opened (openRemoveConfirmation resets it).
+  const staleRefusal =
+    remove.error instanceof EmailConfigStaleError ? remove.error.message : null;
 
   return (
     <div className="space-y-6">
@@ -658,6 +671,18 @@ export function EmailProviderConfig({ siteId }: EmailProviderConfigProps) {
             <RefreshCw aria-hidden="true" className="mr-1.5 size-4" />
             {sync.isPending ? "Syncing…" : "Sync to site"}
           </Button>
+        </div>
+      ) : null}
+
+      {/* A removal was refused because this page was out of date. The page has
+          been read again and the confirmation closed; this says why. */}
+      {staleRefusal !== null ? (
+        <div
+          role="alert"
+          className="flex items-start gap-2.5 rounded-md border border-[var(--color-warning)]/40 bg-warning-subtle p-3 text-sm text-warning-subtle-fg"
+        >
+          <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+          <p>{staleRefusal}</p>
         </div>
       ) : null}
 
@@ -916,7 +941,9 @@ export function EmailProviderConfig({ siteId }: EmailProviderConfigProps) {
         cancelLabel="Keep provider"
         isPending={remove.isPending}
         pendingLabel="Removing…"
-        errorMessage={remove.isError ? remove.error.message : null}
+        errorMessage={
+          remove.isError && staleRefusal === null ? remove.error.message : null
+        }
         consequencesBody={
           <div className="space-y-2">
             <p>
