@@ -21052,7 +21052,7 @@ export type DeleteSiteEmailConfigErrors = {
    */
   404: Error;
   /**
-   * `email_agent_outdated`: the site's agent is too old for `clear_email_config`; update the agent. `email_config_changed`: the settings were saved while they were being removed, so the saved settings stand and were sent back to the site. `email_change_in_progress`: another change that sends this site's email settings to it, or removes them, was still running when the wait for it ran out; nothing was changed, and trying again in a moment works.
+   * `email_agent_outdated`: the site's agent is too old for `clear_email_config`; update the agent. `email_config_changed`: the settings were saved while they were being removed, so the saved settings stand and were sent back to the site. `email_change_in_progress`: another change that sends a site's email settings to it, or removes them, was still running when the wait for it ran out: one for this site, or one for any site on the same API instance. Nothing was changed, and trying again in a moment works.
    *
    */
   409: Error;
@@ -21135,6 +21135,11 @@ export type PutSiteEmailConfigErrors = {
    * Insufficient permission
    */
   403: Error;
+  /**
+   * `email_change_in_progress`: another change that sends a site's email settings to it, or removes them, was still running when the wait for it ran out: one for this site, or one for any site on the same API instance. Nothing was saved, and trying again in a moment works.
+   *
+   */
+  409: Error;
   /**
    * Validation failed
    */
@@ -22077,6 +22082,11 @@ export type PutEmailConnectionErrors = {
    * Resource not found
    */
   404: Error;
+  /**
+   * `email_change_in_progress`: another change that sends a site's email settings to it, or removes them, was still running when the wait for it ran out: one for this site, or one for any site on the same API instance. Nothing was saved, and trying again in a moment works. `email_config_changed`: the site's email settings were removed or replaced while this connection was being saved; nothing was saved. Reload them and try again.
+   *
+   */
+  409: Error;
   /**
    * Validation failed
    */

@@ -52157,6 +52157,10 @@ type PutEmailConnectionBadRequest Error
 
 func (*PutEmailConnectionBadRequest) putEmailConnectionRes() {}
 
+type PutEmailConnectionConflict Error
+
+func (*PutEmailConnectionConflict) putEmailConnectionRes() {}
+
 type PutEmailConnectionForbidden Error
 
 func (*PutEmailConnectionForbidden) putEmailConnectionRes() {}
@@ -52635,6 +52639,10 @@ func (*PutSiteAutologinPolicyUnprocessableEntity) putSiteAutologinPolicyRes() {}
 type PutSiteEmailConfigBadRequest Error
 
 func (*PutSiteEmailConfigBadRequest) putSiteEmailConfigRes() {}
+
+type PutSiteEmailConfigConflict Error
+
+func (*PutSiteEmailConfigConflict) putSiteEmailConfigRes() {}
 
 type PutSiteEmailConfigForbidden Error
 

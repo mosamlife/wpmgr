@@ -11434,6 +11434,17 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            `email_change_in_progress`: another change that sends a site's
+            email settings to it, or removes them, was still running when the
+            wait for it ran out: one for this site, or one for any site on the
+            same API instance. Nothing was saved, and trying again in a moment
+            works.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "422":
           description: Validation failed
           content:
@@ -11494,9 +11505,10 @@ paths:
             `clear_email_config`; update the agent. `email_config_changed`:
             the settings were saved while they were being removed, so the
             saved settings stand and were sent back to the site.
-            `email_change_in_progress`: another change that sends this site's
+            `email_change_in_progress`: another change that sends a site's
             email settings to it, or removes them, was still running when the
-            wait for it ran out; nothing was changed, and trying again in a
+            wait for it ran out: one for this site, or one for any site on the
+            same API instance. Nothing was changed, and trying again in a
             moment works.
           content:
             application/json:
@@ -12514,6 +12526,19 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            `email_change_in_progress`: another change that sends a site's
+            email settings to it, or removes them, was still running when the
+            wait for it ran out: one for this site, or one for any site on the
+            same API instance. Nothing was saved, and trying again in a moment
+            works. `email_config_changed`: the site's email settings were
+            removed or replaced while this connection was being saved; nothing
+            was saved. Reload them and try again.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
     delete:
