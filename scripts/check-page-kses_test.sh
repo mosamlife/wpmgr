@@ -14,12 +14,19 @@
 # is reclaimed or reported within a bound. A lock is held by the run that
 # created its pid file, so a mkdir that says yes to two runs (the mkdir of the
 # Ubuntu 26.04 runner image does, when two start together) still leaves one
-# holder. Run it BEFORE the real check so a guard that fails open cannot pass.
+# holder, and one that says yes for a directory its holder has since given back
+# is waited out, not failed on. A lock this run cannot record its owner in is
+# reported and left where it is, never removed, and the command printed to clear
+# a lock names its paths shell-quoted: pasting it removes that lock and no other
+# path, whatever the cache dir's path holds. Run it BEFORE the real check so a
+# guard that fails open cannot pass.
 #
 # It runs against the real pinned cores, so the first run downloads them (the
 # real check then reuses the same cache). A cache dir can be chosen with
 # PAGE_KSES_CACHE. The cache cases that are about the cache alone use a
-# miniature core and stand-ins for curl, mkdir, mv and php, and need no network.
+# miniature core and stand-ins for curl, mkdir, cat, mv and php, and need no
+# network. One of them needs a user that file modes apply to, not root, and is
+# red with a message saying so when it is run as another.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -62,6 +69,29 @@ said() {
     *"$2"*) ok "$1" ;;
     *) bad "$1 (expected output to contain: $2)"; echo "$LAST_OUT" | sed 's/^/     | /' | head -20 ;;
   esac
+}
+
+# pastes <name> <path...>   The last run printed a command to clear a lock ("remove it with: rm -rf
+# ..."). Pasting that line into a shell must hand rm exactly these paths, one word each. The line is
+# run with rm replaced by a function that prints the words it is given, so nothing is removed. A path
+# with a space in it is where an unquoted line goes wrong: rm would be handed pieces of it.
+pastes() {
+  local name="$1" cmd got want
+  shift
+  case "$LAST_OUT" in
+    *"remove it with: "*) ;;
+    *) bad "$name (no command to paste; the last line printed was: ${LAST_OUT##*$'\n'})"; return ;;
+  esac
+  cmd="${LAST_OUT##*remove it with: }"
+  got="$( ( rm() { shift; printf '[%s]\n' "$@"; }; eval "$cmd" ) 2>&1 )"
+  want="$(printf '[%s]\n' "$@")"
+  if [ "$got" = "$want" ]; then
+    ok "$name"
+  else
+    bad "$name"
+    printf '     | the command printed: %s\n     | the words rm is handed:\n' "$cmd"
+    printf '%s\n' "$got" | sed 's/^/     |   /' | head -12
+  fi
 }
 
 # The pins the cases below borrow.
@@ -433,6 +463,45 @@ SHIM
 chmod +x "$shim_liar/mkdir"
 cp "$shim/mv" "$shim_liar/mv"
 cp "$shim/curl" "$shim_liar/curl"
+# A mkdir that says yes for a lock directory and makes nothing, the first time it is asked: the run
+# that held that directory gave it back after the answer and before this run's next step. Every
+# call after that is the real mkdir. $SHIM_DIR/mkdir.said-yes is left behind as the proof it lied.
+shim_gone="$tmp/shim-gone"
+mkdir -p "$shim_gone"
+{
+  printf '#!/usr/bin/env bash\nreal_mkdir=%s\n' "$real_mkdir"
+  cat <<'SHIM'
+case "$1" in
+  */.lock.*)
+    if [ "$#" -eq 1 ] && [ ! -e "$SHIM_DIR/mkdir.said-yes" ]; then
+      : >"$SHIM_DIR/mkdir.said-yes"
+      exit 0
+    fi
+    ;;
+esac
+exec "$real_mkdir" "$@"
+SHIM
+} >"$shim_gone/mkdir"
+chmod +x "$shim_gone/mkdir"
+cp "$shim/mv" "$shim_gone/mv"
+cp "$shim/curl" "$shim_gone/curl"
+# A cat that finds nothing in a lock's pid file: what was written there does not come back, as when
+# the disk is full. It reads every other file as the real cat does.
+real_cat="$(command -v cat)"
+shim_lostpid="$tmp/shim-lostpid"
+mkdir -p "$shim_lostpid"
+{
+  printf '#!/usr/bin/env bash\nreal_cat=%s\n' "$real_cat"
+  cat <<'SHIM'
+case "$1" in
+  */.lock.*/pid) exit 0 ;;
+esac
+exec "$real_cat" "$@"
+SHIM
+} >"$shim_lostpid/cat"
+chmod +x "$shim_lostpid/cat"
+cp "$shim/mv" "$shim_lostpid/mv"
+cp "$shim/curl" "$shim_lostpid/curl"
 cat >"$tmp/fakephp" <<'SHIM'
 #!/usr/bin/env bash
 # Needs only the core it is handed ($2) to be there. As a reader (SHIM_READER_FLAG set)
@@ -654,7 +723,7 @@ started=$SECONDS
 expect "a lock held by a run that is alive is waited on for the bound and then reported" nonzero "${hermetic[@]}" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S" PAGE_KSES_LOCK_WAIT=2
 waited=$((SECONDS - started))
 said "  and it names the lock and who holds it" "held by pid $$, which is running"
-said "  and it says how to clear it" "rm -rf $C/.lock.$sha_mini"
+pastes "  and the command it prints clears the lock and its reclaim lock, one path each" "$C/.lock.$sha_mini" "$C/.lock.$sha_mini.reclaim"
 if [ "$waited" -lt 30 ]; then ok "  and it did not wait without a bound (${waited}s for 2 polls)"; else bad "  and it did not wait without a bound (${waited}s for 2 polls)"; fi
 if [ -d "$C/.lock.$sha_mini" ] && [ "$(marker_of "$C/$sha_mini")" = "$wrong" ]; then ok "  and it left the lock and the core alone"; else bad "  and it left the lock and the core alone"; fi
 
@@ -671,7 +740,7 @@ mkdir "$C/.lock.$sha_mini" "$C/.lock.$sha_mini.reclaim"
 printf '%s\n' "$dead_pid" >"$C/.lock.$sha_mini/pid"
 expect "a dead owner whose reclaim lock is stuck is reported" nonzero "${hermetic[@]}" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S" PAGE_KSES_LOCK_WAIT=2
 said "  and it says the owner is gone" "left by pid $dead_pid, which is gone"
-said "  and it names the reclaim lock to clear" "$C/.lock.$sha_mini.reclaim"
+pastes "  and the command it prints clears the lock and the reclaim lock, one path each" "$C/.lock.$sha_mini" "$C/.lock.$sha_mini.reclaim"
 
 # The honest case: a lock that is in use and then freed is waited for, not failed on.
 newcache lock-freed
@@ -732,6 +801,61 @@ rc_b=$?
 if [ "$rc_a" -eq 0 ] && [ "$rc_b" -eq 0 ]; then ok "  and both runs pass (exit $rc_a, $rc_b)"; else bad "  and both runs pass (exit $rc_a, $rc_b)"; sed 's/^/     | /' "$tmp/race_liar_a.out" "$tmp/race_liar_b.out" | head -12; fi
 if [ "$(marker_of "$C/$sha_mini")" = "$sha_mini" ] && grep -q 'miniature kses' "$C/$sha_mini/wordpress/wp-includes/kses.php"; then ok "  and the corrupt core was replaced by a verified one"; else bad "  and the corrupt core was replaced by a verified one"; fi
 if only_the_core "$C" "$sha_mini"; then ok "  and no work dir, lock or old copy is left"; else bad "  and no work dir, lock or old copy is left ($(ls -A "$C"))"; fi
+
+# A mkdir that said yes for a lock directory, whose holder then gave it back before this run made
+# its pid file: another run's doing, not a fault in this one. The run waits its turn, takes the
+# lock on the next poll, and passes.
+newcache dir-gone
+corrupt_mini "$C"
+expect "a lock directory that mkdir said yes for and its holder then gave back is waited for, not failed on" 0 "${hermetic[@]}" PATH="$shim_gone:$PATH" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S" PAGE_KSES_LOCK_WAIT=5
+if [ -e "$S/mkdir.said-yes" ]; then ok "  and mkdir did say yes for a directory that was not there"; else bad "  and mkdir did say yes for a directory that was not there"; fi
+if [ "$(marker_of "$C/$sha_mini")" = "$sha_mini" ] && only_the_core "$C" "$sha_mini"; then ok "  and the core is replaced and no lock is left"; else bad "  and the core is replaced and no lock is left ($(ls -A "$C"))"; fi
+
+# A directory that is there, with no pid file in it and none this run can make: a fault of this
+# run's own, so it is reported. It is not removed. That mkdir said yes does not show this run made
+# it, and an empty directory is what another run's looks like in the moment before it makes its pid
+# file. (Root can write into a directory with mode 555, so this case needs a user the mode bits
+# apply to, and says so when it is run as another.)
+newcache dir-unwritable
+corrupt_mini "$C"
+mkdir "$C/.lock.$sha_mini"
+chmod 555 "$C/.lock.$sha_mini"
+if ( : >"$C/.lock.$sha_mini/probe" ) 2>/dev/null; then
+  rm -f "$C/.lock.$sha_mini/probe"
+  bad "setup: this user can create a file in a directory with mode 555 (root?), so a pid file cannot be made to fail to be created"
+else
+  expect "a lock directory its pid file cannot be created in is reported, not waited on" nonzero "${hermetic[@]}" PATH="$shim_liar:$PATH" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S" PAGE_KSES_LOCK_WAIT=5
+  said "  and it says the owner cannot be recorded" "cannot record the owner of the lock $C/.lock.$sha_mini"
+  pastes "  and the command it prints clears that directory" "$C/.lock.$sha_mini"
+  if [ -d "$C/.lock.$sha_mini" ] && [ "$(marker_of "$C/$sha_mini")" = "$wrong" ]; then ok "  and it left the directory where it was, and the core alone"; else bad "  and it left the directory where it was, and the core alone ($(ls -A "$C"))"; fi
+fi
+chmod 755 "$C/.lock.$sha_mini"
+
+# The pid file was made, and what was written to it does not come back (a full disk does that). The
+# run holds nothing it can show it holds, so it reports the directory and leaves it where it is: it
+# neither removes it nor goes on. The command it names must clear that directory and nothing else
+# when pasted, and the cache dir here has a space in its path, which an unquoted command splits.
+newcache "pid lost"
+corrupt_mini "$C"
+expect "a pid that cannot be read back from its file is reported" nonzero "${hermetic[@]}" PATH="$shim_lostpid:$PATH" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S" PAGE_KSES_LOCK_WAIT=5
+said "  and it says the owner cannot be recorded" "cannot record the owner of the lock"
+pastes "  and the command it prints clears that lock and nothing else, in a cache dir with a space in its path" "$C/.lock.$sha_mini"
+if [ -d "$C/.lock.$sha_mini" ] && [ "$(marker_of "$C/$sha_mini")" = "$wrong" ]; then ok "  and it left the lock where it was, and the core alone"; else bad "  and it left the lock where it was, and the core alone ($(ls -A "$C"))"; fi
+
+# The same command when the wait runs out on a lock a live run holds, in a cache dir with a space.
+newcache "lock held live"
+corrupt_mini "$C"
+mkdir "$C/.lock.$sha_mini"
+printf '%s\n' "$$" >"$C/.lock.$sha_mini/pid"
+expect "a lock a live run holds is reported when the wait runs out, in a cache dir with a space in its path" nonzero "${hermetic[@]}" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S" PAGE_KSES_LOCK_WAIT=2
+said "  and it names who holds it" "held by pid $$, which is running"
+pastes "  and the command it prints clears the lock and its reclaim lock, one path each" "$C/.lock.$sha_mini" "$C/.lock.$sha_mini.reclaim"
+
+# Nothing wrong, and a space in the cache path: the lock is taken, the core replaced, the lock given back.
+newcache "cache with a space"
+corrupt_mini "$C"
+expect "a corrupt core is replaced under the lock in a cache dir with a space in its path" 0 "${hermetic[@]}" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S"
+if [ "$(marker_of "$C/$sha_mini")" = "$sha_mini" ] && only_the_core "$C" "$sha_mini"; then ok "  and the core is replaced and no lock is left"; else bad "  and the core is replaced and no lock is left ($(ls -A "$C"))"; fi
 
 # Without ps a lock cannot be judged, and a lock that cannot be judged is not guessed at.
 #
