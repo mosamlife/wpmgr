@@ -77,13 +77,24 @@ func FetchAndValidateLogo(ctx context.Context, client *httpclient.Client, rawURL
 		return nil, fmt.Errorf("logo exceeds %d byte size cap", maxLogoBytes)
 	}
 
-	// Decode-validate: full image.Decode to catch truncated / malformed images.
-	cfg, _, err := image.DecodeConfig(byteReader(data))
+	// The header comes first: it carries the format and the size, and an image
+	// past the size cap is refused here, before a decoder allocates its pixels.
+	cfg, format, err := image.DecodeConfig(byteReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("logo decode config: %w", err)
 	}
+	if format != "png" && format != "jpeg" {
+		return nil, fmt.Errorf("logo format %q not allowed (png or jpeg only)", format)
+	}
 	if cfg.Width > maxLogoDim || cfg.Height > maxLogoDim {
 		return nil, fmt.Errorf("logo dimensions %dx%d exceed %d px cap", cfg.Width, cfg.Height, maxLogoDim)
+	}
+
+	// Then every pixel. A header can be intact on a file whose body was cut
+	// short, and nothing downstream notices until the PDF library reads the
+	// pixels, when it fails the whole report.
+	if _, _, err := image.Decode(byteReader(data)); err != nil {
+		return nil, fmt.Errorf("logo decode: %w", err)
 	}
 
 	return data, nil

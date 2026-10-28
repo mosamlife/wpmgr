@@ -259,17 +259,33 @@ func truncatedPNG(t *testing.T) []byte {
 }
 
 // A panic inside the library is an error to the caller, not a crash of the
-// worker: the worker can then fail the report row.
+// worker: the worker can then fail the report row. Render runs the drawing
+// through recoverRender, so this is the function under test.
+//
+// The panic is the one the library raises on a PNG that stops early (short
+// buffer), reached by registering the image directly instead of through
+// placeLogo, which would drop the logo before anything could fail.
 func TestPDFRenderTurnsAPanicIntoAnError(t *testing.T) {
-	out, err, p := renderCatching(pdfFullFixture(), truncatedPNG(t))
+	cut := truncatedPNG(t)
+	var out []byte
+	var err error
+	var p any
+	func() {
+		defer func() { p = recover() }()
+		out, err = recoverRender(func() ([]byte, error) {
+			f := fpdflib.New("P", "mm", "A4", "")
+			f.RegisterImageOptionsReader("logo", fpdflib.ImageOptions{ImageType: "png"}, bytes.NewReader(cut))
+			return []byte("not reached"), nil
+		})
+	}()
 	if p != nil {
-		t.Fatalf("Render panicked instead of returning an error: %v", p)
+		t.Fatalf("recoverRender let the panic through: %v", p)
 	}
 	if err == nil {
-		t.Fatalf("Render accepted a truncated logo and returned %d bytes", len(out))
+		t.Fatalf("recoverRender returned %d bytes for a drawing that panicked", len(out))
 	}
 	if out != nil {
-		t.Errorf("Render returned bytes alongside an error")
+		t.Errorf("recoverRender returned bytes alongside an error")
 	}
 	if !strings.Contains(err.Error(), "pdf render") {
 		t.Errorf("error %q does not say it came from the PDF render", err)

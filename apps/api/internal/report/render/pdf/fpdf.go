@@ -41,7 +41,15 @@ const (
 // A panic inside the PDF library comes back as an error. Without that, one
 // bad input panics the report job, which skips the worker's own handling of a
 // failed render and leaves the report row unfinished.
-func (r *FpdfRenderer) Render(data reportdata.ReportData, logo []byte) (out []byte, err error) {
+//
+// A logo the library cannot draw does not fail the render: the report comes
+// out without it (see placeLogo).
+func (r *FpdfRenderer) Render(data reportdata.ReportData, logo []byte) ([]byte, error) {
+	return recoverRender(func() ([]byte, error) { return drawReport(data, logo) })
+}
+
+// recoverRender runs draw and returns a panic in it as an error.
+func recoverRender(draw func() ([]byte, error)) (out []byte, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			slog.Error("pdf render panicked",
@@ -50,7 +58,50 @@ func (r *FpdfRenderer) Render(data reportdata.ReportData, logo []byte) (out []by
 			out, err = nil, fmt.Errorf("pdf render: internal error: %v", p)
 		}
 	}()
+	return draw()
+}
 
+// placeLogo draws the logo at the top left of the first page and reports
+// whether it is there.
+//
+// The library reads an image when it is registered, and a logo it cannot take
+// either panics or leaves an error on the document, which fails the whole PDF
+// when the document is written. A logo it cannot draw is dropped instead: the
+// error is cleared, one warning is logged, and the report is drawn without it.
+func placeLogo(f pdfDoc, logo []byte) (placed bool) {
+	if f.Err() {
+		// An error that is not the logo's stays on the document.
+		return false
+	}
+	var cause error
+	defer func() {
+		if p := recover(); p != nil {
+			cause = fmt.Errorf("the library panicked reading the logo: %v", p)
+		}
+		if cause == nil {
+			return
+		}
+		f.ClearError()
+		placed = false
+		slog.Warn("pdf render: the logo cannot be drawn, rendering the report without it",
+			slog.Any("error", cause))
+	}()
+
+	imgOpts := fpdflib.ImageOptions{ImageType: "png"}
+	if len(logo) >= 4 && !(logo[0] == 0x89 && logo[1] == 0x50) {
+		imgOpts.ImageType = "jpg"
+	}
+	f.RegisterImageOptionsReader("logo", imgOpts, bytes.NewReader(logo))
+	f.ImageOptions("logo", marginL, marginT, 40, 0, false, imgOpts, 0, "")
+	if f.Err() {
+		cause = f.Error()
+		return false
+	}
+	return true
+}
+
+// drawReport draws the whole document.
+func drawReport(data reportdata.ReportData, logo []byte) ([]byte, error) {
 	f := pdfDoc{fpdflib.New("P", "mm", "A4", "")}
 	f.SetMargins(marginL, marginT, marginR)
 	f.SetAutoPageBreak(true, 15)
@@ -63,13 +114,7 @@ func (r *FpdfRenderer) Render(data reportdata.ReportData, logo []byte) (out []by
 	// Header
 	// -------------------------------------------------------------------------
 	// Logo (validated bytes only — never hot-link logo_url).
-	if len(logo) > 0 {
-		imgOpts := fpdflib.ImageOptions{ImageType: "png"}
-		if len(logo) >= 4 && !(logo[0] == 0x89 && logo[1] == 0x50) {
-			imgOpts.ImageType = "jpg"
-		}
-		f.RegisterImageOptionsReader("logo", imgOpts, bytes.NewReader(logo))
-		f.ImageOptions("logo", marginL, marginT, 40, 0, false, imgOpts, 0, "")
+	if len(logo) > 0 && placeLogo(f, logo) {
 		f.SetY(marginT + 18)
 	}
 
