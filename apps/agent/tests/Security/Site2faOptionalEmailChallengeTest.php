@@ -237,6 +237,75 @@ final class Site2faOptionalEmailChallengeTest extends TestCase
         $this->assertSame(Site2faModule::SESSION_TYPE_2FA_SETUP, $this->userMeta[903][Site2faModule::META_SESSION]['type'] ?? null);
     }
 
+    // -------------------------------------------------------------------------
+    // A user who must use 2FA is always challenged with an allowed method or
+    // sent to set one up, whatever else they enrolled.
+    // -------------------------------------------------------------------------
+
+    public function test_required_user_whose_enrolled_method_is_not_allowed_is_sent_to_set_up_an_allowed_one(): void
+    {
+        $admin = $this->makeUser(910, 'administrator');
+        (new BackupCodesProvider())->generateAndStore($admin);
+
+        // Backup codes enrolled, but the policy allows only TOTP and email.
+        $this->logIn($this->makeModule(['totp', 'email']), $admin);
+
+        $this->assertSame(['Two-Factor Setup'], $this->screens, 'a required user with no allowed method enrolled is sent to set one up');
+        $this->assertSame(Site2faModule::SESSION_TYPE_2FA_SETUP, $this->userMeta[910][Site2faModule::META_SESSION]['type'] ?? null);
+    }
+
+    public function test_required_user_whose_enrolled_method_is_not_allowed_gets_the_email_challenge_when_totp_is_not_allowed(): void
+    {
+        $admin = $this->makeUser(911, 'administrator');
+        $this->userMeta[911][TotpProvider::META_SECRET] = base64_encode('JBSWY3DPEHPK3PXP');
+
+        // TOTP enrolled, but the policy allows only backup codes (none generated).
+        $this->logIn($this->makeModule(['backup']), $admin);
+
+        $this->assertSame(['Two-Factor Authentication'], $this->screens, 'a required user is still challenged');
+        $this->assertSame(['administrator911@example.com'], $this->mailSent, 'with the email fallback');
+    }
+
+    public function test_required_user_with_an_allowed_method_enrolled_gets_that_method(): void
+    {
+        $admin = $this->makeUser(912, 'administrator');
+        $this->userMeta[912][TotpProvider::META_SECRET] = base64_encode('JBSWY3DPEHPK3PXP');
+
+        $this->logIn($this->makeModule(['totp', 'email']), $admin);
+
+        $this->assertSame(['Two-Factor Authentication'], $this->screens);
+        $this->assertSame([], $this->mailSent, 'the enrolled, allowed TOTP is offered first, so no email is sent');
+        $this->assertSame('2fa', $this->userMeta[912][Site2faModule::META_SESSION]['type'] ?? null, 'a challenge, not setup');
+    }
+
+    public function test_setup_completes_only_with_a_method_the_policy_allows(): void
+    {
+        $admin  = $this->makeUser(913, 'administrator');
+        $module = $this->makeModule(['totp', 'email']);
+        (new BackupCodesProvider())->generateAndStore($admin);
+
+        $authCookie = false;
+        Functions\when('wp_set_auth_cookie')->alias(function () use (&$authCookie) {
+            $authCookie = true;
+        });
+        Functions\when('wp_safe_redirect')->alias(function ($url) {
+            throw new \RuntimeException('marker:redirect');
+        });
+
+        $session = (new \ReflectionMethod($module, 'createSession'))->invoke($module, 913, '/wp-admin/', false, Site2faModule::SESSION_TYPE_2FA_SETUP);
+        $session['setup_step']      = Site2faModule::SETUP_STEP_DONE;
+        $session['grace_remaining'] = false;
+
+        try {
+            (new \ReflectionMethod($module, 'handleSetupSubmit'))->invoke($module, 913, $session, 0, $admin);
+        } catch (\RuntimeException $e) {
+            // A re-rendered screen (login_header marker) or the redirect marker.
+        }
+
+        $this->assertFalse($authCookie, 'setup cannot complete on a method the policy does not allow');
+        $this->assertSame(Site2faModule::SETUP_STEP_INTRO, $this->userMeta[913][Site2faModule::META_SESSION]['setup_step'] ?? null, 'the user is sent back through setup');
+    }
+
     public function test_administrator_keeps_email_as_the_allowed_fallback(): void
     {
         $admin = $this->makeUser(904, 'administrator');

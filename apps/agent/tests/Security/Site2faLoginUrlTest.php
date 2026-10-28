@@ -125,7 +125,7 @@ final class Site2faLoginUrlTest extends TestCase
         Functions\when('__')->alias(fn ($t, $d = '') => $t);
         Functions\when('is_ssl')->justReturn(true);
         Functions\when('admin_url')->justReturn('https://example.test/wp-admin/');
-        Functions\when('wp_login_url')->justReturn('https://example.test/wp-login.php');
+        $this->useSite('https://example.test', 'https://example.test');
         Functions\when('add_query_arg')->alias(fn ($args, $url = '') => $url . '?' . http_build_query($args));
         Functions\when('login_header')->justReturn(null);
         Functions\when('login_footer')->justReturn(null);
@@ -166,6 +166,56 @@ final class Site2faLoginUrlTest extends TestCase
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    /**
+     * The site's public URLs: siteurl (where wp-login.php lives), home (where
+     * a renamed slug lives) and wp_login_url().
+     */
+    private function useSite(string $siteBase, string $homeBase, ?string $loginUrl = null): void
+    {
+        $siteBase = rtrim($siteBase, '/');
+        $homeBase = rtrim($homeBase, '/');
+        Functions\when('site_url')->alias(
+            static fn ($path = '', $scheme = null): string => $siteBase . ($path === '' ? '' : '/' . ltrim((string) $path, '/'))
+        );
+        Functions\when('home_url')->alias(
+            static fn ($path = '', $scheme = null): string => $homeBase . '/' . ltrim((string) $path, '/')
+        );
+        Functions\when('wp_login_url')->justReturn($loginUrl ?? $siteBase . '/wp-login.php');
+    }
+
+    /** RFC 6265 path-match: would a cookie scoped to $cookiePath be sent to $requestPath? */
+    private static function pathMatches(string $cookiePath, string $requestPath): bool
+    {
+        if (!str_starts_with($requestPath, $cookiePath)) {
+            return false;
+        }
+        return $requestPath === $cookiePath
+            || str_ends_with($cookiePath, '/')
+            || $requestPath[strlen($cookiePath)] === '/';
+    }
+
+    private function assertBindCookieReaches(string $action, string $context): void
+    {
+        $path  = (string) parse_url($action, PHP_URL_PATH);
+        $paths = (new \ReflectionMethod(Site2faModule::class, 'bindCookiePaths'))->invoke(null);
+        $sent  = array_filter($paths, static fn (string $cookiePath): bool => self::pathMatches($cookiePath, $path));
+        $this->assertNotSame(
+            [],
+            $sent,
+            $context . ': the bind cookie (paths ' . implode(', ', $paths) . ') must reach the form target path ' . $path
+        );
+    }
+
+    public function test_path_match_helper_can_fail(): void
+    {
+        // Instrument self-check for assertBindCookieReaches().
+        $this->assertFalse(self::pathMatches('/blog/', '/wp-login.php'));
+        $this->assertFalse(self::pathMatches('/my-account/', '/wp-login.php'));
+        $this->assertFalse(self::pathMatches('/blog', '/blogger/x'));
+        $this->assertTrue(self::pathMatches('/blog/', '/blog/wp-login.php'));
+        $this->assertTrue(self::pathMatches('/', '/my-login'));
+    }
 
     private function makeUser(int $id, array $roles = ['administrator']): \WP_User
     {
@@ -444,52 +494,56 @@ final class Site2faLoginUrlTest extends TestCase
     // -------------------------------------------------------------------------
 
     /**
-     * Site layouts: [wp_login_url(), install path prefix, expected origin prefix].
+     * Site layouts: [site URL, home URL, path prefix the backend sees, origin prefix].
      *
-     * @return array<string,array{0:string,1:string,2:string}>
+     * @return array<string,array{0:string,1:string,2:string,3:string}>
      */
     private static function siteLayouts(): array
     {
         return [
-            'root install'           => ['https://example.test/wp-login.php', '', 'https://example.test'],
-            'subdirectory install'   => ['https://example.test/blog/wp-login.php', '/blog', 'https://example.test'],
-            'multisite sub-domain'   => ['https://site2.example.test/wp-login.php', '', 'https://site2.example.test'],
-            'multisite subdirectory' => ['https://example.test/site2/wp-login.php', '/site2', 'https://example.test'],
-            'non-default port'       => ['https://example.test:8443/wp-login.php', '', 'https://example.test:8443'],
+            'root install'             => ['https://example.test', 'https://example.test', '', 'https://example.test'],
+            'subdirectory install'     => ['https://example.test/blog', 'https://example.test/blog', '/blog', 'https://example.test'],
+            'proxy strips /blog'       => ['https://example.test/blog', 'https://example.test/blog', '', 'https://example.test'],
+            'home and site apart'      => ['https://example.test/wp', 'https://example.test', '', 'https://example.test'],
+            'multisite sub-domain'     => ['https://site2.example.test', 'https://site2.example.test', '', 'https://site2.example.test'],
+            'multisite subdirectory'   => ['https://example.test/site2', 'https://example.test/site2', '/site2', 'https://example.test'],
+            'non-default port'         => ['https://example.test:8443', 'https://example.test:8443', '', 'https://example.test:8443'],
         ];
     }
 
     /**
-     * Carried inputs: [REQUEST_URI suffix after the install prefix, Referer suffix or null].
+     * Carried inputs: [REQUEST_URI suffix after the prefix, Referer suffix after the site URL, or null].
      *
      * @return array<string,array{0:string,1:?string}>
      */
     private static function hostileCarriedInputs(): array
     {
         return [
-            'colon and slashes in a query value'   => ['/my-login?next=x://evil.test/', null],
-            'colon in a query key'                 => ['/my-login?x://evil.test=1', null],
-            'encoded colon in the query'           => ['/my-login?next=x%3A%2F%2Fevil.test%2F', null],
+            'colon and slashes in a query value'    => ['/my-login?next=x://evil.test/', null],
+            'colon in a query key'                  => ['/my-login?x://evil.test=1', null],
+            'encoded colon in the query'            => ['/my-login?next=x%3A%2F%2Fevil.test%2F', null],
             'colon and doubled slashes in the path' => ['/a:b//evil.test/my-login', null],
-            'encoded colon in the path'            => ['/my%3Alogin', null],
-            'semicolon before slashes in the path' => ['/a;//evil.test', null],
-            'backslashes and a colon'              => [addslashes('/\\evil.test\\x:y/my-login'), null],
-            'doubled leading slashes and a port'   => ['//evil.test:443/x', null],
-            'colons in the Referer query'          => ['/wp-login.php', '/wp-login.php?a=x://evil.test/&b:c=d&javascript:alert(1)'],
-            'encoded colon in the Referer query'   => ['/wp-login.php', '/wp-login.php?a=x%3A//evil.test/'],
+            'encoded colon in the path'             => ['/my%3Alogin', null],
+            'semicolon before slashes in the path'  => ['/a;//evil.test', null],
+            'backslashes and a colon'               => [addslashes('/\\evil.test\\x:y/my-login'), null],
+            'slash, backslash, slash'               => [addslashes('/\\/evil.test/my-login'), null],
+            'doubled leading slashes and a port'    => ['//evil.test:443/x', null],
+            'dot segments'                          => ['/../%2e%2e/evil.test/x', null],
+            'colons in the Referer query'           => ['/wp-login.php', '/wp-login.php?a=x://evil.test/&b:c=d&javascript:alert(1)'],
+            'encoded colon in the Referer query'    => ['/wp-login.php', '/wp-login.php?a=x%3A//evil.test/'],
         ];
     }
 
     /**
-     * @return array<string,array{0:string,1:string,2:string,3:?string,4:string}>
+     * @return array<string,array{0:string,1:string,2:string,3:string,4:?string}>
      */
     public static function provideLayoutsAndHostileInputs(): array
     {
         $cases = [];
-        foreach (self::siteLayouts() as $layout => [$loginUrl, $prefix, $origin]) {
+        foreach (self::siteLayouts() as $layout => [$siteUrl, $homeUrl, $prefix, $origin]) {
             foreach (self::hostileCarriedInputs() as $input => [$uriSuffix, $refererSuffix]) {
-                $referer = $refererSuffix === null ? null : $origin . $prefix . $refererSuffix;
-                $cases[$layout . ', ' . $input] = [$loginUrl, $prefix . $uriSuffix, $origin, $referer, $prefix];
+                $referer = $refererSuffix === null ? null : $siteUrl . $refererSuffix;
+                $cases[$layout . ', ' . $input] = [$siteUrl, $homeUrl, $prefix . $uriSuffix, $origin, $referer];
             }
         }
         return $cases;
@@ -499,13 +553,13 @@ final class Site2faLoginUrlTest extends TestCase
      * @dataProvider provideLayoutsAndHostileInputs
      */
     public function test_action_is_absolute_on_the_site_origin_whatever_the_request_carries(
-        string $loginUrl,
+        string $siteUrl,
+        string $homeUrl,
         string $requestUri,
         string $origin,
-        ?string $referer,
-        string $prefix
+        ?string $referer
     ): void {
-        Functions\when('wp_login_url')->justReturn($loginUrl);
+        $this->useSite($siteUrl, $homeUrl);
         $_SERVER['HTTP_HOST']   = 'evil.test';
         $_SERVER['REQUEST_URI'] = $requestUri;
         if ($referer !== null) {
@@ -513,12 +567,131 @@ final class Site2faLoginUrlTest extends TestCase
         }
 
         foreach (['challenge', 'setup', 'forced_change'] as $screen) {
-            $this->assertActionIsOnSiteOrigin(
-                $this->formAction($this->loginScreen($screen)),
-                $origin,
-                $screen . ' for ' . $requestUri
-            );
+            $action = $this->formAction($this->loginScreen($screen));
+            $this->assertActionIsOnSiteOrigin($action, $origin, $screen . ' for ' . $requestUri);
+            $this->assertBindCookieReaches($action, $screen . ' for ' . $requestUri);
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // A reverse proxy that strips the public base path
+    // -------------------------------------------------------------------------
+
+    /**
+     * Public site https://example.test/blog behind a proxy that strips /blog:
+     * [REQUEST_URI the backend sees, Referer, expected action].
+     *
+     * @return array<string,array{0:string,1:?string,2:string}>
+     */
+    public static function provideProxiedRequests(): array
+    {
+        return [
+            'core login script'           => ['/wp-login.php', null, 'https://example.test/blog/wp-login.php?action=wpmgr_2fa_verify'],
+            'renamed slug'                => ['/my-login', null, 'https://example.test/blog/my-login?action=wpmgr_2fa_verify'],
+            'slug in the Referer'         => ['/wp-login.php', 'https://example.test/blog/wp-login.php?backend', 'https://example.test/blog/wp-login.php?backend&action=wpmgr_2fa_verify'],
+            'not proxied: core script'    => ['/blog/wp-login.php', null, 'https://example.test/blog/wp-login.php?action=wpmgr_2fa_verify'],
+            'not proxied: renamed slug'   => ['/blog/my-login', null, 'https://example.test/blog/my-login?action=wpmgr_2fa_verify'],
+        ];
+    }
+
+    /**
+     * @dataProvider provideProxiedRequests
+     */
+    public function test_reverse_proxy_that_strips_the_base_path_keeps_the_public_base(string $requestUri, ?string $referer, string $expected): void
+    {
+        $this->useSite('https://example.test/blog', 'https://example.test/blog');
+        $_SERVER['REQUEST_URI'] = $requestUri;
+        if ($referer !== null) {
+            $_SERVER['HTTP_REFERER'] = $referer;
+        }
+
+        $action = $this->formAction($this->loginScreen('challenge'));
+
+        $this->assertSame($expected, $action, 'the form target must keep the public /blog base the proxy strips');
+        $this->assertBindCookieReaches($action, $requestUri);
+    }
+
+    /**
+     * Password step, form, verify: the cookie scope reaches the URL the form
+     * posts to, and the browser that holds it completes the login there.
+     * [site URL, home URL, REQUEST_URI of the password step, on the login screen].
+     *
+     * @return array<string,array{0:string,1:string,2:string,3:bool}>
+     */
+    public static function provideEndToEndLogins(): array
+    {
+        return [
+            'front-end account page'     => ['https://example.test', 'https://example.test', '/my-account/', false],
+            'login via admin-ajax'       => ['https://example.test', 'https://example.test', '/wp-admin/admin-ajax.php', false],
+            'proxy strips /blog, core'   => ['https://example.test/blog', 'https://example.test/blog', '/wp-login.php', true],
+            'proxy strips /blog, slug'   => ['https://example.test/blog', 'https://example.test/blog', '/my-login', true],
+            'home and site apart, core'  => ['https://example.test/wp', 'https://example.test', '/wp/wp-login.php', true],
+            'home and site apart, slug'  => ['https://example.test/wp', 'https://example.test', '/my-login', true],
+        ];
+    }
+
+    /**
+     * @dataProvider provideEndToEndLogins
+     */
+    public function test_password_step_form_and_verify_end_to_end(string $siteUrl, string $homeUrl, string $requestUri, bool $onLoginScreen): void
+    {
+        $this->useSite($siteUrl, $homeUrl);
+        $module = $this->makeModule();
+
+        $this->onLoginScreen       = $onLoginScreen;
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_SERVER['REQUEST_URI']    = $requestUri;
+        $action = $this->formAction($this->loginScreen('challenge', $module));
+
+        $this->assertActionIsOnSiteOrigin($action, 'https://example.test', $requestUri);
+        $this->assertBindCookieReaches($action, $requestUri);
+        if (!$onLoginScreen) {
+            $this->assertSame(rtrim($siteUrl, '/') . '/wp-login.php?action=wpmgr_2fa_verify', $action, 'outside the login screen the target is wp_login_url()');
+        }
+
+        $this->completeChallengeFromTheBoundBrowser($module, (string) parse_url($action, PHP_URL_PATH));
+    }
+
+    /**
+     * Post the challenge the way the browser would after a path-matching bind
+     * cookie: on the login screen, with the session fields and a valid code.
+     */
+    private function completeChallengeFromTheBoundBrowser(Site2faModule $module, string $postedPath): void
+    {
+        $session = $this->userMeta[700][Site2faModule::META_SESSION] ?? null;
+        $this->assertIsArray($session, 'the password step must mint a 2FA session');
+        $token = bin2hex(random_bytes(32));
+        $this->userMeta[700][Site2faModule::META_SESSION]['bind_hash'] = hash('sha256', $token);
+        $_COOKIE[Site2faModule::COOKIE_BIND] = $token;
+
+        $hmac = (new \ReflectionMethod($module, 'computeSessionHmac'))
+            ->invoke($module, 700, $session['id'], $session['created_at'], $session['uuid']);
+        $totp = $this->makeTotp();
+        $code = (new \ReflectionMethod($totp, 'generateCode'))->invoke($totp, self::SECRET, (int) (time() / 30));
+
+        do_action('login_init');
+        $_SERVER['REQUEST_URI'] = $postedPath . '?action=wpmgr_2fa_verify';
+        $_GET  = ['action' => 'wpmgr_2fa_verify'];
+        $_POST = [
+            'wpmgr_2fa_user_id'    => '700',
+            'wpmgr_2fa_session_id' => $session['id'],
+            'wpmgr_2fa_token'      => $hmac,
+            'wpmgr_2fa_provider'   => 'totp',
+            'wpmgr_totp_code'      => $code,
+        ];
+
+        $redirect = null;
+        try {
+            $module->maybeResumeInterstitial();
+        } catch (\RuntimeException $e) {
+            if (!str_starts_with($e->getMessage(), 'marker:redirect:')) {
+                throw $e;
+            }
+            $redirect = substr($e->getMessage(), strlen('marker:redirect:'));
+        }
+
+        $this->assertSame('https://example.test/wp-admin/', $redirect, 'the login_init handler must complete the login');
+        $this->assertTrue($this->authCookieIssued);
     }
 
     public function test_carried_values_are_percent_encoded(): void
@@ -545,7 +718,9 @@ final class Site2faLoginUrlTest extends TestCase
         return [
             'network-path reference'  => ['//evil.test/my-login', 'https://example.test/evil.test/my-login?action=wpmgr_2fa_verify'],
             'three slashes'           => ['///evil.test/my-login', 'https://example.test/evil.test/my-login?action=wpmgr_2fa_verify'],
-            'backslash after slash'   => [addslashes('/\\evil.test/my-login'), 'https://example.test/evil.test/my-login?action=wpmgr_2fa_verify'],
+            // "/\/": the sanitizer deletes the backslash and leaves "//", so
+            // only the slash collapse yields one slash here.
+            'slash, backslash, slash' => [addslashes('/\\/evil.test/my-login'), 'https://example.test/evil.test/my-login?action=wpmgr_2fa_verify'],
             'tab between the slashes' => ["/\t/evil.test/my-login", 'https://example.test/evil.test/my-login?action=wpmgr_2fa_verify'],
             'absolute-form target'    => ['https://evil.test/my-login', 'https://example.test/my-login?action=wpmgr_2fa_verify'],
             'fragment'                => ['/my-login?x=1#frag', 'https://example.test/my-login?x=1&action=wpmgr_2fa_verify'],
@@ -587,40 +762,7 @@ final class Site2faLoginUrlTest extends TestCase
         );
 
         // The browser posts the challenge to that URL: the login screen, login_init.
-        $session = $this->userMeta[700][Site2faModule::META_SESSION] ?? null;
-        $this->assertIsArray($session, 'the front-end password step must mint a 2FA session');
-        $token = bin2hex(random_bytes(32));
-        $this->userMeta[700][Site2faModule::META_SESSION]['bind_hash'] = hash('sha256', $token);
-        $_COOKIE[Site2faModule::COOKIE_BIND] = $token;
-
-        $hmac = (new \ReflectionMethod($module, 'computeSessionHmac'))
-            ->invoke($module, 700, $session['id'], $session['created_at'], $session['uuid']);
-        $totp = $this->makeTotp();
-        $code = (new \ReflectionMethod($totp, 'generateCode'))->invoke($totp, self::SECRET, (int) (time() / 30));
-
-        do_action('login_init');
-        $_SERVER['REQUEST_URI'] = '/wp-login.php?action=wpmgr_2fa_verify';
-        $_GET  = ['action' => 'wpmgr_2fa_verify'];
-        $_POST = [
-            'wpmgr_2fa_user_id'    => '700',
-            'wpmgr_2fa_session_id' => $session['id'],
-            'wpmgr_2fa_token'      => $hmac,
-            'wpmgr_2fa_provider'   => 'totp',
-            'wpmgr_totp_code'      => $code,
-        ];
-
-        $redirect = null;
-        try {
-            $module->maybeResumeInterstitial();
-        } catch (\RuntimeException $e) {
-            if (!str_starts_with($e->getMessage(), 'marker:redirect:')) {
-                throw $e;
-            }
-            $redirect = substr($e->getMessage(), strlen('marker:redirect:'));
-        }
-
-        $this->assertSame('https://example.test/wp-admin/', $redirect, 'the login_init handler must complete the login');
-        $this->assertTrue($this->authCookieIssued);
+        $this->completeChallengeFromTheBoundBrowser($module, '/wp-login.php');
     }
 
     // -------------------------------------------------------------------------
@@ -641,6 +783,19 @@ final class Site2faLoginUrlTest extends TestCase
 
         $legacy = (new \ReflectionMethod(Site2faModule::class, 'loginPath'))->invoke($this->makeModule());
         $this->assertSame('/wp-login.php', $legacy, 'the path earlier releases used, so writeBindCookie() can expire it');
+    }
+
+    /**
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
+    public function test_bind_cookie_paths_follow_the_public_urls_without_the_constants(): void
+    {
+        $this->assertFalse(defined('COOKIEPATH'), 'sanity: a fresh process has no COOKIEPATH');
+        $this->useSite('https://example.test/blog/wp', 'https://example.test/blog');
+
+        $paths = (new \ReflectionMethod(Site2faModule::class, 'bindCookiePaths'))->invoke(null);
+        $this->assertSame(['/blog/', '/blog/wp/'], $paths, 'the public home and site paths, as WordPress derives COOKIEPATH and SITECOOKIEPATH');
     }
 
     /**
