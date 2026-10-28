@@ -123,7 +123,7 @@ final class ServicePrincipal
         unset($password);
         if (self::isPrincipalUser($user)
             || (is_string($username) && $username !== '' && strtolower($username) === self::USER_LOGIN)) {
-            return new \WP_Error('wpmgr_service_principal', 'This account cannot sign in.');
+            return new \WP_Error('wpmgr_service_principal', esc_html__('This account cannot sign in.', 'wpmgr-agent'));
         }
 
         return $user;
@@ -140,7 +140,7 @@ final class ServicePrincipal
     {
         unset($password);
         if (self::isPrincipalUser($user)) {
-            return new \WP_Error('wpmgr_service_principal', 'This account cannot sign in.');
+            return new \WP_Error('wpmgr_service_principal', esc_html__('This account cannot sign in.', 'wpmgr-agent'));
         }
 
         return $user;
