@@ -56,8 +56,8 @@ final class CacheWriter
 
     /**
      * The largest chunk the capture buffer is opened with: 4 MB. A request with
-     * at least 32 MB of memory left, or none to count (memory_limit -1), gets
-     * it. See {@see chunkBytes()}.
+     * 32 MB or more of memory left, or with memory_limit -1, gets it. See
+     * {@see chunkBytes()}.
      */
     public const MAX_CHUNK_BYTES = 4194304;
 
@@ -202,7 +202,7 @@ final class CacheWriter
     /**
      * memory_limit in bytes, read the way WordPress reads it
      * (wp_convert_hr_to_bytes(): "128M", "1G", a plain byte count, "-1"). 0 when
-     * it cannot be read, which leaves no memory to count and so the smallest
+     * it cannot be read, which counts as no memory left and gives the smallest
      * chunk.
      *
      * @return int
