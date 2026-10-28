@@ -132,6 +132,7 @@ use WPMgr\Agent\Support\LoginProtection;
 use WPMgr\Agent\Support\LongRunningJob;
 use WPMgr\Agent\Support\MuPluginInstaller;
 use WPMgr\Agent\Support\SnapshotManager;
+use WPMgr\Agent\Support\TextDomain;
 use WPMgr\Agent\Support\UpdateChecker;
 use WPMgr\Agent\Support\UpdateInFlight;
 use WPMgr\Agent\Support\UpdateWatchdogMarker;
@@ -584,6 +585,11 @@ final class Plugin
      */
     private function registerHooks(): void
     {
+        // Load this plugin's own translation catalogues from languages/ on
+        // `init`. A no-op in the wp.org build, where WordPress loads the
+        // language packs for the plugin's slug itself (see TextDomain).
+        TextDomain::register();
+
         // Schema migration runner: WP does NOT run register_activation_hook on
         // a same-version re-upload, which previously left the M5.5 autologin
         // replay table missing on existing installs that re-uploaded the new
