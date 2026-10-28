@@ -709,7 +709,7 @@ final class QrEncoder
     }
 
     /**
-     * Mask evaluation penalty (the four rules of ISO/IEC 18004 section 7.8.3).
+     * Mask evaluation penalty: the four scoring rules of ISO/IEC 18004; lower is better.
      *
      * @param array<int, array<int, int>> $m
      * @return int
