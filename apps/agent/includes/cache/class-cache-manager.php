@@ -83,6 +83,15 @@ final class CacheManager
     private bool $bufferOpen = false;
 
     /**
+     * The request URI as it stood when the hooks were registered: at plugin
+     * load, ahead of every plugins_loaded callback and ahead of the slashes
+     * WordPress adds to the superglobals. Null until then. It decides only
+     * whether a key is worked out for a request the drop-in handed none over
+     * (see {@see storeKey()}).
+     */
+    private ?string $uriAtLoad = null;
+
+    /**
      * @param WpCacheConstant|null $wpCache  WP_CACHE editor.
      * @param DropinInstaller|null $dropin   Drop-in installer.
      * @param HtaccessManager|null $htaccess .htaccess manager.
@@ -109,6 +118,12 @@ final class CacheManager
      */
     public function registerHooks(): void
     {
+        // The request path as it arrived, read before anything else here and
+        // before another plugin's plugins_loaded callback can change it. The
+        // first read stands.
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- read before WordPress adds slashes to the superglobals (it does so after plugins_loaded), so there are none to remove; only compared with the unslashed value when the buffer opens, never output, stored or put in a query
+        $this->uriAtLoad ??= isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '/';
+
         $config = $this->config();
 
         // The role cookie + refresh cron schedule are armed regardless so a
@@ -167,8 +182,9 @@ final class CacheManager
      * The writer is handed the key the page is stored under, fixed now, before
      * any other plugin's init callback runs (see {@see storeKey()}): the key the
      * drop-in chose, or the key its rule gives when the drop-in did not run, or
-     * none, in which case nothing is stored. The request URI captured here only
-     * feeds the URL rules (Bypass URLs and the never-cached paths).
+     * none, in which case nothing is stored (the rule declines the request, or
+     * its path changed after this plugin loaded). The request URI captured here
+     * only feeds the URL rules (Bypass URLs and the never-cached paths).
      *
      * @return void
      */
@@ -204,6 +220,10 @@ final class CacheManager
      * rule gives for the request as it stands now (see CacheKey::forRequest()),
      * which is the file the web-server rules look a stored page up by; the rule
      * declines the same requests the drop-in does, and then nothing is stored.
+     * Nothing is stored either when the request path is no longer the one this
+     * plugin loaded with: the drop-in read the path as it arrived, ahead of
+     * every plugin, so a key worked out from a changed path is not the file the
+     * request is served from.
      *
      * @return string|null
      */
@@ -213,15 +233,19 @@ final class CacheManager
             $handed = constant(CacheWriter::KEY_CONSTANT);
             return is_string($handed) ? $handed : '';
         }
-        return CacheKey::forRequest(self::arrivedRequest(), $this->config());
+        $arrived = self::arrivedRequest();
+        if ($this->uriAtLoad !== null && $this->uriAtLoad !== $arrived['uri']) {
+            return null;
+        }
+        return CacheKey::forRequest($arrived, $this->config());
     }
 
     /**
      * The request as the drop-in read it, for working out the key it would have
-     * handed over. WordPress adds slashes to the superglobals before any plugin
-     * loads and the drop-in runs ahead of that, so the slashes come off again
-     * and nothing else is done to a value: the key is a function of exactly what
-     * the drop-in read. Nothing here is output, stored or put in a query; the key
+     * handed over. WordPress adds slashes to the superglobals once the plugins
+     * have loaded and the drop-in runs ahead of all of that, so the slashes come
+     * off again and nothing else is done to a value: the key is a function of
+     * exactly what the drop-in read. Nothing here is output, stored or put in a query; the key
      * function validates every part of it.
      *
      * @return array{uri:string,host:string,user_agent:string,cookies:array<mixed>,query:array<mixed>}

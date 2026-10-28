@@ -411,6 +411,105 @@ final class CachePrefixedHomepageTest extends TestCase
     }
 
     /**
+     * Without a key from the drop-in, the key is worked out from the request
+     * path when the buffer opens. A path that is no longer the one the plugin
+     * loaded with (a language plugin that strips its prefix on plugins_loaded,
+     * say) is not the path the drop-in and the web-server rules look a page up
+     * by, so nothing is stored for the request, under the new path's key or any
+     * other. The visitor still receives the page.
+     *
+     * @dataProvider provide_paths_changed_after_the_plugin_loaded
+     *
+     * @param string $loaded Request URI when the plugin loaded.
+     * @param string $later  Request URI when the buffer opens.
+     */
+    public function test_without_a_dropin_key_a_uri_changed_after_the_plugin_loaded_stores_nothing(string $loaded, string $later): void
+    {
+        $manager = $this->enabledManager();
+        $_SERVER['REQUEST_URI'] = $loaded;
+        $manager->registerHooks();          // the plugin loads
+        $_SERVER['REQUEST_URI'] = $later;   // plugins_loaded: another plugin changes the path
+
+        $visitor = $this->renderThroughCaptureBuffer($manager, static function (): void {
+            echo self::HTML_IT;
+        });
+
+        $this->assertSame(self::HTML_IT, $visitor, 'the visitor still receives the page');
+        $this->assertSame([], $this->storedPages(), "$loaded changed to $later must store nothing, not even under the key of $later");
+    }
+
+    /**
+     * @return array<string,array{0:string,1:string}>
+     */
+    public static function provide_paths_changed_after_the_plugin_loaded(): array
+    {
+        return [
+            'prefix stripped'      => ['/en/', '/'],
+            'prefix replaced'      => ['/en/', '/de/'],
+            'trailing slash added' => ['/en', '/en/'],
+        ];
+    }
+
+    /**
+     * The same request with its path left alone is stored under the key the
+     * rule gives. WordPress adds slashes to the superglobals once the plugins
+     * have loaded; that is not a change of path, including for a character it
+     * slashes.
+     *
+     * @dataProvider provide_paths_left_alone
+     *
+     * @param string               $uri Request URI as the browser sends it.
+     * @param array<string,string> $get $_GET for it.
+     * @param string               $key Key the drop-in's rule gives.
+     */
+    public function test_without_a_dropin_key_an_unchanged_uri_is_stored_under_the_derived_key(string $uri, array $get, string $key): void
+    {
+        $manager = $this->enabledManager();
+        $_SERVER['REQUEST_URI'] = $uri;
+        $_GET                   = $get;
+        $manager->registerHooks();                          // the plugin loads
+        $_SERVER['REQUEST_URI'] = addslashes($uri);         // once the plugins have loaded, WordPress slashes the superglobals
+
+        $visitor = $this->renderThroughCaptureBuffer($manager, static function (): void {
+            echo self::HTML_IT;
+        });
+
+        $this->assertSame(self::HTML_IT, $visitor, 'the visitor still receives the page');
+        $this->assertSame([$key], $this->storedPages(), "$uri must be stored under the derived key");
+    }
+
+    /**
+     * @return array<string,array{0:string,1:array<string,string>,2:string}>
+     */
+    public static function provide_paths_left_alone(): array
+    {
+        return [
+            'prefixed homepage'       => ['/en/', [], 'example.com/en/index.html.gz'],
+            'apostrophe in the query' => ["/about/?utm_source=it's", ['utm_source' => "it's"], 'example.com/about/index.html.gz'],
+        ];
+    }
+
+    /**
+     * A key from the drop-in is the file it serves the request from, whatever
+     * path the plugin loaded with: the path captured at load plays no part.
+     */
+    public function test_a_key_from_the_dropin_does_not_depend_on_the_path_the_plugin_loaded_with(): void
+    {
+        $manager = $this->enabledManager();
+        $this->dropinChose('example.com/en/index.html.gz'); // the drop-in ran first and saw /en/
+        $_SERVER['REQUEST_URI'] = '/en/';
+        $manager->registerHooks();                          // the plugin loads
+        $_SERVER['REQUEST_URI'] = '/';                      // plugins_loaded: the prefix is stripped
+
+        $visitor = $this->renderThroughCaptureBuffer($manager, static function (): void {
+            echo self::HTML_IT;
+        });
+
+        $this->assertSame(self::HTML_IT, $visitor, 'the visitor still receives the page');
+        $this->assertSame(['example.com/en/index.html.gz'], $this->storedPages(), 'the drop-in\'s key stands even though the path changed after the plugin loaded');
+    }
+
+    /**
      * The path the cache keys on is the one the request ARRIVED with. A plugin
      * that rewrites $_SERVER['REQUEST_URI'] while the page is built (to hand
      * WordPress a prefix-less URL, say) must not move the page into another
