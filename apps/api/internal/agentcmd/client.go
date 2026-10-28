@@ -1060,6 +1060,31 @@ func (c *Client) SendTestEmail(ctx context.Context, siteID uuid.UUID, siteURL st
 	return out, nil
 }
 
+// ClearEmailConfig sends the signed `clear_email_config` command, asking the
+// site's agent to remove its stored email settings, the email secret and every
+// connection secret, so wp_mail() goes back to WordPress's own mailer (GH #968).
+// siteID is bound into the JWT's aud claim.
+//
+// It succeeds only when the agent reports cleared=true. The agent answers 200
+// whatever the outcome, so an answer with cleared=false is returned as an error
+// wrapping ErrEmailConfigNotCleared, carrying the agent's detail, together with
+// the decoded result. An agent too old to know the command answers 404
+// wpmgr_unknown_command; that error satisfies IsUnknownCommand.
+func (c *Client) ClearEmailConfig(ctx context.Context, siteID uuid.UUID, siteURL string) (ClearEmailConfigResult, error) {
+	var out ClearEmailConfigResult
+	if err := c.post(ctx, siteID, siteURL, ClearEmailCommand, ClearEmailConfigRequest{}, &out); err != nil {
+		return ClearEmailConfigResult{}, err
+	}
+	if !out.Cleared {
+		detail := out.Detail
+		if detail == "" {
+			detail = "no detail given"
+		}
+		return out, fmt.Errorf("%w: %s", ErrEmailConfigNotCleared, detail)
+	}
+	return out, nil
+}
+
 // Probe is a post-update site health probe over the SSRF-hardened client. It
 // fetches the given URL with a short timeout and reports the HTTP status, and
 // whether a successful HTML response carries WordPress's own error screen,

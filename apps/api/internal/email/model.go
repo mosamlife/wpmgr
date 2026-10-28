@@ -189,7 +189,12 @@ type Connection struct {
 // ConnectionUpsertInput carries fields for a connection create-or-update.
 // SecretRaw is the plaintext secret; nil preserves the existing ciphertext.
 type ConnectionUpsertInput struct {
-	TenantID      uuid.UUID
+	TenantID uuid.UUID
+	// SiteID is the site whose route resolved ConfigID. When set, the write
+	// runs under the site's email lock and only while the site still resolves
+	// to ConfigID, so a removal never cascades away a connection saved after
+	// it read the row (GH #968).
+	SiteID        *uuid.UUID
 	ConfigID      uuid.UUID
 	ConnectionKey string
 	Provider      string

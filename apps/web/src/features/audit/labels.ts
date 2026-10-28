@@ -104,6 +104,7 @@ const ACTION_LABELS: Record<string, string> = {
 
   // Email
   "site.email.config.updated": "Updated email settings",
+  "site.email.config.reset": "Removed email provider",
   "site.email.log.resent": "Resent email",
   "site.email.log.deleted": "Deleted email log entries",
   "site.email.suppression.added": "Added email suppression",
@@ -385,6 +386,10 @@ const WRITE_OVERRIDES = new Set<string>([
   "site.db.table.action",
   "site.db.search.replace",
   "site.db.snapshot",
+  // "reset" is not a write stem, and this deletes a site's email credential and
+  // changes where its mail goes (GH #968). Left to the stem heuristic it would
+  // read as the quiet default and could be collapsed away with the reads.
+  "site.email.config.reset",
   // "dispatch" has no write-shaped stem, but this is the moment WPMgr commits
   // to sending an approved AI cache clear to the site's agent (S2.7).
   "assistant.request.dispatched",
