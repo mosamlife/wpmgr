@@ -16,7 +16,9 @@ import (
 // SiteEmailLockKey namespaces the per-site lock that excludes, from each
 // other, every operation that sends a site's email config to its agent or
 // removes it (GH #968): the removal, a save's push, the send-test pre-sync,
-// Sync to site, the organisation default's propagation, and a connection save.
+// Sync to site, and a connection save. PropagateOrgConfig does not take it:
+// it sends only the organisation default, and only to sites with no row of
+// their own.
 // It is taken as pg_try_advisory_lock(hashtext(key), hashtext(site id)) on one
 // pinned connection, so it excludes across every API instance.
 //
