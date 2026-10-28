@@ -109,6 +109,9 @@ type GeneratedReport struct {
 	PDFBlobKey  string
 	Error       string
 	CreatedAt   time.Time
+	// UpdatedAt is when anything last touched the row. A job touches it each
+	// time an attempt starts. Zero when the source did not carry it.
+	UpdatedAt   time.Time
 	CompletedAt *time.Time
 }
 

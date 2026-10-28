@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -43,9 +44,24 @@ type GenerateArgs struct {
 // Kind implements river.JobArgs.
 func (GenerateArgs) Kind() string { return "report_generate" }
 
-// InsertOpts sets MaxAttempts=3 on the default queue.
+const (
+	// generateJobTimeout is how long one attempt of a report job may run.
+	generateJobTimeout = 2 * time.Minute
+	// generateMaxAttempts is how many times River runs a report job.
+	generateMaxAttempts = 3
+	// staleReportAfter is how long a pending or generating report row may go
+	// untouched before the job behind it is taken to be dead: every attempt
+	// has had its whole timeout. Each attempt touches the row when it starts,
+	// so a live job is never idle for this long.
+	staleReportAfter = generateJobTimeout * generateMaxAttempts
+	// failReportTimeout bounds the update that marks a report failed, which
+	// runs after the attempt's own context may be done.
+	failReportTimeout = 15 * time.Second
+)
+
+// InsertOpts sets MaxAttempts=generateMaxAttempts on the default queue.
 func (GenerateArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{MaxAttempts: 3}
+	return river.InsertOpts{MaxAttempts: generateMaxAttempts}
 }
 
 // GenerateWorker renders a single report to HTML + PDF, stores blobs, and
@@ -65,7 +81,7 @@ type GenerateWorker struct {
 
 // Timeout is the per-attempt River worker timeout.
 func (w *GenerateWorker) Timeout(_ *river.Job[GenerateArgs]) time.Duration {
-	return 2 * time.Minute
+	return generateJobTimeout
 }
 
 // NewGenerateWorker constructs the generate worker.
@@ -92,20 +108,53 @@ func NewGenerateWorker(
 	}
 }
 
-// Work generates the report.
-func (w *GenerateWorker) Work(ctx context.Context, job *river.Job[GenerateArgs]) error {
+// Work generates the report. Whatever stops the final attempt from completing
+// the report, an error or a panic, it ends with the row marked failed: a row
+// left 'generating' would make GenerateNow refuse every later request for the
+// client. An earlier attempt that fails or panics just returns the error, and
+// River runs the next attempt.
+func (w *GenerateWorker) Work(ctx context.Context, job *river.Job[GenerateArgs]) (err error) {
 	args := job.Args
 	isFinal := job.Attempt >= job.MaxAttempts
 
+	defer func() {
+		if p := recover(); p != nil {
+			w.logger.Error("report generate: panic",
+				slog.String("report_id", args.ReportID.String()),
+				slog.Any("panic", p),
+				slog.String("stack", string(debug.Stack())))
+			err = fmt.Errorf("report generate: panic: %v", p)
+		}
+		if err != nil && isFinal {
+			w.failReport(ctx, args, err)
+		}
+	}()
+
+	return w.generate(ctx, args)
+}
+
+// failReport marks the report failed and tells the dashboard. It runs when an
+// attempt's own context may already be done (the job timed out), so it works
+// on a context of its own: with the finished one the update would fail and the
+// row would stay 'generating'.
+func (w *GenerateWorker) failReport(ctx context.Context, args GenerateArgs, cause error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), failReportTimeout)
+	defer cancel()
+	if _, err := w.repo.FailReport(ctx, args.TenantID, args.ReportID, cause.Error()); err != nil {
+		w.logger.Error("report generate: mark report failed failed",
+			slog.String("report_id", args.ReportID.String()),
+			slog.Any("error", err))
+	}
+	publishReportCompleted(ctx, w.svc.publisher, args.TenantID, args.ClientID, args.ReportID, StatusFailed)
+}
+
+// generate runs one attempt. Work decides what a failure does to the row.
+func (w *GenerateWorker) generate(ctx context.Context, args GenerateArgs) error {
 	// Mark as generating.
 	if _, err := w.repo.MarkGenerating(ctx, args.TenantID, args.ReportID); err != nil {
 		w.logger.Error("report generate: mark generating failed",
 			slog.String("report_id", args.ReportID.String()),
 			slog.Any("error", err))
-		if isFinal {
-			_, _ = w.repo.FailReport(ctx, args.TenantID, args.ReportID, err.Error())
-			publishReportCompleted(ctx, w.svc.publisher, args.TenantID, args.ClientID, args.ReportID, StatusFailed)
-		}
 		return err
 	}
 
@@ -118,10 +167,6 @@ func (w *GenerateWorker) Work(ctx context.Context, job *river.Job[GenerateArgs])
 		w.logger.Error("report generate: read report settings failed",
 			slog.String("report_id", args.ReportID.String()),
 			slog.Any("error", err))
-		if isFinal {
-			_, _ = w.repo.FailReport(ctx, args.TenantID, args.ReportID, err.Error())
-			publishReportCompleted(ctx, w.svc.publisher, args.TenantID, args.ClientID, args.ReportID, StatusFailed)
-		}
 		return err
 	}
 
@@ -148,20 +193,12 @@ func (w *GenerateWorker) Work(ctx context.Context, job *river.Job[GenerateArgs])
 	}
 	rd, err := BuildReportData(ctx, w.sources, buildIn)
 	if err != nil {
-		if isFinal {
-			_, _ = w.repo.FailReport(ctx, args.TenantID, args.ReportID, err.Error())
-			publishReportCompleted(ctx, w.svc.publisher, args.TenantID, args.ClientID, args.ReportID, StatusFailed)
-		}
 		return err
 	}
 
 	// Snapshot.
 	snapshot, err := json.Marshal(rd)
 	if err != nil {
-		if isFinal {
-			_, _ = w.repo.FailReport(ctx, args.TenantID, args.ReportID, err.Error())
-			publishReportCompleted(ctx, w.svc.publisher, args.TenantID, args.ClientID, args.ReportID, StatusFailed)
-		}
 		return fmt.Errorf("report generate: marshal snapshot: %w", err)
 	}
 
@@ -188,20 +225,12 @@ func (w *GenerateWorker) Work(ctx context.Context, job *river.Job[GenerateArgs])
 	// Render HTML.
 	htmlBytes, err := w.htmlRenderer.Render(rd, logoBytes)
 	if err != nil {
-		if isFinal {
-			_, _ = w.repo.FailReport(ctx, args.TenantID, args.ReportID, err.Error())
-			publishReportCompleted(ctx, w.svc.publisher, args.TenantID, args.ClientID, args.ReportID, StatusFailed)
-		}
 		return fmt.Errorf("report generate: render html: %w", err)
 	}
 
 	// Render PDF.
 	pdfBytes, err := w.pdfRenderer.Render(rd, logoBytes)
 	if err != nil {
-		if isFinal {
-			_, _ = w.repo.FailReport(ctx, args.TenantID, args.ReportID, err.Error())
-			publishReportCompleted(ctx, w.svc.publisher, args.TenantID, args.ClientID, args.ReportID, StatusFailed)
-		}
 		return fmt.Errorf("report generate: render pdf: %w", err)
 	}
 
@@ -211,27 +240,15 @@ func (w *GenerateWorker) Work(ctx context.Context, job *river.Job[GenerateArgs])
 
 	if w.svc.blob != nil {
 		if err := w.svc.blob.Put(ctx, htmlKey, bytes.NewReader(htmlBytes), int64(len(htmlBytes))); err != nil {
-			if isFinal {
-				_, _ = w.repo.FailReport(ctx, args.TenantID, args.ReportID, err.Error())
-				publishReportCompleted(ctx, w.svc.publisher, args.TenantID, args.ClientID, args.ReportID, StatusFailed)
-			}
 			return fmt.Errorf("report generate: upload html: %w", err)
 		}
 		if err := w.svc.blob.Put(ctx, pdfKey, bytes.NewReader(pdfBytes), int64(len(pdfBytes))); err != nil {
-			if isFinal {
-				_, _ = w.repo.FailReport(ctx, args.TenantID, args.ReportID, err.Error())
-				publishReportCompleted(ctx, w.svc.publisher, args.TenantID, args.ClientID, args.ReportID, StatusFailed)
-			}
 			return fmt.Errorf("report generate: upload pdf: %w", err)
 		}
 	}
 
 	// Complete the report row.
 	if _, err := w.repo.CompleteReport(ctx, args.TenantID, args.ReportID, htmlKey, pdfKey, snapshot); err != nil {
-		if isFinal {
-			_, _ = w.repo.FailReport(ctx, args.TenantID, args.ReportID, err.Error())
-			publishReportCompleted(ctx, w.svc.publisher, args.TenantID, args.ClientID, args.ReportID, StatusFailed)
-		}
 		return err
 	}
 

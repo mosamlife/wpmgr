@@ -171,9 +171,16 @@ func (s *Service) GenerateNow(ctx context.Context, tenantID, clientID uuid.UUID,
 
 	// FIX-4 abuse guard: return the existing in-flight report rather than
 	// creating a new one. This bounds per-client queue depth to 1 on-demand job.
+	//
+	// A row nothing has touched for staleReportAfter belongs to a job that died
+	// without finishing it. It is marked failed and the request goes through;
+	// returning it would refuse "Generate now" for this client for ever.
 	existing, found, err := s.repo.GetActiveReport(ctx, tenantID, clientID)
 	if err == nil && found {
-		return existing, nil
+		if !reportIsStale(existing, now) {
+			return existing, nil
+		}
+		_, _ = s.repo.FailReport(ctx, tenantID, existing.ID, "report generation did not finish")
 	}
 
 	rpt, err := s.repo.CreateReport(ctx, CreateReportInput{
@@ -204,6 +211,13 @@ func (s *Service) GenerateNow(ctx context.Context, tenantID, clientID uuid.UUID,
 		}
 	}
 	return rpt, nil
+}
+
+// reportIsStale reports whether the job behind an in-flight report row is dead:
+// the row has not been touched for staleReportAfter. A row without an update
+// time proves nothing and is not stale.
+func reportIsStale(r GeneratedReport, now time.Time) bool {
+	return !r.UpdatedAt.IsZero() && now.Sub(r.UpdatedAt) > staleReportAfter
 }
 
 // ---------------------------------------------------------------------------

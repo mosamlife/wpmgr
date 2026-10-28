@@ -423,7 +423,8 @@ func (r *pgRepo) GetClientInfo(ctx context.Context, tenantID, clientID uuid.UUID
 // keyset shape.
 const getActiveReportQuery = `
 SELECT id, tenant_id, client_id, schedule_id, period_start, period_end,
-       status, html_blob_key, pdf_blob_key, error, created_at, completed_at
+       status, html_blob_key, pdf_blob_key, error, created_at, updated_at,
+       completed_at
 FROM generated_reports
 WHERE tenant_id = $1
   AND client_id = $2
@@ -458,6 +459,7 @@ func (r *pgRepo) GetActiveReport(ctx context.Context, tenantID, clientID uuid.UU
 				&pdfKey,
 				&errMsg,
 				&out.CreatedAt,
+				&out.UpdatedAt,
 				&completedAt,
 			); scanErr != nil {
 				return domain.Internal("report_active_scan_failed", "failed to scan active report").WithCause(scanErr)
@@ -569,6 +571,7 @@ func rowToReport(row sqlc.GeneratedReport) GeneratedReport {
 		PDFBlobKey:  row.PdfBlobKey,
 		Error:       row.Error,
 		CreatedAt:   row.CreatedAt,
+		UpdatedAt:   row.UpdatedAt,
 	}
 	if row.ScheduleID.Valid {
 		id := uuid.UUID(row.ScheduleID.Bytes)
