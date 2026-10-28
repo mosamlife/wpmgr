@@ -355,6 +355,12 @@ if ($wpmgr_host === '') {
 // No WP sanitizers available at drop-in load time.
 // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- advanced-cache drop-in runs pre-WP; wp_unslash/sanitize_* unavailable; control chars stripped + length capped before use as cache key
 $wpmgr_uri_raw = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '/';
+// The block below is duplicated verbatim in CacheKey::forRequest(), which works
+// the same key out for a site where this drop-in does not run. This file runs
+// before WordPress loads and cannot call that class; the two copies are
+// byte-identical once dedented, and tests/CacheNormalizeParityTest.php keeps
+// them so.
+// WPMGR-REQUEST-URI-SHARED BEGIN
 $wpmgr_uri     = (string) preg_replace('/[\x00-\x1F\x7F]/', '', $wpmgr_uri_raw);
 // A URI longer than the cap is looked up by its first 2048 bytes. Such a
 // request may still be answered from the page stored for that prefix, but no
@@ -371,6 +377,7 @@ $wpmgr_qpos = strpos($wpmgr_uri, '?');
 if ($wpmgr_qpos !== false) {
     $wpmgr_uri = substr($wpmgr_uri, 0, $wpmgr_qpos);
 }
+// WPMGR-REQUEST-URI-SHARED END
 $wpmgr_path = strtolower(rawurldecode($wpmgr_uri));
 
 // The traversal-containment step below is duplicated verbatim in

@@ -15,8 +15,15 @@
  *   stats()         — page count + bytes for the heartbeat.
  *
  * The config is stored as a single wp-option (autoload off). On the request path
- * the manager reads it cheaply once and, if caching is enabled, opens the output
- * buffer as early as template_redirect.
+ * the manager reads it cheaply once and, if caching is enabled, binds startBuffer()
+ * to init at the lowest priority, so the capture buffer opens ahead of every
+ * other plugin's init callback and is the outer buffer: it receives the page as
+ * the visitor does, after any buffer a plugin opens later has rewritten it. The
+ * writer it hands the buffer to stores a page only if it was rendered through
+ * template_redirect, and stores it under the key the serving drop-in handed over
+ * for the request, or under the key the drop-in's rule gives when the drop-in did
+ * not run (WP_CACHE off, another plugin's advanced-cache.php, an alternate drop-in
+ * file name).
  *
  * @package WPMgr\Agent\Cache
  */
@@ -157,10 +164,11 @@ final class CacheManager
     /**
      * Open the page-cache output buffer (bound to init at the lowest priority).
      *
-     * The writer is handed the key the drop-in chose for this request, before
-     * any plugin ran: the page is stored under the key it is served from, or
-     * not at all when the drop-in handed none over. The request URI captured
-     * here only feeds the URL rules (Bypass URLs and the never-cached paths).
+     * The writer is handed the key the page is stored under, fixed now, before
+     * any other plugin's init callback runs (see {@see storeKey()}): the key the
+     * drop-in chose, or the key its rule gives when the drop-in did not run, or
+     * none, in which case nothing is stored. The request URI captured here only
+     * feeds the URL rules (Bypass URLs and the never-cached paths).
      *
      * @return void
      */
@@ -171,9 +179,8 @@ final class CacheManager
         }
         $this->bufferOpen = true;
 
-        $storeKey   = defined(CacheWriter::KEY_CONSTANT) ? constant(CacheWriter::KEY_CONSTANT) : null;
         $requestUri = sanitize_text_field( wp_unslash( isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '/' ) );
-        $writer     = new CacheWriter($this->config(), $this->cacheRoot(), is_string($storeKey) ? $storeKey : null, null, null, $requestUri);
+        $writer     = new CacheWriter($this->config(), $this->cacheRoot(), $this->storeKey(), null, null, $requestUri);
         // Full-page output buffer with a callback handler: this is the standard
         // page-cache capture pattern. PHP finalizes the buffer at request end,
         // invoking CacheWriter::handle() with the complete response. The buffer
@@ -184,6 +191,59 @@ final class CacheManager
         // is stored (not HTML, a download, too large) is passed through as it
         // is produced.
         ob_start([$writer, 'handle'], CacheWriter::CHUNK_BYTES);
+    }
+
+    /**
+     * The key this request's page is stored under, relative to the cache root.
+     *
+     * A key the drop-in handed over always wins, even one the writer will
+     * refuse: it is the file the drop-in serves the request from. When it handed
+     * none over, the drop-in did not run on this request (WP_CACHE is off,
+     * another plugin owns advanced-cache.php, ours sits under another file
+     * name), or it declined the request. The key is then the one the drop-in's
+     * rule gives for the request as it stands now (see CacheKey::forRequest()),
+     * which is the file the web-server rules look a stored page up by; the rule
+     * declines the same requests the drop-in does, and then nothing is stored.
+     *
+     * @return string|null
+     */
+    private function storeKey(): ?string
+    {
+        if (defined(CacheWriter::KEY_CONSTANT)) {
+            $handed = constant(CacheWriter::KEY_CONSTANT);
+            return is_string($handed) ? $handed : '';
+        }
+        return CacheKey::forRequest(self::arrivedRequest(), $this->config());
+    }
+
+    /**
+     * The request as the drop-in read it, for working out the key it would have
+     * handed over. WordPress adds slashes to the superglobals before any plugin
+     * loads and the drop-in runs ahead of that, so the slashes come off again
+     * and nothing else is done to a value: sanitising one would change the key.
+     * Nothing here is output, stored or put in a query; the key function
+     * validates every part of it.
+     *
+     * @return array{uri:string,host:string,user_agent:string,cookies:array<mixed>,query:array<mixed>}
+     */
+    private static function arrivedRequest(): array
+    {
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- the unsanitised value is the key input; CacheKey::forRequest() validates it whole and uses only its normalised form, and sanitising it first would change the key
+        $uri = wp_unslash( isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '/' );
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- validated whole by CacheKey::normalizeHost() against an anchored allow-list before use
+        $host = wp_unslash( isset( $_SERVER['HTTP_HOST'] ) ? (string) $_SERVER['HTTP_HOST'] : '' );
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- only matched against the mobile pattern after control characters are stripped and the length is capped; never stored or output
+        $agent = wp_unslash( isset( $_SERVER['HTTP_USER_AGENT'] ) ? (string) $_SERVER['HTTP_USER_AGENT'] : '' );
+        $cookies = wp_unslash( $_COOKIE ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.NonceVerification.Recommended -- cache-key input only; each value is slugified to [a-z0-9-_] by CacheKey::sanitizeSegment, as in the drop-in; no output, no SQL, no state change
+        $query   = wp_unslash( $_GET ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- cache-key input only; key names and values are hashed for routing, as in the drop-in; no state change, no form processing
+
+        return [
+            'uri'        => is_string($uri) ? $uri : '/',
+            'host'       => is_string($host) ? $host : '',
+            'user_agent' => is_string($agent) ? $agent : '',
+            'cookies'    => is_array($cookies) ? $cookies : [],
+            'query'      => is_array($query) ? $query : [],
+        ];
     }
 
     /**

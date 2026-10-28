@@ -214,14 +214,112 @@ final class CachePrefixedHomepageTest extends TestCase
     }
 
     /**
-     * No key from the drop-in (it is not installed, it declined the request,
-     * or it is a release that hands none over) means nothing is stored: the
-     * writer has no second opinion about where a page belongs.
+     * The drop-in does not run (WP_CACHE is off, another plugin owns
+     * advanced-cache.php, ours sits under another file name), so it hands no
+     * key over. The page is still stored, under the key the drop-in's rule
+     * gives for the request as it arrived: the file the web-server rules look
+     * for. A path the browser percent-encodes, a path that is not ASCII and a
+     * path that is not lower case each keep their own key and never land on the
+     * homepage's.
+     *
+     * @dataProvider provide_requests_and_the_keys_the_dropin_rule_gives
+     *
+     * @param string               $uri Request URI as the browser sends it.
+     * @param array<string,string> $get $_GET for it.
+     * @param string               $key Key the drop-in's rule gives.
      */
-    public function test_writer_stores_nothing_without_a_key_from_the_dropin(): void
+    public function test_without_a_dropin_key_the_page_is_stored_under_the_key_the_dropin_rule_gives(string $uri, array $get, string $key): void
+    {
+        $manager = $this->enabledManager();
+        $_SERVER['REQUEST_URI'] = $uri;
+        $_GET                   = $get;
+
+        $visitor = $this->renderThroughCaptureBuffer($manager, static function (): void {
+            echo self::HTML_IT;
+        });
+
+        $this->assertSame(self::HTML_IT, $visitor, 'the visitor still receives the page');
+        $this->assertSame([$key], $this->storedPages(), "$uri must be stored under the drop-in rule's key and nowhere else");
+        if ($key !== 'example.com/index.html.gz') {
+            $this->assertFileDoesNotExist($this->root . '/example.com/index.html.gz', "$uri must never be stored under the homepage key");
+        }
+    }
+
+    /**
+     * @return array<string,array{0:string,1:array<string,string>,2:string}>
+     */
+    public static function provide_requests_and_the_keys_the_dropin_rule_gives(): array
+    {
+        return [
+            'root'                     => ['/', [], 'example.com/index.html.gz'],
+            'page'                     => ['/about/', [], 'example.com/about/index.html.gz'],
+            'prefixed homepage'        => ['/en', [], 'example.com/en/index.html.gz'],
+            'percent-encoded utf8'     => ['/caf%C3%A9/', [], 'example.com/café/index.html.gz'],
+            'literal utf8'             => ['/café/', [], 'example.com/café/index.html.gz'],
+            'percent-encoded cyrillic' => ['/%D0%BC%D0%B8%D1%80/', [], 'example.com/мир/index.html.gz'],
+            'mixed case'               => ['/About/Us/', [], 'example.com/about/us/index.html.gz'],
+            'marketing query'          => ['/about/?utm_source=x', ['utm_source' => 'x'], 'example.com/about/index.html.gz'],
+        ];
+    }
+
+    /**
+     * A key the drop-in handed over always wins: the page goes where the
+     * drop-in serves it from, not where the rule would put the request now in
+     * front of the writer.
+     */
+    public function test_a_key_from_the_dropin_wins_over_the_derived_one(): void
     {
         $manager = $this->enabledManager();
         $_SERVER['REQUEST_URI'] = '/about/';
+        $this->dropinChose('example.com/en/index.html.gz');
+
+        $this->renderThroughCaptureBuffer($manager, static function (): void {
+            echo self::HTML_IT;
+        });
+
+        $this->assertSame(['example.com/en/index.html.gz'], $this->storedPages(), 'the derived key must not be used, or added, next to the drop-in\'s');
+    }
+
+    /**
+     * The derived key follows the request as it was when the buffer opened,
+     * the same as the drop-in's key follows the request as it arrived: a
+     * plugin that rewrites REQUEST_URI while the page is built does not move
+     * the page onto another page's key.
+     */
+    public function test_a_derived_key_is_fixed_when_the_buffer_opens(): void
+    {
+        $manager = $this->enabledManager();
+        $_SERVER['REQUEST_URI'] = '/%D0%BC%D0%B8%D1%80/';
+
+        $this->renderThroughCaptureBuffer($manager, function (): void {
+            echo self::HTML_IT;
+            $_SERVER['REQUEST_URI'] = '/';
+        });
+
+        $this->assertSame(['example.com/мир/index.html.gz'], $this->storedPages());
+    }
+
+    /**
+     * Without a key from the drop-in the rule can still decline a request, as
+     * the drop-in does, and then nothing is stored: a host that names no
+     * bucket, a URI longer than the drop-in reads, more cache-varying query
+     * keys than a variant may carry, a Bypass URL written the way the browser
+     * sends the path, a cookie that marks a personalised page.
+     *
+     * @dataProvider provide_requests_the_dropin_rule_declines
+     *
+     * @param array<string,mixed>  $config Page-cache settings.
+     * @param array<string,string> $server $_SERVER overrides.
+     * @param array<string,string> $get    $_GET.
+     * @param array<string,string> $cookie $_COOKIE.
+     */
+    public function test_without_a_dropin_key_a_request_the_rule_declines_stores_nothing(array $config, array $server, array $get, array $cookie): void
+    {
+        $this->optionStore[CacheManager::OPTION_CONFIG] = ['enabled' => true] + $config;
+        $manager = new CacheManager();
+        $_SERVER = $server + $_SERVER;
+        $_GET    = $get;
+        $_COOKIE = $cookie;
 
         $visitor = $this->renderThroughCaptureBuffer($manager, static function (): void {
             echo self::HTML_IT;
@@ -229,6 +327,25 @@ final class CachePrefixedHomepageTest extends TestCase
 
         $this->assertSame(self::HTML_IT, $visitor, 'the visitor still receives the page');
         $this->assertSame([], $this->storedPages());
+    }
+
+    /**
+     * @return array<string,array{0:array<string,mixed>,1:array<string,string>,2:array<string,string>,3:array<string,string>}>
+     */
+    public static function provide_requests_the_dropin_rule_declines(): array
+    {
+        $manyKeys = [];
+        foreach (range('a', 'm') as $letter) {
+            $manyKeys['filter_' . $letter] = '1'; // a known cache-varying prefix, so only the key cap refuses it
+        }
+
+        return [
+            'uncacheable host'           => [[], ['REQUEST_URI' => '/about/', 'HTTP_HOST' => 'victim..com'], [], []],
+            'overlong uri'               => [[], ['REQUEST_URI' => '/' . str_repeat('a', 2100) . '/'], [], []],
+            'too many query keys'        => [[], ['REQUEST_URI' => '/shop/?' . http_build_query($manyKeys)], $manyKeys, []],
+            'bypass url, percent-encoded' => [['bypass_urls' => ['/%d0%bc%d0%b8%d1%80']], ['REQUEST_URI' => '/%D0%BC%D0%B8%D1%80/'], [], []],
+            'bypass cookie'              => [[], ['REQUEST_URI' => '/about/'], [], ['woocommerce_cart_hash' => 'abc']],
+        ];
     }
 
     /**

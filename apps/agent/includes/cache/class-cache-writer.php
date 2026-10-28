@@ -13,10 +13,13 @@
  *   3. The body is ALWAYS returned unmodified so the live response is unaffected
  *      whether or not it was cached.
  *
- * The page is stored under the key the serving drop-in handed over for this
- * request (the WPMGR_PAGE_CACHE_KEY constant): the file the drop-in serves the
- * request from. The writer never works out a key of its own, so the two cannot
- * disagree, and it stores nothing when no key was handed over.
+ * The page is stored under the key it is handed: the one the serving drop-in
+ * chose for this request (the WPMGR_PAGE_CACHE_KEY constant), the file the
+ * drop-in serves the request from, or, on a site where the drop-in does not run,
+ * the one its rule gives for the request, which CacheManager works out when it
+ * opens the buffer (CacheKey::forRequest()). The writer never works out a key of
+ * its own, so it cannot disagree with the one the page is served from, and it
+ * stores nothing when it is handed none.
  *
  * Standard WordPress disk-cache writer technique.
  *
@@ -69,7 +72,7 @@ final class CacheWriter
 
     private CacheConfig $config;
 
-    /** The drop-in's key for this request, or null when it handed none over. */
+    /** The key this request's page is stored under, or null when there is none. */
     private ?string $storeKey;
 
     private Cacheability $cacheability;
@@ -114,8 +117,9 @@ final class CacheWriter
     /**
      * @param CacheConfig       $config       Page-cache config.
      * @param string            $cacheRoot    Absolute cache root.
-     * @param string|null       $storeKey     The key the drop-in handed over for
-     *                                         this request; null stores nothing.
+     * @param string|null       $storeKey     The key to store this request's page
+     *                                         under (the drop-in's, or the one its
+     *                                         rule gives); null stores nothing.
      * @param Cacheability|null $cacheability Injected for tests.
      * @param Optimizer|null    $optimizer    Phase-4 optimizer (tests/override).
      *                                         When omitted it is lazily loaded
@@ -449,11 +453,12 @@ final class CacheWriter
             return false;
         }
 
-        // The page is stored under the key the drop-in handed over, the file it
-        // serves this request from, or not at all. The drop-in already declined
-        // every request it would never serve from the cache (an uncacheable
-        // host, too many cache-varying query keys, a logged-in visitor without
-        // logged-in caching), so a missing key covers those too.
+        // The page is stored under the key it was handed, the file the drop-in
+        // serves this request from, or not at all. A request the drop-in would
+        // never serve from the cache (an uncacheable host, too many
+        // cache-varying query keys, a logged-in visitor without logged-in
+        // caching) gets no key, from the drop-in or from its rule, so a missing
+        // key covers those too.
         $path = self::keyPath($this->cacheRoot, $ctx['store_key'] ?? null);
         if ($path === null) {
             return false;

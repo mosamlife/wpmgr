@@ -19,6 +19,7 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Tests;
 
 use WPMgr\Agent\Cache\CacheConfig;
+use WPMgr\Agent\Cache\CacheKey;
 use WPMgr\Agent\Cache\DropinInstaller;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -352,6 +353,115 @@ final class AdvancedCacheDropinTest extends TestCase
             // looked up by its prefix, and a page stored under that prefix
             // would answer requests for a different page.
             'overlong uri'     => [['REQUEST_URI' => '/' . str_repeat('a', 2100) . '/'], []],
+        ];
+    }
+
+    /**
+     * A site where the drop-in does not run still stores its pages, under the
+     * key CacheKey::forRequest() derives. That derivation and the drop-in are
+     * two implementations of one rule, so this runs the drop-in itself, in a
+     * child process as WordPress would include it, and requires the derivation
+     * to agree with the key it hands over: the same key, or none from both.
+     *
+     * @dataProvider provide_requests_for_key_parity
+     *
+     * @param array<string,mixed>  $settings Page-cache settings.
+     * @param array<string,mixed>  $server   $_SERVER overrides.
+     * @param array<string,string> $cookies  $_COOKIE.
+     * @param array<string,mixed>  $get      $_GET.
+     */
+    public function test_derived_key_matches_the_key_the_dropin_hands_over(array $settings, array $server, array $cookies, array $get): void
+    {
+        $config   = new CacheConfig($settings);
+        $expected = $this->dropinKey($config->toDropinArray(), $server, $cookies, $get);
+        $server   = array_merge(['REQUEST_URI' => '/', 'HTTP_HOST' => 'example.com'], $server);
+
+        $derived = CacheKey::forRequest([
+            'uri'        => (string) $server['REQUEST_URI'],
+            'host'       => (string) $server['HTTP_HOST'],
+            'user_agent' => (string) ($server['HTTP_USER_AGENT'] ?? ''),
+            'cookies'    => $cookies,
+            'query'      => $get,
+        ], $config);
+
+        $this->assertSame($expected, $derived, 'the derived key and the drop-in\'s key must agree for ' . var_export($server['REQUEST_URI'], true));
+    }
+
+    /**
+     * Every shape of request the key rule has an opinion about: paths that are
+     * encoded, not ASCII, not lower case or not clean, hosts that do and do not
+     * name a bucket, every variant a key carries, and every request the drop-in
+     * declines. A key and a null both count, and both must match.
+     *
+     * @return array<string,array{0:array<string,mixed>,1:array<string,mixed>,2:array<string,string>,3:array<string,mixed>}>
+     */
+    public static function provide_requests_for_key_parity(): array
+    {
+        $uri     = static fn (string $u, array $extra = []): array => ['REQUEST_URI' => $u] + $extra;
+        $filters = [];
+        foreach (range('a', 'm') as $letter) {
+            $filters['filter_' . $letter] = '1';
+        }
+
+        return [
+            'root'                            => [[], $uri('/'), [], []],
+            'empty uri'                       => [[], $uri(''), [], []],
+            'page'                            => [[], $uri('/about/'), [], []],
+            'no trailing slash'               => [[], $uri('/about'), [], []],
+            'prefixed homepage'               => [[], $uri('/en'), [], []],
+            'percent-encoded utf8'            => [[], $uri('/caf%C3%A9/'), [], []],
+            'percent-encoded cyrillic'        => [[], $uri('/%D0%BC%D0%B8%D1%80/'), [], []],
+            'literal utf8'                    => [[], $uri('/日本語/page/2/'), [], []],
+            'mixed case'                      => [[], $uri('/About/Us/'), [], []],
+            'upper case percent-encoding'     => [[], $uri('/%C3%89COLE/'), [], []],
+            'dot segments'                    => [[], $uri('/a/./b/../c/'), [], []],
+            'traversal'                       => [[], $uri('/a/../../../etc'), [], []],
+            'dot run'                         => [[], $uri('/....'), [], []],
+            'encoded traversal'               => [[], $uri('/%2e%2e/%2e%2e/x'), [], []],
+            'repeated slashes'                => [[], $uri('//a///b//'), [], []],
+            'backslash'                       => [[], $uri('/x\\y/z'), [], []],
+            'encoded nul'                     => [[], $uri('/a%00b/'), [], []],
+            'control characters'              => [[], $uri("/a\x01b\x7f/c\n/"), [], []],
+            'fragment in the path'            => [[], $uri('/page#section'), [], []],
+            'query is not part of the path'   => [[], $uri('/about/?x=1&y=/z/'), [], ['x' => '1', 'y' => '/z/']],
+            'marketing query only'            => [[], $uri('/about/?utm_source=x'), [], ['utm_source' => 'x']],
+            'varying query'                   => [[], $uri('/shop/?lang=fr&orderby=price'), [], ['lang' => 'fr', 'orderby' => 'price']],
+            'query in another order'          => [[], $uri('/shop/?orderby=price&lang=fr'), [], ['orderby' => 'price', 'lang' => 'fr']],
+            'twelve query keys'               => [[], $uri('/shop/'), [], array_slice($filters, 0, 12, true)],
+            'thirteen query keys'             => [[], $uri('/shop/'), [], $filters],
+            'host with a port'                => [[], $uri('/about/', ['HTTP_HOST' => 'example.com:8443']), [], []],
+            'upper case host'                 => [[], $uri('/about/', ['HTTP_HOST' => 'EXAMPLE.com']), [], []],
+            'subdomain host'                  => [[], $uri('/about/', ['HTTP_HOST' => 'blog.example.co.uk']), [], []],
+            'host with a double dot'          => [[], $uri('/about/', ['HTTP_HOST' => 'victim..com']), [], []],
+            'host with a path'                => [[], $uri('/about/', ['HTTP_HOST' => 'example.com/x']), [], []],
+            'no host'                         => [[], $uri('/about/', ['HTTP_HOST' => '']), [], []],
+            'uri of exactly 2048 bytes'       => [[], $uri('/' . str_repeat('a', 2046) . '/'), [], []],
+            'uri of 2049 bytes'               => [[], $uri('/' . str_repeat('a', 2047) . '/'), [], []],
+            'overlong uri'                    => [[], $uri('/' . str_repeat('a', 2100) . '/'), [], []],
+            'mobile agent, mobile bucket on'  => [['cache_mobile' => true], $uri('/about/', ['HTTP_USER_AGENT' => 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)']), [], []],
+            'desktop agent, mobile bucket on' => [['cache_mobile' => true], $uri('/about/', ['HTTP_USER_AGENT' => 'Mozilla/5.0 (X11; Linux x86_64)']), [], []],
+            'mobile agent, mobile bucket off' => [[], $uri('/about/', ['HTTP_USER_AGENT' => 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)']), [], []],
+            'agent with control characters'   => [['cache_mobile' => true], $uri('/about/', ['HTTP_USER_AGENT' => "Foo\x01 Mobile\x7f"]), [], []],
+            'mobile token past 512 bytes'     => [['cache_mobile' => true], $uri('/about/', ['HTTP_USER_AGENT' => str_repeat('x', 600) . ' Mobile']), [], []],
+            'include cookie'                  => [['include_cookies' => ['geo']], $uri('/about/'), ['geo' => 'FR'], []],
+            'include cookie to be slugged'    => [['include_cookies' => ['geo']], $uri('/about/'), ['geo' => 'us/ca%2F<b>'], []],
+            'include cookie, empty value'     => [['include_cookies' => ['geo']], $uri('/about/'), ['geo' => ''], []],
+            'two include cookies'             => [['include_cookies' => ['geo', 'currency']], $uri('/about/'), ['currency' => 'eur', 'geo' => 'fr'], []],
+            'everything at once'              => [
+                ['cache_mobile' => true, 'include_cookies' => ['geo']],
+                $uri('/Shop/Caf%C3%A9/?lang=fr', ['HTTP_USER_AGENT' => 'Mozilla/5.0 (Android 13; Mobile)']),
+                ['geo' => 'FR'],
+                ['lang' => 'fr'],
+            ],
+            'bypass url'                      => [['bypass_urls' => ['/checkout']], $uri('/checkout/'), [], []],
+            'bypass url, other spelling'      => [['bypass_urls' => ['/checkout/']], $uri('/checkout'), [], []],
+            'bypass url, percent-encoded'     => [['bypass_urls' => ['/%d0%bc%d0%b8%d1%80']], $uri('/%D0%BC%D0%B8%D1%80/'), [], []],
+            'bypass url, only in the query'   => [['bypass_urls' => ['preview=true']], $uri('/about/?preview=true'), [], ['preview' => 'true']],
+            'bypass url that does not match'  => [['bypass_urls' => ['/checkout']], $uri('/about/'), [], []],
+            'default bypass cookie'           => [[], $uri('/about/'), ['woocommerce_cart_hash' => 'abc'], []],
+            'logged-in cookie'                => [[], $uri('/about/'), ['wordpress_logged_in_abc' => 'x'], []],
+            'operator bypass cookie'          => [['bypass_cookies' => ['vip_']], $uri('/about/'), ['VIP_member' => '1'], []],
+            'unrelated cookie'                => [[], $uri('/about/'), ['theme' => 'dark'], []],
         ];
     }
 
