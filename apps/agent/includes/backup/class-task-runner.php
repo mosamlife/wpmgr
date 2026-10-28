@@ -50,11 +50,21 @@
  * the failure to the operator.
  *
  * Watchdog re-entry semantics:
- *   - Re-entries are gated by `resume_count < max_resumes` (default cap 6).
- *     The cap is enforced by the watchdog handler in Phase D before it calls
- *     us; we don't touch resume_count here. But we DO update last_progress_at
- *     on every meaningful boundary so the watchdog can tell live work apart
- *     from a stalled handler.
+ *   - Every save keeps a durable progress record in sub_state.progress: a
+ *     mark built from the phase, the closed archive parts, the archive's
+ *     first unfinished line, the encrypted entries and the uploaded chunks,
+ *     the time it last advanced, and a sequence number bumped on each
+ *     advance. Each worker records the sequence it started at in
+ *     sub_state.worker. The watchdog counts a resume toward max_resumes
+ *     (default 6) only when the worker before it saved no progress, and
+ *     gives an old task up only when that record stopped advancing. We
+ *     don't touch resume_count here. We DO update last_progress_at on every
+ *     meaningful boundary so the watchdog can tell live work apart from a
+ *     stalled handler.
+ *   - A save that finds no task row means the task was given up: the worker
+ *     stops, reports the stop, and never reports success.
+ *   - A worker that has used most of its time limit stops after a closed
+ *     archive part and hands the task to the watchdog's resume path.
  *
  * Persistence pattern:
  *   - $wpdb->update() with explicit prepared-arg formats. Single-row updates
@@ -118,6 +128,45 @@ final class TaskRunner
 
     /** Minimum seconds between in-phase DB writes to last_progress_at. */
     private const PROGRESS_DB_THROTTLE_SECONDS = 5;
+
+    /** Exception code: a save found no task row, so the task was given up. */
+    public const CODE_TASK_GONE = 983001;
+
+    /** Exception code: this worker saved a closed part and hands the task over. */
+    public const CODE_HANDOVER = 983002;
+
+    /**
+     * Share of the worker's time limit after which it hands over at the next
+     * closed archive part, instead of being ended by the limit mid-part.
+     */
+    public const HANDOVER_SHARE = 0.8;
+
+    /** What the site owner reads when a save finds the task row gone. */
+    private const TASK_GONE_MESSAGE = 'Backup stopped: its task record on this site was removed while it was running, so it cannot be resumed. Run the backup again.';
+
+    /** Phase order inside the durable progress mark. */
+    private const PHASE_RANK = [
+        self::PHASE_QUEUED               => 0,
+        self::PHASE_DUMPING_DB           => 1,
+        self::PHASE_ARCHIVING_FILES      => 2,
+        self::PHASE_ENCRYPTING_UPLOADING => 3,
+        self::PHASE_SUBMITTING_MANIFEST  => 4,
+    ];
+
+    /** @var array{mark:list<int>,at:int,seq:int}|null The durable progress record, as last saved. */
+    private ?array $progress = null;
+
+    /** Progress sequence number this worker started at. */
+    private int $workerStartSeq = 0;
+
+    /** Wall clock when this worker started. */
+    private float $workerWallStart = 0.0;
+
+    /** Process CPU seconds when this worker started; null when the limit counts wall time. */
+    private ?float $workerCpuStart = null;
+
+    /** Seconds of the time limit this worker runs under: null until run() starts, 0 for none. */
+    private ?float $timeLimit = null;
 
     /**
      * @var array{snapshot_id:string,kind:string,age_recipient:string,presign_endpoint:string,
@@ -245,8 +294,10 @@ final class TaskRunner
         $this->workerStartedAt = time();
         @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, PHPCompatibility.FunctionUse.ArgumentFunctionsReportCurrentValue.NeedsInspection, Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup loop must not hit max_execution_time; @-guarded, no-op when disabled
         @ignore_user_abort(true);
+        $this->startWorkerClock();
 
         $currentPhase = self::PHASE_QUEUED;
+        $handedOver   = false;
 
         // ---- GH #232 guard 1: GET_LOCK — fast, cheap, cross-process reject.
         //   '1'  => we won the lock — proceed to the (authoritative) flock
@@ -351,6 +402,15 @@ final class TaskRunner
             //   stage=runner_started                     => a lock held, first phase failed to persist
             //   phase past 'queued'                      => advanced
             // A task without either guard returns before this breadcrumb.
+            //
+            // GH #983: the same save records where this worker started in the
+            // durable progress record, so the watchdog can tell whether this
+            // worker saved any progress before it ended.
+            $this->progress = self::progressRecord($subState['progress'] ?? null)
+                ?? ['mark' => self::progressMark($currentPhase, $subState), 'at' => time(), 'seq' => 0];
+            $this->workerStartSeq = $this->progress['seq'];
+            $subState['progress'] = $this->progress;
+            $subState['worker']   = ['seq' => $this->workerStartSeq, 'started_at' => (int) $this->workerStartedAt];
             if ($lockHeld || $fileLockHandle !== null) {
                 $subState['stage'] = 'runner_started';
                 $this->saveTaskState($currentPhase, $subState);
@@ -437,62 +497,42 @@ final class TaskRunner
 
             $terminal = true;
             return self::PHASE_COMPLETED;
+        } catch (\RuntimeException $e) {
+            if ($e->getCode() === self::CODE_HANDOVER) {
+                // GH #983: the closed part is saved; the next worker continues
+                // from it once this one has released its guards (below).
+                \WPMgr\Agent\Support\DebugLog::write('WPMgr TaskRunner: handing over snapshot ' . $this->snapshotId() . ' after a saved part: ' . $e->getMessage());
+                $handedOver = true;
+            } elseif ($e->getCode() === self::CODE_TASK_GONE) {
+                // GH #983: the task was given up while this worker ran. Stop:
+                // no further phase work, no success report, no task-row write.
+                \WPMgr\Agent\Support\DebugLog::write('WPMgr TaskRunner: stopping snapshot ' . $this->snapshotId() . ' in phase ' . $currentPhase . ': ' . $e->getMessage());
+                try {
+                    $this->postProgress(self::PHASE_FAILED, ['stage' => $currentPhase, 'message' => self::TASK_GONE_MESSAGE]);
+                } catch (\Throwable $_) {
+                    // Swallow.
+                }
+                // This worker still holds the guards, so its scratch is reclaimed now.
+                try {
+                    $this->cleanupOnFailed();
+                } catch (\Throwable $_) {
+                    // Swallow.
+                }
+                $terminal = true;
+                return self::PHASE_FAILED;
+            } else {
+                $terminal = true;
+                return $this->failRun($currentPhase, $e);
+            }
         } catch (\Throwable $e) {
-            \WPMgr\Agent\Support\DebugLog::write('WPMgr TaskRunner: phase ' . $currentPhase . ' failed: ' . $e->getMessage());
-
-            // Best-effort: persist `failed` + post one progress event. If
-            // either of these throws we swallow and still return 'failed' —
-            // the watchdog and operator will see a stale row.
-            try {
-                $this->saveTaskState(self::PHASE_FAILED, [
-                    'last_error' => substr($e->getMessage(), 0, 240),
-                    'failed_in'  => $currentPhase,
-                ]);
-            } catch (\Throwable $_) {
-                // Swallow.
-            }
-            try {
-                $failureDetail = [
-                    'stage'   => $currentPhase,
-                    'message' => substr($e->getMessage(), 0, 240),
-                ];
-                if ($e instanceof ZipCloseException) {
-                    $failureDetail['part'] = $e->part();
-                    $failureDetail['libzip_status'] = $e->libzipStatus();
-                }
-                $this->postProgress(self::PHASE_FAILED, $failureDetail);
-            } catch (\Throwable $_) {
-                // Swallow.
-            }
-
-            // Scratch reclamation requires a held guard. Cleanup failures
-            // must never mask the failure already persisted and reported.
-            try {
-                $this->cleanupOnFailed();
-            } catch (\Throwable $_) {
-                // Swallow.
-            }
-
-            // Guarded failures remove their task row after reporting.
-            // A lock-unavailable failure remains terminal in task storage.
-            try {
-                global $wpdb;
-                if (is_object($wpdb)) {
-                    $tasksTable = $this->prefix() . Schema::BACKUP_TASKS_TABLE;
-                    /** @phpstan-ignore-next-line */
-                    @$wpdb->delete($tasksTable, ['snapshot_id' => $this->snapshotId()], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; no core helper exists
-                }
-            } catch (\Throwable $_) {
-                // Swallow.
-            }
-
             $terminal = true;
-            return self::PHASE_FAILED;
+            return $this->failRun($currentPhase, $e);
         } finally {
             // GH #232: release BOTH guards regardless of how this invocation
-            // ends (completed, failed, or an escape the outer catch didn't
-            // anticipate) — never on the loser/no-lock-held paths above,
-            // which already returned and hold nothing to release here.
+            // ends (completed, failed, handed over, or an escape the outer
+            // catch didn't anticipate) — never on the loser/no-lock-held
+            // paths above, which already returned and hold nothing to
+            // release here.
             if ($lockHeld) {
                 $this->releaseLock();
             }
@@ -506,6 +546,77 @@ final class TaskRunner
                 }
             }
         }
+
+        // GH #983: reached only by a hand-over, after both guards are released
+        // so the next worker can take them. The next worker starts through the
+        // watchdog's own resume path, at once: it is never left to be found
+        // stalled. Its run() restarts the time limit.
+        if (!$handedOver) {
+            return $currentPhase;
+        }
+        unset($task, $subState);
+        return Watchdog::handOver($this->snapshotId()) ?? $currentPhase;
+    }
+
+    /**
+     * Persist and report a failed run, reclaim its scratch, and remove its
+     * task row. Called from run()'s catch, while both guards are held.
+     *
+     * @param string     $currentPhase Phase the failure happened in.
+     * @param \Throwable $e            The failure.
+     * @return string PHASE_FAILED.
+     */
+    private function failRun(string $currentPhase, \Throwable $e): string
+    {
+        \WPMgr\Agent\Support\DebugLog::write('WPMgr TaskRunner: phase ' . $currentPhase . ' failed: ' . $e->getMessage());
+
+        // Best-effort: persist `failed` + post one progress event. If
+        // either of these throws we swallow and still return 'failed' —
+        // the watchdog and operator will see a stale row.
+        try {
+            $this->saveTaskState(self::PHASE_FAILED, [
+                'last_error' => substr($e->getMessage(), 0, 240),
+                'failed_in'  => $currentPhase,
+            ]);
+        } catch (\Throwable $_) {
+            // Swallow.
+        }
+        try {
+            $failureDetail = [
+                'stage'   => $currentPhase,
+                'message' => substr($e->getMessage(), 0, 240),
+            ];
+            if ($e instanceof ZipCloseException) {
+                $failureDetail['part'] = $e->part();
+                $failureDetail['libzip_status'] = $e->libzipStatus();
+            }
+            $this->postProgress(self::PHASE_FAILED, $failureDetail);
+        } catch (\Throwable $_) {
+            // Swallow.
+        }
+
+        // Scratch reclamation requires a held guard. Cleanup failures
+        // must never mask the failure already persisted and reported.
+        try {
+            $this->cleanupOnFailed();
+        } catch (\Throwable $_) {
+            // Swallow.
+        }
+
+        // Guarded failures remove their task row after reporting.
+        // A lock-unavailable failure remains terminal in task storage.
+        try {
+            global $wpdb;
+            if (is_object($wpdb)) {
+                $tasksTable = $this->prefix() . Schema::BACKUP_TASKS_TABLE;
+                /** @phpstan-ignore-next-line */
+                @$wpdb->delete($tasksTable, ['snapshot_id' => $this->snapshotId()], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; no core helper exists
+            }
+        } catch (\Throwable $_) {
+            // Swallow.
+        }
+
+        return self::PHASE_FAILED;
     }
 
     // ==================================================================
@@ -1154,9 +1265,19 @@ final class TaskRunner
             try {
                 $this->saveTaskState(self::PHASE_ARCHIVING_FILES, $subState);
             } catch (\Throwable $e) {
+                if ($e instanceof \RuntimeException && $e->getCode() === self::CODE_TASK_GONE) {
+                    // GH #983: the task was given up; never archive on for it.
+                    throw $e;
+                }
                 // The previous checkpoint stays authoritative: a resume
                 // deletes the parts closed since it and archives them again.
                 \WPMgr\Agent\Support\DebugLog::write('WPMgr TaskRunner: archive checkpoint not saved for snapshot ' . $this->snapshotId() . ': ' . $e->getMessage());
+                return;
+            }
+            // GH #983: hand over only on a saved checkpoint, so the next
+            // worker loses nothing this one closed.
+            if ($this->shouldHandOver()) {
+                throw new \RuntimeException('worker used most of its time limit', self::CODE_HANDOVER); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- fixed literal, never output
             }
         });
 
@@ -1938,6 +2059,17 @@ final class TaskRunner
         if (isset($subState['last_error'])) {
             $subState['last_error'] = json_decode(json_encode($subState['last_error'], JSON_INVALID_UTF8_SUBSTITUTE), true);
         }
+        // GH #983: the durable progress record. It advances only when this
+        // state's mark is later than the last saved one, and this worker
+        // keeps it, so a caller's older copy of sub_state never rolls it back.
+        $mark   = self::progressMark($phase, $subState);
+        $record = $this->progress ?? self::progressRecord($subState['progress'] ?? null);
+        if ($record === null) {
+            $record = ['mark' => $mark, 'at' => $now, 'seq' => 0];
+        } elseif (self::markAdvanced($mark, $record['mark'])) {
+            $record = ['mark' => $mark, 'at' => $now, 'seq' => $record['seq'] + 1];
+        }
+        $subState['progress'] = $record;
         $encoded = self::encodeSubState($subState);
 
         $this->lastDbUpdate = $now;
@@ -1990,7 +2122,201 @@ final class TaskRunner
             );
         }
 
+        // GH #983: 0 rows is also what MySQL reports for a row whose values
+        // did not change, so only a row proven missing means the task is gone.
+        // Nothing was saved then, and nothing this worker does can be resumed.
+        if ($result === 0 && $this->taskRowMissing()) {
+            throw new \RuntimeException(
+                'TaskRunner: task row for phase ' . esc_html($phase) . ' is gone; the backup was given up',
+                self::CODE_TASK_GONE // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- integer code, never output
+            );
+        }
+
+        $this->progress = $record;
         return true;
+    }
+
+    /**
+     * Whether this task's row is provably absent. An unknown answer (no
+     * database, a failed query) is never proof: the worker keeps going.
+     */
+    private function taskRowMissing(): bool
+    {
+        global $wpdb;
+        $table = $this->tableName();
+        if (!is_object($wpdb) || $table === '') {
+            return false;
+        }
+        /** @var \wpdb $wpdb */
+        try {
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- interpolated identifier is prefix+constant (trusted); value bound via %s placeholder
+            $sql      = "SELECT COUNT(*) FROM {$table} WHERE snapshot_id = %s";
+            $prepared = $wpdb->prepare($sql, $this->snapshotId()); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- already prepared on this line
+            $count    = $wpdb->get_var($prepared); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.UnescapedDBParameter, PluginCheck.Security.DirectDB.UnescapedDBParameter -- live existence check on the plugin-owned table; value is the output of $wpdb->prepare()
+        } catch (\Throwable $_) {
+            return false;
+        }
+        return $count !== null && (string) $count === '0';
+    }
+
+    /**
+     * GH #983: the durable progress mark of a task in $phase with $subState:
+     * the phase, then the closed archive parts, the archive's first
+     * unfinished line, the encrypted manifest entries and the uploaded
+     * chunks. Within one pass a later checkpoint never has a lower mark.
+     *
+     * @param array<string,mixed> $subState Task state.
+     * @return list<int>
+     */
+    public static function progressMark(string $phase, array $subState): array
+    {
+        $files  = isset($subState['files']) && is_array($subState['files']) ? $subState['files'] : [];
+        $parts  = $files['parts_completed'] ?? ($files['parts'] ?? []);
+        $line   = $files['file_index'] ?? ($files['files_total'] ?? 0);
+        $encrypt = isset($subState['encrypt']) && is_array($subState['encrypt']) ? $subState['encrypt'] : [];
+        $upload  = isset($subState['upload']) && is_array($subState['upload']) ? $subState['upload'] : [];
+
+        return [
+            self::PHASE_RANK[$phase] ?? 0,
+            is_array($parts) ? count($parts) : 0,
+            is_int($line) ? max(0, $line) : 0,
+            isset($encrypt['entries']) && is_array($encrypt['entries']) ? count($encrypt['entries']) : 0,
+            isset($upload['uploaded_hashes']) && is_array($upload['uploaded_hashes']) ? count($upload['uploaded_hashes']) : 0,
+        ];
+    }
+
+    /**
+     * Whether $mark is later than $than, compared field by field in order.
+     *
+     * @param list<int> $mark Mark to test.
+     * @param list<int> $than Mark it must exceed.
+     */
+    public static function markAdvanced(array $mark, array $than): bool
+    {
+        foreach (array_values($mark) as $i => $value) {
+            $other = (int) ($than[$i] ?? 0);
+            if ((int) $value !== $other) {
+                return (int) $value > $other;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The validated durable progress record from task state, or null. The
+     * task row is input like any other: every field is checked.
+     *
+     * @param mixed $raw sub_state.progress.
+     * @return array{mark:list<int>,at:int,seq:int}|null
+     */
+    public static function progressRecord($raw): ?array
+    {
+        if (!is_array($raw) || !isset($raw['mark'], $raw['at'], $raw['seq']) || !is_array($raw['mark'])
+            || !is_int($raw['at']) || !is_int($raw['seq']) || $raw['seq'] < 0) {
+            return null;
+        }
+        $mark = [];
+        foreach ($raw['mark'] as $value) {
+            if (!is_int($value)) {
+                return null;
+            }
+            $mark[] = $value;
+        }
+        return ['mark' => $mark, 'at' => $raw['at'], 'seq' => $raw['seq']];
+    }
+
+    /**
+     * The validated record of where the last worker started, or null.
+     *
+     * @param mixed $raw sub_state.worker.
+     * @return array{seq:int,started_at:int}|null
+     */
+    public static function workerRecord($raw): ?array
+    {
+        if (!is_array($raw) || !isset($raw['seq'], $raw['started_at']) || !is_int($raw['seq']) || !is_int($raw['started_at'])) {
+            return null;
+        }
+        return ['seq' => $raw['seq'], 'started_at' => $raw['started_at']];
+    }
+
+    /**
+     * Report a failure to the control plane through the same signed
+     * `/progress` channel run() uses, so the dashboard shows $message.
+     * Never throws. Used by the watchdog when it gives a task up.
+     */
+    public function reportFailure(string $stage, string $message): void
+    {
+        $this->postProgress(self::PHASE_FAILED, ['stage' => $stage, 'message' => substr($message, 0, 240)]);
+    }
+
+    /**
+     * Whether a live process holds this snapshot's run-lock right now.
+     * Never creates a lock file: a missing one is not held.
+     */
+    public function isRunLockHeld(): bool
+    {
+        $token = $this->getLock();
+        try {
+            if ($token === '0') {
+                return true;
+            }
+            $path = $this->fileLockPath();
+            if ($path === '' || !is_file($path)) {
+                return false;
+            }
+            $file = self::acquireFileLockAtPath($path, false);
+            if ($file['handle'] !== null) {
+                $this->releaseFileLock($file['handle']);
+            }
+            return $file['contended'];
+        } catch (\Throwable $_) {
+            return false;
+        } finally {
+            if ($token === '1') {
+                $this->releaseLock();
+            }
+        }
+    }
+
+    /** Start this worker's clock against the time limit run() just set. */
+    private function startWorkerClock(): void
+    {
+        $this->workerWallStart = microtime(true);
+        // PHP counts max_execution_time in CPU time everywhere but Windows.
+        $this->workerCpuStart = PHP_OS_FAMILY === 'Windows' ? null : self::cpuSeconds();
+        if ($this->timeLimit === null) {
+            $this->timeLimit = (float) max(0, (int) ini_get('max_execution_time'));
+        }
+    }
+
+    /** CPU seconds this process has used, or null when unavailable. */
+    private static function cpuSeconds(): ?float
+    {
+        if (!function_exists('getrusage')) {
+            return null;
+        }
+        $usage = @getrusage();
+        if (!is_array($usage) || !isset($usage['ru_utime.tv_sec'], $usage['ru_utime.tv_usec'], $usage['ru_stime.tv_sec'], $usage['ru_stime.tv_usec'])) {
+            return null;
+        }
+        return (float) $usage['ru_utime.tv_sec'] + $usage['ru_utime.tv_usec'] / 1e6
+            + (float) $usage['ru_stime.tv_sec'] + $usage['ru_stime.tv_usec'] / 1e6;
+    }
+
+    /**
+     * Whether this worker should hand over now: it saved progress of its
+     * own and used at least HANDOVER_SHARE of its time limit, in CPU time
+     * where the limit counts CPU and in wall time otherwise. A worker with
+     * no time limit never hands over.
+     */
+    private function shouldHandOver(): bool
+    {
+        if ($this->timeLimit === null || $this->timeLimit <= 0.0 || $this->progress === null || $this->progress['seq'] <= $this->workerStartSeq) {
+            return false;
+        }
+        $cpu  = $this->workerCpuStart !== null ? self::cpuSeconds() : null;
+        $used = $cpu !== null ? $cpu - (float) $this->workerCpuStart : microtime(true) - $this->workerWallStart;
+        return $used >= self::HANDOVER_SHARE * $this->timeLimit;
     }
 
     /**
