@@ -114,25 +114,31 @@
  *
  * Fix: every session minted by createSession() also mints a random "bind"
  * token, stores only its SHA-256 hash in session['bind_hash'], and sets an
- * HttpOnly/SameSite=Lax cookie (COOKIE_BIND) carrying the raw token, scoped to
- * the login path and expiring with the session. maybeResumeInterstitial() now
- * requires hasValidBindCookie() to hash_equals()-match BEFORE rendering ANY
- * pending screen (setup, 2FA verify, or forced-change); a missing or
- * mismatched cookie falls through to the normal login page instead of
- * re-rendering anything. A session minted before this fix (no bind_hash key)
- * is treated as unsafe to resume -- never as implicitly trusted -- the user
- * simply logs in again to mint a bound session. The existing HMAC token on the
- * verify/setup SUBMIT path (computeSessionHmac/verifySessionHmac) is
- * unchanged: this adds the render-time browser binding the resume path was
- * missing, it does not replace the HMAC.
+ * HttpOnly/SameSite=Lax cookie (COOKIE_BIND) carrying the raw token, scoped
+ * like WordPress's test cookie and expiring with the session.
+ * maybeResumeInterstitial() requires hasValidBindCookie() to
+ * hash_equals()-match BEFORE rendering ANY pending screen (setup, 2FA verify,
+ * or forced-change); a missing or mismatched cookie falls through to the
+ * normal login page instead of re-rendering anything. A session minted before
+ * this fix (no bind_hash key) is treated as unsafe to resume -- never as
+ * implicitly trusted -- the user simply logs in again to mint a bound session.
+ * handleVerifySubmit() requires the same match on every SUBMIT, in addition to
+ * the HMAC token (computeSessionHmac/verifySessionHmac), which it does not
+ * replace.
  *
  * FORM TARGET (#965):
- * Every interstitial form (2FA challenge, setup, forced change) posts back to
- * the login URL this request is running on, never to wp_login_url(): on a site
+ * On the login screen every interstitial form (2FA challenge, setup, forced
+ * change) posts back to the login URL the request is running on: on a site
  * that renames its login page, wp_login_url() can point at a path that
  * redirects the POST (dropping its body) or answers it with a 404. The target
- * is built from REQUEST_URI as a path-absolute reference, so it stays on the
- * origin and path the login used; see verifyActionUrl().
+ * is an absolute URL on the site's own origin (from wp_login_url(), never the
+ * Host header) with this request's path and filtered, percent-encoded query.
+ * A password step run outside the login screen posts to wp_login_url(), where
+ * the verify handler runs. See verifyActionUrl().
+ *
+ * SESSION BINDING:
+ * Every submit (code, method switch, setup step, forced change) must carry
+ * the bind cookie minted with its session; see handleVerifySubmit().
  *
  * METHOD SWITCH (#964):
  * The "Or use:" alternatives are submit buttons inside the signed form, so a
@@ -224,23 +230,18 @@ final class Site2faModule
     private const NOTICE_INTERRUPTED = 'interrupted';
 
     /**
-     * Bytes a form-target path keeps as they are (RFC 3986 pchar and "/",
-     * minus the apostrophe); every other byte is percent-encoded.
+     * Bytes a form-target path keeps as they are: RFC 3986 pchar and "/",
+     * minus ":" , ";" and the apostrophe. Every other byte is percent-encoded,
+     * so the scheme's colon is the only raw ":" in a form target.
      */
-    private const PATH_SAFE_BYTES = 'A-Za-z0-9\-._~!$&()*+,;=:@\/%';
-
-    /** Bytes one query piece of a form target keeps as they are. */
-    private const QUERY_SAFE_BYTES = 'A-Za-z0-9\-._~!$()*+,;=:@\/?%';
+    private const PATH_SAFE_BYTES = 'A-Za-z0-9\-._~!$&()*+,=@\/%';
 
     /**
-     * Query keys a form target never carries from either source: the login
-     * action (the target sets its own) and the login credentials. Every key
-     * starting with wpmgr_2fa is dropped as well.
+     * Query keys a form target never carries: the login action (the target
+     * sets its own), the login credentials and redirect_to (the session holds
+     * the redirect). Every key starting with wpmgr_2fa is dropped as well.
      */
-    private const DROPPED_QUERY_KEYS = ['action', 'log', 'pwd'];
-
-    /** Further keys never taken from the Referer. */
-    private const DROPPED_REFERER_KEYS = ['redirect_to'];
+    private const DROPPED_QUERY_KEYS = ['action', 'log', 'pwd', 'redirect_to'];
 
     /** Minimum cookie token length for trusted-device tokens. */
     private const DEVICE_TOKEN_BYTES = 32;
@@ -937,10 +938,21 @@ final class Site2faModule
             wp_die(esc_html__('User not found.', 'wpmgr-agent'), '', ['response' => 400]);
         }
 
-        // Verify signed session.
+        // Every session is bound to the browser that passed the password step:
+        // its bind cookie is set when the session is minted. Without that
+        // cookie the session fields prove nothing, whoever sends them, so the
+        // login restarts, clearing nothing and counting nothing. This runs
+        // before the signature check, so a request without the cookie cannot
+        // end the pending session either. It covers every submit: code,
+        // method switch, setup step and forced password change.
         $session = $this->loadSession($userId);
-        if ($session === null
-            || !hash_equals($session['id'], $sessionId)
+        if ($session === null || !$this->hasValidBindCookie($session)) {
+            wp_safe_redirect(esc_url_raw($this->loginFormUrl(self::NOTICE_INTERRUPTED)));
+            exit;
+        }
+
+        // Verify signed session.
+        if (!hash_equals($session['id'], $sessionId)
             || !$this->verifySessionHmac($userId, $sessionId, $session['created_at'], $session['uuid'], $hmac)
         ) {
             $this->clearSession($userId);
@@ -1672,28 +1684,19 @@ final class Site2faModule
 
     /**
      * Set the browser-binding cookie for a newly minted interstitial session.
-     * HttpOnly + SameSite=Lax + Secure-when-SSL; scoped to the login path and
-     * expiring alongside the session (SESSION_TTL).
+     * HttpOnly + SameSite=Lax + Secure-when-SSL, expiring with the session.
+     *
+     * Scoped the way WordPress scopes its own test cookie (COOKIEPATH, plus
+     * SITECOOKIEPATH when it differs, on COOKIE_DOMAIN), so it reaches every
+     * login URL of the site: a renamed slug, wp-login.php, and wp-login.php
+     * after a password step on a front-end page.
      *
      * @param string $token Raw bind token (its hash is what session['bind_hash'] stores).
      * @return void
      */
     private function setBindCookie(string $token): void
     {
-        if (headers_sent()) {
-            return;
-        }
-        setcookie(
-            self::COOKIE_BIND,
-            $token,
-            [
-                'expires'  => time() + self::SESSION_TTL,
-                'path'     => $this->loginPath(),
-                'httponly' => true,
-                'secure'   => is_ssl(),
-                'samesite' => 'Lax',
-            ]
-        );
+        $this->writeBindCookie($token, time() + self::SESSION_TTL);
     }
 
     /**
@@ -1705,35 +1708,91 @@ final class Site2faModule
      */
     private function clearBindCookie(): void
     {
-        if (headers_sent()) {
-            return;
-        }
-        setcookie(
-            self::COOKIE_BIND,
-            '',
-            [
-                'expires'  => time() - self::SESSION_TTL,
-                'path'     => $this->loginPath(),
-                'httponly' => true,
-                'secure'   => is_ssl(),
-                'samesite' => 'Lax',
-            ]
-        );
+        $this->writeBindCookie('', time() - self::SESSION_TTL);
     }
 
     /**
-     * The path of the login URL in use, which scopes the browser-binding
-     * cookie: every interstitial form posts back to that same path (see
-     * verifyActionUrl()), so the cookie travels with each submit.
+     * Write (or, with a past expiry, delete) the bind cookie on every path it
+     * lives on.
+     *
+     * Releases before #965 scoped the cookie to the login path only. Being the
+     * longer path, such a cookie is sent first and PHP keeps the first value,
+     * so it would shadow the current one until it expired: it is deleted here
+     * on every write.
+     *
+     * @param string $value
+     * @param int    $expires
+     * @return void
+     */
+    private function writeBindCookie(string $value, int $expires): void
+    {
+        if (headers_sent()) {
+            return;
+        }
+
+        $domain = defined('COOKIE_DOMAIN') ? (string) constant('COOKIE_DOMAIN') : '';
+        $paths  = self::bindCookiePaths();
+        foreach ($paths as $path) {
+            setcookie(self::COOKIE_BIND, $value, self::bindCookieOptions($expires, $path, $domain));
+        }
+
+        $legacy = $this->loginPath();
+        if (!in_array($legacy, $paths, true)) {
+            setcookie(self::COOKIE_BIND, '', self::bindCookieOptions(time() - self::SESSION_TTL, $legacy, ''));
+        }
+    }
+
+    /**
+     * COOKIEPATH and, when it differs, SITECOOKIEPATH: the paths WordPress
+     * sets its test cookie on.
+     *
+     * @return list<string>
+     */
+    private static function bindCookiePaths(): array
+    {
+        $cookiePath = defined('COOKIEPATH') ? (string) constant('COOKIEPATH') : '/';
+        $paths      = [$cookiePath !== '' ? $cookiePath : '/'];
+
+        $sitePath = defined('SITECOOKIEPATH') ? (string) constant('SITECOOKIEPATH') : '';
+        if ($sitePath !== '' && $sitePath !== $paths[0]) {
+            $paths[] = $sitePath;
+        }
+        return $paths;
+    }
+
+    /**
+     * @param int    $expires
+     * @param string $path
+     * @param string $domain '' for a host-only cookie.
+     * @return array<string,mixed>
+     */
+    private static function bindCookieOptions(int $expires, string $path, string $domain): array
+    {
+        return [
+            'expires'  => $expires,
+            'path'     => $path,
+            'domain'   => $domain,
+            'httponly' => true,
+            'secure'   => function_exists('is_ssl') && is_ssl(),
+            'samesite' => 'Lax',
+        ];
+    }
+
+    /**
+     * Path of the site's login URL, where releases before #965 scoped the bind
+     * cookie (see writeBindCookie()). Always a usable cookie path.
      *
      * @return string
      */
     private function loginPath(): string
     {
-        $path = $this->currentLoginTarget()['path'];
-        // A cookie path may not contain ';' or ',' (setcookie() refuses both).
-        // The site root is a superset that is safe for a random HttpOnly token.
-        return strpbrk($path, ';,') === false ? $path : '/';
+        $path = function_exists('wp_login_url') && function_exists('wp_parse_url')
+            ? wp_parse_url((string) wp_login_url(), PHP_URL_PATH)
+            : null;
+        if (!is_string($path) || $path === '' || $path[0] !== '/' || strpbrk($path, ";, \t\r\n\013\014") !== false) {
+            return '/wp-login.php';
+        }
+        return $path;
     }
 
     /**
@@ -2687,40 +2746,91 @@ final class Site2faModule
     // -------------------------------------------------------------------------
 
     /**
-     * Where every interstitial form posts: the login URL this request is
-     * running on, plus action=wpmgr_2fa_verify.
+     * Where every interstitial form posts, with action=wpmgr_2fa_verify.
      *
-     * A path-absolute reference ("/path?query"), never an absolute URL, so a
-     * browser can only resolve it against the origin it is already on.
+     * On the login screen this is the login URL the request is running on:
+     * the site's own scheme and host, taken from wp_login_url() and never from
+     * the request's Host header, then this request's path and filtered query.
+     * Every carried query key and value is percent-encoded and the path keeps
+     * no raw ":", so the scheme's colon is the only one in the URL and
+     * wp_kses() passes the absolute action attribute through unchanged.
+     *
+     * Anywhere else, for a password step run from a front-end page, it is
+     * wp_login_url(): the verify handler runs on login_init, so only the login
+     * screen can complete the challenge.
      *
      * @return string Unescaped; escape with esc_url() at output.
      */
     private function verifyActionUrl(): string
     {
-        return $this->loginTargetUrl('action=wpmgr_2fa_verify');
+        return $this->loginTargetUrl(['action' => 'wpmgr_2fa_verify']);
     }
 
     /**
      * The login form this request is running on, carrying a notice flag.
      *
      * @param string $notice One of the NOTICE_* values.
-     * @return string Unescaped, path-absolute.
+     * @return string Unescaped absolute URL.
      */
     private function loginFormUrl(string $notice): string
     {
-        return $this->loginTargetUrl(self::NOTICE_PARAM . '=' . rawurlencode($notice));
+        return $this->loginTargetUrl([self::NOTICE_PARAM => $notice]);
     }
 
     /**
-     * @param string $extraPiece One encoded "key=value" piece appended last.
+     * @param array<string,string> $extra Query arguments appended last.
      * @return string
      */
-    private function loginTargetUrl(string $extraPiece): string
+    private function loginTargetUrl(array $extra): string
     {
-        $target   = $this->currentLoginTarget();
-        $pieces   = $target['params'];
-        $pieces[] = $extraPiece;
-        return $target['path'] . '?' . implode('&', $pieces);
+        $loginUrl = function_exists('wp_login_url') ? (string) wp_login_url() : '/wp-login.php';
+        $fallback = self::appendQueryArgs($loginUrl, $extra);
+
+        $siteOrigin = self::originOf($loginUrl);
+        if ($siteOrigin === null || !self::isLoginScreenRequest()) {
+            return $fallback;
+        }
+
+        $target = $this->currentLoginTarget($siteOrigin);
+        $pieces = $target['params'];
+        foreach ($extra as $key => $value) {
+            $pieces[] = rawurlencode($key) . '=' . rawurlencode($value);
+        }
+        $url = self::originPrefix($siteOrigin) . $target['path'] . '?' . implode('&', $pieces);
+
+        // Defense in depth: a form target that does not name the site's own
+        // origin is never emitted.
+        return self::originOf($url) === $siteOrigin ? $url : $fallback;
+    }
+
+    /**
+     * Whether this request is the login screen, where the verify handler runs.
+     *
+     * @return bool
+     */
+    private static function isLoginScreenRequest(): bool
+    {
+        return function_exists('did_action') && did_action('login_init') > 0;
+    }
+
+    /**
+     * wp_login_url() plus query arguments, built the way the form target was
+     * built before #965.
+     *
+     * @param string               $url
+     * @param array<string,string> $args
+     * @return string
+     */
+    private static function appendQueryArgs(string $url, array $args): string
+    {
+        if (function_exists('add_query_arg')) {
+            return (string) add_query_arg($args, $url);
+        }
+        $pieces = [];
+        foreach ($args as $key => $value) {
+            $pieces[] = rawurlencode($key) . '=' . rawurlencode($value);
+        }
+        return $url . (str_contains($url, '?') ? '&' : '?') . implode('&', $pieces);
     }
 
     /**
@@ -2728,103 +2838,105 @@ final class Site2faModule
      *
      * Both come from REQUEST_URI. When this request is the bare core
      * wp-login.php, the query pieces may come from the Referer instead, but
-     * only from a Referer on this request's own origin and path: a login
-     * renamer can post its form there and keep its slug only in the page the
-     * visitor came from. The path never comes from the Referer.
+     * only from a Referer on the site's own origin and this request's path: a
+     * login renamer can post its form there and keep its slug only in the page
+     * the visitor came from. The path never comes from the Referer.
      *
      * Falls back to the path of wp_login_url() only when REQUEST_URI carries
      * no usable path.
      *
+     * @param string $siteOrigin Normalised origin of wp_login_url().
      * @return array{path:string,params:list<string>}
      */
-    private function currentLoginTarget(): array
+    private function currentLoginTarget(string $siteOrigin): array
     {
         $target = null;
         if (isset($_SERVER['REQUEST_URI']) && is_string($_SERVER['REQUEST_URI']) && function_exists('esc_url_raw')) {
             $target = self::splitRequestTarget(esc_url_raw(wp_unslash($_SERVER['REQUEST_URI'])));
         }
         if ($target === null) {
-            $fallback = function_exists('wp_login_url') ? wp_login_url() : '/wp-login.php';
+            $fallback = function_exists('wp_login_url') ? (string) wp_login_url() : '/wp-login.php';
             $target   = self::splitRequestTarget($fallback) ?? ['path' => '/wp-login.php', 'query' => ''];
         }
 
-        $params = self::filterQueryPieces($target['query'], false);
+        $params = self::filterQueryPieces($target['query']);
         if ($params === [] && self::isCoreLoginScript($target['path'])) {
-            $params = $this->refererQueryPieces($target['path']);
+            $params = self::refererQueryPieces($target['path'], $siteOrigin);
         }
 
         return ['path' => $target['path'], 'params' => $params];
     }
 
     /**
-     * Query pieces of a Referer on this request's own origin and path.
+     * Query pieces of a Referer on the site's own origin and this request's path.
      *
      * @param string $currentPath Normalised path of this request.
+     * @param string $siteOrigin  Normalised origin of wp_login_url().
      * @return list<string>
      */
-    private function refererQueryPieces(string $currentPath): array
+    private static function refererQueryPieces(string $currentPath, string $siteOrigin): array
     {
         if (!isset($_SERVER['HTTP_REFERER']) || !is_string($_SERVER['HTTP_REFERER']) || !function_exists('esc_url_raw')) {
             return [];
         }
-        $origin = self::currentOrigin();
-        if ($origin === null) {
+
+        $referer = esc_url_raw(wp_unslash($_SERVER['HTTP_REFERER']));
+        if (self::originOf($referer) !== $siteOrigin) {
             return [];
         }
 
-        $referer = wp_parse_url(esc_url_raw(wp_unslash($_SERVER['HTTP_REFERER'])));
-        if (!is_array($referer) || !isset($referer['scheme'], $referer['host'])) {
+        $parts = wp_parse_url($referer);
+        if (!is_array($parts)) {
             return [];
         }
-        if (self::originOf((string) $referer['scheme'], (string) $referer['host'], $referer['port'] ?? null) !== $origin) {
-            return [];
-        }
-
         $target = self::splitRequestTarget(
-            (string) ($referer['path'] ?? '/') . (isset($referer['query']) ? '?' . $referer['query'] : '')
+            (string) ($parts['path'] ?? '/') . (isset($parts['query']) ? '?' . $parts['query'] : '')
         );
         if ($target === null || $target['path'] !== $currentPath) {
             return [];
         }
 
-        return self::filterQueryPieces($target['query'], true);
+        return self::filterQueryPieces($target['query']);
     }
 
     /**
-     * "scheme://host:port" of this request, or null when the Host header is
-     * missing or malformed.
+     * Normalised "scheme://host:port" of an http or https URL, or null.
      *
+     * @param string $url
      * @return string|null
      */
-    private static function currentOrigin(): ?string
+    private static function originOf(string $url): ?string
     {
-        if (!isset($_SERVER['HTTP_HOST']) || !is_string($_SERVER['HTTP_HOST'])) {
-            return null;
-        }
-        $host = sanitize_text_field(wp_unslash($_SERVER['HTTP_HOST']));
-        if ($host === '' || preg_match('/[^A-Za-z0-9.\-:\[\]]/', $host) === 1) {
+        $parts = function_exists('wp_parse_url') ? wp_parse_url($url) : false;
+        if (!is_array($parts) || !isset($parts['scheme'], $parts['host'])) {
             return null;
         }
 
-        $scheme = function_exists('is_ssl') && is_ssl() ? 'https' : 'http';
-        $parts  = wp_parse_url($scheme . '://' . $host);
-        if (!is_array($parts) || !isset($parts['host'])) {
+        $scheme = strtolower((string) $parts['scheme']);
+        $host   = strtolower((string) $parts['host']);
+        if (($scheme !== 'http' && $scheme !== 'https') || $host === '' || preg_match('/[^a-z0-9.\-\[\]:]/', $host) === 1) {
             return null;
         }
-        return self::originOf($scheme, (string) $parts['host'], $parts['port'] ?? null);
+
+        $port = isset($parts['port']) ? (int) $parts['port'] : ($scheme === 'https' ? 443 : 80);
+        return $scheme . '://' . $host . ':' . $port;
     }
 
     /**
-     * @param string $scheme
-     * @param string $host
-     * @param mixed  $port Explicit port, or null for the scheme's default.
+     * An origin from originOf() as a URL prefix, without the scheme's default port.
+     *
+     * @param string $origin
      * @return string
      */
-    private static function originOf(string $scheme, string $host, mixed $port): string
+    private static function originPrefix(string $origin): string
     {
-        $scheme = strtolower($scheme);
-        $port   = is_int($port) ? $port : ($scheme === 'https' ? 443 : 80);
-        return $scheme . '://' . strtolower($host) . ':' . $port;
+        if (str_starts_with($origin, 'https://') && str_ends_with($origin, ':443')) {
+            return substr($origin, 0, -4);
+        }
+        if (str_starts_with($origin, 'http://') && str_ends_with($origin, ':80')) {
+            return substr($origin, 0, -3);
+        }
+        return $origin;
     }
 
     /**
@@ -2833,9 +2945,8 @@ final class Site2faModule
      *
      * Any scheme and authority are discarded, so the result never names a
      * host. Bytes outside PATH_SAFE_BYTES are percent-encoded and a leading run
-     * of slashes collapses to one, so a browser can never read the path as a
-     * network-path reference ("//host/..."). Collapsing comes after encoding:
-     * a sanitizer that deletes bytes can turn "/\host" into "//host".
+     * of slashes collapses to one. Collapsing comes after encoding: a
+     * sanitizer that deletes bytes can turn "/\host" into "//host".
      *
      * @param string $target
      * @return array{path:string,query:string}|null
@@ -2862,30 +2973,29 @@ final class Site2faModule
     }
 
     /**
-     * Keep the query pieces a form target may carry, each re-encoded.
+     * Keep the query pieces a form target may carry, each rebuilt from its
+     * decoded key and value with every byte outside the RFC 3986 unreserved
+     * set percent-encoded, so no raw ":" or "/" is ever carried. A valueless
+     * "slug" piece stays valueless.
      *
-     * Pieces are kept byte for byte (a valueless "slug" piece stays valueless)
-     * except for the encoding of unsafe bytes. Dropped: DROPPED_QUERY_KEYS,
-     * every key starting with wpmgr_2fa, and from the Referer also
-     * DROPPED_REFERER_KEYS. Keys are compared as PHP would register them.
+     * Dropped: DROPPED_QUERY_KEYS and every key starting with wpmgr_2fa, with
+     * keys compared as PHP would register them.
      *
-     * @param string $query       Raw query string, without the "?".
-     * @param bool   $fromReferer Whether the query came from the Referer.
+     * @param string $query Raw query string, without the "?".
      * @return list<string>
      */
-    private static function filterQueryPieces(string $query, bool $fromReferer): array
+    private static function filterQueryPieces(string $query): array
     {
-        $dropped = $fromReferer
-            ? array_merge(self::DROPPED_QUERY_KEYS, self::DROPPED_REFERER_KEYS)
-            : self::DROPPED_QUERY_KEYS;
-
         $kept = [];
         foreach (explode('&', $query) as $piece) {
             $name = self::queryPieceName($piece);
-            if ($name === '' || in_array($name, $dropped, true) || str_starts_with($name, 'wpmgr_2fa')) {
+            if ($name === '' || in_array($name, self::DROPPED_QUERY_KEYS, true) || str_starts_with($name, 'wpmgr_2fa')) {
                 continue;
             }
-            $kept[] = self::encodeUnsafeBytes($piece, self::QUERY_SAFE_BYTES);
+            $eq     = strpos($piece, '=');
+            $kept[] = $eq === false
+                ? rawurlencode(urldecode($piece))
+                : rawurlencode(urldecode(substr($piece, 0, $eq))) . '=' . rawurlencode(urldecode(substr($piece, $eq + 1)));
         }
         return $kept;
     }
