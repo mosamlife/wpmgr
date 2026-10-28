@@ -1965,40 +1965,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 				})
 				return row, err
 			},
-			GetUpdateReportStats: func(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time) ([]sqlc.GetUpdateReportStatsRow, error) {
-				var rows []sqlc.GetUpdateReportStatsRow
-				err := pool.InAgentTx(ctx, func(tx pgx.Tx) error {
-					var qerr error
-					rows, qerr = sqlc.New(tx).GetUpdateReportStats(ctx, sqlc.GetUpdateReportStatsParams{
-						TenantID: tenantID,
-						SiteID:   siteID,
-						FromTime: pgtype.Timestamptz{Time: from, Valid: true},
-						ToTime:   pgtype.Timestamptz{Time: to, Valid: true},
-					})
-					return qerr
-				})
-				return rows, err
-			},
-			// GH #969 version table. Called once per site with that one site's
-			// id, which ListClientSites returned for this client: under
-			// InAgentTx the tenant_id predicate is the tenant boundary and the
-			// site id list is the client boundary.
-			ListReportUpdateItems: func(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time, limit int32) ([]sqlc.ListReportUpdateItemsRow, error) {
-				var rows []sqlc.ListReportUpdateItemsRow
-				err := pool.InAgentTx(ctx, func(tx pgx.Tx) error {
-					var qerr error
-					rows, qerr = sqlc.New(tx).ListReportUpdateItems(ctx, sqlc.ListReportUpdateItemsParams{
-						TenantID: tenantID,
-						SiteIds:  []uuid.UUID{siteID},
-						FromTime: pgtype.Timestamptz{Time: from, Valid: true},
-						ToTime:   pgtype.Timestamptz{Time: to, Valid: true},
-						RowLimit: limit,
-					})
-					return qerr
-				})
-				return rows, err
-			},
-			GetDailyRollups: rumStore.GetDailyRollups,
+			GetUpdateReportStats:  reportpkg.UpdateReportStatsSource(pool),
+			ListReportUpdateItems: reportpkg.ListReportUpdateItemsSource(pool),
+			GetDailyRollups:       rumStore.GetDailyRollups,
 			GetFleetStatsBySite: func(ctx context.Context, tenantID uuid.UUID, from, to time.Time, limit int32) ([]email.SiteStatsRow, error) {
 				return emailRepo.GetFleetStatsBySite(ctx, tenantID, from, to, limit)
 			},

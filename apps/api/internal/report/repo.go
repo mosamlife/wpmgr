@@ -580,3 +580,50 @@ func rowToReport(row sqlc.GeneratedReport) GeneratedReport {
 	}
 	return r
 }
+
+// ---------------------------------------------------------------------------
+// Aggregator update sources (wired in cmd/wpmgr/main.go)
+// ---------------------------------------------------------------------------
+
+// UpdateReportStatsSource is the production Sources.GetUpdateReportStats. It
+// runs under InAgentTx, where RLS admits every tenant's update_tasks rows, so
+// the query's tenant_id predicate is the tenant boundary.
+func UpdateReportStatsSource(pool *db.Pool) func(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time) ([]sqlc.GetUpdateReportStatsRow, error) {
+	return func(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time) ([]sqlc.GetUpdateReportStatsRow, error) {
+		var rows []sqlc.GetUpdateReportStatsRow
+		err := pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+			var qerr error
+			rows, qerr = sqlc.New(tx).GetUpdateReportStats(ctx, sqlc.GetUpdateReportStatsParams{
+				TenantID: tenantID,
+				SiteID:   siteID,
+				FromTime: pgtype.Timestamptz{Time: from, Valid: true},
+				ToTime:   pgtype.Timestamptz{Time: to, Valid: true},
+			})
+			return qerr
+		})
+		return rows, err
+	}
+}
+
+// ListReportUpdateItemsSource is the production Sources.ListReportUpdateItems
+// (GH #969 version table). It is called once per site with that one site's
+// id, which ListClientSites returned for this client: under InAgentTx the
+// tenant_id predicate is the tenant boundary and the site id list is the
+// client boundary.
+func ListReportUpdateItemsSource(pool *db.Pool) func(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time, limit int32) ([]sqlc.ListReportUpdateItemsRow, error) {
+	return func(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time, limit int32) ([]sqlc.ListReportUpdateItemsRow, error) {
+		var rows []sqlc.ListReportUpdateItemsRow
+		err := pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+			var qerr error
+			rows, qerr = sqlc.New(tx).ListReportUpdateItems(ctx, sqlc.ListReportUpdateItemsParams{
+				TenantID: tenantID,
+				SiteIds:  []uuid.UUID{siteID},
+				FromTime: pgtype.Timestamptz{Time: from, Valid: true},
+				ToTime:   pgtype.Timestamptz{Time: to, Valid: true},
+				RowLimit: limit,
+			})
+			return qerr
+		})
+		return rows, err
+	}
+}
