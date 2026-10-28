@@ -82,6 +82,7 @@ final class LocalStoreRestoreTest extends TestCase
         $restorer->swap($stagingDir, $targetDir, $restoreId, $this->noopRestoreProgress());
 
         $this->assertCustomUploadsStoreKept($targetDir);
+        $this->assertSame('RESTORED_PLUGIN_FILE', file_get_contents($targetDir . '/plugins/acme/wpmgr-backups/readme.txt'), 'a folder that only shares the store\'s name is restored');
     }
 
     public function testWpContentRestoreKeepsAStoreInACustomUploadsFolder(): void
