@@ -411,6 +411,26 @@ cp "$SHIM_TARBALL" "$out"
 SHIM
 } >"$shim/curl"
 chmod +x "$shim/curl"
+# A mkdir that says yes for a directory that is already there. The mkdir of the Ubuntu 26.04
+# runner image (uutils coreutils) does that for the second of two runs that make the same new
+# directory at the same instant, which is what the lock cases below must survive. This one does
+# it every time, so a case does not have to win a race to meet it. It is only on the PATH of the
+# cases that ask for it.
+real_mkdir="$(command -v mkdir)"
+shim_liar="$tmp/shim-liar"
+mkdir -p "$shim_liar"
+{
+  printf '#!/usr/bin/env bash\nreal_mkdir=%s\n' "$real_mkdir"
+  cat <<'SHIM'
+if [ "$#" -eq 1 ] && [ -d "$1" ]; then
+  exit 0
+fi
+exec "$real_mkdir" "$@"
+SHIM
+} >"$shim_liar/mkdir"
+chmod +x "$shim_liar/mkdir"
+cp "$shim/mv" "$shim_liar/mv"
+cp "$shim/curl" "$shim_liar/curl"
 cat >"$tmp/fakephp" <<'SHIM'
 #!/usr/bin/env bash
 # Needs only the core it is handed ($2) to be there. As a reader (SHIM_READER_FLAG set)
@@ -666,6 +686,50 @@ wait "$pw"
 rc_w=$?
 if [ "$rc_w" -eq 0 ]; then ok "  and it goes on once the lock is freed (exit $rc_w)"; else bad "  and it goes on once the lock is freed (exit $rc_w)"; sed 's/^/     | /' "$tmp/lock_freed.out" | head -8; fi
 if [ "$(marker_of "$C/$sha_mini")" = "$sha_mini" ] && only_the_core "$C" "$sha_mini"; then ok "  and the core is replaced and no lock is left"; else bad "  and the core is replaced and no lock is left ($(ls -A "$C"))"; fi
+
+# mkdir is not what decides who holds a lock: on an image whose mkdir says yes to a directory
+# that is already there, a lock another run holds must still be that run's.
+newcache lock-liar
+corrupt_mini "$C"
+mkdir "$C/.lock.$sha_mini"
+printf '%s\n' "$$" >"$C/.lock.$sha_mini/pid"
+expect "a lock a live run holds is not taken when mkdir says yes for it" nonzero "${hermetic[@]}" PATH="$shim_liar:$PATH" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S" PAGE_KSES_LOCK_WAIT=2
+said "  and it names who holds it" "held by pid $$, which is running"
+if [ "$(cat "$C/.lock.$sha_mini/pid" 2>/dev/null || true)" = "$$" ] && [ "$(marker_of "$C/$sha_mini")" = "$wrong" ]; then ok "  and the lock still names its owner and the core was left alone"; else bad "  and the lock still names its owner and the core was left alone"; fi
+
+# The same for the lock two waiters take turns on before one of them removes a dead run's lock.
+newcache reclaim-liar
+corrupt_mini "$C"
+mkdir "$C/.lock.$sha_mini" "$C/.lock.$sha_mini.reclaim"
+printf '%s\n' "$dead_pid" >"$C/.lock.$sha_mini/pid"
+printf '%s\n' "$$" >"$C/.lock.$sha_mini.reclaim/pid"
+expect "a reclaim lock a live run holds is not taken when mkdir says yes for it" nonzero "${hermetic[@]}" PATH="$shim_liar:$PATH" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S" PAGE_KSES_LOCK_WAIT=2
+said "  and it says the owner is gone" "left by pid $dead_pid, which is gone"
+if [ -d "$C/.lock.$sha_mini" ] && [ "$(cat "$C/.lock.$sha_mini.reclaim/pid" 2>/dev/null || true)" = "$$" ] && [ "$(marker_of "$C/$sha_mini")" = "$wrong" ]; then ok "  and it removed nothing: the lock, the reclaim lock and the core are as they were"; else bad "  and it removed nothing: the lock, the reclaim lock and the core are as they were"; fi
+
+# Two runs at the rename with a corrupt core in the way, on that mkdir: both pass, and one of them
+# waits its turn instead of thinking it holds the lock too.
+newcache race-liar
+rm -f "$S/go"
+corrupt_mini "$C"
+spawn "$tmp/race_liar_a.out" "${hermetic[@]}" PATH="$shim_liar:$PATH" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S"
+pa=$SPAWNED
+spawn "$tmp/race_liar_b.out" "${hermetic[@]}" PATH="$shim_liar:$PATH" PAGE_KSES_CACHE="$C" SHIM_CACHE="$C" SHIM_DIR="$S"
+pb=$SPAWNED
+n=0
+while [ "$(arrivals "$S")" -lt 2 ] && [ "$n" -lt 200 ]; do
+  sleep 0.1
+  n=$((n + 1))
+done
+if [ "$(arrivals "$S")" -eq 2 ]; then ok "two runs are at the publishing rename with a corrupt core in the way, on a mkdir that says yes to both"; else bad "two runs are at the publishing rename with a corrupt core in the way, on a mkdir that says yes to both (arrivals: $(arrivals "$S"))"; fi
+: >"$S/go"
+wait "$pa"
+rc_a=$?
+wait "$pb"
+rc_b=$?
+if [ "$rc_a" -eq 0 ] && [ "$rc_b" -eq 0 ]; then ok "  and both runs pass (exit $rc_a, $rc_b)"; else bad "  and both runs pass (exit $rc_a, $rc_b)"; sed 's/^/     | /' "$tmp/race_liar_a.out" "$tmp/race_liar_b.out" | head -12; fi
+if [ "$(marker_of "$C/$sha_mini")" = "$sha_mini" ] && grep -q 'miniature kses' "$C/$sha_mini/wordpress/wp-includes/kses.php"; then ok "  and the corrupt core was replaced by a verified one"; else bad "  and the corrupt core was replaced by a verified one"; fi
+if only_the_core "$C" "$sha_mini"; then ok "  and no work dir, lock or old copy is left"; else bad "  and no work dir, lock or old copy is left ($(ls -A "$C"))"; fi
 
 # Without ps a lock cannot be judged, and a lock that cannot be judged is not guessed at.
 #
