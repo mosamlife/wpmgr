@@ -332,7 +332,8 @@ func overlapForIntervals(intervals []PauseInterval, from, to time.Time) (pauseOv
 // BuildReportData aggregates all section data for the given client and period.
 // A failing section source degrades that section to nil + slog.Warn — it does
 // NOT fail the whole report. Only sections enabled by the schedule flags are
-// populated.
+// populated. The list of the client's sites is not a section: when it cannot
+// be read there is nothing to report, and the error is returned.
 func BuildReportData(ctx context.Context, sources Sources, in BuildInput) (ReportData, error) {
 	sections := DefaultSectionFlags()
 	if in.Schedule != nil {
@@ -364,13 +365,15 @@ func BuildReportData(ctx context.Context, sources Sources, in BuildInput) (Repor
 		Sections:      sections,
 	}
 
-	// Enumerate sites assigned to this client.
+	// Enumerate sites assigned to this client. A failed read is an error, not
+	// an empty report: a report with no sites would be stored and sent as the
+	// client's real report. The generate job fails the attempt and River
+	// retries it.
 	sites, err := sources.ListClientSites(ctx, in.TenantID, in.ClientID)
 	if err != nil {
 		slog.Warn("report aggregator: list client sites failed",
 			slog.String("client_id", in.ClientID.String()), slog.Any("error", err))
-		rd.Sites = []SiteReport{}
-		return rd, nil
+		return ReportData{}, fmt.Errorf("report aggregator: list client sites: %w", err)
 	}
 
 	// Pre-fetch email stats for all sites in one query.
