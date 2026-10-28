@@ -56,6 +56,12 @@ class ClearEmailConfigCommandTest extends TestCase
     /** @var list<string> Option names whose delete_option() is refused: the row stays and false is returned. */
     private array $refuseDelete = [];
 
+    /** Whether a global $wpdb existed when the test started. */
+    private bool $hadWpdb = false;
+
+    /** The global $wpdb that was set aside for the test, if there was one. */
+    private mixed $savedWpdb = null;
+
     /** @var list<string> Option names whose delete_option() throws before the row is touched. */
     private array $throwBeforeDelete = [];
 
@@ -68,7 +74,11 @@ class ClearEmailConfigCommandTest extends TestCase
         Monkey\setUp();
 
         // Another test class may have left a global $wpdb behind; the connector
-        // would then try to use it for its anti-replay table.
+        // would then try to use it for its anti-replay table. Set it aside for
+        // this test and put it back afterwards, so the global is exactly as the
+        // next test class finds it.
+        $this->hadWpdb   = array_key_exists('wpdb', $GLOBALS);
+        $this->savedWpdb = $GLOBALS['wpdb'] ?? null;
         unset($GLOBALS['wpdb']);
 
         $this->keyFile = sys_get_temp_dir() . '/wpmgr-agent-clearmail-' . bin2hex(random_bytes(8)) . '.key';
@@ -134,6 +144,9 @@ class ClearEmailConfigCommandTest extends TestCase
             @unlink($this->keyFile);
         }
         unset($GLOBALS['wpdb']);
+        if ($this->hadWpdb) {
+            $GLOBALS['wpdb'] = $this->savedWpdb;
+        }
         Monkey\tearDown();
         parent::tearDown();
     }
