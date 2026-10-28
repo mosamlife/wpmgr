@@ -55,15 +55,22 @@ final class CacheWriter
     public const KEY_CONSTANT = 'WPMGR_PAGE_CACHE_KEY';
 
     /**
-     * Chunk size the capture buffer is opened with, and the size from which a
-     * response is no longer a page that is stored. PHP hands the buffer to
-     * {@see handle()} as soon as it holds this many bytes, and the response is
-     * then passed through as it is produced, never held in memory in full. A
-     * page smaller than this reaches the handler in one piece, at the final
-     * flush, exactly as with an unchunked buffer. PHP allocates the buffer at
-     * this size when it opens, so it is kept to four megabytes.
+     * The largest chunk the capture buffer is opened with: 4 MB. A request with
+     * at least 32 MB of memory left, or none to count (memory_limit -1), gets
+     * it. See {@see chunkBytes()}.
      */
-    public const CHUNK_BYTES = 4194304;
+    public const MAX_CHUNK_BYTES = 4194304;
+
+    /**
+     * The smallest chunk the capture buffer is opened with: 512 KB. See
+     * {@see chunkBytes()}.
+     */
+    public const MIN_CHUNK_BYTES = 524288;
+
+    /**
+     * The chunk is this fraction of the memory the request has left: one eighth.
+     */
+    private const FREE_MEMORY_SHARE = 8;
 
     private CacheConfig $config;
 
@@ -148,6 +155,66 @@ final class CacheWriter
         } else {
             $this->optimizer = null;
         }
+    }
+
+    /**
+     * The chunk size the capture buffer is opened with in this request, in
+     * bytes: one eighth of the memory the request has left under memory_limit,
+     * kept between {@see MIN_CHUNK_BYTES} and {@see MAX_CHUNK_BYTES}, and
+     * {@see MAX_CHUNK_BYTES} when memory_limit is -1.
+     *
+     * PHP hands the buffer to {@see handle()} as soon as it holds this many
+     * bytes, and the response is then passed through as it is produced, never
+     * held in memory in full. A page smaller than the chunk reaches the handler
+     * in one piece, at the final flush, and is the only kind of response that
+     * is stored: the chunk is also the size from which a page is no longer
+     * stored. PHP reserves the whole chunk against memory_limit when the buffer
+     * opens, which is why it is sized from what the request has left and not
+     * fixed. The memory in use is the memory PHP has obtained from the system,
+     * the figure memory_limit is enforced against.
+     *
+     * @return int
+     */
+    public static function chunkBytes(): int
+    {
+        return self::chunkBytesFor(self::memoryLimitBytes(), memory_get_usage(true));
+    }
+
+    /**
+     * {@see chunkBytes()} for a given memory_limit and memory in use.
+     *
+     * @param int $limitBytes memory_limit in bytes, as WordPress reads it; -1 is no limit.
+     * @param int $usedBytes  Memory in use, in bytes.
+     * @return int
+     */
+    public static function chunkBytesFor(int $limitBytes, int $usedBytes): int
+    {
+        if ($limitBytes === -1) {
+            return self::MAX_CHUNK_BYTES;
+        }
+
+        return max(
+            self::MIN_CHUNK_BYTES,
+            min(self::MAX_CHUNK_BYTES, intdiv($limitBytes - $usedBytes, self::FREE_MEMORY_SHARE))
+        );
+    }
+
+    /**
+     * memory_limit in bytes, read the way WordPress reads it
+     * (wp_convert_hr_to_bytes(): "128M", "1G", a plain byte count, "-1"). 0 when
+     * it cannot be read, which leaves no memory to count and so the smallest
+     * chunk.
+     *
+     * @return int
+     */
+    private static function memoryLimitBytes(): int
+    {
+        $configured = ini_get('memory_limit');
+        if (!is_string($configured) || !function_exists('wp_convert_hr_to_bytes')) {
+            return 0;
+        }
+
+        return (int) wp_convert_hr_to_bytes($configured);
     }
 
     /**

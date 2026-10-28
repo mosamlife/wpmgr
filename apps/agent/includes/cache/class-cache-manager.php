@@ -205,8 +205,11 @@ final class CacheManager
         // not applicable here because the response is not yet complete. The
         // chunk size bounds what is held: a response that reaches it (a
         // download, a very large page) is passed through as it is produced and
-        // is not stored, and output is never held back across chunks.
-        ob_start([$writer, 'handle'], CacheWriter::CHUNK_BYTES);
+        // is not stored, and output is never held back across chunks. PHP
+        // reserves the whole chunk against memory_limit as the buffer opens,
+        // so the chunk is sized from the memory this request has left
+        // (CacheWriter::chunkBytes()).
+        ob_start([$writer, 'handle'], CacheWriter::chunkBytes());
     }
 
     /**

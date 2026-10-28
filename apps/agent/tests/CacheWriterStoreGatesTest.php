@@ -12,6 +12,9 @@
  *  - a response that is not HTML, or carries Content-Disposition, is not
  *    stored; a response that reaches one chunk is passed through as it is
  *    produced, so it is never held in memory in full, and is not stored;
+ *  - the chunk is an eighth of the memory the request has left, between 512 KB
+ *    and 4 MB (4 MB when memory_limit is -1), and a page smaller than the chunk
+ *    is stored whatever the chunk is;
  *  - output is never held back across chunks, so a plugin that takes the
  *    buffer (ob_get_clean) loses nothing that was already on its way;
  *  - a buffer a plugin throws away (ob_end_clean, ob_get_clean) is not stored;
@@ -49,6 +52,21 @@ final class CacheWriterStoreGatesTest extends TestCase
 
     private const KEY = 'example.com/about/index.html.gz';
 
+    /** The smallest chunk the capture buffer opens with: 512 KB. */
+    private const FLOOR = 524288;
+
+    /** The largest chunk the capture buffer opens with: 4 MB. */
+    private const CEILING = 4194304;
+
+    /** Memory left when the buffer opens that is tight: 3 MB, an eighth of which is under the floor. */
+    private const TIGHT = 3145728;
+
+    /** Memory left when the buffer opens that is plentiful: 1 GB. */
+    private const PLENTY = 1073741824;
+
+    /** The memory_limit the tests run under, wide enough for a 64 MB download. */
+    private const ROOM = '1024M';
+
     private string $base = '';
 
     private string $root = '';
@@ -65,6 +83,11 @@ final class CacheWriterStoreGatesTest extends TestCase
     {
         parent::set_up();
         Monkey\setUp();
+
+        // The chunk is sized from the memory left when the buffer opens, so a
+        // test about what is stored must not depend on how much the process
+        // running it has used: every test starts with room for a 4 MB chunk.
+        ini_set('memory_limit', self::ROOM);
 
         $this->base = sys_get_temp_dir() . '/wpmgr-store-gates-' . uniqid('', true);
         $this->root = $this->base . '/cache/wpmgr';
@@ -124,19 +147,75 @@ final class CacheWriterStoreGatesTest extends TestCase
      * opens on init; the shutdown flush closes it) and return what reached the
      * visitor.
      *
-     * @param callable $render Produces the response; may open or close buffers.
+     * @param callable                    $render Produces the response; may open or close buffers.
+     * @param callable(CacheManager):void|null $open   Opens the capture buffer; startBuffer() when omitted.
      */
-    private function respond(callable $render): string
+    private function respond(callable $render, ?callable $open = null): string
     {
         $manager = new CacheManager();
         ob_start();
         $levelsBefore = ob_get_level();
-        $manager->startBuffer();
+        $open === null ? $manager->startBuffer() : $open($manager);
         $render();
         while (ob_get_level() > $levelsBefore) {
             ob_end_flush();
         }
         return (string) ob_get_clean();
+    }
+
+    /**
+     * Open the capture buffer through CacheManager::startBuffer(), as init
+     * does, in a request that has the given amount of memory left, and return
+     * the chunk size it opened with. The request gets its room back as soon as
+     * the buffer is open: the chunk is chosen when the buffer opens, and what
+     * the limit is afterwards does not change it.
+     *
+     * @param CacheManager    $manager The manager whose buffer opens.
+     * @param int|string|null $left    Bytes left under memory_limit when the buffer
+     *                                 opens; a string is memory_limit as it is
+     *                                 written in php.ini ("1G"); null is -1.
+     */
+    private function openCapture(CacheManager $manager, int|string|null $left): int
+    {
+        // Load everything startBuffer() touches while the limit is still wide,
+        // so the window below holds the buffer opening and nothing else.
+        $warm = new CacheManager();
+        $warm->startBuffer();
+        ob_end_clean();
+
+        if ($left === null) {
+            $limit = '-1';
+        } elseif (is_string($left)) {
+            $limit = $left;
+        } else {
+            $limit = (string) (memory_get_usage(true) + $left);
+        }
+
+        ini_set('memory_limit', $limit);
+        try {
+            $manager->startBuffer();
+        } finally {
+            ini_set('memory_limit', self::ROOM);
+        }
+
+        return (int) ob_get_status()['chunk_size'];
+    }
+
+    /**
+     * The chunk size the capture buffer opens with in a request that has the
+     * given amount of memory left (see openCapture()), with the buffer closed
+     * again.
+     *
+     * @param int|string|null $left Bytes left, memory_limit as written, or null for -1.
+     */
+    private function chunkOpenedWith(int|string|null $left): int
+    {
+        $levelBefore = ob_get_level();
+        $chunk       = $this->openCapture(new CacheManager(), $left);
+        $this->assertSame($levelBefore + 1, ob_get_level(), 'the capture buffer must have opened');
+        ob_end_clean();
+
+        return $chunk;
     }
 
     private function stored(): bool
@@ -187,7 +266,6 @@ final class CacheWriterStoreGatesTest extends TestCase
      */
     public function test_a_download_streamed_on_init_is_not_held_in_memory(): void
     {
-        ini_set('memory_limit', '1024M');
         $this->templateStage = false;
         $this->headers       = ['Content-Type: application/zip'];
         $manager             = new CacheManager();
@@ -212,7 +290,7 @@ final class CacheWriterStoreGatesTest extends TestCase
         }
         ob_end_clean();
 
-        $this->assertLessThan(3 * CacheWriter::CHUNK_BYTES, $held, sprintf('the capture held %.1f MB of a 64 MB download', $held / 1048576));
+        $this->assertLessThan(3 * self::CEILING, $held, sprintf('the capture held %.1f MB of a 64 MB download', $held / 1048576));
         $this->assertSame(64 << 20, $sent, 'every byte must reach the visitor');
         $this->assertFalse($this->stored());
     }
@@ -223,7 +301,6 @@ final class CacheWriterStoreGatesTest extends TestCase
      */
     public function test_a_non_html_response_after_the_template_stage_is_passed_through(): void
     {
-        ini_set('memory_limit', '1024M');
         $this->headers = ['Content-Type: application/octet-stream'];
         $manager       = new CacheManager();
 
@@ -241,7 +318,7 @@ final class CacheWriterStoreGatesTest extends TestCase
         }
         ob_end_clean();
 
-        $this->assertLessThan(3 * CacheWriter::CHUNK_BYTES, $held, sprintf('the capture held %.1f MB of a non-HTML response', $held / 1048576));
+        $this->assertLessThan(3 * self::CEILING, $held, sprintf('the capture held %.1f MB of a non-HTML response', $held / 1048576));
         $this->assertFalse($this->stored());
     }
 
@@ -315,7 +392,7 @@ final class CacheWriterStoreGatesTest extends TestCase
     {
         $body = '<!DOCTYPE html><html><body>' . str_repeat('<p>large page</p>', 200000) . '</body></html>';
         $this->assertGreaterThan(1 << 20, strlen($body), 'the page must be larger than a megabyte');
-        $this->assertLessThan(CacheWriter::CHUNK_BYTES, strlen($body));
+        $this->assertLessThan(self::CEILING, strlen($body));
 
         $visitor = $this->respond(static function () use ($body): void {
             foreach (str_split($body, 65536) as $piece) {
@@ -332,46 +409,65 @@ final class CacheWriterStoreGatesTest extends TestCase
     /**
      * A page of one chunk or more is passed through as it is produced and not
      * stored, and the visitor still receives all of it, in order. The largest
-     * page that is stored is one byte short of a chunk.
+     * page that is stored is one byte short of a chunk, whichever chunk the
+     * memory the request has left gave the buffer.
      *
      * @dataProvider provide_page_sizes_around_one_chunk
      *
+     * @param int  $left       Bytes of memory left when the buffer opens.
+     * @param int  $chunk      The chunk the buffer opens with then.
      * @param int  $size       Page size in bytes.
      * @param bool $stored     Whether a page of that size is stored.
      * @param int  $pieceBytes Size of the pieces the page is echoed in; 0 echoes it in one piece.
      */
-    public function test_only_a_page_smaller_than_one_chunk_is_stored(int $size, bool $stored, int $pieceBytes): void
+    public function test_only_a_page_smaller_than_one_chunk_is_stored(int $left, int $chunk, int $size, bool $stored, int $pieceBytes): void
     {
-        ini_set('memory_limit', '1024M');
         $head = '<!DOCTYPE html><html><body>';
         $tail = '</body></html>';
         $body = $head . str_repeat('x', $size - strlen($head) - strlen($tail)) . $tail;
         $this->assertSame($size, strlen($body));
 
-        $visitor = $this->respond(static function () use ($body, $pieceBytes): void {
-            self::echoPage($body, $pieceBytes);
-        });
+        $opened  = 0;
+        $visitor = $this->respond(
+            static function () use ($body, $pieceBytes): void {
+                self::echoPage($body, $pieceBytes);
+            },
+            function (CacheManager $manager) use ($left, &$opened): void {
+                $opened = $this->openCapture($manager, $left);
+            }
+        );
 
+        $this->assertSame($chunk, $opened, 'the buffer must open with the chunk that this much free memory gives');
         $this->assertSame(strlen($body), strlen($visitor));
         $this->assertSame(md5($body), md5($visitor), 'the visitor must receive every byte, in order');
         $this->assertSame($stored, $this->stored());
     }
 
     /**
-     * @return array<string,array{0:int,1:bool,2:int}>
+     * Page sizes around the chunk a request gets, for a request with plenty of
+     * memory left (a 4 MB chunk) and for one with little (the 512 KB floor), each
+     * echoed in pieces and in one echo.
+     *
+     * @return array<string,array{0:int,1:int,2:int,3:bool,4:int}>
      */
     public static function provide_page_sizes_around_one_chunk(): array
     {
-        $sizes = [
-            'one byte short of a chunk' => [CacheWriter::CHUNK_BYTES - 1, true],
-            'exactly one chunk'         => [CacheWriter::CHUNK_BYTES, false],
-            'two chunks and a bit'      => [(2 * CacheWriter::CHUNK_BYTES) + 4097, false],
+        $requests = [
+            'plenty of memory left' => [self::PLENTY, self::CEILING],
+            'little memory left'    => [self::TIGHT, self::FLOOR],
         ];
 
         $cases = [];
-        foreach ($sizes as $label => [$size, $stored]) {
-            foreach (self::provide_how_a_page_is_echoed() as $shape => [$pieceBytes]) {
-                $cases[$label . ', ' . $shape] = [$size, $stored, $pieceBytes];
+        foreach ($requests as $request => [$left, $chunk]) {
+            $sizes = [
+                'one byte short of a chunk' => [$chunk - 1, true],
+                'exactly one chunk'         => [$chunk, false],
+                'two chunks and a bit'      => [(2 * $chunk) + 4097, false],
+            ];
+            foreach ($sizes as $label => [$size, $stored]) {
+                foreach (self::provide_how_a_page_is_echoed() as $shape => [$pieceBytes]) {
+                    $cases[$request . ', ' . $label . ', ' . $shape] = [$left, $chunk, $size, $stored, $pieceBytes];
+                }
             }
         }
 
@@ -438,7 +534,7 @@ final class CacheWriterStoreGatesTest extends TestCase
     {
         $page = '<!DOCTYPE html><html><body>' . str_repeat('<p>row</p>', 220000) . '<span>END-MARKER</span></body></html>';
         $this->assertGreaterThan(1 << 20, strlen($page));
-        $this->assertLessThan(CacheWriter::CHUNK_BYTES, strlen($page));
+        $this->assertLessThan(self::CEILING, strlen($page));
 
         $visitor = $this->respondWithAPluginTakingTheTopBuffer(
             $page,
@@ -461,9 +557,8 @@ final class CacheWriterStoreGatesTest extends TestCase
      */
     public function test_a_page_over_one_chunk_a_plugin_takes_from_the_capture_buffer_is_delivered_whole(int $pieceBytes): void
     {
-        ini_set('memory_limit', '1024M');
         $page = '<!DOCTYPE html><html><body>' . str_repeat('<p>row</p>', 520000) . '<span>END-MARKER</span></body></html>';
-        $this->assertGreaterThan(CacheWriter::CHUNK_BYTES, strlen($page));
+        $this->assertGreaterThan(self::CEILING, strlen($page));
 
         $visitor = $this->respondWithAPluginTakingTheTopBuffer($page, $pieceBytes, static fn (string $taken): string => $taken);
 
@@ -497,6 +592,114 @@ final class CacheWriterStoreGatesTest extends TestCase
         }
 
         return (string) ob_get_clean();
+    }
+
+    // ---------------------------------------------------------------------
+    // Item: the chunk is sized from the memory the request has left.
+    // ---------------------------------------------------------------------
+
+    /**
+     * PHP reserves the whole chunk against memory_limit when the buffer opens.
+     * The chunk is an eighth of the memory the request has left, at least
+     * 512 KB and at most 4 MB, and 4 MB when there is no limit.
+     *
+     * @dataProvider provide_memory_and_the_chunk_it_gives
+     *
+     * @param int $limit Parsed memory_limit in bytes; -1 is no limit.
+     * @param int $used  Memory in use when the buffer opens.
+     * @param int $chunk The chunk size the buffer opens with.
+     */
+    public function test_the_chunk_is_an_eighth_of_the_memory_left_between_512_kb_and_4_mb(int $limit, int $used, int $chunk): void
+    {
+        $this->assertSame($chunk, CacheWriter::chunkBytesFor($limit, $used));
+    }
+
+    /**
+     * @return array<string,array{0:int,1:int,2:int}>
+     */
+    public static function provide_memory_and_the_chunk_it_gives(): array
+    {
+        $mb = 1048576;
+
+        return [
+            'nothing left'                           => [40 * $mb, 40 * $mb, self::FLOOR],
+            'more in use than the limit'             => [40 * $mb, 41 * $mb, self::FLOOR],
+            'a limit that could not be read'         => [0, 20 * $mb, self::FLOOR],
+            '3 MB left'                              => [40 * $mb, 37 * $mb, self::FLOOR],
+            '4 MB left: an eighth is the floor'      => [40 * $mb, 36 * $mb, self::FLOOR],
+            '4 MB and 8 bytes left'                  => [(40 * $mb) + 8, 36 * $mb, self::FLOOR + 1],
+            '8 MB left'                              => [40 * $mb, 32 * $mb, $mb],
+            '16 MB left'                             => [40 * $mb, 24 * $mb, 2 * $mb],
+            '32 MB left: an eighth is the ceiling'   => [64 * $mb, 32 * $mb, self::CEILING],
+            '32 MB less 8 bytes left'                => [(64 * $mb) - 8, 32 * $mb, self::CEILING - 1],
+            '33 MB left'                             => [65 * $mb, 32 * $mb, self::CEILING],
+            '1 GB left'                              => [1024 * $mb, 24 * $mb, self::CEILING],
+            'no limit'                               => [-1, 24 * $mb, self::CEILING],
+            'no limit, a lot in use'                 => [-1, 900 * $mb, self::CEILING],
+            'the largest limit there is'             => [PHP_INT_MAX, 24 * $mb, self::CEILING],
+        ];
+    }
+
+    /**
+     * A request with little memory left opens the smallest chunk, 512 KB, so
+     * that the buffer does not take what the page needs to render. Through
+     * the same code path init uses.
+     */
+    public function test_a_request_with_little_free_memory_opens_the_512_kb_chunk(): void
+    {
+        $this->assertSame(self::FLOOR, $this->chunkOpenedWith(self::TIGHT));
+    }
+
+    /**
+     * One with plenty opens the largest, 4 MB.
+     */
+    public function test_a_request_with_plenty_of_free_memory_opens_the_4_mb_chunk(): void
+    {
+        $this->assertSame(self::CEILING, $this->chunkOpenedWith(self::PLENTY));
+    }
+
+    /**
+     * Between the two the chunk follows the memory left: an eighth of 16 MB is
+     * 2 MB. The buffer itself is not counted in what is left, and neither is
+     * anything a few allocations between the limit being set and the buffer
+     * opening may take, hence the margin.
+     */
+    public function test_a_request_with_some_free_memory_opens_a_chunk_of_an_eighth_of_it(): void
+    {
+        $this->assertEqualsWithDelta(2097152, $this->chunkOpenedWith(16 * 1048576), 307200);
+    }
+
+    /**
+     * memory_limit -1 means there is no limit to be near: 4 MB.
+     */
+    public function test_a_request_without_a_memory_limit_opens_the_4_mb_chunk(): void
+    {
+        $this->assertSame(self::CEILING, $this->chunkOpenedWith(null));
+    }
+
+    /**
+     * memory_limit is read the way WordPress reads it, so a limit written with
+     * a unit is the number of bytes it says: each of these is 1 GB.
+     *
+     * @dataProvider provide_a_gigabyte_written_three_ways
+     *
+     * @param string $limit memory_limit as php.ini writes it.
+     */
+    public function test_a_memory_limit_written_with_a_unit_is_read_the_way_wordpress_reads_it(string $limit): void
+    {
+        $this->assertSame(self::CEILING, $this->chunkOpenedWith($limit));
+    }
+
+    /**
+     * @return array<string,array{0:string}>
+     */
+    public static function provide_a_gigabyte_written_three_ways(): array
+    {
+        return [
+            'in gigabytes' => ['1G'],
+            'in megabytes' => ['1024M'],
+            'in kilobytes' => ['1048576K'],
+        ];
     }
 
     // ---------------------------------------------------------------------
