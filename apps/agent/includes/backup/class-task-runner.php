@@ -1952,8 +1952,10 @@ final class TaskRunner
             $sidecarPath = $scratch . DIRECTORY_SEPARATOR . self::SUBSTATE_SIDECAR_NAME;
             $tmpPath     = $sidecarPath . '.tmp.' . getmypid();
             $written     = @file_put_contents($tmpPath, $encoded);
-            if ($written !== false && $written === strlen($encoded)) {
-                @rename($tmpPath, $sidecarPath); // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- atomic same-filesystem swap; WP_Filesystem::move() is copy+delete (non-atomic) and breaks crash/watchdog-resume safety
+            // A sidecar that was not renamed into place is not this state: the
+            // pointer is written only after the rename succeeds.
+            if ($written !== false && $written === strlen($encoded)
+                && @rename($tmpPath, $sidecarPath)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- atomic same-filesystem swap; WP_Filesystem::move() is copy+delete (non-atomic) and breaks crash/watchdog-resume safety
                 // DB column holds only the pointer; the full cursor is on disk.
                 $pointer    = self::encodeSubState([self::SUBSTATE_SIDECAR_KEY => true, 'file' => $sidecarPath]);
                 $rowEncoded = $pointer !== false ? $pointer : $encoded;
@@ -2127,6 +2129,7 @@ final class TaskRunner
             $scratch . DIRECTORY_SEPARATOR . 'paths.cache',
             $scratch . DIRECTORY_SEPARATOR . FilesArchiver::FILES_LIST_NAME,
             $scratch . DIRECTORY_SEPARATOR . FilesArchiver::TOMBSTONES_LIST_NAME,
+            $scratch . DIRECTORY_SEPARATOR . FilesArchiver::DISCOVERY_ID_NAME,
         ];
         foreach ($patterns as $p) {
             if (is_file($p)) {
@@ -2139,7 +2142,8 @@ final class TaskRunner
             // Match BOTH the generation-namespaced `<comp>.gNNN.partMMM.zip`
             // and the legacy `<comp>.partMMM.zip` part filenames.
             // Also the `<part>.zip.XXXXXX` output libzip leaves when a worker ends mid-close.
-            $zips = array_merge((array) @glob($scratch . DIRECTORY_SEPARATOR . $comp . '.*part*.zip'), (array) @glob($scratch . DIRECTORY_SEPARATOR . $comp . '.*part*.zip.*'));
+            // glob() returns false on error, which must never reach wp_delete_file().
+            $zips = array_merge(@glob($scratch . DIRECTORY_SEPARATOR . $comp . '.*part*.zip') ?: [], @glob($scratch . DIRECTORY_SEPARATOR . $comp . '.*part*.zip.*') ?: []);
             if (is_array($zips)) {
                 foreach ($zips as $f) {
                     wp_delete_file($f);
@@ -2246,6 +2250,7 @@ final class TaskRunner
             $scratch . DIRECTORY_SEPARATOR . 'paths.cache',
             $scratch . DIRECTORY_SEPARATOR . FilesArchiver::FILES_LIST_NAME,
             $scratch . DIRECTORY_SEPARATOR . FilesArchiver::TOMBSTONES_LIST_NAME,
+            $scratch . DIRECTORY_SEPARATOR . FilesArchiver::DISCOVERY_ID_NAME,
         ];
         foreach ($patterns as $p) {
             if (is_file($p)) {
@@ -2256,7 +2261,8 @@ final class TaskRunner
             // Match BOTH the generation-namespaced `<comp>.gNNN.partMMM.zip`
             // and the legacy `<comp>.partMMM.zip` part filenames.
             // Also the `<part>.zip.XXXXXX` output libzip leaves when a worker ends mid-close.
-            $zips = array_merge((array) @glob($scratch . DIRECTORY_SEPARATOR . $comp . '.*part*.zip'), (array) @glob($scratch . DIRECTORY_SEPARATOR . $comp . '.*part*.zip.*'));
+            // glob() returns false on error, which must never reach wp_delete_file().
+            $zips = array_merge(@glob($scratch . DIRECTORY_SEPARATOR . $comp . '.*part*.zip') ?: [], @glob($scratch . DIRECTORY_SEPARATOR . $comp . '.*part*.zip.*') ?: []);
             if (is_array($zips)) {
                 foreach ($zips as $f) {
                     wp_delete_file($f);

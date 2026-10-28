@@ -236,6 +236,14 @@ final class FilesArchiver
     private const PATHS_CACHE_NAME = 'paths.cache';
 
     /**
+     * Name of the file holding the random id of the current discovery. A
+     * fresh pass writes a new id before it changes anything else in $outDir,
+     * and a checkpoint is accepted only while its id is the one on disk, so
+     * a checkpoint can never be applied to another pass's file list.
+     */
+    public const DISCOVERY_ID_NAME = 'discovery.id';
+
+    /**
      * Name of the per-snapshot packed-files manifest emitted alongside every
      * archive run (full and incremental alike). Format: one line per packed
      * file — `<relpath>\t<size>\t<mtime>\n`.
@@ -620,8 +628,10 @@ final class FilesArchiver
                 $this->skippedSources[$rel] = true;
             }
         } else {
-            // One fresh pass: no part of an abandoned pass may share the
-            // scratch dir with it.
+            // One fresh pass. Its new discovery id comes first, so no earlier
+            // checkpoint validates again even if this pass ends before its own
+            // first save; then no part of an abandoned pass may remain.
+            $discoveryId = $this->renewDiscoveryId($outDir);
             $this->removeStaleParts($outDir, []);
             $totalFiles = isset($resume['total_files']) ? (int) $resume['total_files'] : 0;
             // ADR-051 instrumentation: carry-forward count (unchanged files skipped from the archive).
@@ -641,6 +651,7 @@ final class FilesArchiver
             }
             clearstatcache(true, $cachePath);
             $run = [
+                'discovery_id'     => $discoveryId,
                 'total_files'      => $totalFiles,
                 'cache_bytes'      => (int) @filesize($cachePath),
                 'files_carried'    => $filesCarried,
@@ -937,6 +948,12 @@ final class FilesArchiver
         if (($resume['checkpoint'] ?? null) !== self::CHECKPOINT_VERSION || ($resume['incremental'] ?? null) !== $incremental) {
             return null;
         }
+        // Bound to the discovery it was taken in: any later pass renewed the id.
+        $discoveryId = $resume['discovery_id'] ?? null;
+        $onDisk      = $this->currentDiscoveryId($outDir);
+        if (!is_string($discoveryId) || $onDisk === '' || !hash_equals($onDisk, $discoveryId)) {
+            return null;
+        }
         $total = $resume['total_files'] ?? null;
         $bytes = $resume['cache_bytes'] ?? null;
         $carried = $resume['files_carried'] ?? null;
@@ -1009,6 +1026,7 @@ final class FilesArchiver
 
         return [
             'run'             => [
+                'discovery_id'     => $discoveryId,
                 'total_files'      => $total,
                 'cache_bytes'      => $bytes,
                 'files_carried'    => $carried,
@@ -1098,6 +1116,37 @@ final class FilesArchiver
                 throw new \RuntimeException('FilesArchiver: cannot remove stale part: ' . esc_html($name));
             }
         }
+    }
+
+    /**
+     * Write a new random discovery id, atomically, and return it.
+     *
+     * @throws \RuntimeException When the id cannot be written: without it, an
+     *                           earlier checkpoint could still validate.
+     */
+    private function renewDiscoveryId(string $outDir): string
+    {
+        $id        = bin2hex(random_bytes(16));
+        $path      = $outDir . DIRECTORY_SEPARATOR . self::DISCOVERY_ID_NAME;
+        $temporary = $path . '.tmp';
+        $written   = @file_put_contents($temporary, $id);
+        if ($written !== strlen($id) || !@rename($temporary, $path) || $this->currentDiscoveryId($outDir) !== $id) { // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- atomic same-directory swap of a scratch file; WP_Filesystem::move() is not atomic
+            if (is_file($temporary)) { wp_delete_file($temporary); }
+            throw new \RuntimeException('FilesArchiver: cannot write the discovery id');
+        }
+        return $id;
+    }
+
+    /** The discovery id on disk, or '' when absent or malformed. */
+    private function currentDiscoveryId(string $outDir): string
+    {
+        $path = $outDir . DIRECTORY_SEPARATOR . self::DISCOVERY_ID_NAME;
+        clearstatcache(true, $path);
+        if (is_link($path) || !is_file($path)) {
+            return '';
+        }
+        $id = @file_get_contents($path, false, null, 0, 64);
+        return is_string($id) && preg_match('/^[0-9a-f]{32}$/D', $id) === 1 ? $id : '';
     }
 
     /** A closed part settles its component: no line before the cursor is pending. */

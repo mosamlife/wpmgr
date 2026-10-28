@@ -136,6 +136,104 @@ final class ArchiveResumeTest extends TestCase
         fwrite(STDOUT, "\nleftovers removed=" . json_encode($leftovers) . ' kept=' . json_encode($saved['parts_completed']) . "\n");
     }
 
+    public function testCheckpointFromAnEarlierDiscoveryIsNeverApplied(): void
+    {
+        $order = $this->interleavedTree();
+        $stale = $this->interruptAfter(1, ['total_files' => count($order)]);
+        // The next worker cannot use that checkpoint (this time the parent
+        // file list arrived), so it discovers again in the walk's own order.
+        // Every checkpoint it saves is lost, and the host ends it after it has
+        // rebuilt part names of the same sizes.
+        try {
+            $this->archiver()->archive($this->root . '/out', $stale, static function (): void {}, [],
+                static function (array $cursor): void {
+                    if (count($cursor['parts_completed']) === 2) { throw new ArchiveWorkerEnded('host ended the worker'); }
+                });
+            self::fail('the second worker must be ended');
+        } catch (ArchiveWorkerEnded $e) {
+            // The host ended the worker.
+        }
+        self::assertFileExists($this->root . '/out/' . $stale['parts_completed'][0]);
+
+        // The task row still holds the first worker's checkpoint.
+        $result = $this->archiver()->archive($this->root . '/out', $stale, static function (): void {});
+
+        $expected = $order;
+        sort($expected);
+        self::assertSame($expected, $this->entries($result['parts'], $this->root . '/out'), 'every file exactly once');
+        $this->assertDiskHoldsOnly($result['parts']);
+        $listed = array_keys(FilesArchiver::loadPrevMap($this->root . '/out/files.list'));
+        sort($listed);
+        self::assertSame($expected, $listed);
+        self::assertSame(count($order), $result['files_total']);
+    }
+
+    public function testSavedPartOfAnotherSizeIsNotTrusted(): void
+    {
+        $order = $this->interleavedTree();
+        $saved = $this->interruptAfter(2, ['total_files' => count($order)]);
+        // The first saved part changed after the checkpoint: same name, other bytes.
+        $first = $this->root . '/out/' . $saved['parts_completed'][0];
+        $zip = new \ZipArchive();
+        self::assertTrue($zip->open($first, \ZipArchive::CREATE | \ZipArchive::OVERWRITE));
+        $zip->addFromString('uploads/u00.jpg', 'not what the checkpoint saved');
+        $zip->close();
+        clearstatcache(true, $first);
+        self::assertNotSame($saved['part_sizes'][0], filesize($first));
+
+        $result = $this->archiver()->archive($this->root . '/out', $saved, static function (): void {});
+
+        $expected = $order;
+        sort($expected);
+        self::assertSame($expected, $this->entries($result['parts'], $this->root . '/out'), 'every file exactly once');
+        $this->assertDiskHoldsOnly($result['parts']);
+    }
+
+    public function testSettledSkipSurvivesResumeAndFilesListNeverClaimsIt(): void
+    {
+        $order = $this->interleavedTree();
+        $victim = $this->root . '/src/themes/acme/style.css';
+        chmod($victim, 0000);
+        try {
+            $saved = $this->interruptAfter(2, ['total_files' => count($order)]);
+            // No themes part was open when the source was skipped, so the skip is settled.
+            self::assertContains('themes/acme/style.css', $saved['skipped']);
+            $result = $this->archiver()->archive($this->root . '/out', $saved, static function (): void {});
+        } finally {
+            chmod($victim, 0600);
+        }
+        $entries = $this->entries($result['parts'], $this->root . '/out');
+        self::assertNotContains('themes/acme/style.css', $entries);
+        $listed = array_keys(FilesArchiver::loadPrevMap($this->root . '/out/files.list'));
+        sort($listed);
+        self::assertSame($entries, $listed, 'files.list lists exactly the archived files');
+        self::assertSame(1, $result['skipped_sources_count']);
+        self::assertSame(count($order) - 1, $result['files_total']);
+    }
+
+    public function testSkipSettledByAClosedPartSurvivesResume(): void
+    {
+        $order = $this->interleavedTree();
+        $victim = $this->root . '/src/plugins/acme/readme.txt';
+        chmod($victim, 0000);
+        try {
+            // Four uploads parts close in the loop; the fifth is the plugins
+            // part that held the line of the skipped source.
+            $saved = $this->interruptAfter(5, ['total_files' => count($order)]);
+            self::assertContains('plugins.g000.part001.zip', $saved['parts_completed']);
+            self::assertContains('plugins/acme/readme.txt', $saved['skipped'], 'closing the part settles the skip inside it');
+            $result = $this->archiver()->archive($this->root . '/out', $saved, static function (): void {});
+        } finally {
+            chmod($victim, 0600);
+        }
+        $entries = $this->entries($result['parts'], $this->root . '/out');
+        self::assertNotContains('plugins/acme/readme.txt', $entries);
+        $listed = array_keys(FilesArchiver::loadPrevMap($this->root . '/out/files.list'));
+        sort($listed);
+        self::assertSame($entries, $listed, 'files.list lists exactly the archived files');
+        self::assertSame(1, $result['skipped_sources_count']);
+    }
+
     public function testResumeKeepsItsDiscoveryWhileTheSiteAddsFiles(): void
     {
         mkdir($this->root . '/src/uploads');
