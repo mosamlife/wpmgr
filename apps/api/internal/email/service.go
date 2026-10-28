@@ -150,7 +150,7 @@ func NewService(repo *Repo, enc Encryptor, log *slog.Logger) *Service {
 	}
 	var locks siteLocker = newLocalSiteLocker(siteLockWait)
 	if repo != nil && repo.pool != nil {
-		locks = &pgSiteLocker{pool: repo.pool, wait: siteLockWait, poll: siteLockPoll}
+		locks = &pgSiteLocker{pool: repo.pool, gate: instanceEmailGate, wait: siteLockWait, poll: siteLockPoll}
 	}
 	return &Service{repo: repo, enc: enc, log: log, locks: locks}
 }
@@ -389,6 +389,10 @@ func (s *Service) SendTest(ctx context.Context, tenantID, siteID uuid.UUID, in T
 	if lockErr != nil {
 		return TestSendResult{OK: false, Detail: lockErr.Message}, nil
 	}
+	// Released by hand below, before the test send. The deferred call is a
+	// no-op then, and releases on a panic, which would otherwise keep the
+	// instance's slot (instanceEmailGate) until the process restarts.
+	defer release()
 	cfg, cfgErr := s.GetConfig(ctx, tenantID, siteID)
 	if cfgErr != nil {
 		release()

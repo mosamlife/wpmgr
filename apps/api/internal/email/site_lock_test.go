@@ -5,6 +5,7 @@ package email
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -32,7 +33,7 @@ func TestRemoveSiteConfigAnswers409WhenAnotherChangeHoldsTheSite(t *testing.T) {
 
 	_, err := f.remove()
 	de := wantDomainError(t, err, domain.KindConflict, "email_change_in_progress")
-	if de.Message != "Another email change for this site is in progress. Try again in a moment." {
+	if de.Message != "Another email change is in progress. Try again in a moment." {
 		t.Fatalf("message = %q", de.Message)
 	}
 	if len(f.log.events) != 0 {
@@ -122,6 +123,32 @@ func TestUpsertConnectionSavesUnderTheLock(t *testing.T) {
 	// The lock was released: a removal goes straight through.
 	if _, err := f.remove(); err != nil {
 		t.Fatalf("removal after the save: %v", err)
+	}
+}
+
+// A second operation on an instance whose slot is taken waits for it, then
+// answers busy, and never asks the pool for a connection: this locker has no
+// pool, so asking would panic. A cancelled waiter stops waiting.
+func TestPgSiteLockerWaitsForTheInstanceSlotWithoutAConnection(t *testing.T) {
+	l := &pgSiteLocker{gate: make(chan struct{}, 1), wait: 50 * time.Millisecond, poll: 10 * time.Millisecond}
+	l.gate <- struct{}{} // an operation on another site is running
+
+	start := time.Now()
+	if _, err := l.lockSite(context.Background(), uuid.New()); !errors.Is(err, errSiteEmailBusy) {
+		t.Fatalf("lock while the slot is taken = %v, want errSiteEmailBusy", err)
+	}
+	if waited := time.Since(start); waited < 50*time.Millisecond {
+		t.Fatalf("gave up after %v, before the wait ran out", waited)
+	}
+	if len(l.gate) != 1 {
+		t.Fatal("a waiter that never got the slot changed it")
+	}
+
+	l.wait = time.Minute
+	cctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := l.lockSite(cctx, uuid.New()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled waiter = %v, want context.Canceled", err)
 	}
 }
 

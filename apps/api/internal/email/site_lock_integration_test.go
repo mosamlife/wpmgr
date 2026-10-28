@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -32,8 +33,10 @@ func TestSiteEmailLockSerialisesOneSiteAcrossConnections(t *testing.T) {
 		}
 		return n
 	}
+	// Each locker is its own instance, with its own slot, so only the advisory
+	// lock stands between them.
 	locker := func(wait time.Duration) *pgSiteLocker {
-		return &pgSiteLocker{pool: app, wait: wait, poll: 20 * time.Millisecond}
+		return &pgSiteLocker{pool: app, gate: make(chan struct{}, 1), wait: wait, poll: 20 * time.Millisecond}
 	}
 	// take locks a site and registers the release, so a failed assertion
 	// cannot leave a pinned connection that stops the harness closing its pool.
@@ -145,4 +148,123 @@ func TestSiteEmailLockSerialisesOneSiteAcrossConnections(t *testing.T) {
 		t.Fatalf("the app pool connects as a superuser (%v) or BYPASSRLS (%v) role", super, bypass)
 	}
 	var _ *db.Pool = app
+}
+
+// The lock pins one pooled connection for the whole operation, agent calls
+// included, so one instance runs one such operation at a time: a second, on
+// any site, waits for the first without holding a connection, and answers
+// busy when the wait runs out. Without that, a few email changes at once
+// would hold most of the instance's pool for the length of their agent calls.
+
+func TestSiteEmailLockRunsOneOperationAtATimePerInstance(t *testing.T) {
+	app, admin := startScopeTestPostgres(t)
+	f := seedScopeFixture(t, admin)
+	ctx := context.Background()
+
+	// One instance: the locker the Service builds on its pool, with a short wait.
+	svc := NewService(NewRepo(app), nil, nil)
+	l, ok := svc.locks.(*pgSiteLocker)
+	if !ok {
+		t.Fatalf("a Service on a real pool uses %T, want *pgSiteLocker", svc.locks)
+	}
+	l.wait, l.poll = 300*time.Millisecond, 20*time.Millisecond
+
+	holdA, err := l.lockSite(ctx, f.siteA)
+	if err != nil {
+		t.Fatalf("first operation, on site A: %v", err)
+	}
+	t.Cleanup(holdA)
+
+	// A second operation, on another site, waits and then answers busy.
+	start := time.Now()
+	releaseB, err := l.lockSite(ctx, f.siteB)
+	if err == nil {
+		releaseB()
+	}
+	if !errors.Is(err, errSiteEmailBusy) {
+		t.Fatalf("site B on the same instance while site A runs = %v, want errSiteEmailBusy", err)
+	}
+	if waited := time.Since(start); waited < 300*time.Millisecond {
+		t.Fatalf("site B gave up after %v, before its wait ran out", waited)
+	}
+
+	// Through the service it is the 409, worded so it is true for either cause.
+	_, rmErr := svc.RemoveSiteConfig(orgMemberCtx(f.tenant), f.tenant, f.siteB)
+	de, ok := domain.AsDomain(rmErr)
+	if !ok || de.Kind != domain.KindConflict || de.Code != "email_change_in_progress" {
+		t.Fatalf("removal on site B while site A runs = %v, want 409 email_change_in_progress", rmErr)
+	}
+	if de.Message != "Another email change is in progress. Try again in a moment." {
+		t.Fatalf("message = %q", de.Message)
+	}
+
+	// Once the first operation is done, the next one on this instance proceeds.
+	holdA()
+	releaseB, err = l.lockSite(ctx, f.siteB)
+	if err != nil {
+		t.Fatalf("site B after site A finished: %v", err)
+	}
+	releaseB()
+}
+
+func TestSiteEmailLockLeavesThePoolToOtherRequests(t *testing.T) {
+	app, admin := startScopeTestPostgres(t)
+	f := seedScopeFixture(t, admin)
+	ctx := context.Background()
+
+	// A pool of two, as wpmgr_app: room for one operation's pinned connection
+	// and one more.
+	cfg := app.Config()
+	cfg.MinConns, cfg.MaxConns = 0, 2
+	small, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("open a pool of two: %v", err)
+	}
+	t.Cleanup(small.Close)
+	svc := NewService(NewRepo(&db.Pool{Pool: small}), nil, nil)
+	l, ok := svc.locks.(*pgSiteLocker)
+	if !ok {
+		t.Fatalf("a Service on a real pool uses %T, want *pgSiteLocker", svc.locks)
+	}
+	l.wait, l.poll = time.Second, 20*time.Millisecond
+
+	holdA, err := l.lockSite(ctx, f.siteA)
+	if err != nil {
+		t.Fatalf("first operation, on site A: %v", err)
+	}
+	t.Cleanup(holdA)
+
+	// A second operation, on another site, starts while the first runs. If it
+	// gets its lock it keeps it, as one in its agent calls would, until the
+	// test ends.
+	finish := make(chan struct{})
+	gotB := make(chan error, 1)
+	go func() {
+		release, err := l.lockSite(ctx, f.siteB)
+		gotB <- err
+		if err == nil {
+			<-finish
+			release()
+		}
+	}()
+	t.Cleanup(func() { close(finish) })
+	time.Sleep(200 * time.Millisecond)
+
+	// A plain query on the pool still runs.
+	qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var one int
+	if err := small.QueryRow(qctx, `SELECT 1`).Scan(&one); err != nil {
+		t.Fatalf("a plain query found no free connection while email operations ran: %v", err)
+	}
+
+	// The second operation answered busy once its wait ran out.
+	select {
+	case err := <-gotB:
+		if !errors.Is(err, errSiteEmailBusy) {
+			t.Fatalf("site B while site A runs = %v, want errSiteEmailBusy", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("site B never answered")
+	}
 }
