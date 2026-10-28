@@ -707,7 +707,11 @@ final class BackupArchiveBehaviorTest extends TestCase
             self::assertTrue($save->invoke($runner, 'archiving_files', $state));
             $raw = $wpdb->rows[self::SNAPSHOT]['sub_state'];
             self::assertNotNull(json_decode($raw, true));
-            self::assertSame($state, TaskRunner::decodeSubStateColumn($raw));
+            $saved = TaskRunner::decodeSubStateColumn($raw);
+            // GH #983: every save also carries the durable progress record.
+            self::assertIsArray(TaskRunner::progressRecord($saved['progress'] ?? null));
+            unset($saved['progress']);
+            self::assertSame($state, $saved);
         }
     }
 
@@ -728,7 +732,11 @@ final class BackupArchiveBehaviorTest extends TestCase
         $state = ['params' => ['wp_content_path' => "/site/caf\xe9"]];
         self::assertTrue((new \ReflectionMethod($runner, 'saveTaskState'))->invoke($runner, 'archiving_files', $state));
         (new \ReflectionMethod(Watchdog::class, 'stampStage'))->invoke(null, self::SNAPSHOT, 'dispatch_entered');
-        self::assertSame($state + ['stage' => 'dispatch_entered'], TaskRunner::decodeSubStateColumn($GLOBALS['wpdb']->rows[self::SNAPSHOT]['sub_state']));
+        $saved = TaskRunner::decodeSubStateColumn($GLOBALS['wpdb']->rows[self::SNAPSHOT]['sub_state']);
+        // GH #983: every save also carries the durable progress record.
+        self::assertIsArray(TaskRunner::progressRecord($saved['progress'] ?? null));
+        unset($saved['progress']);
+        self::assertSame($state + ['stage' => 'dispatch_entered'], $saved);
     }
 
     public function testExistingUnreadableIncrementalSourceCarriesParentMetadata(): void
@@ -1323,9 +1331,11 @@ final class BackupArchiveBehaviorTest extends TestCase
         try { Watchdog::resumeIfStalled(self::SNAPSHOT); }
         finally { flock($holder, LOCK_UN); fclose($holder); }
         self::assertSame('dumping_db', $wpdb->rows[self::SNAPSHOT]['phase']);
-        self::assertSame(1, $wpdb->rows[self::SNAPSHOT]['resume_count']);
+        // GH #983: a silent runner that still holds the run-lock is alive, so
+        // the watchdog neither resumes over it nor counts the stall.
+        self::assertSame(0, $wpdb->rows[self::SNAPSHOT]['resume_count']);
         self::assertFileDoesNotExist($this->root . '/out/database.sql.gz');
-        fwrite(STDOUT, "\nsilent dump stall: resume_count=1 phase=dumping_db second_worker_blocked=true\n");
+        fwrite(STDOUT, "\nsilent dump stall: resume_count=0 phase=dumping_db second_worker_blocked=true\n");
     }
 
     public function testRequestSweepRunsBackupBeforeReturningToRequest(): void

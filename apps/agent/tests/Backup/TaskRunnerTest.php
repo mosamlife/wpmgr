@@ -311,7 +311,11 @@ final class TaskRunnerTest extends TestCase
             $result = $save->invoke($runner, TaskRunner::PHASE_ENCRYPTING_UPLOADING, ['bad' => "\xB1\x31"]);
 
             $this->assertTrue($result);
-            $this->assertSame(['bad' => "\xB1\x31"], TaskRunner::decodeSubStateColumn($wpdb->lastSubState));
+            $saved = TaskRunner::decodeSubStateColumn($wpdb->lastSubState);
+            // GH #983: every save also carries the durable progress record.
+            $this->assertIsArray(TaskRunner::progressRecord($saved['progress'] ?? null));
+            unset($saved['progress']);
+            $this->assertSame(['bad' => "\xB1\x31"], $saved);
         } finally {
             unset($GLOBALS['wpdb']);
         }

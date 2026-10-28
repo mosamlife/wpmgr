@@ -145,7 +145,7 @@ final class TaskRunner
     private const TASK_GONE_MESSAGE = 'Backup stopped: its task record on this site was removed while it was running, so it cannot be resumed. Run the backup again.';
 
     /** Phase order inside the durable progress mark. */
-    private const PHASE_RANK = [
+    private const RANK_BY_PHASE = [
         self::PHASE_QUEUED               => 0,
         self::PHASE_DUMPING_DB           => 1,
         self::PHASE_ARCHIVING_FILES      => 2,
@@ -2177,7 +2177,7 @@ final class TaskRunner
         $upload  = isset($subState['upload']) && is_array($subState['upload']) ? $subState['upload'] : [];
 
         return [
-            self::PHASE_RANK[$phase] ?? 0,
+            self::RANK_BY_PHASE[$phase] ?? 0,
             is_array($parts) ? count($parts) : 0,
             is_int($line) ? max(0, $line) : 0,
             isset($encrypt['entries']) && is_array($encrypt['entries']) ? count($encrypt['entries']) : 0,

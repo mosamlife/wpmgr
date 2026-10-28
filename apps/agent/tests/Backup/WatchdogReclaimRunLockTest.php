@@ -190,7 +190,10 @@ final class WatchdogReclaimRunLockTest extends TestCase
 
         $this->assertDirectoryExists($dir, 'a live runner still holds the run-lock (e.g. mid-upload of one large chunk); its scratch directory must NOT be deleted');
         $this->assertFileExists($dir . '/wp-content.g000.part001.zip', 'the live runner\'s in-flight archive part must survive the give-up path');
-        $this->assertArrayNotHasKey(self::LATE_PHASE_ID, $wpdb->rows, 'the task row discard is unaffected by the lock gate: only the file reclaim is gated');
+        // GH #983: a give-up now stops a live runner at its next save, so a
+        // runner that still holds the run-lock keeps its row and finishes.
+        $this->assertArrayHasKey(self::LATE_PHASE_ID, $wpdb->rows, 'a live late-phase runner keeps its task row');
+        $this->assertSame(0, $wpdb->rows[self::LATE_PHASE_ID]['resume_count']);
     }
 
     // ------------------------------------------------------------------
@@ -223,7 +226,10 @@ final class WatchdogReclaimRunLockTest extends TestCase
 
         $this->assertDirectoryExists($dir, 'a live runner still holds the run-lock; its scratch directory must NOT be deleted even after resume attempts are exhausted');
         $this->assertFileExists($dir . '/database.sql.gz', 'the live runner\'s in-flight artifact file must survive the give-up path');
-        $this->assertArrayNotHasKey(self::MAX_RESUMES_ID, $wpdb->rows, 'the task row discard is unaffected by the lock gate: only the file reclaim is gated');
+        // GH #983: a silent runner that still holds the run-lock is alive, so
+        // it is neither resumed over, counted, nor given up.
+        $this->assertArrayHasKey(self::MAX_RESUMES_ID, $wpdb->rows, 'a live runner keeps its task row');
+        $this->assertSame(6, $wpdb->rows[self::MAX_RESUMES_ID]['resume_count']);
     }
 
     // ------------------------------------------------------------------
