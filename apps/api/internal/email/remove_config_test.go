@@ -267,34 +267,63 @@ func TestRemoveSiteConfig_OrgDefaultPushFailureIsReported(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRemoveSiteConfig_AgentFailureDeletesNothing(t *testing.T) {
+	// siteUnchanged: the failure is one where nothing on the site can have
+	// changed, so the message may say "nothing was removed". Everywhere else
+	// the site may already have stopped using its provider, and the message
+	// has to say so instead.
 	cases := []struct {
-		name     string
-		err      error
-		wantText string
+		name          string
+		err           error
+		wantText      string
+		siteUnchanged bool
 	}{
 		{
-			name:     "site unreachable",
-			err:      errors.New("clear_email_config command transport: dial tcp: connection refused"),
-			wantText: "Could not connect to the site.",
+			name: "site unreachable (never sent)",
+			err: fmt.Errorf("%w: %s", agentcmd.ErrCommandNotSent,
+				"clear_email_config command transport: dial tcp: connection refused"),
+			wantText:      "Could not connect to the site.",
+			siteUnchanged: true,
 		},
 		{
 			name: "agent refused the token",
 			err: &agentcmd.CommandError{Command: agentcmd.ClearEmailCommand, Status: http.StatusForbidden,
 				Code: "wpmgr_sig_failed"},
-			wantText: "wpmgr_sig_failed",
+			wantText:      "wpmgr_sig_failed",
+			siteUnchanged: true,
 		},
 		{
+			// A 404 that is not wpmgr_unknown_command is not an old agent:
+			// rest_no_route means the plugin is not active at all.
+			name:          "plugin inactive (rest_no_route)",
+			err:           &agentcmd.CommandError{Command: agentcmd.ClearEmailCommand, Status: http.StatusNotFound, Code: "rest_no_route"},
+			wantText:      "HTTP 404",
+			siteUnchanged: true,
+		},
+		{
+			// The agent ran the command and removed part of its settings.
 			name: "agent answered cleared=false",
 			err: fmt.Errorf("%w: %s", agentcmd.ErrEmailConfigNotCleared,
 				"email settings removed; the stored email secret could not be removed"),
 			wantText: "the stored email secret could not be removed",
 		},
 		{
-			// A 404 that is not wpmgr_unknown_command is not an old agent:
-			// rest_no_route means the plugin is not active at all.
-			name:     "plugin inactive (rest_no_route)",
-			err:      &agentcmd.CommandError{Command: agentcmd.ClearEmailCommand, Status: http.StatusNotFound, Code: "rest_no_route"},
-			wantText: "HTTP 404",
+			// The request was sent and the reply never came: the outcome is
+			// unknown.
+			name:     "timed out after sending",
+			err:      fmt.Errorf("clear_email_config command transport: %w", context.DeadlineExceeded),
+			wantText: "The site did not answer in time.",
+		},
+		{
+			// The operator's request was cancelled (the client went away)
+			// after the command was sent.
+			name:     "request cancelled after sending",
+			err:      fmt.Errorf("clear_email_config command transport: %w", context.Canceled),
+			wantText: "The site did not confirm",
+		},
+		{
+			name:     "server error",
+			err:      &agentcmd.CommandError{Command: agentcmd.ClearEmailCommand, Status: http.StatusInternalServerError},
+			wantText: "HTTP 500",
 		},
 	}
 	for _, tc := range cases {
@@ -308,8 +337,13 @@ func TestRemoveSiteConfig_AgentFailureDeletesNothing(t *testing.T) {
 			if !strings.Contains(de.Message, tc.wantText) {
 				t.Fatalf("message %q does not say why (want it to contain %q)", de.Message, tc.wantText)
 			}
-			if !strings.Contains(de.Message, "nothing was removed") {
-				t.Fatalf("message %q does not say nothing was removed", de.Message)
+			const unchanged, may = "nothing was removed", "may already have stopped using the provider"
+			if tc.siteUnchanged {
+				if !strings.Contains(de.Message, unchanged) || strings.Contains(de.Message, may) {
+					t.Fatalf("message %q: want it to say %q, and not %q", de.Message, unchanged, may)
+				}
+			} else if strings.Contains(de.Message, unchanged) || !strings.Contains(de.Message, may) {
+				t.Fatalf("message %q: want it to say %q, and not %q", de.Message, may, unchanged)
 			}
 			wantEvents(t, f.log.events, "agent.clear")
 			if _, ok := f.siteRow(); !ok {

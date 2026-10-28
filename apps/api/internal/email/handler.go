@@ -1080,6 +1080,7 @@ func (h *Handler) putConnection(c *gin.Context) {
 
 	conn, serr := h.svc.UpsertConnection(c.Request.Context(), ConnectionUpsertInput{
 		TenantID:      p.TenantID,
+		SiteID:        &siteID,
 		ConfigID:      cfg.ID,
 		ConnectionKey: connKey,
 		Provider:      body.Provider,

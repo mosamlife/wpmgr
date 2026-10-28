@@ -581,13 +581,13 @@ func (s *Service) RemoveSiteConfig(ctx context.Context, tenantID, siteID uuid.UU
 		if agentcmd.IsUnknownCommand(err) {
 			return RemoveSiteConfigResult{}, domain.Conflict("email_agent_outdated", removeAgentOutdatedMessage)
 		}
-		s.log.Warn("email: the site's agent did not clear its email config; nothing was removed",
+		s.log.Warn("email: the site's agent did not confirm it cleared its email config; the row is kept",
 			slog.String("site_id", siteID.String()),
+			slog.Bool("site_unchanged", clearLeftSiteUnchanged(err)),
 			slog.Any("error", err),
 		)
 		return RemoveSiteConfigResult{}, domain.ServiceUnavailable("email_agent_clear_failed",
-			"The site did not confirm it stopped using its email provider, so nothing was removed: "+
-				clearFailureReason(err)+" Try again.").WithCause(err)
+			clearFailedMessage(err)).WithCause(err)
 	}
 
 	// 3. Compare-and-delete against the row read in step 1.
@@ -665,6 +665,39 @@ func (s *Service) RemoveSiteConfig(ctx context.Context, tenantID, siteID uuid.UU
 		}
 	}
 	return res, nil
+}
+
+// clearLeftSiteUnchanged reports whether a failed clear_email_config call left
+// the site exactly as it was: the command never left this process, or the
+// site refused it before running it (the agent's own refusal, or no agent to
+// answer). Every other failure, a timeout or lost reply after the request was
+// sent, a cancelled request, a server error, or an agent that answered
+// cleared=false after removing part of its settings, is one where the site
+// may already have stopped using its provider.
+func clearLeftSiteUnchanged(err error) bool {
+	if errors.Is(err, agentcmd.ErrCommandNotSent) {
+		return true
+	}
+	if ce, ok := agentcmd.AsCommandError(err); ok {
+		switch ce.Status {
+		case 401, 403, 404:
+			return true
+		}
+	}
+	return false
+}
+
+// clearFailedMessage is the operator's answer to a clear the site did not
+// confirm. It says "nothing was removed" only when nothing on the site
+// changed; otherwise it says the site may already have stopped using the
+// provider. Either way the row is kept, and trying again finishes the job.
+func clearFailedMessage(err error) string {
+	if clearLeftSiteUnchanged(err) {
+		return "The site did not confirm it stopped using its email provider, so nothing was removed: " +
+			clearFailureReason(err) + " Try again."
+	}
+	return "The site did not confirm it stopped using its email provider, so its settings were kept here: " +
+		clearFailureReason(err) + " The site may already have stopped using the provider. Try again."
 }
 
 // clearFailureReason turns a failed clear_email_config call into one sentence.
@@ -1864,6 +1897,30 @@ func (s *Service) UpsertConnection(ctx context.Context, in ConnectionUpsertInput
 		in.Config = map[string]any{}
 	}
 
+	// A connection write moves nothing on its parent row, so a removal's
+	// compare-and-delete cannot see it, and the cascade would take a
+	// connection whose save reported success (GH #968). Under the site's
+	// email lock no removal is in progress, and the parent is checked to be
+	// the one the route resolved: a removal that finished first leaves the
+	// site resolving to the organisation default or to nothing.
+	if in.SiteID != nil {
+		release, lockErr := s.lockSiteForChange(ctx, *in.SiteID)
+		if lockErr != nil {
+			return Connection{}, lockErr
+		}
+		defer release()
+		cur, getErr := s.GetConfig(ctx, in.TenantID, *in.SiteID)
+		if getErr != nil {
+			if de, ok := domain.AsDomain(getErr); ok && de.Kind == domain.KindNotFound {
+				return Connection{}, domain.Conflict("email_config_changed", connectionParentChangedMessage)
+			}
+			return Connection{}, getErr
+		}
+		if cur.ID != in.ConfigID {
+			return Connection{}, domain.Conflict("email_config_changed", connectionParentChangedMessage)
+		}
+	}
+
 	var secretCiphertext []byte
 	setSecret := false
 	switch {
@@ -1923,6 +1980,10 @@ func (s *Service) UpsertConnection(ctx context.Context, in ConnectionUpsertInput
 	}
 	return conn, nil
 }
+
+// connectionParentChangedMessage is the answer when the email settings a
+// connection belongs to were removed or replaced before it could be saved.
+const connectionParentChangedMessage = "The email settings changed while saving this connection; nothing was saved. Reload them and try again."
 
 // DeleteConnection removes a named connection. Returns 409 Conflict when the
 // key is referenced as default_connection or fallback_connection on the parent
