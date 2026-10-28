@@ -203,9 +203,10 @@ func (s *Service) GenerateNow(ctx context.Context, tenantID, clientID uuid.UUID,
 	//
 	// Untouched is not dead. A job still waiting in a busy queue has touched
 	// nothing either, and failing the row of a scheduled report leaves the client
-	// without that period's email, because the replacement does not notify. So
-	// the row is failed only when no job for it is queued or running, and a
-	// report that still has one is returned like any other in flight.
+	// without that period's email: the replacement is an on-demand report, which
+	// notifies only when the request asks it to. So the row is failed only when
+	// no job for it is queued or running, and a report that still has one is
+	// returned like any other in flight.
 	existing, found, err := s.repo.GetActiveReport(ctx, tenantID, clientID)
 	if err == nil && found {
 		if !reportIsStale(existing, now) {

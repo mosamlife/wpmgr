@@ -153,10 +153,10 @@ func (w *GenerateWorker) failReport(ctx context.Context, args GenerateArgs, caus
 func (w *GenerateWorker) generate(ctx context.Context, args GenerateArgs) error {
 	// A job can start after its row was ended by something else: failed and
 	// replaced by a new report, or finished by an earlier attempt of the same
-	// job. It must not bring that row back. Whatever is not waiting for a job or being run by one
-	// has nothing to do, and the job ends clean so River neither retries it nor
-	// marks the report failed. A row that cannot be read fails the attempt like
-	// any other error.
+	// job. It must not bring that row back. Whatever is not waiting for a job
+	// or being run by one has nothing to do, and the job ends clean so River
+	// neither retries it nor marks the report failed. A row that cannot be read
+	// fails the attempt like any other error.
 	row, err := w.repo.GetReport(ctx, args.TenantID, args.ClientID, args.ReportID)
 	if err != nil {
 		w.logger.Error("report generate: read report failed",
