@@ -1,7 +1,7 @@
 <?php
 /**
  * GitHub issue #256 post-ship review, findings 1/2/3: a Watchdog give-up
- * path (the 7200s hard-ceiling guard, the late-phase 300s stale guard, the
+ * path (the hard-ceiling guard, the late-phase 300s stale guard, the
  * max-resumes exhaustion, and dispatch()'s stale-task guard) reclaims a
  * snapshot's scratch directory purely from DB-column signals (row age,
  * last_progress_at age, resume_count). None of those signals can prove the
@@ -129,7 +129,7 @@ final class WatchdogReclaimRunLockTest extends TestCase
     }
 
     // ------------------------------------------------------------------
-    // resumeIfStalled(): 7200s hard-ceiling guard.
+    // resumeIfStalled(): 24h hard-ceiling guard.
     // ------------------------------------------------------------------
 
     /**
@@ -147,7 +147,7 @@ final class WatchdogReclaimRunLockTest extends TestCase
         $wpdb = new FakeBackupTasksWpdb();
         $wpdb->seedRow(self::HARD_CEILING_ID, [
             'phase'            => TaskRunner::PHASE_ARCHIVING_FILES,
-            'started_at'       => time() - 7300, // past the 7200s hard ceiling.
+            'started_at'       => time() - Watchdog::HARD_CEILING_SECONDS - 60, // past the 24h hard ceiling: below it a live lock holder keeps its row (GH #983).
             'last_progress_at' => time() - 7300,
             'sub_state'        => (string) json_encode(['params' => $this->runnerParams(self::HARD_CEILING_ID)]),
         ]);
@@ -233,7 +233,7 @@ final class WatchdogReclaimRunLockTest extends TestCase
     }
 
     // ------------------------------------------------------------------
-    // dispatch(): 7200s stale-task guard.
+    // dispatch(): 24h hard-ceiling guard.
     // ------------------------------------------------------------------
 
     /**
@@ -249,7 +249,7 @@ final class WatchdogReclaimRunLockTest extends TestCase
         $wpdb = new FakeBackupTasksWpdb();
         $wpdb->seedRow(self::DISPATCH_STALE_ID, [
             'phase'            => TaskRunner::PHASE_ARCHIVING_FILES,
-            'started_at'       => time() - 7300, // past dispatch()'s own 7200s guard.
+            'started_at'       => time() - Watchdog::HARD_CEILING_SECONDS - 60, // past the 24h hard ceiling: below it a live lock holder keeps its row (GH #983).
             'last_progress_at' => time() - 7300,
             'sub_state'        => (string) json_encode(['params' => $this->runnerParams(self::DISPATCH_STALE_ID)]),
         ]);
@@ -278,7 +278,7 @@ final class WatchdogReclaimRunLockTest extends TestCase
         $wpdb = new FakeBackupTasksWpdb();
         $wpdb->seedRow(self::HARD_CEILING_ID, [
             'phase'            => TaskRunner::PHASE_ARCHIVING_FILES,
-            'started_at'       => time() - 7300,
+            'started_at'       => time() - Watchdog::HARD_CEILING_SECONDS - 60, // past the 24h hard ceiling: below it a live lock holder keeps its row (GH #983).
             'last_progress_at' => time() - 7300,
             'sub_state'        => (string) json_encode(['params' => $this->runnerParams(self::HARD_CEILING_ID)]),
         ]);
@@ -299,7 +299,7 @@ final class WatchdogReclaimRunLockTest extends TestCase
         // BackupJanitor sweep candidate) with the lock now free.
         $wpdb->seedRow(self::HARD_CEILING_ID, [
             'phase'            => TaskRunner::PHASE_ARCHIVING_FILES,
-            'started_at'       => time() - 7300,
+            'started_at'       => time() - Watchdog::HARD_CEILING_SECONDS - 60, // past the 24h hard ceiling: below it a live lock holder keeps its row (GH #983).
             'last_progress_at' => time() - 7300,
             'sub_state'        => (string) json_encode(['params' => $this->runnerParams(self::HARD_CEILING_ID)]),
         ]);
