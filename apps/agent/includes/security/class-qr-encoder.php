@@ -765,10 +765,11 @@ final class QrEncoder
      * Render the matrix as an inline SVG: a white background and one path of dark modules.
      *
      * One path with crispEdges leaves no anti-aliased seams between modules,
-     * and the fixed width and height keep the symbol square.
+     * and the fixed width and height keep the symbol square. A symbol that
+     * would draw a module smaller than MIN_MODULE_PX is drawn larger instead.
      *
      * @param array<int, array<int, int>> $matrix
-     * @param int             $pixels Rendered width and height in pixels.
+     * @param int             $pixels Requested width and height in pixels.
      * @return string
      */
     private static function renderSvg(array $matrix, int $pixels): string
