@@ -461,8 +461,9 @@ final class Watchdog
         global $wpdb;
         $snapshotId = isset($row['snapshot_id']) && is_string($row['snapshot_id']) ? $row['snapshot_id'] : '';
         $params = is_array($subState['params'] ?? null) ? $subState['params'] : null;
-        if ($recheck !== null && is_array($params) && is_string($params['scratch_dir'] ?? null) && $params['scratch_dir'] !== '') {
-            $given = self::giveUpUnderRunLock($snapshotId, $params, $recheck);
+        $runner = is_array($params) ? new TaskRunner($params) : null;
+        if ($recheck !== null && $runner !== null && is_string($params['scratch_dir'] ?? null) && $params['scratch_dir'] !== '') {
+            $given = self::giveUpUnderRunLock($snapshotId, $runner, $recheck);
             if ($given === null) {
                 return;
             }
@@ -475,9 +476,9 @@ final class Watchdog
                 @$wpdb->delete($wpdb->prefix . Schema::BACKUP_TASKS_TABLE, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; terminal give-up, no further recovery is ever attempted for this row
             }
         }
-        if (is_array($params)) {
+        if ($runner !== null) {
             try {
-                (new TaskRunner($params))->reportFailure((string) ($row['phase'] ?? ''), $reason);
+                $runner->reportFailure((string) ($row['phase'] ?? ''), $reason);
             } catch (\Throwable $e) {
                 DebugLog::write('WPMgr Backup: watchdog could not report the give-up: ' . $e->getMessage());
             }
@@ -493,11 +494,11 @@ final class Watchdog
      * holds the lock keeps its row: nothing is changed and the next watchdog
      * pass decides again.
      *
-     * @param array<string,mixed>                                     $params  Runner params from the task row.
+     * @param TaskRunner                                                 $runner  Runner built from the task row's params.
      * @param callable(array<string,mixed>, array<string,mixed>): ?string $recheck See giveUp().
      * @return string|null The reason the task was given up for, or null when it was not.
      */
-    private static function giveUpUnderRunLock(string $snapshotId, array $params, callable $recheck): ?string
+    private static function giveUpUnderRunLock(string $snapshotId, TaskRunner $runner, callable $recheck): ?string
     {
         global $wpdb;
         if (!is_object($wpdb) || $snapshotId === '') {
@@ -506,13 +507,11 @@ final class Watchdog
         $given  = null;
         $locked = false;
         try {
-            $runner = new TaskRunner($params);
             $locked = $runner->withRunLock(static function () use ($runner, $snapshotId, $recheck, &$given): void {
                 global $wpdb;
                 /** @var \wpdb $wpdb */
                 $table = $wpdb->prefix . Schema::BACKUP_TASKS_TABLE;
-                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- direct query on plugin-owned table; identifier is prefix+constant; the give-up decides on the live row read under the run-lock
-                $fresh = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$table} WHERE snapshot_id = %s", $snapshotId), ARRAY_A);
+                $fresh = $wpdb->get_row($wpdb->prepare('SELECT * FROM %i WHERE snapshot_id = %s', $table, $snapshotId), ARRAY_A); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- the live task row, read uncached under the run-lock the give-up decides with; table via the %i identifier placeholder (WP 6.2+)
                 if (!is_array($fresh)) {
                     return; // Finished, or given up by another pass.
                 }
