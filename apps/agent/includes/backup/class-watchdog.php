@@ -154,7 +154,10 @@ final class Watchdog
      * The shared resume path behind resumeIfStalled() and handOver().
      *
      * Give-up guards, in order (each reclaims scratch under the run-lock,
-     * deletes the row, and reports the reason to the control plane):
+     * deletes the row, and reports the reason to the control plane; every
+     * guard but the 24h ceiling does so only while it holds the run-lock and
+     * the task re-read under that lock is still due, and otherwise waits for
+     * the next pass):
      *   1. Age: past HARD_CEILING_SECONDS whatever the progress; past
      *      AGE_GUARD_SECONDS only when the durable progress record has not
      *      advanced within PROGRESS_WINDOW_SECONDS and no live runner holds
@@ -213,7 +216,7 @@ final class Watchdog
             self::giveUp($row, $subState, sprintf(
                 'WPMgr Backup: watchdog refusing to re-enter stale task for snapshot %s (started %ds ago, phase=%s); deleted row without re-entry.',
                 $snapshotId, time() - $startedAt, $phase
-            ), $ageReason);
+            ), $ageReason, self::ageRecheck($ageReason));
             return null;
         }
 
@@ -244,7 +247,11 @@ final class Watchdog
             self::giveUp($row, $subState, sprintf(
                 'WPMgr Backup: watchdog refusing to re-enter late-phase stalled task for snapshot %s (phase=%s, stalled %ds); deleted row.',
                 $snapshotId, $phase, $stalledFor
-            ), self::LATE_PHASE_REASON);
+            ), self::LATE_PHASE_REASON, static function (array $fresh): ?string {
+                $freshPhase = (string) ($fresh['phase'] ?? '');
+                $late = $freshPhase === TaskRunner::PHASE_ENCRYPTING_UPLOADING || $freshPhase === TaskRunner::PHASE_SUBMITTING_MANIFEST;
+                return $late && time() - (int) ($fresh['last_progress_at'] ?? 0) > self::LATE_PHASE_STALL_SECONDS ? self::LATE_PHASE_REASON : null;
+            });
             return null;
         }
 
@@ -289,7 +296,11 @@ final class Watchdog
                 self::giveUp($row, $subState, sprintf(
                     'WPMgr Backup: snapshot %s exhausted %d resume attempts without progress; reclaimed scratch and deleted row.',
                     $snapshotId, $maxResumes
-                ), $failureReason);
+                ), $failureReason, static function (array $fresh, array $freshSub) use ($handedOver, $failureReason): ?string {
+                    $stalled = $handedOver || time() - (int) ($fresh['last_progress_at'] ?? 0) >= self::STALL_THRESHOLD_SECONDS;
+                    $capped  = (int) ($fresh['resume_count'] ?? 0) >= (int) ($fresh['max_resumes'] ?? 6);
+                    return $stalled && $capped && !self::workerSavedProgress($freshSub) ? $failureReason : null;
+                });
                 return null;
             }
             $resumeCount++;
@@ -373,6 +384,21 @@ final class Watchdog
     }
 
     /**
+     * The re-check of an age give-up under the run-lock: none for the 24h
+     * ceiling, which ends a task whatever runs it; otherwise the age rule
+     * applied again to the task re-read under the lock.
+     *
+     * @return (callable(array<string,mixed>, array<string,mixed>): ?string)|null
+     */
+    private static function ageRecheck(string $reason): ?callable
+    {
+        if ($reason === self::HARD_CEILING_REASON) {
+            return null;
+        }
+        return static fn (array $fresh, array $freshSub): ?string => self::ageGiveUpReason($fresh, $freshSub);
+    }
+
+    /**
      * GH #983: whether the worker that last started saved progress before it
      * ended. A row without both records (an older agent's, or one whose
      * worker never started) has no such proof.
@@ -410,24 +436,45 @@ final class Watchdog
      * #256), deletes the row, and reports $reason to the control plane
      * through the runner's own signed `/progress` failure channel, so the
      * backup fails on the dashboard with a reason the site owner can act
-     * on. A worker still running sees the row gone at its next save and
-     * stops without reporting success.
+     * on.
      *
-     * @param array<string,mixed> $row      Task row already loaded.
-     * @param array<string,mixed> $subState Decoded sub_state.
-     * @param string              $logLine  Local log line.
-     * @param string              $reason   Reason shown to the site owner.
+     * A give-up that spares a live worker passes $recheck: it then takes the
+     * run-lock without waiting, re-reads the task under it, and reclaims the
+     * scratch and deletes the row only while it holds the lock and $recheck
+     * still returns a reason for the row it re-read. When another worker
+     * holds the lock, or the lock cannot be taken, the row is left alone and
+     * the decision waits for the next watchdog pass. Only the 24h ceiling
+     * passes no $recheck: it deletes the row whatever runs it, and a worker
+     * still running sees the row gone at its next save and stops without
+     * reporting success.
+     *
+     * @param array<string,mixed>                                          $row      Task row already loaded.
+     * @param array<string,mixed>                                          $subState Decoded sub_state.
+     * @param string                                                       $logLine  Local log line.
+     * @param string                                                       $reason   Reason shown to the site owner.
+     * @param (callable(array<string,mixed>, array<string,mixed>): ?string)|null $recheck Given the task row re-read under the
+     *                                                                               run-lock and its sub_state, the reason it is
+     *                                                                               still to be given up for, or null.
      */
-    private static function giveUp(array $row, array $subState, string $logLine, string $reason): void
+    private static function giveUp(array $row, array $subState, string $logLine, string $reason, ?callable $recheck = null): void
     {
         global $wpdb;
         $snapshotId = isset($row['snapshot_id']) && is_string($row['snapshot_id']) ? $row['snapshot_id'] : '';
-        self::reclaimRunScratch($row);
-        if (is_object($wpdb) && $snapshotId !== '') {
-            /** @var \wpdb $wpdb */
-            @$wpdb->delete($wpdb->prefix . Schema::BACKUP_TASKS_TABLE, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; terminal give-up, no further recovery is ever attempted for this row
-        }
         $params = is_array($subState['params'] ?? null) ? $subState['params'] : null;
+        if ($recheck !== null && is_array($params) && is_string($params['scratch_dir'] ?? null) && $params['scratch_dir'] !== '') {
+            $given = self::giveUpUnderRunLock($snapshotId, $params, $recheck);
+            if ($given === null) {
+                return;
+            }
+            $reason = $given;
+        } else {
+            // No lock to take (no params to locate it), or the 24h ceiling.
+            self::reclaimRunScratch($row);
+            if (is_object($wpdb) && $snapshotId !== '') {
+                /** @var \wpdb $wpdb */
+                @$wpdb->delete($wpdb->prefix . Schema::BACKUP_TASKS_TABLE, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; terminal give-up, no further recovery is ever attempted for this row
+            }
+        }
         if (is_array($params)) {
             try {
                 (new TaskRunner($params))->reportFailure((string) ($row['phase'] ?? ''), $reason);
@@ -436,6 +483,68 @@ final class Watchdog
             }
         }
         DebugLog::write($logLine . ' ' . $reason);
+    }
+
+    /**
+     * GH #983: the give-up of a task whose live worker must be spared. Takes
+     * the run-lock without waiting; while holding it, re-reads the task row,
+     * and only when that row is still active and $recheck still returns a
+     * reason for it, reclaims the scratch and deletes the row. A worker that
+     * holds the lock keeps its row: nothing is changed and the next watchdog
+     * pass decides again.
+     *
+     * @param array<string,mixed>                                     $params  Runner params from the task row.
+     * @param callable(array<string,mixed>, array<string,mixed>): ?string $recheck See giveUp().
+     * @return string|null The reason the task was given up for, or null when it was not.
+     */
+    private static function giveUpUnderRunLock(string $snapshotId, array $params, callable $recheck): ?string
+    {
+        global $wpdb;
+        if (!is_object($wpdb) || $snapshotId === '') {
+            return null;
+        }
+        $given  = null;
+        $locked = false;
+        try {
+            $runner = new TaskRunner($params);
+            $locked = $runner->withRunLock(static function () use ($runner, $snapshotId, $recheck, &$given): void {
+                global $wpdb;
+                /** @var \wpdb $wpdb */
+                $table = $wpdb->prefix . Schema::BACKUP_TASKS_TABLE;
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- direct query on plugin-owned table; identifier is prefix+constant; the give-up decides on the live row read under the run-lock
+                $fresh = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$table} WHERE snapshot_id = %s", $snapshotId), ARRAY_A);
+                if (!is_array($fresh)) {
+                    return; // Finished, or given up by another pass.
+                }
+                $phase = (string) ($fresh['phase'] ?? '');
+                if ($phase === TaskRunner::PHASE_COMPLETED || $phase === TaskRunner::PHASE_FAILED) {
+                    return;
+                }
+                $reason = $recheck($fresh, self::decodeSubState($fresh['sub_state'] ?? ''));
+                if ($reason === null) {
+                    DebugLog::write(sprintf('WPMgr Backup: watchdog kept snapshot %s: the task re-read under its run-lock is no longer due to be given up', $snapshotId));
+                    return;
+                }
+                try {
+                    $runner->reclaimScratch();
+                } catch (\Throwable $e) {
+                    // A reclaim failure never keeps a given-up row.
+                    DebugLog::write('WPMgr Backup: watchdog scratch reclaim failed: ' . $e->getMessage());
+                }
+                @$wpdb->delete($table, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table, under the run-lock; terminal give-up
+                $given = $reason;
+            });
+        } catch (\Throwable $e) {
+            DebugLog::write('WPMgr Backup: watchdog give-up failed for snapshot ' . $snapshotId . ': ' . $e->getMessage());
+        }
+        if ($given === null) {
+            // Nothing was given up: the next watchdog pass decides again.
+            if (!$locked) {
+                DebugLog::write(sprintf('WPMgr Backup: watchdog deferred giving up snapshot %s to its next pass: a live worker holds its run-lock, or the lock could not be taken', $snapshotId));
+            }
+            self::schedule($snapshotId, self::RESCHEDULE_SECONDS);
+        }
+        return $given;
     }
 
     /**
@@ -490,8 +599,11 @@ final class Watchdog
      *     is abandoned.
      * The lock is the liveness signal here, not a second, independently
      * maintained heuristic that could disagree with the one run() itself
-     * relies on for correctness. This does not change the caller's row
-     * DELETE, which proceeds regardless: only the file reclaim is gated.
+     * relies on for correctness. GH #983: only the 24h ceiling, and a row
+     * without params to locate its lock, reach this method; their row
+     * DELETE proceeds regardless and only the file reclaim is gated. Every
+     * other give-up reclaims and deletes inside one hold of the run-lock
+     * (giveUpUnderRunLock()).
      *
      * Best-effort and defensive: sub_state.params (or its scratch_dir) may
      * be absent (a row seeded by something other than BackupCommand, or a
@@ -601,7 +713,7 @@ final class Watchdog
             self::giveUp($row, $subState, sprintf(
                 'WPMgr Backup: dispatch refusing to start stale task for snapshot %s (started %ds ago, phase=%s); deleted row.',
                 $snapshotId, time() - $startedAt, $phase
-            ), $ageReason);
+            ), $ageReason, self::ageRecheck($ageReason));
             return;
         }
 
