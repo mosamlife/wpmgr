@@ -668,7 +668,7 @@ final class CacheManager
         $name = self::OPTION_PURGED_FOR_KEYS;
 
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- the claim must be one INSERT IGNORE on the unique option name, so that exactly one caller creates the row; the options cache is dropped below
-        $rows =$wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'yes')", $name, self::KEY_SCHEME));
+        $rows = $wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'yes')", $name, self::KEY_SCHEME));
         if ($rows !== 1) {
             // A row exists. Read it as stored, past the options cache, and
             // replace it only from the value read: of the calls that read the
