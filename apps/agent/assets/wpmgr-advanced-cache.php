@@ -343,7 +343,13 @@ if ($wpmgr_host === '') {
 // No WP sanitizers available at drop-in load time.
 // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- advanced-cache drop-in runs pre-WP; wp_unslash/sanitize_* unavailable; control chars stripped + length capped before use as cache key
 $wpmgr_uri_raw = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '/';
-$wpmgr_uri     = substr(preg_replace('/[\x00-\x1F\x7F]/', '', $wpmgr_uri_raw), 0, 2048);
+$wpmgr_uri     = (string) preg_replace('/[\x00-\x1F\x7F]/', '', $wpmgr_uri_raw);
+// A URI longer than the cap is looked up by its first 2048 bytes. Such a
+// request may still be answered from the page stored for that prefix, but no
+// page is stored for it: it would be filed under a key that belongs to a
+// different request.
+$wpmgr_uri_whole = strlen($wpmgr_uri) <= 2048;
+$wpmgr_uri       = substr($wpmgr_uri, 0, 2048);
 unset($wpmgr_uri_raw);
 // Treat an empty URI (after stripping) as root.
 if ($wpmgr_uri === '') {
@@ -434,8 +440,16 @@ if (!empty($wpmgr_bypass_urls) && $wpmgr_uri !== '') {
 }
 
 $wpmgr_content = defined('WP_CONTENT_DIR') ? (string) WP_CONTENT_DIR : (dirname(__DIR__));
-$wpmgr_file = rtrim($wpmgr_content, '/\\')
-    . '/cache/wpmgr/' . $wpmgr_host . $wpmgr_path . '/' . $wpmgr_name . '.html.gz';
+
+// The cache key: the file this request is served from, relative to the cache
+// root. It is worked out here, once, from the request as it arrived and
+// before any plugin runs, and it is handed to the writer, which stores the
+// rendered page under exactly this key and stores nothing when none was
+// handed over. So a page is stored under the key it is served from, whatever
+// a plugin later does to the request, and the writer never needs a second
+// opinion about where a page belongs.
+$wpmgr_key  = $wpmgr_host . $wpmgr_path . '/' . $wpmgr_name . '.html.gz';
+$wpmgr_file = rtrim($wpmgr_content, '/\\') . '/cache/wpmgr/' . $wpmgr_key;
 
 // Resolve the tally metrics dir once, before the HIT/MISS branch.
 // Stored in a local var so both branches share the same computation.
@@ -463,6 +477,9 @@ if (!is_file($wpmgr_file)) {
         @mkdir($wpmgr_metrics_dir, 0755, true); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir,WordPress.Security.PluginDirectoryWrite.PluginDirectoryWrite -- advanced-cache drop-in runs pre-WP; wp_mkdir_p unavailable; writes to wp-content/cache/wpmgr, a persistent location outside the plugin folder
     }
     @file_put_contents($wpmgr_miss_file, "\n", FILE_APPEND); // phpcs:ignore PluginCheck.CodeAnalysis.WriteFile.PluginDirectoryWrite -- writes to wp-content/cache, a persistent install target outside the plugin folder
+    if ($wpmgr_uri_whole && !defined('WPMGR_PAGE_CACHE_KEY')) {
+        define('WPMGR_PAGE_CACHE_KEY', $wpmgr_key); // the page rendered next is stored under this key
+    }
     return false; // MISS — boot WordPress
 }
 

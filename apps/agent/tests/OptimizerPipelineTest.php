@@ -108,7 +108,7 @@ final class OptimizerPipelineTest extends TestCase
         // Inject an optimizer that uppercases a marker so we can prove the
         // OPTIMIZED bytes are what get cached + returned.
         $optimizer = new Optimizer(new PerfConfig(['lazy_load' => true, 'youtube_placeholder' => true]));
-        $writer = new CacheWriter($config, $this->root, null, null, $optimizer);
+        $writer = new CacheWriter($config, $this->root, 'example.com/post/index.html.gz', null, $optimizer);
 
         // Simulate the request superglobals the writer's resolveContext reads.
         $_SERVER['REQUEST_URI']    = '/post/';
@@ -143,7 +143,7 @@ final class OptimizerPipelineTest extends TestCase
     {
         $config = new CacheConfig(['enabled' => true]);
         $optimizer = new Optimizer(new PerfConfig([])); // inactive
-        $writer = new CacheWriter($config, $this->root, null, null, $optimizer);
+        $writer = new CacheWriter($config, $this->root, 'example.com/p2/index.html.gz', null, $optimizer);
 
         $_SERVER['REQUEST_URI']    = '/p2/';
         $_SERVER['HTTP_HOST']      = 'example.com';

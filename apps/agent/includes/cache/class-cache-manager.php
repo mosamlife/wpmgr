@@ -141,9 +141,10 @@ final class CacheManager
     /**
      * Open the page-cache output buffer (bound to init at the lowest priority).
      *
-     * The request path is captured here, before any plugin gets the chance to
-     * rewrite $_SERVER['REQUEST_URI'], and handed to the writer: the page is
-     * stored under the path the drop-in will look it up under.
+     * The writer is handed the key the drop-in chose for this request, before
+     * any plugin ran: the page is stored under the key it is served from, or
+     * not at all when the drop-in handed none over. The request URI captured
+     * here only feeds the URL rules (Bypass URLs and the never-cached paths).
      *
      * @return void
      */
@@ -154,8 +155,9 @@ final class CacheManager
         }
         $this->bufferOpen = true;
 
+        $storeKey   = defined(CacheWriter::KEY_CONSTANT) ? constant(CacheWriter::KEY_CONSTANT) : null;
         $requestUri = sanitize_text_field( wp_unslash( isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '/' ) );
-        $writer     = new CacheWriter($this->config(), $this->cacheRoot(), null, null, null, $requestUri);
+        $writer     = new CacheWriter($this->config(), $this->cacheRoot(), is_string($storeKey) ? $storeKey : null, null, null, $requestUri);
         // Full-page output buffer with a callback handler: this is the standard
         // page-cache capture pattern. PHP finalizes the buffer at request end,
         // invoking CacheWriter::handle() with the complete response. The buffer

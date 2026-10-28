@@ -218,6 +218,210 @@ final class AdvancedCacheDropinTest extends TestCase
         return $out;
     }
 
+    /** Printed by the key harness when the drop-in handed no key over. */
+    private const NO_KEY = '__WPMGR_NO_KEY__';
+
+    /**
+     * Run the drop-in in a child process and return the cache key it hands to
+     * the writer (the WPMGR_PAGE_CACHE_KEY constant), or null when it hands
+     * over none. A HIT exits before the key is printed, so callers keep the
+     * bucket empty unless they test a hit.
+     *
+     * @param array<string,mixed>  $config  Drop-in config array.
+     * @param array<string,mixed>  $server  $_SERVER overrides.
+     * @param array<string,string> $cookies $_COOKIE.
+     * @param array<string,mixed>  $get     $_GET.
+     * @return string|null
+     */
+    private function dropinKey(array $config, array $server = [], array $cookies = [], array $get = []): ?string
+    {
+        $template  = dirname(__DIR__) . '/assets/wpmgr-advanced-cache.php';
+        $installer = new DropinInstaller($this->tempDir, $template);
+        $rendered  = $installer->render($config);
+        $this->assertNotEmpty($rendered);
+
+        $renderedPath = $this->tempDir . '/advanced-cache.php';
+        file_put_contents($renderedPath, $rendered);
+
+        $server = array_merge([
+            'REQUEST_METHOD' => 'GET',
+            'REQUEST_URI'    => '/',
+            'HTTP_HOST'      => 'example.com',
+            'HTTPS'          => 'on',
+        ], $server);
+
+        $harnessPath = $this->tempDir . '/key-harness.php';
+        $harness     = "<?php\n"
+            . 'define(\'ABSPATH\', ' . var_export($this->tempDir . '/', true) . ");\n"
+            . "define('WP_CACHE', true);\n"
+            . 'define(\'WP_CONTENT_DIR\', ' . var_export($this->tempDir, true) . ");\n"
+            . '$_SERVER = ' . var_export($server, true) . ";\n"
+            . '$_GET = ' . var_export($get, true) . ";\n\$_POST = [];\n"
+            . '$_COOKIE = ' . var_export($cookies, true) . ";\n"
+            . 'include ' . var_export($renderedPath, true) . ";\n"
+            . "echo \"\\n__KEY__\" . (defined('WPMGR_PAGE_CACHE_KEY') ? WPMGR_PAGE_CACHE_KEY : "
+            . var_export(self::NO_KEY, true) . ");\n";
+        file_put_contents($harnessPath, $harness);
+
+        $cmd = escapeshellarg(PHP_BINARY) . ' -d error_reporting=E_ALL ' . escapeshellarg($harnessPath) . ' 2>&1';
+        $out = shell_exec($cmd);
+        $this->assertIsString($out, 'drop-in child process produced no output at all');
+
+        $pos = strrpos($out, "\n__KEY__");
+        $this->assertNotFalse($pos, 'the drop-in did not return to the harness: ' . $out);
+        $key = substr($out, $pos + strlen("\n__KEY__"));
+
+        return $key === self::NO_KEY ? null : $key;
+    }
+
+    /**
+     * The drop-in works out the cache key once, from the request as it
+     * arrived, and hands it to the writer, which stores under exactly that
+     * key. A path that is percent-encoded or not ASCII therefore keys on the
+     * page itself (#981), never on the shorter path a sanitiser leaves.
+     *
+     * @dataProvider provide_requests_and_their_keys
+     *
+     * @param string $uri Request URI as the browser sends it.
+     * @param string $key Key the page must be stored and served under.
+     */
+    public function test_dropin_hands_the_writer_the_key_it_serves_from(string $uri, string $key): void
+    {
+        $this->assertSame($key, $this->dropinKey((new CacheConfig([]))->toDropinArray(), ['REQUEST_URI' => $uri]));
+    }
+
+    /**
+     * @return array<string,array{0:string,1:string}>
+     */
+    public static function provide_requests_and_their_keys(): array
+    {
+        return [
+            'root'                    => ['/', 'example.com/index.html.gz'],
+            'page'                    => ['/about/', 'example.com/about/index.html.gz'],
+            'prefixed homepage'       => ['/en', 'example.com/en/index.html.gz'],
+            'percent-encoded utf8'    => ['/caf%C3%A9/', 'example.com/café/index.html.gz'],
+            'percent-encoded cyrillic' => ['/%D0%BC%D0%B8%D1%80/', 'example.com/мир/index.html.gz'],
+            'literal utf8'            => ['/日本語/page/2/', 'example.com/日本語/page/2/index.html.gz'],
+            'marketing query'         => ['/about/?utm_source=x', 'example.com/about/index.html.gz'],
+        ];
+    }
+
+    /**
+     * The key carries every variant the drop-in serves by: the mobile bucket,
+     * an include-cookie value, a cache-varying query.
+     */
+    public function test_dropin_key_carries_the_variant(): void
+    {
+        $config = (new CacheConfig(['cache_mobile' => true, 'include_cookies' => ['geo']]))->toDropinArray();
+        $key    = $this->dropinKey(
+            $config,
+            ['REQUEST_URI' => '/about/?color=red', 'HTTP_USER_AGENT' => 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)'],
+            ['geo' => 'FR'],
+            ['color' => 'red']
+        );
+
+        $this->assertSame('example.com/about/index-fr-mobile-' . md5(serialize(['color' => 'red'])) . '.html.gz', $key);
+    }
+
+    /**
+     * Nothing is handed over for a request the drop-in would never serve from
+     * the cache, so the writer stores nothing for it either.
+     *
+     * @dataProvider provide_requests_without_a_key
+     *
+     * @param array<string,mixed>  $server  $_SERVER overrides.
+     * @param array<string,string> $cookies $_COOKIE.
+     */
+    public function test_dropin_hands_over_no_key_for_a_request_it_never_serves(array $server, array $cookies): void
+    {
+        $config = (new CacheConfig(['bypass_urls' => ['/checkout']]))->toDropinArray();
+        $this->assertNull($this->dropinKey($config, $server, $cookies));
+    }
+
+    /**
+     * @return array<string,array{0:array<string,mixed>,1:array<string,string>}>
+     */
+    public static function provide_requests_without_a_key(): array
+    {
+        return [
+            'post'             => [['REQUEST_METHOD' => 'POST', 'REQUEST_URI' => '/about/'], []],
+            'bypass url'       => [['REQUEST_URI' => '/checkout/'], []],
+            'bypass cookie'    => [['REQUEST_URI' => '/about/'], ['wordpress_logged_in_abc' => 'x']],
+            'uncacheable host' => [['REQUEST_URI' => '/about/', 'HTTP_HOST' => 'victim..com'], []],
+            // The drop-in reads at most 2048 bytes of the URI. A longer one is
+            // looked up by its prefix, and a page stored under that prefix
+            // would answer requests for a different page.
+            'overlong uri'     => [['REQUEST_URI' => '/' . str_repeat('a', 2100) . '/'], []],
+        ];
+    }
+
+    /**
+     * A request carrying the preload header but not the site's token is an
+     * ordinary visitor request: a stored page answers it.
+     *
+     * @dataProvider provide_preload_headers_without_the_token
+     *
+     * @param array<string,mixed> $config Drop-in config overrides.
+     * @param string              $value  Header value sent.
+     */
+    public function test_preload_header_without_the_token_is_an_ordinary_request(array $config, string $value): void
+    {
+        $this->warmCacheFile('example.com', '/about', 'index', 'STORED-PAGE-BODY');
+
+        $out = $this->serveDropin(
+            array_merge((new CacheConfig([]))->toDropinArray(), $config),
+            ['REQUEST_URI' => '/about/', 'HTTP_X_WPMGR_PRELOAD' => $value]
+        );
+
+        $this->assertStringContainsString('STORED-PAGE-BODY', $out, 'a header without the token must not skip the cache');
+    }
+
+    /**
+     * @return array<string,array{0:array<string,mixed>,1:string}>
+     */
+    public static function provide_preload_headers_without_the_token(): array
+    {
+        $token = str_repeat('ab', 32);
+        return [
+            'header only, as sent before tokens' => [['preload_token' => $token], '1'],
+            'wrong token'                        => [['preload_token' => $token], str_repeat('cd', 32)],
+            'token prefix'                       => [['preload_token' => $token], substr($token, 0, 32)],
+            'site has no token'                  => [['preload_token' => ''], ''],
+            'site has a malformed token'         => [['preload_token' => 'short'], 'short'],
+        ];
+    }
+
+    /**
+     * A request carrying the site's own token is a preload: it is rendered
+     * fresh even when a page is stored, and the drop-in still hands over the
+     * key so the fresh render replaces the stored page.
+     */
+    public function test_preload_with_the_sites_token_renders_fresh_under_its_key(): void
+    {
+        $this->warmCacheFile('example.com', '/about', 'index', 'STORED-PAGE-BODY');
+        $token  = str_repeat('ab', 32);
+        $config = array_merge((new CacheConfig([]))->toDropinArray(), ['preload_token' => $token]);
+        $server = ['REQUEST_URI' => '/about/', 'HTTP_X_WPMGR_PRELOAD' => $token];
+
+        $out = $this->serveDropin($config, $server);
+        $this->assertStringNotContainsString('STORED-PAGE-BODY', $out, 'a preload must not be answered from the cache');
+        $this->assertStringContainsString(self::MISS, $out);
+
+        $this->assertSame('example.com/about/index.html.gz', $this->dropinKey($config, $server));
+    }
+
+    /**
+     * A preload is still subject to every rule a visitor is: a Bypass URL
+     * means nothing is stored for it.
+     */
+    public function test_preload_of_a_bypassed_url_hands_over_no_key(): void
+    {
+        $token  = str_repeat('ab', 32);
+        $config = array_merge((new CacheConfig(['bypass_urls' => ['/about']]))->toDropinArray(), ['preload_token' => $token]);
+
+        $this->assertNull($this->dropinKey($config, ['REQUEST_URI' => '/about/', 'HTTP_X_WPMGR_PRELOAD' => $token]));
+    }
+
     /**
      * A request whose URI contains a configured bypass URL must return false
      * BEFORE serving an existing cache file.

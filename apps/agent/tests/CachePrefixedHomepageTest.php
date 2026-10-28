@@ -80,6 +80,9 @@ final class CachePrefixedHomepageTest extends TestCase
         Functions\when('wp_schedule_single_event')->justReturn(true);
         Functions\when('wp_schedule_event')->justReturn(true);
         Functions\when('wp_clear_scheduled_hook')->justReturn(true);
+        // The page reached the template stage, as every page rendered by the
+        // front controller does.
+        Functions\when('did_action')->alias(static fn (string $hook): int => $hook === 'template_redirect' ? 1 : 0);
 
         $_SERVER['REQUEST_METHOD'] = 'GET';
         $_SERVER['HTTP_HOST']      = 'example.com';
@@ -142,40 +145,155 @@ final class CachePrefixedHomepageTest extends TestCase
         return (string) gzdecode((string) file_get_contents($file));
     }
 
+    /**
+     * The key the drop-in worked out for this request, as it hands it over.
+     */
+    private function dropinChose(string $key): void
+    {
+        define('WPMGR_PAGE_CACHE_KEY', $key);
+    }
+
+    /**
+     * @return list<string> Every stored page, relative to the cache root.
+     */
+    private function storedPages(): array
+    {
+        $out = [];
+        if (!is_dir($this->root)) {
+            return $out;
+        }
+        $it = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($this->root, \FilesystemIterator::SKIP_DOTS));
+        foreach ($it as $file) {
+            if (substr((string) $file, -8) === '.html.gz') {
+                $out[] = substr((string) $file, strlen($this->root) + 1);
+            }
+        }
+        sort($out);
+        return $out;
+    }
+
     // ---------------------------------------------------------------------
-    // Write side: the key is the request path.
+    // Write side: the key is the one the drop-in chose.
     // ---------------------------------------------------------------------
 
     /**
-     * The prefixed homepage is stored in its own bucket and the root homepage
-     * is left alone, for the spellings WordPress treats as one page.
+     * The writer stores the page under exactly the key the drop-in serves it
+     * from, whatever the path looks like: a prefixed homepage, a
+     * percent-encoded or non-ASCII slug (#981). A sanitised copy of the URI
+     * would drop the %XX sequences and file the page under another page's
+     * key, often the homepage.
      *
-     * @dataProvider provide_prefixed_homepage_spellings
+     * @dataProvider provide_requests_and_the_keys_the_dropin_chose
      *
      * @param string $uri Request URI as the browser sends it.
+     * @param string $key Key the drop-in handed over for it.
      */
-    public function test_writer_stores_a_prefixed_homepage_under_its_own_key(string $uri): void
+    public function test_writer_stores_under_the_key_the_dropin_chose(string $uri, string $key): void
     {
-        $writer = new CacheWriter(new CacheConfig(['enabled' => true]), $this->root);
-        $ok     = $writer->maybeWrite(self::HTML_IT, [
-            'url' => $uri, 'uri_path' => $uri, 'host' => 'example.com', 'method' => 'GET',
-            'user_agent' => 'Mozilla/5.0', 'cookies' => [], 'query' => [], 'status' => 200,
-        ]);
+        $manager = $this->enabledManager();
+        $_SERVER['REQUEST_URI'] = $uri;
+        $this->dropinChose($key);
 
-        $this->assertTrue($ok);
-        $this->assertFileExists($this->root . '/example.com/en/index.html.gz');
-        $this->assertFileDoesNotExist($this->root . '/example.com/index.html.gz', "$uri must not be stored as the root homepage");
+        $this->renderThroughCaptureBuffer($manager, static function (): void {
+            echo self::HTML_IT;
+        });
+
+        $this->assertSame([$key], $this->storedPages(), "$uri must be stored under the drop-in's key and nowhere else");
+    }
+
+    /**
+     * @return array<string,array{0:string,1:string}>
+     */
+    public static function provide_requests_and_the_keys_the_dropin_chose(): array
+    {
+        return [
+            'prefixed homepage'        => ['/en/', 'example.com/en/index.html.gz'],
+            'prefixed, no slash'       => ['/en', 'example.com/en/index.html.gz'],
+            'percent-encoded utf8'     => ['/caf%C3%A9/', 'example.com/café/index.html.gz'],
+            'percent-encoded cyrillic' => ['/%D0%BC%D0%B8%D1%80/', 'example.com/мир/index.html.gz'],
+            'mobile variant'           => ['/about/', 'example.com/about/index-mobile.html.gz'],
+        ];
+    }
+
+    /**
+     * No key from the drop-in (it is not installed, it declined the request,
+     * or it is a release that hands none over) means nothing is stored: the
+     * writer has no second opinion about where a page belongs.
+     */
+    public function test_writer_stores_nothing_without_a_key_from_the_dropin(): void
+    {
+        $manager = $this->enabledManager();
+        $_SERVER['REQUEST_URI'] = '/about/';
+
+        $visitor = $this->renderThroughCaptureBuffer($manager, static function (): void {
+            echo self::HTML_IT;
+        });
+
+        $this->assertSame(self::HTML_IT, $visitor, 'the visitor still receives the page');
+        $this->assertSame([], $this->storedPages());
+    }
+
+    /**
+     * A key that is not the shape the drop-in produces is refused rather than
+     * written: it is read from a constant, and the writer trusts no input.
+     *
+     * @dataProvider provide_malformed_keys
+     *
+     * @param string $key Key as found in the constant.
+     */
+    public function test_writer_refuses_a_malformed_key(string $key): void
+    {
+        $manager = $this->enabledManager();
+        $_SERVER['REQUEST_URI'] = '/about/';
+        $this->dropinChose($key);
+
+        $this->renderThroughCaptureBuffer($manager, static function (): void {
+            echo self::HTML_IT;
+        });
+
+        $this->assertSame([], $this->storedPages(), "key '$key' must be refused");
+        $this->assertFileDoesNotExist($this->base . '/escaped/index.html.gz');
     }
 
     /**
      * @return array<string,array{0:string}>
      */
-    public static function provide_prefixed_homepage_spellings(): array
+    public static function provide_malformed_keys(): array
     {
         return [
-            'with slash'    => ['/en/'],
-            'without slash' => ['/en'],
+            'empty'             => [''],
+            'no file name'      => ['example.com/about/'],
+            'not a cache file'  => ['example.com/about/index.php'],
+            'absolute'          => ['/example.com/about/index.html.gz'],
+            'parent segment'    => ['example.com/../../escaped/index.html.gz'],
+            'dot segment'       => ['example.com/./index.html.gz'],
+            'empty segment'     => ['example.com//index.html.gz'],
+            'uppercase host'    => ['Example.com/index.html.gz'],
+            'bad host'          => ['victim..com/index.html.gz'],
+            'backslash'         => ['example.com\\about/index.html.gz'],
+            'control character' => ["example.com/a\nb/index.html.gz"],
         ];
+    }
+
+    /**
+     * A plugin that rewrites REQUEST_URI before init (a language plugin that
+     * strips the /en prefix on plugins_loaded, say) does not move the
+     * translated page into the root bucket: the key was worked out before any
+     * plugin ran.
+     */
+    public function test_a_uri_rewritten_before_init_does_not_move_the_page(): void
+    {
+        $manager = $this->enabledManager();
+        $this->dropinChose('example.com/en/index.html.gz'); // the drop-in saw /en/
+        $_SERVER['REQUEST_URI'] = '/';                         // plugins_loaded: the prefix is stripped
+
+        $this->renderThroughCaptureBuffer($manager, static function (): void {
+            ob_start(static fn (string $page): string => str_replace('Benvenuti nella home', 'Welcome home', $page));
+            echo self::HTML_IT;
+        });
+
+        $this->assertSame(['example.com/en/index.html.gz'], $this->storedPages(), 'the root homepage bucket must not receive the /en/ page');
+        $this->assertStringContainsString('Welcome home', $this->storedBody('example.com/en/index.html.gz'));
     }
 
     /**
@@ -189,6 +307,7 @@ final class CachePrefixedHomepageTest extends TestCase
     public function test_buffer_keys_on_the_request_path_it_was_opened_with(): void
     {
         $manager = $this->enabledManager();
+        $this->dropinChose('example.com/en/index.html.gz');
 
         $_SERVER['REQUEST_URI'] = '/en/';
         $this->renderThroughCaptureBuffer($manager, function (): void {
@@ -220,6 +339,7 @@ final class CachePrefixedHomepageTest extends TestCase
     {
         $manager = $this->enabledManager();
         $_SERVER['REQUEST_URI'] = '/en/';
+        $this->dropinChose('example.com/en/index.html.gz');
 
         $this->renderThroughCaptureBuffer($manager, function (): void {
             // A translator opening its filter buffer at init, after the capture.
@@ -245,6 +365,7 @@ final class CachePrefixedHomepageTest extends TestCase
     {
         $manager = $this->enabledManager();
         $_SERVER['REQUEST_URI'] = '/en/';
+        $this->dropinChose('example.com/en/index.html.gz');
 
         ob_start();
         $levelsBefore = ob_get_level();

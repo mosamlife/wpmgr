@@ -5,16 +5,18 @@
  * disk cache under the deterministic CacheKey path.
  *
  * Flow:
- *   1. ob_start(handler) is opened early (template_redirect) when the request is
- *      a candidate (anonymous-or-allowed, GET, not admin/ajax, no bypass cookie).
+ *   1. ob_start(handler) is opened early (init) when the request is a candidate
+ *      (GET, the front controller, not admin/ajax/cron/REST/login).
  *   2. At buffer flush the handler receives the full body; it re-checks full
- *      cacheability (status 200, full HTML doc, password not required) and the
- *      cache key (logged-in caching gate), then gzencode + atomic write.
+ *      cacheability (status 200, full HTML doc, password not required), then
+ *      gzencode + atomic write.
  *   3. The body is ALWAYS returned unmodified so the live response is unaffected
  *      whether or not it was cached.
  *
- * The written file name is byte-identical to what the serving drop-in computes
- * for the same request — both use CacheKey.
+ * The page is stored under the key the serving drop-in handed over for this
+ * request (the WPMGR_PAGE_CACHE_KEY constant): the file the drop-in serves the
+ * request from. The writer never works out a key of its own, so the two cannot
+ * disagree, and it stores nothing when no key was handed over.
  *
  * Standard WordPress disk-cache writer technique.
  *
@@ -41,9 +43,18 @@ final class CacheWriter
 
     /** Suffix appended when the optimizer transformed the buffer. */
     private const FOOTPRINT_OPTIMIZED_SUFFIX = ' (optimized)';
+
+    /**
+     * Constant the serving drop-in defines with the cache key it chose for this
+     * request: the path of the file it serves the request from, relative to the
+     * cache root ("{host}/{path}/{name}.html.gz").
+     */
+    public const KEY_CONSTANT = 'WPMGR_PAGE_CACHE_KEY';
+
     private CacheConfig $config;
 
-    private CacheKey $key;
+    /** The drop-in's key for this request, or null when it handed none over. */
+    private ?string $storeKey;
 
     private Cacheability $cacheability;
 
@@ -63,23 +74,18 @@ final class CacheWriter
     private bool $optimizerResolved = false;
 
     /**
-     * The request URI as it ARRIVED, captured when the buffer was opened. Null
-     * reads the live value at flush time (tests, and callers that never
-     * captured one).
-     *
-     * The page is stored under the path the request came in on, because that
-     * is the path the serving drop-in looks it up under. A plugin may rewrite
-     * $_SERVER['REQUEST_URI'] while the page is built (to hand WordPress a
-     * URL without a language prefix, say); reading it back at flush time would
-     * file the page under the rewritten path, where the drop-in never looks and
-     * where it overwrites the page that really belongs there.
+     * The request URI captured when the buffer was opened, for the URL rules
+     * (Bypass URLs, the never-cached paths). Null reads the live value at
+     * flush time (tests, and callers that never captured one). It plays no
+     * part in where the page is stored: that is the drop-in's key.
      */
     private ?string $requestUri;
 
     /**
      * @param CacheConfig       $config       Page-cache config.
      * @param string            $cacheRoot    Absolute cache root.
-     * @param CacheKey|null     $key          Injected for tests.
+     * @param string|null       $storeKey     The key the drop-in handed over for
+     *                                         this request; null stores nothing.
      * @param Cacheability|null $cacheability Injected for tests.
      * @param Optimizer|null    $optimizer    Phase-4 optimizer (tests/override).
      *                                         When omitted it is lazily loaded
@@ -90,7 +96,7 @@ final class CacheWriter
     public function __construct(
         CacheConfig $config,
         string $cacheRoot,
-        ?CacheKey $key = null,
+        ?string $storeKey = null,
         ?Cacheability $cacheability = null,
         ?Optimizer $optimizer = null,
         ?string $requestUri = null
@@ -98,7 +104,7 @@ final class CacheWriter
         $this->config       = $config;
         $this->cacheRoot    = rtrim($cacheRoot, '/\\');
         $this->requestUri   = $requestUri;
-        $this->key          = $key ?? new CacheKey();
+        $this->storeKey     = $storeKey;
         // When no Cacheability is injected (live path) we build one, passing the
         // persisted woo_supported probe result so the write path and the drop-in
         // serve path agree: Woo cookies are only promoted out of bypass when BOTH
@@ -278,33 +284,15 @@ final class CacheWriter
             return false;
         }
 
-        // A host the cache does not key on is not stored under a placeholder:
-        // the serve side declines the same hosts by the same rule, so a bucket
-        // written here for one of them could never be read back by the request
-        // that produced it, and would be readable by unrelated ones.
-        if (CacheKey::normalizeHost((string) ($ctx['host'] ?? '')) === '') {
+        // The page is stored under the key the drop-in handed over, the file it
+        // serves this request from, or not at all. The drop-in already declined
+        // every request it would never serve from the cache (an uncacheable
+        // host, too many cache-varying query keys, a logged-in visitor without
+        // logged-in caching), so a missing key covers those too.
+        $path = self::keyPath($this->cacheRoot, $ctx['store_key'] ?? null);
+        if ($path === null) {
             return false;
         }
-
-        $fileName = $this->key->build(
-            (array) ($ctx['cookies'] ?? []),
-            (array) ($ctx['query'] ?? []),
-            (string) ($ctx['user_agent'] ?? ''),
-            $this->config->cacheLoggedIn,
-            $this->config->cacheMobile,
-            $this->config->includeCookies,
-            $this->config->includeQueries
-        );
-        if ($fileName === null) {
-            return false; // logged-in but logged-in caching disabled
-        }
-
-        $path = $this->key->path(
-            $this->cacheRoot,
-            (string) ($ctx['host'] ?? ''),
-            (string) ($ctx['uri_path'] ?? '/'),
-            $fileName
-        );
 
         // Append the footprint marker BEFORE gzencode so it appears in both the
         // cached file bytes and the live served response. Only appended on an
@@ -319,6 +307,42 @@ final class CacheWriter
         }
 
         return $this->atomicWrite($path, $compressed);
+    }
+
+    /**
+     * The absolute file a drop-in key names, or null when the key is not the
+     * shape the drop-in produces: "{host bucket}/{path segments}/{name}.html.gz",
+     * with a lower-case bucket, no empty or dot-only segment, no backslash and
+     * no control character. The key is read from a constant and is not trusted
+     * because of where it came from; the write below also checks the resolved
+     * directory against the cache root.
+     *
+     * @param string $cacheRoot Absolute cache root, no trailing slash.
+     * @param mixed  $key       Key as handed over.
+     * @return string|null
+     */
+    private static function keyPath(string $cacheRoot, $key): ?string
+    {
+        if ($cacheRoot === '' || !is_string($key) || $key === '' || strlen($key) > 4096
+            || strpbrk($key, '\\') !== false || preg_match('/[\x00-\x1F\x7F]/', $key) === 1
+        ) {
+            return null;
+        }
+        $segments = explode('/', $key);
+        $bucket   = (string) array_shift($segments);
+        $file     = (string) array_pop($segments);
+        if (strpos($bucket, '..') !== false
+            || preg_match('/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(_[0-9]{1,5})?$/', $bucket) !== 1
+            || preg_match('/^index[a-z0-9_-]*\.html\.gz$/', $file) !== 1
+        ) {
+            return null;
+        }
+        foreach ($segments as $segment) {
+            if (trim($segment, '.') === '') {
+                return null; // empty, '.', '..' or a longer dot run
+            }
+        }
+        return $cacheRoot . '/' . $key;
     }
 
     /**
@@ -364,6 +388,7 @@ final class CacheWriter
         $wcCartEmpty = $this->resolveWcCartEmpty();
 
         return [
+            'store_key'         => $this->storeKey,
             'url'               => $uri,
             'uri_path'          => $uri,
             'host'              => $host,
