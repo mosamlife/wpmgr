@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
@@ -172,6 +173,59 @@ func TestPgSiteLockerCapsTheInstanceAcrossTenants(t *testing.T) {
 	}
 	if got := l.slots.inUse(); got != instanceEmailCap {
 		t.Fatalf("%d slot(s) in use, want %d", got, instanceEmailCap)
+	}
+}
+
+// stuckAgent never answers a config command on its own; it returns only when
+// the call's context ends, as a site that accepted the connection and then
+// stalled would.
+type stuckAgent struct{ orderedAgent }
+
+func (a *stuckAgent) SyncEmailConfig(ctx context.Context, _ uuid.UUID, _ string, _ agentcmd.EmailConfigRequest) (agentcmd.EmailConfigResult, error) {
+	<-ctx.Done()
+	return agentcmd.EmailConfigResult{}, ctx.Err()
+}
+
+func (a *stuckAgent) ClearEmailConfig(ctx context.Context, _ uuid.UUID, _ string) (agentcmd.ClearEmailConfigResult, error) {
+	<-ctx.Done()
+	return agentcmd.ClearEmailConfigResult{}, ctx.Err()
+}
+
+// An agent call made under the site's lock is cut off at the locked-call
+// timeout, so a stalled site holds the lock no longer than that, and the
+// next change on the site starts.
+func TestLockedAgentCallsAreCutOffAtTheTimeout(t *testing.T) {
+	if lockedAgentCallTimeout > 15*time.Second {
+		t.Fatalf("lockedAgentCallTimeout = %v, want at most 15s", lockedAgentCallTimeout)
+	}
+	f := newRemoveFixture(t)
+	f.svc.SetAgentClient(&stuckAgent{orderedAgent{log: f.log}}, &fakeSiteLookup{})
+	f.svc.lockedCallTimeout = 50 * time.Millisecond
+	ctx := context.Background()
+
+	start := time.Now()
+	res, err := f.svc.SyncConfigToAgent(ctx, f.tenantID, f.siteID)
+	if err != nil || res.OK {
+		t.Fatalf("sync to a stalled site = %+v, %v; want ok=false", res, err)
+	}
+	if waited := time.Since(start); waited > 2*time.Second {
+		t.Fatalf("sync to a stalled site held on for %v", waited)
+	}
+
+	start = time.Now()
+	_, err = f.remove()
+	wantDomainError(t, err, domain.KindServiceUnavailable, "email_agent_clear_failed")
+	if waited := time.Since(start); waited > 2*time.Second {
+		t.Fatalf("a removal on a stalled site held on for %v", waited)
+	}
+	if _, ok := f.siteRow(); !ok {
+		t.Fatal("a removal whose clear was never confirmed deleted the row")
+	}
+
+	// The lock was let go: the next change on the site starts at once.
+	f.svc.SetAgentClient(f.agent, &fakeSiteLookup{})
+	if _, err := f.remove(); err != nil {
+		t.Fatalf("a removal after the stalled calls were cut off: %v", err)
 	}
 }
 

@@ -203,6 +203,44 @@ func TestSiteEmailLockCapsAnInstanceAndLeavesThePoolTwoConnections(t *testing.T)
 	}
 }
 
+// A connection lost while it holds the lock leaves neither the site nor the
+// tenant's slot stuck.
+func TestSiteEmailLockSurvivesATerminatedBackend(t *testing.T) {
+	app, admin := startScopeTestPostgres(t)
+	l := instanceLocker(app, 2*time.Second)
+	ctx := context.Background()
+	tenant, site := uuid.New(), uuid.New()
+
+	release, err := l.lockSite(ctx, tenant, site)
+	if err != nil {
+		t.Fatalf("first lock: %v", err)
+	}
+	var killed int
+	if err := admin.QueryRow(ctx, `SELECT count(pg_terminate_backend(pid)) FROM pg_locks
+		WHERE locktype = 'advisory' AND pid <> pg_backend_pid()`).Scan(&killed); err != nil {
+		t.Fatalf("terminate: %v", err)
+	}
+	if killed != 1 {
+		t.Fatalf("terminated %d backend(s) holding an advisory lock, want 1", killed)
+	}
+	release() // the unlock fails on the dead session; the connection is closed
+	if got := l.slots.inUse(); got != 0 {
+		t.Fatalf("%d slot(s) in use after the release, want 0", got)
+	}
+	again, err := l.lockSite(ctx, tenant, site)
+	if err != nil {
+		t.Fatalf("the site after its holder's connection was lost: %v", err)
+	}
+	again()
+	var held int
+	if err := admin.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory'`).Scan(&held); err != nil {
+		t.Fatalf("count locks: %v", err)
+	}
+	if held != 0 {
+		t.Fatalf("%d advisory lock(s) still held after both releases", held)
+	}
+}
+
 // A request for a site locked from another instance holds no slot while it
 // waits. Here the waiting instance has room for one operation only, so if the
 // waiter kept its slot between tries, another tenant's change there would wait
