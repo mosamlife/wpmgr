@@ -12317,7 +12317,8 @@ export const AssignSitesResponseSchema = {
 
 export const ClientReportSectionFlagsSchema = {
   type: "object",
-  description: "Controls which data sections are included in a report.",
+  description:
+    "Controls which data sections are included in a report. Every flag is\noptional in a request. A flag that is left out keeps the value already\nstored for the client, or takes the default listed here when the\nclient has no saved settings yet; `false` turns the section off. A\nresponse always carries all six flags.\n",
   properties: {
     overview: {
       type: "boolean",
@@ -12341,7 +12342,7 @@ export const ClientReportSectionFlagsSchema = {
     },
     email: {
       type: "boolean",
-      default: false,
+      default: true,
     },
   },
 } as const;
@@ -12417,7 +12418,7 @@ export const ClientReportScheduleSchema = {
     powered_by_removed: {
       type: "boolean",
       description:
-        'When true, the "Powered by WPMgr" footer is omitted (white-label plan).',
+        'When true, the "Prepared with WPMgr" footer is omitted (white-label plan).',
     },
     next_run_at: {
       type: "string",
@@ -12439,7 +12440,8 @@ export const ClientReportScheduleSchema = {
 
 export const ClientReportScheduleUpdateSchema = {
   type: "object",
-  description: "All fields are required (full replace).",
+  description:
+    "Saves the client's report schedule. The first save creates it and each\nlater save updates it.\n\nEvery field is replaced by the value sent, with one exception:\n`sections` is merged one flag at a time. For every other field,\nleaving it out does not keep the stored value: the server reads it as\nthe zero value of its type, runs the checks below on that value, and\nsaves it. That holds for the five required fields too, since the\nserver does not reject a body for leaving one out.\n\n- `enabled`: `true` turns scheduled sending on and sets `next_run_at`;\n  `false` turns it off and clears `next_run_at`. Missing: `false`, so\n  the schedule is switched off.\n- `cadence`: `weekly` or `monthly`; anything else is rejected with\n  `invalid_cadence`. Missing: rejected the same way.\n- `send_day`: 0 to 6 for `weekly` (0 is Sunday) and 1 to 28 for\n  `monthly`; anything else is rejected with `invalid_send_day`.\n  Missing: 0, which is accepted for `weekly` (Sunday) and rejected for\n  `monthly`.\n- `send_hour`: 0 to 23; anything else is rejected with\n  `invalid_send_hour`. Missing: 0 (midnight), which is accepted.\n- `recipients`: replaces the stored list. Entries are trimmed, blank\n  entries are skipped, each remaining entry must be a valid email\n  address (`invalid_recipient`), and duplicates are removed ignoring\n  case. Each address is saved as the bare address in lower case. At\n  most 10 may remain (`too_many_recipients`); this limit is lower than\n  the `maxItems` shown for this field. Missing: an empty list, which\n  clears the stored recipients.\n- `sections`: merged over the sections already stored for the client,\n  or over the defaults when no schedule is stored yet. A flag that is\n  present turns that section on (`true`) or off (`false`). A flag that\n  is left out keeps its stored value, and a body with no `sections`\n  object keeps every stored flag.\n- `intro_text`, `closing_text`: replace the stored text. At most 2000\n  bytes of UTF-8 each, rejected with `intro_text_too_long` or\n  `closing_text_too_long`, so text outside ASCII fits fewer than 2000\n  characters. Missing: empty, which clears the stored text.\n- `powered_by_removed`: `true` leaves the \"Prepared with WPMgr\" footer\n  out of the client's reports and `false` shows it. Missing: `false`,\n  so the footer is shown again.\n",
   required: ["enabled", "cadence", "send_day", "send_hour", "recipients"],
   properties: {
     enabled: {

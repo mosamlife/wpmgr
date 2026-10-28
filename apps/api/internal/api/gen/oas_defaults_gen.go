@@ -89,7 +89,7 @@ func (s *ClientReportSectionFlags) setDefaults() {
 		s.Performance.SetTo(val)
 	}
 	{
-		val := bool(false)
+		val := bool(true)
 		s.Email.SetTo(val)
 	}
 }
