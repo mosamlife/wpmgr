@@ -190,6 +190,9 @@ final class TaskRunner
     /** @var list<string> Relative paths omitted from the snapshot. */
     private array $skippedSources = [];
 
+    /** Whether the last runWorker() ended by handing the task over. */
+    private bool $handedOver = false;
+
     /**
      * @param array{snapshot_id:string,kind:string,age_recipient:string,
      *              presign_endpoint:string,manifest_endpoint:string,
@@ -226,9 +229,44 @@ final class TaskRunner
     }
 
     /**
-     * Drive the task to completion (or to the next checkpoint a watchdog can
-     * resume from). NEVER throws — top-level catch translates any escape into
+     * Drive the task to completion. A worker that hands over after a saved
+     * archive part (GH #983) is followed by the next one through the
+     * watchdog's resume path, which runs every worker after this one from a
+     * single loop: a hand-over starts no frame inside the previous worker's,
+     * so nothing of an earlier worker, its cursor included, stays alive while
+     * a later one runs (GH #954). NEVER throws, like runWorker().
+     *
+     * @return string Terminal phase reached, or the phase the last worker
+     *                that ran stopped in.
+     */
+    public function run(): string
+    {
+        $phase = $this->runWorker();
+        if (!$this->handedOver) {
+            return $phase;
+        }
+        return Watchdog::handOver($this->snapshotId()) ?? $phase;
+    }
+
+    /**
+     * Whether the last runWorker() ended by handing the task over: its saved
+     * part is durable and its guards are released, and the caller starts the
+     * next worker.
+     */
+    public function handedOver(): bool
+    {
+        return $this->handedOver;
+    }
+
+    /**
+     * Run ONE worker: drive the task to completion, until this worker hands
+     * over (see handedOver()), or to the next checkpoint a watchdog can
+     * resume from. NEVER throws — top-level catch translates any escape into
      * a `failed` phase + progress post.
+     *
+     * The next worker of a hand-over is started by the caller, after this call
+     * has returned: run() for a single caller, the watchdog's resume loop for
+     * every worker after it.
      *
      * GitHub issue #232: two independent, layered mutual-exclusion guards are
      * taken before any phase work, because the now-guaranteed double-fire of
@@ -289,14 +327,14 @@ final class TaskRunner
      *                phase. Today every handler runs the phase to completion
      *                or throws, so this returns COMPLETED or FAILED.
      */
-    public function run(): string
+    public function runWorker(): string
     {
         $this->workerStartedAt = time();
         LongRunningJob::extendLimits();
         $this->startWorkerClock();
 
-        $currentPhase = self::PHASE_QUEUED;
-        $handedOver   = false;
+        $currentPhase     = self::PHASE_QUEUED;
+        $this->handedOver = false;
 
         // ---- GH #232 guard 1: GET_LOCK — fast, cheap, cross-process reject.
         //   '1'  => we won the lock — proceed to the (authoritative) flock
@@ -501,7 +539,7 @@ final class TaskRunner
                 // GH #983: the closed part is saved; the next worker continues
                 // from it once this one has released its guards (below).
                 \WPMgr\Agent\Support\DebugLog::write('WPMgr TaskRunner: handing over snapshot ' . $this->snapshotId() . ' after a saved part: ' . $e->getMessage());
-                $handedOver = true;
+                $this->handedOver = true;
             } elseif ($e->getCode() === self::CODE_TASK_GONE) {
                 // GH #983: the task was given up while this worker ran. Stop:
                 // no further phase work, no success report, no task-row write.
@@ -547,17 +585,15 @@ final class TaskRunner
         }
 
         // GH #983: reached only by a hand-over, after both guards are released
-        // so the next worker can take them. The next worker starts through the
-        // watchdog's own resume path, at once: it is never left to be found
-        // stalled. Its run() restarts the time limit.
-        if (!$handedOver) {
-            return $currentPhase;
-        }
-        // The caught hand-over exception goes too: when zend.exception_ignore_args
-        // is off, its trace holds everything this worker passed into its archive
-        // pass, which would stay alive through the whole next worker.
-        unset($task, $subState, $e);
-        return Watchdog::handOver($this->snapshotId()) ?? $currentPhase;
+        // so the next worker can take them. The caller starts the next worker
+        // through the watchdog's own resume path, at once: it is never left to
+        // be found stalled. Its runWorker() restarts the time limit.
+        //
+        // GH #954: this frame ends here, and the caught hand-over exception
+        // with it. When zend.exception_ignore_args is off, that exception's
+        // trace holds everything this worker passed into its archive pass, so
+        // none of it may outlive this call.
+        return $currentPhase;
     }
 
     /**

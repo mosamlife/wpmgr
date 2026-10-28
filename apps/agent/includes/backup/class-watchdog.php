@@ -143,7 +143,7 @@ final class Watchdog
      * because its worker saved progress.
      *
      * @param string $snapshotId UUID of the snapshot to continue.
-     * @return string|null Phase the next worker reached, or null when none ran.
+     * @return string|null Phase the last worker that ran reached, or null when none ran.
      */
     public static function handOver(string $snapshotId): ?string
     {
@@ -151,7 +151,44 @@ final class Watchdog
     }
 
     /**
-     * The shared resume path behind resumeIfStalled() and handOver().
+     * The shared resume path behind resumeIfStalled() and handOver(): runs
+     * the worker the guards of runnerToResume() allow and, for as long as a
+     * worker hands over, the next one, all from this loop (GH #954). A
+     * worker's frames end before the next worker's guards decode the task row
+     * again, so a backup that needs many hand-overs holds one worker's state
+     * at a time, not one more copy of its cursor for every hand-over.
+     *
+     * @param string $snapshotId UUID of the snapshot.
+     * @param bool   $handedOver True when the previous worker handed over.
+     * @return string|null Phase the last worker that ran reached, or null when none ran.
+     */
+    private static function resume(string $snapshotId, bool $handedOver): ?string
+    {
+        $phase = null;
+        while (true) {
+            $runner = self::runnerToResume($snapshotId, $handedOver);
+            if ($runner === null) {
+                return $phase;
+            }
+            // runWorker() catches all exceptions and never throws, so this
+            // call cannot kill the WP-Cron worker.
+            $phase = $runner->runWorker();
+            if (!$runner->handedOver()) {
+                return $phase;
+            }
+            // The worker saved a part and released its guards: the next one
+            // continues at once, and this one is released before its state is
+            // decoded.
+            $handedOver = true;
+            $runner     = null;
+        }
+    }
+
+    /**
+     * The runner a resume starts, or null when none should run: the task is
+     * gone, finished, healthy, held by a live worker, or given up. Everything
+     * decoded here for the guards is gone when this returns, before any worker
+     * runs.
      *
      * Give-up guards, in order (each reclaims scratch under the run-lock,
      * deletes the row, and reports the reason to the control plane; every
@@ -169,9 +206,9 @@ final class Watchdog
      *
      * @param string $snapshotId UUID of the snapshot.
      * @param bool   $handedOver True when the previous worker handed over.
-     * @return string|null Phase the resumed worker reached, or null when none ran.
+     * @return TaskRunner|null The runner to start, or null when none should run.
      */
-    private static function resume(string $snapshotId, bool $handedOver): ?string
+    private static function runnerToResume(string $snapshotId, bool $handedOver): ?TaskRunner
     {
         if ($snapshotId === '' || !preg_match('/^[a-f0-9-]{36}$/i', $snapshotId)) {
             return null;
@@ -327,11 +364,10 @@ final class Watchdog
         // until it terminates.
         self::schedule($snapshotId, self::RESCHEDULE_SECONDS);
 
-        // Enter the runner. run() catches all exceptions and never
-        // throws — so this call cannot kill the WP-Cron worker. The
-        // runner reads phase + sub_state and dispatches.
-        $runner = new TaskRunner($params);
-        return $runner->run();
+        // The caller runs the runner once this call has returned, so the
+        // decoded row and cursor above are gone before the worker starts. The
+        // runner reads phase + sub_state itself and dispatches.
+        return new TaskRunner($params);
     }
 
     /**
