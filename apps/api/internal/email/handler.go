@@ -1,6 +1,7 @@
 package email
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"io"
@@ -22,20 +23,35 @@ import (
 // /api/v1/email/...
 type Handler struct {
 	svc        *Service
-	audit      *audit.Recorder
+	audit      auditRecorder  // nil when no recorder is wired; guarded in record
 	pub        EventPublisher // may be nil; guarded before use
 	publicBase string         // e.g. "https://manage.wpmgr.app" for webhook_url
 }
 
+// auditRecorder is the audit surface the handler uses. *audit.Recorder
+// satisfies it; tests substitute a fake to see what was recorded.
+type auditRecorder interface {
+	Record(ctx context.Context, e audit.Event) (audit.Entry, error)
+}
+
+// recorderOrNil keeps a nil *audit.Recorder nil. Stored as an interface it
+// would otherwise compare non-nil, and record would call through it.
+func recorderOrNil(rec *audit.Recorder) auditRecorder {
+	if rec == nil {
+		return nil
+	}
+	return rec
+}
+
 // NewHandler constructs the email handler.
 func NewHandler(svc *Service, rec *audit.Recorder) *Handler {
-	return &Handler{svc: svc, audit: rec}
+	return &Handler{svc: svc, audit: recorderOrNil(rec)}
 }
 
 // NewHandlerWithPublisher constructs the email handler wired to the SSE event
 // publisher so manual suppression add/delete emits email.suppression_updated.
 func NewHandlerWithPublisher(svc *Service, rec *audit.Recorder, pub EventPublisher) *Handler {
-	return &Handler{svc: svc, audit: rec, pub: pub}
+	return &Handler{svc: svc, audit: recorderOrNil(rec), pub: pub}
 }
 
 // SetPublisher wires the SSE event publisher after construction. Mirrors
@@ -57,7 +73,8 @@ func (h *Handler) SetPublicBase(publicBase string) {
 //
 //	GET    /sites/:siteId/email/config                — masked config
 //	PUT    /sites/:siteId/email/config                — upsert per-site config
-//	POST   /sites/:siteId/email/test                  — dispatch send_test_email command
+//	DELETE /sites/:siteId/email/config                — remove the site's own provider
+//	POST   /sites/:siteId/email/test                 — dispatch send_test_email command
 //	POST   /sites/:siteId/email/sync                  — push stored config to agent (explicit sync)
 //	GET    /sites/:siteId/email/log                   — keyset-paginated log list
 //	GET    /sites/:siteId/email/log/export            — CSV export
@@ -85,6 +102,8 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	g := r.Group("/sites/:siteId", authz.RequireSiteAccess("siteId"))
 	g.GET("/email/config", authz.RequirePermission(authz.PermEmailManage), h.getConfig)
 	g.PUT("/email/config", authz.RequirePermission(authz.PermEmailManage), h.putConfig)
+	// GH #968: remove the site's own provider (agent cleared first).
+	g.DELETE("/email/config", authz.RequirePermission(authz.PermEmailManage), h.deleteConfig)
 	// m61: per-site webhook security config (route token rotation, signing key, SES ARNs).
 	g.PUT("/email/webhook-config", authz.RequirePermission(authz.PermEmailManage), h.putWebhookConfig)
 	// m62 Area 2: named connections CRUD.
@@ -180,6 +199,35 @@ func (h *Handler) putConfig(c *gin.Context) {
 		"secret_set": saved.SecretSet,
 	})
 	c.JSON(http.StatusOK, toConfigDTO(saved, h.publicBase))
+}
+
+// deleteConfig handles DELETE /sites/:siteId/email/config (GH #968).
+// Removes the site's OWN email provider: the agent is told to clear its email
+// config first, and the row is deleted only once it confirms. The site then
+// uses the organisation default when there is one, and WordPress's own mailer
+// when there is not; the response says which.
+//
+// 404 when the site has no config of its own (an inheriting site has nothing
+// to remove), 409 when the agent is too old for the command or the settings
+// changed while they were being removed, 503 when the agent did not confirm.
+// In every failure nothing is removed.
+func (h *Handler) deleteConfig(c *gin.Context) {
+	p, _ := domain.PrincipalFromContext(c.Request.Context())
+	siteID, ok := parseSiteID(c)
+	if !ok {
+		return
+	}
+	res, err := h.svc.RemoveSiteConfig(c.Request.Context(), p.TenantID, siteID)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	h.record(c, p, audit.ActionEmailConfigReset, siteID, map[string]any{
+		"provider":           res.RemovedProvider,
+		"fallback":           res.Fallback,
+		"org_default_synced": res.OrgDefaultSynced,
+	})
+	c.JSON(http.StatusOK, toRemoveConfigDTO(res))
 }
 
 // testSend handles POST /sites/:siteId/email/test.

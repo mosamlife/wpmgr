@@ -605,6 +605,26 @@ func (r *Repo) GetSiteConfig(ctx context.Context, tenantID, siteID uuid.UUID) (C
 	return cfg, err
 }
 
+// DeleteSiteConfig deletes one site's own config row, and only while its
+// updated_at still equals expectedUpdatedAt, the value GetSiteConfig returned
+// (GH #968). It never reaches the org-wide row. It returns the number of rows
+// deleted, 0 or 1. Zero has three causes the caller tells apart by reading the
+// row again: there is no row, the m112 site-scope policy refused the delete,
+// or the row was written after it was read. Runs under scopedTenantTx.
+func (r *Repo) DeleteSiteConfig(ctx context.Context, tenantID, siteID uuid.UUID, expectedUpdatedAt time.Time) (int64, error) {
+	var n int64
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		var qerr error
+		n, qerr = sqlc.New(tx).DeleteSiteEmailConfig(ctx, sqlc.DeleteSiteEmailConfigParams{
+			TenantID:          tenantID,
+			SiteID:            pgtype.UUID{Bytes: siteID, Valid: true},
+			ExpectedUpdatedAt: expectedUpdatedAt,
+		})
+		return qerr
+	})
+	return n, err
+}
+
 // GetOrgConfig returns the org-wide default config row (site_id IS NULL).
 // Returns ErrNotFound when no org-wide default is configured.
 func (r *Repo) GetOrgConfig(ctx context.Context, tenantID uuid.UUID) (Config, error) {
