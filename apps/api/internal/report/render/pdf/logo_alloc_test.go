@@ -161,6 +161,7 @@ func TestFetchAndValidateLogoDoesNotDecodeThePixels(t *testing.T) {
 				t.Errorf("the fetch allocated %d MiB for a %d KiB file, over the %d MiB limit: the pixels were decoded",
 					n>>20, len(tc.body)>>10, limit>>20)
 			}
+			t.Logf("fetched and validated a %d KiB file with %d KiB allocated", len(tc.body)>>10, n>>10)
 		})
 	}
 }
