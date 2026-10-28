@@ -172,9 +172,12 @@ final class CacheWriter
     {
         $final = ($phase & PHP_OUTPUT_HANDLER_FINAL) !== 0; // PHP_OUTPUT_HANDLER_END is the same bit
 
-        // ob_clean(): the caller throws away everything output so far, which
-        // includes what this writer was holding. PHP discards the return value.
-        if (!$final && ($phase & PHP_OUTPUT_HANDLER_CLEAN) !== 0) {
+        // ob_clean(), ob_end_clean(), ob_get_clean(): the caller throws away
+        // everything output so far, which includes what this writer was
+        // holding, and PHP discards the return value. When the buffer ends this
+        // way the visitor receives something else entirely, so the discarded
+        // page is neither optimized nor stored.
+        if (($phase & PHP_OUTPUT_HANDLER_CLEAN) !== 0) {
             $this->held = '';
             return '';
         }
