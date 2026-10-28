@@ -624,21 +624,77 @@ final class CacheManager
      * would still clear host and edge caches through the integrations, so the
      * scheme is only recorded.
      *
+     * The run is claimed before anything is purged ({@see claimKeySchemePurge()}),
+     * and only the request that claimed it purges: requests that find the scheme
+     * not recorded at the same moment purge once between them, and a record that
+     * cannot be written leaves nobody to purge, instead of every request doing so.
+     *
      * @param CacheConfig $config Current config.
      * @return void
      */
     private function maybePurgeForKeyScheme(CacheConfig $config): void
     {
-        if (!function_exists('get_option') || !function_exists('update_option')) {
+        if (!function_exists('get_option')) {
             return;
         }
         if ((string) get_option(self::OPTION_PURGED_FOR_KEYS, '') === self::KEY_SCHEME) {
             return;
         }
+        if (!self::claimKeySchemePurge()) {
+            return;
+        }
         if ($config->enabled || $this->dropin->isInstalled()) {
             $this->purgeEngine()->purgeEverything();
         }
-        update_option(self::OPTION_PURGED_FOR_KEYS, self::KEY_SCHEME, true);
+    }
+
+    /**
+     * Record the current key scheme as handled, and report whether this call is
+     * the one that recorded it. Exactly one of any number of concurrent calls
+     * is: the row is created with an INSERT IGNORE on the unique option name,
+     * or, when an older scheme is recorded, replaced by an UPDATE conditional on
+     * the value read from the table, so a second statement finds nothing left
+     * to change. False when another call recorded it first, and when the table
+     * cannot be written.
+     *
+     * @return bool True only when this call recorded the scheme.
+     */
+    private static function claimKeySchemePurge(): bool
+    {
+        global $wpdb;
+        if (!isset($wpdb) || !is_object($wpdb) || !isset($wpdb->options) || !is_string($wpdb->options)) {
+            return false;
+        }
+        $name = self::OPTION_PURGED_FOR_KEYS;
+
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- the claim must be one INSERT IGNORE on the unique option name, so that exactly one caller creates the row; the options cache is dropped below
+        $rows =$wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'yes')", $name, self::KEY_SCHEME));
+        if ($rows !== 1) {
+            // A row exists. Read it as stored, past the options cache, and
+            // replace it only from the value read: of the calls that read the
+            // same older scheme, one UPDATE changes the row and the rest find
+            // it changed.
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- the value as stored, never a cached or filtered option value
+            $recorded = $wpdb->get_var($wpdb->prepare("SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", $name));
+            if (!is_string($recorded) || $recorded === self::KEY_SCHEME) {
+                return false;
+            }
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- the replacement must be one UPDATE conditional on the value read, so only one caller changes the row; update_option() is not conditional
+            $rows = $wpdb->query($wpdb->prepare("UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s", self::KEY_SCHEME, $name, $recorded));
+            if ($rows !== 1) {
+                return false;
+            }
+        }
+
+        // The row was written past the options cache: drop the entries that
+        // would still answer with the old record, so later reads find the row.
+        if (function_exists('wp_cache_delete')) {
+            foreach ([$name, 'alloptions', 'notoptions'] as $key) {
+                wp_cache_delete($key, 'options');
+            }
+        }
+
+        return true;
     }
 
     /**

@@ -55,6 +55,16 @@ final class CachePrefixedHomepageTest extends TestCase
     /** @var array<string,mixed> */
     private array $optionStore = [];
 
+    /** The options table the key-scheme claim writes to; its rows are $optionStore. */
+    private FakeKeySchemeWpdb $wpdb;
+
+    /**
+     * Runs once, right after a request has read which key scheme is recorded
+     * and before it does anything with that: another request lands in that
+     * window.
+     */
+    private ?\Closure $afterSchemeRead = null;
+
     protected function set_up(): void
     {
         parent::set_up();
@@ -69,7 +79,19 @@ final class CachePrefixedHomepageTest extends TestCase
         }
 
         $this->optionStore = [];
-        Functions\when('get_option')->alias(fn ($k, $d = false) => $this->optionStore[$k] ?? $d);
+        $this->afterSchemeRead = null;
+        $this->wpdb            = new FakeKeySchemeWpdb($this->optionStore);
+        $GLOBALS['wpdb']       = $this->wpdb;
+        Functions\when('get_option')->alias(function ($k, $d = false) {
+            $value = $this->optionStore[$k] ?? $d;
+            if ($k === CacheManager::OPTION_PURGED_FOR_KEYS && $this->afterSchemeRead !== null) {
+                $otherRequest          = $this->afterSchemeRead;
+                $this->afterSchemeRead = null;
+                $otherRequest();
+            }
+
+            return $value;
+        });
         Functions\when('update_option')->alias(function ($k, $v) {
             $this->optionStore[$k] = $v;
             return true;
@@ -93,6 +115,7 @@ final class CachePrefixedHomepageTest extends TestCase
 
     protected function tear_down(): void
     {
+        unset($GLOBALS['wpdb']);
         $this->rrmdir($this->base);
         Monkey\tearDown();
         parent::tear_down();
@@ -908,6 +931,130 @@ final class CachePrefixedHomepageTest extends TestCase
         $manager->maybeRefreshDropin();
         (new CacheManager())->maybeRefreshDropin();
         $this->assertFileExists($new, 'later boots must not purge again');
+    }
+
+    /**
+     * Requests that find the scheme not recorded at the same moment: the second
+     * lands between the first one's read of the record and its claim. Exactly
+     * one of them purges, and the purge reaches the host and edge caches once.
+     */
+    public function test_requests_that_arrive_together_on_the_first_boot_purge_once(): void
+    {
+        $manager = $this->enabledManager();
+        $old     = $this->warm('example.com/index.html.gz', self::HTML_IT);
+        Monkey\Actions\expectDone('wpmgr_purge_everything:before')->once();
+        $this->afterSchemeRead = static function (): void {
+            (new CacheManager())->maybeRefreshDropin();
+        };
+
+        $manager->maybeRefreshDropin();
+
+        $this->assertNull($this->afterSchemeRead, 'the second request must have run in that window');
+        $this->assertFileDoesNotExist($old);
+        $this->assertSame(CacheManager::KEY_SCHEME, $this->optionStore[CacheManager::OPTION_PURGED_FOR_KEYS] ?? null);
+    }
+
+    /**
+     * A request that arrives while the first is still purging finds the scheme
+     * already recorded, and purges nothing.
+     */
+    public function test_a_request_that_arrives_during_the_purge_does_not_purge_again(): void
+    {
+        $manager = $this->enabledManager();
+        $this->warm('example.com/index.html.gz', self::HTML_IT);
+        $arrived = false;
+        Monkey\Actions\expectDone('wpmgr_purge_everything:before')->once()->whenHappen(function () use (&$arrived): void {
+            if ($arrived) {
+                return;
+            }
+            $arrived = true;
+            (new CacheManager())->maybeRefreshDropin();
+        });
+
+        $manager->maybeRefreshDropin();
+
+        $this->assertTrue($arrived, 'the second request must have run during the purge');
+    }
+
+    /**
+     * A recorded scheme older than the current one is replaced by exactly one
+     * request, which purges; the same race on it purges once.
+     */
+    public function test_a_newer_key_scheme_purges_once_more(): void
+    {
+        $this->optionStore[CacheManager::OPTION_PURGED_FOR_KEYS] = 'older-' . CacheManager::KEY_SCHEME;
+        $manager = $this->enabledManager();
+        $old     = $this->warm('example.com/index.html.gz', self::HTML_IT);
+        Monkey\Actions\expectDone('wpmgr_purge_everything:before')->once();
+        $this->afterSchemeRead = static function (): void {
+            (new CacheManager())->maybeRefreshDropin();
+        };
+
+        $manager->maybeRefreshDropin();
+
+        $this->assertNull($this->afterSchemeRead, 'the second request must have run in that window');
+        $this->assertFileDoesNotExist($old);
+        $this->assertSame(CacheManager::KEY_SCHEME, $this->optionStore[CacheManager::OPTION_PURGED_FOR_KEYS] ?? null);
+    }
+
+    /**
+     * When the record can never be written (a read-only database) no request
+     * claims the purge, so none purges: the purge is not repeated on every
+     * request for as long as the write keeps failing.
+     */
+    public function test_an_option_that_cannot_be_written_causes_no_purge_loop(): void
+    {
+        $this->enabledManager();
+        $this->warm('example.com/index.html.gz', self::HTML_IT);
+        $this->wpdb->writesFail = true;
+        Functions\when('update_option')->justReturn(false);
+        Monkey\Actions\expectDone('wpmgr_purge_everything:before')->never();
+
+        for ($request = 0; $request < 4; $request++) {
+            (new CacheManager())->maybeRefreshDropin();
+        }
+
+        $this->assertArrayNotHasKey(CacheManager::OPTION_PURGED_FOR_KEYS, $this->optionStore);
+        $this->assertCount(4, $this->wpdb->writes, 'every request must have tried to claim the purge');
+    }
+
+    /**
+     * The claim is written past the options cache, so the cache entries that
+     * would still answer with the old record are dropped; a boot that finds the
+     * scheme recorded drops nothing.
+     */
+    public function test_a_claim_drops_the_cached_options_it_made_stale(): void
+    {
+        $dropped = [];
+        Functions\when('wp_cache_delete')->alias(function ($key, $group = '') use (&$dropped): bool {
+            $dropped[] = $group . ':' . $key;
+
+            return true;
+        });
+
+        $this->enabledManager()->maybeRefreshDropin();
+        sort($dropped);
+        $this->assertSame(['options:alloptions', 'options:notoptions', 'options:' . CacheManager::OPTION_PURGED_FOR_KEYS], $dropped);
+
+        $dropped = [];
+        (new CacheManager())->maybeRefreshDropin();
+        $this->assertSame([], $dropped, 'a recorded scheme needs no claim and drops nothing');
+    }
+
+    /**
+     * Control for the tests above: the options table double has the unique key
+     * and the conditional UPDATE that make a claim a claim.
+     */
+    public function test_the_options_table_double_admits_one_claim(): void
+    {
+        $insert = "INSERT IGNORE INTO wp_options (option_name, option_value, autoload) VALUES (%s, %s, 'yes')";
+        $update = 'UPDATE wp_options SET option_value = %s WHERE option_name = %s AND option_value = %s';
+
+        $this->assertSame(1, $this->wpdb->query($this->wpdb->prepare($insert, 'name', 'a')));
+        $this->assertSame(0, $this->wpdb->query($this->wpdb->prepare($insert, 'name', 'a')), 'the second insert of a name changes nothing');
+        $this->assertSame(1, $this->wpdb->query($this->wpdb->prepare($update, 'b', 'name', 'a')));
+        $this->assertSame(0, $this->wpdb->query($this->wpdb->prepare($update, 'c', 'name', 'a')), 'an update from a value that is no longer stored changes nothing');
+        $this->assertSame('b', $this->optionStore['name']);
     }
 
     /**
