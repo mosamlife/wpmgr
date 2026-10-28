@@ -19,10 +19,8 @@ import (
 // pixels.
 
 // deepPNG is a w x h PNG of 16-bit RGB pixels, all zero. Zeros compress to
-// almost nothing, so the file is small while the decoded image is not. The
-// pixel data is written a row at a time, so building the fixture does not
-// need the memory it stands for. It has no alpha channel, so it is within the
-// limits of an opaque PNG at the largest size.
+// almost nothing, so the file is small however large the image is. RGB has no
+// alpha channel, so the 4000 x 4000 limit applies to it.
 func deepPNG(t *testing.T, w, h int) []byte {
 	t.Helper()
 	return flatPNG(t, w, h, 2, 16)
