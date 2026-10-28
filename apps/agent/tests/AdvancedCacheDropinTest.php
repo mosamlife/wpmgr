@@ -525,6 +525,119 @@ final class AdvancedCacheDropinTest extends TestCase
     }
 
     /**
+     * A homepage served under a path prefix (a language, a subsite) is a page
+     * of its own: `/`, `/en/` and `/en` must each be answered from the file
+     * stored for that path, and `/en` and `/en/` are one page (a homepage has
+     * no trailing-slash redirect in WordPress), so they share one file.
+     *
+     * Both buckets are warmed with a body that names them, so a collapse of the
+     * prefixed homepage onto the root one (or the reverse) shows in the bytes
+     * served and not merely in whether something was served.
+     *
+     * @dataProvider provide_prefixed_homepage_requests
+     *
+     * @param string $uri      Request URI as the browser sends it.
+     * @param string $expected Body marker of the bucket that must answer.
+     * @param string $other    Body marker of the bucket that must NOT answer.
+     */
+    public function test_prefixed_homepage_is_served_from_its_own_bucket(string $uri, string $expected, string $other): void
+    {
+        $this->warmCacheFile('example.com', '', 'index', 'ROOT-HOMEPAGE-BODY');
+        $this->warmCacheFile('example.com', '/en', 'index', 'EN-HOMEPAGE-BODY');
+
+        $out = $this->serveDropin((new CacheConfig([]))->toDropinArray(), ['REQUEST_URI' => $uri]);
+
+        $this->assertStringContainsString($expected, $out, "$uri must be answered from its own bucket");
+        $this->assertStringNotContainsString($other, $out, "$uri must not be answered from the other homepage's bucket");
+    }
+
+    /**
+     * @return array<string,array{0:string,1:string,2:string}>
+     */
+    public static function provide_prefixed_homepage_requests(): array
+    {
+        return [
+            'root'                       => ['/', 'ROOT-HOMEPAGE-BODY', 'EN-HOMEPAGE-BODY'],
+            'prefixed with slash'        => ['/en/', 'EN-HOMEPAGE-BODY', 'ROOT-HOMEPAGE-BODY'],
+            'prefixed without slash'     => ['/en', 'EN-HOMEPAGE-BODY', 'ROOT-HOMEPAGE-BODY'],
+            'prefixed with query noise'  => ['/en/?utm_source=x', 'EN-HOMEPAGE-BODY', 'ROOT-HOMEPAGE-BODY'],
+            'prefixed upper case'        => ['/EN/', 'EN-HOMEPAGE-BODY', 'ROOT-HOMEPAGE-BODY'],
+        ];
+    }
+
+    /**
+     * A Bypass URL must stop the matching page being served from a warmed file,
+     * whichever way the visitor spells the path. WordPress answers `/en` and
+     * `/en/` with the same homepage, so an entry written with a trailing slash
+     * has to cover the request without one (a language switcher links both).
+     *
+     * @dataProvider provide_prefixed_homepage_bypass
+     *
+     * @param string $entry Bypass URL entry as an operator types it.
+     * @param string $uri   Request URI as the browser sends it.
+     */
+    public function test_bypass_url_covers_the_prefixed_homepage_however_it_is_spelled(string $entry, string $uri): void
+    {
+        $this->warmCacheFile('example.com', '/en', 'index', 'EN-HOMEPAGE-BODY');
+
+        $out = $this->serveDropin((new CacheConfig(['bypass_urls' => [$entry]]))->toDropinArray(), ['REQUEST_URI' => $uri]);
+
+        $this->assertStringNotContainsString(
+            'EN-HOMEPAGE-BODY',
+            $out,
+            "bypass entry '$entry' must stop the warmed file being served for $uri"
+        );
+        $this->assertStringContainsString(self::MISS, $out, "bypass entry '$entry' must hand $uri to WordPress");
+    }
+
+    /**
+     * @return array<string,array{0:string,1:string}>
+     */
+    public static function provide_prefixed_homepage_bypass(): array
+    {
+        return [
+            'slash entry, slash request'           => ['/en/', '/en/'],
+            'slash entry, bare request'            => ['/en/', '/en'],
+            'slash entry, bare request with query' => ['/en/', '/en?x=1'],
+            'bare entry, slash request'            => ['/en', '/en/'],
+            'bare entry, bare request'             => ['/en', '/en'],
+            'slash entry, upper case request'      => ['/en/', '/EN'],
+            'slash entry, page below the prefix'   => ['/en/', '/en/about/'],
+        ];
+    }
+
+    /**
+     * The matching rule above must not become a blanket rule: a Bypass URL for
+     * the English homepage leaves the root homepage and unrelated paths cached.
+     *
+     * @dataProvider provide_unrelated_paths
+     *
+     * @param string $uri  Request URI that must keep being served from cache.
+     * @param string $path Bucket-relative directory its page is stored under.
+     */
+    public function test_bypass_url_for_the_prefixed_homepage_leaves_other_pages_cached(string $uri, string $path): void
+    {
+        $this->warmCacheFile('example.com', $path, 'index', 'STILL-CACHED-BODY');
+
+        $out = $this->serveDropin((new CacheConfig(['bypass_urls' => ['/en/']]))->toDropinArray(), ['REQUEST_URI' => $uri]);
+
+        $this->assertStringContainsString('STILL-CACHED-BODY', $out, "$uri must not be caught by a bypass entry for /en/");
+    }
+
+    /**
+     * @return array<string,array{0:string,1:string}>
+     */
+    public static function provide_unrelated_paths(): array
+    {
+        return [
+            'root homepage'          => ['/', ''],
+            'unrelated page'         => ['/contact/', '/contact'],
+            'segment that starts en' => ['/enterprise/', '/enterprise'],
+            'segment that ends en'   => ['/men', '/men'],
+        ];
+    }
+
+    /**
      * Containment backstop: even when every lexical sanitiser passes, a file
      * that physically resolves OUTSIDE the cache root (here: through a planted
      * symlink) must be handed to WordPress as a miss, never served.
