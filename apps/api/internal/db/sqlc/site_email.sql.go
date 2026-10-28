@@ -234,14 +234,16 @@ func (q *Queries) DeleteEmailSuppression(ctx context.Context, arg DeleteEmailSup
 
 const deleteSiteEmailConfig = `-- name: DeleteSiteEmailConfig :execrows
 DELETE FROM site_email_config
-WHERE tenant_id = $1
-  AND site_id   = $2
+WHERE tenant_id  = $1
+  AND site_id    = $2
   AND site_id IS NOT NULL
+  AND updated_at = $3
 `
 
 type DeleteSiteEmailConfigParams struct {
-	TenantID uuid.UUID   `json:"tenant_id"`
-	SiteID   pgtype.UUID `json:"site_id"`
+	TenantID          uuid.UUID   `json:"tenant_id"`
+	SiteID            pgtype.UUID `json:"site_id"`
+	ExpectedUpdatedAt time.Time   `json:"expected_updated_at"`
 }
 
 // GH #968: removes ONE site's own config row, so the site stops using the
@@ -252,12 +254,22 @@ type DeleteSiteEmailConfigParams struct {
 //
 // Never the org-wide default. site_id = @site_id cannot match a NULL site_id,
 // and the explicit IS NOT NULL keeps that true if the comparison is loosened.
+//
+// Only the row as the caller read it. @expected_updated_at is the updated_at
+// the service read before it told the agent to clear its config. An edit in
+// between moves updated_at, so this matches nothing and the edited row stays.
+// That holds because every write to a per-site row sets updated_at = now()
+// (UpsertSiteEmailConfigByTenantSite, SetEmailConfigWebhookFields); a new
+// writer must do the same. Pass the value exactly as read: it has microsecond
+// precision, and a copy truncated to milliseconds does not reliably match.
+//
 // Runs under scopedTenantTx. :execrows, not :exec, for the reason
 // DeleteEmailSuppression gives: the m112 site-scope delete policy refuses a
-// site-scoped collaborator with zero rows affected rather than an error, and a
-// row already gone is also zero, so the caller needs the count.
+// site-scoped collaborator with zero rows affected rather than an error. A row
+// already gone, or changed since it was read, is also zero, so the caller
+// needs the count and re-reads the row to tell those apart.
 func (q *Queries) DeleteSiteEmailConfig(ctx context.Context, arg DeleteSiteEmailConfigParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteSiteEmailConfig, arg.TenantID, arg.SiteID)
+	result, err := q.db.Exec(ctx, deleteSiteEmailConfig, arg.TenantID, arg.SiteID, arg.ExpectedUpdatedAt)
 	if err != nil {
 		return 0, err
 	}

@@ -1085,10 +1085,20 @@ type Querier interface {
 	//
 	// Never the org-wide default. site_id = @site_id cannot match a NULL site_id,
 	// and the explicit IS NOT NULL keeps that true if the comparison is loosened.
+	//
+	// Only the row as the caller read it. @expected_updated_at is the updated_at
+	// the service read before it told the agent to clear its config. An edit in
+	// between moves updated_at, so this matches nothing and the edited row stays.
+	// That holds because every write to a per-site row sets updated_at = now()
+	// (UpsertSiteEmailConfigByTenantSite, SetEmailConfigWebhookFields); a new
+	// writer must do the same. Pass the value exactly as read: it has microsecond
+	// precision, and a copy truncated to milliseconds does not reliably match.
+	//
 	// Runs under scopedTenantTx. :execrows, not :exec, for the reason
 	// DeleteEmailSuppression gives: the m112 site-scope delete policy refuses a
-	// site-scoped collaborator with zero rows affected rather than an error, and a
-	// row already gone is also zero, so the caller needs the count.
+	// site-scoped collaborator with zero rows affected rather than an error. A row
+	// already gone, or changed since it was read, is also zero, so the caller
+	// needs the count and re-reads the row to tell those apart.
 	DeleteSiteEmailConfig(ctx context.Context, arg DeleteSiteEmailConfigParams) (int64, error)
 	// The second half of a replace: drops the site's rows the latest refresh did
 	// not report. Pass the checked_at the upsert used.

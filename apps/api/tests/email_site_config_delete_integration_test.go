@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -132,6 +133,24 @@ func siteEmailRowCounter(t *testing.T, app *db.Pool) func(query string, args ...
 	}
 }
 
+// siteEmailUpdatedAtReader reads a config row's updated_at on the superuser
+// pool. The tenant and site-scope cases pass the target row's true value, so a
+// zero from them is the policy refusing and never a stale updated_at.
+func siteEmailUpdatedAtReader(t *testing.T, app *db.Pool) func(config uuid.UUID) time.Time {
+	t.Helper()
+	admin := connectAdmin(t, app)
+	t.Cleanup(admin.Close)
+	return func(config uuid.UUID) time.Time {
+		t.Helper()
+		var at time.Time
+		if err := admin.QueryRow(context.Background(),
+			`SELECT updated_at FROM site_email_config WHERE id = $1`, config).Scan(&at); err != nil {
+			t.Fatalf("read updated_at of config %s: %v", config, err)
+		}
+		return at
+	}
+}
+
 const (
 	countSiteEmailConfigByID        = `SELECT count(*) FROM site_email_config WHERE id = $1`
 	countSiteEmailConnectionsByConf = `SELECT count(*) FROM site_email_connection WHERE config_id = $1`
@@ -156,8 +175,8 @@ func logSiteEmailDelete(t *testing.T, ctx context.Context, tx pgx.Tx, label stri
 
 // deleteSiteEmailConfigAsMember runs DeleteSiteEmailConfig the way an
 // organisation member's request does: in db.Pool.InTenantTx for actingTenant,
-// with whatever ids the request names.
-func deleteSiteEmailConfigAsMember(t *testing.T, pool *db.Pool, label string, actingTenant, tenant, site uuid.UUID) int64 {
+// with whatever ids and expected updated_at the request names.
+func deleteSiteEmailConfigAsMember(t *testing.T, pool *db.Pool, label string, actingTenant, tenant, site uuid.UUID, expected time.Time) int64 {
 	t.Helper()
 	ctx := context.Background()
 	var n int64
@@ -165,8 +184,9 @@ func deleteSiteEmailConfigAsMember(t *testing.T, pool *db.Pool, label string, ac
 		requireAppRoleInTx(t, ctx, tx)
 		var qerr error
 		n, qerr = sqlc.New(tx).DeleteSiteEmailConfig(ctx, sqlc.DeleteSiteEmailConfigParams{
-			TenantID: tenant,
-			SiteID:   siteEmailDeleteSiteID(site),
+			TenantID:          tenant,
+			SiteID:            siteEmailDeleteSiteID(site),
+			ExpectedUpdatedAt: expected,
 		})
 		if qerr != nil {
 			return qerr
@@ -182,7 +202,7 @@ func deleteSiteEmailConfigAsMember(t *testing.T, pool *db.Pool, label string, ac
 // deleteSiteEmailConfigAsCollaborator runs it the way a site-scoped
 // collaborator's request does: in db.Pool.InScopedTenantTx with only the
 // granted sites in app.allowed_site_ids.
-func deleteSiteEmailConfigAsCollaborator(t *testing.T, pool *db.Pool, label string, tenant uuid.UUID, granted []uuid.UUID, site uuid.UUID) int64 {
+func deleteSiteEmailConfigAsCollaborator(t *testing.T, pool *db.Pool, label string, tenant uuid.UUID, granted []uuid.UUID, site uuid.UUID, expected time.Time) int64 {
 	t.Helper()
 	ctx := context.Background()
 	var n int64
@@ -190,8 +210,9 @@ func deleteSiteEmailConfigAsCollaborator(t *testing.T, pool *db.Pool, label stri
 		requireAppRoleInTx(t, ctx, tx)
 		var qerr error
 		n, qerr = sqlc.New(tx).DeleteSiteEmailConfig(ctx, sqlc.DeleteSiteEmailConfigParams{
-			TenantID: tenant,
-			SiteID:   siteEmailDeleteSiteID(site),
+			TenantID:          tenant,
+			SiteID:            siteEmailDeleteSiteID(site),
+			ExpectedUpdatedAt: expected,
 		})
 		if qerr != nil {
 			return qerr
@@ -218,10 +239,11 @@ func TestDeleteSiteEmailConfigRemovesOnlyThatSitesOwnRow(t *testing.T) {
 		t.Fatalf("fixture: site A has %d connections, want 2", got)
 	}
 
-	if n := deleteSiteEmailConfigAsMember(t, pool, "member, site A, first delete", f.tenant, f.tenant, f.siteA); n != 1 {
+	siteAAt := siteEmailUpdatedAtReader(t, pool)(f.siteAConfig)
+	if n := deleteSiteEmailConfigAsMember(t, pool, "member, site A, first delete", f.tenant, f.tenant, f.siteA, siteAAt); n != 1 {
 		t.Fatalf("first delete of site A's config affected %d rows, want 1", n)
 	}
-	if n := deleteSiteEmailConfigAsMember(t, pool, "member, site A, repeat delete", f.tenant, f.tenant, f.siteA); n != 0 {
+	if n := deleteSiteEmailConfigAsMember(t, pool, "member, site A, repeat delete", f.tenant, f.tenant, f.siteA, siteAAt); n != 0 {
 		t.Fatalf("repeat delete of site A's config affected %d rows, want 0", n)
 	}
 
@@ -282,12 +304,13 @@ func TestDeleteSiteEmailConfigCannotReachAnotherTenant(t *testing.T) {
 	f := seedSiteEmailDeleteFixture(t, pool)
 	count := siteEmailRowCounter(t, pool)
 
+	otherAt := siteEmailUpdatedAtReader(t, pool)(f.otherConfig)
 	if n := deleteSiteEmailConfigAsMember(t, pool, "member, other organisation's tenant and site",
-		f.tenant, f.otherTenant, f.otherSite); n != 0 {
+		f.tenant, f.otherTenant, f.otherSite, otherAt); n != 0 {
 		t.Fatalf("a member naming another organisation's tenant and site deleted %d rows, want 0", n)
 	}
 	if n := deleteSiteEmailConfigAsMember(t, pool, "member, other organisation's site under own tenant",
-		f.tenant, f.tenant, f.otherSite); n != 0 {
+		f.tenant, f.tenant, f.otherSite, otherAt); n != 0 {
 		t.Fatalf("a member naming another organisation's site under their own tenant deleted %d rows, want 0", n)
 	}
 	if got := count(countSiteEmailConfigByID, f.otherConfig); got != 1 {
@@ -309,8 +332,9 @@ func TestDeleteSiteEmailConfigCannotReachAnotherTenant(t *testing.T) {
 		t.Fatalf("control: begin on the superuser pool: %v", err)
 	}
 	n, err := sqlc.New(tx).DeleteSiteEmailConfig(ctx, sqlc.DeleteSiteEmailConfigParams{
-		TenantID: f.otherTenant,
-		SiteID:   siteEmailDeleteSiteID(f.otherSite),
+		TenantID:          f.otherTenant,
+		SiteID:            siteEmailDeleteSiteID(f.otherSite),
+		ExpectedUpdatedAt: otherAt,
 	})
 	if rbErr := tx.Rollback(ctx); rbErr != nil {
 		t.Fatalf("control: rollback: %v", rbErr)
@@ -336,8 +360,9 @@ func TestDeleteSiteEmailConfigRespectsSiteScope(t *testing.T) {
 	f := seedSiteEmailDeleteFixture(t, pool)
 	count := siteEmailRowCounter(t, pool)
 
+	siteAAt := siteEmailUpdatedAtReader(t, pool)(f.siteAConfig)
 	if n := deleteSiteEmailConfigAsCollaborator(t, pool, "collaborator granted site B, site A",
-		f.tenant, []uuid.UUID{f.siteB}, f.siteA); n != 0 {
+		f.tenant, []uuid.UUID{f.siteB}, f.siteA, siteAAt); n != 0 {
 		t.Fatalf("a collaborator granted only site B deleted %d of site A's config rows", n)
 	}
 	if got := count(countSiteEmailConfigByID, f.siteAConfig); got != 1 {
@@ -348,7 +373,7 @@ func TestDeleteSiteEmailConfigRespectsSiteScope(t *testing.T) {
 	}
 
 	if n := deleteSiteEmailConfigAsCollaborator(t, pool, "collaborator granted site A, site A",
-		f.tenant, []uuid.UUID{f.siteA}, f.siteA); n != 1 {
+		f.tenant, []uuid.UUID{f.siteA}, f.siteA, siteAAt); n != 1 {
 		t.Fatalf("a collaborator granted site A deleted %d of its config rows, want 1", n)
 	}
 	for _, c := range []struct {
@@ -367,4 +392,110 @@ func TestDeleteSiteEmailConfigRespectsSiteScope(t *testing.T) {
 			t.Errorf("%s: %d connection rows, want %d", c.what, got, c.conns)
 		}
 	}
+}
+
+// TestDeleteSiteEmailConfigRefusesARowChangedSinceItWasRead: the service reads
+// site A's row, tells the agent to clear its config, and deletes the row once
+// the agent confirms. An edit in between moves updated_at, so a delete naming
+// the value the service read matches nothing and the edited row stays. Each
+// query that can change a per-site row in that window runs through its real
+// statement as wpmgr_app.
+func TestDeleteSiteEmailConfigRefusesARowChangedSinceItWasRead(t *testing.T) {
+	pool := startPostgres(t)
+	f := seedSiteEmailDeleteFixture(t, pool)
+	count := siteEmailRowCounter(t, pool)
+	ctx := context.Background()
+
+	// readAsService reads site A's row the way the service does: as a member,
+	// through GetSiteEmailConfig.
+	readAsService := func(t *testing.T) sqlc.SiteEmailConfig {
+		t.Helper()
+		var row sqlc.SiteEmailConfig
+		if err := pool.InTenantTx(ctx, f.tenant, func(tx pgx.Tx) error {
+			requireAppRoleInTx(t, ctx, tx)
+			var qerr error
+			row, qerr = sqlc.New(tx).GetSiteEmailConfig(ctx, sqlc.GetSiteEmailConfigParams{
+				TenantID: f.tenant,
+				SiteID:   siteEmailDeleteSiteID(f.siteA),
+			})
+			return qerr
+		}); err != nil {
+			t.Fatalf("read site A's config as a member: %v", err)
+		}
+		return row
+	}
+
+	// staleAfter reads the row, runs one write as a member, then deletes with
+	// the updated_at read before that write.
+	staleAfter := func(t *testing.T, write string, run func(q *sqlc.Queries, read sqlc.SiteEmailConfig) error) {
+		t.Helper()
+		read := readAsService(t)
+		if err := pool.InTenantTx(ctx, f.tenant, func(tx pgx.Tx) error {
+			requireAppRoleInTx(t, ctx, tx)
+			return run(sqlc.New(tx), read)
+		}); err != nil {
+			t.Fatalf("%s as a member: %v", write, err)
+		}
+		// Positive control: the write moved updated_at, or the delete below
+		// could not tell a stale value from the current one.
+		if edited := readAsService(t); edited.UpdatedAt.Equal(read.UpdatedAt) {
+			t.Fatalf("%s left updated_at at %s", write, read.UpdatedAt.Format(time.RFC3339Nano))
+		}
+		if n := deleteSiteEmailConfigAsMember(t, pool, "member, site A, updated_at read before "+write,
+			f.tenant, f.tenant, f.siteA, read.UpdatedAt); n != 0 {
+			t.Fatalf("a delete naming the updated_at read before %s removed %d rows, want 0", write, n)
+		}
+		if got := count(countSiteEmailConfigByID, f.siteAConfig); got != 1 {
+			t.Fatalf("site A's config after a stale delete: %d rows, want 1", got)
+		}
+		if got := count(countSiteEmailConnectionsByConf, f.siteAConfig); got != 2 {
+			t.Fatalf("site A's connections after a stale delete: %d rows, want 2", got)
+		}
+	}
+
+	t.Run("stale after UpsertSiteEmailConfigByTenantSite", func(t *testing.T) {
+		staleAfter(t, "UpsertSiteEmailConfigByTenantSite", func(q *sqlc.Queries, read sqlc.SiteEmailConfig) error {
+			_, err := q.UpsertSiteEmailConfigByTenantSite(ctx, sqlc.UpsertSiteEmailConfigByTenantSiteParams{
+				TenantID:      f.tenant,
+				SiteID:        siteEmailDeleteSiteID(f.siteA),
+				Provider:      "smtp",
+				FromAddress:   read.FromAddress,
+				Config:        []byte(`{"host":"smtp.edited.email-delete.example"}`),
+				Mappings:      []byte(`{}`),
+				LogEmails:     true,
+				RetentionDays: 14,
+			})
+			return err
+		})
+		if got := count(`SELECT count(*) FROM site_email_config WHERE id = $1 AND config->>'host' = 'smtp.edited.email-delete.example'`,
+			f.siteAConfig); got != 1 {
+			t.Fatalf("site A's row does not carry the edit after the refused delete (%d matching rows)", got)
+		}
+	})
+
+	t.Run("stale after SetEmailConfigWebhookFields", func(t *testing.T) {
+		staleAfter(t, "SetEmailConfigWebhookFields", func(q *sqlc.Queries, read sqlc.SiteEmailConfig) error {
+			_, err := q.SetEmailConfigWebhookFields(ctx, sqlc.SetEmailConfigWebhookFieldsParams{
+				TokenHash:    []byte("e968-route-token-hash-0123456789"),
+				SesTopicArns: []string{},
+				TenantID:     f.tenant,
+				ID:           read.ID,
+			})
+			return err
+		})
+	})
+
+	t.Run("current value deletes", func(t *testing.T) {
+		current := readAsService(t)
+		if n := deleteSiteEmailConfigAsMember(t, pool, "member, site A, current updated_at",
+			f.tenant, f.tenant, f.siteA, current.UpdatedAt); n != 1 {
+			t.Fatalf("a delete naming the current updated_at removed %d rows, want 1", n)
+		}
+		if got := count(countSiteEmailConfigByID, f.siteAConfig); got != 0 {
+			t.Fatalf("site A's config after the delete: %d rows, want 0", got)
+		}
+		if got := count(countSiteEmailConnectionsByConf, f.siteAConfig); got != 0 {
+			t.Fatalf("site A's connections after the delete: %d rows, want 0", got)
+		}
+	})
 }
