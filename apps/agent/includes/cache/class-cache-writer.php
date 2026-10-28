@@ -456,6 +456,19 @@ final class CacheWriter
             return false;
         }
 
+        // The settings this request started with may be out of date by now: a
+        // push that added a Bypass URL, or switched the cache off, while the
+        // page was rendering has already cleared the cache, and storing the
+        // page now would put back what it removed. Read them again and honour
+        // the current ones.
+        $current = self::currentConfig();
+        if ($current !== null
+            && (!$current->enabled
+                || (new Cacheability([], $current->bypassUrls))->matchesBypassUrl((string) ($ctx['url'] ?? '')))
+        ) {
+            return false;
+        }
+
         // Append the footprint marker BEFORE gzencode so it appears in both the
         // cached file bytes and the live served response. Only appended on an
         // actual cache write (so its presence is a true signal).
@@ -469,6 +482,25 @@ final class CacheWriter
         }
 
         return $this->atomicWrite($path, $compressed);
+    }
+
+    /**
+     * The page-cache settings as they are stored now, read past the copy this
+     * request cached when it started. Null when none are stored (nothing to
+     * compare against: the settings the request started with stand).
+     *
+     * @return CacheConfig|null
+     */
+    private static function currentConfig(): ?CacheConfig
+    {
+        if (!function_exists('get_option')) {
+            return null;
+        }
+        if (function_exists('wp_cache_delete')) {
+            wp_cache_delete(CacheManager::OPTION_CONFIG, 'options');
+        }
+        $stored = get_option(CacheManager::OPTION_CONFIG, null);
+        return is_array($stored) ? new CacheConfig($stored) : null;
     }
 
     /**

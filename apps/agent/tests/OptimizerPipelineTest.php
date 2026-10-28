@@ -45,7 +45,9 @@ final class OptimizerPipelineTest extends TestCase
         // pipeline runs cleanly under unit tests.
         Functions\when('site_url')->justReturn('https://example.com');
         Functions\when('home_url')->justReturn('https://example.com');
-        Functions\when('get_option')->justReturn([]);
+        // The stored page-cache settings say the cache is on (the writer reads
+        // them again before it stores); every other option is empty.
+        Functions\when('get_option')->alias(static fn ($k, $d = false) => $k === 'wpmgr_cache_config' ? ['enabled' => true] : []);
         // The writer stores only a page rendered through the template stage.
         Functions\when('did_action')->alias(static fn (string $hook): int => $hook === 'template_redirect' ? 1 : 0);
     }

@@ -590,6 +590,12 @@ final class CacheManager
             if (self::addedEntries($current->bypassUrls, $config->bypassUrls) !== []) {
                 $this->purgeEngine()->purgeEverything();
             }
+        } elseif ($current->enabled) {
+            // A push that switches the cache off leaves the drop-in and the
+            // server rules in place, and both would keep serving what is
+            // stored. Clear it; the writer stores nothing while the cache is
+            // off.
+            $this->purgeEngine()->purgeEverything();
         }
 
         // Re-arm the refresh schedule to the (possibly new) interval.
