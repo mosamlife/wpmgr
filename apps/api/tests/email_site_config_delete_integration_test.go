@@ -137,10 +137,27 @@ const (
 	countSiteEmailConnectionsByConf = `SELECT count(*) FROM site_email_connection WHERE config_id = $1`
 )
 
+// logSiteEmailDelete records, from inside the transaction, the role and the
+// RLS settings the delete ran under, so the -v output carries the evidence and
+// not only the verdict.
+func logSiteEmailDelete(t *testing.T, ctx context.Context, tx pgx.Tx, label string, n int64) {
+	t.Helper()
+	var role, tenant, scope, allowed string
+	if err := tx.QueryRow(ctx, `SELECT current_user,
+		       coalesce(current_setting('app.tenant_id', true), ''),
+		       coalesce(current_setting('app.site_scope', true), ''),
+		       coalesce(current_setting('app.allowed_site_ids', true), '')`).
+		Scan(&role, &tenant, &scope, &allowed); err != nil {
+		t.Fatalf("read the RLS settings: %v", err)
+	}
+	t.Logf("%s: role=%s app.tenant_id=%s app.site_scope=%q app.allowed_site_ids=%q -> %d rows",
+		label, role, tenant, scope, allowed, n)
+}
+
 // deleteSiteEmailConfigAsMember runs DeleteSiteEmailConfig the way an
 // organisation member's request does: in db.Pool.InTenantTx for actingTenant,
 // with whatever ids the request names.
-func deleteSiteEmailConfigAsMember(t *testing.T, pool *db.Pool, actingTenant, tenant, site uuid.UUID) int64 {
+func deleteSiteEmailConfigAsMember(t *testing.T, pool *db.Pool, label string, actingTenant, tenant, site uuid.UUID) int64 {
 	t.Helper()
 	ctx := context.Background()
 	var n int64
@@ -151,7 +168,11 @@ func deleteSiteEmailConfigAsMember(t *testing.T, pool *db.Pool, actingTenant, te
 			TenantID: tenant,
 			SiteID:   siteEmailDeleteSiteID(site),
 		})
-		return qerr
+		if qerr != nil {
+			return qerr
+		}
+		logSiteEmailDelete(t, ctx, tx, label, n)
+		return nil
 	}); err != nil {
 		t.Fatalf("DeleteSiteEmailConfig as a member of %s: %v", actingTenant, err)
 	}
@@ -161,7 +182,7 @@ func deleteSiteEmailConfigAsMember(t *testing.T, pool *db.Pool, actingTenant, te
 // deleteSiteEmailConfigAsCollaborator runs it the way a site-scoped
 // collaborator's request does: in db.Pool.InScopedTenantTx with only the
 // granted sites in app.allowed_site_ids.
-func deleteSiteEmailConfigAsCollaborator(t *testing.T, pool *db.Pool, tenant uuid.UUID, granted []uuid.UUID, site uuid.UUID) int64 {
+func deleteSiteEmailConfigAsCollaborator(t *testing.T, pool *db.Pool, label string, tenant uuid.UUID, granted []uuid.UUID, site uuid.UUID) int64 {
 	t.Helper()
 	ctx := context.Background()
 	var n int64
@@ -172,7 +193,11 @@ func deleteSiteEmailConfigAsCollaborator(t *testing.T, pool *db.Pool, tenant uui
 			TenantID: tenant,
 			SiteID:   siteEmailDeleteSiteID(site),
 		})
-		return qerr
+		if qerr != nil {
+			return qerr
+		}
+		logSiteEmailDelete(t, ctx, tx, label, n)
+		return nil
 	}); err != nil {
 		t.Fatalf("DeleteSiteEmailConfig as a collaborator granted %v: %v", granted, err)
 	}
@@ -193,10 +218,10 @@ func TestDeleteSiteEmailConfigRemovesOnlyThatSitesOwnRow(t *testing.T) {
 		t.Fatalf("fixture: site A has %d connections, want 2", got)
 	}
 
-	if n := deleteSiteEmailConfigAsMember(t, pool, f.tenant, f.tenant, f.siteA); n != 1 {
+	if n := deleteSiteEmailConfigAsMember(t, pool, "member, site A, first delete", f.tenant, f.tenant, f.siteA); n != 1 {
 		t.Fatalf("first delete of site A's config affected %d rows, want 1", n)
 	}
-	if n := deleteSiteEmailConfigAsMember(t, pool, f.tenant, f.tenant, f.siteA); n != 0 {
+	if n := deleteSiteEmailConfigAsMember(t, pool, "member, site A, repeat delete", f.tenant, f.tenant, f.siteA); n != 0 {
 		t.Fatalf("repeat delete of site A's config affected %d rows, want 0", n)
 	}
 
@@ -257,10 +282,12 @@ func TestDeleteSiteEmailConfigCannotReachAnotherTenant(t *testing.T) {
 	f := seedSiteEmailDeleteFixture(t, pool)
 	count := siteEmailRowCounter(t, pool)
 
-	if n := deleteSiteEmailConfigAsMember(t, pool, f.tenant, f.otherTenant, f.otherSite); n != 0 {
+	if n := deleteSiteEmailConfigAsMember(t, pool, "member, other organisation's tenant and site",
+		f.tenant, f.otherTenant, f.otherSite); n != 0 {
 		t.Fatalf("a member naming another organisation's tenant and site deleted %d rows, want 0", n)
 	}
-	if n := deleteSiteEmailConfigAsMember(t, pool, f.tenant, f.tenant, f.otherSite); n != 0 {
+	if n := deleteSiteEmailConfigAsMember(t, pool, "member, other organisation's site under own tenant",
+		f.tenant, f.tenant, f.otherSite); n != 0 {
 		t.Fatalf("a member naming another organisation's site under their own tenant deleted %d rows, want 0", n)
 	}
 	if got := count(countSiteEmailConfigByID, f.otherConfig); got != 1 {
@@ -291,6 +318,7 @@ func TestDeleteSiteEmailConfigCannotReachAnotherTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("control: delete on the superuser pool: %v", err)
 	}
+	t.Logf("control, superuser pool, no RLS, other organisation's tenant and site: -> %d rows (rolled back)", n)
 	if n != 1 {
 		t.Fatalf("control: without RLS the statement matched %d rows, want 1, so the zero above proves nothing", n)
 	}
@@ -308,7 +336,8 @@ func TestDeleteSiteEmailConfigRespectsSiteScope(t *testing.T) {
 	f := seedSiteEmailDeleteFixture(t, pool)
 	count := siteEmailRowCounter(t, pool)
 
-	if n := deleteSiteEmailConfigAsCollaborator(t, pool, f.tenant, []uuid.UUID{f.siteB}, f.siteA); n != 0 {
+	if n := deleteSiteEmailConfigAsCollaborator(t, pool, "collaborator granted site B, site A",
+		f.tenant, []uuid.UUID{f.siteB}, f.siteA); n != 0 {
 		t.Fatalf("a collaborator granted only site B deleted %d of site A's config rows", n)
 	}
 	if got := count(countSiteEmailConfigByID, f.siteAConfig); got != 1 {
@@ -318,7 +347,8 @@ func TestDeleteSiteEmailConfigRespectsSiteScope(t *testing.T) {
 		t.Fatalf("site A's connections after a refused delete: %d rows, want 2", got)
 	}
 
-	if n := deleteSiteEmailConfigAsCollaborator(t, pool, f.tenant, []uuid.UUID{f.siteA}, f.siteA); n != 1 {
+	if n := deleteSiteEmailConfigAsCollaborator(t, pool, "collaborator granted site A, site A",
+		f.tenant, []uuid.UUID{f.siteA}, f.siteA); n != 1 {
 		t.Fatalf("a collaborator granted site A deleted %d of its config rows, want 1", n)
 	}
 	for _, c := range []struct {
