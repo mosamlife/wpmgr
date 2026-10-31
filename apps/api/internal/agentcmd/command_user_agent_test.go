@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
-	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -22,15 +21,10 @@ func TestCommandClientUserAgent(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			type received struct {
 				method, path, userAgent, contentType, accept, auth string
-				body                                               []byte
 			}
 			requests := make(chan received, 2)
 			srv := newDualServer(t, func(w http.ResponseWriter, r *http.Request, _ int, _ string) {
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Error("read command body failed")
-				}
-				requests <- received{r.Method, r.URL.Path, r.UserAgent(), r.Header.Get("Content-Type"), r.Header.Get("Accept"), r.Header.Get("Authorization"), body}
+				requests <- received{r.Method, r.URL.Path, r.UserAgent(), r.Header.Get("Content-Type"), r.Header.Get("Accept"), r.Header.Get("Authorization")}
 				if upgrade && r.TLS == nil {
 					w.Header().Set("Location", "https://"+r.Host+r.URL.Path)
 					w.WriteHeader(http.StatusTemporaryRedirect)
@@ -51,8 +45,9 @@ func TestCommandClientUserAgent(t *testing.T) {
 			if upgrade {
 				wantRequests = 2
 			}
-			if len(requests) != wantRequests {
-				t.Fatalf("received %d requests, want %d", len(requests), wantRequests)
+			seen := srv.requests()
+			if len(seen) != wantRequests {
+				t.Fatalf("received %d requests, want %d", len(seen), wantRequests)
 			}
 			var firstAuth string
 			for i := 0; i < wantRequests; i++ {
@@ -66,7 +61,7 @@ func TestCommandClientUserAgent(t *testing.T) {
 				if got.contentType != "application/json" || got.accept != "application/json" {
 					t.Error("existing JSON headers changed")
 				}
-				if !bytes.Equal(got.body, []byte(`{}`)) {
+				if !bytes.Equal(seen[i].Body, []byte(`{}`)) {
 					t.Error("command payload changed")
 				}
 				if !strings.HasPrefix(got.auth, "Bearer ") {
