@@ -906,6 +906,7 @@ func (c *Client) sendSigned(ctx context.Context, endpoint, command string, paylo
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("User-Agent", "WPMgr-CommandClient/1.0")
 	// The agent's permission_callback expects a Bearer token (class-router.php
 	// bearerToken()). NEVER log this header value (it is a credential).
 	httpReq.Header.Set("Authorization", "Bearer "+token)
@@ -946,6 +947,7 @@ func (c *Client) sendSigned(ctx context.Context, endpoint, command string, paylo
 			}
 			retry.Header.Set("Content-Type", "application/json")
 			retry.Header.Set("Accept", "application/json")
+			retry.Header.Set("User-Agent", "WPMgr-CommandClient/1.0")
 			retry.Header.Set("Authorization", "Bearer "+token)
 			resp, err = c.http.DoOnce(retry)
 			if err != nil {
