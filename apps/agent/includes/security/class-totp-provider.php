@@ -84,7 +84,7 @@ final class TotpProvider implements SiteTwoFactorProvider
     /** {@inheritDoc} */
     public function label(): string
     {
-        return 'Authenticator App (TOTP)';
+        return __('Authenticator App (TOTP)', 'wpmgr-agent');
     }
 
     /** {@inheritDoc} */
@@ -108,7 +108,7 @@ final class TotpProvider implements SiteTwoFactorProvider
     {
         $label = esc_html($this->label());
         $field = esc_attr('wpmgr_totp_code');
-        $placeholder = esc_attr('6-digit code');
+        $placeholder = esc_attr__('6-digit code', 'wpmgr-agent');
         return '<p><label for="' . $field . '">'
             . $label
             . '</label>'
@@ -267,12 +267,15 @@ final class TotpProvider implements SiteTwoFactorProvider
      *
      * @param \WP_User $user
      * @param string   $secret Raw base32 secret.
-     * @param string   $issuer Human-readable issuer name (site URL).
+     * @param string   $issuer Human-readable issuer name (the site name, as WordPress stores it).
      * @return string
      */
     public function buildOtpauthUri(\WP_User $user, string $secret, string $issuer): string
     {
-        $label = rawurlencode($issuer . ':' . $user->user_login);
+        // WordPress stores the site name HTML-escaped ("Tom &amp; Jerry"); the
+        // authenticator app shows the URI text verbatim, so carry the plain name.
+        $issuer = html_entity_decode($issuer, ENT_QUOTES, 'UTF-8');
+        $label  = rawurlencode($issuer . ':' . $user->user_login);
         return 'otpauth://totp/'
             . $label
             . '?secret=' . rawurlencode($secret)

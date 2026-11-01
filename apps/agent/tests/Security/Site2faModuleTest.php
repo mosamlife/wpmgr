@@ -121,8 +121,21 @@ final class Site2faModuleTest extends TestCase
 
     protected function tear_down(): void
     {
+        unset($_COOKIE[Site2faModule::COOKIE_BIND]);
         Monkey\tearDown();
         parent::tear_down();
+    }
+
+    /**
+     * Every submit must come from the browser holding the session's bind
+     * cookie. setcookie() never reaches $_COOKIE in a test, so give the stored
+     * session a known bind token and present it, as that browser would.
+     */
+    private function presentBindCookie(int $userId): void
+    {
+        $token = bin2hex(random_bytes(32));
+        $this->userMeta[$userId][Site2faModule::META_SESSION]['bind_hash'] = hash('sha256', $token);
+        $_COOKIE[Site2faModule::COOKIE_BIND] = $token;
     }
 
     private function makeUser(int $id = 1, array $roles = ['administrator'], string $email = 'user@example.com'): \WP_User
@@ -1730,6 +1743,7 @@ final class Site2faModuleTest extends TestCase
 
         $createRef = new \ReflectionMethod($module, 'createSession');
         $session   = $createRef->invoke($module, $userId, '/wp-admin/', false, '2fa');
+        $this->presentBindCookie($userId);
 
         Functions\when('get_userdata')->justReturn($user);
 
@@ -1778,6 +1792,7 @@ final class Site2faModuleTest extends TestCase
 
         $createRef = new \ReflectionMethod($module, 'createSession');
         $session   = $createRef->invoke($module, $userId, '/wp-admin/', false, '2fa');
+        $this->presentBindCookie($userId);
 
         $hmacRef = new \ReflectionMethod($module, 'computeSessionHmac');
         $hmac = $hmacRef->invoke($module, $userId, $session['id'], $session['created_at'], $session['uuid']);
@@ -1920,6 +1935,7 @@ final class Site2faModuleTest extends TestCase
 
         $createRef = new \ReflectionMethod($module, 'createSession');
         $session   = $createRef->invoke($module, $userId, '/wp-admin/', false, '2fa');
+        $this->presentBindCookie($userId);
 
         $hmacRef = new \ReflectionMethod($module, 'computeSessionHmac');
         $hmac    = $hmacRef->invoke($module, $userId, $session['id'], $session['created_at'], $session['uuid']);
@@ -1997,6 +2013,7 @@ final class Site2faModuleTest extends TestCase
 
         $createRef = new \ReflectionMethod($module, 'createSession');
         $session   = $createRef->invoke($module, $userId, '/wp-admin/', false, '2fa');
+        $this->presentBindCookie($userId);
 
         $hmacRef = new \ReflectionMethod($module, 'computeSessionHmac');
         $hmac    = $hmacRef->invoke($module, $userId, $session['id'], $session['created_at'], $session['uuid']);

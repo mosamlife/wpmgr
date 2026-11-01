@@ -113,6 +113,20 @@ final class TotpProviderTest extends TestCase
     // Key and label
     // -------------------------------------------------------------------------
 
+    public function test_otpauth_uri_carries_the_site_name_without_html_entities(): void
+    {
+        // get_bloginfo('name') returns the site name as stored: HTML-escaped.
+        $stored = 'Tom &amp; Jerry&#039;s &quot;Caf&eacute;&quot;';
+        $plain  = "Tom & Jerry's \"Café\"";
+
+        $uri = $this->provider()->buildOtpauthUri($this->makeUser(), 'JBSWY3DPEHPK3PXP', $stored);
+
+        $this->assertStringStartsWith('otpauth://totp/' . rawurlencode($plain . ':testuser') . '?secret=JBSWY3DPEHPK3PXP&', $uri);
+        $this->assertStringContainsString('&issuer=' . rawurlencode($plain) . '&', $uri);
+        $this->assertStringNotContainsString('%26amp%3B', $uri, 'no escaped ampersand reaches the authenticator app');
+        $this->assertStringNotContainsString('%26%23039%3B', $uri, 'no numeric entity reaches the authenticator app');
+    }
+
     public function test_key_is_totp(): void
     {
         $this->assertSame('totp', $this->provider()->key());

@@ -165,6 +165,9 @@ WHERE tenant_id  = @tenant_id
 
 -- name: GetUpdateReportStats :many
 -- Update section: succeeded/failed tasks grouped by target_type in [from, to).
+-- Only plugin, theme and core tasks count (GH #969): the agent's own
+-- self-update tasks, and any other target_type, are not updates a client
+-- report describes, so they are in neither column.
 SELECT
     target_type,
     COUNT(*) FILTER (WHERE status = 'succeeded')               AS succeeded,
@@ -174,7 +177,32 @@ WHERE tenant_id  = @tenant_id
   AND site_id    = @site_id
   AND finished_at >= @from_time
   AND finished_at  < @to_time
+  AND target_type IN ('plugin','theme','core')
 GROUP BY target_type;
+
+-- name: ListReportUpdateItems :many
+-- Update section version table (GH #969): one row per finished plugin, theme
+-- or core task on the given sites in [from, to), oldest first within a site.
+-- Same population as GetUpdateReportStats, so the table and the counts agree:
+-- succeeded, failed and rolled_back only, agent self-updates excluded.
+--
+-- Runs under InAgentTx, where RLS admits every tenant's update_tasks rows, so
+-- tenant_id = @tenant_id is the tenant boundary: a site id belonging to
+-- another tenant in @site_ids matches nothing. @row_limit caps the result.
+--
+-- from_version and to_version may each be the empty string (version unknown),
+-- and a rollback records from_version = to_version. `, id` is the project
+-- ORDER BY tiebreaker.
+SELECT site_id, target_type, target_slug, from_version, to_version, status, finished_at
+FROM update_tasks
+WHERE tenant_id   = @tenant_id
+  AND site_id     = ANY(@site_ids::uuid[])
+  AND finished_at >= @from_time
+  AND finished_at  < @to_time
+  AND target_type IN ('plugin','theme','core')
+  AND status      IN ('succeeded','failed','rolled_back')
+ORDER BY site_id, finished_at, id
+LIMIT @row_limit;
 
 -- ---------------------------------------------------------------------------
 -- m66 — Portal report queries

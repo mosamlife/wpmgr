@@ -10,6 +10,7 @@
  * License:           MIT
  * License URI:       https://opensource.org/licenses/MIT
  * Text Domain:       wpmgr-agent
+ * Domain Path:       /languages
  *
  * @package WPMgr\Agent
  */

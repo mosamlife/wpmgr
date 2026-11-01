@@ -20030,8 +20030,8 @@ type ClientReportSchedule struct {
 	SendDay int `json:"send_day"`
 	// Hour-of-day in the client's timezone at which the report is sent.
 	SendHour int `json:"send_hour"`
-	// IANA timezone name inherited from the client record. Informational only; update via PUT
-	// /clients/{clientId}.
+	// IANA timezone name on the client record, which `send_hour` and `next_run_at` are computed in. Read
+	// only here; change it on the client (PUT /clients/{clientId}).
 	Timezone OptString `json:"timezone"`
 	// Email addresses to deliver the report to.
 	Recipients []string                 `json:"recipients"`
@@ -20040,7 +20040,7 @@ type ClientReportSchedule struct {
 	IntroText string `json:"intro_text"`
 	// Optional closing paragraph for the report body.
 	ClosingText string `json:"closing_text"`
-	// When true, the "Powered by WPMgr" footer is omitted (white-label plan).
+	// When true, the "Prepared with WPMgr" footer is omitted (white-label plan).
 	PoweredByRemoved bool `json:"powered_by_removed"`
 	// Next scheduled execution time. Absent when disabled.
 	NextRunAt OptDateTime `json:"next_run_at"`
@@ -20237,7 +20237,41 @@ func (s *ClientReportScheduleCadence) UnmarshalText(data []byte) error {
 	}
 }
 
-// All fields are required (full replace).
+// Saves the client's report schedule. The first save creates it and each later save updates it.
+//
+// Every field is replaced by the value sent, with one exception: `sections` is merged one flag at a
+// time. For every other field, leaving it out does not keep the stored value: the server reads it as
+// the zero value of its type, runs the checks below on that value, and saves it. That holds for the
+// five required fields too, since the server does not reject a body for leaving one out.
+//
+// A value that fails a check below is rejected with HTTP 422 and the error `code` named; a field of
+// the wrong JSON type, or a body that is not JSON, is rejected with 422 and `invalid_body`.
+//
+//   - `enabled`: `true` turns scheduled sending on and sets `next_run_at` to the next send time, at
+//     `send_hour` in the client's timezone; `false` turns it off and clears `next_run_at`. Missing:
+//     `false`, so the schedule is switched off.
+//   - `cadence`: `weekly` or `monthly`; anything else is rejected with `invalid_cadence`. Missing:
+//     rejected the same way.
+//   - `send_day`: 0 to 6 for `weekly` (0 is Sunday) and 1 to 28 for `monthly`; anything else is
+//     rejected with `invalid_send_day`. Missing: 0, which is accepted for `weekly` (Sunday) and
+//     rejected for `monthly`.
+//   - `send_hour`: 0 to 23; anything else is rejected with `invalid_send_hour`. Missing: 0 (midnight),
+//     which is accepted.
+//   - `recipients`: replaces the stored list. Entries are trimmed, blank entries are skipped, each
+//     remaining entry must be a valid email address (`invalid_recipient`), and duplicates are removed
+//     ignoring case. Each address is saved as the bare address in lower case. At most 10 may remain
+//     after that (`too_many_recipients`). Missing: an empty list, which clears the stored recipients.
+//   - `sections`: merged over the sections already stored for the client, or over the defaults when no
+//     schedule is stored yet. A flag that is present turns that section on (`true`) or off (`false`). A
+//     flag that is left out keeps its stored value, and a body with no `sections` object keeps every
+//     stored flag.
+//   - `intro_text`, `closing_text`: replace the stored text. At most 2000 characters each, counted as
+//     characters and not as bytes, so text in any script fits the same 2000; longer text is rejected
+//     with `intro_text_too_long` or `closing_text_too_long`. Missing: empty, which clears the stored
+//     text.
+//   - `powered_by_removed`: `true` leaves the "Prepared with WPMgr" footer out of the client's reports
+//     and report emails, and `false` shows it. Missing: `false`, so the footer is shown again.
+//
 // Ref: #/components/schemas/ClientReportScheduleUpdate
 type ClientReportScheduleUpdate struct {
 	Enabled          bool                              `json:"enabled"`
@@ -20382,7 +20416,10 @@ func (s *ClientReportScheduleUpdateCadence) UnmarshalText(data []byte) error {
 	}
 }
 
-// Controls which data sections are included in a report.
+// Controls which data sections are included in a report. Every flag is optional in a request. A flag
+// that is left out keeps the value already stored for the client, or takes the default listed here
+// when the client has no saved settings yet; `false` turns the section off. A response always carries
+// all six flags.
 // Ref: #/components/schemas/ClientReportSectionFlags
 type ClientReportSectionFlags struct {
 	Overview    OptBool `json:"overview"`
@@ -24331,6 +24368,26 @@ func (*DeleteSiteDestinationNotFound) deleteSiteDestinationRes() {}
 type DeleteSiteDestinationUnauthorized Error
 
 func (*DeleteSiteDestinationUnauthorized) deleteSiteDestinationRes() {}
+
+type DeleteSiteEmailConfigConflict Error
+
+func (*DeleteSiteEmailConfigConflict) deleteSiteEmailConfigRes() {}
+
+type DeleteSiteEmailConfigForbidden Error
+
+func (*DeleteSiteEmailConfigForbidden) deleteSiteEmailConfigRes() {}
+
+type DeleteSiteEmailConfigNotFound Error
+
+func (*DeleteSiteEmailConfigNotFound) deleteSiteEmailConfigRes() {}
+
+type DeleteSiteEmailConfigServiceUnavailable Error
+
+func (*DeleteSiteEmailConfigServiceUnavailable) deleteSiteEmailConfigRes() {}
+
+type DeleteSiteEmailConfigUnauthorized Error
+
+func (*DeleteSiteEmailConfigUnauthorized) deleteSiteEmailConfigRes() {}
 
 type DeleteSiteEmailSuppressionForbidden Error
 
@@ -29797,10 +29854,6 @@ func (s *ForgotPasswordReq) SetEmail(val string) {
 	s.Email = val
 }
 
-type GenerateClientReportBadRequest Error
-
-func (*GenerateClientReportBadRequest) generateClientReportRes() {}
-
 type GenerateClientReportForbidden Error
 
 func (*GenerateClientReportForbidden) generateClientReportRes() {}
@@ -29809,7 +29862,19 @@ type GenerateClientReportNotFound Error
 
 func (*GenerateClientReportNotFound) generateClientReportRes() {}
 
-// Optional overrides for an on-demand report. Omit entirely to use schedule defaults.
+// Optional settings for one on-demand report.
+//
+// The report uses the client's saved report settings, the same ones a scheduled report uses: which
+// sections are on, the intro and closing text, and whether the "Prepared with WPMgr" footer is shown.
+// A client with no saved settings gets the defaults: every section on, no intro or closing text,
+// footer shown.
+//
+// `sections` is laid over the saved sections for this one report, one flag at a time. A flag that is
+// present turns that section on (`true`) or off (`false`); a flag that is left out keeps the saved
+// value. Nothing in this request changes the saved settings, and it cannot change the intro text, the
+// closing text or the footer.
+//
+// Omit the body, or send `{}`, to use the saved settings unchanged.
 // Ref: #/components/schemas/GenerateClientReportRequest
 type GenerateClientReportRequest struct {
 	// Start of the data window (inclusive). Defaults to 30 days ago when absent.
@@ -29861,9 +29926,17 @@ func (s *GenerateClientReportRequest) SetNotify(val OptBool) {
 	s.Notify = val
 }
 
+type GenerateClientReportServiceUnavailable Error
+
+func (*GenerateClientReportServiceUnavailable) generateClientReportRes() {}
+
 type GenerateClientReportUnauthorized Error
 
 func (*GenerateClientReportUnauthorized) generateClientReportRes() {}
+
+type GenerateClientReportUnprocessableEntity Error
+
+func (*GenerateClientReportUnprocessableEntity) generateClientReportRes() {}
 
 type GetAIConnectionUsageForbidden Error
 
@@ -51942,6 +52015,10 @@ type PutClientReportScheduleUnauthorized Error
 
 func (*PutClientReportScheduleUnauthorized) putClientReportScheduleRes() {}
 
+type PutClientReportScheduleUnprocessableEntity Error
+
+func (*PutClientReportScheduleUnprocessableEntity) putClientReportScheduleRes() {}
+
 // Request body for PUT /email/org-config and PUT /sites/{siteId}/email/config. All fields are optional
 // — omitted fields are unchanged (PATCH semantics within a PUT envelope). Omitting `secret`
 // preserves the existing stored credential (nil-sentinel pattern).
@@ -52136,6 +52213,10 @@ func (s *PutEmailConfigRequestMappings) init() PutEmailConfigRequestMappings {
 type PutEmailConnectionBadRequest Error
 
 func (*PutEmailConnectionBadRequest) putEmailConnectionRes() {}
+
+type PutEmailConnectionConflict Error
+
+func (*PutEmailConnectionConflict) putEmailConnectionRes() {}
 
 type PutEmailConnectionForbidden Error
 
@@ -52615,6 +52696,10 @@ func (*PutSiteAutologinPolicyUnprocessableEntity) putSiteAutologinPolicyRes() {}
 type PutSiteEmailConfigBadRequest Error
 
 func (*PutSiteEmailConfigBadRequest) putSiteEmailConfigRes() {}
+
+type PutSiteEmailConfigConflict Error
+
+func (*PutSiteEmailConfigConflict) putSiteEmailConfigRes() {}
 
 type PutSiteEmailConfigForbidden Error
 
@@ -53414,6 +53499,120 @@ func (*RemoveClientMemberNotFound) removeClientMemberRes() {}
 type RemoveClientMemberUnauthorized Error
 
 func (*RemoveClientMemberUnauthorized) removeClientMemberRes() {}
+
+// Outcome of removing a site's own email provider (GH #968). The site's agent confirmed it cleared its
+// email config and the site's own config row was deleted; these fields say where the site's mail goes
+// now.
+// Ref: #/components/schemas/RemoveSiteEmailConfigResult
+type RemoveSiteEmailConfigResult struct {
+	// Provider slug of the config that was removed.
+	RemovedProvider string `json:"removed_provider"`
+	// What the site uses now. `org_default`: the organisation has a default email config and the site uses
+	// it. `wordpress`: there is no organisation default, so the site sends through WordPress's own mailer.
+	// `unknown`: the provider was removed but the organisation default could not be read; read the site's
+	// email config again.
+	Fallback RemoveSiteEmailConfigResultFallback `json:"fallback"`
+	// True when `fallback` is `org_default` and the organisation default reached the site's agent. When
+	// false with `org_default`, the site sends through WordPress's own mailer until the default is synced
+	// (POST /sites/{siteId}/email/sync).
+	OrgDefaultSynced bool `json:"org_default_synced"`
+	// One sentence for the operator describing the outcome.
+	Detail string `json:"detail"`
+}
+
+// GetRemovedProvider returns the value of RemovedProvider.
+func (s *RemoveSiteEmailConfigResult) GetRemovedProvider() string {
+	return s.RemovedProvider
+}
+
+// GetFallback returns the value of Fallback.
+func (s *RemoveSiteEmailConfigResult) GetFallback() RemoveSiteEmailConfigResultFallback {
+	return s.Fallback
+}
+
+// GetOrgDefaultSynced returns the value of OrgDefaultSynced.
+func (s *RemoveSiteEmailConfigResult) GetOrgDefaultSynced() bool {
+	return s.OrgDefaultSynced
+}
+
+// GetDetail returns the value of Detail.
+func (s *RemoveSiteEmailConfigResult) GetDetail() string {
+	return s.Detail
+}
+
+// SetRemovedProvider sets the value of RemovedProvider.
+func (s *RemoveSiteEmailConfigResult) SetRemovedProvider(val string) {
+	s.RemovedProvider = val
+}
+
+// SetFallback sets the value of Fallback.
+func (s *RemoveSiteEmailConfigResult) SetFallback(val RemoveSiteEmailConfigResultFallback) {
+	s.Fallback = val
+}
+
+// SetOrgDefaultSynced sets the value of OrgDefaultSynced.
+func (s *RemoveSiteEmailConfigResult) SetOrgDefaultSynced(val bool) {
+	s.OrgDefaultSynced = val
+}
+
+// SetDetail sets the value of Detail.
+func (s *RemoveSiteEmailConfigResult) SetDetail(val string) {
+	s.Detail = val
+}
+
+func (*RemoveSiteEmailConfigResult) deleteSiteEmailConfigRes() {}
+
+// What the site uses now. `org_default`: the organisation has a default email config and the site uses
+// it. `wordpress`: there is no organisation default, so the site sends through WordPress's own mailer.
+// `unknown`: the provider was removed but the organisation default could not be read; read the site's
+// email config again.
+type RemoveSiteEmailConfigResultFallback string
+
+const (
+	RemoveSiteEmailConfigResultFallbackOrgDefault RemoveSiteEmailConfigResultFallback = "org_default"
+	RemoveSiteEmailConfigResultFallbackWordpress  RemoveSiteEmailConfigResultFallback = "wordpress"
+	RemoveSiteEmailConfigResultFallbackUnknown    RemoveSiteEmailConfigResultFallback = "unknown"
+)
+
+// AllValues returns all RemoveSiteEmailConfigResultFallback values.
+func (RemoveSiteEmailConfigResultFallback) AllValues() []RemoveSiteEmailConfigResultFallback {
+	return []RemoveSiteEmailConfigResultFallback{
+		RemoveSiteEmailConfigResultFallbackOrgDefault,
+		RemoveSiteEmailConfigResultFallbackWordpress,
+		RemoveSiteEmailConfigResultFallbackUnknown,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s RemoveSiteEmailConfigResultFallback) MarshalText() ([]byte, error) {
+	switch s {
+	case RemoveSiteEmailConfigResultFallbackOrgDefault:
+		return []byte(s), nil
+	case RemoveSiteEmailConfigResultFallbackWordpress:
+		return []byte(s), nil
+	case RemoveSiteEmailConfigResultFallbackUnknown:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *RemoveSiteEmailConfigResultFallback) UnmarshalText(data []byte) error {
+	switch RemoveSiteEmailConfigResultFallback(data) {
+	case RemoveSiteEmailConfigResultFallbackOrgDefault:
+		*s = RemoveSiteEmailConfigResultFallbackOrgDefault
+		return nil
+	case RemoveSiteEmailConfigResultFallbackWordpress:
+		*s = RemoveSiteEmailConfigResultFallbackWordpress
+		return nil
+	case RemoveSiteEmailConfigResultFallbackUnknown:
+		*s = RemoveSiteEmailConfigResultFallbackUnknown
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 type RenameOrgForbidden Error
 

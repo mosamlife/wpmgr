@@ -289,6 +289,11 @@ type DeleteSiteDestinationParams struct {
 	DestinationId uuid.UUID
 }
 
+// DeleteSiteEmailConfigParams is parameters of deleteSiteEmailConfig operation.
+type DeleteSiteEmailConfigParams struct {
+	SiteId uuid.UUID
+}
+
 // DeleteSiteEmailSuppressionParams is parameters of deleteSiteEmailSuppression operation.
 type DeleteSiteEmailSuppressionParams struct {
 	SiteId        uuid.UUID

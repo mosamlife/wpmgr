@@ -20,6 +20,7 @@ use WPMgr\Agent\Backup\Watchdog;
 use WPMgr\Agent\Commands\AgentSelfUpdateCommand;
 use WPMgr\Agent\Commands\AutologinCommand;
 use WPMgr\Agent\Commands\BackupCommand;
+use WPMgr\Agent\Commands\ClearEmailConfigCommand;
 use WPMgr\Agent\Commands\CommandInterface;
 use WPMgr\Agent\Commands\DiagnosticsCommand;
 use WPMgr\Agent\Commands\InfoCommand;
@@ -132,6 +133,7 @@ use WPMgr\Agent\Support\LoginProtection;
 use WPMgr\Agent\Support\LongRunningJob;
 use WPMgr\Agent\Support\MuPluginInstaller;
 use WPMgr\Agent\Support\SnapshotManager;
+use WPMgr\Agent\Support\TextDomain;
 use WPMgr\Agent\Support\UpdateChecker;
 use WPMgr\Agent\Support\UpdateInFlight;
 use WPMgr\Agent\Support\UpdateWatchdogMarker;
@@ -584,6 +586,11 @@ final class Plugin
      */
     private function registerHooks(): void
     {
+        // Load this plugin's own translation catalogues from languages/ on
+        // `init`. A no-op in the wp.org build, where WordPress loads the
+        // language packs for the plugin's slug itself (see TextDomain).
+        TextDomain::register();
+
         // Schema migration runner: WP does NOT run register_activation_hook on
         // a same-version re-upload, which previously left the M5.5 autologin
         // replay table missing on existing installs that re-uploaded the new
@@ -2217,9 +2224,14 @@ final class Plugin
             // Email (Phase 2) — per-site outgoing-mail configuration + test.
             // sync_email_config: receives the full provider config (including the
             //   DECRYPTED secret) from the CP and stores it in the agent keystore.
+            // clear_email_config: the way back to "no provider". Removes the stored
+            //   config, the email secret and every connection secret, then checks
+            //   they are gone; wp_mail() then uses WordPress's own mailer. It rides
+            //   the same signed, cmd-bound channel as sync_email_config.
             // send_test_email:   sends a test message via the current provider
             //   config with the fallback DISABLED so real provider errors surface.
             new SyncEmailConfigCommand($this->keystore),
+            new ClearEmailConfigCommand($this->keystore),
             new SendTestEmailCommand($this->providerRouter),
             // Phase 4b — re-sends a buffered email by its local agent_seq when
             // the body was stored (body_stored=1). Returns body_not_stored when

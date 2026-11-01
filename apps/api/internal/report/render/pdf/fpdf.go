@@ -3,7 +3,9 @@ package pdf
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"math"
+	"runtime/debug"
 	"strings"
 
 	fpdflib "codeberg.org/go-pdf/fpdf"
@@ -35,11 +37,75 @@ const (
 )
 
 // Render renders a PDF from ReportData + optional validated logo bytes.
+//
+// A panic inside the PDF library comes back as an error. Without that, one
+// bad input panics the report job, which skips the worker's own handling of a
+// failed render and leaves the report row unfinished.
+//
+// A logo the library cannot draw does not fail the render: the report comes
+// out without it (see placeLogo).
 func (r *FpdfRenderer) Render(data reportdata.ReportData, logo []byte) ([]byte, error) {
-	f := fpdflib.New("P", "mm", "A4", "")
+	return recoverRender(func() ([]byte, error) { return drawReport(data, logo) })
+}
+
+// recoverRender runs draw and returns a panic in it as an error.
+func recoverRender(draw func() ([]byte, error)) (out []byte, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			slog.Error("pdf render panicked",
+				slog.Any("panic", p),
+				slog.String("stack", string(debug.Stack())))
+			out, err = nil, fmt.Errorf("pdf render: internal error: %v", p)
+		}
+	}()
+	return draw()
+}
+
+// placeLogo draws the logo at the top left of the first page and reports
+// whether it is there.
+//
+// The library reads an image when it is registered, and a logo it cannot take
+// either panics or leaves an error on the document, which fails the whole PDF
+// when the document is written. A logo it cannot draw is dropped instead: the
+// error is cleared, one warning is logged, and the report is drawn without it.
+func placeLogo(f pdfDoc, logo []byte) (placed bool) {
+	if f.Err() {
+		// An error that is not the logo's stays on the document.
+		return false
+	}
+	var cause error
+	defer func() {
+		if p := recover(); p != nil {
+			cause = fmt.Errorf("the library panicked reading the logo: %v", p)
+		}
+		if cause == nil {
+			return
+		}
+		f.ClearError()
+		placed = false
+		slog.Warn("pdf render: the logo cannot be drawn, rendering the report without it",
+			slog.Any("error", cause))
+	}()
+
+	imgOpts := fpdflib.ImageOptions{ImageType: "png"}
+	if len(logo) >= 4 && !(logo[0] == 0x89 && logo[1] == 0x50) {
+		imgOpts.ImageType = "jpg"
+	}
+	f.RegisterImageOptionsReader("logo", imgOpts, bytes.NewReader(logo))
+	f.ImageOptions("logo", marginL, marginT, 40, 0, false, imgOpts, 0, "")
+	if f.Err() {
+		cause = f.Error()
+		return false
+	}
+	return true
+}
+
+// drawReport draws the whole document.
+func drawReport(data reportdata.ReportData, logo []byte) ([]byte, error) {
+	f := pdfDoc{fpdflib.New("P", "mm", "A4", "")}
 	f.SetMargins(marginL, marginT, marginR)
 	f.SetAutoPageBreak(true, 15)
-	if err := registerFonts(f); err != nil {
+	if err := registerFonts(f.Fpdf); err != nil {
 		return nil, err
 	}
 	f.AddPage()
@@ -48,13 +114,7 @@ func (r *FpdfRenderer) Render(data reportdata.ReportData, logo []byte) ([]byte, 
 	// Header
 	// -------------------------------------------------------------------------
 	// Logo (validated bytes only — never hot-link logo_url).
-	if len(logo) > 0 {
-		imgOpts := fpdflib.ImageOptions{ImageType: "png"}
-		if len(logo) >= 4 && !(logo[0] == 0x89 && logo[1] == 0x50) {
-			imgOpts.ImageType = "jpg"
-		}
-		f.RegisterImageOptionsReader("logo", imgOpts, bytes.NewReader(logo))
-		f.ImageOptions("logo", marginL, marginT, 40, 0, false, imgOpts, 0, "")
+	if len(logo) > 0 && placeLogo(f, logo) {
 		f.SetY(marginT + 18)
 	}
 
@@ -151,7 +211,7 @@ func (r *FpdfRenderer) Render(data reportdata.ReportData, logo []byte) ([]byte, 
 // Drawing helpers — native fpdf vector primitives (no SVG path reuse)
 // ---------------------------------------------------------------------------
 
-func sectionHeader(f *fpdflib.Fpdf, accent [3]int, title string) {
+func sectionHeader(f pdfDoc, accent [3]int, title string) {
 	f.SetFont("dejavu", "B", 13)
 	f.SetTextColor(15, 23, 42)
 	f.SetFillColor(248, 249, 250)
@@ -165,7 +225,7 @@ func sectionHeader(f *fpdflib.Fpdf, accent [3]int, title string) {
 	f.Ln(3)
 }
 
-func drawTotalsGrid(f *fpdflib.Fpdf, data reportdata.ReportData) {
+func drawTotalsGrid(f pdfDoc, data reportdata.ReportData) {
 	// GH #414 phase 5 — the average is over the MEASURED population, so when any
 	// site was paused the label says which population, and when NOTHING was
 	// measured it prints an em dash rather than 0.0%, which would read as a
@@ -229,7 +289,7 @@ func drawTotalsGrid(f *fpdflib.Fpdf, data reportdata.ReportData) {
 // actual state of this document, never on s.MonitoringPaused.
 //
 // Grey, never red: a pause is a decision, not an incident.
-func drawPausedRow(f *fpdflib.Fpdf, s reportdata.SiteReport) {
+func drawPausedRow(f pdfDoc, s reportdata.SiteReport) {
 	f.SetFont("dejavu", "B", 10)
 	f.SetTextColor(75, 85, 99)
 	title := "Monitoring paused"
@@ -251,7 +311,7 @@ func drawPausedRow(f *fpdflib.Fpdf, s reportdata.SiteReport) {
 	f.Ln(2)
 }
 
-func drawUptimeRow(f *fpdflib.Fpdf, u *reportdata.UptimeSection) {
+func drawUptimeRow(f pdfDoc, u *reportdata.UptimeSection) {
 	f.SetFont("dejavu", "B", 10)
 	f.SetTextColor(55, 65, 81)
 	f.CellFormat(contentW, 5, "Uptime", "", 1, "L", false, 0, "")
@@ -283,7 +343,7 @@ func drawUptimeRow(f *fpdflib.Fpdf, u *reportdata.UptimeSection) {
 // .paused-note block in report.html.tmpl. It is what a FAILED pause-history
 // read renders as: the checks are real and are shown, but the document does
 // not claim the period was monitored end to end when nothing could confirm it.
-func drawCoverageUnknownNote(f *fpdflib.Fpdf) {
+func drawCoverageUnknownNote(f pdfDoc) {
 	f.SetFont("dejavu", "B", 9)
 	f.SetTextColor(75, 85, 99)
 	f.CellFormat(contentW, 4.5, "Coverage unconfirmed", "", 1, "L", false, 0, "")
@@ -305,7 +365,7 @@ func drawCoverageUnknownNote(f *fpdflib.Fpdf) {
 // overlap leaves real, measured data in u — it must render — but a reader
 // must not mistake a month with a hole in it for a complete measurement, so
 // this must sit beside the numbers, not in a footnote.
-func drawPartialCoverageNote(f *fpdflib.Fpdf, u *reportdata.UptimeSection) {
+func drawPartialCoverageNote(f pdfDoc, u *reportdata.UptimeSection) {
 	f.SetFont("dejavu", "B", 9)
 	f.SetTextColor(75, 85, 99)
 	f.CellFormat(contentW, 4.5, "Partial coverage", "", 1, "L", false, 0, "")
@@ -341,7 +401,7 @@ func humanizeHours(hours float64) string {
 
 // drawSparkline draws a bar chart from UptimeDay series using native fpdf Rect.
 // Charts are NEVER the HTML twin's inline SVG — native primitives only.
-func drawSparkline(f *fpdflib.Fpdf, x, y, w, h float64, days []reportdata.UptimeDay) {
+func drawSparkline(f pdfDoc, x, y, w, h float64, days []reportdata.UptimeDay) {
 	if len(days) == 0 {
 		return
 	}
@@ -369,7 +429,7 @@ func uptimeRGB(pct float64) (int, int, int) {
 	return 220, 38, 38 // red
 }
 
-func drawBackupRow(f *fpdflib.Fpdf, b *reportdata.BackupSection) {
+func drawBackupRow(f pdfDoc, b *reportdata.BackupSection) {
 	f.SetFont("dejavu", "B", 10)
 	f.SetTextColor(55, 65, 81)
 	f.CellFormat(contentW, 5, "Backups", "", 1, "L", false, 0, "")
@@ -382,7 +442,7 @@ func drawBackupRow(f *fpdflib.Fpdf, b *reportdata.BackupSection) {
 	f.Ln(2)
 }
 
-func drawUpdatesRow(f *fpdflib.Fpdf, u *reportdata.UpdateSection) {
+func drawUpdatesRow(f pdfDoc, u *reportdata.UpdateSection) {
 	f.SetFont("dejavu", "B", 10)
 	f.SetTextColor(55, 65, 81)
 	f.CellFormat(contentW, 5, "Updates", "", 1, "L", false, 0, "")
@@ -392,10 +452,69 @@ func drawUpdatesRow(f *fpdflib.Fpdf, u *reportdata.UpdateSection) {
 		row += fmt.Sprintf("  ·  %d failed", u.Failed)
 	}
 	f.CellFormat(contentW, 5, row, "", 1, "L", false, 0, "")
+	drawUpdateItemsTable(f, u)
 	f.Ln(2)
 }
 
-func drawPerfRow(f *fpdflib.Fpdf, p *reportdata.PerfSection) {
+// updateTableCols are the version table's columns; the widths sum to contentW.
+var updateTableCols = []struct {
+	title string
+	w     float64
+}{
+	{"Name", 62}, {"Type", 20}, {"From", 26}, {"To", 26}, {"Result", 22}, {"Date", 24},
+}
+
+// drawUpdateItemsTable is the PDF twin of the version table in
+// report.html.tmpl (GH #969): the same rows, the same labels, the same
+// "and N more changes" line, which both take from reportdata.
+func drawUpdateItemsTable(f pdfDoc, u *reportdata.UpdateSection) {
+	if len(u.Items) > 0 {
+		f.Ln(1)
+		f.SetFont("dejavu", "B", 8.5)
+		f.SetTextColor(107, 114, 128)
+		f.SetDrawColor(229, 231, 235)
+		for _, c := range updateTableCols {
+			f.CellFormat(c.w, 5, c.title, "B", 0, "L", false, 0, "")
+		}
+		f.Ln(5)
+		f.SetFont("dejavu", "", 8.5)
+		for _, it := range u.Items {
+			cells := []string{it.Name, it.TypeLabel(), it.FromLabel(), it.ToLabel(), it.StatusLabel(), it.Date.Format("2 Jan 2006")}
+			for i, c := range updateTableCols {
+				switch {
+				case i == 4 && it.Status == reportdata.UpdateStatusFailed:
+					f.SetTextColor(220, 38, 38)
+				case i == 4 && it.Status == reportdata.UpdateStatusRolledBack:
+					f.SetTextColor(202, 138, 4)
+				default:
+					f.SetTextColor(55, 65, 81)
+				}
+				f.CellFormat(c.w, 4.8, fitCell(f, cells[i], c.w-1), "", 0, "L", false, 0, "")
+			}
+			f.Ln(4.8)
+		}
+	}
+	if more := u.MoreItemsLabel(); more != "" {
+		f.SetFont("dejavu", "", 8.5)
+		f.SetTextColor(107, 114, 128)
+		f.CellFormat(contentW, 5, more, "", 1, "L", false, 0, "")
+	}
+}
+
+// fitCell shortens s with an ellipsis until it fits w millimetres in the
+// current font, so a long name cannot run into the next column.
+func fitCell(f pdfDoc, s string, w float64) string {
+	if f.GetStringWidth(s) <= w {
+		return s
+	}
+	r := []rune(s)
+	for len(r) > 0 && f.GetStringWidth(string(r)+"…") > w {
+		r = r[:len(r)-1]
+	}
+	return string(r) + "…"
+}
+
+func drawPerfRow(f pdfDoc, p *reportdata.PerfSection) {
 	if len(p.Metrics) == 0 {
 		return
 	}
@@ -452,7 +571,7 @@ func cwvDisplayPDF(metric string, p75 float64) string {
 	return fmt.Sprintf("%.0fms", p75)
 }
 
-func drawEmailRow(f *fpdflib.Fpdf, e *reportdata.EmailSection) {
+func drawEmailRow(f pdfDoc, e *reportdata.EmailSection) {
 	f.SetFont("dejavu", "B", 10)
 	f.SetTextColor(55, 65, 81)
 	f.CellFormat(contentW, 5, "Email", "", 1, "L", false, 0, "")

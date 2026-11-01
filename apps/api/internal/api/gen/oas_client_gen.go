@@ -1160,6 +1160,23 @@ type Invoker interface {
 	//
 	// DELETE /api/v1/sites/{siteId}/destinations/{destinationId}
 	DeleteSiteDestination(ctx context.Context, params DeleteSiteDestinationParams) (DeleteSiteDestinationRes, error)
+	// DeleteSiteEmailConfig invokes deleteSiteEmailConfig operation.
+	//
+	// Removes the site's OWN email config (GH #968), so the site falls back to the organisation's default
+	// email config when there is one, and to WordPress's own mailer when there is not. The organisation
+	// default itself is never touched.
+	//
+	// The site's agent is told first, with the signed `clear_email_config` command, and the row is deleted
+	// only after the agent confirms it cleared its stored email settings and credentials. When the
+	// organisation has a default it is then pushed to the site. In every failure below nothing is removed.
+	//
+	// The row's webhook route token goes with it, so provider callbacks for mail sent before the removal
+	// no longer resolve.
+	//
+	// Requires `site.email.manage` permission (operator+) and site access.
+	//
+	// DELETE /api/v1/sites/{siteId}/email/config
+	DeleteSiteEmailConfig(ctx context.Context, params DeleteSiteEmailConfigParams) (DeleteSiteEmailConfigRes, error)
 	// DeleteSiteEmailSuppression invokes deleteSiteEmailSuppression operation.
 	//
 	// Removes a suppression entry by id. The operator is responsible for ensuring the removal is
@@ -15079,6 +15096,116 @@ func (c *Client) sendDeleteSiteDestination(ctx context.Context, params DeleteSit
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteSiteDestinationResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// DeleteSiteEmailConfig invokes deleteSiteEmailConfig operation.
+//
+// Removes the site's OWN email config (GH #968), so the site falls back to the organisation's default
+// email config when there is one, and to WordPress's own mailer when there is not. The organisation
+// default itself is never touched.
+//
+// The site's agent is told first, with the signed `clear_email_config` command, and the row is deleted
+// only after the agent confirms it cleared its stored email settings and credentials. When the
+// organisation has a default it is then pushed to the site. In every failure below nothing is removed.
+//
+// The row's webhook route token goes with it, so provider callbacks for mail sent before the removal
+// no longer resolve.
+//
+// Requires `site.email.manage` permission (operator+) and site access.
+//
+// DELETE /api/v1/sites/{siteId}/email/config
+func (c *Client) DeleteSiteEmailConfig(ctx context.Context, params DeleteSiteEmailConfigParams) (DeleteSiteEmailConfigRes, error) {
+	res, err := c.sendDeleteSiteEmailConfig(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendDeleteSiteEmailConfig(ctx context.Context, params DeleteSiteEmailConfigParams) (res DeleteSiteEmailConfigRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("deleteSiteEmailConfig"),
+		semconv.HTTPRequestMethodKey.String("DELETE"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/email/config"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, DeleteSiteEmailConfigOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/email/config"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "DELETE", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeDeleteSiteEmailConfigResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

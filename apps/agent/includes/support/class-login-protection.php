@@ -417,7 +417,7 @@ final class LoginProtection
         if (!empty($config['deny_cidrs']) && IpUtils::matchesAnyCidr($ip, $config['deny_cidrs'])) {
             $this->terminate($ip, $username, self::CATEGORY_BLACKLISTED, $config);
             // In AUDIT mode terminate() returns; return a WP_Error as a safety net.
-            return new \WP_Error('wpmgr_ip_blocked', 'Your IP address is blocked from logging in to this site.');
+            return new \WP_Error('wpmgr_ip_blocked', esc_html($this->blockMessage(self::CATEGORY_BLACKLISTED)));
         }
 
         // Step 5: Private-IP bypass -- loopback/LAN/link-local traffic is never blocked.
@@ -492,7 +492,7 @@ final class LoginProtection
         // of per-IP counts. Checked before per-IP so the most severe tier wins.
         if ($this->getLoginCount(self::STATUS_FAILURE, null, $now, $thresholds['all_blocked_gap']) >= $thresholds['block_all_limit']) {
             $this->terminate($ip, $username, self::CATEGORY_ALL_BLOCKED, $config);
-            return new \WP_Error('wpmgr_all_blocked', 'Logins to this site are currently blocked due to excessive failed login attempts. Please try again later.');
+            return new \WP_Error('wpmgr_all_blocked', esc_html($this->blockMessage(self::CATEGORY_ALL_BLOCKED)));
         }
 
         // Per-IP failure count (used for tiers 8 and 9 below).
@@ -501,13 +501,13 @@ final class LoginProtection
         // Step 8: Per-IP hard temp-block -- too many failures -> temporary ban.
         if ($failedAttempts >= $thresholds['temp_block_limit']) {
             $this->terminate($ip, $username, self::CATEGORY_TEMP_BLOCK, $config);
-            return new \WP_Error('wpmgr_temp_blocked', 'Too many failed login attempts. You cannot log in to this site for 30 minutes.');
+            return new \WP_Error('wpmgr_temp_blocked', esc_html($this->blockMessage(self::CATEGORY_TEMP_BLOCK)));
         }
 
         // Step 9: Per-IP soft captcha-gate -- moderate failures -> captcha challenge.
         if ($failedAttempts >= $thresholds['captcha_limit']) {
             $this->terminate($ip, $username, self::CATEGORY_CAPTCHA_BLOCK, $config);
-            return new \WP_Error('wpmgr_captcha_block', 'Too many failed login attempts. Your IP has been temporarily restricted. Contact the site administrator to unblock access.');
+            return new \WP_Error('wpmgr_captcha_block', esc_html($this->blockMessage(self::CATEGORY_CAPTCHA_BLOCK)));
         }
 
         // Step 10: No threshold exceeded -- pass through unchanged.
@@ -885,9 +885,9 @@ final class LoginProtection
         $safeRequestId = htmlspecialchars($requestId, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
         $html = '<div style="text-align:center;padding:3em;font-family:sans-serif;">'
-            . '<h2>WPMgr Login Protection</h2>'
+            . '<h2>' . esc_html__('WPMgr Login Protection', 'wpmgr-agent') . '</h2>'
             . '<p>' . $safeMessage . '</p>'
-            . '<p style="color:#999;font-size:0.85em;">Reference ID: ' . $safeRequestId . '</p>'
+            . '<p style="color:#999;font-size:0.85em;">' . esc_html__('Reference ID:', 'wpmgr-agent') . ' ' . $safeRequestId . '</p>'
             . '</div>';
 
         // terminate() is only ever reached via the 'authenticate' filter
@@ -908,7 +908,7 @@ final class LoginProtection
             'code'   => [],
         ];
 
-        wp_die(wp_kses($html, $allowedHtml), 'Login Blocked', ['response' => 403, 'back_link' => false]);
+        wp_die(wp_kses($html, $allowedHtml), esc_html__('Login Blocked', 'wpmgr-agent'), ['response' => 403, 'back_link' => false]);
         // wp_die() never returns.
     }
 
@@ -1057,15 +1057,15 @@ final class LoginProtection
     {
         switch ($category) {
             case self::CATEGORY_CAPTCHA_BLOCK:
-                return 'Too many failed login attempts. Your IP has been temporarily restricted. Contact the site administrator to unblock access.';
+                return __('Too many failed login attempts. Your IP has been temporarily restricted. Contact the site administrator to unblock access.', 'wpmgr-agent');
             case self::CATEGORY_TEMP_BLOCK:
-                return 'Too many failed login attempts. You cannot log in to this site for 30 minutes.';
+                return __('Too many failed login attempts. You cannot log in to this site for 30 minutes.', 'wpmgr-agent');
             case self::CATEGORY_ALL_BLOCKED:
-                return 'Logins to this site are currently blocked due to excessive failed login attempts. Please try again later.';
+                return __('Logins to this site are currently blocked due to excessive failed login attempts. Please try again later.', 'wpmgr-agent');
             case self::CATEGORY_BLACKLISTED:
-                return 'Your IP address is blocked from logging in to this site.';
+                return __('Your IP address is blocked from logging in to this site.', 'wpmgr-agent');
             default:
-                return 'Login blocked.';
+                return __('Login blocked.', 'wpmgr-agent');
         }
     }
 }

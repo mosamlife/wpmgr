@@ -373,6 +373,10 @@ type DeleteSiteDestinationRes interface {
 	deleteSiteDestinationRes()
 }
 
+type DeleteSiteEmailConfigRes interface {
+	deleteSiteEmailConfigRes()
+}
+
 type DeleteSiteEmailSuppressionRes interface {
 	deleteSiteEmailSuppressionRes()
 }

@@ -11083,6 +11083,34 @@ export const EmailTestRequestSchema = {
   },
 } as const;
 
+export const RemoveSiteEmailConfigResultSchema = {
+  type: "object",
+  description:
+    "Outcome of removing a site's own email provider (GH #968). The site's agent confirmed it cleared its email config and the site's own config row was deleted; these fields say where the site's mail goes now.\n",
+  required: ["removed_provider", "fallback", "org_default_synced", "detail"],
+  properties: {
+    removed_provider: {
+      type: "string",
+      description: "Provider slug of the config that was removed.",
+    },
+    fallback: {
+      type: "string",
+      enum: ["org_default", "wordpress", "unknown"],
+      description:
+        "What the site uses now. `org_default`: the organisation has a default email config and the site uses it. `wordpress`: there is no organisation default, so the site sends through WordPress's own mailer. `unknown`: the provider was removed but the organisation default could not be read; read the site's email config again.\n",
+    },
+    org_default_synced: {
+      type: "boolean",
+      description:
+        "True when `fallback` is `org_default` and the organisation default reached the site's agent. When false with `org_default`, the site sends through WordPress's own mailer until the default is synced (POST /sites/{siteId}/email/sync).\n",
+    },
+    detail: {
+      type: "string",
+      description: "One sentence for the operator describing the outcome.",
+    },
+  },
+} as const;
+
 export const EmailTestResultSchema = {
   type: "object",
   description:
@@ -12317,7 +12345,8 @@ export const AssignSitesResponseSchema = {
 
 export const ClientReportSectionFlagsSchema = {
   type: "object",
-  description: "Controls which data sections are included in a report.",
+  description:
+    "Controls which data sections are included in a report. Every flag is\noptional in a request. A flag that is left out keeps the value already\nstored for the client, or takes the default listed here when the\nclient has no saved settings yet; `false` turns the section off. A\nresponse always carries all six flags.\n",
   properties: {
     overview: {
       type: "boolean",
@@ -12341,7 +12370,7 @@ export const ClientReportSectionFlagsSchema = {
     },
     email: {
       type: "boolean",
-      default: false,
+      default: true,
     },
   },
 } as const;
@@ -12392,7 +12421,7 @@ export const ClientReportScheduleSchema = {
     timezone: {
       type: "string",
       description:
-        "IANA timezone name inherited from the client record. Informational only; update via PUT /clients/{clientId}.",
+        "IANA timezone name on the client record, which `send_hour` and `next_run_at` are computed in. Read only here; change it on the client (PUT /clients/{clientId}).",
     },
     recipients: {
       type: "array",
@@ -12417,7 +12446,7 @@ export const ClientReportScheduleSchema = {
     powered_by_removed: {
       type: "boolean",
       description:
-        'When true, the "Powered by WPMgr" footer is omitted (white-label plan).',
+        'When true, the "Prepared with WPMgr" footer is omitted (white-label plan).',
     },
     next_run_at: {
       type: "string",
@@ -12439,7 +12468,8 @@ export const ClientReportScheduleSchema = {
 
 export const ClientReportScheduleUpdateSchema = {
   type: "object",
-  description: "All fields are required (full replace).",
+  description:
+    "Saves the client's report schedule. The first save creates it and each\nlater save updates it.\n\nEvery field is replaced by the value sent, with one exception:\n`sections` is merged one flag at a time. For every other field,\nleaving it out does not keep the stored value: the server reads it as\nthe zero value of its type, runs the checks below on that value, and\nsaves it. That holds for the five required fields too, since the\nserver does not reject a body for leaving one out.\n\nA value that fails a check below is rejected with HTTP 422 and the\nerror `code` named; a field of the wrong JSON type, or a body that is\nnot JSON, is rejected with 422 and `invalid_body`.\n\n- `enabled`: `true` turns scheduled sending on and sets `next_run_at`\n  to the next send time, at `send_hour` in the client's timezone;\n  `false` turns it off and clears `next_run_at`. Missing: `false`, so\n  the schedule is switched off.\n- `cadence`: `weekly` or `monthly`; anything else is rejected with\n  `invalid_cadence`. Missing: rejected the same way.\n- `send_day`: 0 to 6 for `weekly` (0 is Sunday) and 1 to 28 for\n  `monthly`; anything else is rejected with `invalid_send_day`.\n  Missing: 0, which is accepted for `weekly` (Sunday) and rejected for\n  `monthly`.\n- `send_hour`: 0 to 23; anything else is rejected with\n  `invalid_send_hour`. Missing: 0 (midnight), which is accepted.\n- `recipients`: replaces the stored list. Entries are trimmed, blank\n  entries are skipped, each remaining entry must be a valid email\n  address (`invalid_recipient`), and duplicates are removed ignoring\n  case. Each address is saved as the bare address in lower case. At\n  most 10 may remain after that (`too_many_recipients`). Missing: an\n  empty list, which clears the stored recipients.\n- `sections`: merged over the sections already stored for the client,\n  or over the defaults when no schedule is stored yet. A flag that is\n  present turns that section on (`true`) or off (`false`). A flag that\n  is left out keeps its stored value, and a body with no `sections`\n  object keeps every stored flag.\n- `intro_text`, `closing_text`: replace the stored text. At most 2000\n  characters each, counted as characters and not as bytes, so text in\n  any script fits the same 2000; longer text is rejected with\n  `intro_text_too_long` or `closing_text_too_long`. Missing: empty,\n  which clears the stored text.\n- `powered_by_removed`: `true` leaves the \"Prepared with WPMgr\" footer\n  out of the client's reports and report emails, and `false` shows it.\n  Missing: `false`, so the footer is shown again.\n",
   required: ["enabled", "cadence", "send_day", "send_hour", "recipients"],
   properties: {
     enabled: {
@@ -12463,7 +12493,7 @@ export const ClientReportScheduleUpdateSchema = {
         type: "string",
         format: "email",
       },
-      maxItems: 20,
+      maxItems: 10,
     },
     sections: {
       $ref: "#/components/schemas/ClientReportSectionFlags",
@@ -12485,7 +12515,7 @@ export const ClientReportScheduleUpdateSchema = {
 export const GenerateClientReportRequestSchema = {
   type: "object",
   description:
-    "Optional overrides for an on-demand report. Omit entirely to use schedule defaults.",
+    'Optional settings for one on-demand report.\n\nThe report uses the client\'s saved report settings, the same ones a\nscheduled report uses: which sections are on, the intro and closing\ntext, and whether the "Prepared with WPMgr" footer is shown. A client\nwith no saved settings gets the defaults: every section on, no intro or\nclosing text, footer shown.\n\n`sections` is laid over the saved sections for this one report, one\nflag at a time. A flag that is present turns that section on (`true`) or\noff (`false`); a flag that is left out keeps the saved value. Nothing in\nthis request changes the saved settings, and it cannot change the intro\ntext, the closing text or the footer.\n\nOmit the body, or send `{}`, to use the saved settings unchanged.\n',
   properties: {
     period_start: {
       type: "string",

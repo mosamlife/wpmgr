@@ -39,6 +39,9 @@ type AgentEmailClient interface {
 	// ResendEmail is the Phase 4b agent command for resending a stored email.
 	// Phase 4a: the client stub returns ok=false until the agent implements it.
 	ResendEmail(ctx context.Context, siteID uuid.UUID, siteURL string, req agentcmd.ResendEmailRequest) (agentcmd.ResendEmailResult, error)
+	// ClearEmailConfig asks the agent to remove its stored email settings and
+	// credentials (GH #968). It errors unless the agent confirms cleared=true.
+	ClearEmailConfig(ctx context.Context, siteID uuid.UUID, siteURL string) (agentcmd.ClearEmailConfigResult, error)
 }
 
 // SiteLookup resolves a site's agent URL. The perf package's pattern.
@@ -54,6 +57,8 @@ type repository interface {
 	GetOrgSecretCiphertext(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
 	UpsertSiteConfig(ctx context.Context, in upsertRepoInput) (Config, error)
 	UpsertOrgConfig(ctx context.Context, in upsertRepoInput) (Config, error)
+	// GH #968: compare-and-delete of one site's own row; see Repo.DeleteSiteConfig.
+	DeleteSiteConfig(ctx context.Context, tenantID, siteID uuid.UUID, expectedUpdatedAt time.Time) (int64, error)
 	ListSiteConfigs(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]Config, error)
 	// Phase 3 — email log
 	IngestLogBatch(ctx context.Context, tenantID, siteID uuid.UUID, entries []IngestEntry) (int64, error)
@@ -132,6 +137,11 @@ type Service struct {
 	// m103 (GH #247): supplies the digest's "new vulnerabilities" section.
 	// Nil is safe — buildDigestData skips the section entirely.
 	vulnDigest VulnDigestSource
+	// locks is the per-site email lock (GH #968); see SiteEmailLockKey.
+	locks siteLocker
+	// lockedCallTimeout overrides lockedAgentCallTimeout when positive; only
+	// tests set it.
+	lockedCallTimeout time.Duration
 }
 
 // NewService builds the email service. enc may be nil (all secret-write paths
@@ -141,7 +151,11 @@ func NewService(repo *Repo, enc Encryptor, log *slog.Logger) *Service {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Service{repo: repo, enc: enc, log: log}
+	var locks siteLocker = newLocalSiteLocker(siteLockWait)
+	if repo != nil && repo.pool != nil {
+		locks = &pgSiteLocker{pool: repo.pool, slots: instanceEmailSlots, wait: siteLockWait, poll: siteLockPoll}
+	}
+	return &Service{repo: repo, enc: enc, log: log, locks: locks}
 }
 
 // SetAgentClient wires the CP->agent command client + site-URL resolver.
@@ -238,6 +252,19 @@ func (s *Service) UpsertSiteConfig(ctx context.Context, in UpsertInput) (Config,
 		return Config{}, err
 	}
 
+	// The site's email lock is held across the write and the push (GH #968),
+	// so a removal either finishes before this save writes, or starts after
+	// its push has landed. A save that only pushed under the lock could write
+	// its row, lose it to a removal, and then push it to a site the removal
+	// had just cleared.
+	if in.SiteID != nil {
+		release, lockErr := s.lockSiteForChange(ctx, in.TenantID, *in.SiteID)
+		if lockErr != nil {
+			return Config{}, lockErr
+		}
+		defer release()
+	}
+
 	ri, err := s.buildRepoInput(ctx, in)
 	if err != nil {
 		return Config{}, err
@@ -274,7 +301,10 @@ func (s *Service) UpsertSiteConfig(ctx context.Context, in UpsertInput) (Config,
 			return saved, nil
 		}
 		req := s.buildAgentConfigReq(saved, secret)
-		if _, syncErr := s.agent.SyncEmailConfig(ctx, *in.SiteID, siteURL, req); syncErr != nil {
+		pushCtx, cancelPush := s.lockedAgentCtx(ctx)
+		_, syncErr := s.agent.SyncEmailConfig(pushCtx, *in.SiteID, siteURL, req)
+		cancelPush()
+		if syncErr != nil {
 			s.log.Warn("email: config stored but agent sync failed",
 				slog.String("site_id", in.SiteID.String()),
 				slog.Any("error", syncErr),
@@ -357,20 +387,39 @@ func (s *Service) SendTest(ctx context.Context, tenantID, siteID uuid.UUID, in T
 	// agent never hits "no email config — run sync_email_config first" on the
 	// test path. Failures here surface as a clear TestSendResult rather than
 	// the opaque downstream error from the agent.
+	//
+	// The read and the pre-sync run under the site's email lock (GH #968), so
+	// the pre-sync can never land on a site a removal has just cleared. The
+	// lock is released before the test send, which changes no config.
+	release, lockErr := s.lockSiteForChange(ctx, tenantID, siteID)
+	if lockErr != nil {
+		return TestSendResult{OK: false, Detail: lockErr.Message}, nil
+	}
+	// Released by hand below, before the test send. The deferred call is a
+	// no-op then, and releases on a panic, which would otherwise keep the
+	// tenant's slot on this instance (instanceEmailSlots) until the process
+	// restarts.
+	defer release()
 	cfg, cfgErr := s.GetConfig(ctx, tenantID, siteID)
 	if cfgErr != nil {
+		release()
 		return TestSendResult{OK: false, Detail: "could not load email config for agent sync: " + cfgErr.Error()}, nil
 	}
 	// Resolve the effective secret: per-site first, then the org secret for a
 	// site that still shares the org's endpoint.
 	syncSecret, decryptFailed := s.resolveSitePushSecret(ctx, tenantID, siteID, cfg, nil)
 	if decryptFailed {
+		release()
 		// Report the real problem instead of pre-syncing a config the site
 		// cannot authenticate with and then testing it (GH #380).
 		return TestSendResult{OK: false, Detail: secretDecryptFailedDetail}, nil
 	}
 	syncReq := s.buildAgentConfigReq(cfg, syncSecret)
-	if _, syncErr := s.agent.SyncEmailConfig(ctx, siteID, siteURL, syncReq); syncErr != nil {
+	syncCtx, cancelSync := s.lockedAgentCtx(ctx)
+	_, syncErr := s.agent.SyncEmailConfig(syncCtx, siteID, siteURL, syncReq)
+	cancelSync()
+	release()
+	if syncErr != nil {
 		return TestSendResult{OK: false, Detail: "could not sync config to agent: " + syncErr.Error()}, nil
 	}
 
@@ -411,6 +460,15 @@ func (s *Service) SyncConfigToAgent(ctx context.Context, tenantID, siteID uuid.U
 		}, nil
 	}
 
+	// The read and the push run under the site's email lock (GH #968): a push
+	// of the row as read, landing after a removal cleared the site, would
+	// leave the site holding a provider the dashboard says is gone.
+	release, lockErr := s.lockSiteForChange(ctx, tenantID, siteID)
+	if lockErr != nil {
+		return TestSendResult{OK: false, Detail: lockErr.Message}, nil
+	}
+	defer release()
+
 	// Resolve effective config (per-site → org fallback).
 	cfg, err := s.GetConfig(ctx, tenantID, siteID)
 	if err != nil {
@@ -433,10 +491,289 @@ func (s *Service) SyncConfigToAgent(ctx context.Context, tenantID, siteID uuid.U
 	}
 
 	req := s.buildAgentConfigReq(cfg, secret)
-	if _, syncErr := s.agent.SyncEmailConfig(ctx, siteID, siteURL, req); syncErr != nil {
+	syncCtx, cancelSync := s.lockedAgentCtx(ctx)
+	defer cancelSync()
+	if _, syncErr := s.agent.SyncEmailConfig(syncCtx, siteID, siteURL, req); syncErr != nil {
 		return TestSendResult{OK: false, Detail: syncErr.Error()}, nil
 	}
 	return TestSendResult{OK: true, Detail: "email config synced to site agent"}, nil
+}
+
+// ---------------------------------------------------------------------------
+// RemoveSiteConfig (GH #968)
+// ---------------------------------------------------------------------------
+
+// Where a site's mail goes once its own email provider is removed.
+const (
+	// FallbackOrgDefault: the organisation has a default email config, and the
+	// site now uses it.
+	FallbackOrgDefault = "org_default"
+	// FallbackWordPress: the organisation has no default, so the site sends
+	// through WordPress's own mailer.
+	FallbackWordPress = "wordpress"
+	// FallbackUnknown: the site's own provider was removed, but the
+	// organisation default could not be read, so which of the two applies is
+	// not known. Reading the site's email config again answers it.
+	FallbackUnknown = "unknown"
+)
+
+// Operator-facing messages for RemoveSiteConfig's refusals.
+const (
+	removeAgentOutdatedMessage = "Update the WPMgr agent on this site to remove its email provider."
+	removeChangedMessage       = "The email settings changed while removing them; nothing was removed."
+)
+
+// RemoveSiteConfigResult is what RemoveSiteConfig reports once the site's own
+// config row is gone.
+type RemoveSiteConfigResult struct {
+	// RemovedProvider is the provider slug of the row that was removed.
+	RemovedProvider string
+	// Fallback is FallbackOrgDefault, FallbackWordPress or FallbackUnknown.
+	Fallback string
+	// OrgDefaultSynced is true when Fallback is FallbackOrgDefault and the
+	// organisation default reached the site's agent. Until it does, the site
+	// sends through WordPress's own mailer.
+	OrgDefaultSynced bool
+	// Detail is one sentence for the operator.
+	Detail string
+}
+
+// RemoveSiteConfig removes a site's OWN email provider (GH #968), so the site
+// falls back to the organisation default when there is one and to WordPress's
+// own mailer when there is not.
+//
+// The order is the contract:
+//
+//  1. Read the site's own row on the server. Its updated_at, exactly as read,
+//     is what the delete compares against; it never comes from the client.
+//  2. Tell the agent to clear its email config. If the agent does not confirm,
+//     nothing is deleted and the error says why. An agent too old to know the
+//     command is told apart and asked to be updated.
+//  3. Delete the row only if it is still the row read in step 1.
+//  4. Push the organisation default to the site, when there is one.
+//
+// The agent goes first because the opposite order fails open: a deleted row
+// with an agent that never heard about it leaves the site sending through the
+// removed provider while the dashboard says it does not.
+//
+// When step 3 deletes nothing after step 2 succeeded, the agent has already
+// been cleared, so the row is read again to find out why. A row written in
+// between is the current truth: it is pushed back to the agent so the two
+// agree, and the caller is told nothing was removed. A row deleted in between
+// is the outcome asked for, and the fallback still runs.
+func (s *Service) RemoveSiteConfig(ctx context.Context, tenantID, siteID uuid.UUID) (RemoveSiteConfigResult, error) {
+	// 0. The site's email lock, held across every step below. Every other
+	// operation that pushes this site's email config takes it too, so none is
+	// in flight while the agent is cleared, and none starts until the
+	// fallback has been pushed. A push of the row as it already stood would
+	// not move updated_at, so step 3's compare cannot catch it.
+	release, lockErr := s.lockSiteForChange(ctx, tenantID, siteID)
+	if lockErr != nil {
+		return RemoveSiteConfigResult{}, lockErr
+	}
+	defer release()
+
+	// 1. The row as it is now.
+	cfg, err := s.repo.GetSiteConfig(ctx, tenantID, siteID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return RemoveSiteConfigResult{}, domain.NotFound("email_site_config_not_found",
+				"This site has no email provider of its own to remove.")
+		}
+		return RemoveSiteConfigResult{}, domain.Internal("email_get_config", "failed to load site email config").WithCause(err)
+	}
+	if s.agent == nil || s.siteLook == nil {
+		return RemoveSiteConfigResult{}, domain.ServiceUnavailable("email_agent_unwired",
+			"The agent command client is not configured, so the site cannot be told to stop using its email provider. Nothing was removed.")
+	}
+	siteURL, err := s.siteLook.GetSiteURL(ctx, tenantID, siteID)
+	if err != nil {
+		return RemoveSiteConfigResult{}, domain.NotFound("email_site_not_found", "site not found or not enrolled")
+	}
+
+	// 2. The agent first.
+	clearCtx, cancelClear := s.lockedAgentCtx(ctx)
+	_, err = s.agent.ClearEmailConfig(clearCtx, siteID, siteURL)
+	cancelClear()
+	if err != nil {
+		if agentcmd.IsUnknownCommand(err) {
+			return RemoveSiteConfigResult{}, domain.Conflict("email_agent_outdated", removeAgentOutdatedMessage)
+		}
+		s.log.Warn("email: the site's agent did not confirm it cleared its email config; the row is kept",
+			slog.String("site_id", siteID.String()),
+			slog.Bool("site_unchanged", clearLeftSiteUnchanged(err)),
+			slog.Any("error", err),
+		)
+		return RemoveSiteConfigResult{}, domain.ServiceUnavailable("email_agent_clear_failed",
+			clearFailedMessage(err)).WithCause(err)
+	}
+
+	// 3. Compare-and-delete against the row read in step 1.
+	//
+	// From here on the agent has confirmed, so the row read in step 1 is never
+	// pushed back: the operator asked for that provider to stop, and the site
+	// has stopped. The only pushes left are the organisation default (step 4)
+	// and, on a conflict, a row that changed since step 1.
+	n, delErr := s.repo.DeleteSiteConfig(ctx, tenantID, siteID, cfg.UpdatedAt)
+	if delErr != nil {
+		s.log.Error("email: the site's agent cleared its email config but the row could not be deleted",
+			slog.String("site_id", siteID.String()),
+			slog.Any("error", delErr),
+		)
+		// ServiceUnavailable, not Internal: httpx hides an Internal message,
+		// and the operator has to be told the site already stopped.
+		return RemoveSiteConfigResult{}, domain.ServiceUnavailable("email_delete_site_config_failed",
+			removeUnfinishedMessage).WithCause(delErr)
+	}
+	if n == 0 {
+		cur, getErr := s.repo.GetSiteConfig(ctx, tenantID, siteID)
+		switch {
+		case errors.Is(getErr, ErrNotFound):
+			// Removed by a concurrent request after step 1. That is the end
+			// state asked for; the fallback below still has to run, because
+			// this request's clear may have landed after the other's push.
+		case getErr != nil:
+			s.log.Error("email: the site's agent cleared its email config but the row could not be read again",
+				slog.String("site_id", siteID.String()),
+				slog.Any("error", getErr),
+			)
+			return RemoveSiteConfigResult{}, domain.ServiceUnavailable("email_delete_site_config_failed",
+				removeUnfinishedMessage).WithCause(getErr)
+		case !cur.UpdatedAt.Equal(cfg.UpdatedAt):
+			// Edited after step 1: the edit stands, and the agent gets it back
+			// so the two agree again.
+			note := s.pushChangedRow(ctx, tenantID, siteID, siteURL, cur)
+			return RemoveSiteConfigResult{}, domain.Conflict("email_config_changed", removeChangedMessage+note)
+		default:
+			// Still the row read in step 1, so the delete itself was refused:
+			// the m112 site-scope policy reports that as zero rows.
+			return RemoveSiteConfigResult{}, domain.Forbidden("email_site_config_delete_forbidden",
+				"The site stopped using its email provider, but you cannot remove its stored settings. "+
+					"Ask an organisation member to remove them, or use Sync to site to restore them.")
+		}
+	}
+
+	// 4. The fallback.
+	res := RemoveSiteConfigResult{RemovedProvider: cfg.Provider}
+	orgCfg, orgErr := s.repo.GetOrgConfig(ctx, tenantID)
+	switch {
+	case errors.Is(orgErr, ErrNotFound):
+		res.Fallback = FallbackWordPress
+		res.Detail = "This site now sends email through WordPress's own mailer."
+	case orgErr != nil:
+		s.log.Error("email: removed a site's email config but could not read the org default",
+			slog.String("site_id", siteID.String()),
+			slog.Any("error", orgErr),
+		)
+		res.Fallback = FallbackUnknown
+		res.Detail = "This site's email provider was removed, but the organisation's default email settings could not be read. " +
+			"Until they are sent to the site it uses WordPress's own mailer; reload the email settings and use Sync to site."
+	default:
+		res.Fallback = FallbackOrgDefault
+		if pushErr := s.pushOrgDefaultToSite(ctx, tenantID, siteID, siteURL, orgCfg); pushErr != nil {
+			s.log.Warn("email: removed a site's email config but could not push the org default to it",
+				slog.String("site_id", siteID.String()),
+				slog.Any("error", pushErr),
+			)
+			res.Detail = "This site now uses the organisation's default email settings, but they could not be sent to it yet. " +
+				"Until they are it uses WordPress's own mailer; use Sync to site to try again."
+		} else {
+			res.OrgDefaultSynced = true
+			res.Detail = "This site now uses the organisation's default email settings."
+		}
+	}
+	return res, nil
+}
+
+// clearLeftSiteUnchanged reports whether a failed clear_email_config call left
+// the site exactly as it was: the command never left this process, or the
+// site refused it before running it (the agent's own refusal, or no agent to
+// answer). Every other failure, a timeout or lost reply after the request was
+// sent, a cancelled request, a server error, or an agent that answered
+// cleared=false after removing part of its settings, is one where the site
+// may already have stopped using its provider.
+func clearLeftSiteUnchanged(err error) bool {
+	if errors.Is(err, agentcmd.ErrCommandNotSent) {
+		return true
+	}
+	if ce, ok := agentcmd.AsCommandError(err); ok {
+		switch ce.Status {
+		case 401, 403, 404:
+			return true
+		}
+	}
+	return false
+}
+
+// clearFailedMessage is the operator's answer to a clear the site did not
+// confirm. It says "nothing was removed" only when nothing on the site
+// changed; otherwise it says the site may already have stopped using the
+// provider. Either way the row is kept, and trying again finishes the job.
+func clearFailedMessage(err error) string {
+	if clearLeftSiteUnchanged(err) {
+		return "The site did not confirm it stopped using its email provider, so nothing was removed: " +
+			clearFailureReason(err) + " Try again."
+	}
+	return "The site did not confirm it stopped using its email provider, so its settings were kept here: " +
+		clearFailureReason(err) + " The site may already have stopped using the provider. Try again."
+}
+
+// clearFailureReason turns a failed clear_email_config call into one sentence.
+// The agent's own detail is used when it answered and said what is left; any
+// other failure is described without raw transport or agent text.
+func clearFailureReason(err error) string {
+	if errors.Is(err, agentcmd.ErrEmailConfigNotCleared) {
+		msg := strings.TrimSpace(strings.TrimPrefix(err.Error(), agentcmd.ErrEmailConfigNotCleared.Error()+":"))
+		if len(msg) > 300 {
+			msg = msg[:300]
+		}
+		return "the site reported: " + msg + "."
+	}
+	return agentcmd.DescribeAttemptError(err)
+}
+
+// pushChangedRow sends cur, the site's own row as it was just read after an
+// edit landed during a removal, to the agent the removal had already cleared,
+// so the two agree again. It returns "" when the agent took it, and otherwise
+// a sentence to append to the conflict message.
+func (s *Service) pushChangedRow(ctx context.Context, tenantID, siteID uuid.UUID, siteURL string, cur Config) string {
+	secret, decryptFailed := s.resolveSitePushSecret(ctx, tenantID, siteID, cur, nil)
+	if decryptFailed {
+		return pushChangedFailedNote
+	}
+	pushCtx, cancelPush := s.lockedAgentCtx(ctx)
+	defer cancelPush()
+	if _, err := s.agent.SyncEmailConfig(pushCtx, siteID, siteURL, s.buildAgentConfigReq(cur, secret)); err != nil {
+		s.log.Warn("email: could not send the changed email config back to the site's agent",
+			slog.String("site_id", siteID.String()),
+			slog.Any("error", err),
+		)
+		return pushChangedFailedNote
+	}
+	return ""
+}
+
+// pushChangedFailedNote is appended to the conflict when the changed settings
+// could not be sent back to the agent the removal had already cleared.
+const pushChangedFailedNote = " The site had already stopped using its email provider and could not be sent the changed settings, so it uses WordPress's own mailer until you use Sync to site."
+
+// removeUnfinishedMessage is the answer when the agent confirmed but the row
+// could not be deleted, or could not be read again to find out why not.
+// Sending the command again is harmless, so trying again finishes it.
+const removeUnfinishedMessage = "The site stopped using its email provider, but its stored settings could not be removed. Remove the email provider again to finish."
+
+// pushOrgDefaultToSite sends the organisation default to one site that no
+// longer has a config of its own, the way PropagateOrgConfig does for every
+// inheriting site.
+func (s *Service) pushOrgDefaultToSite(ctx context.Context, tenantID, siteID uuid.UUID, siteURL string, orgCfg Config) error {
+	orgSecret, decryptFailed := s.resolveOrgPushSecret(ctx, tenantID, orgCfg)
+	if decryptFailed {
+		return errors.New(secretDecryptFailedDetail)
+	}
+	pushCtx, cancelPush := s.lockedAgentCtx(ctx)
+	defer cancelPush()
+	_, err := s.agent.SyncEmailConfig(pushCtx, siteID, siteURL, s.buildAgentConfigReq(orgCfg, orgSecret))
+	return err
 }
 
 // ---------------------------------------------------------------------------
@@ -1582,6 +1919,30 @@ func (s *Service) UpsertConnection(ctx context.Context, in ConnectionUpsertInput
 		in.Config = map[string]any{}
 	}
 
+	// A connection write moves nothing on its parent row, so a removal's
+	// compare-and-delete cannot see it, and the cascade would take a
+	// connection whose save reported success (GH #968). Under the site's
+	// email lock no removal is in progress, and the parent is checked to be
+	// the one the route resolved: a removal that finished first leaves the
+	// site resolving to the organisation default or to nothing.
+	if in.SiteID != nil {
+		release, lockErr := s.lockSiteForChange(ctx, in.TenantID, *in.SiteID)
+		if lockErr != nil {
+			return Connection{}, lockErr
+		}
+		defer release()
+		cur, getErr := s.GetConfig(ctx, in.TenantID, *in.SiteID)
+		if getErr != nil {
+			if de, ok := domain.AsDomain(getErr); ok && de.Kind == domain.KindNotFound {
+				return Connection{}, domain.Conflict("email_config_changed", connectionParentChangedMessage)
+			}
+			return Connection{}, getErr
+		}
+		if cur.ID != in.ConfigID {
+			return Connection{}, domain.Conflict("email_config_changed", connectionParentChangedMessage)
+		}
+	}
+
 	var secretCiphertext []byte
 	setSecret := false
 	switch {
@@ -1641,6 +2002,10 @@ func (s *Service) UpsertConnection(ctx context.Context, in ConnectionUpsertInput
 	}
 	return conn, nil
 }
+
+// connectionParentChangedMessage is the answer when the email settings a
+// connection belongs to were removed or replaced before it could be saved.
+const connectionParentChangedMessage = "The email settings changed while saving this connection; nothing was saved. Reload them and try again."
 
 // DeleteConnection removes a named connection. Returns 409 Conflict when the
 // key is referenced as default_connection or fallback_connection on the parent

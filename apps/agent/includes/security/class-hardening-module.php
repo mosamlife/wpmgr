@@ -441,7 +441,7 @@ final class HardeningModule
 
                 return new \WP_Error(
                     'rest_not_logged_in',
-                    'REST API access requires authentication.',
+                    __('REST API access requires authentication.', 'wpmgr-agent'),
                     ['status' => 401]
                 );
             }

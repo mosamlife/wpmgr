@@ -1,16 +1,16 @@
 <?php
 /**
- * QrEncoder — minimal pure-PHP QR code encoder producing inline SVG output.
+ * QrEncoder: pure-PHP QR code encoder producing inline SVG output.
  *
- * Scope: produces a scannable QR matrix for an otpauth:// URI. The implementation
- * handles only what is required for TOTP enrollment:
- *   - Data capacity covers the otpauth URI (< 2000 chars in practice, fitting
- *     QR version 1–15 at ECC-M).
- *   - Reed-Solomon error correction at level M (15 % recovery capacity).
- *   - Output: inline SVG with black modules on white background; no external deps.
+ * Scope: the otpauth:// URI shown on the TOTP enrollment screen.
+ *   - Byte mode, error correction level M, version 1-40 (smallest that fits).
+ *   - Output: inline SVG, one path of dark modules on a white background,
+ *     with the 4-module quiet zone the standard requires.
  *
- * Clean-room implementation of ISO/IEC 18004 (QR Code 2005).
- * No Composer dependency added — this file is the sole dependency for TOTP setup.
+ * Implements ISO/IEC 18004 (QR Code): Reed-Solomon error correction over
+ * GF(256), block interleaving, function patterns, format and version
+ * information, data placement and masking with the standard penalty rules.
+ * No Composer dependency: this file is the sole dependency for TOTP setup.
  *
  * @package WPMgr\Agent\Security
  */
@@ -25,48 +25,55 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 /**
  * Pure-PHP QR code encoder, inline SVG output.
- *
- * Only byte-mode encoding is implemented (sufficient for all alphanumeric/URL data).
- * ECC level M. Version is chosen automatically (smallest fitting version 1-15).
  */
 final class QrEncoder
 {
-    /** ECC level M codeword tables (ISO 18004 Table 9, versions 1-15). */
-    private const ECC_M = [
-        // [total_codewords, data_codewords, ecc_codewords_per_block, blocks]
-        1  => [26,  16, 10, 1],
-        2  => [44,  28, 16, 1],
-        3  => [70,  44, 26, 1],
-        4  => [100, 64, 18, 2],
-        5  => [134, 86, 24, 2],
-        6  => [172, 108, 16, 4],
-        7  => [196, 124, 18, 4],
-        8  => [242, 154, 22, 4],
-        9  => [292, 182, 22, 5],
-        10 => [346, 216, 26, 5],
-        11 => [404, 254, 30, 5],
-        12 => [466, 290, 22, 8],
-        13 => [532, 334, 22, 8],
-        14 => [581, 365, 24, 9],
-        15 => [655, 415, 24, 10],
+    /** Highest symbol version (177 x 177 modules). */
+    private const MAX_VERSION = 40;
+
+    /** Format information error correction level indicator for M (L=01, M=00, Q=11, H=10). */
+    private const ECC_LEVEL_M = 0b00;
+
+    /**
+     * Error correction codewords per block, level M, indexed by version (ISO/IEC 18004 Table 9).
+     *
+     * @var array<int,int>
+     */
+    private const ECC_PER_BLOCK_M = [
+        1 => 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26,
+        26, 26, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28,
     ];
 
     /**
-     * Galois field GF(256) exponent table (generator polynomial α^0 to α^254, then wrap).
+     * Number of error correction blocks, level M, indexed by version (ISO/IEC 18004 Table 9).
      *
-     * @var list<int>
+     * @var array<int,int>
+     */
+    private const BLOCKS_M = [
+        1 => 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14,
+        16, 17, 17, 18, 20, 21, 23, 25, 26, 28, 29, 31, 33, 35, 37, 38, 40, 43, 45, 47, 49,
+    ];
+
+    /** Quiet zone width in modules. */
+    private const QUIET_ZONE = 4;
+
+    /** Smallest rendered module, in pixels; larger symbols grow instead of shrinking below it. */
+    private const MIN_MODULE_PX = 4;
+
+    /**
+     * GF(256) antilog table: $gfExp[i] = alpha^i, for i in 0..254.
+     *
+     * @var array<int,int>
      */
     private static array $gfExp = [];
 
     /**
-     * Galois field GF(256) log table (index is field element, value is power of α).
+     * GF(256) log table: $gfLog[x] = i where alpha^i = x, for x in 1..255.
+     * The zero element has no logarithm and no entry.
      *
      * @var array<int,int>
      */
     private static array $gfLog = [];
-
-    /** Whether GF tables have been initialised. */
-    private static bool $gfReady = false;
 
     // -------------------------------------------------------------------------
     // Public API
@@ -75,553 +82,618 @@ final class QrEncoder
     /**
      * Encode $data and return an inline SVG string at the given pixel size.
      *
-     * @param string $data   Data to encode (UTF-8 string; byte-mode).
-     * @param int    $pixels Target pixel size (≥ 64 recommended for QR codes).
-     * @return string Inline SVG markup.
+     * @param string $data   Data to encode (bytes, encoded in byte mode).
+     * @param int    $pixels Requested width and height in pixels, raised to
+     *                       MIN_MODULE_PX per module (quiet zone included) when
+     *                       the symbol needs more.
+     * @return string Inline SVG markup, or '' when $data exceeds the version 40-M capacity.
      */
     public static function toSvg(string $data, int $pixels = 256): string
     {
-        $version  = 0;
-        $eccTable = [];
-        $bits     = self::buildBitstream($data, $version, $eccTable);
-        $matrix   = self::buildMatrix($bits, $version);
-        $matrix   = self::applyBestMask($matrix, $version, $eccTable);
+        $matrix = self::encode($data);
+        if ($matrix === []) {
+            return '';
+        }
         return self::renderSvg($matrix, $pixels);
     }
 
     // -------------------------------------------------------------------------
-    // Bitstream
+    // Symbol assembly
     // -------------------------------------------------------------------------
 
     /**
-     * Build the raw data codeword bitstream, choosing the smallest fitting version.
+     * Encode $data into the final module matrix (1 = dark), or [] when it does not fit.
      *
-     * @param string              $data
-     * @param int                 $version Output parameter: chosen version.
-     * @param array<int>          $eccTable Output parameter: ECC table entry for chosen version.
-     * @return list<int>          Codeword bytes.
+     * @param string $data
+     * @return array<int, array<int, int>>
      */
-    private static function buildBitstream(string $data, int &$version, array &$eccTable): array
+    private static function encode(string $data): array
     {
-        $byteLen = strlen($data);
-
-        // Find smallest fitting version (byte-mode, ECC-M).
-        $version = 0;
-        foreach (self::ECC_M as $v => $tbl) {
-            // Byte mode header = 4 (mode) + char-count indicator bits + 8*len data bits.
-            $ccBits  = $v < 10 ? 8 : 16;
-            $needed  = (int) ceil((4 + $ccBits + 8 * $byteLen) / 8);
-            if ($needed <= $tbl[1]) {
-                $version  = $v;
-                $eccTable = $tbl;
-                break;
-            }
-        }
-
+        $version = self::chooseVersion(strlen($data));
         if ($version === 0) {
-            // Data too long for version 15 — truncate to whatever fits.
-            $version  = 15;
-            $eccTable = self::ECC_M[15];
+            return [];
         }
 
-        [, $dataCw, ,] = $eccTable;
-        $ccBits = $version < 10 ? 8 : 16;
+        $codewords = self::interleave(self::dataCodewords($data, $version), $version);
 
-        // Assemble bit buffer.
-        $buf = 0;
-        $bufLen = 0;
-        $codewords = [];
+        [$modules, $reserved] = self::functionPatterns($version);
+        self::placeData($modules, $reserved, $codewords);
 
-        $pushBits = static function (int $bits, int $len) use (&$buf, &$bufLen, &$codewords): void {
-            $buf    = ($buf << $len) | ($bits & ((1 << $len) - 1));
-            $bufLen += $len;
-            while ($bufLen >= 8) {
-                $bufLen    -= 8;
-                $codewords[] = ($buf >> $bufLen) & 0xFF;
+        $best        = [];
+        $bestPenalty = PHP_INT_MAX;
+        for ($mask = 0; $mask < 8; $mask++) {
+            $candidate = self::applyMask($modules, $reserved, $mask);
+            self::drawFormatBits($candidate, self::formatBits(self::ECC_LEVEL_M, $mask));
+            $penalty = self::penalty($candidate);
+            if ($penalty < $bestPenalty) {
+                $bestPenalty = $penalty;
+                $best        = $candidate;
             }
-        };
-
-        $pushBits(0b0100, 4);          // byte mode indicator
-        $pushBits($byteLen, $ccBits);  // character count
-        for ($i = 0; $i < $byteLen; $i++) {
-            $pushBits(ord($data[$i]), 8);
-        }
-        $pushBits(0b0000, 4);          // terminator (may be < 4 bits if buffer fills first)
-
-        // Pad to byte boundary.
-        if ($bufLen > 0) {
-            $codewords[] = ($buf << (8 - $bufLen)) & 0xFF;
         }
 
-        // Pad codewords to capacity.
-        $padBytes = [0xEC, 0x11];
-        $padIdx   = 0;
-        while (count($codewords) < $dataCw) {
-            $codewords[] = $padBytes[$padIdx % 2];
-            $padIdx++;
-        }
+        return $best;
+    }
 
-        return self::appendEcc($codewords, $eccTable);
+    /**
+     * Smallest version whose level-M capacity holds $byteLen bytes in byte mode, or 0.
+     *
+     * @param int $byteLen
+     * @return int
+     */
+    private static function chooseVersion(int $byteLen): int
+    {
+        for ($version = 1; $version <= self::MAX_VERSION; $version++) {
+            $bits = 4 + self::countBits($version) + 8 * $byteLen;
+            if ($bits <= 8 * self::dataCodewordCount($version)) {
+                return $version;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Character count indicator length for byte mode.
+     *
+     * @param int $version
+     * @return int
+     */
+    private static function countBits(int $version): int
+    {
+        return $version <= 9 ? 8 : 16;
+    }
+
+    /**
+     * Number of modules available for codewords (data plus ECC, plus remainder bits).
+     *
+     * @param int $version
+     * @return int
+     */
+    private static function rawDataModules(int $version): int
+    {
+        $size   = 17 + 4 * $version;
+        $result = $size * $size;
+        $result -= 3 * 64;                 // Finder patterns with their separators.
+        $result -= 2 * ($size - 16);       // Timing patterns between the separators.
+        $result -= 31;                     // Format information (2 x 15) and the dark module.
+        if ($version >= 2) {
+            $count   = intdiv($version, 7) + 2;
+            $result -= 25 * ($count * $count - 3);     // Alignment patterns, minus the 3 under finders.
+            $result += 10 * ($count - 2);              // Alignment modules already counted as timing.
+        }
+        if ($version >= 7) {
+            $result -= 36;                 // Version information (2 x 18).
+        }
+        return $result;
+    }
+
+    /**
+     * Total codewords (data plus ECC) in a symbol of this version.
+     *
+     * @param int $version
+     * @return int
+     */
+    private static function totalCodewords(int $version): int
+    {
+        return intdiv(self::rawDataModules($version), 8);
+    }
+
+    /**
+     * Level-M data codewords in a symbol of this version.
+     *
+     * @param int $version
+     * @return int
+     */
+    private static function dataCodewordCount(int $version): int
+    {
+        return self::totalCodewords($version) - self::ECC_PER_BLOCK_M[$version] * self::BLOCKS_M[$version];
+    }
+
+    /**
+     * Level-M block structure: one [data codewords, ECC codewords] pair per block, in order.
+     *
+     * @param int $version
+     * @return list<array{int,int}>
+     */
+    private static function blockLayout(int $version): array
+    {
+        $blocks      = self::BLOCKS_M[$version];
+        $ecc         = self::ECC_PER_BLOCK_M[$version];
+        $total       = self::totalCodewords($version);
+        $shortBlocks = $blocks - $total % $blocks;
+        $shortData   = intdiv($total, $blocks) - $ecc;
+
+        $layout = [];
+        for ($b = 0; $b < $blocks; $b++) {
+            $layout[] = [$b < $shortBlocks ? $shortData : $shortData + 1, $ecc];
+        }
+        return $layout;
     }
 
     // -------------------------------------------------------------------------
-    // Reed-Solomon ECC
+    // Data codewords
     // -------------------------------------------------------------------------
 
     /**
-     * Append Reed-Solomon ECC blocks and interleave, returning the full codeword sequence.
+     * Byte-mode segment, terminator and padding, as data codewords.
      *
-     * @param list<int>  $data
-     * @param array<int> $eccTable
+     * @param string $data
+     * @param int    $version
      * @return list<int>
      */
-    private static function appendEcc(array $data, array $eccTable): array
+    private static function dataCodewords(string $data, int $version): array
     {
-        self::initGf();
+        $capacityBits = 8 * self::dataCodewordCount($version);
+        $byteLen      = strlen($data);
 
-        [, $dataCw, $eccPerBlock, $blocks] = $eccTable;
-        $blockSize = (int) floor($dataCw / $blocks);
-        $longBlocks = $dataCw % $blocks;
-        $shortBlocks = $blocks - $longBlocks;
-
-        /** @var list<list<int>> $dataBlocks */
-        $dataBlocks = [];
-        /** @var list<list<int>> $eccBlocks */
-        $eccBlocks  = [];
-        $offset     = 0;
-
-        for ($b = 0; $b < $blocks; $b++) {
-            $len = ($b < $shortBlocks) ? $blockSize : $blockSize + 1;
-            $block = array_slice($data, $offset, $len);
-            $offset += $len;
-            $dataBlocks[]  = $block;
-            $eccBlocks[] = self::rsEncode($block, $eccPerBlock);
+        /** @var list<int> $bits */
+        $bits = [];
+        self::appendBits($bits, 0b0100, 4);                       // Byte mode indicator.
+        self::appendBits($bits, $byteLen, self::countBits($version));
+        for ($i = 0; $i < $byteLen; $i++) {
+            self::appendBits($bits, ord($data[$i]), 8);
         }
 
-        // Interleave data.
-        $out = [];
-        $maxData = max(array_map('count', $dataBlocks));
-        for ($i = 0; $i < $maxData; $i++) {
+        // Terminator: up to four zero bits, never past capacity.
+        self::appendBits($bits, 0, min(4, $capacityBits - count($bits)));
+        // Zero bits to the next codeword boundary.
+        self::appendBits($bits, 0, (8 - count($bits) % 8) % 8);
+
+        $codewords = [];
+        $bitCount  = count($bits);
+        for ($i = 0; $i < $bitCount; $i += 8) {
+            $byte = 0;
+            for ($j = 0; $j < 8; $j++) {
+                $byte = ($byte << 1) | $bits[$i + $j];
+            }
+            $codewords[] = $byte;
+        }
+
+        // Pad codewords 11101100 and 00010001, alternating, to capacity.
+        $capacity = intdiv($capacityBits, 8);
+        for ($pad = 0xEC; count($codewords) < $capacity; $pad ^= 0xEC ^ 0x11) {
+            $codewords[] = $pad;
+        }
+
+        return $codewords;
+    }
+
+    /**
+     * Append the low $len bits of $value, most significant first.
+     *
+     * @param list<int> $bits
+     * @param int       $value
+     * @param int       $len
+     * @return void
+     */
+    private static function appendBits(array &$bits, int $value, int $len): void
+    {
+        for ($i = $len - 1; $i >= 0; $i--) {
+            $bits[] = ($value >> $i) & 1;
+        }
+    }
+
+    /**
+     * Split data codewords into blocks, append each block's ECC, and interleave.
+     *
+     * @param list<int> $data
+     * @param int       $version
+     * @return list<int>
+     */
+    private static function interleave(array $data, int $version): array
+    {
+        $dataBlocks = [];
+        $eccBlocks  = [];
+        $offset     = 0;
+        foreach (self::blockLayout($version) as [$dataLen, $eccLen]) {
+            $block        = array_slice($data, $offset, $dataLen);
+            $offset      += $dataLen;
+            $dataBlocks[] = $block;
+            $eccBlocks[]  = self::rsEncode($block, $eccLen);
+        }
+
+        $out     = [];
+        $longest = max(array_map('count', $dataBlocks));
+        for ($i = 0; $i < $longest; $i++) {
             foreach ($dataBlocks as $block) {
-                if (isset($block[$i])) {
+                if ($i < count($block)) {
                     $out[] = $block[$i];
                 }
             }
         }
-        // Interleave ECC.
-        for ($i = 0; $i < $eccPerBlock; $i++) {
+        $eccLen = self::ECC_PER_BLOCK_M[$version];
+        for ($i = 0; $i < $eccLen; $i++) {
             foreach ($eccBlocks as $block) {
-                if (isset($block[$i])) {
-                    $out[] = $block[$i];
-                }
+                $out[] = $block[$i];
             }
         }
 
         return $out;
     }
 
+    // -------------------------------------------------------------------------
+    // Reed-Solomon error correction over GF(256), primitive polynomial 0x11D
+    // -------------------------------------------------------------------------
+
     /**
-     * Reed-Solomon encode: returns $n ECC bytes for the given data block.
+     * The $n error correction codewords for one block: the remainder of
+     * data(x) * x^n divided by the generator polynomial of degree $n.
      *
      * @param list<int> $data
-     * @param int       $n    Number of ECC bytes.
+     * @param int       $n
      * @return list<int>
      */
     private static function rsEncode(array $data, int $n): array
     {
-        $gen = self::rsGeneratorPoly($n);
-        $msg = array_merge($data, array_fill(0, $n, 0));
+        $generator = self::rsGenerator($n);
+        $remainder = array_fill(0, $n, 0);
 
-        $msgLen = count($msg);
-        $dataLen = count($data);
-        for ($i = 0; $i < $dataLen; $i++) {
-            $coeff = $msg[$i];
-            if ($coeff === 0) {
-                continue;
-            }
-            $logCoeff = self::$gfLog[$coeff];
-            $genLen = count($gen);
-            for ($j = 0; $j < $genLen; $j++) {
-                $msg[$i + $j] ^= self::$gfExp[($logCoeff + $gen[$j]) % 255];
+        foreach ($data as $codeword) {
+            $factor = $codeword ^ $remainder[0];
+            array_shift($remainder);
+            $remainder[] = 0;
+            for ($j = 0; $j < $n; $j++) {
+                $remainder[$j] ^= self::gfMul($generator[$j + 1], $factor);
             }
         }
 
-        return array_slice($msg, $dataLen);
+        return array_values($remainder);
     }
 
     /**
-     * Compute the generator polynomial of degree $n (as GF log coefficients).
+     * Generator polynomial (x - alpha^0)(x - alpha^1)...(x - alpha^(n-1)),
+     * as field elements, highest degree first (the leading coefficient is 1).
      *
      * @param int $n
      * @return list<int>
      */
-    private static function rsGeneratorPoly(int $n): array
+    private static function rsGenerator(int $n): array
     {
-        $gen = [0]; // α^0
+        self::initGf();
+
+        $poly = [1];
         for ($i = 0; $i < $n; $i++) {
-            $next = [0];
-            foreach ($gen as $coeff) {
-                $next[] = ($coeff + $i) % 255;
+            $root = self::$gfExp[$i];
+            $next = array_fill(0, count($poly) + 1, 0);
+            foreach ($poly as $j => $coeff) {
+                $next[$j]     ^= $coeff;                      // x * poly
+                $next[$j + 1] ^= self::gfMul($coeff, $root);  // alpha^i * poly
             }
-            // XOR: polynomial multiplication by (x + α^i).
-            $g2 = $next;
-            $genLen = count($gen);
-            for ($j = 0; $j < $genLen; $j++) {
-                // $gen[$j] * α^i = ($gen[$j] + $i) mod 255 in log space.
-                $g2[$j] = self::gfLogXor($g2[$j], ($gen[$j] + $i) % 255);
-            }
-            $gen = $g2;
+            $poly = $next;
         }
-        return $gen;
+
+        return array_values($poly);
     }
 
     /**
-     * XOR two GF(256) elements given as log values; returns log of the result.
+     * Multiply two GF(256) field elements.
      *
-     * @param int $a  Log of first element (or -1 for zero).
-     * @param int $b  Log of second element (or -1 for zero).
-     * @return int    Log of result element (or -1 for zero).
+     * @param int $a
+     * @param int $b
+     * @return int
      */
-    private static function gfLogXor(int $a, int $b): int
+    private static function gfMul(int $a, int $b): int
     {
-        $ea = self::$gfExp[$a % 255];
-        $eb = self::$gfExp[$b % 255];
-        $xored = $ea ^ $eb;
-        if ($xored === 0) {
-            return 0; // zero in log space (represent as 0 exponent, but GF element is 0)
+        // Zero is the one element without a logarithm; its product is zero.
+        if ($a === 0 || $b === 0) {
+            return 0;
         }
-        return self::$gfLog[$xored];
+        self::initGf();
+        return self::$gfExp[(self::$gfLog[$a] + self::$gfLog[$b]) % 255];
     }
 
-    // -------------------------------------------------------------------------
-    // GF(256) table initialisation
-    // -------------------------------------------------------------------------
-
+    /**
+     * Build the GF(256) antilog and log tables once.
+     *
+     * @return void
+     */
     private static function initGf(): void
     {
-        if (self::$gfReady) {
+        if (self::$gfExp !== []) {
             return;
         }
         $x = 1;
         for ($i = 0; $i < 255; $i++) {
-            self::$gfExp[$i]          = $x;
-            self::$gfLog[$x]          = $i;
-            $x                        = $x << 1;
-            if ($x >= 256) {
-                $x ^= 0x11D; // primitive poly x^8+x^4+x^3+x^2+1 = 0x11D
+            self::$gfExp[$i] = $x;
+            self::$gfLog[$x] = $i;
+            $x <<= 1;
+            if ($x > 0xFF) {
+                $x ^= 0x11D; // x^8 + x^4 + x^3 + x^2 + 1.
             }
         }
-        self::$gfExp[255] = self::$gfExp[0];
-        self::$gfReady = true;
     }
 
     // -------------------------------------------------------------------------
-    // Matrix construction
+    // Format and version information (BCH codes)
     // -------------------------------------------------------------------------
 
     /**
-     * Build the QR module matrix for the given version and codeword sequence.
+     * 15-bit format information: level indicator and mask, BCH(15,5), XOR 101010000010010.
      *
-     * @param list<int> $codewords
-     * @param int       $version
-     * @return array<int,array<int,int>> 2D array: [row][col] = 0|1|-1 (-1 = reserved/function)
+     * @param int $eccLevel 2-bit level indicator (L=01, M=00, Q=11, H=10).
+     * @param int $mask     Mask pattern 0-7.
+     * @return int
      */
-    private static function buildMatrix(array $codewords, int $version): array
+    private static function formatBits(int $eccLevel, int $mask): int
     {
-        $size = 17 + 4 * $version;
-
-        // Initialise to -1 (unset).
-        $matrix = array_fill(0, $size, array_fill(0, $size, -1));
-
-        // Place finder patterns and separators.
-        self::placeFinderPattern($matrix, 0, 0);
-        self::placeFinderPattern($matrix, $size - 7, 0);
-        self::placeFinderPattern($matrix, 0, $size - 7);
-        self::placeSeparators($matrix, $size);
-
-        // Alignment patterns (versions 2+).
-        if ($version >= 2) {
-            foreach (self::alignmentPositions($version) as [$ar, $ac]) {
-                self::placeAlignmentPattern($matrix, $ar, $ac);
+        $data = (($eccLevel & 0b11) << 3) | ($mask & 0b111);
+        $rem  = $data << 10;
+        for ($i = 14; $i >= 10; $i--) {
+            if ((($rem >> $i) & 1) === 1) {
+                $rem ^= 0x537 << ($i - 10); // x^10 + x^8 + x^5 + x^4 + x^2 + x + 1.
             }
         }
-
-        // Timing patterns.
-        for ($i = 8; $i < $size - 8; $i++) {
-            $bit = ($i % 2 === 0) ? 1 : 0;
-            if ($matrix[6][$i] < 0) {
-                $matrix[6][$i] = $bit;
-            }
-            if ($matrix[$i][6] < 0) {
-                $matrix[$i][6] = $bit;
-            }
-        }
-
-        // Dark module (always 1).
-        $matrix[4 * $version + 9][8] = 1;
-
-        // Reserve format information areas.
-        self::reserveFormat($matrix, $size);
-
-        // Data placement.
-        self::placeData($matrix, $codewords, $size);
-
-        return $matrix;
+        return (($data << 10) | $rem) ^ 0x5412;
     }
 
     /**
-     * Place a 7×7 finder pattern at top-left corner (row, col).
-     *
-     * @param array<int,array<int,int>> $matrix
-     * @param int $row
-     * @param int $col
-     * @return void
-     */
-    private static function placeFinderPattern(array &$matrix, int $row, int $col): void
-    {
-        $pattern = [
-            [1, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 1],
-            [1, 0, 1, 1, 1, 0, 1],
-            [1, 0, 1, 1, 1, 0, 1],
-            [1, 0, 1, 1, 1, 0, 1],
-            [1, 0, 0, 0, 0, 0, 1],
-            [1, 1, 1, 1, 1, 1, 1],
-        ];
-        for ($r = 0; $r < 7; $r++) {
-            for ($c = 0; $c < 7; $c++) {
-                $matrix[$row + $r][$col + $c] = $pattern[$r][$c];
-            }
-        }
-    }
-
-    /**
-     * Zero the separator areas around finder patterns.
-     *
-     * @param array<int,array<int,int>> $matrix
-     * @param int $size
-     * @return void
-     */
-    private static function placeSeparators(array &$matrix, int $size): void
-    {
-        for ($i = 0; $i < 8; $i++) {
-            // Top-left.
-            $matrix[7][$i] = 0;
-            $matrix[$i][7] = 0;
-            // Top-right.
-            $matrix[7][$size - 8 + $i] = 0;
-            $matrix[$i][$size - 8]      = 0;
-            // Bottom-left.
-            $matrix[$size - 8][$i] = 0;
-            $matrix[$size - 8 + $i][7] = 0;
-        }
-    }
-
-    /**
-     * Place a 5×5 alignment pattern centred at (row, col).
-     *
-     * @param array<int,array<int,int>> $matrix
-     * @param int $row  Centre row.
-     * @param int $col  Centre col.
-     * @return void
-     */
-    private static function placeAlignmentPattern(array &$matrix, int $row, int $col): void
-    {
-        $pattern = [
-            [1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 1],
-            [1, 0, 1, 0, 1],
-            [1, 0, 0, 0, 1],
-            [1, 1, 1, 1, 1],
-        ];
-        for ($r = -2; $r <= 2; $r++) {
-            for ($c = -2; $c <= 2; $c++) {
-                $mr = $row + $r;
-                $mc = $col + $c;
-                // Do not overwrite finder patterns.
-                if ($matrix[$mr][$mc] === -1) {
-                    $matrix[$mr][$mc] = $pattern[$r + 2][$c + 2];
-                }
-            }
-        }
-    }
-
-    /**
-     * Reserve format information strips (marked as 2 = reserved, will be overwritten by mask step).
-     *
-     * @param array<int,array<int,int>> $matrix
-     * @param int $size
-     * @return void
-     */
-    private static function reserveFormat(array &$matrix, int $size): void
-    {
-        // Horizontal strip along row 8.
-        for ($i = 0; $i <= 8; $i++) {
-            if ($matrix[8][$i] < 0) {
-                $matrix[8][$i] = 2;
-            }
-            if ($matrix[8][$size - 1 - $i] < 0) {
-                $matrix[8][$size - 1 - $i] = 2;
-            }
-        }
-        // Vertical strip along col 8.
-        for ($i = 0; $i < $size; $i++) {
-            if ($matrix[$i][8] < 0) {
-                $matrix[$i][8] = 2;
-            }
-        }
-    }
-
-    /**
-     * Return alignment pattern centre positions for the given version.
+     * 18-bit version information: 6-bit version, BCH(18,6). Versions 7 and up only.
      *
      * @param int $version
-     * @return list<array{int,int}>
+     * @return int
      */
-    private static function alignmentPositions(int $version): array
+    private static function versionBits(int $version): int
     {
-        // Positions table (ISO 18004 Annex E).
-        $table = [
-            2  => [6, 18],
-            3  => [6, 22],
-            4  => [6, 26],
-            5  => [6, 30],
-            6  => [6, 34],
-            7  => [6, 22, 38],
-            8  => [6, 24, 42],
-            9  => [6, 26, 46],
-            10 => [6, 28, 50],
-            11 => [6, 30, 54],
-            12 => [6, 32, 58],
-            13 => [6, 34, 62],
-            14 => [6, 26, 46, 66],
-            15 => [6, 26, 48, 70],
-        ];
-
-        $positions = $table[$version] ?? [];
-        $n         = count($positions);
-        $result    = [];
-
-        for ($r = 0; $r < $n; $r++) {
-            for ($c = 0; $c < $n; $c++) {
-                // Skip positions that would overlap finder patterns.
-                if (($r === 0 && $c === 0) || ($r === 0 && $c === $n - 1) || ($r === $n - 1 && $c === 0)) {
-                    continue;
-                }
-                $result[] = [$positions[$r], $positions[$c]];
+        $rem = $version << 12;
+        for ($i = 17; $i >= 12; $i--) {
+            if ((($rem >> $i) & 1) === 1) {
+                $rem ^= 0x1F25 << ($i - 12); // x^12 + x^11 + x^10 + x^9 + x^8 + x^5 + x^2 + 1.
             }
         }
-
-        return $result;
+        return ($version << 12) | $rem;
     }
 
     /**
-     * Write codeword data into the matrix in the standard zigzag column-pair order.
+     * Module coordinates [row, col] of format information bit i (0 = least
+     * significant), for the copy around the top-left finder and the copy
+     * split between the top-right and bottom-left finders.
      *
-     * @param array<int,array<int,int>> $matrix
-     * @param list<int>                 $codewords
-     * @param int                       $size
+     * @param int $size
+     * @return array{list<array{int,int}>, list<array{int,int}>}
+     */
+    private static function formatPositions(int $size): array
+    {
+        $first  = [];
+        $second = [];
+        for ($i = 0; $i < 15; $i++) {
+            if ($i <= 5) {
+                $first[] = [$i, 8];
+            } elseif ($i === 6) {
+                $first[] = [7, 8];
+            } elseif ($i === 7) {
+                $first[] = [8, 8];
+            } elseif ($i === 8) {
+                $first[] = [8, 7];
+            } else {
+                $first[] = [8, 14 - $i];
+            }
+            $second[] = $i < 8 ? [8, $size - 1 - $i] : [$size - 15 + $i, 8];
+        }
+        return [$first, $second];
+    }
+
+    /**
+     * Write both copies of the format information.
+     *
+     * @param array<int, array<int, int>> $modules
+     * @param int             $bits
      * @return void
      */
-    private static function placeData(array &$matrix, array $codewords, int $size): void
+    private static function drawFormatBits(array &$modules, int $bits): void
     {
-        $bitIndex = 0;
-        $totalBits = count($codewords) * 8;
+        [$first, $second] = self::formatPositions(count($modules));
+        for ($i = 0; $i < 15; $i++) {
+            $bit = ($bits >> $i) & 1;
+            $modules[$first[$i][0]][$first[$i][1]]   = $bit;
+            $modules[$second[$i][0]][$second[$i][1]] = $bit;
+        }
+    }
 
-        $getBit = static function () use (&$bitIndex, $codewords, $totalBits): int {
-            if ($bitIndex >= $totalBits) {
-                return 0;
+    // -------------------------------------------------------------------------
+    // Function patterns
+    // -------------------------------------------------------------------------
+
+    /**
+     * Draw every function pattern and reserve every function module.
+     *
+     * Returns the module values and, separately, which modules are function
+     * modules: data placement and masking touch only the unreserved ones.
+     *
+     * @param int $version
+     * @return array{array<int, array<int, int>>, array<int, array<int, bool>>}
+     */
+    private static function functionPatterns(int $version): array
+    {
+        $size     = 17 + 4 * $version;
+        $modules  = array_fill(0, $size, array_fill(0, $size, 0));
+        $reserved = array_fill(0, $size, array_fill(0, $size, false));
+
+        // Timing patterns: row 6 and column 6, dark on even indexes.
+        for ($i = 0; $i < $size; $i++) {
+            self::setFunction($modules, $reserved, 6, $i, $i % 2 === 0 ? 1 : 0);
+            self::setFunction($modules, $reserved, $i, 6, $i % 2 === 0 ? 1 : 0);
+        }
+
+        // Finder patterns with their light separators.
+        foreach ([[0, 0], [0, $size - 7], [$size - 7, 0]] as [$top, $left]) {
+            for ($dr = -1; $dr <= 7; $dr++) {
+                for ($dc = -1; $dc <= 7; $dc++) {
+                    $row = $top + $dr;
+                    $col = $left + $dc;
+                    if ($row < 0 || $col < 0 || $row >= $size || $col >= $size) {
+                        continue;
+                    }
+                    $ring = max(abs($dr - 3), abs($dc - 3));
+                    self::setFunction($modules, $reserved, $row, $col, ($ring === 2 || $ring === 4) ? 0 : 1);
+                }
             }
-            $byte = $codewords[(int) floor($bitIndex / 8)];
-            $bit  = ($byte >> (7 - ($bitIndex % 8))) & 1;
-            $bitIndex++;
-            return $bit;
-        };
+        }
 
-        // Columns are processed in pairs from right to left, skipping col 6 (timing).
-        $col = $size - 1;
-        $goingUp = true;
-
-        while ($col >= 0) {
-            if ($col === 6) {
-                $col--; // skip timing column
-            }
-
-            for ($row = ($goingUp ? $size - 1 : 0); $goingUp ? $row >= 0 : $row < $size; $row += $goingUp ? -1 : 1) {
-                for ($dc = 0; $dc <= 1; $dc++) {
-                    $c = $col - $dc;
-                    if ($matrix[$row][$c] === -1) {
-                        $matrix[$row][$c] = $getBit();
+        // Alignment patterns, except the three that would overlap finders.
+        $centres = self::alignmentCentres($version);
+        $last    = count($centres) - 1;
+        foreach ($centres as $i => $row) {
+            foreach ($centres as $j => $col) {
+                if (($i === 0 && $j === 0) || ($i === 0 && $j === $last) || ($i === $last && $j === 0)) {
+                    continue;
+                }
+                for ($dr = -2; $dr <= 2; $dr++) {
+                    for ($dc = -2; $dc <= 2; $dc++) {
+                        $dark = max(abs($dr), abs($dc)) === 1 ? 0 : 1;
+                        self::setFunction($modules, $reserved, $row + $dr, $col + $dc, $dark);
                     }
                 }
             }
-
-            $col    -= 2;
-            $goingUp = !$goingUp;
         }
-    }
 
-    // -------------------------------------------------------------------------
-    // Masking
-    // -------------------------------------------------------------------------
+        // Format information areas (written per mask later), then the dark module.
+        [$first, $second] = self::formatPositions($size);
+        foreach (array_merge($first, $second) as [$row, $col]) {
+            self::setFunction($modules, $reserved, $row, $col, 0);
+        }
+        self::setFunction($modules, $reserved, $size - 8, 8, 1);
 
-    /**
-     * Evaluate all 8 mask patterns and apply the one with the best penalty score.
-     *
-     * @param array<int,array<int,int>> $matrix
-     * @param int                       $version
-     * @param array<int>                $eccTable
-     * @return array<int,array<int,int>>
-     */
-    private static function applyBestMask(array $matrix, int $version, array $eccTable): array
-    {
-        $bestMatrix  = null;
-        $bestPenalty = PHP_INT_MAX;
-        $bestMask    = 0;
-
-        for ($mask = 0; $mask < 8; $mask++) {
-            $m = self::applyMask($matrix, $mask, count($matrix));
-            self::writeFormatInfo($m, 0b01, $mask, count($m)); // ECC level M = 0b01
-            $p = self::penalty($m, count($m));
-            if ($p < $bestPenalty) {
-                $bestPenalty = $p;
-                $bestMatrix  = $m;
-                $bestMask    = $mask;
+        // Version information, versions 7 and up: two 6 x 3 blocks.
+        if ($version >= 7) {
+            $bits = self::versionBits($version);
+            for ($i = 0; $i < 18; $i++) {
+                $bit = ($bits >> $i) & 1;
+                $a   = $size - 11 + $i % 3;
+                $b   = intdiv($i, 3);
+                self::setFunction($modules, $reserved, $b, $a, $bit);
+                self::setFunction($modules, $reserved, $a, $b, $bit);
             }
         }
 
-        return $bestMatrix ?? $matrix;
+        return [$modules, $reserved];
     }
 
     /**
-     * Apply mask $mask to all data modules (non-function modules) of the matrix.
+     * Set a function module and mark it reserved.
      *
-     * @param array<int,array<int,int>> $matrix
-     * @param int                       $mask
-     * @param int                       $size
-     * @return array<int,array<int,int>>
+     * @param array<int, array<int, int>>  $modules
+     * @param array<int, array<int, bool>> $reserved
+     * @param int              $row
+     * @param int              $col
+     * @param int              $dark
+     * @return void
      */
-    private static function applyMask(array $matrix, int $mask, int $size): array
+    private static function setFunction(array &$modules, array &$reserved, int $row, int $col, int $dark): void
     {
-        $m = $matrix;
+        $modules[$row][$col]  = $dark;
+        $reserved[$row][$col] = true;
+    }
+
+    /**
+     * Alignment pattern centre coordinates (both axes) for the version.
+     *
+     * @param int $version
+     * @return list<int>
+     */
+    private static function alignmentCentres(int $version): array
+    {
+        if ($version < 2) {
+            return [];
+        }
+        // The first centre is always 6 and the last is 7 modules in from the
+        // far edge; the ones between are evenly spaced by an even step.
+        $count = intdiv($version, 7) + 2;
+        $step  = $version === 32 ? 26 : intdiv($version * 4 + $count * 2 + 1, $count * 2 - 2) * 2;
+        $last  = 17 + 4 * $version - 7;
+
+        $centres = [6];
+        for ($k = $count - 2; $k >= 0; $k--) {
+            $centres[] = $last - $k * $step;
+        }
+        return $centres;
+    }
+
+    // -------------------------------------------------------------------------
+    // Data placement and masking
+    // -------------------------------------------------------------------------
+
+    /**
+     * Place codeword bits in the zigzag order: two-column strips from the
+     * right edge, alternating upward and downward, skipping the vertical
+     * timing column and every reserved module. Leftover modules stay light
+     * (the remainder bits).
+     *
+     * @param array<int, array<int, int>>  $modules
+     * @param array<int, array<int, bool>> $reserved
+     * @param list<int>        $codewords
+     * @return void
+     */
+    private static function placeData(array &$modules, array $reserved, array $codewords): void
+    {
+        $size      = count($modules);
+        $totalBits = count($codewords) * 8;
+        $bit       = 0;
+
+        for ($right = $size - 1; $right >= 1; $right -= 2) {
+            if ($right === 6) {
+                $right = 5;
+            }
+            $upward = (intdiv($right + 1, 2) % 2) === 0;
+            for ($step = 0; $step < $size; $step++) {
+                $row = $upward ? $size - 1 - $step : $step;
+                for ($k = 0; $k < 2; $k++) {
+                    $col = $right - $k;
+                    if ($reserved[$row][$col]) {
+                        continue;
+                    }
+                    if ($bit < $totalBits) {
+                        $modules[$row][$col] = ($codewords[$bit >> 3] >> (7 - ($bit & 7))) & 1;
+                        $bit++;
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Return a copy with mask pattern $mask applied to every non-reserved module.
+     *
+     * @param array<int, array<int, int>>  $modules
+     * @param array<int, array<int, bool>> $reserved
+     * @param int              $mask
+     * @return array<int, array<int, int>>
+     */
+    private static function applyMask(array $modules, array $reserved, int $mask): array
+    {
+        $size = count($modules);
         for ($row = 0; $row < $size; $row++) {
             for ($col = 0; $col < $size; $col++) {
-                $v = $m[$row][$col];
-                if ($v !== 0 && $v !== 1) {
-                    continue; // skip function modules
-                }
-                if (self::maskCondition($mask, $row, $col)) {
-                    $m[$row][$col] = $v ^ 1;
+                if (!$reserved[$row][$col] && self::maskCondition($mask, $row, $col)) {
+                    $modules[$row][$col] ^= 1;
                 }
             }
         }
-        return $m;
+        return $modules;
     }
 
     /**
-     * Evaluate the mask condition for pattern $mask at (row, col).
+     * Mask pattern condition at (row, col): true means the module is inverted.
      *
-     * @param int $mask 0-7
+     * @param int $mask
      * @param int $row
      * @param int $col
      * @return bool
@@ -633,7 +705,7 @@ final class QrEncoder
             1 => $row % 2 === 0,
             2 => $col % 3 === 0,
             3 => ($row + $col) % 3 === 0,
-            4 => ((int) floor($row / 2) + (int) floor($col / 3)) % 2 === 0,
+            4 => (intdiv($row, 2) + intdiv($col, 3)) % 2 === 0,
             5 => ($row * $col) % 2 + ($row * $col) % 3 === 0,
             6 => (($row * $col) % 2 + ($row * $col) % 3) % 2 === 0,
             7 => (($row + $col) % 2 + ($row * $col) % 3) % 2 === 0,
@@ -642,109 +714,47 @@ final class QrEncoder
     }
 
     /**
-     * Compute a simplified penalty score for mask evaluation (ISO 18004 §8.8.2).
+     * Mask evaluation penalty: the four scoring rules of ISO/IEC 18004; lower is better.
      *
-     * @param array<int,array<int,int>> $matrix
-     * @param int                       $size
+     * @param array<int, array<int, int>> $m
      * @return int
      */
-    private static function penalty(array $matrix, int $size): int
+    private static function penalty(array $m): int
     {
+        $size    = count($m);
         $penalty = 0;
+        $dark    = 0;
 
-        // Rule 1: 5+ consecutive same-coloured modules in a row or column.
-        for ($row = 0; $row < $size; $row++) {
-            $run = 1;
-            for ($col = 1; $col < $size; $col++) {
-                $cur = $matrix[$row][$col] & 1;
-                $prv = $matrix[$row][$col - 1] & 1;
-                if ($cur === $prv) {
-                    $run++;
-                    if ($run === 5) {
-                        $penalty += 3;
-                    } elseif ($run > 5) {
-                        $penalty += 1;
+        for ($i = 0; $i < $size; $i++) {
+            $dark += array_sum($m[$i]);
+            foreach ([implode('', $m[$i]), implode('', array_column($m, $i))] as $line) {
+                // Rule 1: each run of five or more same-colour modules scores 3 + (length - 5).
+                if (preg_match_all('/0{5,}|1{5,}/', $line, $runs) > 0) {
+                    foreach ($runs[0] as $run) {
+                        $penalty += strlen($run) - 2;
                     }
-                } else {
-                    $run = 1;
                 }
-            }
-        }
-        for ($col = 0; $col < $size; $col++) {
-            $run = 1;
-            for ($row = 1; $row < $size; $row++) {
-                $cur = $matrix[$row][$col] & 1;
-                $prv = $matrix[$row - 1][$col] & 1;
-                if ($cur === $prv) {
-                    $run++;
-                    if ($run === 5) {
-                        $penalty += 3;
-                    } elseif ($run > 5) {
-                        $penalty += 1;
-                    }
-                } else {
-                    $run = 1;
-                }
+                // Rule 3: 1:1:3:1:1 finder-like pattern with four light modules on one side.
+                // Neither pattern can overlap itself, so substr_count() finds every one.
+                $penalty += 40 * (substr_count($line, '10111010000') + substr_count($line, '00001011101'));
             }
         }
 
-        // Rule 2: 2×2 blocks of same colour.
-        for ($row = 0; $row < $size - 1; $row++) {
-            for ($col = 0; $col < $size - 1; $col++) {
-                $a = $matrix[$row][$col] & 1;
-                $b = $matrix[$row][$col + 1] & 1;
-                $c = $matrix[$row + 1][$col] & 1;
-                $d = $matrix[$row + 1][$col + 1] & 1;
-                if ($a === $b && $a === $c && $a === $d) {
+        // Rule 2: 2 x 2 blocks of one colour.
+        for ($r = 0; $r < $size - 1; $r++) {
+            for ($c = 0; $c < $size - 1; $c++) {
+                $v = $m[$r][$c];
+                if ($v === $m[$r][$c + 1] && $v === $m[$r + 1][$c] && $v === $m[$r + 1][$c + 1]) {
                     $penalty += 3;
                 }
             }
         }
 
+        // Rule 4: deviation of the dark proportion from 50 %, per 5 % step.
+        $total    = $size * $size;
+        $penalty += 10 * intdiv(abs($dark * 20 - $total * 10), $total);
+
         return $penalty;
-    }
-
-    /**
-     * Write the 15-bit format information string (ECC level + mask) into the matrix.
-     *
-     * @param array<int,array<int,int>> $matrix
-     * @param int                       $eccLevel  2 bits (M=0b01).
-     * @param int                       $maskPat   3 bits (0-7).
-     * @param int                       $size      Matrix size.
-     * @return void
-     */
-    private static function writeFormatInfo(array &$matrix, int $eccLevel, int $maskPat, int $size): void
-    {
-        // 5-bit format data: eccLevel (2 bits) << 3 | maskPat (3 bits).
-        $data = ($eccLevel << 3) | $maskPat;
-        // BCH(15,5) error correction — generator polynomial x^10+x^8+x^5+x^4+x^2+x+1.
-        $gen  = 0b10100110111;
-        $rem  = $data << 10;
-        for ($i = 14; $i >= 10; $i--) {
-            if ($rem & (1 << $i)) {
-                $rem ^= $gen << ($i - 10);
-            }
-        }
-        $format = (($data << 10) | $rem) ^ 0b101010000010010; // XOR mask
-
-        // Place 15 bits into the two format-info strips.
-        $positions = [
-            [8, 0], [8, 1], [8, 2], [8, 3], [8, 4], [8, 5], [8, 7], [8, 8],
-            [7, 8], [5, 8], [4, 8], [3, 8], [2, 8], [1, 8], [0, 8],
-        ];
-        for ($i = 0; $i < 15; $i++) {
-            $bit = ($format >> (14 - $i)) & 1;
-            [$r, $c] = $positions[$i];
-            $matrix[$r][$c] = $bit;
-            // Mirror strip.
-            if ($i < 7) {
-                $matrix[$size - 1 - $i][8] = $bit;
-            } elseif ($i === 7) {
-                $matrix[$size - 8][8] = $bit;
-            } else {
-                $matrix[8][$size - 15 + $i] = $bit;
-            }
-        }
     }
 
     // -------------------------------------------------------------------------
@@ -752,37 +762,47 @@ final class QrEncoder
     // -------------------------------------------------------------------------
 
     /**
-     * Render the matrix as an inline SVG string.
+     * Render the matrix as an inline SVG: a white background and one path of dark modules.
      *
-     * @param array<int,array<int,int>> $matrix
-     * @param int                       $pixels  Total output size in pixels.
+     * One path with crispEdges leaves no anti-aliased seams between modules,
+     * and the fixed width and height keep the symbol square. A symbol that
+     * would draw a module smaller than MIN_MODULE_PX is drawn larger instead.
+     *
+     * @param array<int, array<int, int>> $matrix
+     * @param int             $pixels Requested width and height in pixels.
      * @return string
      */
     private static function renderSvg(array $matrix, int $pixels): string
     {
-        $size    = count($matrix);
-        $quiet   = 4; // 4-module quiet zone
-        $total   = $size + 2 * $quiet;
-        $module  = round($pixels / $total, 3);
+        $size   = count($matrix);
+        $total  = $size + 2 * self::QUIET_ZONE;
+        $pixels = max($pixels, self::MIN_MODULE_PX * $total);
+
+        $path = '';
+        for ($row = 0; $row < $size; $row++) {
+            $col = 0;
+            while ($col < $size) {
+                if ($matrix[$row][$col] !== 1) {
+                    $col++;
+                    continue;
+                }
+                $start = $col;
+                while ($col < $size && $matrix[$row][$col] === 1) {
+                    $col++;
+                }
+                $run   = $col - $start;
+                $path .= 'M' . ($start + self::QUIET_ZONE) . ',' . ($row + self::QUIET_ZONE) . 'h' . $run . 'v1h-' . $run . 'z';
+            }
+        }
 
         $svg  = '<svg xmlns="http://www.w3.org/2000/svg"';
         $svg .= ' width="' . esc_attr((string) $pixels) . '"';
         $svg .= ' height="' . esc_attr((string) $pixels) . '"';
         $svg .= ' viewBox="0 0 ' . esc_attr((string) $total) . ' ' . esc_attr((string) $total) . '"';
+        $svg .= ' shape-rendering="crispEdges"';
         $svg .= ' role="img" aria-label="' . esc_attr__('QR code for two-factor setup', 'wpmgr-agent') . '">';
         $svg .= '<rect width="' . esc_attr((string) $total) . '" height="' . esc_attr((string) $total) . '" fill="#ffffff"/>';
-
-        for ($row = 0; $row < $size; $row++) {
-            for ($col = 0; $col < $size; $col++) {
-                if (($matrix[$row][$col] & 1) === 1) {
-                    $x = $col + $quiet;
-                    $y = $row + $quiet;
-                    $svg .= '<rect x="' . esc_attr((string) $x) . '" y="' . esc_attr((string) $y) . '"';
-                    $svg .= ' width="1" height="1" fill="#000000"/>';
-                }
-            }
-        }
-
+        $svg .= '<path d="' . esc_attr($path) . '" fill="#000000"/>';
         $svg .= '</svg>';
         return $svg;
     }

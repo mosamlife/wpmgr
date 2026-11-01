@@ -223,3 +223,24 @@ describe("AuditEntryRow for a page request WPMgr refused before showing it", () 
     expect(screen.queryByTestId("ai-refusal-row")).not.toBeInTheDocument();
   });
 });
+
+// GH #968: the row the control plane writes when a site's own email provider is
+// removed. Target type "site" and the metadata keys are the ones the handler
+// records (deleteConfig and record in apps/api/internal/email/handler.go).
+describe("AuditEntryRow for a removed email provider (GH #968)", () => {
+  it("reads as a plain, marked write on the site it happened to, not as a raw key", async () => {
+    const e = entry({
+      action: "site.email.config.reset",
+      target_type: "site",
+      target_id: SITE_ID,
+      metadata: { provider: "smtp", fallback: "org_default", org_default_synced: true },
+    });
+
+    renderWithProviders(<AuditEntryRow entry={e} sites={SITES} isToday={false} />, { withRouter: true });
+
+    expect(await screen.findByText("Removed email provider")).toBeInTheDocument();
+    expect(screen.getByText("Write")).toBeInTheDocument();
+    expect(screen.getByText("Acme Blog")).toBeInTheDocument();
+    expect(screen.queryByText("site.email.config.reset")).not.toBeInTheDocument();
+  });
+});

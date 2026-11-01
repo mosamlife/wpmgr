@@ -231,6 +231,8 @@ final class Site2faKsesEscapingTest extends TestCase
         // The inline TOTP QR code (QrEncoder::toSvg()).
         $this->assertArrayHasKey('svg', $allowed);
         $this->assertArrayHasKey('rect', $allowed);
+        $this->assertArrayHasKey('path', $allowed);
+        $this->assertArrayHasKey('d', $allowed['path']);
 
         $this->assertArrayHasKey('action', $allowed['form']);
         $this->assertArrayHasKey('method', $allowed['form']);
@@ -321,9 +323,15 @@ final class Site2faKsesEscapingTest extends TestCase
         );
 
         $this->assertStringContainsString('<form', $html);
-        // The QR code -- the reason svg/rect are in the allowlist at all.
+        // The QR code -- the reason svg/rect/path are in the allowlist at all.
         $this->assertStringContainsString('<svg', $html);
         $this->assertStringContainsString('<rect', $html);
+        $this->assertStringContainsString('<path d="M', $html);
+
+        // The manual entry key is shown in space-separated groups of four.
+        $this->assertSame(1, preg_match('#<code id="wpmgr-totp-secret"[^>]*>([^<]*)</code>#', $html, $key));
+        $this->assertMatchesRegularExpression('/^[A-Z2-7]{4}( [A-Z2-7]{4})*( [A-Z2-7]{1,3})?$/', $key[1]);
+        $this->assertStringContainsString(' ', $key[1]);
     }
 
     public function test_render_setup_screen_backup_step_escapes_via_wp_kses_and_keeps_data_uri_download(): void
@@ -572,6 +580,40 @@ final class Site2faKsesEscapingTest extends TestCase
             fn () => $renderRef->invoke($module, $user, $session, 'Invalid code')
         );
 
+        $this->assertEveryTagAndAttributeIsAllowlisted($html);
+    }
+
+    /**
+     * GH #964: with more than one method on offer the challenge carries the
+     * method-switch submit buttons (formnovalidate included), which must
+     * survive wp_kses() or the alternatives silently disappear.
+     */
+    public function test_interstitial_with_method_switch_buttons_is_fully_covered_by_allowlist(): void
+    {
+        $policy = SecurityPolicy::fromArray([
+            'policy' => [
+                'two_factor_enabled'        => true,
+                'two_factor_required_roles' => ['administrator'],
+            ],
+        ]);
+        $module = $this->makeModule($policy);
+        $userId = 518;
+        $user   = $this->makeUser($userId);
+
+        // TOTP and backup codes enrolled, email allowed: three methods on offer.
+        $this->userMeta[$userId][TotpProvider::META_SECRET] = base64_encode('JBSWY3DPEHPK3PXP');
+        Functions\when('wp_hash_password')->alias(fn ($p) => password_hash((string) $p, PASSWORD_BCRYPT));
+        (new BackupCodesProvider())->generateAndStore($user);
+
+        $createRef = new \ReflectionMethod($module, 'createSession');
+        $session   = $createRef->invoke($module, $userId, '/wp-admin/', false, '2fa');
+
+        $renderRef = new \ReflectionMethod($module, 'renderInterstitial');
+        $html      = $this->captureWpKsesCall(
+            fn () => $renderRef->invoke($module, $user, $session, '')
+        );
+
+        $this->assertStringContainsString('name="wpmgr_2fa_switch"', $html, 'sanity: the switch buttons must be rendered for this guard to mean anything');
         $this->assertEveryTagAndAttributeIsAllowlisted($html);
     }
 

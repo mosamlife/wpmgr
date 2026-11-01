@@ -79,6 +79,24 @@ func toConfigDTOWithConnections(c Config, baseURL string, conns []Connection) co
 	return dto
 }
 
+// removeConfigDTO is the DELETE /sites/:siteId/email/config response, the
+// OpenAPI schema RemoveSiteEmailConfigResult.
+type removeConfigDTO struct {
+	RemovedProvider  string `json:"removed_provider"`
+	Fallback         string `json:"fallback"`
+	OrgDefaultSynced bool   `json:"org_default_synced"`
+	Detail           string `json:"detail"`
+}
+
+func toRemoveConfigDTO(r RemoveSiteConfigResult) removeConfigDTO {
+	return removeConfigDTO{
+		RemovedProvider:  r.RemovedProvider,
+		Fallback:         r.Fallback,
+		OrgDefaultSynced: r.OrgDefaultSynced,
+		Detail:           r.Detail,
+	}
+}
+
 func toConfigDTO(c Config, baseURL string) configDTO {
 	dto := configDTO{
 		ID:                   c.ID.String(),

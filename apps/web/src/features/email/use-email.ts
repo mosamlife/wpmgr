@@ -3,6 +3,7 @@ import {
   useMutation,
   useInfiniteQuery,
   useQueryClient,
+  type QueryClient,
   type UseQueryResult,
   type UseMutationResult,
   type UseInfiniteQueryResult,
@@ -11,6 +12,7 @@ import {
 import {
   getSiteEmailConfig,
   putSiteEmailConfig,
+  deleteSiteEmailConfig,
   sendTestEmail,
   syncSiteEmailConfig,
   listEmailProviders,
@@ -40,6 +42,7 @@ import {
   putEmailNotifySettings,
   type SiteEmailConfig,
   type PutEmailConfigRequest,
+  type RemoveSiteEmailConfigResult,
   type EmailTestRequest,
   type EmailTestResult,
   type EmailProviderCatalog,
@@ -294,6 +297,130 @@ export function useSyncEmailConfig(
     },
     onError: (err) => {
       toast.error("Could not sync to site", { description: err.message });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Remove the site's own provider (GH #968)
+// ---------------------------------------------------------------------------
+
+/**
+ * A refusal that leaves the page showing something the server no longer holds:
+ *  - 404 email_site_config_not_found: the site has no provider of its own any
+ *    more (it was removed from somewhere else), so there is nothing to remove.
+ *  - 409 email_config_changed: the settings were saved while they were being
+ *    removed, so the saved settings stand.
+ * Both come from RemoveSiteConfig in apps/api/internal/email/service.go. The
+ * config and its connections are read again for these two and for no other
+ * refusal: every other one leaves the server exactly as the page already shows
+ * it. The message is the server's own.
+ */
+export class EmailConfigStaleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EmailConfigStaleError";
+  }
+}
+
+function apiErrorCode(error: unknown): string | undefined {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string"
+  ) {
+    return error.code;
+  }
+  return undefined;
+}
+
+/**
+ * Whether a finished removal leaves the site waiting for a Sync to site.
+ *
+ *  - `org_default` with `org_default_synced` false: the organisation default
+ *    never reached the site's agent, so the site sends through WordPress's own
+ *    mailer until it does.
+ *  - `unknown`: the organisation default could not be read, and the server's
+ *    own sentence asks for a sync once it can be.
+ *  - `wordpress` also has `org_default_synced` false, but there is no default
+ *    to send, so nothing is waiting (RemoveSiteEmailConfigResult in
+ *    packages/openapi/openapi.yaml).
+ */
+export function removalNeedsSync(
+  result: Pick<RemoveSiteEmailConfigResult, "fallback" | "org_default_synced">,
+): boolean {
+  if (result.fallback === "unknown") return true;
+  return result.fallback === "org_default" && !result.org_default_synced;
+}
+
+/**
+ * Marks out of date what a removal leaves behind: the site's config and its
+ * connections, which went with the config row (ON DELETE CASCADE, in
+ * apps/api/migrations/20260625000000_m62_email_v1_completion.sql). A finished
+ * removal and a refusal that found the page out of date both end here, so the
+ * two cannot drift apart again. Resolves once the queries being shown have been
+ * read again.
+ */
+function refreshSiteEmailConfig(queryClient: QueryClient, siteId: string) {
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: emailKeys.siteConfig(siteId) }),
+    queryClient.invalidateQueries({ queryKey: emailKeys.connections(siteId) }),
+  ]);
+}
+
+/**
+ * DELETE /api/v1/sites/:siteId/email/config
+ *
+ * Removes the site's OWN provider. The site then uses the organisation default
+ * when there is one, and WordPress's own mailer when there is not. The agent is
+ * told first and the row is deleted only once it confirms, so every failure
+ * means the provider was not removed (the response codes are on the operation
+ * in packages/openapi/openapi.yaml). A failure throws with the server's message
+ * and is never reported as a success.
+ *
+ * It resolves only after this site's config has been read again, so a caller
+ * that continues from `mutateAsync` finds the answer in the cache. A failed
+ * read does not fail the removal; the query shows its own error.
+ */
+export function useRemoveSiteEmailConfig(
+  siteId: string,
+): UseMutationResult<RemoveSiteEmailConfigResult, Error, void> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const { data, error, response } = await deleteSiteEmailConfig({
+        path: { siteId },
+      });
+      if (error) {
+        const failure = toError(error);
+        if (
+          response?.status === 404 ||
+          (response?.status === 409 &&
+            apiErrorCode(error) === "email_config_changed")
+        ) {
+          throw new EmailConfigStaleError(failure.message);
+        }
+        throw failure;
+      }
+      return data;
+    },
+    onSuccess: async (result) => {
+      // The server's own sentence says where the mail goes now. A removal that
+      // still needs a sync is a warning, not the plain success.
+      if (removalNeedsSync(result)) {
+        toast.warning("Email provider removed", { description: result.detail });
+      } else {
+        toast.success("Email provider removed", { description: result.detail });
+      }
+      await refreshSiteEmailConfig(queryClient, siteId);
+    },
+    onError: async (err) => {
+      // Another request already removed or changed the provider, so the page
+      // is out of date in everything a removal touches, connections included.
+      if (err instanceof EmailConfigStaleError) {
+        await refreshSiteEmailConfig(queryClient, siteId);
+      }
     },
   });
 }

@@ -66,28 +66,31 @@ type scheduleResponseDTO struct {
 	IntroText                string       `json:"intro_text"`
 	ClosingText              string       `json:"closing_text"`
 	PoweredByRemoved         bool         `json:"powered_by_removed"`
-	NextRunAt                *time.Time   `json:"next_run_at"`
-	LastRunAt                *time.Time   `json:"last_run_at"`
+	NextRunAt                *time.Time   `json:"next_run_at,omitempty"`
+	LastRunAt                *time.Time   `json:"last_run_at,omitempty"`
 	InstanceMailerConfigured bool         `json:"instance_mailer_configured"`
 }
 
 type scheduleUpdateBody struct {
-	Enabled          bool          `json:"enabled"`
-	Cadence          string        `json:"cadence"`
-	SendDay          int           `json:"send_day"`
-	SendHour         int           `json:"send_hour"`
-	Recipients       []string      `json:"recipients"`
-	Sections         *SectionFlags `json:"sections"`
-	IntroText        string        `json:"intro_text"`
-	ClosingText      string        `json:"closing_text"`
-	PoweredByRemoved bool          `json:"powered_by_removed"`
+	Enabled    bool     `json:"enabled"`
+	Cadence    string   `json:"cadence"`
+	SendDay    int      `json:"send_day"`
+	SendHour   int      `json:"send_hour"`
+	Recipients []string `json:"recipients"`
+	// Sections is partial: a section left out keeps its stored value.
+	Sections         *SectionFlagsPatch `json:"sections"`
+	IntroText        string             `json:"intro_text"`
+	ClosingText      string             `json:"closing_text"`
+	PoweredByRemoved bool               `json:"powered_by_removed"`
 }
 
 type generateReportBody struct {
-	PeriodStart *time.Time    `json:"period_start"`
-	PeriodEnd   *time.Time    `json:"period_end"`
-	Sections    *SectionFlags `json:"sections"`
-	Notify      bool          `json:"notify"`
+	PeriodStart *time.Time `json:"period_start"`
+	PeriodEnd   *time.Time `json:"period_end"`
+	// Sections optionally overrides the client's stored sections for this
+	// one report; a section left out keeps the stored value.
+	Sections *SectionFlagsPatch `json:"sections"`
+	Notify   bool               `json:"notify"`
 }
 
 type reportDTO struct {
@@ -149,7 +152,7 @@ func (h *Handler) putSchedule(c *gin.Context) {
 		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
 		return
 	}
-	sections := DefaultSectionFlags()
+	var sections SectionFlagsPatch
 	if body.Sections != nil {
 		sections = *body.Sections
 	}
@@ -161,7 +164,7 @@ func (h *Handler) putSchedule(c *gin.Context) {
 		SendDay:          body.SendDay,
 		SendHour:         body.SendHour,
 		Recipients:       body.Recipients,
-		Sections:         sections,
+		SectionsPatch:    sections,
 		IntroText:        body.IntroText,
 		ClosingText:      body.ClosingText,
 		PoweredByRemoved: body.PoweredByRemoved,
@@ -200,11 +203,7 @@ func (h *Handler) generateReport(c *gin.Context) {
 	if body.PeriodEnd != nil {
 		in.PeriodEnd = *body.PeriodEnd
 	}
-	if body.Sections != nil {
-		in.Sections = *body.Sections
-	} else {
-		in.Sections = DefaultSectionFlags()
-	}
+	in.Sections = body.Sections
 	rpt, err := h.svc.GenerateNow(c.Request.Context(), p.TenantID, clientID, in)
 	if err != nil {
 		httpx.Error(c, err)
@@ -321,6 +320,7 @@ func toScheduleDTO(s Schedule, mailerConfigured bool) scheduleResponseDTO {
 		Cadence:                  s.Cadence,
 		SendDay:                  s.SendDay,
 		SendHour:                 s.SendHour,
+		Timezone:                 s.Timezone,
 		Recipients:               s.Recipients,
 		Sections:                 s.Sections,
 		IntroText:                s.IntroText,

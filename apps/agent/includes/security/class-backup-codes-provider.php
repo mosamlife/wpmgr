@@ -40,7 +40,7 @@ final class BackupCodesProvider implements SiteTwoFactorProvider
     /** {@inheritDoc} */
     public function label(): string
     {
-        return 'Backup Code';
+        return __('Backup Code', 'wpmgr-agent');
     }
 
     /** {@inheritDoc} */
@@ -63,7 +63,7 @@ final class BackupCodesProvider implements SiteTwoFactorProvider
     public function renderForm(\WP_User $user): string
     {
         $field       = esc_attr('wpmgr_backup_code');
-        $placeholder = esc_attr('10-digit backup code');
+        $placeholder = esc_attr__('10-digit backup code', 'wpmgr-agent');
         return '<p><label for="' . $field . '">'
             . esc_html__('Enter a backup code:', 'wpmgr-agent')
             . '</label>'

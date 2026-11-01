@@ -160,6 +160,28 @@ func AsCommandError(err error) (*CommandError, bool) {
 	return nil, false
 }
 
+// unknownCommandCode is the WP_Error code the agent's router answers, with
+// status 404, for a command name it has no handler for (class-router.php
+// dispatch). The router reaches that answer only after the signed request has
+// been verified, so it means "this agent is real and predates the command".
+const unknownCommandCode = "wpmgr_unknown_command"
+
+// UnknownCommand reports whether the agent refused the command because it does
+// not know it: HTTP 404 with code wpmgr_unknown_command. A 404 without that
+// code is not this answer. WordPress's own rest_no_route, for one, means the
+// agent's routes are not registered at all (the plugin is inactive), and
+// telling that operator to update the agent would send them the wrong way.
+func (e *CommandError) UnknownCommand() bool {
+	return e != nil && e.Status == http.StatusNotFound && e.Code == unknownCommandCode
+}
+
+// IsUnknownCommand reports whether err is the agent's answer for a command its
+// version does not know (see CommandError.UnknownCommand).
+func IsUnknownCommand(err error) bool {
+	ce, ok := AsCommandError(err)
+	return ok && ce.UnknownCommand()
+}
+
 // AgentFailed reports whether this response is a genuine, terminal failure
 // FROM THE AGENT ITSELF — as opposed to a transient failure a proxy, a
 // misconfigured host, or WordPress's own fatal-error handler could equally

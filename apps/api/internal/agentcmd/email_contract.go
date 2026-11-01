@@ -1,5 +1,7 @@
 package agentcmd
 
+import "errors"
+
 // email_contract.go — CP->agent command contract for per-site email management
 // (m59, Phase 1 foundation). The wp-agent-engineer mirrors these shapes in the
 // agent's command handlers when implementing Phase 2.
@@ -19,6 +21,12 @@ package agentcmd
 //   send_test_email    — ask the agent to send a test email using its current
 //                        email config (sync_email_config MUST be called first).
 //                        Response: {ok, detail, message_id?}.
+//
+//   clear_email_config — remove the site's stored email settings, the email
+//                        secret and every connection secret, so wp_mail() goes
+//                        back to WordPress's own mailer (GH #968). Body: {}.
+//                        Response: {ok, cleared, detail, existed}. An agent
+//                        that predates it answers 404 wpmgr_unknown_command.
 //
 // Phase 2 (wp-agent-engineer) MUST implement both command handlers.
 
@@ -162,3 +170,37 @@ type SendTestEmailResult struct {
 	// MessageID is the provider-returned Message-ID header value (if available).
 	MessageID string `json:"message_id,omitempty"`
 }
+
+// ClearEmailCommand is the wire name of the command that takes a site back to
+// "no email provider" (GH #968).
+const ClearEmailCommand = "clear_email_config"
+
+// ClearEmailConfigRequest is the POST body for `clear_email_config`. The agent
+// reads no field: the command always removes the same three stored items (the
+// email settings, the email secret and every connection secret), so there is
+// nothing for a request to select.
+type ClearEmailConfigRequest struct{}
+
+// ClearEmailConfigExisted says which of the three stored items were present on
+// the site before the command ran.
+type ClearEmailConfigExisted struct {
+	Config            bool `json:"config"`
+	Secret            bool `json:"secret"`
+	ConnectionSecrets bool `json:"connection_secrets"`
+}
+
+// ClearEmailConfigResult is the response body for `clear_email_config`. The
+// agent answers HTTP 200 for any authorized request and puts the outcome in
+// the body: Cleared is true only when it read every item back and found it
+// gone, and OK always equals Cleared. When Cleared is false, Detail names what
+// is still stored.
+type ClearEmailConfigResult struct {
+	OK      bool                    `json:"ok"`
+	Cleared bool                    `json:"cleared"`
+	Detail  string                  `json:"detail,omitempty"`
+	Existed ClearEmailConfigExisted `json:"existed"`
+}
+
+// ErrEmailConfigNotCleared is wrapped by ClearEmailConfig when the agent
+// answered but did not confirm that every stored item is gone.
+var ErrEmailConfigNotCleared = errors.New("the site's agent did not confirm its email settings were removed")

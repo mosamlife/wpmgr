@@ -6839,6 +6839,31 @@ export type EmailTestRequest = {
 };
 
 /**
+ * Outcome of removing a site's own email provider (GH #968). The site's agent confirmed it cleared its email config and the site's own config row was deleted; these fields say where the site's mail goes now.
+ *
+ */
+export type RemoveSiteEmailConfigResult = {
+  /**
+   * Provider slug of the config that was removed.
+   */
+  removed_provider: string;
+  /**
+   * What the site uses now. `org_default`: the organisation has a default email config and the site uses it. `wordpress`: there is no organisation default, so the site sends through WordPress's own mailer. `unknown`: the provider was removed but the organisation default could not be read; read the site's email config again.
+   *
+   */
+  fallback: "org_default" | "wordpress" | "unknown";
+  /**
+   * True when `fallback` is `org_default` and the organisation default reached the site's agent. When false with `org_default`, the site sends through WordPress's own mailer until the default is synced (POST /sites/{siteId}/email/sync).
+   *
+   */
+  org_default_synced: boolean;
+  /**
+   * One sentence for the operator describing the outcome.
+   */
+  detail: string;
+};
+
+/**
  * Result of a test-send dispatch. `ok` may be false when the agent returns an error or when the agent does not yet implement the command (Phase 1 expected behaviour — see endpoint description).
  *
  */
@@ -7609,7 +7634,12 @@ export type AssignSitesResponse = {
 };
 
 /**
- * Controls which data sections are included in a report.
+ * Controls which data sections are included in a report. Every flag is
+ * optional in a request. A flag that is left out keeps the value already
+ * stored for the client, or takes the default listed here when the
+ * client has no saved settings yet; `false` turns the section off. A
+ * response always carries all six flags.
+ *
  */
 export type ClientReportSectionFlags = {
   overview?: boolean;
@@ -7642,7 +7672,7 @@ export type ClientReportSchedule = {
    */
   send_hour: number;
   /**
-   * IANA timezone name inherited from the client record. Informational only; update via PUT /clients/{clientId}.
+   * IANA timezone name on the client record, which `send_hour` and `next_run_at` are computed in. Read only here; change it on the client (PUT /clients/{clientId}).
    */
   timezone?: string;
   /**
@@ -7659,7 +7689,7 @@ export type ClientReportSchedule = {
    */
   closing_text: string;
   /**
-   * When true, the "Powered by WPMgr" footer is omitted (white-label plan).
+   * When true, the "Prepared with WPMgr" footer is omitted (white-label plan).
    */
   powered_by_removed: boolean;
   /**
@@ -7677,7 +7707,52 @@ export type ClientReportSchedule = {
 };
 
 /**
- * All fields are required (full replace).
+ * Saves the client's report schedule. The first save creates it and each
+ * later save updates it.
+ *
+ * Every field is replaced by the value sent, with one exception:
+ * `sections` is merged one flag at a time. For every other field,
+ * leaving it out does not keep the stored value: the server reads it as
+ * the zero value of its type, runs the checks below on that value, and
+ * saves it. That holds for the five required fields too, since the
+ * server does not reject a body for leaving one out.
+ *
+ * A value that fails a check below is rejected with HTTP 422 and the
+ * error `code` named; a field of the wrong JSON type, or a body that is
+ * not JSON, is rejected with 422 and `invalid_body`.
+ *
+ * - `enabled`: `true` turns scheduled sending on and sets `next_run_at`
+ * to the next send time, at `send_hour` in the client's timezone;
+ * `false` turns it off and clears `next_run_at`. Missing: `false`, so
+ * the schedule is switched off.
+ * - `cadence`: `weekly` or `monthly`; anything else is rejected with
+ * `invalid_cadence`. Missing: rejected the same way.
+ * - `send_day`: 0 to 6 for `weekly` (0 is Sunday) and 1 to 28 for
+ * `monthly`; anything else is rejected with `invalid_send_day`.
+ * Missing: 0, which is accepted for `weekly` (Sunday) and rejected for
+ * `monthly`.
+ * - `send_hour`: 0 to 23; anything else is rejected with
+ * `invalid_send_hour`. Missing: 0 (midnight), which is accepted.
+ * - `recipients`: replaces the stored list. Entries are trimmed, blank
+ * entries are skipped, each remaining entry must be a valid email
+ * address (`invalid_recipient`), and duplicates are removed ignoring
+ * case. Each address is saved as the bare address in lower case. At
+ * most 10 may remain after that (`too_many_recipients`). Missing: an
+ * empty list, which clears the stored recipients.
+ * - `sections`: merged over the sections already stored for the client,
+ * or over the defaults when no schedule is stored yet. A flag that is
+ * present turns that section on (`true`) or off (`false`). A flag that
+ * is left out keeps its stored value, and a body with no `sections`
+ * object keeps every stored flag.
+ * - `intro_text`, `closing_text`: replace the stored text. At most 2000
+ * characters each, counted as characters and not as bytes, so text in
+ * any script fits the same 2000; longer text is rejected with
+ * `intro_text_too_long` or `closing_text_too_long`. Missing: empty,
+ * which clears the stored text.
+ * - `powered_by_removed`: `true` leaves the "Prepared with WPMgr" footer
+ * out of the client's reports and report emails, and `false` shows it.
+ * Missing: `false`, so the footer is shown again.
+ *
  */
 export type ClientReportScheduleUpdate = {
   enabled: boolean;
@@ -7692,7 +7767,22 @@ export type ClientReportScheduleUpdate = {
 };
 
 /**
- * Optional overrides for an on-demand report. Omit entirely to use schedule defaults.
+ * Optional settings for one on-demand report.
+ *
+ * The report uses the client's saved report settings, the same ones a
+ * scheduled report uses: which sections are on, the intro and closing
+ * text, and whether the "Prepared with WPMgr" footer is shown. A client
+ * with no saved settings gets the defaults: every section on, no intro or
+ * closing text, footer shown.
+ *
+ * `sections` is laid over the saved sections for this one report, one
+ * flag at a time. A flag that is present turns that section on (`true`) or
+ * off (`false`); a flag that is left out keeps the saved value. Nothing in
+ * this request changes the saved settings, and it cannot change the intro
+ * text, the closing text or the footer.
+ *
+ * Omit the body, or send `{}`, to use the saved settings unchanged.
+ *
  */
 export type GenerateClientReportRequest = {
   /**
@@ -21003,6 +21093,54 @@ export type PutOrgEmailConfigResponses = {
 export type PutOrgEmailConfigResponse =
   PutOrgEmailConfigResponses[keyof PutOrgEmailConfigResponses];
 
+export type DeleteSiteEmailConfigData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/email/config";
+};
+
+export type DeleteSiteEmailConfigErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * The site has no email config of its own (`email_site_config_not_found`; a site using the organisation default has nothing to remove), or the site was not found.
+   *
+   */
+  404: Error;
+  /**
+   * `email_agent_outdated`: the site's agent is too old for `clear_email_config`; update the agent. `email_config_changed`: the settings were saved while they were being removed, so the saved settings stand and were sent back to the site. `email_change_in_progress`: another change that sends a site's email settings to it, or removes them, was still running when the wait for it ran out: one for this site, or one for any site on the same API instance. Nothing was changed, and trying again in a moment works.
+   *
+   */
+  409: Error;
+  /**
+   * `email_agent_clear_failed`: the site did not confirm it stopped using the provider (unreachable, refused, or it reported what it could not remove); the message says why, and says the site may already have stopped using it whenever the command may have run. The stored settings are kept either way. `email_agent_unwired`: agent commands are not configured on this control plane. `email_delete_site_config_failed`: the site stopped using the provider but its stored settings could not be removed; send the request again to finish.
+   *
+   */
+  503: Error;
+};
+
+export type DeleteSiteEmailConfigError =
+  DeleteSiteEmailConfigErrors[keyof DeleteSiteEmailConfigErrors];
+
+export type DeleteSiteEmailConfigResponses = {
+  /**
+   * The site's own provider was removed
+   */
+  200: RemoveSiteEmailConfigResult;
+};
+
+export type DeleteSiteEmailConfigResponse =
+  DeleteSiteEmailConfigResponses[keyof DeleteSiteEmailConfigResponses];
+
 export type GetSiteEmailConfigData = {
   body?: never;
   path: {
@@ -21062,6 +21200,11 @@ export type PutSiteEmailConfigErrors = {
    * Insufficient permission
    */
   403: Error;
+  /**
+   * `email_change_in_progress`: another change that sends a site's email settings to it, or removes them, was still running when the wait for it ran out: one for this site, or one for any site on the same API instance. Nothing was saved, and trying again in a moment works.
+   *
+   */
+  409: Error;
   /**
    * Validation failed
    */
@@ -22005,6 +22148,11 @@ export type PutEmailConnectionErrors = {
    */
   404: Error;
   /**
+   * `email_change_in_progress`: another change that sends a site's email settings to it, or removes them, was still running when the wait for it ran out: one for this site, or one for any site on the same API instance. Nothing was saved, and trying again in a moment works. `email_config_changed`: the site's email settings were removed or replaced while this connection was being saved; nothing was saved. Reload them and try again.
+   *
+   */
+  409: Error;
+  /**
    * Validation failed
    */
   422: Error;
@@ -22772,6 +22920,10 @@ export type PutClientReportScheduleErrors = {
    * Resource not found
    */
   404: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
 };
 
 export type PutClientReportScheduleError =
@@ -22844,10 +22996,6 @@ export type GenerateClientReportData = {
 
 export type GenerateClientReportErrors = {
   /**
-   * Validation error
-   */
-  400: Error;
-  /**
    * Not authenticated
    */
   401: Error;
@@ -22859,6 +23007,20 @@ export type GenerateClientReportErrors = {
    * Resource not found
    */
   404: Error;
+  /**
+   * The request failed validation. The error `code` is `invalid_period`
+   * when `period_start` is not before `period_end`, `period_too_long`
+   * when the period is longer than 92 days, and `invalid_body` when the
+   * body is not valid JSON.
+   *
+   */
+  422: Error;
+  /**
+   * The error `code` is `object_storage_required`: this instance has no
+   * object storage configured, so it cannot store a report.
+   *
+   */
+  503: Error;
 };
 
 export type GenerateClientReportError =

@@ -40,7 +40,7 @@ final class EmailCodeProvider implements SiteTwoFactorProvider
     /** {@inheritDoc} */
     public function label(): string
     {
-        return 'Email Code';
+        return __('Email Code', 'wpmgr-agent');
     }
 
     /** {@inheritDoc} */
@@ -61,7 +61,7 @@ final class EmailCodeProvider implements SiteTwoFactorProvider
     {
         $field       = esc_attr('wpmgr_email_code');
         $email       = isset($user->user_email) ? esc_html($user->user_email) : '';
-        $placeholder = esc_attr('8-digit code');
+        $placeholder = esc_attr__('8-digit code', 'wpmgr-agent');
         return '<p>'
             . esc_html__('A verification code was sent to', 'wpmgr-agent')
             . ' ' . $email . '.</p>'
@@ -142,9 +142,14 @@ final class EmailCodeProvider implements SiteTwoFactorProvider
         $this->storeTokens($userId, $tokens);
 
         $siteName = function_exists('get_bloginfo') ? get_bloginfo('name') : 'WordPress';
-        $subject  = sprintf('[%s] Two-factor verification code', $siteName);
+        $subject  = sprintf(
+            /* translators: %s: the site name. */
+            __('[%s] Two-factor verification code', 'wpmgr-agent'),
+            $siteName
+        );
         $message  = sprintf(
-            "Your two-factor verification code is: %s\n\nThis code expires in 15 minutes.",
+            /* translators: %s: the one-time verification code. */
+            __("Your two-factor verification code is: %s\n\nThis code expires in 15 minutes.", 'wpmgr-agent'),
             $code
         );
 

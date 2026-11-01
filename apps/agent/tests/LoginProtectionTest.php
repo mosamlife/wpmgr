@@ -915,4 +915,88 @@ final class LoginProtectionTest extends TestCase
         $this->assertInstanceOf(\WP_Error::class, $result, 'AUDIT mode must still return a WP_Error as a safety net');
         $this->assertSame('wpmgr_temp_blocked', $result->get_error_code());
     }
+
+    // -------------------------------------------------------------------------
+    // Translation (GH #967): what a blocked visitor reads passes through gettext
+    // -------------------------------------------------------------------------
+
+    /**
+     * A catalogue that marks every string it is asked for, so a literal that
+     * bypasses gettext shows up without the marker.
+     */
+    private static function marker(string $text, string $domain = 'default'): string
+    {
+        return '[' . $domain . '] ' . $text;
+    }
+
+    public function test_the_wp_error_message_for_each_block_tier_is_translated(): void
+    {
+        Functions\when('__')->alias(static fn (string $t, string $d = 'default'): string => self::marker($t, $d));
+        Functions\when('esc_html')->alias(static fn (string $t): string => $t);
+
+        $expected = [
+            'wpmgr_temp_blocked'  => 'Too many failed login attempts. You cannot log in to this site for 30 minutes.',
+            'wpmgr_captcha_block' => 'Too many failed login attempts. Your IP has been temporarily restricted. Contact the site administrator to unblock access.',
+            'wpmgr_all_blocked'   => 'Logins to this site are currently blocked due to excessive failed login attempts. Please try again later.',
+            'wpmgr_ip_blocked'    => 'Your IP address is blocked from logging in to this site.',
+        ];
+
+        $scenarios = [
+            'wpmgr_temp_blocked'  => [['captcha_limit' => 3, 'temp_block_limit' => 10, 'block_all_limit' => 100], [], [], 0, 5, 10],
+            'wpmgr_captcha_block' => [['captcha_limit' => 3, 'temp_block_limit' => 10, 'block_all_limit' => 100], [], [], 0, 5, 3],
+            'wpmgr_all_blocked'   => [['captcha_limit' => 3, 'temp_block_limit' => 10, 'block_all_limit' => 100], [], [], 0, 100, 1],
+            'wpmgr_ip_blocked'    => [[], [], ['203.0.113.0/24'], 0, 0, 0],
+        ];
+
+        foreach ($scenarios as $code => [$thresholds, $allow, $deny, $success, $failureGlobal, $failurePerIp]) {
+            $this->configureProtection(LoginProtection::MODE_AUDIT, $thresholds, $allow, $deny);
+            $_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+            $GLOBALS['wpdb']        = $this->makeScriptedLoginEventsWpdb($success, $failureGlobal, $failurePerIp);
+
+            $result = $this->makeProtection()->onAuthenticate(new \stdClass(), 'admin', 'wrongpass');
+
+            $this->assertInstanceOf(\WP_Error::class, $result, $code);
+            $this->assertSame($code, $result->get_error_code());
+            $this->assertSame(
+                self::marker($expected[$code], 'wpmgr-agent'),
+                $result->get_error_message(),
+                $code . ': the message must come from the wpmgr-agent text domain, not a bare literal'
+            );
+        }
+    }
+
+    public function test_the_protect_mode_block_page_and_title_are_translated(): void
+    {
+        $this->configureProtection(
+            LoginProtection::MODE_PROTECT,
+            ['captcha_limit' => 3, 'temp_block_limit' => 10, 'block_all_limit' => 100]
+        );
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+        $GLOBALS['wpdb']        = $this->makeScriptedLoginEventsWpdb(successPerIp: 0, failureGlobal: 5, failurePerIp: 10);
+
+        Functions\when('__')->alias(static fn (string $t, string $d = 'default'): string => self::marker($t, $d));
+        Functions\when('esc_html__')->alias(static fn (string $t, string $d = 'default'): string => self::marker($t, $d));
+        Functions\when('wp_kses')->alias(static fn ($html, $allowed = []) => $html);
+
+        $page  = null;
+        $title = null;
+        Functions\when('wp_die')->alias(function ($message, $t = '', $args = []) use (&$page, &$title) {
+            $page  = $message;
+            $title = $t;
+            throw new \RuntimeException('wp_die called');
+        });
+
+        try {
+            $this->makeProtection()->onAuthenticate(new \stdClass(), 'admin', 'wrongpass');
+            $this->fail('PROTECT mode must call wp_die() on a block');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('wp_die called', $e->getMessage());
+        }
+
+        $this->assertSame('[wpmgr-agent] Login Blocked', $title, 'the wp_die title is translated');
+        $this->assertIsString($page);
+        $this->assertStringContainsString('<h2>[wpmgr-agent] WPMgr Login Protection</h2>', $page);
+        $this->assertStringContainsString('[wpmgr-agent] Too many failed login attempts. You cannot log in to this site for 30 minutes.', $page);
+        $this->assertStringContainsString('[wpmgr-agent] Reference ID: lp_', $page);
+    }
 }
