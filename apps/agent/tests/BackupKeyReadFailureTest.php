@@ -241,7 +241,7 @@ final class BackupKeyReadFailureTest extends TestCase
 
         $this->assertSame(1, $this->wpdb->failedSelects, 'Precondition: the read of the backup key failed.');
         $this->assertSame($sealed, $this->rows[Keystore::OPTION_AGE_IDENTITY], 'The backup key must not be replaced.');
-        $this->assertSame(0, $this->wpdb->inserted);
+        $this->assertSame(0, $this->wpdb->insertedFor(Keystore::OPTION_AGE_IDENTITY));
         $this->assertFalse($res['ok']);
         $this->assertSame('keystore_read_failed', $res['code'] ?? null);
         $this->assertSame(self::READ_FAILED_DETAIL, $res['detail']);
@@ -277,7 +277,7 @@ final class BackupKeyReadFailureTest extends TestCase
         $this->assertSame($sealed, $this->rows[Keystore::OPTION_AGE_IDENTITY], 'The backup key must not be replaced.');
         $this->assertSame(1, $this->wpdb->failedSelects, 'Precondition: the read of the backup key failed.');
         $this->assertFalse($ready);
-        $this->assertSame(0, $this->wpdb->inserted);
+        $this->assertSame(0, $this->wpdb->insertedFor(Keystore::OPTION_AGE_IDENTITY));
         $this->assertArrayNotHasKey(Plugin::OPTION_KEYSTORE_ERROR, $this->rows);
         $this->assertArrayNotHasKey(Plugin::OPTION_KEYSTORE_ERROR_KIND, $this->rows);
     }
@@ -295,7 +295,7 @@ final class BackupKeyReadFailureTest extends TestCase
         $this->assertSame($recipient, $ensured);
         $this->assertTrue($ready);
         $this->assertSame($sealed, $this->rows[Keystore::OPTION_AGE_IDENTITY], 'The backup key must not be replaced.');
-        $this->assertSame(0, $this->wpdb->inserted);
+        $this->assertSame(0, $this->wpdb->insertedFor(Keystore::OPTION_AGE_IDENTITY));
         $this->assertArrayNotHasKey(Keystore::OPTION_AGE_IDENTITY, $this->notoptions, 'A cached missing record is dropped once the row is found.');
     }
 
@@ -307,7 +307,7 @@ final class BackupKeyReadFailureTest extends TestCase
         $first  = (new AgeIdentity(new Keystore()))->ensureRecipient();
         $second = (new AgeIdentity(new Keystore()))->ensureRecipient();
 
-        $this->assertSame(1, $this->wpdb->inserted, 'Exactly one key is created.');
+        $this->assertSame(1, $this->wpdb->insertedFor(Keystore::OPTION_AGE_IDENTITY), 'Exactly one key is created.');
         $this->assertStringStartsWith('age1', $first);
         $this->assertSame($first, $second);
         $this->assertSame($first, $this->storedRecipient());
@@ -335,7 +335,7 @@ final class BackupKeyReadFailureTest extends TestCase
         $this->assertStringStartsWith('age1', $other);
         $this->assertSame($other, $mine, 'Both creators must end on the same key.');
         $this->assertSame($other, $this->storedRecipient(), 'The first key stored is the one kept.');
-        $this->assertSame(1, $this->wpdb->inserted);
+        $this->assertSame(1, $this->wpdb->insertedFor(Keystore::OPTION_AGE_IDENTITY));
     }
 
     /**
@@ -346,6 +346,7 @@ final class BackupKeyReadFailureTest extends TestCase
     public function test_a_key_stored_first_by_another_request_is_the_one_used(): void
     {
         (new Keystore())->generateSiteKeypair();
+        $this->wpdb->insertSuppressed = [];
         $winner = (new AgeCrypto())->generateIdentity();
         $sealed = (new Keystore())->encrypt($winner['secret']);
         $this->wpdb->beforeInsert = function () use ($sealed): void {

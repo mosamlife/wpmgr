@@ -195,7 +195,7 @@ final class AgentSelfUpdateTest extends TestCase
         });
 
         $this->settings = new Settings();
-        $this->keystore->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $this->keystore->generateSiteKeypair());
         $this->signer = new Signer($this->keystore);
 
         $self = $this;

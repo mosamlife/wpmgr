@@ -170,7 +170,7 @@ final class AutologinCommandTest extends TestCase
         $this->keystore = new Keystore();
         $this->keystore->storeControlPlanePublicKey($this->cpPublic);
         // Site keypair for the Signer's outbound headers on the consume call.
-        $this->keystore->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $this->keystore->generateSiteKeypair());
 
         $this->options[Settings::OPTION_SITE_ID]   = $this->siteId;
         $this->options[Settings::OPTION_TENANT_ID] = 'tenant-1';

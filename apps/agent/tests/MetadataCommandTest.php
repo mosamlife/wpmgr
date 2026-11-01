@@ -985,7 +985,7 @@ PHP;
         $this->assertSame($sealed, $options[\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY], 'The backup key must not be replaced.');
         $this->assertSame(1, $wpdb->failedSelects, 'Precondition: the read of the backup key failed.');
         $this->assertArrayNotHasKey('age_recipient', $data);
-        $this->assertSame(0, $wpdb->inserted);
+        $this->assertSame(0, $wpdb->insertedFor(\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY));
     }
 
     /**
@@ -1047,7 +1047,7 @@ PHP;
         $this->assertSame($sealed, $options[\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY], 'The backup key must not be replaced.');
         $this->assertSame(1, $failedRead, 'Precondition: the probe read of the backup key failed.');
         $this->assertSame($pair['recipient'], $data['age_recipient'] ?? null, 'The push carries the stored key, never a new one.');
-        $this->assertSame(0, $wpdb->inserted);
+        $this->assertSame(0, $wpdb->insertedFor(\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY));
     }
 
     /** Over-fire guard: a healthy keystore reports ok and still sends the recipient. */

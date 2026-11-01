@@ -47,6 +47,9 @@ final class FakeKeyRowWpdb
     /** Rows an INSERT created so far. */
     public int $inserted = 0;
 
+    /** @var array<string,int> Rows an INSERT created so far, by option name. */
+    public array $insertedByName = [];
+
     /** INSERTs that failed as a duplicate key so far. */
     public int $duplicateInserts = 0;
 
@@ -127,6 +130,17 @@ final class FakeKeyRowWpdb
     }
 
     /**
+     * Rows an INSERT created so far for one option.
+     *
+     * @param string $name Option name.
+     * @return int
+     */
+    public function insertedFor(string $name): int
+    {
+        return $this->insertedByName[$name] ?? 0;
+    }
+
+    /**
      * Set whether errors are suppressed, as core does.
      *
      * @param bool $suppress New state.
@@ -166,6 +180,7 @@ final class FakeKeyRowWpdb
             }
             $this->rows[$name] = (string) $args[1];
             ++$this->inserted;
+            $this->insertedByName[$name] = ($this->insertedByName[$name] ?? 0) + 1;
 
             return 1;
         }

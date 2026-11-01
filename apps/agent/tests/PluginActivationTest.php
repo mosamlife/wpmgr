@@ -272,7 +272,7 @@ final class PluginActivationTest extends TestCase
         Plugin::boot()->activate();
 
         $this->assertSame(1, $raced, 'Precondition: the backup key changed between the probe and its creation.');
-        $this->assertSame(0, $this->wpdb->inserted, 'The racing key must not be replaced.');
+        $this->assertSame(0, $this->wpdb->insertedFor(Keystore::OPTION_AGE_IDENTITY), 'The racing key must not be replaced.');
         $this->assertSame('unreadable', $this->options[Plugin::OPTION_KEYSTORE_ERROR_KIND] ?? null);
         $message = $this->options[Plugin::OPTION_KEYSTORE_ERROR] ?? null;
         $this->assertIsString($message);

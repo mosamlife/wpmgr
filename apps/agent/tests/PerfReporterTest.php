@@ -83,7 +83,7 @@ final class PerfReporterTest extends TestCase
         $this->optionStore[Settings::OPTION_SITE_ID] = 'site-abc';
 
         $keystore = new Keystore();
-        $keystore->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->generateSiteKeypair());
         $settings = new Settings();
         $signer   = new Signer($keystore);
         $cache    = new CacheManager();

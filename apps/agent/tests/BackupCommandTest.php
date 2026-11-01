@@ -576,7 +576,7 @@ final class BackupCommandTest extends TestCase
             $options[$name] = $value;
             return true;
         });
-        (new \WPMgr\Agent\Keystore())->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(static fn () => (new \WPMgr\Agent\Keystore())->generateSiteKeypair());
 
         $previousWpdb    = $GLOBALS['wpdb'] ?? null;
         $GLOBALS['wpdb'] = new FakeKeyRowWpdb($options);
