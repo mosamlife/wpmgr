@@ -202,8 +202,7 @@ final class RestoreWatchdog
             \WPMgr\Agent\Support\DebugLog::write(sprintf('WPMgr Restore: dispatch cannot extract params for %s/%s', $snapshotId, $restoreId));
             return;
         }
-        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup/restore loop must not hit max_execution_time; @-guarded
-        @ignore_user_abort(true);
+        LongRunningJob::extendLimits();
         try {
             (new RestoreRunner($params))->run();
         } catch (\Throwable $e) {

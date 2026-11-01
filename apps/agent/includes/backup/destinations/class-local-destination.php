@@ -248,6 +248,84 @@ final class LocalDestination implements BackupDestination
     }
 
     /**
+     * GH #982: where the default store can be, as paths relative to
+     * WP_CONTENT_DIR: the uploads folder WordPress reports (which follows a
+     * custom UPLOADS constant or upload_path option, and a multisite
+     * subsite's folder), the wp-content folder resolveBaseDir() falls back
+     * to, and the default uploads folder of an earlier layout.
+     *
+     * A backup excludes exactly these paths and a restore keeps exactly these
+     * paths from the live site, so no store is left out of the archive
+     * without also being kept. A store outside wp-content is outside both the
+     * archive and the restore swap. An operator-configured local_path_prefix
+     * is not listed: such a store is archived and restored like any folder.
+     *
+     * @return list<string> `/`-separated, no leading or trailing slash, never `..`.
+     */
+    public static function storePathsInContent(): array
+    {
+        $paths = ['uploads/' . self::BASE_DIR_NAME, self::BASE_DIR_NAME];
+        if (defined('WP_CONTENT_DIR') && is_string(WP_CONTENT_DIR) && WP_CONTENT_DIR !== '') {
+            $relative = self::relativeTo(WP_CONTENT_DIR, StoragePaths::dataBase('backups'));
+            if ($relative !== null) {
+                $paths[] = $relative;
+            }
+        }
+        return array_values(array_unique($paths));
+    }
+
+    /**
+     * $path relative to $base, or null when it is not inside $base. Both are
+     * compared as written and, when that fails, as resolved by realpath(), so
+     * a symlinked wp-content still matches.
+     */
+    private static function relativeTo(string $base, string $path): ?string
+    {
+        if ($path === '') {
+            return null;
+        }
+        $pairs = [[self::normalizePath($base), self::normalizePath($path)]];
+        $realBase = @realpath($base);
+        $realParent = @realpath(dirname($path));
+        if (is_string($realBase) && is_string($realParent)) {
+            $pairs[] = [self::normalizePath($realBase), self::normalizePath($realParent . '/' . basename($path))];
+        }
+        foreach ($pairs as [$b, $p]) {
+            if ($b === '' || $p === '' || strncmp($p, $b . '/', strlen($b) + 1) !== 0) {
+                continue;
+            }
+            $relative = substr($p, strlen($b) + 1);
+            if ($relative !== '' && !in_array('..', explode('/', $relative), true)) {
+                return $relative;
+            }
+        }
+        return null;
+    }
+
+    /** Forward slashes, no empty or `.` segments, `..` resolved, no trailing slash. */
+    private static function normalizePath(string $path): string
+    {
+        $path     = str_replace('\\', '/', $path);
+        $absolute = str_starts_with($path, '/');
+        $out      = [];
+        foreach (explode('/', $path) as $segment) {
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+            if ($segment === '..') {
+                if ($out === [] || end($out) === '..') {
+                    $out[] = '..';
+                } else {
+                    array_pop($out);
+                }
+                continue;
+            }
+            $out[] = $segment;
+        }
+        return ($absolute ? '/' : '') . implode('/', $out);
+    }
+
+    /**
      * Pick the base dir for wpmgr-backups/.
      *
      * When the operator configured an explicit `local_path_prefix`

@@ -288,8 +288,7 @@ final class RestoreRunner
      */
     public function run(): string
     {
-        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running restore loop must not hit max_execution_time; @-guarded, no-op when disabled
-        @ignore_user_abort(true);
+        LongRunningJob::extendLimits();
 
         $currentPhase = self::PHASE_PREFLIGHT;
 
@@ -568,7 +567,7 @@ final class RestoreRunner
 
         // Disk free on wp-content's volume. disk_free_space returns the
         // bytes free for the filesystem the path lives on.
-        $free = $wpContent !== '' && is_dir($wpContent) ? (int) @disk_free_space($wpContent) : 0;
+        $free = $wpContent !== '' && is_dir($wpContent) ? (int) (LongRunningJob::diskFreeSpace($wpContent) ?? 0) : 0;
 
         if ($required > 0 && $free > 0 && $free < $required) {
             // Operator-facing message — surfaces in the SSE phase_detail and
