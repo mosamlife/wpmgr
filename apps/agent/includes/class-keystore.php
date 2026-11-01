@@ -459,18 +459,21 @@ final class Keystore implements EmailKeystoreInterface
     {
         $keypair = sodium_crypto_sign_keypair();
         try {
-            $this->insertKeyRow(self::OPTION_SITE_KEYPAIR, $this->encrypt($keypair), 'site keypair');
+            $this->insertKeyRow(self::OPTION_SITE_KEYPAIR, $this->encrypt($keypair));
         } finally {
             // Wipe the in-memory keypair as soon as it is written.
             SecureMemory::wipe($keypair);
         }
 
-        $stored = $this->readKeyRow(self::OPTION_SITE_KEYPAIR, 'site keypair');
+        $stored = $this->readKeyRow(self::OPTION_SITE_KEYPAIR);
         if ($stored === null) {
             throw new \RuntimeException('WPMgr Agent: the site keypair could not be stored.');
         }
         $storedKeypair = $this->decrypt($stored);
-        $publicKey     = sodium_crypto_sign_publickey($storedKeypair);
+        if ($storedKeypair === '') {
+            throw new \RuntimeException('WPMgr Agent: the stored site keypair is empty.');
+        }
+        $publicKey = sodium_crypto_sign_publickey($storedKeypair);
         SecureMemory::wipe($storedKeypair);
 
         return $publicKey;
@@ -489,7 +492,7 @@ final class Keystore implements EmailKeystoreInterface
     {
         $stored = get_option(self::OPTION_SITE_KEYPAIR);
         if (!is_string($stored) || $stored === '') {
-            $stored = $this->readKeyRow(self::OPTION_SITE_KEYPAIR, 'site keypair');
+            $stored = $this->readKeyRow(self::OPTION_SITE_KEYPAIR);
             if ($stored === null) {
                 return null;
             }
@@ -542,9 +545,9 @@ final class Keystore implements EmailKeystoreInterface
      */
     public function createAgeIdentity(string $rawSecret): string
     {
-        $this->insertKeyRow(self::OPTION_AGE_IDENTITY, $this->encrypt($rawSecret), 'backup key');
+        $this->insertKeyRow(self::OPTION_AGE_IDENTITY, $this->encrypt($rawSecret));
 
-        $stored = $this->readKeyRow(self::OPTION_AGE_IDENTITY, 'backup key');
+        $stored = $this->readKeyRow(self::OPTION_AGE_IDENTITY);
         if ($stored === null) {
             throw new \RuntimeException('WPMgr Agent: the backup key could not be stored.');
         }
@@ -564,7 +567,7 @@ final class Keystore implements EmailKeystoreInterface
      */
     public function getAgeIdentity(): ?string
     {
-        $stored = $this->readKeyRow(self::OPTION_AGE_IDENTITY, 'backup key');
+        $stored = $this->readKeyRow(self::OPTION_AGE_IDENTITY);
         if ($stored === null) {
             return null;
         }
@@ -579,24 +582,23 @@ final class Keystore implements EmailKeystoreInterface
      * failed.
      *
      * @param string $option Option name of the key row.
-     * @param string $what   What the row holds, for the error message.
      * @return string|null The stored envelope, or null when no row is stored or it is empty.
      * @throws KeystoreReadFailed When the read failed.
      */
-    private function readKeyRow(string $option, string $what): ?string
+    private function readKeyRow(string $option): ?string
     {
         global $wpdb;
         if (!is_object($wpdb) || !method_exists($wpdb, 'prepare') || !method_exists($wpdb, 'get_row')
             || !isset($wpdb->options) || !is_string($wpdb->options) || $wpdb->options === ''
         ) {
-            throw new KeystoreReadFailed('WPMgr Agent: the ' . $what . ' cannot be read without a database connection.');
+            throw new KeystoreReadFailed('WPMgr Agent: a stored key cannot be read without a database connection.');
         }
 
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- reads the key row directly, so a read that fails is never taken for an absent key
         $row   = $wpdb->get_row($wpdb->prepare("SELECT COUNT(*) AS stored_rows, MAX(option_value) AS stored_value FROM {$wpdb->options} WHERE option_name = %s", $option), ARRAY_A);
         $error = isset($wpdb->last_error) && is_string($wpdb->last_error) ? $wpdb->last_error : '';
         if ($error !== '' || !is_array($row) || !isset($row['stored_rows']) || !is_numeric($row['stored_rows'])) {
-            throw new KeystoreReadFailed('WPMgr Agent: the ' . $what . ' could not be read from the database.');
+            throw new KeystoreReadFailed('WPMgr Agent: a stored key could not be read from the database.');
         }
         if ((int) $row['stored_rows'] === 0) {
             return null;
@@ -618,17 +620,16 @@ final class Keystore implements EmailKeystoreInterface
      *
      * @param string $option   Option name of the key row.
      * @param string $envelope Encrypted envelope to store.
-     * @param string $what     What the row holds, for the error message.
      * @return void
      * @throws KeystoreReadFailed When there is no database connection.
      */
-    private function insertKeyRow(string $option, string $envelope, string $what): void
+    private function insertKeyRow(string $option, string $envelope): void
     {
         global $wpdb;
         if (!is_object($wpdb) || !method_exists($wpdb, 'prepare') || !method_exists($wpdb, 'query')
             || !isset($wpdb->options) || !is_string($wpdb->options) || $wpdb->options === ''
         ) {
-            throw new KeystoreReadFailed('WPMgr Agent: the ' . $what . ' cannot be stored without a database connection.');
+            throw new KeystoreReadFailed('WPMgr Agent: a key cannot be stored without a database connection.');
         }
 
         // A plain INSERT, portable to every database WordPress runs on. When
