@@ -235,9 +235,10 @@ final class TaskRunner
      * Drive the task to completion. A worker that hands over after a saved
      * archive part (GH #983) is followed by the next one through the
      * watchdog's resume path, which runs every worker after this one from a
-     * single loop: a hand-over starts no frame inside the previous worker's,
-     * so nothing of an earlier worker, its cursor included, stays alive while
-     * a later one runs (GH #954). NEVER throws, like runWorker().
+     * single loop: a hand-over starts no frame inside the previous worker's.
+     * This runner itself stays alive until the last worker ends, keeping its
+     * params and at most 20 skipped paths; no worker's archive cursor
+     * outlives that worker (GH #954). NEVER throws, like runWorker().
      *
      * @return string Terminal phase reached, or the phase the last worker
      *                that ran stopped in.
