@@ -23,6 +23,9 @@ import (
 const (
 	recipientA = "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqsaaaaaa"
 	recipientB = "age1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzsbbbbbb"
+
+	// testAgentKey stands in for the agent key that authenticated a push.
+	testAgentKey = "dGVzdC1hZ2VudC1rZXktdGhhdC1zaWduZWQtdGhlLXB1c2g="
 )
 
 // logCapture wires a service to a JSON logger writing into a buffer, so a test
@@ -38,7 +41,7 @@ func logCapture(svc *Service) *bytes.Buffer {
 
 func applyRecipient(t *testing.T, svc *Service, tenantID, siteID uuid.UUID, rec string) error {
 	t.Helper()
-	_, err := svc.ApplyAgentMetadata(context.Background(), tenantID, siteID, agentpkg.Metadata{
+	_, err := svc.ApplyAgentMetadata(context.Background(), tenantID, siteID, testAgentKey, agentpkg.Metadata{
 		WPVersion:    "6.7",
 		AgentVersion: "0.61.161",
 		AgeRecipient: rec,
@@ -101,7 +104,7 @@ func TestAgentMetadataRefusesAndReportsRecipientChange(t *testing.T) {
 	buf := logCapture(svc)
 	tenantID, siteID := uuid.New(), uuid.New()
 
-	out, err := svc.ApplyAgentMetadata(context.Background(), tenantID, siteID, agentpkg.Metadata{
+	out, err := svc.ApplyAgentMetadata(context.Background(), tenantID, siteID, testAgentKey, agentpkg.Metadata{
 		WPVersion:    "6.7",
 		AgentVersion: "0.61.161",
 		AgeRecipient: recipientB,
@@ -174,6 +177,46 @@ func TestAgentMetadataSurfacesRecipientPersistFailure(t *testing.T) {
 	}
 }
 
+// GH #1004: the recipient is recorded only from a signed agent push. Metadata
+// no agent key signed (agentKey "", as the Re-check pull passes) never reaches
+// the guarded write on an empty column and is reported as unsigned_report; over
+// an established recipient it is refused as already_set, exactly as before.
+func TestAgentMetadataUnsignedReportNeverRecordsRecipient(t *testing.T) {
+	t.Run("empty column", func(t *testing.T) {
+		repo := &fakeRepo{}
+		svc := newSvc(repo)
+		buf := logCapture(svc)
+		if _, err := svc.ApplyAgentMetadata(context.Background(), uuid.New(), uuid.New(), "", agentpkg.Metadata{
+			WPVersion: "6.7", AgeRecipient: recipientA,
+		}); err != nil {
+			t.Fatalf("ApplyAgentMetadata returned error for an unsigned report: %v", err)
+		}
+		if repo.ageRecipient != "" || repo.ifUnsetCalls != 0 || repo.unconditionalSets != 0 {
+			t.Fatalf("unsigned report wrote the recipient: column=%q ifUnset=%d unconditional=%d",
+				repo.ageRecipient, repo.ifUnsetCalls, repo.unconditionalSets)
+		}
+		if !strings.Contains(buf.String(), `"reason":"unsigned_report"`) {
+			t.Fatalf("unsigned report was not reported as unsigned_report; log = %s", buf.String())
+		}
+	})
+	t.Run("established recipient", func(t *testing.T) {
+		repo := &fakeRepo{ageRecipient: recipientA}
+		svc := newSvc(repo)
+		buf := logCapture(svc)
+		if _, err := svc.ApplyAgentMetadata(context.Background(), uuid.New(), uuid.New(), "", agentpkg.Metadata{
+			WPVersion: "6.7", AgeRecipient: recipientB,
+		}); err != nil {
+			t.Fatalf("ApplyAgentMetadata returned error for an unsigned report: %v", err)
+		}
+		if repo.ageRecipient != recipientA || repo.ifUnsetCalls != 0 {
+			t.Fatalf("established recipient changed: column=%q ifUnset=%d", repo.ageRecipient, repo.ifUnsetCalls)
+		}
+		if !strings.Contains(buf.String(), `"reason":"already_set"`) {
+			t.Fatalf("refusal over an established recipient was not already_set; log = %s", buf.String())
+		}
+	})
+}
+
 // Losing the in-transaction race to a concurrent first set is a refused change
 // too: the column already holds someone else's value and this push must not
 // pretend it won.
@@ -198,7 +241,7 @@ type racingRepo struct {
 	winner string
 }
 
-func (r *racingRepo) SetAgeRecipientIfUnset(_ context.Context, tenantID, siteID uuid.UUID, _ string) (Site, bool, error) {
+func (r *racingRepo) SetAgeRecipientIfUnset(_ context.Context, tenantID, siteID uuid.UUID, _, _ string) (Site, bool, error) {
 	r.ifUnsetCalls++
 	r.ageRecipient = r.winner
 	return Site{ID: siteID, TenantID: tenantID, AgeRecipient: r.winner}, false, nil

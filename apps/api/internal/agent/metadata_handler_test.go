@@ -18,11 +18,13 @@ import (
 // than just the HTTP status.
 type fakeMetadataSink struct {
 	got       Metadata
+	gotKey    string
 	callCount int
 }
 
-func (f *fakeMetadataSink) ApplyAgentMetadata(_ context.Context, _, _ uuid.UUID, m Metadata) (gen.Site, error) {
+func (f *fakeMetadataSink) ApplyAgentMetadata(_ context.Context, _, _ uuid.UUID, agentKey string, m Metadata) (gen.Site, error) {
 	f.got = m
+	f.gotKey = agentKey
 	f.callCount++
 	return gen.Site{}, nil
 }
@@ -42,7 +44,7 @@ func postMetadata(t *testing.T, body string) (*httptest.ResponseRecorder, *fakeM
 	r := gin.New()
 	g := r.Group("/agent/v1")
 	g.Use(func(c *gin.Context) {
-		c.Request = c.Request.WithContext(WithIdentity(c.Request.Context(), Identity{SiteID: uuid.New(), TenantID: uuid.New()}))
+		c.Request = c.Request.WithContext(WithIdentity(c.Request.Context(), Identity{SiteID: uuid.New(), TenantID: uuid.New(), AgentPublicKey: testIdentityKey}))
 		c.Next()
 	})
 	h.Register(g)
@@ -52,6 +54,22 @@ func postMetadata(t *testing.T, body string) (*httptest.ResponseRecorder, *fakeM
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 	return w, sink
+}
+
+// testIdentityKey stands in for the key the agent authenticator verified.
+const testIdentityKey = "dGVzdC1hZ2VudC1rZXktZm9yLWlkZW50aXR5LXRlc3Q="
+
+// TestMetadataHandlerPassesTheAuthenticatingKey (GH #1004): the sink gets the
+// key that authenticated the push, so the first set of the backup recipient
+// can refuse a push whose key a re-enrollment has since rotated away.
+func TestMetadataHandlerPassesTheAuthenticatingKey(t *testing.T) {
+	w, sink := postMetadata(t, `{"wp_version":"6.8"}`)
+	if w.Code/100 != 2 {
+		t.Fatalf("status = %d, want 2xx; body = %s", w.Code, w.Body.String())
+	}
+	if sink.gotKey != testIdentityKey {
+		t.Fatalf("sink got agent key %q, want the authenticating key %q", sink.gotKey, testIdentityKey)
+	}
 }
 
 // TestMetadataHandlerToleratesMalformedKeystoreShapes (GH #753) proves that a

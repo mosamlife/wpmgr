@@ -12,6 +12,7 @@ import {
   humanizeReason,
   humanizeTargetType,
   metaString,
+  REASON_SHOWN_ACTIONS,
 } from "./metadata";
 
 // AuditEntryDetail — the "detail on demand" panel (redesign point 10). Every
@@ -43,6 +44,14 @@ export function AuditEntryDetail({ entry }: { entry: AuditEntry }) {
   const metaEntries = Object.entries(entry.metadata ?? {}).filter(
     ([key]) => !HANDLED_KEYS.has(key),
   );
+
+  // A denial's reason is the "Why" callout below. A listed non-denial's reason
+  // leads the metadata list as a plain "Reason" line; `reason` itself is in
+  // HANDLED_KEYS, so it never doubles up as a generic row.
+  const reasonRows: KvRowProps[] =
+    !denied && reason && REASON_SHOWN_ACTIONS.has(entry.action)
+      ? [{ label: "Reason", value: humanizeReason(reason) }]
+      : [];
 
   const metaRows: KvRowProps[] = metaEntries.map(([key, value]) => {
     const reasonKey = DELIVERY_STATUS_REASON_KEYS[key];
@@ -77,7 +86,9 @@ export function AuditEntryDetail({ entry }: { entry: AuditEntry }) {
         <DefinitionList rows={[{ label: "Path", copyable: path }]} />
       ) : null}
 
-      {metaRows.length > 0 ? <DefinitionList rows={metaRows} /> : null}
+      {reasonRows.length + metaRows.length > 0 ? (
+        <DefinitionList rows={[...reasonRows, ...metaRows]} />
+      ) : null}
 
       <DefinitionList
         rows={[

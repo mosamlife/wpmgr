@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import type { AuditEntry } from "@wpmgr/api";
 
 import { renderWithProviders } from "@/test/render";
@@ -242,5 +242,148 @@ describe("AuditEntryRow for a removed email provider (GH #968)", () => {
     expect(screen.getByText("Write")).toBeInTheDocument();
     expect(screen.getByText("Acme Blog")).toBeInTheDocument();
     expect(screen.queryByText("site.email.config.reset")).not.toBeInTheDocument();
+  });
+});
+
+// D1004: the rows the control plane writes for a site's backup key. Target type
+// "site", actor "system" and the metadata keys are the ones recorded by
+// recordRecipientChangeRejected, recordRecipientCleared and
+// applyAgentAgeRecipient in apps/api/internal/site/service.go. The reason codes
+// are already_set, concurrent_first_set, agent_key_not_current, unsigned_report
+// (reasonUnsignedReport, same file) and re_enrollment (reasonReEnrollment).
+describe("AuditEntryRow for the backup key events (D1004)", () => {
+  const renderRow = (e: AuditEntry) =>
+    renderWithProviders(<AuditEntryRow entry={e} sites={SITES} isToday={false} />, { withRouter: true });
+
+  const keyEvent = (action: string, metadata: Record<string, unknown>) =>
+    entry({ actor_type: "system", action, target_type: "site", target_id: SITE_ID, metadata });
+
+  const refused = (reason: string) =>
+    keyEvent("site.backup.recipient.change_rejected", {
+      current_recipient: "age1recordedkey",
+      proposed_recipient: "age1reportedkey",
+      source: "agent_metadata",
+      agent_version: "0.61.167",
+      reason,
+    });
+
+  // A person opening the row clicks its summary line.
+  const openRow = (title: string) => fireEvent.click(screen.getByText(title));
+
+  it.each([
+    ["already_set", "WPMgr already had a key for this site"],
+    ["concurrent_first_set", "Another report recorded a key first"],
+    ["agent_key_not_current", "The report came from an old connection"],
+    ["unsigned_report", "The report was not signed by the site's agent"],
+  ])("titles a refused change in plain words and explains %s once opened", async (reason, plain) => {
+    renderRow(refused(reason));
+
+    // Closed: the plain title on the site it happened to, and neither the raw
+    // event key nor the explanation yet.
+    expect(await screen.findByText("Backup key change refused")).toBeInTheDocument();
+    expect(screen.getByText("Acme Blog")).toBeInTheDocument();
+    expect(screen.queryByText("site.backup.recipient.change_rejected")).not.toBeInTheDocument();
+    expect(screen.queryByText(plain)).not.toBeInTheDocument();
+
+    openRow("Backup key change refused");
+
+    expect(await screen.findByText(plain)).toBeInTheDocument();
+    expect(screen.getByText("Reason")).toBeInTheDocument();
+    // The wire code never becomes visible text.
+    expect(screen.queryByText(reason)).not.toBeInTheDocument();
+  });
+
+  // The table above gives every reason a recorded key. A report no agent key
+  // signed arrives while none is recorded, so the control plane writes this row
+  // with an empty current_recipient (recordRecipientChangeRejected in
+  // apps/api/internal/site/service.go; apps/api/tests/
+  // c1004_reenroll_repin_integration_test.go asserts that exact shape).
+  it("explains an unsigned report on the row written when no key is recorded", async () => {
+    renderRow(
+      keyEvent("site.backup.recipient.change_rejected", {
+        current_recipient: "",
+        proposed_recipient: "age1reportedkey",
+        source: "agent_metadata",
+        agent_version: "0.61.167",
+        reason: "unsigned_report",
+      }),
+    );
+
+    expect(await screen.findByText("Backup key change refused")).toBeInTheDocument();
+    openRow("Backup key change refused");
+
+    expect(await screen.findByText("The report was not signed by the site's agent")).toBeInTheDocument();
+    expect(screen.getByText("Reason")).toBeInTheDocument();
+    expect(screen.queryByText("unsigned_report")).not.toBeInTheDocument();
+  });
+
+  it("says a reconnect cleared the key, and why, once opened", async () => {
+    renderRow(
+      keyEvent("site.backup.recipient.cleared", {
+        previous_recipient: "age1recordedkey",
+        reason: "re_enrollment",
+      }),
+    );
+
+    expect(await screen.findByText("Backup key cleared by reconnect")).toBeInTheDocument();
+    openRow("Backup key cleared by reconnect");
+
+    expect(await screen.findByText("The site was reconnected")).toBeInTheDocument();
+    expect(screen.getByText("Reason")).toBeInTheDocument();
+  });
+
+  it("titles the first recording of a key, which carries no reason to show", async () => {
+    renderRow(
+      keyEvent("site.backup.recipient.set", {
+        recipient: "age1reportedkey",
+        source: "agent_metadata",
+        agent_version: "0.61.167",
+      }),
+    );
+
+    expect(await screen.findByText("Backup key recorded")).toBeInTheDocument();
+    openRow("Backup key recorded");
+
+    expect(await screen.findByText("Event key")).toBeInTheDocument();
+    expect(screen.queryByText("Reason")).not.toBeInTheDocument();
+  });
+
+  it("keeps a denial's reason in its Why callout, with no extra Reason line", async () => {
+    renderRow(
+      entry({
+        action: "site.files.delete.denied",
+        target_type: "site",
+        target_id: SITE_ID,
+        metadata: { reason: "insufficient_permission" },
+      }),
+    );
+
+    expect(await screen.findByText("Blocked file deletion")).toBeInTheDocument();
+    openRow("Blocked file deletion");
+
+    expect(await screen.findByText("Why:")).toBeInTheDocument();
+    expect(
+      screen.getByText("The actor's role does not have permission for this action"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Reason")).not.toBeInTheDocument();
+  });
+
+  it("does not add a Reason line to any other row that carries a reason", async () => {
+    // grant_inactive is a real not_sent reason (apps/api/internal/assistantrequest/model.go).
+    renderRow(
+      entry({
+        action: "assistant.request.not_sent",
+        target_type: "site",
+        target_id: SITE_ID,
+        metadata: { reason: "grant_inactive" },
+      }),
+    );
+
+    expect(await screen.findByText("AI cache-clear request not sent")).toBeInTheDocument();
+    openRow("AI cache-clear request not sent");
+
+    expect(await screen.findByText("Event key")).toBeInTheDocument();
+    expect(screen.queryByText("Reason")).not.toBeInTheDocument();
+    expect(screen.queryByText("The connection was revoked or had expired")).not.toBeInTheDocument();
   });
 });
