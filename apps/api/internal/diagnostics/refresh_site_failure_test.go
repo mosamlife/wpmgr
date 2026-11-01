@@ -12,12 +12,14 @@ package diagnostics
 // rename them silently.
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -52,7 +54,7 @@ func (l testSiteLookup) GetSiteURL(context.Context, uuid.UUID, uuid.UUID) (strin
 
 // seenRequest is what a fake site recorded of one signed command.
 type seenRequest struct {
-	method, path, userAgent string
+	method, path, userAgent, authorization string
 }
 
 // fakeSite is an httptest site that records every request it receives and
@@ -68,7 +70,7 @@ func newFakeSite(t *testing.T, behave http.HandlerFunc) *fakeSite {
 	s := &fakeSite{}
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
-		s.got = append(s.got, seenRequest{r.Method, r.URL.Path, r.UserAgent()})
+		s.got = append(s.got, seenRequest{r.Method, r.URL.Path, r.UserAgent(), r.Header.Get("Authorization")})
 		s.mu.Unlock()
 		behave(w, r)
 	}))
@@ -124,6 +126,7 @@ func hostForbiddenPage(t *testing.T) string {
 // signed-command client in place of a fake.
 type refreshChain struct {
 	svc     *Service
+	enq     *RefreshEnqueuerImpl
 	handler *Handler
 }
 
@@ -146,11 +149,12 @@ func newRefreshChain(t *testing.T, repo repository, sites SiteLookup, clientTime
 	svc.SetRefreshEnqueuer(enq)
 	// The audit recorder is nil: every case here ends before the handler
 	// records the success, and a case that does not is caught below.
-	return &refreshChain{svc: svc, handler: NewHandler(svc, nil)}
+	return &refreshChain{svc: svc, enq: enq, handler: NewHandler(svc, nil)}
 }
 
 // apiAnswer is the response the control plane gave the dashboard.
 type apiAnswer struct {
+	siteID  string
 	status  int
 	code    string
 	message string
@@ -161,9 +165,10 @@ type apiAnswer struct {
 func (c *refreshChain) refresh(t *testing.T) apiAnswer {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
+	siteID := uuid.NewString()
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
-	ctx.Params = gin.Params{{Key: "siteId", Value: uuid.NewString()}}
+	ctx.Params = gin.Params{{Key: "siteId", Value: siteID}}
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/v1/sites/x/diagnostics/refresh", nil)
 	func() {
 		defer func() {
@@ -178,7 +183,7 @@ func (c *refreshChain) refresh(t *testing.T) apiAnswer {
 		Message string `json:"message"`
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &env)
-	return apiAnswer{status: rec.Code, code: env.Code, message: env.Message, body: rec.Body.String()}
+	return apiAnswer{siteID: siteID, status: rec.Code, code: env.Code, message: env.Message, body: rec.Body.String()}
 }
 
 // TestRefreshAnswersASiteFailureWithBadGateway: whatever the site does to a
@@ -422,4 +427,116 @@ func closedSiteURL(s *fakeSite) string {
 	url := s.srv.URL
 	s.srv.Close()
 	return url
+}
+
+// TestRefreshLogsOneWarnLinePerSiteFailure: a failure that is the site's doing
+// is logged once, with the site, the command, the code and (when the site gave
+// one) the HTTP status. The line never carries the command token, the
+// Authorization header, the reply body or the error text. A failure that is not
+// the site's doing logs nothing from the enqueuer.
+func TestRefreshLogsOneWarnLinePerSiteFailure(t *testing.T) {
+	cases := []struct {
+		name       string
+		behave     http.HandlerFunc
+		timeout    time.Duration
+		lookupErr  error
+		repo       func() repository
+		wantCode   string // "" means no line is expected
+		wantStatus string // "" means the line has no http_status
+	}{
+		{name: "host 403 page", behave: reply(403, "text/html", hostForbiddenPage(t)), wantCode: "site_refused", wantStatus: "403"},
+		{name: "agent 403", behave: reply(403, "application/json", `{"code":"wpmgr_token_skew","message":"`+siteMarker+`","data":{"status":403}}`), wantCode: "site_refused", wantStatus: "403"},
+		{name: "web server error page", behave: reply(500, "text/html", `<html>`+siteMarker+`</html>`), wantCode: "site_error", wantStatus: "500"},
+		{name: "redirect", behave: redirectTo("https://redirect-target.example.test"+commandPath, siteMarker), wantCode: "site_url_redirects", wantStatus: "302"},
+		{name: "timeout", behave: stall, timeout: 150 * time.Millisecond, wantCode: "site_timeout"},
+		{name: "PHP warning before the JSON", behave: reply(200, "application/json", "\nWarning: "+siteMarker+"\n"+string(pushBodyFixture(t))), wantCode: "site_bad_reply"},
+		{name: "reply without collected_at", behave: reply(200, "application/json", string(pushBody(t, nil, true)))},
+		{name: "unknown site", behave: reply(200, "application/json", `{}`), lookupErr: domain.NotFound("site_not_found", "site not found")},
+		{name: "failing database", behave: reply(200, "application/json", string(pushBodyFixture(t))), repo: func() repository { return failingUpsertRepo{&fakeRepo{}} }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			site := newFakeSite(t, tc.behave)
+			var repo repository = &fakeRepo{}
+			if tc.repo != nil {
+				repo = tc.repo()
+			}
+			timeout := tc.timeout
+			if timeout == 0 {
+				timeout = 2 * time.Second
+			}
+			chain := newRefreshChain(t, repo, testSiteLookup{url: site.srv.URL, err: tc.lookupErr}, timeout)
+			logs := &bytes.Buffer{}
+			chain.enq.logger = slog.New(slog.NewTextHandler(logs, nil))
+
+			got := chain.refresh(t)
+
+			var lines []string
+			if s := strings.TrimSpace(logs.String()); s != "" {
+				lines = strings.Split(s, "\n")
+			}
+			if tc.wantCode == "" {
+				if len(lines) != 0 {
+					t.Fatalf("want no log line, got %q", lines)
+				}
+				return
+			}
+			if len(lines) != 1 {
+				t.Fatalf("want exactly 1 log line, got %d: %q", len(lines), lines)
+			}
+			line := lines[0]
+			for _, want := range []string{"level=WARN", "site_id=" + got.siteID, "command=diagnostics", "code=" + tc.wantCode} {
+				if !strings.Contains(line, want) {
+					t.Errorf("log line %q does not contain %q", line, want)
+				}
+			}
+			if tc.wantStatus != "" {
+				if !strings.Contains(line, "http_status="+tc.wantStatus) {
+					t.Errorf("log line %q does not contain http_status=%s", line, tc.wantStatus)
+				}
+			} else if strings.Contains(line, "http_status=") {
+				t.Errorf("log line %q carries an http_status the site never gave", line)
+			}
+
+			// The credential the site was sent must be real for the check below
+			// to mean anything.
+			seen := site.requests()
+			if len(seen) != 1 || !strings.HasPrefix(seen[0].authorization, "Bearer ") {
+				t.Fatalf("the site saw %+v, want one request with a Bearer token", seen)
+			}
+			token := strings.TrimPrefix(seen[0].authorization, "Bearer ")
+			if len(token) < 40 {
+				t.Fatalf("token %q is too short to be a signed command token", token)
+			}
+			for _, banned := range []string{token, "Bearer", "Authorization", siteMarker, "<html", "body=", "rejected by agent", "Warning:"} {
+				if strings.Contains(line, banned) {
+					t.Errorf("log line carries %q: %s", banned, line)
+				}
+			}
+		})
+	}
+}
+
+// sinkReturning is an IngestSink whose IngestDiagnostics fails with err.
+type sinkReturning struct{ err error }
+
+func (s sinkReturning) IngestDiagnostics(context.Context, uuid.UUID, uuid.UUID, []byte) (int, error) {
+	return 0, s.err
+}
+
+func (sinkReturning) ResolveHostProvider(context.Context, uuid.UUID, uuid.UUID, string, []byte) {}
+
+// TestRefreshKeepsTheKindOfADomainErrorThatWrapsADecodeError: only an ingest
+// error that is not a domain error is taken for the site's. A domain error
+// keeps its kind even when its cause is a decode error.
+func TestRefreshKeepsTheKindOfADomainErrorThatWrapsADecodeError(t *testing.T) {
+	refusal := domain.Validation("collected_at_invalid", "fixed copy").WithCause(&json.SyntaxError{})
+	enq := NewRefreshEnqueuer(&fakeDiagnosticsAgent{body: []byte(`{}`)}, fakeSiteLookup{}, sinkReturning{err: refusal})
+
+	err := enq.EnqueueRefreshDiagnostics(context.Background(), uuid.New(), uuid.New())
+
+	de, ok := domain.AsDomain(err)
+	if !ok || de.Kind != domain.KindValidation || de.Code != "collected_at_invalid" {
+		t.Fatalf("err = %v, want the 422 validation error unchanged", err)
+	}
 }
