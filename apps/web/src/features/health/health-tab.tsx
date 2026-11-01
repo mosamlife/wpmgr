@@ -41,6 +41,17 @@ import {
 // is plain text, each card is the single surface (cards never nest).
 
 export function HealthTab({ siteId }: { siteId: string }) {
+  // Keyed by site. The tab holds state that belongs to one site: the answer of
+  // the last re-run, whether a re-run is still going, a card's dismissed hint.
+  // The route keeps this component mounted when only the site in the URL
+  // changes, so without the key a refusal shown for site A would still be on
+  // screen under site B, B's button would read as running, and a re-run still
+  // going for A would answer into B's page. With it, A's tab is dropped in the
+  // same commit that renders B, and a late answer for A has no tab to reach.
+  return <SiteHealth key={siteId} siteId={siteId} />;
+}
+
+function SiteHealth({ siteId }: { siteId: string }) {
   const { data, isPending, isError, error, refetch } = useDiagnostics(siteId);
   const { data: site } = useSite(siteId);
   const refresh = useRefreshDiagnostics(siteId);

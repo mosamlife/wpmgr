@@ -6,11 +6,20 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  RouterProvider,
+  useParams,
+} from "@tanstack/react-router";
 import type { SiteDiagnosticsCard } from "@wpmgr/api";
 
 import { renderWithProviders } from "@/test/render";
 
 import { HealthTab } from "./health-tab";
+import { diagnosticsKeys } from "./use-diagnostics";
 
 // GH #1005, dashboard half. The Diagnostics "Re-run all checks" button against
 // the control plane's new answers for POST /api/v1/sites/{siteId}/diagnostics/refresh.
@@ -446,5 +455,150 @@ describe("Re-run all checks, other failures keep the generic handling", () => {
       description: message,
     });
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});
+
+// The re-run's answer belongs to the site it was started on. The route keeps the
+// tab mounted when only the site in the URL changes, so it must not carry a
+// refusal, a running state or a late answer over to the next site.
+//
+// The route below is wired like routes/_authed/sites/$siteId.health.tsx: the
+// site comes from the URL param and goes straight to HealthTab as a prop. The
+// real router is used, so that a param change behaves as it does in the app.
+describe("Re-run all checks, moving to another site", () => {
+  const SITE_B = "00000000-0000-0000-0000-0000000000b2";
+
+  // Each site has its own report, so which page is showing is unmistakable.
+  const reports: Record<string, SiteDiagnosticsCard[]> = {};
+
+  function fetchesFor(siteId: string): number {
+    return getSiteDiagnostics.mock.calls.filter(
+      ([options]) =>
+        (options as { path: { siteId: string } }).path.siteId === siteId,
+    ).length;
+  }
+
+  /** Lets the query client's notification batch and any late promise land. */
+  function settle(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 25));
+  }
+
+  function renderHealthRoutes() {
+    const rootRoute = createRootRoute();
+    const healthRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: "/sites/$siteId/health",
+      component: function SiteHealthRoute() {
+        const { siteId } = useParams({ strict: false }) as { siteId: string };
+        return <HealthTab siteId={siteId} />;
+      },
+    });
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([healthRoute]),
+      history: createMemoryHistory({
+        initialEntries: [`/sites/${SITE_ID}/health`],
+      }),
+    });
+    const rendered = renderWithProviders(<RouterProvider router={router} />);
+    return {
+      ...rendered,
+      goToSite: (siteId: string) =>
+        act(() =>
+          router.navigate({ to: "/sites/$siteId/health", params: { siteId } }),
+        ),
+    };
+  }
+
+  beforeEach(() => {
+    reports[SITE_ID] = reportWithWpVersion("6.6.1");
+    reports[SITE_B] = reportWithWpVersion("6.7.2");
+    getSiteDiagnostics.mockImplementation((options) => {
+      const { path } = options as { path: { siteId: string } };
+      return Promise.resolve(ok({ items: reports[path.siteId] }));
+    });
+  });
+
+  it("drops a refusal shown for one site when the route moves to the next", async () => {
+    refreshSiteDiagnostics.mockResolvedValue(
+      siteFailure(502, "site_refused", SITE_REFUSED_MESSAGE),
+    );
+    const { goToSite } = renderHealthRoutes();
+    fireEvent.click(await rerunButton());
+    expect(await screen.findByText(SITE_REFUSED_MESSAGE)).toBeInTheDocument();
+    expect(screen.getByText("6.6.1")).toBeInTheDocument();
+
+    await goToSite(SITE_B);
+
+    // The second site's own report is on screen, and nothing of the first
+    // site's refusal is.
+    expect(await screen.findByText("6.7.2")).toBeInTheDocument();
+    expect(screen.queryByText("6.6.1")).not.toBeInTheDocument();
+    expect(screen.queryByText(SITE_REFUSED_MESSAGE)).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Re-run all checks" }),
+    ).toBeEnabled();
+  });
+
+  it("does not show the next site as running a re-run that was started on the first", async () => {
+    const late = deferred<unknown>();
+    refreshSiteDiagnostics.mockReturnValue(late.promise);
+    const { goToSite } = renderHealthRoutes();
+    fireEvent.click(await rerunButton());
+    expect(
+      await screen.findByRole("button", { name: /Running checks/ }),
+    ).toBeDisabled();
+
+    await goToSite(SITE_B);
+
+    expect(await screen.findByText("6.7.2")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Re-run all checks" }),
+    ).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /Running checks/ })).toBeNull();
+  });
+
+  it("does not show a refusal that arrives after the route has moved to the next site", async () => {
+    const late = deferred<unknown>();
+    refreshSiteDiagnostics.mockReturnValue(late.promise);
+    const { goToSite } = renderHealthRoutes();
+    fireEvent.click(await rerunButton());
+    await goToSite(SITE_B);
+    expect(await screen.findByText("6.7.2")).toBeInTheDocument();
+
+    // The first site's answer arrives now, with the second site on screen.
+    await act(async () => {
+      late.resolve(siteFailure(502, "site_refused", SITE_REFUSED_MESSAGE));
+      await settle();
+    });
+
+    expect(screen.queryByText(SITE_REFUSED_MESSAGE)).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(toastError).not.toHaveBeenCalled();
+    expect(refreshSiteDiagnostics).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives a late success no toast on the next site, and refreshes the first site's report, not the next one's", async () => {
+    const late = deferred<unknown>();
+    refreshSiteDiagnostics.mockReturnValue(late.promise);
+    const { goToSite, queryClient } = renderHealthRoutes();
+    fireEvent.click(await rerunButton());
+    await goToSite(SITE_B);
+    expect(await screen.findByText("6.7.2")).toBeInTheDocument();
+    expect(fetchesFor(SITE_B)).toBe(1);
+
+    await act(async () => {
+      late.resolve(accepted());
+      await settle();
+    });
+
+    // "All checks ran" would be about the wrong site.
+    expect(toastSuccess).not.toHaveBeenCalled();
+    // The report that was re-run is the first site's: it is marked stale, so it
+    // reloads when that site is opened again. The second site's was not touched.
+    expect(
+      queryClient.getQueryState(diagnosticsKeys.forSite(SITE_ID))?.isInvalidated,
+    ).toBe(true);
+    expect(fetchesFor(SITE_B)).toBe(1);
   });
 });
