@@ -773,9 +773,11 @@ type CoreUpdate struct {
 
 // MetadataSink applies agent-pushed metadata and heartbeats. Implemented by the
 // site service (wired in main) so this package needs no site import. The
-// metadata call returns the updated site in its OpenAPI form.
+// metadata call returns the updated site in its OpenAPI form. agentKey is the
+// key that authenticated the push (Identity.AgentPublicKey); the sink uses it
+// to refuse a write that is only valid while that key is still the site's.
 type MetadataSink interface {
-	ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.UUID, m Metadata) (gen.Site, error)
+	ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.UUID, agentKey string, m Metadata) (gen.Site, error)
 	Heartbeat(ctx context.Context, tenantID, siteID uuid.UUID) error
 }
 
@@ -863,7 +865,7 @@ func (h *Handler) metadata(c *gin.Context) {
 		slog.String("site_id", id.SiteID.String()),
 		slog.Int("plugins", len(m.Plugins)), slog.Int("themes", len(m.Themes)),
 		slog.String("active_theme", m.ActiveTheme))
-	out, err := h.sink.ApplyAgentMetadata(c.Request.Context(), id.TenantID, id.SiteID, m)
+	out, err := h.sink.ApplyAgentMetadata(c.Request.Context(), id.TenantID, id.SiteID, id.AgentPublicKey, m)
 	if err != nil {
 		httpx.Error(c, err)
 		return

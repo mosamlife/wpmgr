@@ -1,7 +1,7 @@
 <?php
 /**
  * CacheWriter tests on a temp-dir cache fixture: a cacheable anonymous HTML GET
- * is written as a gzip file at the deterministic key path; non-cacheable
+ * is written as a gzip file under the key the drop-in handed over; non-cacheable
  * requests (logged-in w/o logged-in caching, non-200, non-HTML) write nothing;
  * the written bytes are valid gzip of the original body.
  *
@@ -62,6 +62,7 @@ final class CacheWriterTest extends TestCase
     private function ctx(array $over = []): array
     {
         return array_merge([
+            'store_key'         => 'example.com/about/index.html.gz', // the drop-in's key
             'url'               => '/about/',
             'uri_path'          => '/about/',
             'host'              => 'example.com',
@@ -136,6 +137,58 @@ final class CacheWriterTest extends TestCase
         $this->assertFalse($written);
     }
 
+    /**
+     * With logged-in caching on, a page rendered for a logged-in user is never
+     * stored under the anonymous key.
+     */
+    public function test_a_page_for_a_logged_in_user_is_never_stored_under_the_anonymous_key(): void
+    {
+        $ctx = $this->ctx(['logged_in' => true, 'cache_logged_in' => true]);
+
+        $written = $this->writer(['cache_logged_in' => true])->maybeWrite(self::HTML, $ctx);
+
+        $this->assertFalse($written);
+        $this->assertFileDoesNotExist($this->root . '/example.com/about/index.html.gz');
+    }
+
+    /**
+     * A key whose file name reads like the logged-in variant is not enough:
+     * a page rendered for a logged-in user is stored only under a logged-in
+     * variant the key rule built for a request with the logged-in cookie.
+     */
+    public function test_a_page_for_a_logged_in_user_is_not_stored_under_a_name_that_only_looks_like_the_logged_in_variant(): void
+    {
+        $ctx = $this->ctx([
+            'store_key'       => 'example.com/about/index-logged-in.html.gz',
+            'logged_in'       => true,
+            'cache_logged_in' => true,
+        ]);
+
+        $written = $this->writer(['cache_logged_in' => true])->maybeWrite(self::HTML, $ctx);
+
+        $this->assertFalse($written);
+        $this->assertFileDoesNotExist($this->root . '/example.com/about/index-logged-in.html.gz');
+    }
+
+    /**
+     * A logged-in visitor with the logged-in cookie, handed the logged-in
+     * variant of the key, with logged-in caching on: still not stored.
+     */
+    public function test_a_page_for_a_visitor_with_the_logged_in_cookie_is_not_stored(): void
+    {
+        $ctx = $this->ctx([
+            'store_key'       => 'example.com/about/index-logged-in-editor.html.gz',
+            'logged_in'       => true,
+            'cache_logged_in' => true,
+            'cookies'         => ['wordpress_logged_in_x' => '1', 'wpmgr_logged_in_roles' => 'editor'],
+        ]);
+
+        $written = $this->writer(['cache_logged_in' => true])->maybeWrite(self::HTML, $ctx);
+
+        $this->assertFalse($written);
+        $this->assertFileDoesNotExist($this->root . '/example.com/about/index-logged-in-editor.html.gz');
+    }
+
     public function test_non_200_writes_nothing(): void
     {
         $written = $this->writer()->maybeWrite(self::HTML, $this->ctx(['status' => 404]));
@@ -148,23 +201,57 @@ final class CacheWriterTest extends TestCase
         $this->assertFalse($written);
     }
 
+    /**
+     * The variant is part of the drop-in's key (AdvancedCacheDropinTest pins
+     * how the drop-in builds it); the writer stores under that key as given.
+     */
     public function test_query_variant_path(): void
     {
-        $ctx = $this->ctx(['query' => ['lang' => 'fr'], 'url' => '/about/?lang=fr']);
+        $hash = md5(serialize(['lang' => 'fr']));
+        $ctx  = $this->ctx([
+            'query'     => ['lang' => 'fr'],
+            'url'       => '/about/?lang=fr',
+            'store_key' => 'example.com/about/index-' . $hash . '.html.gz',
+        ]);
         $written = $this->writer()->maybeWrite(self::HTML, $ctx);
         $this->assertTrue($written);
-
-        // The file name carries a query hash segment, not a bare index.
-        $files = glob($this->root . '/example.com/about/index-*.html.gz');
-        $this->assertNotEmpty($files);
+        $this->assertFileExists($this->root . '/example.com/about/index-' . $hash . '.html.gz');
     }
 
     public function test_mobile_variant_path(): void
     {
-        $ctx = $this->ctx(['user_agent' => 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)']);
+        $ctx = $this->ctx([
+            'user_agent' => 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)',
+            'store_key'  => 'example.com/about/index-mobile.html.gz',
+        ]);
         $written = $this->writer(['cache_mobile' => true])->maybeWrite(self::HTML, $ctx);
         $this->assertTrue($written);
         $this->assertFileExists($this->root . '/example.com/about/index-mobile.html.gz');
+    }
+
+    /**
+     * The writer's own view of the request plays no part in where the page
+     * goes: a ctx that disagrees with the key (a rewritten URI, a $_GET a
+     * plugin added to) still stores under the key.
+     */
+    public function test_store_location_is_the_key_not_the_request_context(): void
+    {
+        $ctx = $this->ctx([
+            'url'        => '/',
+            'uri_path'   => '/',
+            'query'      => ['lang' => 'en'],
+            'user_agent' => 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)',
+        ]);
+        $this->assertTrue($this->writer(['cache_mobile' => true])->maybeWrite(self::HTML, $ctx));
+        $this->assertSame(['about'], array_values(array_diff(scandir($this->root . '/example.com') ?: [], ['.', '..'])));
+        $this->assertFileExists($this->root . '/example.com/about/index.html.gz');
+    }
+
+    public function test_no_key_writes_nothing(): void
+    {
+        $written = $this->writer()->maybeWrite(self::HTML, $this->ctx(['store_key' => null]));
+        $this->assertFalse($written);
+        $this->assertSame([], glob($this->root . '/*') ?: []);
     }
 
     /**
@@ -211,7 +298,12 @@ final class CacheWriterTest extends TestCase
      */
     public function test_uncacheable_host_writes_nothing(string $host): void
     {
-        $written = $this->writer()->maybeWrite(self::HTML, $this->ctx(['host' => $host]));
+        // The drop-in hands over no key for these hosts; a key naming one as
+        // its bucket is refused as well.
+        $written = $this->writer()->maybeWrite(self::HTML, $this->ctx([
+            'host'      => $host,
+            'store_key' => strtolower($host) . '/about/index.html.gz',
+        ]));
 
         $this->assertFalse($written, "host '$host' must not be cached at all");
         $this->assertSame(
@@ -253,7 +345,10 @@ final class CacheWriterTest extends TestCase
         $bucket = \WPMgr\Agent\Cache\CacheKey::normalizeHost($host);
         $this->assertNotSame('', $bucket, "host $host must remain cacheable");
 
-        $written = $this->writer()->maybeWrite(self::HTML, $this->ctx(['host' => $host]));
+        $written = $this->writer()->maybeWrite(self::HTML, $this->ctx([
+            'host'      => $host,
+            'store_key' => $bucket . '/about/index.html.gz',
+        ]));
 
         $this->assertTrue($written, "host $host must still be cached");
         $this->assertFileExists($this->root . '/' . $bucket . '/about/index.html.gz');

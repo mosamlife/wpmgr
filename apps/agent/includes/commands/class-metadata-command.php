@@ -14,9 +14,11 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Commands;
 
 use WPMgr\Agent\Keystore;
+use WPMgr\Agent\KeystoreReadFailed;
 use WPMgr\Agent\Security\SiteRoles;
 use WPMgr\Agent\Support\AgeIdentity;
 use WPMgr\Agent\Support\BuilderFacts;
+use WPMgr\Agent\Support\DebugLog;
 use WPMgr\Agent\Support\KeystoreHealth;
 
 /**
@@ -187,6 +189,11 @@ final class MetadataCommand implements CommandInterface
                     if ($backupKeyWasAbsent) {
                         $probe = $this->ageIdentity->probeKeystore();
                     }
+                } catch (KeystoreReadFailed $e) {
+                    // The backup key could not be read from the database just
+                    // now. Nothing was created; this push carries no recipient
+                    // and the next one reads the key again.
+                    DebugLog::write('WPMgr Agent: metadata push sent no backup recipient: the backup key could not be read from the database.');
                 } catch (\Throwable $e) {
                     // Swallow — telemetry must not fail the sync.
                 }

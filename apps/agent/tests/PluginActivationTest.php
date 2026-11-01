@@ -43,6 +43,11 @@ final class PluginActivationTest extends TestCase
     /** @var array<string,mixed> In-memory wp-option store. */
     private array $options = [];
 
+    /** @var mixed */
+    private $previousWpdb;
+
+    private FakeKeyRowWpdb $wpdb;
+
     protected function set_up(): void
     {
         parent::set_up();
@@ -87,6 +92,10 @@ final class PluginActivationTest extends TestCase
         // plugin_basename() is called under a function_exists guard inside
         // AdminBarPurge during Plugin::boot(); Brain Monkey makes the guard pass.
         Functions\when('plugin_basename')->returnArg();
+
+        $this->previousWpdb = $GLOBALS['wpdb'] ?? null;
+        $this->wpdb         = new FakeKeyRowWpdb($this->options);
+        $GLOBALS['wpdb']    = $this->wpdb;
 
         Functions\when('update_option')->alias(function ($name, $value) {
             $this->options[$name] = $value;
@@ -252,23 +261,18 @@ final class PluginActivationTest extends TestCase
         $this->options[Keystore::OPTION_EMAIL_SECRET] = $this->sealUnderForeignKey('smtp-password');
         $racing = $this->sealUnderForeignKey(random_bytes(32));
 
-        $ageReads = 0;
-        Functions\when('get_option')->alias(function ($name, $default = false) use (&$ageReads, $racing) {
-            if ($name === Keystore::OPTION_AGE_IDENTITY && !array_key_exists($name, $this->options)) {
-                // The probe reads first and sees no backup key; by the time
-                // setup reads it again, another request has stored one.
-                ++$ageReads;
-                if ($ageReads > 1) {
-                    $this->options[$name] = $racing;
-                    return $racing;
-                }
-            }
-            return $this->options[$name] ?? $default;
-        });
+        $raced = 0;
+        $this->wpdb->beforeInsert = function () use (&$raced, $racing): void {
+            // Setup read no backup key; before its insert lands, another
+            // request stores one. The insert leaves that row as it is.
+            ++$raced;
+            $this->options[Keystore::OPTION_AGE_IDENTITY] = $racing;
+        };
 
         Plugin::boot()->activate();
 
-        $this->assertSame(2, $ageReads, 'Precondition: the backup key changed between the probe and its creation.');
+        $this->assertSame(1, $raced, 'Precondition: the backup key changed between the probe and its creation.');
+        $this->assertSame(0, $this->wpdb->insertedFor(Keystore::OPTION_AGE_IDENTITY), 'The racing key must not be replaced.');
         $this->assertSame('unreadable', $this->options[Plugin::OPTION_KEYSTORE_ERROR_KIND] ?? null);
         $message = $this->options[Plugin::OPTION_KEYSTORE_ERROR] ?? null;
         $this->assertIsString($message);
@@ -416,6 +420,7 @@ final class PluginActivationTest extends TestCase
         // Reset the Plugin singleton so this test's constructed instance (with its
         // Keystore and Brain Monkey stubs) does not leak into subsequent tests.
         Plugin::resetForTesting();
+        $GLOBALS['wpdb'] = $this->previousWpdb;
         Monkey\tearDown();
         parent::tear_down();
     }

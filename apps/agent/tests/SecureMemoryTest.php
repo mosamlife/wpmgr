@@ -144,7 +144,7 @@ final class SecureMemoryTest extends TestCase
         $this->simulateHostWithoutNativeLibsodium();
 
         $keystore  = new Keystore();
-        $publicKey = $keystore->generateSiteKeypair();
+        $publicKey = \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->generateSiteKeypair());
 
         $this->assertSame(
             SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES,
@@ -169,7 +169,7 @@ final class SecureMemoryTest extends TestCase
         $this->simulateHostWithoutNativeLibsodium();
 
         $signer = new Signer(new Keystore());
-        $base64 = $signer->agentPublicKeyBase64();
+        $base64 = \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $signer->agentPublicKeyBase64());
 
         $this->assertNotSame('', $base64);
         $this->assertSame(
@@ -193,7 +193,7 @@ final class SecureMemoryTest extends TestCase
 
         $keystore = new Keystore();
         $signer   = new Signer($keystore);
-        $signer->agentPublicKey();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $signer->agentPublicKey());
 
         $headers = $signer->signHeaders('POST', '/v1/agent/heartbeat', '{}');
 

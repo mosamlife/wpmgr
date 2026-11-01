@@ -8038,21 +8038,71 @@ paths:
   /api/v1/sites/{siteId}/diagnostics/refresh:
     post:
       operationId: refreshSiteDiagnostics
-      summary: Enqueue an on-demand diagnostics command to the agent
+      summary: Run an on-demand diagnostics check through the site's agent
       description: |
-        Enqueues a signed `diagnostics` command to the agent. The agent runs
-        the 14-category collector immediately and pushes the result back to
-        POST /agent/v1/diagnostics. Returns 202 on accept. Returns 503 with
-        code `diagnostics_refresh_unwired` when the CP->agent commander has
-        not yet been wired (V1).
+        Sends a signed `diagnostics` command to the site's agent, waits for
+        the agent's report and stores it before answering, so the stored
+        report is readable as soon as the 202 returns. Answers 501 with code
+        `diagnostics_refresh_unwired` when this control plane has no
+        CP->agent commander wired. A failure of the site itself answers 502;
+        see that response for its codes.
       tags: [diagnostics]
       parameters:
         - $ref: "#/components/parameters/SiteId"
       responses:
         "202":
-          description: Refresh enqueued
-        "503":
-          description: Refresh is not yet wired
+          description: The agent's report was stored
+        "404":
+          description: site_not_found, the site does not exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: invalid_site_id (the siteId is not a valid UUID), or collected_at_missing / collected_at_invalid (the agent's report carries no usable collection time, so nothing was stored)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: internal_error, a failure inside the control plane rather than the site, such as the database failing while the report is stored, or a request its caller cancelled; the message is generic
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: diagnostics_refresh_unwired, on-demand refresh is not wired on this control plane
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: |
+            The site did not give a usable answer. `code` says which.
+            `message` is fixed operator wording written by the control plane. It
+            never contains the site's reply body or any other text from the
+            site. The only values it takes from the site's answer are bounded
+            and sanitised: the HTTP status number; an agent refusal code that
+            matches `^wpmgr_[a-z_]{1,40}$`; and, for `site_url_redirects`, the
+            redirect address reduced to a plain http(s) address with no
+            userinfo, query or fragment, a percent-escaped path, and at most
+            256 bytes (a longer one is cut back to its origin). A client must
+            render `message` as plain text. The codes:
+
+            - `site_refused`: the site answered HTTP 403, either the WPMgr
+              agent refusing the signed request or a firewall, host rule or
+              security plugin in front of it.
+            - `site_url_redirects`: the site answered its command address
+              with a redirect, so no command was sent.
+            - `agent_command_failed`: the WPMgr agent ran the command and
+              stopped with an error.
+            - `site_error`: the site answered with any other HTTP error
+              status.
+            - `site_timeout`: the site did not answer in time.
+            - `site_unreachable`: the connection to the site failed.
+            - `site_bad_reply`: the site answered with success, but the reply
+              was not the agent's JSON, for example a PHP notice printed
+              before it.
           content:
             application/json:
               schema:

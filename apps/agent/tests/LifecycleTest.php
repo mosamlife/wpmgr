@@ -109,7 +109,7 @@ final class LifecycleTest extends TestCase
         Functions\when('wp_remote_retrieve_body')->justReturn('');
 
         $this->keystore = new Keystore();
-        $this->keystore->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $this->keystore->generateSiteKeypair());
         $this->keystore->storeControlPlanePublicKey(
             sodium_crypto_sign_publickey(sodium_crypto_sign_keypair())
         );
@@ -257,7 +257,7 @@ final class LifecycleTest extends TestCase
         $this->assertSame([basename(__FILE__)], $deactivated);
 
         // Keystore site identity wiped (CP key + site keypair gone).
-        $this->assertNull($this->keystore->getSiteKeypair());
+        $this->assertNull(\WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $this->keystore->getSiteKeypair()));
         $this->assertNull($this->keystore->getControlPlanePublicKey());
 
         // Enrollment cleared.
@@ -396,7 +396,7 @@ final class LifecycleTest extends TestCase
 
         $this->assertSame([basename(__FILE__)], $deactivated, 'a genuine signed revoke tears down');
         $this->assertFalse($this->settings->isEnrolled());
-        $this->assertNull($this->keystore->getSiteKeypair());
+        $this->assertNull(\WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $this->keystore->getSiteKeypair()));
 
         unset($GLOBALS['wpdb']);
     }
@@ -547,14 +547,14 @@ final class LifecycleTest extends TestCase
         $this->settings->clearEnrollment();
         $this->settings->clearLastSyncTimestamps();
 
-        $this->assertNull($this->keystore->getSiteKeypair());
+        $this->assertNull(\WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $this->keystore->getSiteKeypair()));
         $this->assertFalse($this->settings->isEnrolled());
 
         // --- The enroll half against a fresh code. ---
         // A fresh keypair must exist for the enroll request to be signable; the
         // Signer regenerates it lazily, mirroring the real enroll flow.
         $signer        = new Signer($this->keystore);
-        $newPublicB64  = $signer->agentPublicKeyBase64();
+        $newPublicB64  = \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $signer->agentPublicKeyBase64());
         $this->assertNotSame('', $newPublicB64);
 
         $cpKeypair = sodium_crypto_sign_keypair();

@@ -671,8 +671,8 @@ final class KeystoreMasterKeyTest extends TestCase
         @unlink($this->absParent() . '/.wpmgr-agent-master.key');
         $this->defineRealSalts();
         $keystore = new Keystore();
-        $keystore->generateSiteKeypair();
-        $keystore->storeAgeIdentity(random_bytes(32));
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->generateSiteKeypair());
+        $this->options[Keystore::OPTION_AGE_IDENTITY] = $keystore->encrypt(random_bytes(32));
         $this->assertSame(
             ['source' => 'salts'],
             $this->options[Keystore::OPTION_MASTER_KEY_SOURCE] ?? null,

@@ -122,7 +122,7 @@ final class OptimizerRucssClientTest extends TestCase
     private function workingSigner(): Signer
     {
         $keystore = new Keystore();
-        $keystore->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->generateSiteKeypair());
         return new Signer($keystore);
     }
 

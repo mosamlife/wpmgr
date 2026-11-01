@@ -296,6 +296,12 @@ func (r *pgRepo) ConsumeSiteBoundCode(ctx context.Context, codeHash, consumedFro
 			return err
 		}
 		out = ConsumeResult{Site: toModel(row), SiteBound: true, URL: urlOut}
+		// AttachAgentAndConnect returned the row, so it cleared the recipient.
+		// loaded was read under the row lock earlier in this transaction, so
+		// its value is the one the attach replaced.
+		if lerr == nil {
+			out.ClearedAgeRecipient = loaded.AgeRecipient
+		}
 		if consumed.CreatedBy.Valid {
 			out.CodeCreatedBy = uuid.UUID(consumed.CreatedBy.Bytes)
 		}

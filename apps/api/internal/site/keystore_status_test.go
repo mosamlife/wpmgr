@@ -39,7 +39,7 @@ func TestAgentMetadataStoresKeystoreStatus(t *testing.T) {
 		svc := newSvc(repo)
 		tenantID, siteID := uuid.New(), uuid.New()
 
-		out, err := svc.ApplyAgentMetadata(context.Background(), tenantID, siteID, agentpkg.Metadata{
+		out, err := svc.ApplyAgentMetadata(context.Background(), tenantID, siteID, testAgentKey, agentpkg.Metadata{
 			WPVersion: "6.4.3", // metadata WAS pushed; just no keystore key (pre-#753 agent)
 		})
 		if err != nil {
@@ -59,7 +59,7 @@ func TestAgentMetadataStoresKeystoreStatus(t *testing.T) {
 		svc := newSvc(repo)
 		tenantID, siteID := uuid.New(), uuid.New()
 
-		out, err := svc.ApplyAgentMetadata(context.Background(), tenantID, siteID, agentpkg.Metadata{
+		out, err := svc.ApplyAgentMetadata(context.Background(), tenantID, siteID, testAgentKey, agentpkg.Metadata{
 			WPVersion: "6.8",
 			KeystoreStatus: &agentpkg.KeystoreStatus{
 				State:     "unreadable",

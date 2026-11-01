@@ -42,6 +42,7 @@ namespace WPMgr\Agent\Commands;
 
 use WPMgr\Agent\Backup\TaskRunner;
 use WPMgr\Agent\Backup\Watchdog;
+use WPMgr\Agent\KeystoreReadFailed;
 use WPMgr\Agent\Schema;
 use WPMgr\Agent\Support\AgeIdentity;
 use WPMgr\Agent\Support\ConnectionFinisher;
@@ -203,12 +204,19 @@ final class BackupCommand implements CommandInterface
         // The recipient check reads the backup key, and creates it when none
         // is stored only if the keystore shows the current key is live. When
         // it fails, refuse here, before any preflight row, dedup claim or
-        // scratch directory exists: in plain words with the
+        // scratch directory exists: with the keystore_read_failed code when
+        // the database read of the backup key failed (nothing was created or
+        // changed, and a retry can succeed), in plain words with the
         // keystore_unreadable code when the keystore explains the failure
         // (the backup key cannot be read, or none is stored and none may be
-        // created), and without that code otherwise.
+        // created), and without a code otherwise.
         try {
             $recipientMatches = $this->identity->recipientMatches($recipient);
+        } catch (KeystoreReadFailed $e) {
+            return $this->refuse(
+                'Backup not started: this site could not read its backup key from its database just now. Nothing was changed. Try again in a few minutes.',
+                'keystore_read_failed'
+            );
         } catch (\Throwable $e) {
             $probe = $this->identity->probeKeystore();
             if (!KeystoreHealth::backupKeyUsable($probe)) {
@@ -218,7 +226,8 @@ final class BackupCommand implements CommandInterface
             return $this->refuse('Backup not started: this site could not check its backup key.');
         }
         if (!$recipientMatches) {
-            return $this->refuse('age recipient mismatch');
+            // The detail is matched by control planes that predate the code.
+            return $this->refuse('age recipient mismatch', 'age_recipient_mismatch');
         }
 
         // Check guard support before claiming work or persisting any task row.

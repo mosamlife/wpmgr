@@ -49,7 +49,7 @@ final class SignerTest extends TestCase
         });
 
         $this->keystore = new Keystore();
-        $this->keystore->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $this->keystore->generateSiteKeypair());
         $this->signer = new Signer($this->keystore);
     }
 

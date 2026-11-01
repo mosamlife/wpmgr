@@ -104,6 +104,12 @@ const (
 	// applied. Metadata: current_recipient, proposed_recipient, source,
 	// agent_version, reason.
 	ActionSiteBackupRecipientChangeRejected = "site.backup.recipient.change_rejected"
+	// ActionSiteBackupRecipientCleared: an enrollment the operator authorised
+	// (a re-enrollment or a reconnect) cleared the recorded recipient, so the
+	// agent's next metadata push records the site's current one as a first
+	// set. Recorded after the enrollment commits, only when a recipient was
+	// recorded before. Metadata: previous_recipient, reason ("re_enrollment").
+	ActionSiteBackupRecipientCleared = "site.backup.recipient.cleared"
 
 	// GH #230 "rich tags" — tenant-level tag registry (internal/sitetag).
 	ActionTagCreate    = "tag.create"

@@ -91,7 +91,7 @@ final class HeartbeatCatchupTest extends TestCase
         }
 
         $keystore   = new Keystore();
-        $keystore->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->generateSiteKeypair());
         $this->settings   = new Settings();
         $signer     = new Signer($keystore);
         $this->enrollment = new Enrollment($keystore, $this->settings, $signer, new MetadataCommand());
