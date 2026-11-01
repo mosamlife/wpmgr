@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { AlertTriangle, X } from "lucide-react";
 
 import { CopyableMono } from "@/components/shared/copyable-mono";
 import { FreshnessBadge } from "@/components/shared/freshness-badge";
@@ -24,7 +25,12 @@ import { CardSecurity } from "./card-security";
 import { CardThemes } from "./card-themes";
 import { CardUsers } from "./card-users";
 import { EolChip } from "./eol-chip";
-import { cardFor, useDiagnostics, useRefreshDiagnostics } from "./use-diagnostics";
+import {
+  cardFor,
+  DiagnosticsSiteFailureError,
+  useDiagnostics,
+  useRefreshDiagnostics,
+} from "./use-diagnostics";
 
 // ADR-037 Impeccable, Batch 1 — the redesigned Site Health tab.
 //
@@ -42,14 +48,20 @@ export function HealthTab({ siteId }: { siteId: string }) {
   const onRefresh = useCallback(() => {
     refresh.mutate(undefined, {
       onSuccess: () => {
-        toast.success("Queued a re-run of all checks", {
-          description: "The agent will push fresh diagnostics shortly.",
+        // The call is synchronous: by now the site has answered and the hook
+        // has loaded the new report, so this says the checks ran, not that
+        // they are on their way.
+        toast.success("All checks ran", {
+          description: "The results below are up to date.",
         });
       },
       onError: (err) => {
-        // The 503 "diagnostics_refresh_unwired" path surfaces as an honest
-        // toast rather than inline amber text in the page body.
-        toast.error("Could not queue a re-run", {
+        // A site that refused or could not be reached is shown in the alert
+        // under the ribbon, where it stays until the next attempt or until it
+        // is dismissed. A toast would be gone before its remedy was read.
+        if (err instanceof DiagnosticsSiteFailureError) return;
+        // The unwired install and every other failure stay a toast.
+        toast.error("Could not re-run the checks", {
           description: err.message,
         });
       },
@@ -73,17 +85,29 @@ export function HealthTab({ siteId }: { siteId: string }) {
   }
 
   const disk = diskFromSite(site?.components);
+  // Derived from the mutation, so it clears itself when the next attempt starts
+  // (the mutation's error resets) and when the operator dismisses it (reset()).
+  const siteFailure =
+    refresh.error instanceof DiagnosticsSiteFailureError ? refresh.error : null;
 
   return (
     <div className="space-y-6">
-      <HealthRibbon
-        data={data}
-        refreshing={refresh.isPending}
-        onRefresh={onRefresh}
-        hostProvider={site?.host_provider}
-        hostProviderOrg={site?.host_provider_org}
-        hostProviderIp={site?.host_provider_ip}
-      />
+      <div className="space-y-3">
+        <HealthRibbon
+          data={data}
+          refreshing={refresh.isPending}
+          onRefresh={onRefresh}
+          hostProvider={site?.host_provider}
+          hostProviderOrg={site?.host_provider_org}
+          hostProviderIp={site?.host_provider_ip}
+        />
+        {siteFailure ? (
+          <RefreshFailureAlert
+            message={siteFailure.message}
+            onDismiss={refresh.reset}
+          />
+        ) : null}
+      </div>
 
       <Section label="Runtime">
         <CardPHP card={cardFor(data, "php")} />
@@ -264,9 +288,53 @@ function HealthRibbon({
         disabled={refreshing}
         onClick={onRefresh}
       >
-        {refreshing ? "Queuing…" : "Re-run all checks"}
+        {refreshing ? "Running checks…" : "Re-run all checks"}
       </Button>
     </section>
+  );
+}
+
+// ── Refresh failure ──────────────────────────────────────────────────────────
+
+// The control plane's own words for why the site did not run the checks: what
+// happened and, usually, what to do about it. Shown as given. It sits beside the
+// ribbon, not inside it, because surfaces here never nest.
+function RefreshFailureAlert({
+  message,
+  onDismiss,
+}: {
+  message: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      role="alert"
+      className="relative flex min-w-0 items-start gap-3 rounded-lg border border-[var(--color-destructive)]/30 bg-card px-4 py-3"
+    >
+      <AlertTriangle
+        aria-hidden="true"
+        className="mt-0.5 size-4 shrink-0 text-[var(--color-destructive)]"
+      />
+      <div className="min-w-0 flex-1 space-y-1 pr-7">
+        <p className="text-sm font-semibold text-foreground">
+          Could not re-run the checks
+        </p>
+        <p
+          className="break-words text-sm text-muted-foreground"
+          style={{ textWrap: "pretty" }}
+        >
+          {message}
+        </p>
+      </div>
+      <button
+        type="button"
+        aria-label="Dismiss this message"
+        onClick={onDismiss}
+        className="absolute right-2 top-2 inline-flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
+      >
+        <X aria-hidden="true" className="size-3.5" />
+      </button>
+    </div>
   );
 }
 
