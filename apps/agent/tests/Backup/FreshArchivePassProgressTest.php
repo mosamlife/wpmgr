@@ -129,13 +129,14 @@ final class FreshArchivePassProgressTest extends TestCase
 
     public function testFlippingModeWithTheBudgetSpentDoesNotHandOverWithoutClosingAPart(): void
     {
-        // Every worker's saved checkpoint is rejected (the mode flips) and its
-        // CPU budget is spent: only a real advance may hand the task over, and
-        // a fresh pass's discovery checkpoint is none.
+        // A resumed backup whose saved checkpoint is rejected on every worker
+        // (the mode flips), with every worker's CPU budget spent: only a real
+        // advance may hand the task over, and a fresh pass's discovery
+        // checkpoint is none.
         $this->spendEveryWorkersBudget();
         $log = $this->flippingArchiver(false);
         $this->letTheHostEndWorkers();
-        $this->seedNewBackup();
+        $this->seed(600, 600, 5);
 
         (new TaskRunner($this->params()))->run();
 
