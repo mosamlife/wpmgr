@@ -473,9 +473,10 @@ func (s *Service) RecordNonce(ctx context.Context, siteID uuid.UUID, nonce strin
 
 // ApplyAgentMetadata adapts agent-package metadata to the site domain and
 // returns the updated site in OpenAPI form, satisfying agent.MetadataSink.
-// agentKey is the agent key the metadata is attributed to: on a push, the key
-// that authenticated it, exactly as GetSiteByAgentKey matched it. The first
-// set of the backup recipient lands only while that key is still the site's.
+// agentKey is the agent key that signed the metadata: on a push, the key that
+// authenticated it, exactly as GetSiteByAgentKey matched it; "" when no agent
+// key signed it (the Re-check pull). The backup recipient is recorded only from
+// a signed push, and only while that key is still the site's.
 func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.UUID, agentKey string, m agentpkg.Metadata) (gen.Site, error) {
 	// Capped once, here, and passed everywhere else this push's agent version
 	// is used: the stored metadata below, the age-recipient log/audit path,
@@ -544,14 +545,15 @@ func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.
 //     code, or Reconnect) is the one way to re-pin it. The attach clears the
 //     column in the same UPDATE that rotates the agent key and records
 //     site.backup.recipient.cleared; the agent's next push is then a first set.
-//   - A first set needs the request's current agent key. agentKey is the key
-//     the metadata is attributed to (on a push, the key that authenticated
-//     it), and the write lands only while that key is still the site's. A push
-//     that authenticated with the old key before a re-enrollment committed
-//     therefore cannot claim the first set the re-enrollment opened up.
+//   - The recipient is recorded only from a signed agent push carrying the
+//     site's current agent key. agentKey is the key that signed the metadata;
+//     metadata no agent key signed (agentKey empty, as on a Re-check) never
+//     records one, and a signed push records one only while its key is still
+//     the site's, so a push signed with a key a re-enrollment has rotated away
+//     cannot claim the first set the re-enrollment opened up.
 //
-// FIRST SET (column empty, key current) is applied. That is ordinary enrolment
-// and the column gates backups outright (internal/backup:
+// FIRST SET (column empty, signed push, key current) is applied. That is
+// ordinary enrolment and the column gates backups outright (internal/backup:
 // age_recipient_missing), so breaking it would stop every new site backing up.
 //
 // A CHANGE to an established recipient is NOT applied. The agent channel proves
@@ -579,6 +581,12 @@ func (s *Service) applyAgentAgeRecipient(ctx context.Context, tenantID, siteID u
 		s.recordRecipientChangeRejected(ctx, tenantID, siteID, current.AgeRecipient, rec, agentVersion, "already_set")
 		return current, nil
 	}
+	if agentKey == "" {
+		// No agent key signed this metadata, so it never records a recipient.
+		// Refused, and recorded like any other refusal.
+		s.recordRecipientChangeRejected(ctx, tenantID, siteID, "", rec, agentVersion, reasonUnsignedReport)
+		return current, nil
+	}
 
 	// The read-and-decide above is advisory only: the authoritative first-set
 	// check is one compare-and-set inside the repo's transaction, under a
@@ -600,9 +608,9 @@ func (s *Service) applyAgentAgeRecipient(ctx context.Context, tenantID, siteID u
 		case rec:
 			// A concurrent first set stored the same value: nothing to report.
 		case "":
-			// Still empty, so the key this metadata is attributed to is no
-			// longer the site's: a re-enrollment rotated it after the request
-			// resolved the site. Refused, and recorded like any other refusal.
+			// Still empty, so the key that signed this push is no longer the
+			// site's: a re-enrollment rotated it after the request resolved
+			// the site. Refused, and recorded like any other refusal.
 			s.recordRecipientChangeRejected(ctx, tenantID, siteID, "", rec, agentVersion, "agent_key_not_current")
 		default:
 			// Lost the race to a concurrent first set that stored a different
@@ -625,6 +633,10 @@ func (s *Service) applyAgentAgeRecipient(ctx context.Context, tenantID, siteID u
 // agentMetadataSource names the channel a recipient event arrived on, so the
 // audit log distinguishes it from any future operator-initiated change.
 const agentMetadataSource = "agent_metadata"
+
+// reasonUnsignedReport is the change_rejected reason for a recipient carried
+// by metadata that no agent key signed (the Re-check pull).
+const reasonUnsignedReport = "unsigned_report"
 
 func (s *Service) recordRecipientChangeRejected(ctx context.Context, tenantID, siteID uuid.UUID, current, proposed, agentVersion, reason string) {
 	// WARN, not INFO: on a site with backups this means the install that is

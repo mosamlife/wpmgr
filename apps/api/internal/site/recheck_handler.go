@@ -146,10 +146,10 @@ func (h *Handler) recheck(c *gin.Context) {
 	// Apply the metadata (updates inventory, last_seen_at, age_recipient).
 	// We ignore the gen.Site return value here; the recheck response shape is
 	// intentionally minimal and reads state back from the heartbeat result.
-	// The metadata is attributed to the agent key the site held when this
-	// command was dispatched (st, loaded above), so a first set of the backup
-	// recipient lands only if no re-enrollment rotated that key meanwhile.
-	if _, applyErr := h.svc.ApplyAgentMetadata(ctx, p.TenantID, siteID, st.AgentPublicKey, agentMeta); applyErr != nil {
+	// No agent key signed this answer, so it is attributed to none (""): the
+	// backup recipient is recorded only from the agent's own signed push, and
+	// ApplyAgentMetadata never records one from metadata no key signed.
+	if _, applyErr := h.svc.ApplyAgentMetadata(ctx, p.TenantID, siteID, "", agentMeta); applyErr != nil {
 		httpx.Error(c, applyErr)
 		return
 	}

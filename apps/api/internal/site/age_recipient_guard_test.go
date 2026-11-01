@@ -177,6 +177,46 @@ func TestAgentMetadataSurfacesRecipientPersistFailure(t *testing.T) {
 	}
 }
 
+// GH #1004: the recipient is recorded only from a signed agent push. Metadata
+// no agent key signed (agentKey "", as the Re-check pull passes) never reaches
+// the guarded write on an empty column and is reported as unsigned_report; over
+// an established recipient it is refused as already_set, exactly as before.
+func TestAgentMetadataUnsignedReportNeverRecordsRecipient(t *testing.T) {
+	t.Run("empty column", func(t *testing.T) {
+		repo := &fakeRepo{}
+		svc := newSvc(repo)
+		buf := logCapture(svc)
+		if _, err := svc.ApplyAgentMetadata(context.Background(), uuid.New(), uuid.New(), "", agentpkg.Metadata{
+			WPVersion: "6.7", AgeRecipient: recipientA,
+		}); err != nil {
+			t.Fatalf("ApplyAgentMetadata returned error for an unsigned report: %v", err)
+		}
+		if repo.ageRecipient != "" || repo.ifUnsetCalls != 0 || repo.unconditionalSets != 0 {
+			t.Fatalf("unsigned report wrote the recipient: column=%q ifUnset=%d unconditional=%d",
+				repo.ageRecipient, repo.ifUnsetCalls, repo.unconditionalSets)
+		}
+		if !strings.Contains(buf.String(), `"reason":"unsigned_report"`) {
+			t.Fatalf("unsigned report was not reported as unsigned_report; log = %s", buf.String())
+		}
+	})
+	t.Run("established recipient", func(t *testing.T) {
+		repo := &fakeRepo{ageRecipient: recipientA}
+		svc := newSvc(repo)
+		buf := logCapture(svc)
+		if _, err := svc.ApplyAgentMetadata(context.Background(), uuid.New(), uuid.New(), "", agentpkg.Metadata{
+			WPVersion: "6.7", AgeRecipient: recipientB,
+		}); err != nil {
+			t.Fatalf("ApplyAgentMetadata returned error for an unsigned report: %v", err)
+		}
+		if repo.ageRecipient != recipientA || repo.ifUnsetCalls != 0 {
+			t.Fatalf("established recipient changed: column=%q ifUnset=%d", repo.ageRecipient, repo.ifUnsetCalls)
+		}
+		if !strings.Contains(buf.String(), `"reason":"already_set"`) {
+			t.Fatalf("refusal over an established recipient was not already_set; log = %s", buf.String())
+		}
+	})
+}
+
 // Losing the in-transaction race to a concurrent first set is a refused change
 // too: the column already holds someone else's value and this push must not
 // pretend it won.

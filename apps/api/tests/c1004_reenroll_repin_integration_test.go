@@ -21,12 +21,16 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"net/http"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
 	agentpkg "github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 )
 
@@ -296,5 +300,129 @@ func TestC1004_OldKeyCannotSetRecipientAfterAttach(t *testing.T) {
 			"current_recipient": "", "proposed_recipient": c1004RecipientStale, "reason": "agent_key_not_current",
 		}},
 		{audit.ActionSiteBackupRecipientSet, map[string]string{"recipient": c1004RecipientAfter}},
+	})
+}
+
+const (
+	c1004RecheckURL = "https://c1004-recheck.example.test"
+
+	c1004RecipientFromRecheck = "age1c1004recipientinanunsignedrecheckanswer"
+)
+
+// c1004Rechecker answers the dashboard's Re-check pull with a fixed body, the
+// way whatever answers at the site's address would. Nothing signs that body.
+type c1004Rechecker struct {
+	mu   sync.Mutex
+	body []byte
+}
+
+func (r *c1004Rechecker) MetadataRaw(context.Context, uuid.UUID, string) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.body, nil
+}
+
+func (r *c1004Rechecker) answer(t *testing.T, rec string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"wp_version": "6.6", "age_recipient": rec})
+	if err != nil {
+		t.Fatalf("marshal recheck answer: %v", err)
+	}
+	r.mu.Lock()
+	r.body = body
+	r.mu.Unlock()
+}
+
+// c1004RecheckSetup is gh755PushSetup's control plane with the Re-check
+// connection route wired to rc: the same site service, repo, recorder and
+// agent Authenticator, as wpmgr_app.
+func c1004RecheckSetup(t *testing.T, slug string, rc site.AgentRechecker) (*gh755PushEnv, uuid.UUID) {
+	t.Helper()
+	pool := startPostgres(t)
+	tenant := seedTenant(t, pool, slug)
+	gh755AssertAppRole(t, pool, tenant)
+
+	gin.SetMode(gin.TestMode)
+	repo := site.NewRepo(pool)
+	rec := audit.NewRecorder(pool, domain.SystemClock{})
+	conn := site.NewConnectionService(repo, domain.NewValidator(), rec, nil, domain.SystemClock{}, nil)
+	svc := site.NewService(repo, domain.NewValidator(), domain.SystemClock{})
+	svc.SetConnectionService(conn)
+	svc.SetAuditRecorder(rec)
+	h := site.NewHandler(svc, rec, "")
+	h.SetConnectionService(conn)
+	h.SetRechecker(rc)
+	agentH := agentpkg.NewHandler(svc)
+	authn := agentpkg.NewAuthenticator(svc, domain.SystemClock{}, 5*time.Minute)
+
+	env := &gh755PushEnv{pool: pool, svc: svc, rec: rec, adoptQ: &gh755AdoptQueue{}}
+	eng := gin.New()
+	h.RegisterPublic(eng)
+	v1 := eng.Group("/api/v1")
+	v1.Use(func(c *gin.Context) {
+		c.Request = c.Request.WithContext(domain.WithPrincipal(c.Request.Context(), env.as))
+		c.Next()
+	})
+	h.Register(v1)
+	ag := eng.Group("/agent/v1")
+	ag.Use(authn.Authenticate())
+	agentH.Register(ag)
+	env.eng = eng
+	env.as = gh755Owner(tenant, gh755SeedUser(t, pool, slug+"@example.test"))
+	return env, tenant
+}
+
+func c1004Recheck(t *testing.T, env *gh755PushEnv, siteID uuid.UUID) {
+	t.Helper()
+	status, body := env.do(t, http.MethodPost, "/api/v1/sites/"+siteID.String()+"/recheck", nil)
+	if status != http.StatusOK {
+		t.Fatalf("POST /sites/%s/recheck answered %d, want 200: %v", siteID, status, body)
+	}
+}
+
+// The first backup key a site gets is recorded only from the agent's own
+// signed metadata push carrying the site's current agent key. After a
+// Reconnect cleared the recorded key, a Re-check answer (which nothing signs)
+// leaves it empty and is recorded as refused; the agent's next signed push
+// then records its key. A Re-check over an established key still leaves it
+// alone and is refused as before.
+func TestC1004_OnlyASignedAgentReportRecordsTheFirstBackupKey(t *testing.T) {
+	rc := &c1004Rechecker{}
+	env, tenant := c1004RecheckSetup(t, "c1004-recheck", rc)
+
+	siteID, priv1, pub1 := env.connectSite(t, c1004RecheckURL)
+	if status := c1004PushRecipient(t, env, priv1, pub1, c1004RecipientBefore); status != http.StatusOK {
+		t.Fatalf("first push answered %d, want 200", status)
+	}
+	code := c1004Reconnect(t, env, siteID)
+	priv2, pub2 := env.enroll(t, code, c1004RecheckURL, siteID)
+	c1004WantRecipient(t, env, tenant, siteID, "", "after the reconnect")
+
+	// A Re-check answer carrying a key does not record it.
+	rc.answer(t, c1004RecipientFromRecheck)
+	c1004Recheck(t, env, siteID)
+	c1004WantRecipient(t, env, tenant, siteID, "", "after a Re-check answer carrying a backup key")
+
+	// The agent's next signed push records its key.
+	if status := c1004PushRecipient(t, env, priv2, pub2, c1004RecipientAfter); status != http.StatusOK {
+		t.Fatalf("push with the new key answered %d, want 200", status)
+	}
+	c1004WantRecipient(t, env, tenant, siteID, c1004RecipientAfter, "after the agent's signed push")
+
+	// Over an established key, a Re-check answer carrying another one is
+	// refused exactly as a push would be.
+	c1004Recheck(t, env, siteID)
+	c1004WantRecipient(t, env, tenant, siteID, c1004RecipientAfter, "after a Re-check over the established key")
+
+	c1004AssertAudits(t, c1004RecipientAudits(t, env, tenant, siteID), []c1004Want{
+		{audit.ActionSiteBackupRecipientSet, map[string]string{"recipient": c1004RecipientBefore}},
+		{audit.ActionSiteBackupRecipientCleared, map[string]string{"previous_recipient": c1004RecipientBefore, "reason": "re_enrollment"}},
+		{audit.ActionSiteBackupRecipientChangeRejected, map[string]string{
+			"current_recipient": "", "proposed_recipient": c1004RecipientFromRecheck, "reason": "unsigned_report",
+		}},
+		{audit.ActionSiteBackupRecipientSet, map[string]string{"recipient": c1004RecipientAfter}},
+		{audit.ActionSiteBackupRecipientChangeRejected, map[string]string{
+			"current_recipient": c1004RecipientAfter, "proposed_recipient": c1004RecipientFromRecheck, "reason": "already_set",
+		}},
 	})
 }
