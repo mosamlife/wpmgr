@@ -58,6 +58,7 @@ namespace WPMgr\Agent\Commands;
 use WPMgr\Agent\Backup\RestoreRunner;
 use WPMgr\Agent\Backup\RestoreWatchdog;
 use WPMgr\Agent\Schema;
+use WPMgr\Agent\Support\LongRunningJob;
 
 /**
  * Accepts a `restore` command from the CP, seeds the task row, and hands
@@ -583,8 +584,8 @@ final class RestoreCommand implements CommandInterface
 
             $probeDir = is_dir($scratchBase) ? $scratchBase : (is_dir($parent) ? $parent : '');
             if ($probeDir !== '' && function_exists('disk_free_space')) {
-                $free = @disk_free_space($probeDir);
-                if ($free === false) {
+                $free = LongRunningJob::diskFreeSpace($probeDir);
+                if ($free === null) {
                     $warnings[] = 'disk_free_space() returned false; cannot probe headroom';
                 } else {
                     // 1 GiB floor — restore staging + DB scratch on a typical

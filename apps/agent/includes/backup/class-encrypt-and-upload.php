@@ -291,8 +291,7 @@ final class EncryptAndUpload
         // Lift caller-imposed time/abort guards. We may be running inside a
         // request that has already released the client connection via the
         // SAPI-aware finish (fastcgi/litespeed/fallback — see ConnectionFinisher).
-        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running encrypt pass must not hit max_execution_time; @-guarded, no-op when disabled
-        @ignore_user_abort(true);
+        LongRunningJob::extendLimits();
 
         // Idempotent no-op for an already-completed cursor.
         if (!empty($resume['done'])) {
@@ -538,8 +537,7 @@ final class EncryptAndUpload
      */
     public function uploadChunks(array $encryptCursor, array $resume, callable $progress, ?callable $checkpoint = null): array
     {
-        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running upload pass must not hit max_execution_time; @-guarded, no-op when disabled
-        @ignore_user_abort(true);
+        LongRunningJob::extendLimits();
 
         if (!empty($resume['done'])) {
             return $resume;
@@ -852,8 +850,7 @@ final class EncryptAndUpload
      */
     public function submitManifest(array $entries, callable $progress): void
     {
-        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running manifest submit must not hit max_execution_time; @-guarded, no-op when disabled
-        @ignore_user_abort(true);
+        LongRunningJob::extendLimits();
 
         try {
             // ADR-036 P1 storage adapter: route through the destination so
