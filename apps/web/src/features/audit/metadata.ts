@@ -72,6 +72,9 @@ const REASON_LABELS: Record<string, string> = {
   already_set: "WPMgr already had a key for this site",
   concurrent_first_set: "Another report recorded a key first",
   agent_key_not_current: "The report came from an old connection",
+  // reasonUnsignedReport in the same file: a Re-check answer, which the site's
+  // agent does not sign, never records a key.
+  unsigned_report: "The report was not signed by the site's agent",
   // site.backup.recipient.cleared's reason (reasonReEnrollment in the same file).
   re_enrollment: "The site was reconnected",
 };
