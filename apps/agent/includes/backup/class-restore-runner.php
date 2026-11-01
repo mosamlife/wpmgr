@@ -288,8 +288,7 @@ final class RestoreRunner
      */
     public function run(): string
     {
-        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running restore loop must not hit max_execution_time; @-guarded, no-op when disabled
-        @ignore_user_abort(true);
+        LongRunningJob::extendLimits();
 
         $currentPhase = self::PHASE_PREFLIGHT;
 
@@ -568,7 +567,7 @@ final class RestoreRunner
 
         // Disk free on wp-content's volume. disk_free_space returns the
         // bytes free for the filesystem the path lives on.
-        $free = $wpContent !== '' && is_dir($wpContent) ? (int) @disk_free_space($wpContent) : 0;
+        $free = $wpContent !== '' && is_dir($wpContent) ? (int) (LongRunningJob::diskFreeSpace($wpContent) ?? 0) : 0;
 
         if ($required > 0 && $free > 0 && $free < $required) {
             // Operator-facing message — surfaces in the SSE phase_detail and
@@ -1088,7 +1087,15 @@ final class RestoreRunner
      * Track A / A2 (#187): extract core.gNNN.partMMM.zip archives into a
      * staging directory under ABSPATH. Returns the absolute path of the
      * staging directory (a `.wpmgr-core-staging-<restoreId>/` sibling of
-     * ABSPATH). Returns '' on failure (non-fatal; caller logs and skips).
+     * ABSPATH). Returns '' when ext-zip is unavailable.
+     *
+     * Every entry it means to restore has to land whole, as in
+     * FilesRestorer::stage(): a core part that is missing or cannot be
+     * opened, a folder that cannot be created, or a file that cannot be read,
+     * written, or does not end up at the size the archive records stops the
+     * restore here, before the overlay touches ABSPATH. The staging dir is
+     * left in place for the regular cleanup. Unsafe entry names are still
+     * skipped.
      *
      * The staging directory is then used by runSwapFiles to overlay ABSPATH
      * atomically. Each zip entry relative path (e.g. `wp-admin/foo.php`) is
@@ -1112,52 +1119,64 @@ final class RestoreRunner
         }
         $stagingDir = dirname(rtrim($absPath, DIRECTORY_SEPARATOR)) . DIRECTORY_SEPARATOR . '.wpmgr-core-staging-' . $short;
 
-        if (!is_dir($stagingDir) && !wp_mkdir_p($stagingDir) && !is_dir($stagingDir)) {
-            \WPMgr\Agent\Support\DebugLog::write('WPMgr RestoreRunner: cannot create core staging dir: ' . $stagingDir);
-            return '';
-        }
-
+        // Each entry creates the folders it needs below, so a staging dir that
+        // cannot be created fails the first entry, with that entry named.
         foreach ($coreZips as $zipPath) {
             if (!is_file($zipPath)) {
-                continue;
+                throw new \RuntimeException('stage_files: missing core part: ' . esc_html(basename($zipPath))); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; message goes to server log/SSE, not browser output
             }
             $zip = new \ZipArchive();
-            if ($zip->open($zipPath) !== true) {
-                \WPMgr\Agent\Support\DebugLog::write('WPMgr RestoreRunner: cannot open core zip: ' . $zipPath);
-                continue;
+            $rc  = $zip->open($zipPath);
+            if ($rc !== true) {
+                throw new \RuntimeException('stage_files: cannot open core part: ' . esc_html(basename($zipPath)) . ' (code=' . esc_html((string) $rc) . ')'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; message goes to server log/SSE, not browser output
             }
-            for ($i = 0; $i < $zip->numFiles; $i++) {
-                $name = (string) $zip->getNameIndex($i);
-                if ($name === '' || $name === false) {
-                    continue;
-                }
-                // Sanitize: reject absolute paths, dotdot segments, NUL bytes.
-                if (!self::isSafeLogicalPath($name)) {
-                    \WPMgr\Agent\Support\DebugLog::write('WPMgr RestoreRunner: unsafe core zip entry rejected: ' . substr($name, 0, 120));
-                    continue;
-                }
-                // Directories end with '/' — create them and skip file write.
-                if (substr($name, -1) === '/') {
-                    $dir = $stagingDir . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, rtrim($name, '/'));
-                    if (!is_dir($dir)) {
-                        wp_mkdir_p($dir);
+            try {
+                for ($i = 0; $i < $zip->numFiles; $i++) {
+                    $name = (string) $zip->getNameIndex($i);
+                    if ($name === '') {
+                        continue;
                     }
-                    continue;
+                    // Sanitize: reject absolute paths, dotdot segments, NUL bytes.
+                    if (!self::isSafeLogicalPath($name)) {
+                        \WPMgr\Agent\Support\DebugLog::write('WPMgr RestoreRunner: unsafe core zip entry rejected: ' . substr($name, 0, 120));
+                        continue;
+                    }
+                    // Directories end with '/' — create them and skip file write.
+                    if (substr($name, -1) === '/') {
+                        $dir = $stagingDir . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, rtrim($name, '/'));
+                        error_clear_last();
+                        if (!is_dir($dir) && !wp_mkdir_p($dir) && !is_dir($dir)) {
+                            throw FilesRestorer::entryFailure($name, 'could not create its folder', FilesRestorer::folderFailureReason($dir));
+                        }
+                        continue;
+                    }
+                    $destPath = $stagingDir . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $name);
+                    $destDir  = dirname($destPath);
+                    error_clear_last();
+                    if (!is_dir($destDir) && !wp_mkdir_p($destDir) && !is_dir($destDir)) {
+                        throw FilesRestorer::entryFailure($name, 'could not create its folder', FilesRestorer::folderFailureReason($destDir));
+                    }
+                    $bytes = $zip->getFromIndex($i);
+                    if ($bytes === false) {
+                        $readReason = $zip->status !== \ZipArchive::ER_OK ? (string) $zip->getStatusString() : 'it could not be read from the backup';
+                        throw FilesRestorer::entryFailure($name, 'could not unpack it', $readReason);
+                    }
+                    $stat = $zip->statIndex($i);
+                    error_clear_last();
+                    $put         = @file_put_contents($destPath, $bytes); // phpcs:ignore WordPress.WP.AlternativeFunctions.WriteFile.ABSPATHDetected,PluginCheck.CodeAnalysis.WriteFile.ABSPATHDetected -- restore/quarantine engine intentionally writes under ABSPATH (the live WP tree); relocating would defeat the restore
+                    $writeReason = FilesRestorer::lastErrorReason();
+                    if ($put === false || $put !== strlen($bytes)) {
+                        throw FilesRestorer::entryFailure($name, 'could not unpack it', $writeReason !== '' ? $writeReason : (int) $put . ' of ' . strlen($bytes) . ' bytes written');
+                    }
+                    $expected  = is_array($stat) && isset($stat['size']) ? (int) $stat['size'] : -1;
+                    $shortfall = FilesRestorer::unpackedShortfall($destPath, $expected);
+                    if ($shortfall !== '') {
+                        throw FilesRestorer::entryFailure($name, 'could not unpack it', $writeReason !== '' ? $writeReason : $shortfall);
+                    }
                 }
-                $destPath = $stagingDir . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $name);
-                $destDir  = dirname($destPath);
-                if (!is_dir($destDir) && !wp_mkdir_p($destDir) && !is_dir($destDir)) {
-                    \WPMgr\Agent\Support\DebugLog::write('WPMgr RestoreRunner: cannot create core staging subdir: ' . $destDir);
-                    continue;
-                }
-                $bytes = $zip->getFromIndex($i);
-                if ($bytes === false) {
-                    \WPMgr\Agent\Support\DebugLog::write('WPMgr RestoreRunner: failed to read core zip entry: ' . $name);
-                    continue;
-                }
-                @file_put_contents($destPath, $bytes); // phpcs:ignore WordPress.WP.AlternativeFunctions.WriteFile.ABSPATHDetected,PluginCheck.CodeAnalysis.WriteFile.ABSPATHDetected -- restore/quarantine engine intentionally writes under ABSPATH (the live WP tree); relocating would defeat the restore
+            } finally {
+                $zip->close();
             }
-            $zip->close();
         }
 
         return $stagingDir;

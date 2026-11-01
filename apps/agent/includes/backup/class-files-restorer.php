@@ -8,7 +8,10 @@
  *   1. PREFLIGHT every `.zip` opens cleanly (ZipArchive::open + numFiles > 0).
  *      Any failure aborts before a single byte is written to live wp-content.
  *   2. Extract entries into `wp-content/.wpmgr-staging-<short>/` (NOT into live
- *      wp-content). 0700 perms.
+ *      wp-content). 0700 perms. An entry the restore means to keep that
+ *      cannot be written whole into staging stops the stage: stage() throws,
+ *      so nothing is promoted over live. Staging is left in place for the
+ *      regular cleanup.
  *   3. Per-entry path-traversal defense: full resolved path must live INSIDE
  *      staging dir. Reject `..`, absolute paths, NUL bytes, symlink targets.
  *   4. Skip the canonical "keep the site running" EXCLUDE LIST (config files
@@ -35,6 +38,8 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Backup;
 
+use WPMgr\Agent\Backup\Destinations\LocalDestination;
+use WPMgr\Agent\Support\LongRunningJob;
 use ZipArchive;
 
 /**
@@ -200,6 +205,15 @@ final class FilesRestorer
     ];
 
     /**
+     * GH #982: the Local destination's store paths, relative to wp-content,
+     * as LocalDestination::storePathsInContent() resolves them. Resolved once
+     * per restorer.
+     *
+     * @var list<string>|null
+     */
+    private ?array $storePaths = null;
+
+    /**
      * Stage every zip part into `<wpContentParent>/.wpmgr-staging-<short>/`.
      * Returns the absolute staging dir.
      *
@@ -211,7 +225,10 @@ final class FilesRestorer
      * @param string       $restoreId   UUID — for the per-run staging dir name.
      * @param callable     $progress    function(string $phase, array $detail): void
      * @return string Absolute staging dir.
-     * @throws \RuntimeException On preflight failure or unrecoverable I/O.
+     * @throws \RuntimeException On preflight failure or unrecoverable I/O, and
+     *                           when an entry it means to restore cannot have
+     *                           its folder created or cannot be unpacked whole
+     *                           (staging is left for the regular cleanup).
      */
     public function stage(array $zipPaths, string $targetDir, string $restoreId, callable $progress): string
     {
@@ -284,7 +301,9 @@ final class FilesRestorer
 
                     // Drop-in / config / WPMgr-scratch exclude list — anchored
                     // match (exact path or exact segment; never substring).
-                    if (self::isExcluded($entryName)) {
+                    // GH #982: an older snapshot's copy of the Local store is
+                    // never extracted; swap() keeps the live store instead.
+                    if (self::isExcluded($entryName) || $this->isStoreEntry($entryName)) {
                         continue;
                     }
 
@@ -301,9 +320,12 @@ final class FilesRestorer
                     $target = $stagingReal . DIRECTORY_SEPARATOR . ltrim($entryName, DIRECTORY_SEPARATOR);
                     $targetParent = dirname($target);
                     // Pre-create the directory so extractTo can write the file.
+                    // An entry this restore means to keep whose folder cannot
+                    // be created stops the stage: the staged tree would be
+                    // missing it, and the swap would promote that over live.
+                    error_clear_last();
                     if (!is_dir($targetParent) && !wp_mkdir_p($targetParent) && !is_dir($targetParent)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- converted to wp_mkdir_p
-                        // Cannot create — skip this entry; not fatal.
-                        continue;
+                        throw self::entryFailure($entryName, 'could not create its folder', self::folderFailureReason($targetParent));
                     }
                     // Double-check containment against the canonical staging
                     // root after dir creation (defends against a malicious
@@ -316,12 +338,28 @@ final class FilesRestorer
                     // Per-entry extraction lets us control which entries
                     // actually land. extractTo's third arg accepts a list of
                     // entry names; ZipArchive resolves them itself.
-                    $ok = @$zip->extractTo($stagingDir, [$entryName]);
+                    //
+                    // An entry that does not land whole stops the stage, for
+                    // the same reason as a folder that cannot be created.
+                    // extractTo() can report success for a file it could only
+                    // partly write (a full disk), so a file entry also has to
+                    // match the size the archive records for it.
+                    $stat = $zip->statIndex($i);
+                    error_clear_last();
+                    $ok            = @$zip->extractTo($stagingDir, [$entryName]);
+                    $extractReason = self::lastErrorReason();
                     if ($ok !== true) {
-                        // Extraction failed for this entry — log via progress
-                        // and continue — log and skip semantics, never
-                        // abort the whole run on one entry.
-                        continue;
+                        if ($extractReason === '' && $zip->status !== ZipArchive::ER_OK) {
+                            $extractReason = (string) $zip->getStatusString();
+                        }
+                        throw self::entryFailure($entryName, 'could not unpack it', $extractReason);
+                    }
+                    if (substr($entryName, -1) !== '/') {
+                        $expected  = is_array($stat) && isset($stat['size']) ? (int) $stat['size'] : -1;
+                        $shortfall = self::unpackedShortfall($target, $expected);
+                        if ($shortfall !== '') {
+                            throw self::entryFailure($entryName, 'could not unpack it', $extractReason !== '' ? $extractReason : $shortfall);
+                        }
                     }
 
                     $filesDone++;
@@ -427,6 +465,10 @@ final class FilesRestorer
         // level files (`wp-config.php`, `.htaccess`, `.user.ini`) live above
         // the swap surface and are preserved by virtue of not being touched.
         self::preserveFromLive($targetDir, $stagingDir);
+        // GH #982: the Local destination's live store. Unlike the entries
+        // above, a store that cannot be kept in full stops the restore here,
+        // before anything is moved.
+        $this->keepLiveStore($targetDir, $stagingDir, null);
 
         // 1) Move live target aside. If $oldFiles already exists (a watchdog
         // mid-swap re-entry), the previous attempt already moved the live
@@ -528,6 +570,7 @@ final class FilesRestorer
         // (catch-all others) component is being swapped — we handle them
         // there.
         self::preserveFromLiveScoped($targetDir, $stagingDir, $components);
+        $this->keepLiveStore($targetDir, $stagingDir, $components);
 
         foreach ($components as $comp) {
             if (isset(self::COMPONENT_SUBDIRS[$comp])) {
@@ -1073,6 +1116,153 @@ final class FilesRestorer
     }
 
     /**
+     * Longest message entryFailureMessage() builds, in bytes after escaping; a
+     * failed restore keeps this many characters of its error.
+     */
+    private const ENTRY_FAILURE_MESSAGE_MAX = 240;
+
+    /**
+     * Operator-facing message for an entry a restore could not write into
+     * staging: the site was not changed, which file failed and why, and what
+     * to do. The whole escaped message stays within ENTRY_FAILURE_MESSAGE_MAX
+     * bytes, so the guidance at its end is always kept. A long entry name is
+     * shortened from the front, whole characters at a time, so the file name
+     * itself survives and is never cut inside a character.
+     *
+     * @param string $entryName Archive entry name.
+     * @param string $what      "could not create its folder" or "could not unpack it".
+     * @param string $reason    Short cause, or '' when none is known.
+     */
+    private static function entryFailureMessage(string $entryName, string $what, string $reason): string
+    {
+        $lead   = esc_html('The restore stopped and the site was not changed. File ');
+        $advice = '. Free disk space or fix folder permissions, then retry.';
+        $reason = self::utf8Head($reason, 50);
+        $tail   = esc_html(': ' . $what . ($reason !== '' ? ' (' . $reason . ')' : '') . $advice);
+        if (strlen($lead) + strlen($tail) + 40 > self::ENTRY_FAILURE_MESSAGE_MAX) {
+            $tail = esc_html(': ' . $what . $advice);
+        }
+        $room  = self::ENTRY_FAILURE_MESSAGE_MAX - strlen($lead) - strlen($tail);
+        $shown = esc_html($entryName);
+        if (strlen($shown) > $room) {
+            $cut = self::utf8FromBoundary((string) substr($entryName, -max(1, $room - 3)));
+            while ($cut !== '' && strlen(esc_html('...' . $cut)) > $room) {
+                $cut = self::utf8FromBoundary((string) substr($cut, 1));
+            }
+            $shown = esc_html('...' . $cut);
+        }
+
+        return $lead . $shown . $tail;
+    }
+
+    /** $s from its first whole UTF-8 character: leading continuation bytes dropped. */
+    private static function utf8FromBoundary(string $s): string
+    {
+        $i = 0;
+        $n = strlen($s);
+        while ($i < $n && (ord($s[$i]) & 0xC0) === 0x80) {
+            $i++;
+        }
+        return (string) substr($s, $i);
+    }
+
+    /** At most $max bytes of $s, never ending inside a UTF-8 character. */
+    private static function utf8Head(string $s, int $max): string
+    {
+        if (strlen($s) <= $max) {
+            return $s;
+        }
+        $s = (string) substr($s, 0, $max);
+        $j = strlen($s);
+        while ($j > 0 && (ord($s[$j - 1]) & 0xC0) === 0x80) {
+            $j--;
+        }
+        if ($j > 0) {
+            $first = ord($s[$j - 1]);
+            $need  = $first >= 0xF0 ? 4 : ($first >= 0xE0 ? 3 : ($first >= 0xC0 ? 2 : 1));
+            if (strlen($s) - ($j - 1) < $need) {
+                $s = (string) substr($s, 0, $j - 1);
+            }
+        }
+        return $s;
+    }
+
+    /**
+     * The exception a restore throws for an entry it means to restore but
+     * could not write whole into staging. Shared by stage() and
+     * RestoreRunner's core-part staging.
+     *
+     * @internal
+     * @param string $entryName Archive entry name.
+     * @param string $what      "could not create its folder" or "could not unpack it".
+     * @param string $reason    Short cause, or '' when none is known.
+     */
+    public static function entryFailure(string $entryName, string $what, string $reason): \RuntimeException
+    {
+        return new \RuntimeException(self::entryFailureMessage($entryName, $what, $reason)); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- exception message for log/SSE, not browser; parts escaped in entryFailureMessage()
+    }
+
+    /**
+     * Why a folder could not be created: the cause PHP recorded, or "a file
+     * is in the way" when a file holds that path and nothing was recorded.
+     *
+     * @internal
+     */
+    public static function folderFailureReason(string $folder): string
+    {
+        $reason = self::lastErrorReason();
+        if ($reason === '' && file_exists($folder)) {
+            $reason = 'a file is in the way';
+        }
+        return $reason;
+    }
+
+    /**
+     * '' when the file at $path holds exactly the $expected bytes the archive
+     * records for it; otherwise a short reason. A write onto a full disk can
+     * report success for a file it only partly wrote, so callers check this
+     * after every file they unpack.
+     *
+     * @internal
+     * @param string $path     File just written.
+     * @param int    $expected Uncompressed size from the archive, or -1 when unknown.
+     */
+    public static function unpackedShortfall(string $path, int $expected): string
+    {
+        if ($expected < 0) {
+            return 'the backup does not record its size';
+        }
+        clearstatcache(true, $path);
+        $written = @filesize($path);
+        if ($written === $expected) {
+            return '';
+        }
+        return (int) $written . ' of ' . $expected . ' bytes written';
+    }
+
+    /**
+     * The cause PHP recorded for the last failed filesystem call, in a few
+     * plain words ("No space left on device", "Permission denied"), or ''
+     * when nothing was recorded. Callers clear the record first.
+     *
+     * @internal
+     */
+    public static function lastErrorReason(): string
+    {
+        $last    = error_get_last();
+        $message = is_array($last) ? trim((string) $last['message']) : '';
+        if ($message === '') {
+            return '';
+        }
+        if (preg_match('/errno=\d+\s+(.+)$/', $message, $m) === 1) {
+            return trim($m[1]);
+        }
+        $cut = strrpos($message, ': ');
+
+        return $cut === false ? $message : trim(substr($message, $cut + 2));
+    }
+
+    /**
      * Track 5 — preserve-from-live for the per-component swap path. Same
      * semantics as preserveFromLive() but only copies allowlist entries whose
      * top-level segment is in scope for one of the components being swapped.
@@ -1257,6 +1447,160 @@ final class FilesRestorer
     }
 
     /**
+     * GH #982: the Local destination's store paths, relative to wp-content.
+     *
+     * @return list<string>
+     */
+    private function storePaths(): array
+    {
+        if ($this->storePaths === null) {
+            $this->storePaths = LocalDestination::storePathsInContent();
+        }
+        return $this->storePaths;
+    }
+
+    /** Whether an archive entry lies in the Local destination's store. Anchored: exact path or path prefix. */
+    private function isStoreEntry(string $entryName): bool
+    {
+        $normalized = ltrim(str_replace('\\', '/', $entryName), '/');
+        foreach ($this->storePaths() as $store) {
+            if ($normalized === $store || strncmp($normalized, $store . '/', strlen($store) + 1) === 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * GH #982: carry the Local destination's live store into staging before
+     * the swap, by hard link where the host allows it (a store file is
+     * written once, so a link costs no space) and by copy otherwise. stage()
+     * never extracts a store path, so this is the only copy the restored
+     * tree gets: any store file that cannot be kept stops the restore here,
+     * before the live tree is moved. A symlink in the store is never
+     * followed; the swap does not touch what it points to.
+     *
+     * @param string            $liveRoot    Absolute live wp-content path.
+     * @param string            $stagingRoot Absolute staging dir.
+     * @param list<string>|null $components  Components being swapped, or null for the whole tree.
+     * @throws \RuntimeException When a store file could not be kept.
+     */
+    private function keepLiveStore(string $liveRoot, string $stagingRoot, ?array $components): void
+    {
+        $liveRoot    = rtrim($liveRoot, DIRECTORY_SEPARATOR);
+        $stagingRoot = rtrim($stagingRoot, DIRECTORY_SEPARATOR);
+        $canLink     = function_exists('link');
+        $failed      = [];
+        foreach ($this->storePaths() as $rel) {
+            if ($components !== null) {
+                if (!in_array(self::componentOf($rel), $components, true)) {
+                    continue;
+                }
+                // A component swap replaces only the top-level items staging
+                // holds. A store under one that staging lacks stays in place,
+                // and creating that item in staging would make the swap
+                // replace everything else the live one holds.
+                if (!file_exists($stagingRoot . DIRECTORY_SEPARATOR . explode('/', $rel)[0])) {
+                    continue;
+                }
+            }
+            $src = $liveRoot . DIRECTORY_SEPARATOR . $rel;
+            if (is_link($src) || !is_dir($src)) {
+                continue;
+            }
+            $failed = array_merge($failed, self::keepTree($src, $stagingRoot . DIRECTORY_SEPARATOR . $rel, $rel, $canLink));
+        }
+        if ($failed === []) {
+            return;
+        }
+        foreach (array_slice($failed, 0, 20) as $rel) {
+            \WPMgr\Agent\Support\DebugLog::write('WPMgr FilesRestorer: could not keep Local store file ' . $rel);
+        }
+        throw new \RuntimeException(sprintf( // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; message goes to log/SSE, not browser
+            'FilesRestorer: %d file(s) of the local backup store could not be kept, first %s; the restore stopped before replacing any file. Free disk space and run it again.',
+            count($failed),
+            esc_html($failed[0])
+        ));
+    }
+
+    /**
+     * Link or copy every regular file under $src to the same place under
+     * $dst. Idempotent across a re-entered swap: a file already kept at its
+     * full size is left as it is.
+     *
+     * @return list<string> Paths, relative to wp-content, that could not be kept.
+     */
+    private static function keepTree(string $src, string $dst, string $rel, bool $canLink): array
+    {
+        if (!is_dir($dst) && !wp_mkdir_p($dst) && !is_dir($dst)) {
+            return [$rel];
+        }
+        $items = @scandir($src);
+        if ($items === false) {
+            return [$rel];
+        }
+        $failed = [];
+        foreach ($items as $name) {
+            if ($name === '.' || $name === '..') {
+                continue;
+            }
+            $sp = $src . DIRECTORY_SEPARATOR . $name;
+            $dp = $dst . DIRECTORY_SEPARATOR . $name;
+            if (is_link($sp)) {
+                continue;
+            }
+            if (is_dir($sp)) {
+                $failed = array_merge($failed, self::keepTree($sp, $dp, $rel . '/' . $name, $canLink));
+            } elseif (is_file($sp) && !self::keepFile($sp, $dp, $canLink)) {
+                $failed[] = $rel . '/' . $name;
+            }
+        }
+        return $failed;
+    }
+
+    /** Link (or copy) one store file into staging, and confirm it arrived whole. */
+    private static function keepFile(string $sp, string $dp, bool $canLink): bool
+    {
+        $size = @filesize($sp);
+        if ($size === false) {
+            return false;
+        }
+        if (is_file($dp) && !is_link($dp)) {
+            clearstatcache(true, $dp);
+            if (@filesize($dp) === $size) {
+                return true;
+            }
+            wp_delete_file($dp); // A partial copy from an interrupted earlier attempt.
+        }
+        if (file_exists($dp) || is_link($dp)) {
+            return false;
+        }
+        if ($canLink && @link($sp, $dp)) {
+            return true;
+        }
+        if (!@copy($sp, $dp)) {
+            return false;
+        }
+        clearstatcache(true, $dp);
+        return @filesize($dp) === $size;
+    }
+
+    /** The swap component a wp-content-relative path belongs to (by its first segment). */
+    private static function componentOf(string $rel): string
+    {
+        switch (explode('/', ltrim($rel, '/'))[0]) {
+            case 'plugins':
+                return 'plugin';
+            case 'themes':
+                return 'theme';
+            case 'uploads':
+                return 'upload';
+            default:
+                return 'wp-content';
+        }
+    }
+
+    /**
      * Estimate the on-disk size of wp-content. Used by `RestoreRunner`'s
      * two-leg disk-free precheck to size the "we need room for a staging tree
      * the same size as live wp-content" leg. Caps at 5 wall-clock seconds —
@@ -1314,9 +1658,9 @@ final class FilesRestorer
      */
     private static function diskUsageFallback(string $path): int
     {
-        $total = @disk_total_space($path);
-        $free  = @disk_free_space($path);
-        if (!is_numeric($total) || !is_numeric($free) || $total <= 0) {
+        $total = LongRunningJob::diskTotalSpace($path);
+        $free  = LongRunningJob::diskFreeSpace($path);
+        if ($total === null || $free === null || $total <= 0) {
             return 0;
         }
         $used = (int) $total - (int) $free;
