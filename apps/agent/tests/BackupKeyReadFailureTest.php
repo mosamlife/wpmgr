@@ -22,6 +22,7 @@ use WPMgr\Agent\Commands\BackupCommand;
 use WPMgr\Agent\Keystore;
 use WPMgr\Agent\KeystoreReadFailed;
 use WPMgr\Agent\Plugin;
+use WPMgr\Agent\Signer;
 use WPMgr\Agent\Support\AgeCrypto;
 use WPMgr\Agent\Support\AgeIdentity;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
@@ -46,6 +47,9 @@ final class BackupKeyReadFailureTest extends TestCase
 
     private FakeKeyRowWpdb $wpdb;
 
+    /** @var list<string> Options whose reads go through the stand-in's database read. */
+    private array $modelled = [Keystore::OPTION_AGE_IDENTITY];
+
     private string $keyFile = '';
 
     /** @var mixed */
@@ -61,6 +65,7 @@ final class BackupKeyReadFailureTest extends TestCase
         $this->rows       = [Keystore::OPTION_MASTER_KEY_SOURCE => ['source' => 'file', 'path' => $this->keyFile]];
         $this->notoptions = [];
         $this->valueCache = [];
+        $this->modelled   = [Keystore::OPTION_AGE_IDENTITY];
 
         $this->previousWpdb = $GLOBALS['wpdb'] ?? null;
         $this->wpdb         = new FakeKeyRowWpdb($this->rows);
@@ -110,7 +115,7 @@ final class BackupKeyReadFailureTest extends TestCase
      */
     private function optionGet(string $name, $default = false)
     {
-        if ($name !== Keystore::OPTION_AGE_IDENTITY) {
+        if (!in_array($name, $this->modelled, true)) {
             return $this->rows[$name] ?? $default;
         }
         if (isset($this->notoptions[$name])) {
@@ -140,7 +145,7 @@ final class BackupKeyReadFailureTest extends TestCase
     /** @param mixed $value */
     private function optionUpdate(string $name, $value): bool
     {
-        if ($name !== Keystore::OPTION_AGE_IDENTITY) {
+        if (!in_array($name, $this->modelled, true)) {
             $this->rows[$name] = $value;
 
             return true;
@@ -161,7 +166,7 @@ final class BackupKeyReadFailureTest extends TestCase
      */
     private function optionAdd(string $name, $value): bool
     {
-        if ($name !== Keystore::OPTION_AGE_IDENTITY) {
+        if (!in_array($name, $this->modelled, true)) {
             if (array_key_exists($name, $this->rows)) {
                 return false;
             }
@@ -360,6 +365,57 @@ final class BackupKeyReadFailureTest extends TestCase
         $this->assertSame($sealed, $this->rows[Keystore::OPTION_AGE_IDENTITY], 'The stored key must not be replaced.');
         $this->assertSame([true], $this->wpdb->insertSuppressed, 'The insert runs with errors suppressed.');
         $this->assertFalse($this->wpdb->suppressErrors, 'The previous error state is restored.');
+    }
+
+    /** A failed read of the site keypair during admin setup leaves the keypair unchanged and records no notice. */
+    public function test_a_failed_keypair_read_during_admin_setup_leaves_the_keypair_unchanged(): void
+    {
+        $this->seedHealthyKeystore();
+        $keypair          = $this->rows[Keystore::OPTION_SITE_KEYPAIR];
+        $this->modelled[] = Keystore::OPTION_SITE_KEYPAIR;
+        $this->wpdb->insertedByName = [];
+        $this->wpdb->failSelects    = 1;
+
+        $this->runSetupKeystore();
+
+        $this->assertSame($keypair, $this->rows[Keystore::OPTION_SITE_KEYPAIR], 'The site keypair must not be replaced.');
+        $this->assertSame(1, $this->wpdb->failedSelects, 'Precondition: the read of the site keypair failed.');
+        $this->assertSame(0, $this->wpdb->insertedFor(Keystore::OPTION_SITE_KEYPAIR));
+        $this->assertArrayNotHasKey(Plugin::OPTION_KEYSTORE_ERROR, $this->rows);
+        $this->assertArrayNotHasKey(Plugin::OPTION_KEYSTORE_ERROR_KIND, $this->rows);
+    }
+
+    /** A failed read of the site keypair while its public key is taken for enrolment keeps the stored keypair. */
+    public function test_a_failed_keypair_read_for_enrolment_keeps_the_stored_keypair(): void
+    {
+        $this->seedHealthyKeystore();
+        $keypair          = $this->rows[Keystore::OPTION_SITE_KEYPAIR];
+        $expected         = sodium_crypto_sign_publickey((new Keystore())->decrypt($keypair));
+        $this->modelled[] = Keystore::OPTION_SITE_KEYPAIR;
+        $this->wpdb->insertedByName = [];
+        $this->wpdb->failSelects    = 1;
+
+        $public = (new Signer(new Keystore()))->agentPublicKey();
+
+        $this->assertSame($keypair, $this->rows[Keystore::OPTION_SITE_KEYPAIR], 'The site keypair must not be replaced.');
+        $this->assertSame(1, $this->wpdb->failedSelects, 'Precondition: the read of the site keypair failed.');
+        $this->assertSame($expected, $public, 'The stored keypair is the one used.');
+        $this->assertSame(0, $this->wpdb->insertedFor(Keystore::OPTION_SITE_KEYPAIR));
+    }
+
+    /** Over-fire guard: a site keypair row that is really absent gets exactly one keypair. */
+    public function test_a_really_absent_keypair_row_creates_exactly_one_keypair(): void
+    {
+        $this->modelled[] = Keystore::OPTION_SITE_KEYPAIR;
+
+        $ready = $this->runSetupKeystore();
+
+        $this->assertTrue($ready);
+        $this->assertSame(1, $this->wpdb->insertedFor(Keystore::OPTION_SITE_KEYPAIR), 'Exactly one keypair is created.');
+        $keypair = (new Keystore())->getSiteKeypair();
+        $this->assertIsString($keypair);
+        $this->assertSame(SODIUM_CRYPTO_SIGN_KEYPAIRBYTES, strlen($keypair));
+        $this->assertSame(1, $this->wpdb->insertedFor(Keystore::OPTION_AGE_IDENTITY));
     }
 
     /** Run Plugin::setupKeystore() over a fresh Keystore, without booting the plugin. */
