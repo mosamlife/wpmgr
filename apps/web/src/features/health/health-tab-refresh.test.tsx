@@ -489,8 +489,8 @@ describe("Re-run all checks, moving to another site", () => {
       getParentRoute: () => rootRoute,
       path: "/sites/$siteId/health",
       component: function SiteHealthRoute() {
-        const { siteId } = useParams({ strict: false }) as { siteId: string };
-        return <HealthTab siteId={siteId} />;
+        const { siteId } = useParams({ strict: false });
+        return siteId ? <HealthTab siteId={siteId} /> : null;
       },
     });
     const router = createRouter({
