@@ -2837,9 +2837,6 @@ final class RestoreRunner
         return $subState;
     }
 
-    /**
-     * @param array<string,mixed> $subState
-     */
     // ==================================================================
     // Per-restore run lock (GH #1008)
     // ==================================================================
@@ -2986,6 +2983,9 @@ final class RestoreRunner
         return rtrim($base, '/\\') . DIRECTORY_SEPARATOR . $id . '.lock';
     }
 
+    /**
+     * @param array<string,mixed> $subState
+     */
     private function saveTaskState(string $phase, array $subState): void
     {
         global $wpdb;
