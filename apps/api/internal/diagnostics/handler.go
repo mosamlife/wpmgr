@@ -106,8 +106,10 @@ func (h *Handler) refresh(c *gin.Context) {
 		return
 	}
 	if err := h.svc.RefreshAgent(c.Request.Context(), p.TenantID, siteID); err != nil {
-		// Treat the unwired sentinel as a 503 the UI can render as
-		// "on-demand refresh not yet wired".
+		// Treat the unwired sentinel as the 501 the UI can render as
+		// "on-demand refresh not yet wired". A failure of the site itself
+		// arrives here already as a 502 domain error (see
+		// RefreshEnqueuerImpl.EnqueueRefreshDiagnostics).
 		if errors.Is(err, errUnwired) || err.Error() == "diagnostics_refresh_unwired" {
 			httpx.Error(c, domain.Unavailable("diagnostics_refresh_unwired", "on-demand diagnostics refresh is not yet wired"))
 			return
