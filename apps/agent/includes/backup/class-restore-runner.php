@@ -237,6 +237,31 @@ final class RestoreRunner
     private array $rollbackPointers = [];
 
     /**
+     * Per-restore run lock (GH #1008). One restore, one runner: the lock is
+     * the database lock plus file lock the backup TaskRunner uses, taken
+     * before any work and released on every exit. Only the holder changes
+     * anything. 'unacquired' until run() tries; 'held', 'contended' (another
+     * live runner holds it), or 'unavailable' (the host offers neither lock).
+     */
+    private string $runLockState = 'unacquired';
+
+    private bool $runDbLockHeld = false;
+
+    /** @var resource|null */
+    private $runLockFile = null;
+
+    private string $runLockPath = '';
+
+    /** True once this run reached completed or failed. */
+    private bool $runEnded = false;
+
+    /**
+     * The phase this run last read from or wrote to its row. Phase writes are
+     * conditional on it, so a row that ended elsewhere is never moved.
+     */
+    private string $rowPhaseSeen = '';
+
+    /**
      * Test seam: the sleeper invoked between download retry attempts. Tests
      * override this with a no-op so the retry-loop test doesn't actually
      * pause 1+2+4+8 = 15s of wall clock. Default is `usleep` so production
@@ -291,6 +316,24 @@ final class RestoreRunner
         @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running restore loop must not hit max_execution_time; @-guarded, no-op when disabled
         @ignore_user_abort(true);
 
+        // GH #1008: one runner per restore. A runner that finds another live
+        // runner holding this restore's lock does nothing and changes nothing.
+        if ($this->acquireRunLock() === 'contended') {
+            return $this->rowPhaseReadOnly();
+        }
+        try {
+            return $this->runHoldingLock();
+        } finally {
+            $this->releaseRunLock();
+        }
+    }
+
+    /**
+     * The phase loop, run by the lock holder (or, on a host that offers no
+     * lock at all, by the only runner the host can tell about).
+     */
+    private function runHoldingLock(): string
+    {
         $currentPhase = self::PHASE_PREFLIGHT;
 
         try {
@@ -307,8 +350,10 @@ final class RestoreRunner
             $this->rememberSubState($subState);
 
             if ($currentPhase === self::PHASE_COMPLETED || $currentPhase === self::PHASE_FAILED) {
+                $this->runEnded = true;
                 return $currentPhase;
             }
+            $this->rowPhaseSeen = $currentPhase;
 
             // Compute the tmp prefix once + persist it into sub_state so
             // every phase agrees + a watchdog re-entry sees the same value.
@@ -355,6 +400,11 @@ final class RestoreRunner
                         break;
 
                     case self::PHASE_SWAP_FILES:
+                        // GH #1008: the swap and the core overlay run only
+                        // while this run still owns the restore.
+                        if (!$this->ownsRestore()) {
+                            return $this->rowPhaseReadOnly();
+                        }
                         // GH #146: arm the shutdown-rollback backstop right
                         // before the first destructive rename this run
                         // performs.
@@ -388,6 +438,9 @@ final class RestoreRunner
                         break;
 
                     case self::PHASE_SWAP_DB:
+                        if (!$this->ownsRestore()) {
+                            return $this->rowPhaseReadOnly();
+                        }
                         // GH #146: arm the shutdown-rollback backstop right
                         // before the first destructive rename this run
                         // performs (idempotent — a no-op if swap_files
@@ -454,6 +507,7 @@ final class RestoreRunner
             }
 
             // ---- Completion: cleanup + ack. ------------------------------
+            $this->runEnded = true;
             $this->cleanupOnCompleted($subState);
             $this->postProgress(self::PHASE_COMPLETED, [
                 'ok'      => true,
@@ -463,6 +517,13 @@ final class RestoreRunner
             return self::PHASE_COMPLETED;
         } catch (\Throwable $e) {
             \WPMgr\Agent\Support\DebugLog::write('WPMgr RestoreRunner: phase ' . $currentPhase . ' failed: ' . $e->getMessage());
+
+            // GH #1008: a run that no longer owns the restore records nothing
+            // and turns nothing off; the owner reports the outcome.
+            if (!$this->mayChangeSite()) {
+                return $this->rowPhaseReadOnly();
+            }
+            $this->runEnded = true;
 
             // GH #146: RestoreHealthCheckFailed carries which rollback legs
             // already completed (runHealthCheck() performs the combined
@@ -984,7 +1045,7 @@ final class RestoreRunner
             throw new \RuntimeException('stage_files: wp_content_path is empty');
         }
 
-        $restorer   = new FilesRestorer();
+        $restorer   = new FilesRestorer(fn (): bool => $this->mayRemoveStaging());
         $stagingDir = '';
         if ($zips !== []) {
             if ($target === '') {
@@ -1010,7 +1071,14 @@ final class RestoreRunner
                 // manually extract it). Log and continue.
                 \WPMgr\Agent\Support\DebugLog::write('WPMgr RestoreRunner: ABSPATH not available for core extraction — skipping core zip extraction');
             } else {
-                $coreStagingDir = $this->extractCorePartsToStaging($coreZips, $absPath, $restoreId);
+                try {
+                    $coreStagingDir = $this->extractCorePartsToStaging($coreZips, $absPath, $restoreId);
+                } catch (\Throwable $e) {
+                    // The finished wp-content staging tree will never be
+                    // swapped now; reclaim it too (only while holding the lock).
+                    $this->abandonStagingIfOwned($stagingDir);
+                    throw $e;
+                }
             }
         }
 
@@ -1085,6 +1153,25 @@ final class RestoreRunner
     }
 
     /**
+     * Remove a staging tree this run is giving up on, only while it holds the
+     * restore's run lock. A run without the lock leaves it for the owner, or
+     * for the staging cleanup job on a host that offers no lock.
+     */
+    private function abandonStagingIfOwned(string $stagingDir): void
+    {
+        if ($stagingDir !== '' && $this->mayRemoveStaging()) {
+            FilesRestorer::abandonStaging($stagingDir);
+        }
+    }
+
+    /** Core-part staging's failure for one entry: guarded removal, then the exception to throw. */
+    private function failCoreEntry(string $stagingDir, string $entryName, string $what, string $reason): \RuntimeException
+    {
+        $this->abandonStagingIfOwned($stagingDir);
+        return FilesRestorer::entryFailure($entryName, $what, $reason);
+    }
+
+    /**
      * Track A / A2 (#187): extract core.gNNN.partMMM.zip archives into a
      * staging directory under ABSPATH. Returns the absolute path of the
      * staging directory (a `.wpmgr-core-staging-<restoreId>/` sibling of
@@ -1123,13 +1210,13 @@ final class RestoreRunner
         // cannot be created fails the first entry, with that entry named.
         foreach ($coreZips as $zipPath) {
             if (!is_file($zipPath)) {
-                FilesRestorer::abandonStaging($stagingDir);
+                $this->abandonStagingIfOwned($stagingDir);
                 throw new \RuntimeException('stage_files: missing core part: ' . esc_html(basename($zipPath))); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; message goes to server log/SSE, not browser output
             }
             $zip = new \ZipArchive();
             $rc  = $zip->open($zipPath);
             if ($rc !== true) {
-                FilesRestorer::abandonStaging($stagingDir);
+                $this->abandonStagingIfOwned($stagingDir);
                 throw new \RuntimeException('stage_files: cannot open core part: ' . esc_html(basename($zipPath)) . ' (code=' . esc_html((string) $rc) . ')'); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; message goes to server log/SSE, not browser output
             }
             try {
@@ -1148,7 +1235,7 @@ final class RestoreRunner
                         $dir = $stagingDir . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, rtrim($name, '/'));
                         error_clear_last();
                         if (!is_dir($dir) && !wp_mkdir_p($dir) && !is_dir($dir)) {
-                            throw FilesRestorer::entryFailure($stagingDir, $name, 'could not create its folder', FilesRestorer::folderFailureReason($dir));
+                            throw $this->failCoreEntry($stagingDir, $name, 'could not create its folder', FilesRestorer::folderFailureReason($dir));
                         }
                         continue;
                     }
@@ -1156,24 +1243,24 @@ final class RestoreRunner
                     $destDir  = dirname($destPath);
                     error_clear_last();
                     if (!is_dir($destDir) && !wp_mkdir_p($destDir) && !is_dir($destDir)) {
-                        throw FilesRestorer::entryFailure($stagingDir, $name, 'could not create its folder', FilesRestorer::folderFailureReason($destDir));
+                        throw $this->failCoreEntry($stagingDir, $name, 'could not create its folder', FilesRestorer::folderFailureReason($destDir));
                     }
                     $bytes = $zip->getFromIndex($i);
                     if ($bytes === false) {
                         $readReason = $zip->status !== \ZipArchive::ER_OK ? (string) $zip->getStatusString() : 'it could not be read from the backup';
-                        throw FilesRestorer::entryFailure($stagingDir, $name, 'could not unpack it', $readReason);
+                        throw $this->failCoreEntry($stagingDir, $name, 'could not unpack it', $readReason);
                     }
                     $stat = $zip->statIndex($i);
                     error_clear_last();
                     $put         = @file_put_contents($destPath, $bytes); // phpcs:ignore WordPress.WP.AlternativeFunctions.WriteFile.ABSPATHDetected,PluginCheck.CodeAnalysis.WriteFile.ABSPATHDetected -- restore/quarantine engine intentionally writes under ABSPATH (the live WP tree); relocating would defeat the restore
                     $writeReason = FilesRestorer::lastErrorReason();
                     if ($put === false || $put !== strlen($bytes)) {
-                        throw FilesRestorer::entryFailure($stagingDir, $name, 'could not unpack it', $writeReason !== '' ? $writeReason : (int) $put . ' of ' . strlen($bytes) . ' bytes written');
+                        throw $this->failCoreEntry($stagingDir, $name, 'could not unpack it', $writeReason !== '' ? $writeReason : (int) $put . ' of ' . strlen($bytes) . ' bytes written');
                     }
                     $expected  = is_array($stat) && isset($stat['size']) ? (int) $stat['size'] : -1;
                     $shortfall = FilesRestorer::unpackedShortfall($destPath, $expected);
                     if ($shortfall !== '') {
-                        throw FilesRestorer::entryFailure($stagingDir, $name, 'could not unpack it', $writeReason !== '' ? $writeReason : $shortfall);
+                        throw $this->failCoreEntry($stagingDir, $name, 'could not unpack it', $writeReason !== '' ? $writeReason : $shortfall);
                     }
                 }
             } finally {
@@ -2753,6 +2840,152 @@ final class RestoreRunner
     /**
      * @param array<string,mixed> $subState
      */
+    // ==================================================================
+    // Per-restore run lock (GH #1008)
+    // ==================================================================
+
+    /**
+     * Take this restore's run lock: the backup TaskRunner's non-blocking
+     * database lock, then its file lock (the authoritative guard; it lives
+     * as long as this process). Returns 'held', 'contended' (another live
+     * runner holds it: this run must do nothing), or 'unavailable' (the host
+     * offers neither lock).
+     *
+     * On a host with neither lock a restore still runs, because refusing it
+     * would block recovery. Such a run never removes a staging tree when it
+     * fails; the staging cleanup job reclaims it later.
+     */
+    private function acquireRunLock(): string
+    {
+        $name  = $this->runLockName();
+        $token = $name !== '' ? TaskRunner::getNamedLock($name) : null;
+        if ($token === '0') {
+            return $this->runLockState = 'contended';
+        }
+        $this->runDbLockHeld = ($token === '1');
+
+        $file = ['handle' => null, 'contended' => false];
+        $path = $this->runLockFilePath();
+        if ($path !== '') {
+            $dir = dirname($path);
+            if (is_dir($dir) || wp_mkdir_p($dir) || is_dir($dir)) {
+                $file = TaskRunner::acquireFileLockAtPath($path);
+            }
+        }
+        if ($file['contended']) {
+            if ($this->runDbLockHeld) {
+                TaskRunner::releaseNamedLock($name);
+                $this->runDbLockHeld = false;
+            }
+            return $this->runLockState = 'contended';
+        }
+        $this->runLockFile = $file['handle'];
+        $this->runLockPath = $this->runLockFile !== null ? $path : '';
+
+        return $this->runLockState = ($this->runDbLockHeld || $this->runLockFile !== null) ? 'held' : 'unavailable';
+    }
+
+    /** Release the run lock on every exit; an ended run also removes its own lock file. */
+    private function releaseRunLock(): void
+    {
+        if ($this->runLockFile !== null) {
+            if ($this->runEnded && TaskRunner::fileLockMatchesPath($this->runLockFile, $this->runLockPath)) {
+                wp_delete_file($this->runLockPath);
+            }
+            TaskRunner::releaseFileLockHandle($this->runLockFile);
+            $this->runLockFile = null;
+        }
+        if ($this->runDbLockHeld) {
+            TaskRunner::releaseNamedLock($this->runLockName());
+            $this->runDbLockHeld = false;
+        }
+    }
+
+    /** True while this run still holds the restore's run lock. */
+    private function holdsRunLock(): bool
+    {
+        if ($this->runLockState !== 'held') {
+            return false;
+        }
+        if ($this->runLockFile !== null) {
+            return TaskRunner::fileLockMatchesPath($this->runLockFile, $this->runLockPath);
+        }
+        // Database lock only: still ours while this session holds it.
+        global $wpdb;
+        if (!is_object($wpdb)) {
+            return false;
+        }
+        /** @var \wpdb $wpdb */
+        try {
+            $mine = $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s) = CONNECTION_ID()', $this->runLockName())); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- advisory run-lock ownership probe; correctness read, not a cacheable value
+        } catch (\Throwable $_) {
+            return false;
+        }
+        return (string) $mine === '1';
+    }
+
+    /**
+     * Whether this run may change the site or the restore row: it holds the
+     * lock, or the host offers no lock (then it runs as the only runner the
+     * host can tell about), or run() never took one (direct phase calls).
+     */
+    private function mayChangeSite(): bool
+    {
+        if ($this->runLockState === 'unavailable' || $this->runLockState === 'unacquired') {
+            return true;
+        }
+        return $this->holdsRunLock();
+    }
+
+    /** Whether a failing stage may remove its staging tree: only while holding the lock. */
+    private function mayRemoveStaging(): bool
+    {
+        return $this->holdsRunLock();
+    }
+
+    /** Whether this run may still perform a destructive step: it may change the site and its row has not ended. */
+    private function ownsRestore(): bool
+    {
+        if (!$this->mayChangeSite()) {
+            return false;
+        }
+        $phase = $this->rowPhaseReadOnly();
+        return $phase !== self::PHASE_COMPLETED && $phase !== self::PHASE_FAILED;
+    }
+
+    /** The row's current phase, read without writing anything. */
+    private function rowPhaseReadOnly(): string
+    {
+        try {
+            $task = $this->loadTask();
+            return $task !== null ? (string) $task['phase'] : self::PHASE_PREFLIGHT;
+        } catch (\Throwable $_) {
+            return self::PHASE_PREFLIGHT;
+        }
+    }
+
+    /** Database lock name: 9 + 36 characters, under MySQL's 64-character limit. */
+    private function runLockName(): string
+    {
+        $id = (string) preg_replace('/[^A-Fa-f0-9-]/', '', $this->restoreId());
+        return $id !== '' ? 'wpmgr_rs_' . $id : '';
+    }
+
+    /**
+     * File lock path: `<restore id>.lock` beside this restore's scratch dir,
+     * so it is stable before that dir exists and survives its cleanup.
+     */
+    private function runLockFilePath(): string
+    {
+        $scratch = $this->scratchDir();
+        $base    = $scratch !== '' ? dirname(rtrim($scratch, '/\\')) : '';
+        $id      = (string) preg_replace('/[^A-Fa-f0-9-]/', '', $this->restoreId());
+        if ($base === '' || $base === '.' || $base === DIRECTORY_SEPARATOR || $id === '') {
+            return '';
+        }
+        return rtrim($base, '/\\') . DIRECTORY_SEPARATOR . $id . '.lock';
+    }
+
     private function saveTaskState(string $phase, array $subState): void
     {
         global $wpdb;
@@ -2781,9 +3014,23 @@ final class RestoreRunner
             \WPMgr\Agent\Support\DebugLog::write('WPMgr RestoreRunner: sub_state json_encode failed for phase ' . $phase . ' — skipping state write to preserve the prior cursor');
             return;
         }
+        // GH #1008: only the run that owns the restore writes its row.
+        if (!$this->mayChangeSite()) {
+            return;
+        }
         $this->lastDbUpdate = $now;
         $this->rememberSubState($subState);
 
+        // A phase write is conditional on the phase this run last read or
+        // wrote, which is never completed or failed: a row that has ended
+        // stays ended.
+        $where = [
+            'snapshot_id' => $this->snapshotId(),
+            'restore_id'  => $this->restoreId(),
+        ];
+        if ($this->rowPhaseSeen !== '') {
+            $where['phase'] = $this->rowPhaseSeen;
+        }
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct query on plugin-owned table; correctness requires a live read
         $wpdb->update(
             $table,
@@ -2792,13 +3039,13 @@ final class RestoreRunner
                 'sub_state'        => $encoded,
                 'last_progress_at' => $now,
             ],
-            [
-                'snapshot_id' => $this->snapshotId(),
-                'restore_id'  => $this->restoreId(),
-            ],
+            $where,
             ['%s', '%s', '%d'],
-            ['%s', '%s']
+            array_fill(0, count($where), '%s')
         );
+        if ($phase !== self::PHASE_COMPLETED && $phase !== self::PHASE_FAILED) {
+            $this->rowPhaseSeen = $phase;
+        }
     }
 
     /**
@@ -2832,18 +3079,25 @@ final class RestoreRunner
         if ($table === '') {
             return;
         }
+        if (!$this->mayChangeSite()) {
+            return;
+        }
         $this->lastDbUpdate = $now;
 
+        $where = [
+            'snapshot_id' => $this->snapshotId(),
+            'restore_id'  => $this->restoreId(),
+        ];
+        if ($this->rowPhaseSeen !== '') {
+            $where['phase'] = $this->rowPhaseSeen;
+        }
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct query on plugin-owned table; correctness requires a live read
         $wpdb->update(
             $table,
             ['last_progress_at' => $now],
-            [
-                'snapshot_id' => $this->snapshotId(),
-                'restore_id'  => $this->restoreId(),
-            ],
+            $where,
             ['%d'],
-            ['%s', '%s']
+            array_fill(0, count($where), '%s')
         );
     }
 

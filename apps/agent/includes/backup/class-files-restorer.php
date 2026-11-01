@@ -112,6 +112,24 @@ final class FilesRestorer
     private const PROGRESS_EVERY_FILES = 50;
 
     /**
+     * Says whether this run may remove a staging tree it gives up on. Null
+     * means it may; RestoreRunner passes its run-lock check, so only the
+     * runner holding the restore's lock ever removes staging.
+     *
+     * @var (\Closure():bool)|null
+     */
+    private ?\Closure $mayRemoveStaging;
+
+    /**
+     * @param (\Closure():bool)|null $mayRemoveStaging Whether a failing stage may
+     *                                                remove its staging tree.
+     */
+    public function __construct(?\Closure $mayRemoveStaging = null)
+    {
+        $this->mayRemoveStaging = $mayRemoveStaging;
+    }
+
+    /**
      * Default GC threshold for `.wpmgr-old-files-*` directories: 1 h.
      *
      * V0 originally kept old files for 24 h so the operator had a long window
@@ -311,7 +329,7 @@ final class FilesRestorer
                     // missing it, and the swap would promote that over live.
                     error_clear_last();
                     if (!is_dir($targetParent) && !wp_mkdir_p($targetParent) && !is_dir($targetParent)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- converted to wp_mkdir_p
-                        throw self::entryFailure($stagingDir, $entryName, 'could not create its folder', self::folderFailureReason($targetParent));
+                        throw $this->failEntry($stagingDir, $entryName, 'could not create its folder', self::folderFailureReason($targetParent));
                     }
                     // Double-check containment against the canonical staging
                     // root after dir creation (defends against a malicious
@@ -338,13 +356,13 @@ final class FilesRestorer
                         if ($extractReason === '' && $zip->status !== ZipArchive::ER_OK) {
                             $extractReason = (string) $zip->getStatusString();
                         }
-                        throw self::entryFailure($stagingDir, $entryName, 'could not unpack it', $extractReason);
+                        throw $this->failEntry($stagingDir, $entryName, 'could not unpack it', $extractReason);
                     }
                     if (substr($entryName, -1) !== '/') {
                         $expected  = is_array($stat) && isset($stat['size']) ? (int) $stat['size'] : -1;
                         $shortfall = self::unpackedShortfall($target, $expected);
                         if ($shortfall !== '') {
-                            throw self::entryFailure($stagingDir, $entryName, 'could not unpack it', $extractReason !== '' ? $extractReason : $shortfall);
+                            throw $this->failEntry($stagingDir, $entryName, 'could not unpack it', $extractReason !== '' ? $extractReason : $shortfall);
                         }
                     }
 
@@ -1097,16 +1115,18 @@ final class FilesRestorer
     }
 
     /**
-     * Longest message entryFailureMessage() builds; a failed restore keeps
-     * this many characters of its error.
+     * Longest message entryFailureMessage() builds, in bytes after escaping; a
+     * failed restore keeps this many characters of its error.
      */
     private const ENTRY_FAILURE_MESSAGE_MAX = 240;
 
     /**
-     * Operator-facing message for an entry stage() could not write into
+     * Operator-facing message for an entry a restore could not write into
      * staging: the site was not changed, which file failed and why, and what
-     * to do. A long entry name is shortened from the front so the message
-     * stays within ENTRY_FAILURE_MESSAGE_MAX and the file name itself is kept.
+     * to do. The whole escaped message stays within ENTRY_FAILURE_MESSAGE_MAX
+     * bytes, so the guidance at its end is always kept. A long entry name is
+     * shortened from the front, whole characters at a time, so the file name
+     * itself survives and is never cut inside a character.
      *
      * @param string $entryName Archive entry name.
      * @param string $what      "could not create its folder" or "could not unpack it".
@@ -1114,32 +1134,84 @@ final class FilesRestorer
      */
     private static function entryFailureMessage(string $entryName, string $what, string $reason): string
     {
-        $reason = substr($reason, 0, 50);
-        $lead   = 'The restore stopped and the site was not changed. File ';
-        $tail   = ': ' . $what . ($reason !== '' ? ' (' . $reason . ')' : '')
-            . '. Free disk space or fix folder permissions, then retry.';
-        $room   = max(40, self::ENTRY_FAILURE_MESSAGE_MAX - strlen($lead) - strlen($tail));
-        $shown  = strlen($entryName) > $room ? '...' . substr($entryName, 3 - $room) : $entryName;
+        $lead   = esc_html('The restore stopped and the site was not changed. File ');
+        $advice = '. Free disk space or fix folder permissions, then retry.';
+        $reason = self::utf8Head($reason, 50);
+        $tail   = esc_html(': ' . $what . ($reason !== '' ? ' (' . $reason . ')' : '') . $advice);
+        if (strlen($lead) + strlen($tail) + 40 > self::ENTRY_FAILURE_MESSAGE_MAX) {
+            $tail = esc_html(': ' . $what . $advice);
+        }
+        $room  = self::ENTRY_FAILURE_MESSAGE_MAX - strlen($lead) - strlen($tail);
+        $shown = esc_html($entryName);
+        if (strlen($shown) > $room) {
+            $cut = self::utf8FromBoundary((string) substr($entryName, -max(1, $room - 3)));
+            while ($cut !== '' && strlen(esc_html('...' . $cut)) > $room) {
+                $cut = self::utf8FromBoundary((string) substr($cut, 1));
+            }
+            $shown = esc_html('...' . $cut);
+        }
 
-        return $lead . esc_html($shown) . esc_html($tail);
+        return $lead . $shown . $tail;
+    }
+
+    /** $s from its first whole UTF-8 character: leading continuation bytes dropped. */
+    private static function utf8FromBoundary(string $s): string
+    {
+        $i = 0;
+        $n = strlen($s);
+        while ($i < $n && (ord($s[$i]) & 0xC0) === 0x80) {
+            $i++;
+        }
+        return (string) substr($s, $i);
+    }
+
+    /** At most $max bytes of $s, never ending inside a UTF-8 character. */
+    private static function utf8Head(string $s, int $max): string
+    {
+        if (strlen($s) <= $max) {
+            return $s;
+        }
+        $s = (string) substr($s, 0, $max);
+        $j = strlen($s);
+        while ($j > 0 && (ord($s[$j - 1]) & 0xC0) === 0x80) {
+            $j--;
+        }
+        if ($j > 0) {
+            $first = ord($s[$j - 1]);
+            $need  = $first >= 0xF0 ? 4 : ($first >= 0xE0 ? 3 : ($first >= 0xC0 ? 2 : 1));
+            if (strlen($s) - ($j - 1) < $need) {
+                $s = (string) substr($s, 0, $j - 1);
+            }
+        }
+        return $s;
     }
 
     /**
      * The exception a restore throws for an entry it means to restore but
-     * could not write whole into staging, after removing that staging tree
-     * (removal never follows a link). Shared by stage() and RestoreRunner's
-     * core-part staging.
+     * could not write whole into staging. Removing the staging tree is the
+     * caller's decision (see abandonStaging()). Shared by stage() and
+     * RestoreRunner's core-part staging.
      *
      * @internal
-     * @param string $stagingDir Staging tree to remove ('' for none).
-     * @param string $entryName  Archive entry name.
-     * @param string $what       "could not create its folder" or "could not unpack it".
-     * @param string $reason     Short cause, or '' when none is known.
+     * @param string $entryName Archive entry name.
+     * @param string $what      "could not create its folder" or "could not unpack it".
+     * @param string $reason    Short cause, or '' when none is known.
      */
-    public static function entryFailure(string $stagingDir, string $entryName, string $what, string $reason): \RuntimeException
+    public static function entryFailure(string $entryName, string $what, string $reason): \RuntimeException
     {
-        self::abandonStaging($stagingDir);
         return new \RuntimeException(self::entryFailureMessage($entryName, $what, $reason)); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- exception message for log/SSE, not browser; parts escaped in entryFailureMessage()
+    }
+
+    /**
+     * stage()'s failure for one entry: removes the staging tree only when this
+     * run may (see $mayRemoveStaging), then returns the exception to throw.
+     */
+    private function failEntry(string $stagingDir, string $entryName, string $what, string $reason): \RuntimeException
+    {
+        if ($this->mayRemoveStaging === null || ($this->mayRemoveStaging)() === true) {
+            self::abandonStaging($stagingDir);
+        }
+        return self::entryFailure($entryName, $what, $reason);
     }
 
     /**
@@ -1203,9 +1275,11 @@ final class FilesRestorer
     }
 
     /**
-     * Remove a staging tree stage() is giving up on, so a failed restore does
-     * not keep holding the disk space it used. A linked staging path is left
-     * alone: removal never follows a link.
+     * Remove a staging tree a failed restore is giving up on, so it does not
+     * keep holding the disk space it used. A linked staging path is left
+     * alone: removal never follows a link. Callers remove only staging their
+     * run owns: RestoreRunner calls this only while it holds the restore's
+     * run lock.
      *
      * @internal
      */
