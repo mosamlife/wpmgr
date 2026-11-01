@@ -496,7 +496,9 @@ final class Keystore implements EmailKeystoreInterface
     }
 
     /**
-     * Persist the site's age X25519 secret scalar (raw 32 bytes), encrypted.
+     * Store the site's age X25519 secret scalar (raw 32 bytes), encrypted,
+     * only when no backup key is stored, and return the secret that is
+     * stored afterwards.
      *
      * The secret is the ONLY key that can decrypt anything encrypted to this
      * site's age recipient: today the authenticator-app secrets stored for its
@@ -504,27 +506,138 @@ final class Keystore implements EmailKeystoreInterface
      * stored AES-256-GCM-encrypted under the master key, exactly like the
      * Ed25519 keypair, and is never logged or transmitted.
      *
-     * @param string $rawSecret Raw 32-byte X25519 scalar.
-     * @return void
+     * It never replaces a stored backup key. The row is written with an
+     * insert that does nothing when the row exists, and an empty row (which
+     * holds no key) is filled only while it is still empty. The row is then
+     * read back and the secret stored in it is returned: when another request
+     * stored a backup key first, that key is the one returned, so concurrent
+     * creators settle on one key.
+     *
+     * @param string $rawSecret Raw 32-byte X25519 scalar to store when none is.
+     * @return string The raw secret now stored: $rawSecret, or the key another request stored first.
+     * @throws KeystoreReadFailed When the row could not be read back.
+     * @throws \RuntimeException  When no backup key is stored after the write, or the stored one does not open.
      */
-    public function storeAgeIdentity(string $rawSecret): void
+    public function createAgeIdentity(string $rawSecret): string
     {
-        update_option(self::OPTION_AGE_IDENTITY, $this->encrypt($rawSecret), false);
+        global $wpdb;
+        if (!is_object($wpdb) || !isset($wpdb->options) || !is_string($wpdb->options) || $wpdb->options === '') {
+            throw new KeystoreReadFailed('WPMgr Agent: the backup key cannot be stored without a database connection.');
+        }
+
+        $envelope = $this->encrypt($rawSecret);
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- the backup key must never replace a stored one: add_option() can write over an existing row, an INSERT IGNORE on the unique option_name cannot
+        $wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')", self::OPTION_AGE_IDENTITY, $envelope));
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- fills a row only while it is empty (it holds no key), so it can never replace a stored key; update_option() is not conditional
+        $wpdb->query($wpdb->prepare("UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = ''", $envelope, self::OPTION_AGE_IDENTITY));
+        $this->forgetCachedAgeIdentity();
+
+        $stored = $this->readAgeIdentityRow();
+        if ($stored === null) {
+            throw new \RuntimeException('WPMgr Agent: the backup key could not be stored.');
+        }
+
+        return $this->decrypt($stored);
     }
 
     /**
      * Retrieve and decrypt the site's age X25519 secret scalar.
      *
-     * @return string|null Raw 32-byte X25519 scalar, or null if not provisioned.
+     * The row is read straight from the options table, never from the options
+     * caches, so a read that failed is told apart from a row that is absent.
+     *
+     * @return string|null Raw 32-byte X25519 scalar, or null when no backup key is stored.
+     * @throws KeystoreReadFailed When the row could not be read: whether a key is stored is unknown.
+     * @throws \RuntimeException  When a stored key does not open under the master key.
      */
     public function getAgeIdentity(): ?string
     {
-        $stored = get_option(self::OPTION_AGE_IDENTITY);
-        if (!is_string($stored) || $stored === '') {
+        $stored = $this->readAgeIdentityRow();
+        if ($stored === null) {
             return null;
         }
 
         return $this->decrypt($stored);
+    }
+
+    /**
+     * Read the stored backup-key envelope straight from the options table.
+     *
+     * get_option() cannot be used here: when its SELECT fails it records the
+     * option as missing in the 'notoptions' cache and returns false, exactly
+     * as for a row that is absent, and a persistent object cache keeps that
+     * record into later requests. This read bypasses the 'notoptions' and
+     * 'alloptions' caches. The statement is an aggregate, so a read that
+     * succeeds always returns one row; no row, or a database error, means
+     * the read failed.
+     *
+     * @return string|null The stored envelope, or null when no row is stored or it is empty.
+     * @throws KeystoreReadFailed When the read failed.
+     */
+    private function readAgeIdentityRow(): ?string
+    {
+        global $wpdb;
+        if (!is_object($wpdb) || !isset($wpdb->options) || !is_string($wpdb->options) || $wpdb->options === '') {
+            throw new KeystoreReadFailed('WPMgr Agent: the backup key cannot be read without a database connection.');
+        }
+
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- a failed read must be told apart from an absent row, which get_option() and the options caches cannot do
+        $row   = $wpdb->get_row($wpdb->prepare("SELECT COUNT(*) AS stored_rows, MAX(option_value) AS stored_value FROM {$wpdb->options} WHERE option_name = %s", self::OPTION_AGE_IDENTITY), ARRAY_A);
+        $error = isset($wpdb->last_error) && is_string($wpdb->last_error) ? $wpdb->last_error : '';
+        if ($error !== '' || !is_array($row) || !isset($row['stored_rows']) || !is_numeric($row['stored_rows'])) {
+            throw new KeystoreReadFailed('WPMgr Agent: the backup key could not be read from the database.');
+        }
+        if ((int) $row['stored_rows'] === 0) {
+            return null;
+        }
+
+        $stored = $row['stored_value'] ?? null;
+        if (!is_string($stored) || $stored === '') {
+            return null;
+        }
+        $this->forgetMissingAgeIdentityMark();
+
+        return $stored;
+    }
+
+    /**
+     * Drop a 'notoptions' record that the backup-key option is missing, once
+     * the row has been read and found, so get_option() stops reporting it
+     * absent. A persistent object cache would otherwise keep that record.
+     *
+     * @return void
+     */
+    private function forgetMissingAgeIdentityMark(): void
+    {
+        if (!function_exists('wp_cache_get') || !function_exists('wp_cache_set')) {
+            return;
+        }
+        $notoptions = wp_cache_get('notoptions', 'options');
+        if (is_array($notoptions) && array_key_exists(self::OPTION_AGE_IDENTITY, $notoptions)) {
+            unset($notoptions[self::OPTION_AGE_IDENTITY]);
+            wp_cache_set('notoptions', $notoptions, 'options');
+        }
+    }
+
+    /**
+     * Drop every cached copy of the backup-key option, including a 'notoptions'
+     * record that it is missing, so get_option() reads the row afresh.
+     *
+     * @return void
+     */
+    private function forgetCachedAgeIdentity(): void
+    {
+        if (!function_exists('wp_cache_delete') || !function_exists('wp_cache_get') || !function_exists('wp_cache_set')) {
+            return;
+        }
+        wp_cache_delete(self::OPTION_AGE_IDENTITY, 'options');
+        foreach (['notoptions', 'alloptions'] as $list) {
+            $cached = wp_cache_get($list, 'options');
+            if (is_array($cached) && array_key_exists(self::OPTION_AGE_IDENTITY, $cached)) {
+                unset($cached[self::OPTION_AGE_IDENTITY]);
+                wp_cache_set($list, $cached, 'options');
+            }
+        }
     }
 
     /**
