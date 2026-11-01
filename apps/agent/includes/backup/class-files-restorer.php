@@ -8,7 +8,10 @@
  *   1. PREFLIGHT every `.zip` opens cleanly (ZipArchive::open + numFiles > 0).
  *      Any failure aborts before a single byte is written to live wp-content.
  *   2. Extract entries into `wp-content/.wpmgr-staging-<short>/` (NOT into live
- *      wp-content). 0700 perms.
+ *      wp-content). 0700 perms. An entry the restore means to keep that
+ *      cannot be written whole into staging stops the stage: stage() throws,
+ *      so nothing is promoted over live. Staging is left in place for the
+ *      regular cleanup.
  *   3. Per-entry path-traversal defense: full resolved path must live INSIDE
  *      staging dir. Reject `..`, absolute paths, NUL bytes, symlink targets.
  *   4. Skip the canonical "keep the site running" EXCLUDE LIST (config files
@@ -222,7 +225,10 @@ final class FilesRestorer
      * @param string       $restoreId   UUID — for the per-run staging dir name.
      * @param callable     $progress    function(string $phase, array $detail): void
      * @return string Absolute staging dir.
-     * @throws \RuntimeException On preflight failure or unrecoverable I/O.
+     * @throws \RuntimeException On preflight failure or unrecoverable I/O, and
+     *                           when an entry it means to restore cannot have
+     *                           its folder created or cannot be unpacked whole
+     *                           (staging is left for the regular cleanup).
      */
     public function stage(array $zipPaths, string $targetDir, string $restoreId, callable $progress): string
     {
@@ -314,9 +320,12 @@ final class FilesRestorer
                     $target = $stagingReal . DIRECTORY_SEPARATOR . ltrim($entryName, DIRECTORY_SEPARATOR);
                     $targetParent = dirname($target);
                     // Pre-create the directory so extractTo can write the file.
+                    // An entry this restore means to keep whose folder cannot
+                    // be created stops the stage: the staged tree would be
+                    // missing it, and the swap would promote that over live.
+                    error_clear_last();
                     if (!is_dir($targetParent) && !wp_mkdir_p($targetParent) && !is_dir($targetParent)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- converted to wp_mkdir_p
-                        // Cannot create — skip this entry; not fatal.
-                        continue;
+                        throw self::entryFailure($entryName, 'could not create its folder', self::folderFailureReason($targetParent));
                     }
                     // Double-check containment against the canonical staging
                     // root after dir creation (defends against a malicious
@@ -329,12 +338,28 @@ final class FilesRestorer
                     // Per-entry extraction lets us control which entries
                     // actually land. extractTo's third arg accepts a list of
                     // entry names; ZipArchive resolves them itself.
-                    $ok = @$zip->extractTo($stagingDir, [$entryName]);
+                    //
+                    // An entry that does not land whole stops the stage, for
+                    // the same reason as a folder that cannot be created.
+                    // extractTo() can report success for a file it could only
+                    // partly write (a full disk), so a file entry also has to
+                    // match the size the archive records for it.
+                    $stat = $zip->statIndex($i);
+                    error_clear_last();
+                    $ok            = @$zip->extractTo($stagingDir, [$entryName]);
+                    $extractReason = self::lastErrorReason();
                     if ($ok !== true) {
-                        // Extraction failed for this entry — log via progress
-                        // and continue — log and skip semantics, never
-                        // abort the whole run on one entry.
-                        continue;
+                        if ($extractReason === '' && $zip->status !== ZipArchive::ER_OK) {
+                            $extractReason = (string) $zip->getStatusString();
+                        }
+                        throw self::entryFailure($entryName, 'could not unpack it', $extractReason);
+                    }
+                    if (substr($entryName, -1) !== '/') {
+                        $expected  = is_array($stat) && isset($stat['size']) ? (int) $stat['size'] : -1;
+                        $shortfall = self::unpackedShortfall($target, $expected);
+                        if ($shortfall !== '') {
+                            throw self::entryFailure($entryName, 'could not unpack it', $extractReason !== '' ? $extractReason : $shortfall);
+                        }
                     }
 
                     $filesDone++;
@@ -1088,6 +1113,153 @@ final class FilesRestorer
     {
         $real = @realpath($path);
         return is_string($real) ? $real : '';
+    }
+
+    /**
+     * Longest message entryFailureMessage() builds, in bytes after escaping; a
+     * failed restore keeps this many characters of its error.
+     */
+    private const ENTRY_FAILURE_MESSAGE_MAX = 240;
+
+    /**
+     * Operator-facing message for an entry a restore could not write into
+     * staging: the site was not changed, which file failed and why, and what
+     * to do. The whole escaped message stays within ENTRY_FAILURE_MESSAGE_MAX
+     * bytes, so the guidance at its end is always kept. A long entry name is
+     * shortened from the front, whole characters at a time, so the file name
+     * itself survives and is never cut inside a character.
+     *
+     * @param string $entryName Archive entry name.
+     * @param string $what      "could not create its folder" or "could not unpack it".
+     * @param string $reason    Short cause, or '' when none is known.
+     */
+    private static function entryFailureMessage(string $entryName, string $what, string $reason): string
+    {
+        $lead   = esc_html('The restore stopped and the site was not changed. File ');
+        $advice = '. Free disk space or fix folder permissions, then retry.';
+        $reason = self::utf8Head($reason, 50);
+        $tail   = esc_html(': ' . $what . ($reason !== '' ? ' (' . $reason . ')' : '') . $advice);
+        if (strlen($lead) + strlen($tail) + 40 > self::ENTRY_FAILURE_MESSAGE_MAX) {
+            $tail = esc_html(': ' . $what . $advice);
+        }
+        $room  = self::ENTRY_FAILURE_MESSAGE_MAX - strlen($lead) - strlen($tail);
+        $shown = esc_html($entryName);
+        if (strlen($shown) > $room) {
+            $cut = self::utf8FromBoundary((string) substr($entryName, -max(1, $room - 3)));
+            while ($cut !== '' && strlen(esc_html('...' . $cut)) > $room) {
+                $cut = self::utf8FromBoundary((string) substr($cut, 1));
+            }
+            $shown = esc_html('...' . $cut);
+        }
+
+        return $lead . $shown . $tail;
+    }
+
+    /** $s from its first whole UTF-8 character: leading continuation bytes dropped. */
+    private static function utf8FromBoundary(string $s): string
+    {
+        $i = 0;
+        $n = strlen($s);
+        while ($i < $n && (ord($s[$i]) & 0xC0) === 0x80) {
+            $i++;
+        }
+        return (string) substr($s, $i);
+    }
+
+    /** At most $max bytes of $s, never ending inside a UTF-8 character. */
+    private static function utf8Head(string $s, int $max): string
+    {
+        if (strlen($s) <= $max) {
+            return $s;
+        }
+        $s = (string) substr($s, 0, $max);
+        $j = strlen($s);
+        while ($j > 0 && (ord($s[$j - 1]) & 0xC0) === 0x80) {
+            $j--;
+        }
+        if ($j > 0) {
+            $first = ord($s[$j - 1]);
+            $need  = $first >= 0xF0 ? 4 : ($first >= 0xE0 ? 3 : ($first >= 0xC0 ? 2 : 1));
+            if (strlen($s) - ($j - 1) < $need) {
+                $s = (string) substr($s, 0, $j - 1);
+            }
+        }
+        return $s;
+    }
+
+    /**
+     * The exception a restore throws for an entry it means to restore but
+     * could not write whole into staging. Shared by stage() and
+     * RestoreRunner's core-part staging.
+     *
+     * @internal
+     * @param string $entryName Archive entry name.
+     * @param string $what      "could not create its folder" or "could not unpack it".
+     * @param string $reason    Short cause, or '' when none is known.
+     */
+    public static function entryFailure(string $entryName, string $what, string $reason): \RuntimeException
+    {
+        return new \RuntimeException(self::entryFailureMessage($entryName, $what, $reason)); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- exception message for log/SSE, not browser; parts escaped in entryFailureMessage()
+    }
+
+    /**
+     * Why a folder could not be created: the cause PHP recorded, or "a file
+     * is in the way" when a file holds that path and nothing was recorded.
+     *
+     * @internal
+     */
+    public static function folderFailureReason(string $folder): string
+    {
+        $reason = self::lastErrorReason();
+        if ($reason === '' && file_exists($folder)) {
+            $reason = 'a file is in the way';
+        }
+        return $reason;
+    }
+
+    /**
+     * '' when the file at $path holds exactly the $expected bytes the archive
+     * records for it; otherwise a short reason. A write onto a full disk can
+     * report success for a file it only partly wrote, so callers check this
+     * after every file they unpack.
+     *
+     * @internal
+     * @param string $path     File just written.
+     * @param int    $expected Uncompressed size from the archive, or -1 when unknown.
+     */
+    public static function unpackedShortfall(string $path, int $expected): string
+    {
+        if ($expected < 0) {
+            return 'the backup does not record its size';
+        }
+        clearstatcache(true, $path);
+        $written = @filesize($path);
+        if ($written === $expected) {
+            return '';
+        }
+        return (int) $written . ' of ' . $expected . ' bytes written';
+    }
+
+    /**
+     * The cause PHP recorded for the last failed filesystem call, in a few
+     * plain words ("No space left on device", "Permission denied"), or ''
+     * when nothing was recorded. Callers clear the record first.
+     *
+     * @internal
+     */
+    public static function lastErrorReason(): string
+    {
+        $last    = error_get_last();
+        $message = is_array($last) ? trim((string) $last['message']) : '';
+        if ($message === '') {
+            return '';
+        }
+        if (preg_match('/errno=\d+\s+(.+)$/', $message, $m) === 1) {
+            return trim($m[1]);
+        }
+        $cut = strrpos($message, ': ');
+
+        return $cut === false ? $message : trim(substr($message, $cut + 2));
     }
 
     /**
