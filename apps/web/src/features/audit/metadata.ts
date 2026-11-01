@@ -76,6 +76,17 @@ const REASON_LABELS: Record<string, string> = {
   re_enrollment: "The site was reconnected",
 };
 
+/**
+ * Actions that are not denials but whose `reason` an operator needs to read.
+ * The detail panel shows a ".denied" row's reason in its "Why" callout and
+ * leaves `reason` out of every other row; these rows show it as a "Reason"
+ * line instead. Every other row stays exactly as it was.
+ */
+export const REASON_SHOWN_ACTIONS: ReadonlySet<string> = new Set([
+  "site.backup.recipient.change_rejected",
+  "site.backup.recipient.cleared",
+]);
+
 /** Humanize a `metadata.reason` code; passes through free text unchanged. */
 export function humanizeReason(reason: string): string {
   const known = REASON_LABELS[reason];
