@@ -1547,6 +1547,44 @@ func (q *Queries) SetSiteAgeRecipient(ctx context.Context, arg SetSiteAgeRecipie
 	return i, err
 }
 
+const setSiteAgeRecipientIfUnsetForAgentKey = `-- name: SetSiteAgeRecipientIfUnsetForAgentKey :execrows
+UPDATE sites
+SET age_recipient = $1, updated_at = now()
+WHERE id = $2 AND tenant_id = $3
+  AND age_recipient = ''
+  AND agent_public_key <> ''
+  AND agent_public_key = $4
+`
+
+type SetSiteAgeRecipientIfUnsetForAgentKeyParams struct {
+	AgeRecipient   string    `json:"age_recipient"`
+	ID             uuid.UUID `json:"id"`
+	TenantID       uuid.UUID `json:"tenant_id"`
+	AgentPublicKey string    `json:"agent_public_key"`
+}
+
+// The agent path's first set of the backup recipient, as one compare-and-set.
+// It writes only while the column is still empty and only for the agent key
+// the site holds now, which must be the key that authenticated the push, passed
+// exactly as GetSiteByAgentKey matched it. A push signed with a key that a
+// re-enrollment has since rotated away therefore changes nothing, and a
+// recipient already set is never replaced. Under READ COMMITTED a push that
+// waits on the row lock of a concurrent re-enrollment re-checks both
+// conditions against the committed row. Returns the number of rows changed:
+// 1 when this call set the recipient, 0 otherwise. Runs in InTenantTx.
+func (q *Queries) SetSiteAgeRecipientIfUnsetForAgentKey(ctx context.Context, arg SetSiteAgeRecipientIfUnsetForAgentKeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setSiteAgeRecipientIfUnsetForAgentKey,
+		arg.AgeRecipient,
+		arg.ID,
+		arg.TenantID,
+		arg.AgentPublicKey,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setSiteHealthStatus = `-- name: SetSiteHealthStatus :execrows
 UPDATE sites
 SET health_status = $2, updated_at = now()

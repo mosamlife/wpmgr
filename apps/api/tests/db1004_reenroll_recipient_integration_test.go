@@ -20,6 +20,12 @@ package tests
 // query is what confines it to one tenant, so another tenant's site at the
 // same address is checked to stay unlocked and unchanged.
 //
+// The agent path's first set of the recipient is the compare-and-set
+// SetSiteAgeRecipientIfUnsetForAgentKey, run in InTenantTx as the metadata push
+// runs it (repo.SetAgeRecipientIfUnset). There sites_tenant_isolation is the
+// permissive policy that applies and sites_site_scope (RESTRICTIVE) passes
+// because InTenantTx sets no app.site_scope.
+//
 // Selected by: go -C apps/api test -run '^TestDB1004_' ./tests/
 
 import (
@@ -43,6 +49,13 @@ const (
 	db1004LegacyOld    = "age1db1004legacyrecipientbeforereenrollment"
 	db1004SiteFirstOld = "age1db1004sitefirstrecipientbeforereconnect"
 	db1004OtherTenant  = "age1db1004othertenantrecipientmuststay"
+
+	db1004FirstKeyRecipient   = "age1db1004recipientsetbythefirstagentkey"
+	db1004ReplaceAttempt      = "age1db1004recipientthatmustneverreplaceaset"
+	db1004OldKeyAttempt       = "age1db1004recipientpushedwiththerotatedkey"
+	db1004CurrentKeyRecipient = "age1db1004recipientsetbythecurrentagentkey"
+	db1004CrossTenantAttempt  = "age1db1004recipientfromanothertenantstx"
+	db1004OtherOwnRecipient   = "age1db1004othertenantsetsitsownrecipient"
 )
 
 var errDB1004Rollback = errors.New("db1004: roll back the probe transaction")
@@ -230,4 +243,104 @@ func TestDB1004_ReEnrollmentClearsPinnedRecipient(t *testing.T) {
 	// addresses.
 	db1004AssertUnchanged(t, otherBefore[0], env.site(t, other, otherLegacy.ID))
 	db1004AssertUnchanged(t, otherBefore[1], env.site(t, other, otherSiteFirst.ID))
+}
+
+// db1004FirstSet runs the agent path's first-set query the way the metadata
+// push does: in InTenantTx for txTenant, the tenant the pushing agent's key
+// resolved to. It returns how many rows the query changed.
+func db1004FirstSet(t *testing.T, pool *db.Pool, txTenant, siteTenant, siteID uuid.UUID, agentKey, recipient string) int64 {
+	t.Helper()
+	ctx := context.Background()
+	var n int64
+	err := pool.InTenantTx(ctx, txTenant, func(tx pgx.Tx) error {
+		var err error
+		n, err = sqlc.New(tx).SetSiteAgeRecipientIfUnsetForAgentKey(ctx, sqlc.SetSiteAgeRecipientIfUnsetForAgentKeyParams{
+			ID:             siteID,
+			TenantID:       siteTenant,
+			AgeRecipient:   recipient,
+			AgentPublicKey: agentKey,
+		})
+		return err
+	})
+	if err != nil {
+		t.Fatalf("first-set query on site %s: %v", siteID, err)
+	}
+	return n
+}
+
+func db1004WantRecipient(t *testing.T, env *gh755Env, tenant, siteID uuid.UUID, want, when string) {
+	t.Helper()
+	if got := env.site(t, tenant, siteID).AgeRecipient; got != want {
+		t.Errorf("%s: age_recipient = %q, want %q", when, got, want)
+	}
+}
+
+func TestDB1004_FirstSetNeedsTheCurrentAgentKey(t *testing.T) {
+	env, tenant := gh755Setup(t, "db1004-cas")
+	pool := env.pool
+	other := seedTenant(t, pool, "db1004-cas-other")
+
+	// The other tenant's site sits at the same address with an empty
+	// recipient, so nothing but tenant scoping keeps the writes below off it.
+	_, _, otherKey := genKey(t)
+	otherSite := db1004LegacyEnroll(t, env.svc, other, db1004LegacyURL, otherKey)
+	if otherSite.AgeRecipient != "" {
+		t.Fatalf("other tenant's site starts with recipient %q, want empty", otherSite.AgeRecipient)
+	}
+
+	_, _, key1 := genKey(t)
+	s := db1004LegacyEnroll(t, env.svc, tenant, db1004LegacyURL, key1)
+
+	// The key the site holds sets an empty recipient.
+	if n := db1004FirstSet(t, pool, tenant, tenant, s.ID, key1, db1004FirstKeyRecipient); n != 1 {
+		t.Errorf("current key on an empty recipient changed %d rows, want 1", n)
+	}
+	db1004WantRecipient(t, env, tenant, s.ID, db1004FirstKeyRecipient, "after the first set")
+
+	// A recipient already set is never replaced, whatever the key.
+	_, _, stranger := genKey(t)
+	for _, k := range []struct{ name, key string }{{"the current key", key1}, {"a key no site holds", stranger}} {
+		if n := db1004FirstSet(t, pool, tenant, tenant, s.ID, k.key, db1004ReplaceAttempt); n != 0 {
+			t.Errorf("%s over a set recipient changed %d rows, want 0", k.name, n)
+		}
+	}
+	db1004WantRecipient(t, env, tenant, s.ID, db1004FirstKeyRecipient, "after the replace attempts")
+
+	// A re-enrollment rotates key1 to key2 and clears the recipient. A push
+	// still signed with key1 then changes nothing; key2 sets it.
+	_, _, key2 := genKey(t)
+	db1004LegacyEnroll(t, env.svc, tenant, db1004LegacyURL, key2)
+	db1004WantRecipient(t, env, tenant, s.ID, "", "after the re-enrollment")
+	if n := db1004FirstSet(t, pool, tenant, tenant, s.ID, key1, db1004OldKeyAttempt); n != 0 {
+		t.Errorf("rotated-away key on an empty recipient changed %d rows, want 0", n)
+	}
+	db1004WantRecipient(t, env, tenant, s.ID, "", "after the rotated-away key's push")
+	if n := db1004FirstSet(t, pool, tenant, tenant, s.ID, key2, db1004CurrentKeyRecipient); n != 1 {
+		t.Errorf("current key after the re-enrollment changed %d rows, want 1", n)
+	}
+	if n := db1004FirstSet(t, pool, tenant, tenant, s.ID, key1, db1004OldKeyAttempt); n != 0 {
+		t.Errorf("rotated-away key over the new recipient changed %d rows, want 0", n)
+	}
+	db1004WantRecipient(t, env, tenant, s.ID, db1004CurrentKeyRecipient, "after the current key's first set")
+
+	// Another tenant's row: from this tenant's transaction, naming the other
+	// site under either tenant id, with the other site's own key, nothing
+	// changes. Neither did any write above.
+	if n := db1004FirstSet(t, pool, tenant, other, otherSite.ID, otherKey, db1004CrossTenantAttempt); n != 0 {
+		t.Errorf("other tenant's site named with its own tenant id changed %d rows, want 0", n)
+	}
+	if n := db1004FirstSet(t, pool, tenant, tenant, otherSite.ID, otherKey, db1004CrossTenantAttempt); n != 0 {
+		t.Errorf("other tenant's site named with this tenant id changed %d rows, want 0", n)
+	}
+	otherAfter := env.site(t, other, otherSite.ID)
+	if otherAfter.AgeRecipient != "" || otherAfter.AgentPublicKey != otherKey {
+		t.Errorf("other tenant's site changed: recipient %q, key kept %v", otherAfter.AgeRecipient, otherAfter.AgentPublicKey == otherKey)
+	}
+
+	// Positive control: the same call in the other tenant's own transaction
+	// does set it, so the zeros above came from tenant scoping.
+	if n := db1004FirstSet(t, pool, other, other, otherSite.ID, otherKey, db1004OtherOwnRecipient); n != 1 {
+		t.Errorf("other tenant's own first set changed %d rows, want 1", n)
+	}
+	db1004WantRecipient(t, env, other, otherSite.ID, db1004OtherOwnRecipient, "other tenant's own first set")
 }

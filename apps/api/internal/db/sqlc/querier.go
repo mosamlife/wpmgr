@@ -4591,6 +4591,16 @@ type Querier interface {
 	// Stores the per-site age PUBLIC recipient backups are encrypted to. The CP
 	// never holds the matching identity (private key); it cannot decrypt backups.
 	SetSiteAgeRecipient(ctx context.Context, arg SetSiteAgeRecipientParams) (Site, error)
+	// The agent path's first set of the backup recipient, as one compare-and-set.
+	// It writes only while the column is still empty and only for the agent key
+	// the site holds now, which must be the key that authenticated the push, passed
+	// exactly as GetSiteByAgentKey matched it. A push signed with a key that a
+	// re-enrollment has since rotated away therefore changes nothing, and a
+	// recipient already set is never replaced. Under READ COMMITTED a push that
+	// waits on the row lock of a concurrent re-enrollment re-checks both
+	// conditions against the committed row. Returns the number of rows changed:
+	// 1 when this call set the recipient, 0 otherwise. Runs in InTenantTx.
+	SetSiteAgeRecipientIfUnsetForAgentKey(ctx context.Context, arg SetSiteAgeRecipientIfUnsetForAgentKeyParams) (int64, error)
 	// Sets a site's health_status from an M5 probe result (cross-tenant probe job,
 	// app.agent GUC). Only writes when the value actually changes to avoid churn.
 	SetSiteHealthStatus(ctx context.Context, arg SetSiteHealthStatusParams) (int64, error)

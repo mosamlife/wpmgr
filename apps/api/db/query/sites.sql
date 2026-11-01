@@ -272,6 +272,23 @@ SET age_recipient = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2
 RETURNING *;
 
+-- name: SetSiteAgeRecipientIfUnsetForAgentKey :execrows
+-- The agent path's first set of the backup recipient, as one compare-and-set.
+-- It writes only while the column is still empty and only for the agent key
+-- the site holds now, which must be the key that authenticated the push, passed
+-- exactly as GetSiteByAgentKey matched it. A push signed with a key that a
+-- re-enrollment has since rotated away therefore changes nothing, and a
+-- recipient already set is never replaced. Under READ COMMITTED a push that
+-- waits on the row lock of a concurrent re-enrollment re-checks both
+-- conditions against the committed row. Returns the number of rows changed:
+-- 1 when this call set the recipient, 0 otherwise. Runs in InTenantTx.
+UPDATE sites
+SET age_recipient = @age_recipient, updated_at = now()
+WHERE id = @id AND tenant_id = @tenant_id
+  AND age_recipient = ''
+  AND agent_public_key <> ''
+  AND agent_public_key = @agent_public_key;
+
 -- name: UpdateSiteMetadata :one
 -- Tenant-scoped metadata update (used by the agent path inside the resolved
 -- site's own tenant scope).
