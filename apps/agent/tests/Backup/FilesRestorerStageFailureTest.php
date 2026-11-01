@@ -167,6 +167,77 @@ final class FilesRestorerStageFailureTest extends TestCase
         $this->assertStringContainsString('Free disk space or fix folder permissions, then retry.', $message);
     }
 
+    public function test_stage_stops_when_a_file_is_cut_short_on_disk(): void
+    {
+        $fx        = $this->makeRestoreRoot('cutshort');
+        $restoreId = $this->makeRestoreId();
+        $staging   = $this->stagingDirFor($fx['targetDir'], $restoreId);
+
+        // What a full disk does: extracting reports success, but only part of
+        // the file reached the disk. The file is cut short right before
+        // stage() looks at its size, through the same stat refresh it uses.
+        $victim = realpath($fx['root']) . '/' . basename($staging) . '/uploads/big.bin';
+        Functions\when('clearstatcache')->alias(static function (bool $clearRealpathCache = false, string $filename = '') use ($victim): void {
+            if ($filename === $victim && is_file($victim)) {
+                $h = fopen($victim, 'r+'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- test cuts the staged file short
+                ftruncate($h, 4096);
+                fclose($h); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- test cuts the staged file short
+            }
+        });
+
+        $zipPath = $fx['scratchDir'] . '/part001.zip';
+        $this->buildFixtureZip($zipPath, [
+            'themes/ok/style.css' => '/* ok */',
+            'uploads/big.bin'     => str_repeat('x', 65536),
+        ]);
+
+        $message = $this->stageExpectingFailure($zipPath, $fx['targetDir'], $restoreId);
+
+        $this->assertStringContainsString('uploads/big.bin: could not unpack it (4096 of 65536 bytes written)', $message);
+        $this->assertDirectoryDoesNotExist($staging);
+    }
+
+    public function test_removing_staging_never_follows_a_staging_path_that_is_a_link(): void
+    {
+        $fx     = $this->makeRestoreRoot('linkedstaging');
+        $victim = $fx['root'] . '/elsewhere';
+        mkdir($victim . '/keep', 0755, true);
+        file_put_contents($victim . '/keep/keep.txt', 'must survive');
+        $link = $fx['root'] . '/.wpmgr-staging-linked';
+        symlink($victim, $link);
+
+        FilesRestorer::abandonStaging($link);
+
+        $this->assertFileExists($victim . '/keep/keep.txt', 'removal followed a linked staging path');
+        $this->assertTrue(is_link($link), 'a linked staging path is left alone');
+    }
+
+    public function test_the_message_keeps_its_guidance_within_240_bytes_after_escaping(): void
+    {
+        $this->useCoreEscaping();
+        $name = "uploads/it's & that's/o'brien & co's d'arcy's \"quoted\" & <tagged> file name that goes on.jpg";
+
+        $message = FilesRestorer::entryFailure($name, 'could not create its folder', 'Permission denied')->getMessage();
+
+        $this->assertLessThanOrEqual(240, strlen($message), $message);
+        $this->assertStringEndsWith('then retry.', $message);
+        $this->assertStringContainsString('file name that goes on.jpg', $message);
+    }
+
+    public function test_shortening_a_long_name_never_cuts_inside_a_character(): void
+    {
+        $this->useCoreEscaping();
+        $name = 'uploads/' . str_repeat("\u{65E5}\u{672C}", 40) . '.jpeg';
+
+        $message = FilesRestorer::entryFailure($name, 'could not unpack it', 'No space left on device')->getMessage();
+
+        $this->assertSame(1, preg_match('//u', $message), 'the message is not valid UTF-8');
+        $this->assertStringNotContainsString('File : could not', $message, 'the file name vanished');
+        $this->assertStringContainsString("\u{65E5}\u{672C}.jpeg: could not unpack it", $message);
+        $this->assertLessThanOrEqual(240, strlen($message));
+        $this->assertStringEndsWith('then retry.', $message);
+    }
+
     public function test_entries_stage_leaves_out_are_still_skipped_and_the_rest_is_staged(): void
     {
         $fx        = $this->makeRestoreRoot('skips');
@@ -221,6 +292,21 @@ final class FilesRestorerStageFailureTest extends TestCase
             return $e->getMessage();
         }
         $this->fail('stage() returned ' . $dir . ' with an entry it could not write; it must throw before any swap');
+    }
+
+    /**
+     * WordPress core's esc_html(): invalid UTF-8 becomes '', then quotes and
+     * ampersands are escaped. The shared stub returns its input unchanged.
+     */
+    private function useCoreEscaping(): void
+    {
+        Functions\when('esc_html')->alias(static function ($text): string {
+            $text = (string) $text;
+            if ($text !== '' && preg_match('//u', $text) !== 1) {
+                return '';
+            }
+            return htmlspecialchars($text, ENT_QUOTES, 'UTF-8', false);
+        });
     }
 
     /** The staging dir stage() uses for this restore id. */
