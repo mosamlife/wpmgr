@@ -153,7 +153,7 @@ final class TaskRunner
         self::PHASE_SUBMITTING_MANIFEST  => 4,
     ];
 
-    /** @var array{mark:list<int>,at:int,seq:int}|null The durable progress record, as last saved. */
+    /** @var array{mark:list<int>,at:int,seq:int,pass?:string}|null The durable progress record, as last saved. */
     private ?array $progress = null;
 
     /** Progress sequence number this worker started at. */
@@ -444,7 +444,7 @@ final class TaskRunner
             // durable progress record, so the watchdog can tell whether this
             // worker saved any progress before it ended.
             $this->progress = self::progressRecord($subState['progress'] ?? null)
-                ?? ['mark' => self::progressMark($currentPhase, $subState), 'at' => time(), 'seq' => 0];
+                ?? self::newProgressRecord(self::progressMark($currentPhase, $subState), self::progressPass($subState), time(), 0);
             $this->workerStartSeq = $this->progress['seq'];
             $subState['progress'] = $this->progress;
             $subState['worker']   = ['seq' => $this->workerStartSeq, 'started_at' => (int) $this->workerStartedAt];
@@ -2097,15 +2097,20 @@ final class TaskRunner
         if (isset($subState['last_error'])) {
             $subState['last_error'] = json_decode(json_encode($subState['last_error'], JSON_INVALID_UTF8_SUBSTITUTE), true);
         }
-        // GH #983: the durable progress record. It advances only when this
-        // state's mark is later than the last saved one, and this worker
-        // keeps it, so a caller's older copy of sub_state never rolls it back.
+        // GH #983: the durable progress record. It advances when this state's
+        // mark is later than the last saved one, or when the archive has begun
+        // a fresh pass: a pass restarts the marks, so the first parts a fresh
+        // pass closes compare as earlier than the pass it replaced. The record
+        // names the pass it last advanced in, and a pass it has not seen is an
+        // advance. This worker keeps the record, so a caller's older copy of
+        // sub_state never rolls it back.
         $mark   = self::progressMark($phase, $subState);
+        $pass   = self::progressPass($subState);
         $record = $this->progress ?? self::progressRecord($subState['progress'] ?? null);
         if ($record === null) {
-            $record = ['mark' => $mark, 'at' => $now, 'seq' => 0];
-        } elseif (self::markAdvanced($mark, $record['mark'])) {
-            $record = ['mark' => $mark, 'at' => $now, 'seq' => $record['seq'] + 1];
+            $record = self::newProgressRecord($mark, $pass, $now, 0);
+        } elseif (($pass !== '' && $pass !== ($record['pass'] ?? '')) || self::markAdvanced($mark, $record['mark'])) {
+            $record = self::newProgressRecord($mark, $pass, $now, $record['seq'] + 1);
         }
         $subState['progress'] = $record;
         $encoded = self::encodeSubState($subState);
@@ -2201,7 +2206,8 @@ final class TaskRunner
      * GH #983: the durable progress mark of a task in $phase with $subState:
      * the phase, then the closed archive parts, the archive's first
      * unfinished line, the encrypted manifest entries and the uploaded
-     * chunks. Within one pass a later checkpoint never has a lower mark.
+     * chunks. Within one pass a later checkpoint never has a lower mark; a
+     * fresh pass restarts them, which the record's `pass` accounts for.
      *
      * @param array<string,mixed> $subState Task state.
      * @return list<int>
@@ -2242,10 +2248,12 @@ final class TaskRunner
 
     /**
      * The validated durable progress record from task state, or null. The
-     * task row is input like any other: every field is checked.
+     * task row is input like any other: every field is checked. The optional
+     * `pass` is the archive pass the record last advanced in; a record saved
+     * without one, or with one that is not a pass id, loads without it.
      *
      * @param mixed $raw sub_state.progress.
-     * @return array{mark:list<int>,at:int,seq:int}|null
+     * @return array{mark:list<int>,at:int,seq:int,pass?:string}|null
      */
     public static function progressRecord($raw): ?array
     {
@@ -2260,7 +2268,43 @@ final class TaskRunner
             }
             $mark[] = $value;
         }
-        return ['mark' => $mark, 'at' => $raw['at'], 'seq' => $raw['seq']];
+        return self::newProgressRecord($mark, self::passId($raw['pass'] ?? null), $raw['at'], $raw['seq']);
+    }
+
+    /**
+     * A progress record, naming $pass when there is one.
+     *
+     * @param list<int> $mark Progress mark.
+     * @param string    $pass Archive pass id, or '' for none.
+     * @return array{mark:list<int>,at:int,seq:int,pass?:string}
+     */
+    private static function newProgressRecord(array $mark, string $pass, int $at, int $seq): array
+    {
+        $record = ['mark' => $mark, 'at' => $at, 'seq' => $seq];
+        return $pass === '' ? $record : $record + ['pass' => $pass];
+    }
+
+    /**
+     * The archive pass a task state belongs to: the discovery id of its
+     * archive cursor, or '' while the state has none.
+     *
+     * @param array<string,mixed> $subState Task state.
+     */
+    private static function progressPass(array $subState): string
+    {
+        $files = isset($subState['files']) && is_array($subState['files']) ? $subState['files'] : [];
+        return self::passId($files['discovery_id'] ?? null);
+    }
+
+    /**
+     * A pass id from task state, which is input like any other: 1 to 64
+     * letters, digits, '_' or '-'. Anything else is no pass.
+     *
+     * @param mixed $raw Candidate pass id.
+     */
+    private static function passId($raw): string
+    {
+        return is_string($raw) && preg_match('/^[A-Za-z0-9_-]{1,64}$/D', $raw) === 1 ? $raw : '';
     }
 
     /**
