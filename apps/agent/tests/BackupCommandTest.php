@@ -424,7 +424,8 @@ final class BackupCommandTest extends TestCase
         // database access (preflight row, dedup claim) reaches this spy.
         $dbCalls = [];
         $previousWpdb = $GLOBALS['wpdb'] ?? null;
-        $GLOBALS['wpdb'] = new class ($dbCalls, new FakeKeyRowWpdb($options)) {
+        $keyRows = new FakeKeyRowWpdb($options);
+        $GLOBALS['wpdb'] = new class ($dbCalls, $keyRows) {
             public string $prefix = 'wp_';
             public string $options = 'wp_options';
             public string $last_error = '';
@@ -492,6 +493,7 @@ final class BackupCommandTest extends TestCase
             $this->assertStringContainsString('Backups already taken are not affected.', $res['detail']);
         }
         $this->assertSame([], $dbCalls, 'The refusal must come before any database work other than reading the backup key.');
+        $this->assertSame([], $keyRows->neutralStatements, 'The refusal must come before any database work other than reading the backup key.');
         $this->assertSame([], $writes, 'The refusal must not write anything.');
         $this->assertSame($sealed, $options[\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY]);
         $this->assertFalse($scratchExisted, 'The refusal must come before the scratch directory is created.');
