@@ -135,11 +135,26 @@ final class TaskRunner
     /** Exception code: this worker saved a closed part and hands the task over. */
     public const CODE_HANDOVER = 983002;
 
+    /** Exception code: the archive has started over more often than a backup may. */
+    public const CODE_RESTART_LIMIT = 954001;
+
+    /**
+     * Fresh archive passes one backup may start after its first. A saved
+     * checkpoint that no longer validates (an incremental plan whose file
+     * list cannot be fetched on resume, say) starts one, and a fresh pass
+     * discards the parts of the pass it replaces, so a backup that keeps
+     * starting over never finishes. The restart after this many stops it.
+     */
+    public const MAX_ARCHIVE_RESTARTS = 3;
+
     /**
      * Share of the worker's time limit after which it hands over at the next
      * closed archive part, instead of being ended by the limit mid-part.
      */
     public const HANDOVER_SHARE = 0.8;
+
+    /** What the site owner reads when the archive keeps starting over; %d is the number of restarts. */
+    private const RESTART_LIMIT_MESSAGE = 'Backup stopped: its archive had to start over %d times, so the parts it had saved were discarded each time. Check the free disk space on the site and its connection to the control plane, then run the backup again.';
 
     /** What the site owner reads when a save finds the task row gone. */
     private const TASK_GONE_MESSAGE = 'Backup stopped: its task record on this site was removed while it was running, so it cannot be resumed. Run the backup again.';
@@ -153,7 +168,7 @@ final class TaskRunner
         self::PHASE_SUBMITTING_MANIFEST  => 4,
     ];
 
-    /** @var array{mark:list<int>,at:int,seq:int,pass?:string}|null The durable progress record, as last saved. */
+    /** @var array{mark:list<int>,at:int,seq:int,pass?:string,restarts?:int}|null The durable progress record, as last saved. */
     private ?array $progress = null;
 
     /** Progress sequence number this worker started at. */
@@ -1307,8 +1322,9 @@ final class TaskRunner
             try {
                 $this->saveTaskState(self::PHASE_ARCHIVING_FILES, $subState);
             } catch (\Throwable $e) {
-                if ($e instanceof \RuntimeException && $e->getCode() === self::CODE_TASK_GONE) {
+                if ($e instanceof \RuntimeException && ($e->getCode() === self::CODE_TASK_GONE || $e->getCode() === self::CODE_RESTART_LIMIT)) {
                     // GH #983: the task was given up; never archive on for it.
+                    // GH #954: so is a backup whose archive keeps starting over.
                     throw $e;
                 }
                 // The previous checkpoint stays authoritative: a resume
@@ -2101,21 +2117,31 @@ final class TaskRunner
         if (isset($subState['last_error'])) {
             $subState['last_error'] = json_decode(json_encode($subState['last_error'], JSON_INVALID_UTF8_SUBSTITUTE), true);
         }
-        // GH #983: the durable progress record. It advances when this state's
-        // mark is later than the last saved one, or when the archive has begun
-        // a fresh pass: a pass restarts the marks, so the first parts a fresh
-        // pass closes compare as earlier than the pass it replaced. The record
-        // names the pass it is in, and a different pass is an advance. A record
-        // that names none learns the pass it finds, which is not an advance.
-        // This worker keeps the record, so a caller's older copy of sub_state
-        // never rolls it back.
+        // GH #983: the durable progress record. It advances only when this
+        // state's mark is later than the record's. A fresh archive pass (a new
+        // discovery id) restarts the marks, so the record takes the new pass
+        // and its mark as the baseline, which is no advance: starting over is
+        // not progress, and the pass's first closed part is. Each such restart
+        // is counted, and a backup that restarts too often is stopped (GH
+        // #954). A record that names no pass learns the one it finds, also
+        // without an advance. This worker keeps the record, so a caller's
+        // older copy of sub_state never rolls it back.
         $mark   = self::progressMark($phase, $subState);
         $pass   = self::progressPass($subState);
         $record = $this->progress ?? self::progressRecord($subState['progress'] ?? null);
         if ($record === null) {
             $record = self::newProgressRecord($mark, $pass, $now, 0);
-        } elseif (self::markAdvanced($mark, $record['mark']) || ($pass !== '' && isset($record['pass']) && $pass !== $record['pass'])) {
-            $record = self::newProgressRecord($mark, $pass, $now, $record['seq'] + 1);
+        } elseif ($pass !== '' && isset($record['pass']) && $pass !== $record['pass']) {
+            $restarts = ($record['restarts'] ?? 0) + 1;
+            if ($restarts > self::MAX_ARCHIVE_RESTARTS) {
+                throw new \RuntimeException(
+                    sprintf(self::RESTART_LIMIT_MESSAGE, $restarts), // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- fixed text and an integer, never output
+                    self::CODE_RESTART_LIMIT // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- integer code, never output
+                );
+            }
+            $record = self::newProgressRecord($mark, $pass, $record['at'], $record['seq'], $restarts);
+        } elseif (self::markAdvanced($mark, $record['mark'])) {
+            $record = self::newProgressRecord($mark, $pass, $now, $record['seq'] + 1, $record['restarts'] ?? 0);
         } elseif ($pass !== '' && !isset($record['pass'])) {
             $record['pass'] = $pass;
         }
@@ -2256,11 +2282,13 @@ final class TaskRunner
     /**
      * The validated durable progress record from task state, or null. The
      * task row is input like any other: every field is checked. The optional
-     * `pass` is the archive pass the record last advanced in; a record saved
-     * without one, or with one that is not a pass id, loads without it.
+     * `pass` is the archive pass the record is in and `restarts` the number of
+     * fresh passes the backup has started after its first; a record saved
+     * without them, or with values that are not a pass id and a small count,
+     * loads without them.
      *
      * @param mixed $raw sub_state.progress.
-     * @return array{mark:list<int>,at:int,seq:int,pass?:string}|null
+     * @return array{mark:list<int>,at:int,seq:int,pass?:string,restarts?:int}|null
      */
     public static function progressRecord($raw): ?array
     {
@@ -2275,20 +2303,28 @@ final class TaskRunner
             }
             $mark[] = $value;
         }
-        return self::newProgressRecord($mark, self::passId($raw['pass'] ?? null), $raw['at'], $raw['seq']);
+        $restarts = $raw['restarts'] ?? 0;
+        return self::newProgressRecord($mark, self::passId($raw['pass'] ?? null), $raw['at'], $raw['seq'], is_int($restarts) && $restarts >= 0 && $restarts <= 1000 ? $restarts : 0);
     }
 
     /**
-     * A progress record, naming $pass when there is one.
+     * A progress record, naming $pass and the restart count when there are any.
      *
-     * @param list<int> $mark Progress mark.
-     * @param string    $pass Archive pass id, or '' for none.
-     * @return array{mark:list<int>,at:int,seq:int,pass?:string}
+     * @param list<int> $mark     Progress mark.
+     * @param string    $pass     Archive pass id, or '' for none.
+     * @param int       $restarts Fresh archive passes started after the first.
+     * @return array{mark:list<int>,at:int,seq:int,pass?:string,restarts?:int}
      */
-    private static function newProgressRecord(array $mark, string $pass, int $at, int $seq): array
+    private static function newProgressRecord(array $mark, string $pass, int $at, int $seq, int $restarts = 0): array
     {
         $record = ['mark' => $mark, 'at' => $at, 'seq' => $seq];
-        return $pass === '' ? $record : $record + ['pass' => $pass];
+        if ($pass !== '') {
+            $record['pass'] = $pass;
+        }
+        if ($restarts > 0) {
+            $record['restarts'] = $restarts;
+        }
+        return $record;
     }
 
     /**
