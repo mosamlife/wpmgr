@@ -53,8 +53,7 @@ $write = static function (string $path, string $bytes): void {
 };
 
 $step('extend_limits', static function (): bool {
-    LongRunningJob::extendLimits();
-    return true;
+    return LongRunningJob::extendLimits();
 });
 
 $step('disk_space', static fn (): array => [

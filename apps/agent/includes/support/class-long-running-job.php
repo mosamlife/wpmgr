@@ -53,15 +53,22 @@ final class LongRunningJob
      * running if the client disconnects. A host that disables either
      * function keeps its own limit; the watchdog resumes a worker that limit
      * ends.
+     *
+     * @return bool True when the time limit was reset to TIME_LIMIT_SECONDS;
+     *              false when the host keeps its own because it disables
+     *              set_time_limit() or refuses the call. Callers that do not
+     *              need to know ignore it.
      */
-    public static function extendLimits(): void
+    public static function extendLimits(): bool
     {
+        $reset = false;
         if (function_exists('set_time_limit')) {
-            @set_time_limit(self::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup/restore loop must not hit max_execution_time; bounded, never 0
+            $reset = (bool) @set_time_limit(self::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup/restore loop must not hit max_execution_time; bounded, never 0
         }
         if (function_exists('ignore_user_abort')) {
             @ignore_user_abort(true); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- a background worker must outlive the request that started it
         }
+        return $reset;
     }
 
     /**

@@ -253,6 +253,42 @@ final class TaskRunnerHandoverTest extends TestCase
         }
     }
 
+    public function testWorkerThatCannotResetItsTimeLimitDoesNotHandOver(): void
+    {
+        // A host that disables set_time_limit() keeps the limit it gave the
+        // request, so a worker started in the same request would not get a
+        // fresh one: this worker keeps saving parts until the host ends it.
+        \Patchwork\redefine('WPMgr\Agent\Support\LongRunningJob::extendLimits', function (): bool { return false; });
+        $this->tree(['plugins/acme/acme.php', 'plugins/acme/readme.txt', 'uploads/a.jpg', 'uploads/b.jpg', 'themes/t/style.css', 'index.php']);
+        $wpdb = $this->seed();
+        $runner = new TaskRunner($this->params());
+        // Past the hand-over threshold at its first saved part.
+        (new \ReflectionProperty($runner, 'timeLimit'))->setValue($runner, 1e-9);
+
+        $runner->run();
+
+        $seqs = array_unique(array_filter(array_map(static fn (array $s) => $s['sub_state']['worker']['seq'] ?? null, $wpdb->saves), 'is_int'));
+        self::assertCount(1, $seqs, 'one worker runs the whole archive');
+        self::assertSame([], array_values(array_filter($wpdb->inner->updates, static fn (array $u): bool => array_key_exists('resume_count', $u['data']))), 'nothing was handed over through the watchdog');
+        self::assertNotEmpty(array_filter($wpdb->saves, static fn (array $s): bool => !empty($s['sub_state']['files']['done'])), 'that worker finished the archive');
+    }
+
+    public function testWorkerThatResetsItsTimeLimitHandsOverPastTheThreshold(): void
+    {
+        \Patchwork\redefine('WPMgr\Agent\Support\LongRunningJob::extendLimits', function (): bool { return true; });
+        $this->tree(['plugins/acme/acme.php', 'plugins/acme/readme.txt', 'uploads/a.jpg', 'uploads/b.jpg', 'themes/t/style.css', 'index.php']);
+        $wpdb = $this->seed();
+        $runner = new TaskRunner($this->params());
+        (new \ReflectionProperty($runner, 'timeLimit'))->setValue($runner, 1e-9);
+
+        $runner->run();
+
+        $seqs = array_unique(array_filter(array_map(static fn (array $s) => $s['sub_state']['worker']['seq'] ?? null, $wpdb->saves), 'is_int'));
+        self::assertGreaterThanOrEqual(2, count($seqs), 'a second worker started after the first saved a part');
+        $handOff = array_values(array_filter($wpdb->inner->updates, static fn (array $u): bool => array_key_exists('resume_count', $u['data'])));
+        self::assertSame([0], array_column(array_column($handOff, 'data'), 'resume_count'), 'the hand-over went through the watchdog and was not counted');
+    }
+
     public function testWorkerWithinItsTimeBudgetDoesNotHandOver(): void
     {
         $this->tree(['plugins/acme/acme.php', 'uploads/a.jpg']);

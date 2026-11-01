@@ -58,11 +58,17 @@ final class DisabledHostFunctionsTest extends TestCase
 
         self::assertSame(array_fill_keys([...self::GUARDED, 'link'], true), $report['disabled'], 'the child really ran with these functions disabled');
         self::assertSame([], $report['errors'], 'no backup or restore step may fail on such a host');
-        self::assertTrue($report['steps']['extend_limits']);
+        self::assertFalse($report['steps']['extend_limits'], 'with set_time_limit() disabled the limit cannot be reset, and extendLimits() says so');
         self::assertSame(['free' => null, 'total' => null], $report['steps']['disk_space']);
         self::assertIsString($report['steps']['task_runner'], 'TaskRunner::run() returns a phase instead of throwing');
         self::assertSame(2, $report['steps']['archive']);
         self::assertSame(['photo' => 'RESTORED_PHOTO', 'store' => 'LIVE_CHUNK', 'disk_fallback' => 0], $report['steps']['restore']);
+    }
+
+    public function testExtendLimitsReportsTheResetOnAHostThatAllowsIt(): void
+    {
+        self::assertTrue(function_exists('set_time_limit'), 'this host allows set_time_limit()');
+        self::assertTrue(\WPMgr\Agent\Support\LongRunningJob::extendLimits(), 'the time limit was reset to the bounded cap');
     }
 
     public function testBackupAndRestoreCodeCallsThemOnlyThroughTheGuard(): void

@@ -168,6 +168,9 @@ final class TaskRunner
     /** Seconds of the time limit this worker runs under: null until run() starts, 0 for none. */
     private ?float $timeLimit = null;
 
+    /** Whether this worker reset its time limit when it started; false on a host that keeps its own. */
+    private bool $timeLimitReset = false;
+
     /**
      * @var array{snapshot_id:string,kind:string,age_recipient:string,presign_endpoint:string,
      *            manifest_endpoint:string,progress_endpoint:string,chunk_bytes:int,
@@ -330,7 +333,7 @@ final class TaskRunner
     public function runWorker(): string
     {
         $this->workerStartedAt = time();
-        LongRunningJob::extendLimits();
+        $this->timeLimitReset  = LongRunningJob::extendLimits();
         $this->startWorkerClock();
 
         $currentPhase     = self::PHASE_QUEUED;
@@ -2392,11 +2395,14 @@ final class TaskRunner
      * Whether this worker should hand over now: it saved progress of its
      * own and used at least HANDOVER_SHARE of its time limit, in CPU time
      * where the limit counts CPU and in wall time otherwise. A worker with
-     * no time limit never hands over.
+     * no time limit never hands over, and neither does one that could not
+     * reset its limit: the next worker would start in the same request
+     * without a fresh one. It keeps working and saving parts until the host
+     * ends it, and the next resume continues from its checkpoint.
      */
     private function shouldHandOver(): bool
     {
-        if ($this->timeLimit === null || $this->timeLimit <= 0.0 || $this->progress === null || $this->progress['seq'] <= $this->workerStartSeq) {
+        if (!$this->timeLimitReset || $this->timeLimit === null || $this->timeLimit <= 0.0 || $this->progress === null || $this->progress['seq'] <= $this->workerStartSeq) {
             return false;
         }
         $cpu  = $this->workerCpuStart !== null ? self::cpuSeconds() : null;
