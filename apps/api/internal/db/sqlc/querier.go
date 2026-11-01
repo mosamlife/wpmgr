@@ -1077,6 +1077,29 @@ type Querier interface {
 	DeleteReport(ctx context.Context, arg DeleteReportParams) (int64, error)
 	DeleteShare(ctx context.Context, arg DeleteShareParams) (int64, error)
 	DeleteSite(ctx context.Context, arg DeleteSiteParams) (int64, error)
+	// GH #968: removes ONE site's own config row, so the site stops using the
+	// provider it chose and falls back to the org-wide default (GetOrgEmailConfig)
+	// when there is one. The row's secrets go with it; its named connections go by
+	// cascade (site_email_connection.config_id is ON DELETE CASCADE, m62). The
+	// site's email log stays: it references sites, not this row.
+	//
+	// Never the org-wide default. site_id = @site_id cannot match a NULL site_id,
+	// and the explicit IS NOT NULL keeps that true if the comparison is loosened.
+	//
+	// Only the row as the caller read it. @expected_updated_at is the updated_at
+	// the service read before it told the agent to clear its config. An edit in
+	// between moves updated_at, so this matches nothing and the edited row stays.
+	// That holds because every write to a per-site row sets updated_at = now()
+	// (UpsertSiteEmailConfigByTenantSite, SetEmailConfigWebhookFields); a new
+	// writer must do the same. Pass the value exactly as read: it has microsecond
+	// precision, and a copy truncated to milliseconds does not reliably match.
+	//
+	// Runs under scopedTenantTx. :execrows, not :exec, for the reason
+	// DeleteEmailSuppression gives: the m112 site-scope delete policy refuses a
+	// site-scoped collaborator with zero rows affected rather than an error. A row
+	// already gone, or changed since it was read, is also zero, so the caller
+	// needs the count and re-reads the row to tell those apart.
+	DeleteSiteEmailConfig(ctx context.Context, arg DeleteSiteEmailConfigParams) (int64, error)
 	// The second half of a replace: drops the site's rows the latest refresh did
 	// not report. Pass the checked_at the upsert used.
 	DeleteStaleSiteAbilityInventory(ctx context.Context, arg DeleteStaleSiteAbilityInventoryParams) (int64, error)
@@ -2259,6 +2282,9 @@ type Querier interface {
 	// Verify a device trust cookie token (hashed before lookup comparison).
 	GetTrustedDeviceByTokenHash(ctx context.Context, tokenHash string) (TrustedDevice, error)
 	// Update section: succeeded/failed tasks grouped by target_type in [from, to).
+	// Only plugin, theme and core tasks count (GH #969): the agent's own
+	// self-update tasks, and any other target_type, are not updates a client
+	// report describes, so they are in neither column.
 	GetUpdateReportStats(ctx context.Context, arg GetUpdateReportStatsParams) ([]GetUpdateReportStatsRow, error)
 	GetUpdateRun(ctx context.Context, arg GetUpdateRunParams) (UpdateRun, error)
 	GetUpdateTask(ctx context.Context, arg GetUpdateTaskParams) (UpdateTask, error)
@@ -3207,6 +3233,19 @@ type Querier interface {
 	// always p.AllowedSiteIDs (RLS double-gate via app.site_scope on
 	// backup_snapshots). `, id` tiebreaker follows the project ORDER BY convention.
 	ListRecentCompletedSnapshotsForSites(ctx context.Context, arg ListRecentCompletedSnapshotsForSitesParams) ([]ListRecentCompletedSnapshotsForSitesRow, error)
+	// Update section version table (GH #969): one row per finished plugin, theme
+	// or core task on the given sites in [from, to), oldest first within a site.
+	// Same population as GetUpdateReportStats, so the table and the counts agree:
+	// succeeded, failed and rolled_back only, agent self-updates excluded.
+	//
+	// Runs under InAgentTx, where RLS admits every tenant's update_tasks rows, so
+	// tenant_id = @tenant_id is the tenant boundary: a site id belonging to
+	// another tenant in @site_ids matches nothing. @row_limit caps the result.
+	//
+	// from_version and to_version may each be the empty string (version unknown),
+	// and a rollback records from_version = to_version. `, id` is the project
+	// ORDER BY tiebreaker.
+	ListReportUpdateItems(ctx context.Context, arg ListReportUpdateItemsParams) ([]ListReportUpdateItemsRow, error)
 	// Keyset cursor pagination: composite predicate (created_at, id) < (cursor_at, cursor_id)
 	// because batch inserts can share created_at and a bare compare skips co-timestamped rows
 	// (standing keyset-cursor-composite rule).

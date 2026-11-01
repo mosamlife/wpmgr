@@ -259,6 +259,11 @@ const (
 	// email config is created or updated. Metadata: provider, secret_set, scope
 	// (site|org).
 	ActionEmailConfigUpdated = "site.email.config.updated"
+	// ActionEmailConfigReset is recorded when a site's OWN email provider is
+	// removed (GH #968): the agent confirmed it cleared its email config and
+	// the site's row was deleted. Metadata: provider (the one removed),
+	// fallback (org_default|wordpress|unknown), org_default_synced.
+	ActionEmailConfigReset = "site.email.config.reset"
 
 	// Phase 4a — email log actions and suppression management.
 	// ActionEmailResent: metadata: log_id (single) or count (bulk).

@@ -109,6 +109,7 @@ const (
 	DeleteSiteOperation                        OperationName = "DeleteSite"
 	DeleteSiteBanOperation                     OperationName = "DeleteSiteBan"
 	DeleteSiteDestinationOperation             OperationName = "DeleteSiteDestination"
+	DeleteSiteEmailConfigOperation             OperationName = "DeleteSiteEmailConfig"
 	DeleteSiteEmailSuppressionOperation        OperationName = "DeleteSiteEmailSuppression"
 	DeleteSiteFileOperation                    OperationName = "DeleteSiteFile"
 	DeleteSitePolicyGroupOperation             OperationName = "DeleteSitePolicyGroup"

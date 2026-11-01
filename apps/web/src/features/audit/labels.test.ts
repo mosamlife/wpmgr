@@ -165,3 +165,22 @@ describe("AI page request lifecycle actions", () => {
     }
   });
 });
+
+// GH #968: removing a site's own email provider writes site.email.config.reset
+// (ActionEmailConfigReset in apps/api/internal/audit/audit.go). The key carries
+// no write verb the stem heuristic knows, so without an explicit entry it would
+// read as the quiet default and be eligible for read-burst collapsing.
+describe("site email provider removal (site.email.config.reset)", () => {
+  it("is labelled in plain words, never as the raw dotted key", () => {
+    expect(actionLabel("site.email.config.reset")).toBe("Removed email provider");
+  });
+
+  it("is a write, because it deletes a credential and changes where the site's mail goes", () => {
+    expect(classifySeverity("site.email.config.reset")).toBe("write");
+  });
+
+  it("leaves its sibling, the settings update, exactly as it was", () => {
+    expect(actionLabel("site.email.config.updated")).toBe("Updated email settings");
+    expect(classifySeverity("site.email.config.updated")).toBe("write");
+  });
+});

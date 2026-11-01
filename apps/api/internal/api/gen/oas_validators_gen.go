@@ -7430,7 +7430,7 @@ func (s *ClientReportScheduleUpdate) Validate() error {
 		if err := (validate.Array{
 			MinLength:    0,
 			MinLengthSet: false,
-			MaxLength:    20,
+			MaxLength:    10,
 			MaxLengthSet: true,
 		}).ValidateLength(len(s.Recipients)); err != nil {
 			return errors.Wrap(err, "array")
@@ -14883,6 +14883,42 @@ func (s RegisterRequestPlan) Validate() error {
 	case "agency":
 		return nil
 	case "scale":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s *RemoveSiteEmailConfigResult) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Fallback.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "fallback",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s RemoveSiteEmailConfigResultFallback) Validate() error {
+	switch s {
+	case "org_default":
+		return nil
+	case "wordpress":
+		return nil
+	case "unknown":
 		return nil
 	default:
 		return errors.Errorf("invalid value: %v", s)

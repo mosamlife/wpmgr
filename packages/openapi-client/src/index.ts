@@ -197,6 +197,8 @@ export {
   putOrgEmailWebhookConfig,
   // email sync (Phase 5)
   syncSiteEmailConfig,
+  // email provider removal (GH #968)
+  deleteSiteEmailConfig,
   // email m62 — connections + notify settings
   listEmailConnections,
   putEmailConnection,
@@ -761,6 +763,10 @@ export type {
   // email sync (Phase 5)
   SyncSiteEmailConfigData,
   SyncSiteEmailConfigResponse,
+  // email provider removal (GH #968)
+  RemoveSiteEmailConfigResult,
+  DeleteSiteEmailConfigData,
+  DeleteSiteEmailConfigResponse,
   // email m62 — connections + notify settings + attachment metadata
   EmailConnection,
   EmailAttachmentMeta,
