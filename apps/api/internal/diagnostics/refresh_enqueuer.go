@@ -91,8 +91,10 @@ func NewRefreshEnqueuer(cmd AgentDiagnosticsClient, sites SiteLookup, sink Inges
 // A failure of the signed call, and a reply that is not the agent's JSON, are
 // the site's doing. They come back as a domain.BadGateway (HTTP 502) carrying a
 // stable code and fixed operator copy (agentcmd.DescribeSiteFailure), after one
-// warn log line. Neither the site's reply nor err.Error() reaches the response
-// or the log. A domain error keeps its kind: the 404 for an unknown site, the
+// warn log line. The copy may carry only the bounded values the mapper allows
+// (a status number, an allow-listed refusal code, a sanitised redirect
+// address); neither the body of the site's reply nor err.Error() reaches the
+// response or the log. A domain error keeps its kind: the 404 for an unknown site, the
 // 422 for a reply without collected_at. Anything else, such as a database
 // failure while storing the report, comes back as it is, and the handler
 // answers it with a 500.

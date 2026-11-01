@@ -53147,6 +53147,10 @@ type RefreshSiteDiagnosticsBadGateway Error
 
 func (*RefreshSiteDiagnosticsBadGateway) refreshSiteDiagnosticsRes() {}
 
+type RefreshSiteDiagnosticsInternalServerError Error
+
+func (*RefreshSiteDiagnosticsInternalServerError) refreshSiteDiagnosticsRes() {}
+
 type RefreshSiteDiagnosticsNotFound Error
 
 func (*RefreshSiteDiagnosticsNotFound) refreshSiteDiagnosticsRes() {}

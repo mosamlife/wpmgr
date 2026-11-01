@@ -17922,17 +17922,28 @@ export type RefreshSiteDiagnosticsErrors = {
    */
   404: Error;
   /**
-   * collected_at_missing / collected_at_invalid, the agent's report carries no usable collection time, so nothing was stored
+   * invalid_site_id (the siteId is not a valid UUID), or collected_at_missing / collected_at_invalid (the agent's report carries no usable collection time, so nothing was stored)
    */
   422: Error;
+  /**
+   * internal_error, a failure inside the control plane rather than the site, such as the database failing while the report is stored, or a request its caller cancelled; the message is generic
+   */
+  500: Error;
   /**
    * diagnostics_refresh_unwired, on-demand refresh is not wired on this control plane
    */
   501: Error;
   /**
-   * The site did not give a usable answer. `code` says which, and
-   * `message` is fixed wording written by the control plane that never
-   * repeats the site's own reply:
+   * The site did not give a usable answer. `code` says which.
+   * `message` is fixed operator wording written by the control plane. It
+   * never contains the site's reply body or any other text from the
+   * site. The only values it takes from the site's answer are bounded
+   * and sanitised: the HTTP status number; an agent refusal code that
+   * matches `^wpmgr_[a-z_]{1,40}$`; and, for `site_url_redirects`, the
+   * redirect address reduced to a plain http(s) address with no
+   * userinfo, query or fragment, a percent-escaped path, and at most
+   * 256 bytes (a longer one is cut back to its origin). A client must
+   * render `message` as plain text. The codes:
    *
    * - `site_refused`: the site answered HTTP 403, either the WPMgr
    * agent refusing the signed request or a firewall, host rule or

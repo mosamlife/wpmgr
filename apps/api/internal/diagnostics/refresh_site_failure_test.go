@@ -188,7 +188,9 @@ func (c *refreshChain) refresh(t *testing.T) apiAnswer {
 
 // TestRefreshAnswersASiteFailureWithBadGateway: whatever the site does to a
 // signed diagnostics command, the operator gets a status and code that name
-// what happened and wording the control plane wrote, never the site's text.
+// what happened and wording the control plane wrote, never the site's body or
+// free text. The redirect case shows the one sanitised address the copy may
+// carry, by design.
 func TestRefreshAnswersASiteFailureWithBadGateway(t *testing.T) {
 	phpWarning := "\nWarning: Undefined variable $" + siteMarker + " in /var/www/html/wp-content/plugins/other/other.php on line 7\n"
 	cases := []struct {
@@ -409,6 +411,32 @@ func TestRefreshWithoutACommanderAnswers501(t *testing.T) {
 
 	if got.status != 501 || got.code != "diagnostics_refresh_unwired" {
 		t.Fatalf("answered %d %q, want 501 diagnostics_refresh_unwired", got.status, got.code)
+	}
+}
+
+// TestRefreshRejectsASiteIDThatIsNotAUUID: the route answers 422
+// invalid_site_id, as the OpenAPI contract documents, before it contacts any
+// site.
+func TestRefreshRejectsASiteIDThatIsNotAUUID(t *testing.T) {
+	site := newFakeSite(t, reply(200, "application/json", `{}`))
+	chain := newRefreshChain(t, &fakeRepo{}, testSiteLookup{url: site.srv.URL}, 2*time.Second)
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Params = gin.Params{{Key: "siteId", Value: "not-a-uuid"}}
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/v1/sites/not-a-uuid/diagnostics/refresh", nil)
+
+	chain.handler.refresh(ctx)
+
+	var env struct {
+		Code string `json:"code"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &env)
+	if rec.Code != 422 || env.Code != "invalid_site_id" {
+		t.Fatalf("answered %d %q, want 422 invalid_site_id", rec.Code, env.Code)
+	}
+	if n := len(site.requests()); n != 0 {
+		t.Fatalf("the site received %d requests, want 0", n)
 	}
 }
 

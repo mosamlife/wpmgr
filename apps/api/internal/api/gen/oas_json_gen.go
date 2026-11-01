@@ -118710,6 +118710,44 @@ func (s *RefreshSiteDiagnosticsBadGateway) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes RefreshSiteDiagnosticsInternalServerError as json.
+func (s *RefreshSiteDiagnosticsInternalServerError) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes RefreshSiteDiagnosticsInternalServerError from json.
+func (s *RefreshSiteDiagnosticsInternalServerError) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode RefreshSiteDiagnosticsInternalServerError to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = RefreshSiteDiagnosticsInternalServerError(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *RefreshSiteDiagnosticsInternalServerError) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *RefreshSiteDiagnosticsInternalServerError) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes RefreshSiteDiagnosticsNotFound as json.
 func (s *RefreshSiteDiagnosticsNotFound) Encode(e *jx.Encoder) {
 	unwrapped := (*Error)(s)
