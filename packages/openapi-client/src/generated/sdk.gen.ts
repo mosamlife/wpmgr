@@ -5940,13 +5940,14 @@ export const getSiteDiagnostics = <ThrowOnError extends boolean = false>(
   >({ url: "/api/v1/sites/{siteId}/diagnostics", ...options });
 
 /**
- * Enqueue an on-demand diagnostics command to the agent
+ * Run an on-demand diagnostics check through the site's agent
  *
- * Enqueues a signed `diagnostics` command to the agent. The agent runs
- * the 14-category collector immediately and pushes the result back to
- * POST /agent/v1/diagnostics. Returns 202 on accept. Returns 503 with
- * code `diagnostics_refresh_unwired` when the CP->agent commander has
- * not yet been wired (V1).
+ * Sends a signed `diagnostics` command to the site's agent, waits for
+ * the agent's report and stores it before answering, so the stored
+ * report is readable as soon as the 202 returns. Answers 501 with code
+ * `diagnostics_refresh_unwired` when this control plane has no
+ * CP->agent commander wired. A failure of the site itself answers 502;
+ * see that response for its codes.
  *
  */
 export const refreshSiteDiagnostics = <ThrowOnError extends boolean = false>(

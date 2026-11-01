@@ -45,7 +45,11 @@ final class OptimizerPipelineTest extends TestCase
         // pipeline runs cleanly under unit tests.
         Functions\when('site_url')->justReturn('https://example.com');
         Functions\when('home_url')->justReturn('https://example.com');
-        Functions\when('get_option')->justReturn([]);
+        // The stored page-cache settings say the cache is on (the writer reads
+        // them again before it stores); every other option is empty.
+        Functions\when('get_option')->alias(static fn ($k, $d = false) => $k === 'wpmgr_cache_config' ? ['enabled' => true] : []);
+        // The writer stores only a page rendered through the template stage.
+        Functions\when('did_action')->alias(static fn (string $hook): int => $hook === 'template_redirect' ? 1 : 0);
     }
 
     protected function tear_down(): void
@@ -108,7 +112,7 @@ final class OptimizerPipelineTest extends TestCase
         // Inject an optimizer that uppercases a marker so we can prove the
         // OPTIMIZED bytes are what get cached + returned.
         $optimizer = new Optimizer(new PerfConfig(['lazy_load' => true, 'youtube_placeholder' => true]));
-        $writer = new CacheWriter($config, $this->root, null, null, $optimizer);
+        $writer = new CacheWriter($config, $this->root, 'example.com/post/index.html.gz', null, $optimizer);
 
         // Simulate the request superglobals the writer's resolveContext reads.
         $_SERVER['REQUEST_URI']    = '/post/';
@@ -143,7 +147,7 @@ final class OptimizerPipelineTest extends TestCase
     {
         $config = new CacheConfig(['enabled' => true]);
         $optimizer = new Optimizer(new PerfConfig([])); // inactive
-        $writer = new CacheWriter($config, $this->root, null, null, $optimizer);
+        $writer = new CacheWriter($config, $this->root, 'example.com/p2/index.html.gz', null, $optimizer);
 
         $_SERVER['REQUEST_URI']    = '/p2/';
         $_SERVER['HTTP_HOST']      = 'example.com';

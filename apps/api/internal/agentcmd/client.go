@@ -28,6 +28,13 @@ import (
 // commandPathFormat is the agent's signed-command REST route (class-router.php).
 const commandPathFormat = "/wp-json/wpmgr/v1/command/%s"
 
+// CommandUserAgent is the User-Agent every signed command carries: on the first
+// send and on the same-host HTTPS-upgrade retry. The control plane's other
+// requests to a site identify themselves the same way (WPMgr-*/1.0), so a host
+// or firewall rule can recognise WPMgr's traffic by name. Site owners allowlist
+// this exact string, so it stays fixed and carries no version.
+const CommandUserAgent = "WPMgr-CommandClient/1.0"
+
 // maxRespBody bounds the agent response we will read into memory.
 const maxRespBody = 4 << 20 // 4 MiB
 
@@ -906,6 +913,7 @@ func (c *Client) sendSigned(ctx context.Context, endpoint, command string, paylo
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("User-Agent", CommandUserAgent)
 	// The agent's permission_callback expects a Bearer token (class-router.php
 	// bearerToken()). NEVER log this header value (it is a credential).
 	httpReq.Header.Set("Authorization", "Bearer "+token)
@@ -946,6 +954,7 @@ func (c *Client) sendSigned(ctx context.Context, endpoint, command string, paylo
 			}
 			retry.Header.Set("Content-Type", "application/json")
 			retry.Header.Set("Accept", "application/json")
+			retry.Header.Set("User-Agent", CommandUserAgent)
 			retry.Header.Set("Authorization", "Bearer "+token)
 			resp, err = c.http.DoOnce(retry)
 			if err != nil {

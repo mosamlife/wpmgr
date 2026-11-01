@@ -33,8 +33,9 @@ func Error(c *gin.Context, err error) {
 	if de, ok := domain.AsDomain(err); ok {
 		body.Code = de.Code
 		// Expose the message for every domain Kind except the catch-all internal
-		// error, whose message may leak internals. 4xx and the explicit 501
-		// (feature disabled) carry caller-actionable, safe messages.
+		// error, whose message may leak internals. 4xx, the explicit 501
+		// (feature disabled) and the 502 (another system failed; fixed copy,
+		// see domain.BadGateway) carry caller-actionable, safe messages.
 		if de.Kind != domain.KindInternal {
 			body.Message = de.Message
 		}

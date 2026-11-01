@@ -613,6 +613,7 @@ final class WooCommerceCacheTest extends TestCase
     private function writerCtx(array $over = []): array
     {
         return array_merge([
+            'store_key'         => 'example.com/shop/index.html.gz', // the drop-in's key
             'url'               => '/shop/',
             'uri_path'          => '/shop/',
             'host'              => 'example.com',
