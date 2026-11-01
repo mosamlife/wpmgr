@@ -26181,7 +26181,6 @@ func (*Error) putObjectCacheConfigRes()                      {}
 func (*Error) putPerfConfigRes()                             {}
 func (*Error) putSiteLoginBrandRes()                         {}
 func (*Error) putSiteLoginProtectionRes()                    {}
-func (*Error) refreshSiteDiagnosticsRes()                    {}
 func (*Error) restoreSiteRes()                               {}
 func (*Error) resumeSiteMonitoringRes()                      {}
 func (*Error) revokeAllTrustedDevicesRes()                   {}
@@ -53143,6 +53142,22 @@ func (*RefreshSiteContentInventoryUnauthorized) refreshSiteContentInventoryRes()
 type RefreshSiteDiagnosticsAccepted struct{}
 
 func (*RefreshSiteDiagnosticsAccepted) refreshSiteDiagnosticsRes() {}
+
+type RefreshSiteDiagnosticsBadGateway Error
+
+func (*RefreshSiteDiagnosticsBadGateway) refreshSiteDiagnosticsRes() {}
+
+type RefreshSiteDiagnosticsNotFound Error
+
+func (*RefreshSiteDiagnosticsNotFound) refreshSiteDiagnosticsRes() {}
+
+type RefreshSiteDiagnosticsNotImplemented Error
+
+func (*RefreshSiteDiagnosticsNotImplemented) refreshSiteDiagnosticsRes() {}
+
+type RefreshSiteDiagnosticsUnprocessableEntity Error
+
+func (*RefreshSiteDiagnosticsUnprocessableEntity) refreshSiteDiagnosticsRes() {}
 
 type RefreshSiteScreenshotAccepted struct {
 	Status    RefreshSiteScreenshotAcceptedStatus `json:"status"`

@@ -398,6 +398,20 @@ func TestRefreshSucceedsAgainstAHealthySite(t *testing.T) {
 	}
 }
 
+// TestRefreshWithoutACommanderAnswers501: when no signed-command client is
+// wired, the route answers 501 diagnostics_refresh_unwired, the status the
+// OpenAPI contract documents (it said 503 until GH #1005).
+func TestRefreshWithoutACommanderAnswers501(t *testing.T) {
+	svc := NewService(&fakeRepo{})
+	chain := &refreshChain{svc: svc, handler: NewHandler(svc, nil)}
+
+	got := chain.refresh(t)
+
+	if got.status != 501 || got.code != "diagnostics_refresh_unwired" {
+		t.Fatalf("answered %d %q, want 501 diagnostics_refresh_unwired", got.status, got.code)
+	}
+}
+
 // failingUpsertRepo is the ingest repository with a broken database:
 // UpsertDiagnostic fails with an error that is not a domain error.
 type failingUpsertRepo struct{ *fakeRepo }

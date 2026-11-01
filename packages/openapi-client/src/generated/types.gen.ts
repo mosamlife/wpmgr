@@ -17918,9 +17918,39 @@ export type RefreshSiteDiagnosticsData = {
 
 export type RefreshSiteDiagnosticsErrors = {
   /**
-   * Refresh is not yet wired
+   * site_not_found, the site does not exist
    */
-  503: Error;
+  404: Error;
+  /**
+   * collected_at_missing / collected_at_invalid, the agent's report carries no usable collection time, so nothing was stored
+   */
+  422: Error;
+  /**
+   * diagnostics_refresh_unwired, on-demand refresh is not wired on this control plane
+   */
+  501: Error;
+  /**
+   * The site did not give a usable answer. `code` says which, and
+   * `message` is fixed wording written by the control plane that never
+   * repeats the site's own reply:
+   *
+   * - `site_refused`: the site answered HTTP 403, either the WPMgr
+   * agent refusing the signed request or a firewall, host rule or
+   * security plugin in front of it.
+   * - `site_url_redirects`: the site answered its command address
+   * with a redirect, so no command was sent.
+   * - `agent_command_failed`: the WPMgr agent ran the command and
+   * stopped with an error.
+   * - `site_error`: the site answered with any other HTTP error
+   * status.
+   * - `site_timeout`: the site did not answer in time.
+   * - `site_unreachable`: the connection to the site failed.
+   * - `site_bad_reply`: the site answered with success, but the reply
+   * was not the agent's JSON, for example a PHP notice printed
+   * before it.
+   *
+   */
+  502: Error;
 };
 
 export type RefreshSiteDiagnosticsError =
@@ -17928,7 +17958,7 @@ export type RefreshSiteDiagnosticsError =
 
 export type RefreshSiteDiagnosticsResponses = {
   /**
-   * Refresh enqueued
+   * The agent's report was stored
    */
   202: unknown;
 };
