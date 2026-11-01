@@ -15,8 +15,8 @@
  *   - A core part that fails after the wp-content staging tree is finished
  *     removes that finished tree too.
  *
- * The second runner is started from inside the first one's progress tick,
- * so both share one staging tree exactly as two live processes would.
+ * The second runner is started while the first is mid-stage, from the
+ * first one's progress tick.
  *
  * @package WPMgr\Agent\Tests\Backup
  */
