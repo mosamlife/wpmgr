@@ -65,6 +65,15 @@ const REASON_LABELS: Record<string, string> = {
   could_not_reach_site: "WPMgr could not reach this site",
   // assistant.request.failed's outcome.
   outcome_unknown: "WPMgr could not confirm whether the clear ran",
+
+  // site.backup.recipient.change_rejected's reason (apps/api/internal/site/
+  // service.go, recordRecipientChangeRejected): the site reported a backup key
+  // and WPMgr kept the one it had recorded, or recorded none.
+  already_set: "WPMgr already had a key for this site",
+  concurrent_first_set: "Another report recorded a key first",
+  agent_key_not_current: "The report came from an old connection",
+  // site.backup.recipient.cleared's reason (reasonReEnrollment in the same file).
+  re_enrollment: "The site was reconnected",
 };
 
 /** Humanize a `metadata.reason` code; passes through free text unchanged. */
