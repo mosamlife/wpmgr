@@ -956,11 +956,10 @@ PHP;
     }
 
     /**
-     * GH #1004. The backup key's own database read fails the way a MySQL
-     * error does: the push carries no recipient, and the stored key is left
-     * as it is.
+     * GH #1004. A failed read of the backup key leaves it unchanged, and the
+     * push carries no recipient.
      */
-    public function test_collect_sends_no_recipient_when_the_backup_key_read_fails(): void
+    public function test_a_failed_key_read_sends_no_recipient_and_leaves_the_key_unchanged(): void
     {
         $keyPath = sys_get_temp_dir() . '/wpmgr-agent-metadata-' . bin2hex(random_bytes(8)) . '.key';
         file_put_contents($keyPath, random_bytes(32));
@@ -990,12 +989,10 @@ PHP;
     }
 
     /**
-     * GH #1004. The keystore probe's get_option() read of the backup key fails
-     * first, so WordPress records the option as missing in 'notoptions' and an
-     * update_option() of it would replace the row. The push still carries the
-     * stored key's recipient, and the stored key is left as it is.
+     * GH #1004. When the keystore probe's read of the backup key fails, the
+     * stored key is left unchanged and the push carries its recipient.
      */
-    public function test_collect_keeps_the_backup_key_when_the_probe_read_fails(): void
+    public function test_a_failed_probe_read_leaves_the_key_unchanged(): void
     {
         $keyPath = sys_get_temp_dir() . '/wpmgr-agent-metadata-' . bin2hex(random_bytes(8)) . '.key';
         file_put_contents($keyPath, random_bytes(32));
@@ -1008,8 +1005,7 @@ PHP;
 
         $notoptions = [];
         $failedRead = 0;
-        // get_option() as core runs it for the backup key: the first SELECT
-        // fails, which records the option as missing and returns the default.
+        // Stand-in for get_option(): the first read of the backup key fails.
         Functions\when('get_option')->alias(static function ($name, $default = false) use (&$options, &$notoptions, &$failedRead) {
             if ($name === 'active_plugins') {
                 return [];
@@ -1028,8 +1024,7 @@ PHP;
 
             return $options[$name] ?? $default;
         });
-        // update_option() of an option get_option() reports missing goes to
-        // add_option(), which writes with ON DUPLICATE KEY UPDATE.
+        // Stand-in for update_option().
         Functions\when('update_option')->alias(static function ($name, $value) use (&$options, &$notoptions) {
             $options[$name] = $value;
             unset($notoptions[$name]);

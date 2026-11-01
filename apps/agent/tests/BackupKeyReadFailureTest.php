@@ -1,16 +1,13 @@
 <?php
 /**
- * GH #1004. A failed database read of the backup-key row must never be taken
- * for "no key is stored", so it can never replace the site's backup key.
+ * GH #1004. The keystore reads the backup-key row directly, so a read that
+ * fails is never taken for an absent key, and creates the key only with an
+ * insert that cannot replace an existing row.
  *
- * The option API is modelled the way WordPress core behaves: a SELECT of the
- * row that fails records the option as missing in 'notoptions' and returns
- * false; update_option() of a value get_option() reports missing goes to
- * add_option(), which skips its existence check when 'notoptions' lists the
- * option and writes with ON DUPLICATE KEY UPDATE, replacing the row. The
- * database is FakeKeyRowWpdb over the same rows, and one SELECT of the row can
- * fail the way a MySQL error does. The metadata push cases live in
- * MetadataCommandTest, next to the inventory stubs that push needs.
+ * The database is FakeKeyRowWpdb, and a stand-in for the option functions
+ * reads and writes the same rows. One SELECT of the row can fail the way a
+ * MySQL error does. The metadata push cases live in MetadataCommandTest, next
+ * to the inventory stubs that push needs.
  *
  * @package WPMgr\Agent\Tests
  */
@@ -41,7 +38,7 @@ final class BackupKeyReadFailureTest extends TestCase
     /** @var array<string,mixed> The options table. */
     private array $rows = [];
 
-    /** @var array<string,bool> Core's 'notoptions' cache. */
+    /** @var array<string,bool> The options cache's record of missing options. */
     private array $notoptions = [];
 
     /** @var array<string,mixed> Core's per-option value cache. */
@@ -70,9 +67,9 @@ final class BackupKeyReadFailureTest extends TestCase
         $GLOBALS['wpdb']    = $this->wpdb;
 
         Functions\when('wp_json_encode')->alias(static fn ($d) => json_encode($d));
-        Functions\when('get_option')->alias(fn ($name, $default = false) => $this->coreGetOption((string) $name, $default));
-        Functions\when('update_option')->alias(fn ($name, $value) => $this->coreUpdateOption((string) $name, $value));
-        Functions\when('add_option')->alias(fn ($name, $value = '') => $this->coreAddOption((string) $name, $value));
+        Functions\when('get_option')->alias(fn ($name, $default = false) => $this->optionGet((string) $name, $default));
+        Functions\when('update_option')->alias(fn ($name, $value) => $this->optionUpdate((string) $name, $value));
+        Functions\when('add_option')->alias(fn ($name, $value = '') => $this->optionAdd((string) $name, $value));
         Functions\when('delete_option')->alias(function ($name): bool {
             unset($this->rows[$name], $this->valueCache[$name]);
 
@@ -106,14 +103,12 @@ final class BackupKeyReadFailureTest extends TestCase
     }
 
     /**
-     * get_option() as core runs it: 'notoptions' first, then the value cache,
-     * then a SELECT of the row. A SELECT that fails, or finds no row, records
-     * the option in 'notoptions' and returns the default.
+     * Stand-in for get_option() over the test's rows and caches.
      *
      * @param mixed $default
      * @return mixed
      */
-    private function coreGetOption(string $name, $default = false)
+    private function optionGet(string $name, $default = false)
     {
         if ($name !== Keystore::OPTION_AGE_IDENTITY) {
             return $this->rows[$name] ?? $default;
@@ -124,7 +119,7 @@ final class BackupKeyReadFailureTest extends TestCase
         if (array_key_exists($name, $this->valueCache)) {
             return $this->valueCache[$name];
         }
-        $this->wpdb->statements[] = 'core get_option SELECT';
+        $this->wpdb->statements[] = 'get_option SELECT';
         if ($this->wpdb->failSelects > 0) {
             --$this->wpdb->failSelects;
             ++$this->wpdb->failedSelects;
@@ -143,15 +138,15 @@ final class BackupKeyReadFailureTest extends TestCase
     }
 
     /** @param mixed $value */
-    private function coreUpdateOption(string $name, $value): bool
+    private function optionUpdate(string $name, $value): bool
     {
         if ($name !== Keystore::OPTION_AGE_IDENTITY) {
             $this->rows[$name] = $value;
 
             return true;
         }
-        if ($this->coreGetOption($name) === false) {
-            return $this->coreAddOption($name, $value);
+        if ($this->optionGet($name) === false) {
+            return $this->optionAdd($name, $value);
         }
         $this->rows[$name]       = $value;
         $this->valueCache[$name] = $value;
@@ -160,12 +155,11 @@ final class BackupKeyReadFailureTest extends TestCase
     }
 
     /**
-     * add_option() as core runs it: the existence check is skipped when
-     * 'notoptions' lists the option, and the write is an upsert.
+     * Stand-in for add_option() over the test's rows and caches.
      *
      * @param mixed $value
      */
-    private function coreAddOption(string $name, $value): bool
+    private function optionAdd(string $name, $value): bool
     {
         if ($name !== Keystore::OPTION_AGE_IDENTITY) {
             if (array_key_exists($name, $this->rows)) {
@@ -175,13 +169,12 @@ final class BackupKeyReadFailureTest extends TestCase
 
             return true;
         }
-        if (!isset($this->notoptions[$name]) && $this->coreGetOption($name) !== false) {
+        if (!isset($this->notoptions[$name]) && $this->optionGet($name) !== false) {
             return false;
         }
         if ($this->wpdb->beforeInsert !== null) {
             ($this->wpdb->beforeInsert)();
         }
-        // INSERT ... ON DUPLICATE KEY UPDATE: replaces an existing row.
         $this->rows[$name]       = $value;
         $this->valueCache[$name] = $value;
         unset($this->notoptions[$name]);
@@ -238,7 +231,7 @@ final class BackupKeyReadFailureTest extends TestCase
     }
 
     /** (a) The backup command's recipient check. */
-    public function test_backup_refuses_with_keystore_read_failed_and_keeps_the_key(): void
+    public function test_a_failed_read_during_a_backup_refuses_and_leaves_the_key_unchanged(): void
     {
         $recipient               = $this->seedHealthyKeystore();
         $sealed                  = $this->rows[Keystore::OPTION_AGE_IDENTITY];
@@ -270,12 +263,12 @@ final class BackupKeyReadFailureTest extends TestCase
     }
 
     /** (c) Admin setup: a failed read leaves the key, and records no notice. */
-    public function test_admin_setup_does_nothing_when_the_key_read_fails(): void
+    public function test_a_failed_read_during_admin_setup_leaves_the_key_unchanged(): void
     {
         $this->seedHealthyKeystore();
         $sealed = $this->rows[Keystore::OPTION_AGE_IDENTITY];
-        // An earlier failed read left the option marked missing (a persistent
-        // object cache keeps it), and this request's read fails as well.
+        // The options cache reports the key missing, and this request's read
+        // of the row fails.
         $this->notoptions[Keystore::OPTION_AGE_IDENTITY] = true;
         $this->wpdb->failSelects                         = 1;
 
@@ -289,8 +282,8 @@ final class BackupKeyReadFailureTest extends TestCase
         $this->assertArrayNotHasKey(Plugin::OPTION_KEYSTORE_ERROR_KIND, $this->rows);
     }
 
-    /** A 'notoptions' record that the option is missing, with a healthy database: the stored key is used. */
-    public function test_a_stale_notoptions_record_never_replaces_the_stored_key(): void
+    /** With a healthy database, the stored key is used whatever the options cache holds for it. */
+    public function test_a_healthy_read_uses_the_stored_key_whatever_the_cache_holds(): void
     {
         $recipient = $this->seedHealthyKeystore();
         $sealed    = $this->rows[Keystore::OPTION_AGE_IDENTITY];
@@ -303,7 +296,7 @@ final class BackupKeyReadFailureTest extends TestCase
         $this->assertTrue($ready);
         $this->assertSame($sealed, $this->rows[Keystore::OPTION_AGE_IDENTITY], 'The backup key must not be replaced.');
         $this->assertSame(0, $this->wpdb->inserted);
-        $this->assertArrayNotHasKey(Keystore::OPTION_AGE_IDENTITY, $this->notoptions, 'The stale missing record is dropped once the row is found.');
+        $this->assertArrayNotHasKey(Keystore::OPTION_AGE_IDENTITY, $this->notoptions, 'A cached missing record is dropped once the row is found.');
     }
 
     /** Over-fire guard: a row that is really absent gets exactly one key. */
@@ -343,6 +336,29 @@ final class BackupKeyReadFailureTest extends TestCase
         $this->assertSame($other, $mine, 'Both creators must end on the same key.');
         $this->assertSame($other, $this->storedRecipient(), 'The first key stored is the one kept.');
         $this->assertSame(1, $this->wpdb->inserted);
+    }
+
+    /**
+     * The key row is stored by another request before this one's insert, so
+     * the insert fails: the stored key is the one used, and the error state of
+     * the database handle is restored afterwards.
+     */
+    public function test_a_key_stored_first_by_another_request_is_the_one_used(): void
+    {
+        (new Keystore())->generateSiteKeypair();
+        $winner = (new AgeCrypto())->generateIdentity();
+        $sealed = (new Keystore())->encrypt($winner['secret']);
+        $this->wpdb->beforeInsert = function () use ($sealed): void {
+            $this->rows[Keystore::OPTION_AGE_IDENTITY] = $sealed;
+        };
+
+        $recipient = (new AgeIdentity(new Keystore()))->ensureRecipient();
+
+        $this->assertSame(1, $this->wpdb->duplicateInserts, 'Precondition: the insert failed on the existing row.');
+        $this->assertSame($winner['recipient'], $recipient, 'The stored key is the one used.');
+        $this->assertSame($sealed, $this->rows[Keystore::OPTION_AGE_IDENTITY], 'The stored key must not be replaced.');
+        $this->assertSame([true], $this->wpdb->insertSuppressed, 'The insert runs with errors suppressed.');
+        $this->assertFalse($this->wpdb->suppressErrors, 'The previous error state is restored.');
     }
 
     /** Run Plugin::setupKeystore() over a fresh Keystore, without booting the plugin. */
