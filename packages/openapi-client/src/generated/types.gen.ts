@@ -17918,9 +17918,50 @@ export type RefreshSiteDiagnosticsData = {
 
 export type RefreshSiteDiagnosticsErrors = {
   /**
-   * Refresh is not yet wired
+   * site_not_found, the site does not exist
    */
-  503: Error;
+  404: Error;
+  /**
+   * invalid_site_id (the siteId is not a valid UUID), or collected_at_missing / collected_at_invalid (the agent's report carries no usable collection time, so nothing was stored)
+   */
+  422: Error;
+  /**
+   * internal_error, a failure inside the control plane rather than the site, such as the database failing while the report is stored, or a request its caller cancelled; the message is generic
+   */
+  500: Error;
+  /**
+   * diagnostics_refresh_unwired, on-demand refresh is not wired on this control plane
+   */
+  501: Error;
+  /**
+   * The site did not give a usable answer. `code` says which.
+   * `message` is fixed operator wording written by the control plane. It
+   * never contains the site's reply body or any other text from the
+   * site. The only values it takes from the site's answer are bounded
+   * and sanitised: the HTTP status number; an agent refusal code that
+   * matches `^wpmgr_[a-z_]{1,40}$`; and, for `site_url_redirects`, the
+   * redirect address reduced to a plain http(s) address with no
+   * userinfo, query or fragment, a percent-escaped path, and at most
+   * 256 bytes (a longer one is cut back to its origin). A client must
+   * render `message` as plain text. The codes:
+   *
+   * - `site_refused`: the site answered HTTP 403, either the WPMgr
+   * agent refusing the signed request or a firewall, host rule or
+   * security plugin in front of it.
+   * - `site_url_redirects`: the site answered its command address
+   * with a redirect, so no command was sent.
+   * - `agent_command_failed`: the WPMgr agent ran the command and
+   * stopped with an error.
+   * - `site_error`: the site answered with any other HTTP error
+   * status.
+   * - `site_timeout`: the site did not answer in time.
+   * - `site_unreachable`: the connection to the site failed.
+   * - `site_bad_reply`: the site answered with success, but the reply
+   * was not the agent's JSON, for example a PHP notice printed
+   * before it.
+   *
+   */
+  502: Error;
 };
 
 export type RefreshSiteDiagnosticsError =
@@ -17928,7 +17969,7 @@ export type RefreshSiteDiagnosticsError =
 
 export type RefreshSiteDiagnosticsResponses = {
   /**
-   * Refresh enqueued
+   * The agent's report was stored
    */
   202: unknown;
 };

@@ -751,6 +751,9 @@ final class PreloadQueue
             'reject_unsafe_urls' => true,
             'headers'           => [
                 'Content-Type' => 'application/json',
+                // No preload token here: a POST is never answered from the page
+                // cache, and this loopback is sent without certificate checks,
+                // so the site's token stays off it.
                 self::PRELOAD_HEADER => '1',
             ],
             'body'              => $body,
