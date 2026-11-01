@@ -57,6 +57,9 @@ type BackupSection = reportdata.BackupSection
 // UpdateSection holds update task counts for one site in the report period.
 type UpdateSection = reportdata.UpdateSection
 
+// UpdateItem is one row of the Updates section's version table.
+type UpdateItem = reportdata.UpdateItem
+
 // PerfSection holds Core Web Vitals p75 for one site (all-devices aggregate).
 type PerfSection = reportdata.PerfSection
 
@@ -91,6 +94,10 @@ type Schedule struct {
 	LastRunAt        *time.Time
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+	// Timezone is the IANA timezone on the client's record, which SendHour is
+	// in. It is read from the client when a schedule is returned, not stored
+	// on the schedule.
+	Timezone string
 }
 
 // GeneratedReport is the domain model for one generated_reports row.
@@ -106,6 +113,9 @@ type GeneratedReport struct {
 	PDFBlobKey  string
 	Error       string
 	CreatedAt   time.Time
+	// UpdatedAt is when anything last touched the row. A job touches it each
+	// time an attempt starts. Zero when the source did not carry it.
+	UpdatedAt   time.Time
 	CompletedAt *time.Time
 }
 
@@ -122,15 +132,50 @@ type DueSchedule struct {
 // Input types
 // ---------------------------------------------------------------------------
 
+// SectionFlagsPatch is a partial SectionFlags as a request sends it: a nil
+// field was not sent and keeps the value it is applied over, an explicit false
+// turns that section off (GH #972).
+type SectionFlagsPatch struct {
+	Overview    *bool `json:"overview"`
+	Uptime      *bool `json:"uptime"`
+	Backups     *bool `json:"backups"`
+	Updates     *bool `json:"updates"`
+	Performance *bool `json:"performance"`
+	Email       *bool `json:"email"`
+}
+
+// Apply returns base with every field the patch carries replaced.
+func (p SectionFlagsPatch) Apply(base SectionFlags) SectionFlags {
+	set := func(dst *bool, v *bool) {
+		if v != nil {
+			*dst = *v
+		}
+	}
+	out := base
+	set(&out.Overview, p.Overview)
+	set(&out.Uptime, p.Uptime)
+	set(&out.Backups, p.Backups)
+	set(&out.Updates, p.Updates)
+	set(&out.Performance, p.Performance)
+	set(&out.Email, p.Email)
+	return out
+}
+
 // UpsertScheduleInput is the validated input for PUT /report-schedule.
 type UpsertScheduleInput struct {
-	TenantID         uuid.UUID
-	ClientID         uuid.UUID
-	Enabled          bool
-	Cadence          string
-	SendDay          int
-	SendHour         int
-	Recipients       []string
+	TenantID   uuid.UUID
+	ClientID   uuid.UUID
+	Enabled    bool
+	Cadence    string
+	SendDay    int
+	SendHour   int
+	Recipients []string
+	// SectionsPatch is the sections the request sent. The service applies it
+	// over the stored sections (or the defaults when there is no row yet), so
+	// a section the request left out keeps its value.
+	SectionsPatch SectionFlagsPatch
+	// Sections is the resolved value written to the row. It is computed by
+	// the service from SectionsPatch; callers do not supply it directly.
 	Sections         SectionFlags
 	IntroText        string
 	ClosingText      string
@@ -138,6 +183,13 @@ type UpsertScheduleInput struct {
 	// NextRunAt is computed by the service; callers do not supply it directly.
 	NextRunAt *time.Time
 }
+
+// ScheduleMerge turns the schedule stored for a client into the one to write;
+// found is false when the client has not saved a schedule yet. The repo calls it
+// inside the transaction that writes its result, under the client's save lock,
+// so it sees every save that finished before it and none that runs alongside.
+// It must not do I/O.
+type ScheduleMerge func(stored Schedule, found bool) UpsertScheduleInput
 
 // CreateReportInput is the input for creating a new pending report row.
 type CreateReportInput struct {

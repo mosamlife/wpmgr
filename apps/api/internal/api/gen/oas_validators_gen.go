@@ -7430,7 +7430,7 @@ func (s *ClientReportScheduleUpdate) Validate() error {
 		if err := (validate.Array{
 			MinLength:    0,
 			MinLengthSet: false,
-			MaxLength:    20,
+			MaxLength:    10,
 			MaxLengthSet: true,
 		}).ValidateLength(len(s.Recipients)); err != nil {
 			return errors.Wrap(err, "array")
