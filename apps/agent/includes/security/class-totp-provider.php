@@ -182,10 +182,11 @@ final class TotpProvider implements SiteTwoFactorProvider
      * to the active secret (META_SECRET). Clears the pending meta on either outcome
      * to prevent re-use of the pending value.
      *
-     * Returns true when the code is valid and activation succeeded.
-     * Returns false when the code is invalid; the pending secret remains available
-     * for a retry (caller may re-present the same QR) — the pending meta is NOT
-     * cleared on failure so the user can re-try without re-generating the QR.
+     * Returns true when the code is valid and the active secret was stored.
+     * Returns false when the code is invalid, or the active secret could not be
+     * stored; the pending secret remains available for a retry (caller may
+     * re-present the same QR) — the pending meta is NOT cleared on failure so
+     * the user can re-try without re-generating the QR.
      *
      * Attempt limiting is enforced at the interstitial session layer (not here).
      *
@@ -210,8 +211,11 @@ final class TotpProvider implements SiteTwoFactorProvider
         for ($offset = -self::WINDOW; $offset <= self::WINDOW; $offset++) {
             $counter = $now + $offset;
             if (hash_equals($this->generateCode($secret, $counter), $code)) {
-                // Code valid: promote pending → active.
-                $this->storeSecretToMeta($user, $secret, self::META_SECRET);
+                // Code valid: promote pending → active, and report success
+                // only when the active secret was stored.
+                if (!$this->storeSecretToMeta($user, $secret, self::META_SECRET)) {
+                    return false;
+                }
                 // Burn the activation step so the same confirm code cannot be
                 // replayed as the very first login validate() call (the
                 // activation step was previously never recorded in
@@ -347,18 +351,20 @@ final class TotpProvider implements SiteTwoFactorProvider
      * @param \WP_User $user
      * @param string   $secret  Raw base32 secret.
      * @param string   $metaKey META_SECRET or META_PENDING_SECRET.
-     * @return void
+     * @return bool Whether the secret was stored.
      */
-    private function storeSecretToMeta(\WP_User $user, string $secret, string $metaKey): void
+    private function storeSecretToMeta(\WP_User $user, string $secret, string $metaKey): bool
     {
         if (!function_exists('update_user_meta')) {
-            return;
+            return false;
         }
         try {
             $ciphertext = $this->ageIdentity->encryptChunk($secret);
-            update_user_meta((int) $user->ID, $metaKey, base64_encode($ciphertext));
+
+            return update_user_meta((int) $user->ID, $metaKey, base64_encode($ciphertext)) !== false;
         } catch (\Throwable $e) {
-            // Storage failure is non-fatal; the enrollment flow will surface this.
+            // Nothing was stored; the caller reports the failure.
+            return false;
         }
     }
 

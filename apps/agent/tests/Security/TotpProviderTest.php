@@ -32,6 +32,7 @@ namespace WPMgr\Agent\Tests\Security;
 
 use Brain\Monkey;
 use Brain\Monkey\Functions;
+use WPMgr\Agent\KeystoreReadFailed;
 use WPMgr\Agent\Security\TotpProvider;
 use WPMgr\Agent\Support\AgeIdentity;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
@@ -338,6 +339,58 @@ final class TotpProviderTest extends TestCase
             $provider->validate($user, ['wpmgr_totp_code' => $code]),
             'GH #215: the activation/confirm code must not be replayable as the first login validate() call'
         );
+    }
+
+    /**
+     * GH #1004. Activation reports success only when the active secret was
+     * stored. When the backup key cannot be read while storing it, activation
+     * fails, the pending secret stays for a retry, no step is burned and the
+     * user is not configured; once the key reads again, the retry succeeds.
+     */
+    public function test_activation_succeeds_only_when_the_active_secret_is_stored(): void
+    {
+        $secret = 'JBSWY3DPEHPK3PXP';
+        $user   = $this->makeUser(9);
+        $this->userMeta[9][TotpProvider::META_PENDING_SECRET] = base64_encode($secret);
+
+        $baseTime = 1_700_000_000;
+        Functions\when('time')->justReturn($baseTime);
+        $code = $this->generateExpectedCode($secret, (int) ($baseTime / 30));
+
+        $readFails = true;
+        $identity  = new class ($readFails) extends AgeIdentity {
+            private bool $readFails;
+
+            public function __construct(bool &$readFails)
+            {
+                $this->readFails = &$readFails;
+            }
+
+            public function encryptChunk(string $plaintext): string
+            {
+                if ($this->readFails) {
+                    throw new KeystoreReadFailed('WPMgr Agent: the backup key could not be read from the database.');
+                }
+
+                return $plaintext;
+            }
+
+            public function decryptChunk(string $ciphertext): string
+            {
+                return $ciphertext;
+            }
+        };
+        $provider = new TotpProvider($identity);
+
+        $this->assertFalse($provider->activatePendingSecret($user, $code), 'Activation must fail when the active secret was not stored.');
+        $this->assertSame(base64_encode($secret), $this->userMeta[9][TotpProvider::META_PENDING_SECRET] ?? null, 'The pending secret must stay for a retry.');
+        $this->assertArrayNotHasKey(TotpProvider::META_LAST_USED, $this->userMeta[9], 'No step may be burned.');
+        $this->assertFalse($provider->isConfiguredFor($user));
+
+        $readFails = false;
+        $this->assertTrue($provider->activatePendingSecret($user, $code), 'The retry succeeds once the key reads again.');
+        $this->assertTrue($provider->isConfiguredFor($user));
+        $this->assertArrayNotHasKey(TotpProvider::META_PENDING_SECRET, $this->userMeta[9]);
     }
 
     // -------------------------------------------------------------------------
