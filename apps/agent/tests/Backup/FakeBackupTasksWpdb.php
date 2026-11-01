@@ -91,6 +91,11 @@ final class FakeBackupTasksWpdb
             return isset($this->rows[$id]) ? (string) $this->rows[$id]['sub_state'] : null;
         }
 
+        if (strpos($sql, 'SELECT COUNT(*) FROM') !== false) {
+            $id = (string) ($args[0] ?? '');
+            return isset($this->rows[$id]) ? '1' : '0';
+        }
+
         return null;
     }
 

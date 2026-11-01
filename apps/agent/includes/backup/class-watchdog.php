@@ -10,8 +10,13 @@
  *   - If terminal (`completed` / `failed`), do nothing.
  *   - If active but `last_progress_at < now() - 180s`, the runner has
  *     stalled (PHP process killed, FPM worker recycled, hosting
- *     restart…). Increment `resume_count` (cap at `max_resumes`) and
- *     re-enter `TaskRunner::run()` from the persisted `sub_state`.
+ *     restart…). Re-enter `TaskRunner::run()` from the persisted
+ *     `sub_state`. Only a resume whose previous worker saved no progress
+ *     counts toward `max_resumes` (GH #983).
+ *   - A task is given up on age only without progress: past 2h it runs on
+ *     while its durable checkpoint advanced within the last hour or a live
+ *     runner holds its run-lock, and 24h ends it regardless. Every give-up
+ *     is reported to the control plane.
  *   - If active but still posting progress, reschedule the watchdog
  *     itself for another +120s. Belt-and-suspenders: even if the
  *     runner never crashes, the watchdog stays alive long enough to
@@ -58,6 +63,27 @@ final class Watchdog
      */
     public const RESCHEDULE_SECONDS = 120;
 
+    /** GH #983: a task this old is given up whatever its progress (zombie bound). */
+    public const HARD_CEILING_SECONDS = 86400;
+
+    /** GH #983: past this age a task runs on only while its progress is recent. */
+    public const AGE_GUARD_SECONDS = 7200;
+
+    /** GH #983: how recently the durable progress record must have advanced. */
+    public const PROGRESS_WINDOW_SECONDS = 3600;
+
+    /** Silence after which a late-phase task with no live runner is given up. */
+    public const LATE_PHASE_STALL_SECONDS = 300;
+
+    /** Reasons shown on the dashboard when the watchdog gives a backup up. */
+    private const HARD_CEILING_REASON = 'Backup stopped: it was still running after 24 hours. Run it again; if backups keep taking this long, exclude large folders or file types from them.';
+
+    private const NO_PROGRESS_REASON = 'Backup stopped: it saved no progress for over an hour. Check the site\'s free disk space and PHP error log, then run the backup again.';
+
+    private const LATE_PHASE_REASON = 'Backup stopped: its upload stalled and the worker running it ended. Check that the site can reach the control plane, then run the backup again.';
+
+    private const RESUME_CAP_REASON = 'Backup stopped: the host ended the backup worker %d times before it saved any progress. Raise the PHP time or memory limit, or exclude large files, then run the backup again.';
+
     /**
      * Cron callback. Invoked by WP-Cron with the snapshot_id passed via
      * the wp_schedule_single_event $args array. Returns `void` because
@@ -86,32 +112,111 @@ final class Watchdog
      *
      *   - If terminal (`completed` / `failed`), do nothing (best-effort
      *     defensive DELETE).
-     *   - If active but `last_progress_at < now() - STALL_THRESHOLD_SECONDS`,
-     *     the runner has stalled (PHP process killed, FPM worker recycled,
-     *     hosting restart…). Increment `resume_count` (cap at `max_resumes`)
-     *     and re-enter `TaskRunner::run()` from the persisted `sub_state`.
+     *   - If active but `last_progress_at < now() - STALL_THRESHOLD_SECONDS`
+     *     and no live runner holds the run-lock, the runner has stalled (PHP
+     *     process killed, FPM worker recycled, hosting restart…). Re-enter
+     *     `TaskRunner::run()` from the persisted `sub_state`, counting the
+     *     resume toward `max_resumes` only when the worker before it saved
+     *     no progress (GH #983).
      *   - If active but still posting progress, reschedule the watchdog
      *     itself for another +120s. Belt-and-suspenders: even if the
      *     runner never crashes, the watchdog stays alive long enough to
      *     observe the eventual `completed`/`failed` transition.
      *
-     * Every guard below is preserved VERBATIM from the pre-#232 run(): the
-     * 7200s hard-ceiling delete, the late-phase (encrypting_uploading /
-     * submitting_manifest) delete, the STALL_THRESHOLD_SECONDS staleness
-     * check, and the resume_count >= max_resumes -> mark-failed guard.
+     * The give-up guards are listed on resume(). Each one reports its
+     * reason to the control plane (GH #983).
      *
      * @param string $snapshotId UUID of the snapshot to inspect.
      * @return void
      */
     public static function resumeIfStalled(string $snapshotId): void
     {
+        self::resume($snapshotId, false);
+    }
+
+    /**
+     * GH #983: continue a task whose worker stopped itself after a saved
+     * archive part, because it had used most of its time limit. Called by
+     * TaskRunner::run() once it has released its guards. This is the same
+     * resume path a stall takes, minus the wait for the stall: every give-up
+     * guard still applies, and a hand-over never counts toward max_resumes
+     * because its worker saved progress.
+     *
+     * @param string $snapshotId UUID of the snapshot to continue.
+     * @return string|null Phase the last worker that ran reached, or null when none ran.
+     */
+    public static function handOver(string $snapshotId): ?string
+    {
+        return self::resume($snapshotId, true);
+    }
+
+    /**
+     * The shared resume path behind resumeIfStalled() and handOver(): runs
+     * the worker the guards of runnerToResume() allow and, for as long as a
+     * worker hands over, the next one, all from this loop (GH #954). A
+     * worker's frames end before the next worker's guards decode the task row
+     * again, so a backup that needs many hand-overs holds one worker's state
+     * at a time, not one more copy of its cursor for every hand-over.
+     *
+     * @param string $snapshotId UUID of the snapshot.
+     * @param bool   $handedOver True when the previous worker handed over.
+     * @return string|null Phase the last worker that ran reached, or null when none ran.
+     */
+    private static function resume(string $snapshotId, bool $handedOver): ?string
+    {
+        $phase = null;
+        while (true) {
+            $runner = self::runnerToResume($snapshotId, $handedOver);
+            if ($runner === null) {
+                return $phase;
+            }
+            // runWorker() catches all exceptions and never throws, so this
+            // call cannot kill the WP-Cron worker.
+            $phase = $runner->runWorker();
+            if (!$runner->handedOver()) {
+                return $phase;
+            }
+            // The worker saved a part and released its guards: the next one
+            // continues at once, and this one is released before its state is
+            // decoded.
+            $handedOver = true;
+            $runner     = null;
+        }
+    }
+
+    /**
+     * The runner a resume starts, or null when none should run: the task is
+     * gone, finished, healthy, held by a live worker, or given up. Everything
+     * decoded here for the guards is gone when this returns, before any worker
+     * runs.
+     *
+     * Give-up guards, in order (each reclaims scratch under the run-lock,
+     * deletes the row, and reports the reason to the control plane; every
+     * guard but the 24h ceiling does so only while it holds the run-lock and
+     * the task re-read under that lock is still due, and otherwise waits for
+     * the next pass):
+     *   1. Age: past HARD_CEILING_SECONDS whatever the progress; past
+     *      AGE_GUARD_SECONDS only when the durable progress record has not
+     *      advanced within PROGRESS_WINDOW_SECONDS and no live runner holds
+     *      the run-lock.
+     *   2. Late phase: encrypting_uploading / submitting_manifest silent for
+     *      LATE_PHASE_STALL_SECONDS while no live runner holds the run-lock.
+     *   3. Resume cap: a resume whose previous worker saved no progress
+     *      counts toward max_resumes; at the cap the task is given up.
+     *
+     * @param string $snapshotId UUID of the snapshot.
+     * @param bool   $handedOver True when the previous worker handed over.
+     * @return TaskRunner|null The runner to start, or null when none should run.
+     */
+    private static function runnerToResume(string $snapshotId, bool $handedOver): ?TaskRunner
+    {
         if ($snapshotId === '' || !preg_match('/^[a-f0-9-]{36}$/i', $snapshotId)) {
-            return;
+            return null;
         }
 
         global $wpdb;
         if (!is_object($wpdb)) {
-            return;
+            return null;
         }
         /** @var \wpdb $wpdb */
 
@@ -119,7 +224,7 @@ final class Watchdog
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- direct query on plugin-owned table; identifier is prefix+constant; no caching on live task-state read
         $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$table} WHERE snapshot_id = %s", $snapshotId), ARRAY_A);
         if (!is_array($row)) {
-            return; // Task was already cleaned up (a completed runner deletes its row).
+            return null; // Task was already cleaned up (a completed runner deletes its row).
         }
 
         $phase = (string) ($row['phase'] ?? '');
@@ -128,179 +233,353 @@ final class Watchdog
             // wpmgr_backup_watchdog event can't even find it. (Defensive
             // cleanup — the TaskRunner success path now also DELETEs.)
             @$wpdb->delete($table, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; correctness requires a live write
-            return;
+            return null;
         }
 
-        // SAFETY: refuse to re-enter a task that's been "running" for an
-        // implausibly long time. The longest legit backup on a real WP host
-        // is ~30 min; >2h means the row is stale state from a process that
-        // died without cleanup, OR (the bug we shipped this guard for) a
-        // task row from a backup that COMPLETED on the CP side but whose
-        // local row never got DELETEd by a crashing/killed runner. Either
-        // way, re-entering it now would re-run TaskRunner against an
-        // already-completed snapshot, triggering presignChunks calls the
-        // CP would 422-reject (observed in M5.6 ADR-034 live QA, mid-restore).
-        $startedAt = (int) ($row['started_at'] ?? 0);
-        $age       = time() - $startedAt;
-        if ($startedAt > 0 && $age > 7200) {
-            // GH #256: reclaim this run's scratch directory BEFORE the row
-            // (the only record of where that scratch lives) is deleted
-            // below. A row "running" for over 2h with no completion is a
-            // strong signal by itself, but not a certain one: an unusually
-            // large site can legitimately take that long, so
-            // reclaimRunScratch() does not treat this age alone as proof
-            // the run is dead. It reclaims the file only from INSIDE
-            // TaskRunner's own run-lock (TaskRunner::withRunLock()), and
-            // skips the file reclaim entirely (deferring to
-            // BackupJanitor::gcRuns()) if a live runner still holds it. See
-            // reclaimRunScratch()'s own doc for the full rationale.
-            self::reclaimRunScratch($row);
-            // DELETE the row (not just mark failed) so the next watchdog
-            // tick finds nothing and immediately returns. We DON'T touch
-            // the CP — the snapshot's CP-side status is whatever the
-            // last legitimate /progress post made it; if it's already
-            // 'completed' on the CP, this guard prevents the phantom 'failed'
-            // event that would otherwise overwrite it.
-            @$wpdb->delete($table, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; stale-row cleanup
-            DebugLog::write(sprintf(
-                'WPMgr Backup: watchdog refusing to re-enter stale task for snapshot %s (started %ds ago, phase=%s); deleted row without re-entry',
-                $snapshotId, $age, $phase
-            ));
-            return;
+        $subState = self::decodeSubState($row['sub_state'] ?? '');
+
+        // SAFETY 1 (GH #983): give up on age only without progress. A row
+        // "running" for a long time used to be deleted at 2h outright, even
+        // while a worker was alive and closing parts, so no large site could
+        // finish. Now a task past AGE_GUARD_SECONDS continues while its
+        // durable progress record keeps advancing, and only
+        // HARD_CEILING_SECONDS ends a task whatever it does, so a zombie row
+        // (or one whose backup completed on the CP while its local row
+        // survived a killed runner) still ends. Below that ceiling a live
+        // run-lock holder always wins over the age rule.
+        $ageReason = self::ageGiveUpReasonUnlessLive($row, $subState);
+        if ($ageReason !== null) {
+            $startedAt = (int) ($row['started_at'] ?? 0);
+            self::giveUp($row, $subState, sprintf(
+                'WPMgr Backup: watchdog refusing to re-enter stale task for snapshot %s (started %ds ago, phase=%s); deleted row without re-entry.',
+                $snapshotId, time() - $startedAt, $phase
+            ), $ageReason, self::ageRecheck($ageReason));
+            return null;
         }
 
         // SAFETY 2 (Bug 2 fix): refuse to re-enter a task whose phase has
         // been stuck at `encrypting_uploading` or `submitting_manifest` for
-        // more than 5 minutes. These are the LATE phases of the pipeline;
-        // if we got that far the artifacts are already uploaded and the
-        // manifest is either submitted or about to be. Re-entering would
-        // re-issue presignChunks calls the CP would 422-reject (the
-        // observed bug).
+        // more than LATE_PHASE_STALL_SECONDS. These are the LATE phases of
+        // the pipeline; if we got that far the artifacts are already
+        // uploaded and the manifest is either submitted or about to be.
+        // Re-entering would re-issue presignChunks calls the CP would
+        // 422-reject (the observed bug).
         //
-        // GH #256 finding 4 (post-ship review): this 300s figure is NOT a
-        // reliable dead-run signal on its own. The GH #279 heartbeat is
-        // emitted BETWEEN chunks, so a single large chunk upload on a slow
-        // link can legitimately exceed 300s of database silence while the
-        // runner is completely alive. Kept at 300s deliberately, for two
-        // separate reasons rather than one:
-        //   - As the trigger for the ROW discard below, 300s is fine: the
-        //     row is only bookkeeping, and every other give-up branch in
-        //     this method already accepts that a live runner can lose its
-        //     row (see the class doc's re-entry contract) without harming
-        //     the in-flight run itself.
-        //   - As the trigger for the FILE reclaim, the number itself no
-        //     longer needs to be conservative, because reclaimRunScratch()
-        //     no longer trusts this threshold as proof of death: it
-        //     reclaims files only from inside TaskRunner's own run-lock
-        //     (TaskRunner::withRunLock()) and skips deleting any file
-        //     when a live runner still holds it, deferring to
-        //     BackupJanitor::gcRuns() instead. A slow-but-alive upload that
-        //     trips this 300s gate simply has its reclaim attempt safely
-        //     no-op.
+        // GH #256 finding 4: the GH #279 heartbeat is emitted BETWEEN
+        // chunks, so a single large chunk upload on a slow link can exceed
+        // this silence while the runner is alive. GH #983: a give-up now
+        // stops a live runner at its next save, so a runner that still
+        // holds the run-lock is left to finish instead.
         $lastProgress = (int) ($row['last_progress_at'] ?? 0);
         $stalledFor   = time() - $lastProgress;
         if (
             ($phase === TaskRunner::PHASE_ENCRYPTING_UPLOADING
                 || $phase === TaskRunner::PHASE_SUBMITTING_MANIFEST)
-            && $stalledFor > 300
+            && $stalledFor > self::LATE_PHASE_STALL_SECONDS
         ) {
-            // GH #256: reclaim scratch BEFORE discarding the row. This is
-            // the LARGEST leak this fix closes: at this late phase every
-            // zip part and every encrypted chunk file is already on disk
-            // (see the class doc's "reporter's screenshot shape" note).
-            // See reclaimRunScratch()'s own doc and the SAFETY 2 note above
-            // for why this is now gated on the run-lock rather than on
-            // $stalledFor alone.
-            self::reclaimRunScratch($row);
-            @$wpdb->delete($table, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; late-phase stale-row cleanup
-            DebugLog::write(sprintf(
-                'WPMgr Backup: watchdog refusing to re-enter late-phase stalled task for snapshot %s (phase=%s, stalled %ds); deleted row',
+            if (self::runLockHeld($subState)) {
+                self::schedule($snapshotId, self::RESCHEDULE_SECONDS);
+                return null;
+            }
+            self::giveUp($row, $subState, sprintf(
+                'WPMgr Backup: watchdog refusing to re-enter late-phase stalled task for snapshot %s (phase=%s, stalled %ds); deleted row.',
                 $snapshotId, $phase, $stalledFor
-            ));
-            return;
+            ), self::LATE_PHASE_REASON, static function (array $fresh): ?string {
+                $freshPhase = (string) ($fresh['phase'] ?? '');
+                $late = $freshPhase === TaskRunner::PHASE_ENCRYPTING_UPLOADING || $freshPhase === TaskRunner::PHASE_SUBMITTING_MANIFEST;
+                return $late && time() - (int) ($fresh['last_progress_at'] ?? 0) > self::LATE_PHASE_STALL_SECONDS ? self::LATE_PHASE_REASON : null;
+            });
+            return null;
         }
 
-        if ($stalledFor < self::STALL_THRESHOLD_SECONDS) {
+        if (!$handedOver && $stalledFor < self::STALL_THRESHOLD_SECONDS) {
             // Runner is alive — reschedule the watchdog so it stays
             // armed across the rest of the run. No state change.
             self::schedule($snapshotId, self::RESCHEDULE_SECONDS);
-            return;
+            return null;
         }
 
-        // STALLED. Bump resume_count + re-enter the runner.
+        // A silent runner that still holds the run-lock is alive (a long
+        // part close, say): resuming would only lose the lock, so it is
+        // neither resumed nor counted.
+        if (self::runLockHeld($subState)) {
+            self::schedule($snapshotId, self::RESCHEDULE_SECONDS);
+            return null;
+        }
+
+        // STALLED (or handed over). GH #983: only a resume whose previous
+        // worker saved no progress counts toward max_resumes.
         $resumeCount = (int) ($row['resume_count'] ?? 0);
         $maxResumes  = (int) ($row['max_resumes'] ?? 6);
-        if ($resumeCount >= $maxResumes) {
-            // Give up: too many resume attempts. The runner might be
-            // wedged in a way we can't re-enter.
-            //
-            // If the task never left the `queued` phase (phase=queued AND
-            // resume_count already at max), the runner was never dispatched
-            // at all: strong signal that both the spawn_cron loopback and
-            // the in-process fallback failed to start the runner. Detect the
-            // loopback-gate scenario and surface a clear, actionable reason.
-            $failureReason = self::detectQueuedStallReason($phase, $snapshotId);
-
-            // GH #256: reclaim scratch BEFORE discarding the row. This
-            // branch is only reached after $resumeCount >= $maxResumes
-            // (default 6) SEPARATE stall detections, each already requiring
-            // STALL_THRESHOLD_SECONDS (180s) of silence, a stronger dead-run
-            // signal than either single-stall guard above, but still not a
-            // certain one on its own for the reason explained in
-            // reclaimRunScratch()'s own doc: the file reclaim inside that
-            // call only ever runs from inside TaskRunner's own run-lock
-            // (TaskRunner::withRunLock()) and skips deleting any file
-            // when a live runner still holds it.
-            //
-            // DELETE the row rather than marking it failed (the pre-#256
-            // behavior): a row left at phase=failed here was never revisited
-            // by anything else in the agent (sweepStalled()'s own query
-            // excludes terminal phases, so the row leaked forever), and
-            // WORSE, a later re-entry into TaskRunner::run() for this exact
-            // snapshot_id (e.g. a CP retry reusing the same id) would find
-            // phase=failed and short-circuit at the "terminal? no-op" check
-            // BEFORE ever reaching the catch block that calls
-            // cleanupOnFailed(), so the scratch could never be reclaimed for
-            // that snapshot again. Deleting the row here, mirroring every
-            // other give-up branch in this method, closes both gaps at
-            // once and matches BackupJanitor::isActiveRun()'s own existing
-            // assumption that no row for a snapshot means "not active,
-            // defer to the age gate" (never a live run). Nothing else in the
-            // agent reads wpmgr_backup_tasks once a snapshot is terminal;
-            // the failure reason is still captured below via DebugLog for
-            // local troubleshooting, and the CP's own progress-watchdog
-            // independently times the snapshot out on its side regardless.
-            self::reclaimRunScratch($row);
-            @$wpdb->delete($table, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; terminal give-up, no further recovery is ever attempted for this row
-            DebugLog::write(sprintf('WPMgr Backup: snapshot %s exhausted %d resume attempts; reclaimed scratch and deleted row. %s', $snapshotId, $maxResumes, $failureReason));
-            return;
+        $progressed  = self::workerSavedProgress($subState);
+        if (!$progressed) {
+            if ($resumeCount >= $maxResumes) {
+                // Give up: too many workers ended without saving progress.
+                //
+                // If the task never left the `queued` phase, the runner was
+                // never dispatched at all: strong signal that both the
+                // spawn_cron loopback and the in-process fallback failed to
+                // start the runner. Detect the loopback-gate scenario and
+                // surface a clear, actionable reason.
+                //
+                // GH #256: the row is DELETEd rather than marked failed, like
+                // every other give-up branch: a row left at phase=failed was
+                // never revisited (sweepStalled() excludes terminal phases),
+                // and a CP retry reusing this snapshot id would short-circuit
+                // on it before cleanupOnFailed() could reclaim the scratch.
+                $failureReason = $phase === TaskRunner::PHASE_QUEUED
+                    ? self::detectQueuedStallReason($phase, $snapshotId)
+                    : sprintf(self::RESUME_CAP_REASON, $maxResumes);
+                self::giveUp($row, $subState, sprintf(
+                    'WPMgr Backup: snapshot %s exhausted %d resume attempts without progress; reclaimed scratch and deleted row.',
+                    $snapshotId, $maxResumes
+                ), $failureReason, static function (array $fresh, array $freshSub) use ($handedOver, $failureReason): ?string {
+                    $stalled = $handedOver || time() - (int) ($fresh['last_progress_at'] ?? 0) >= self::STALL_THRESHOLD_SECONDS;
+                    $capped  = (int) ($fresh['resume_count'] ?? 0) >= (int) ($fresh['max_resumes'] ?? 6);
+                    return $stalled && $capped && !self::workerSavedProgress($freshSub) ? $failureReason : null;
+                });
+                return null;
+            }
+            $resumeCount++;
         }
 
-        @$wpdb->update($table, ['resume_count' => $resumeCount + 1, 'last_progress_at' => time()], ['snapshot_id' => $snapshotId], ['%d', '%d'], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned table; watchdog resume-count must be written live
-        DebugLog::write(sprintf('WPMgr Backup: watchdog resuming snapshot %s (attempt %d/%d) — stalled for %ds in phase=%s',
-            $snapshotId, $resumeCount + 1, $maxResumes, $stalledFor, $phase));
+        @$wpdb->update($table, ['resume_count' => $resumeCount, 'last_progress_at' => time()], ['snapshot_id' => $snapshotId], ['%d', '%d'], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned table; watchdog resume-count must be written live
+        DebugLog::write(sprintf('WPMgr Backup: watchdog %s snapshot %s (%s; %d/%d resumes without progress) after %ds in phase=%s',
+            $handedOver ? 'continuing handed-over' : 'resuming', $snapshotId,
+            $progressed ? 'previous worker saved progress' : 'previous worker saved no progress',
+            $resumeCount, $maxResumes, $stalledFor, $phase));
 
         // Reconstruct the runner from the persisted task row. params
         // sub_state lives in the row; the OTHER params (endpoints, db,
         // age recipient) live in sub_state.params (BackupCommand stuffed
         // them there on first run so the watchdog can rehydrate without
         // re-receiving them from the CP).
-        $subState = self::decodeSubState($row['sub_state'] ?? '');
-        $params   = is_array($subState['params'] ?? null) ? $subState['params'] : null;
+        $params = is_array($subState['params'] ?? null) ? $subState['params'] : null;
         if (!is_array($params)) {
             DebugLog::write(sprintf('WPMgr Backup: watchdog cannot resume %s — sub_state.params missing', $snapshotId));
-            return;
+            return null;
         }
 
         // Cap the next watchdog firing so this row keeps getting checked
         // until it terminates.
         self::schedule($snapshotId, self::RESCHEDULE_SECONDS);
 
-        // Enter the runner. run() catches all exceptions and never
-        // throws — so this call cannot kill the WP-Cron worker. The
-        // runner reads phase + sub_state and dispatches.
-        $runner = new TaskRunner($params);
-        $runner->run();
+        // The caller runs the runner once this call has returned, so the
+        // decoded row and cursor above are gone before the worker starts. The
+        // runner reads phase + sub_state itself and dispatches.
+        return new TaskRunner($params);
+    }
+
+    /**
+     * GH #983: why an old task must be given up, or null while it may run
+     * on. Past HARD_CEILING_SECONDS always; past AGE_GUARD_SECONDS only when
+     * the durable progress record is missing or last advanced more than
+     * PROGRESS_WINDOW_SECONDS ago.
+     *
+     * @param array<string,mixed> $row      Task row.
+     * @param array<string,mixed> $subState Decoded sub_state.
+     */
+    private static function ageGiveUpReason(array $row, array $subState): ?string
+    {
+        $startedAt = (int) ($row['started_at'] ?? 0);
+        if ($startedAt <= 0) {
+            return null;
+        }
+        $now = time();
+        $age = $now - $startedAt;
+        if ($age > self::HARD_CEILING_SECONDS) {
+            return self::HARD_CEILING_REASON;
+        }
+        if ($age <= self::AGE_GUARD_SECONDS) {
+            return null;
+        }
+        $progress = TaskRunner::progressRecord($subState['progress'] ?? null);
+        if ($progress !== null && $now - $progress['at'] <= self::PROGRESS_WINDOW_SECONDS) {
+            return null;
+        }
+        return self::NO_PROGRESS_REASON;
+    }
+
+    /**
+     * GH #983: ageGiveUpReason(), except that below HARD_CEILING_SECONDS a
+     * live runner holding the run-lock always wins. The progress record does
+     * not move during one DB dump, one encrypt pass or the discovery walk,
+     * so a quiet record never proves its runner dead; only the ceiling ends
+     * a task whose runner is still alive.
+     *
+     * @param array<string,mixed> $row      Task row.
+     * @param array<string,mixed> $subState Decoded sub_state.
+     */
+    private static function ageGiveUpReasonUnlessLive(array $row, array $subState): ?string
+    {
+        $reason = self::ageGiveUpReason($row, $subState);
+        if ($reason === null || $reason === self::HARD_CEILING_REASON) {
+            return $reason;
+        }
+        return self::runLockHeld($subState) ? null : $reason;
+    }
+
+    /**
+     * The re-check of an age give-up under the run-lock: none for the 24h
+     * ceiling, which ends a task whatever runs it; otherwise the age rule
+     * applied again to the task re-read under the lock.
+     *
+     * @return (callable(array<string,mixed>, array<string,mixed>): ?string)|null
+     */
+    private static function ageRecheck(string $reason): ?callable
+    {
+        if ($reason === self::HARD_CEILING_REASON) {
+            return null;
+        }
+        return static fn (array $fresh, array $freshSub): ?string => self::ageGiveUpReason($fresh, $freshSub);
+    }
+
+    /**
+     * GH #983: whether the worker that last started saved progress before it
+     * ended. A row without both records (an older agent's, or one whose
+     * worker never started) has no such proof.
+     *
+     * @param array<string,mixed> $subState Decoded sub_state.
+     */
+    private static function workerSavedProgress(array $subState): bool
+    {
+        $progress = TaskRunner::progressRecord($subState['progress'] ?? null);
+        $worker   = TaskRunner::workerRecord($subState['worker'] ?? null);
+        return $progress !== null && $worker !== null && $progress['seq'] > $worker['seq'];
+    }
+
+    /**
+     * Whether a live runner holds this task's run-lock. False when the row
+     * carries no params to locate the lock.
+     *
+     * @param array<string,mixed> $subState Decoded sub_state.
+     */
+    private static function runLockHeld(array $subState): bool
+    {
+        $params = is_array($subState['params'] ?? null) ? $subState['params'] : null;
+        if (!is_array($params) || !isset($params['scratch_dir']) || !is_string($params['scratch_dir']) || $params['scratch_dir'] === '') {
+            return false;
+        }
+        try {
+            return (new TaskRunner($params))->isRunLockHeld();
+        } catch (\Throwable $_) {
+            return false;
+        }
+    }
+
+    /**
+     * GH #983: give a task up. Reclaims its scratch under the run-lock (GH
+     * #256), deletes the row, and reports $reason to the control plane
+     * through the runner's own signed `/progress` failure channel, so the
+     * backup fails on the dashboard with a reason the site owner can act
+     * on.
+     *
+     * A give-up that spares a live worker passes $recheck: it then takes the
+     * run-lock without waiting, re-reads the task under it, and reclaims the
+     * scratch and deletes the row only while it holds the lock and $recheck
+     * still returns a reason for the row it re-read. When another worker
+     * holds the lock, or the lock cannot be taken, the row is left alone and
+     * the decision waits for the next watchdog pass. Only the 24h ceiling
+     * passes no $recheck: it deletes the row whatever runs it, and a worker
+     * still running sees the row gone at its next save and stops without
+     * reporting success.
+     *
+     * @param array<string,mixed>                                          $row      Task row already loaded.
+     * @param array<string,mixed>                                          $subState Decoded sub_state.
+     * @param string                                                       $logLine  Local log line.
+     * @param string                                                       $reason   Reason shown to the site owner.
+     * @param (callable(array<string,mixed>, array<string,mixed>): ?string)|null $recheck Given the task row re-read under the
+     *                                                                               run-lock and its sub_state, the reason it is
+     *                                                                               still to be given up for, or null.
+     */
+    private static function giveUp(array $row, array $subState, string $logLine, string $reason, ?callable $recheck = null): void
+    {
+        global $wpdb;
+        $snapshotId = isset($row['snapshot_id']) && is_string($row['snapshot_id']) ? $row['snapshot_id'] : '';
+        $params = is_array($subState['params'] ?? null) ? $subState['params'] : null;
+        $runner = is_array($params) ? new TaskRunner($params) : null;
+        if ($recheck !== null && $runner !== null && is_string($params['scratch_dir'] ?? null) && $params['scratch_dir'] !== '') {
+            $given = self::giveUpUnderRunLock($snapshotId, $runner, $recheck);
+            if ($given === null) {
+                return;
+            }
+            $reason = $given;
+        } else {
+            // No lock to take (no params to locate it), or the 24h ceiling.
+            self::reclaimRunScratch($row);
+            if (is_object($wpdb) && $snapshotId !== '') {
+                /** @var \wpdb $wpdb */
+                @$wpdb->delete($wpdb->prefix . Schema::BACKUP_TASKS_TABLE, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; terminal give-up, no further recovery is ever attempted for this row
+            }
+        }
+        if ($runner !== null) {
+            try {
+                $runner->reportFailure((string) ($row['phase'] ?? ''), $reason);
+            } catch (\Throwable $e) {
+                DebugLog::write('WPMgr Backup: watchdog could not report the give-up: ' . $e->getMessage());
+            }
+        }
+        DebugLog::write($logLine . ' ' . $reason);
+    }
+
+    /**
+     * GH #983: the give-up of a task whose live worker must be spared. Takes
+     * the run-lock without waiting; while holding it, re-reads the task row,
+     * and only when that row is still active and $recheck still returns a
+     * reason for it, reclaims the scratch and deletes the row. A worker that
+     * holds the lock keeps its row: nothing is changed and the next watchdog
+     * pass decides again.
+     *
+     * @param TaskRunner                                                 $runner  Runner built from the task row's params.
+     * @param callable(array<string,mixed>, array<string,mixed>): ?string $recheck See giveUp().
+     * @return string|null The reason the task was given up for, or null when it was not.
+     */
+    private static function giveUpUnderRunLock(string $snapshotId, TaskRunner $runner, callable $recheck): ?string
+    {
+        global $wpdb;
+        if (!is_object($wpdb) || $snapshotId === '') {
+            return null;
+        }
+        $given  = null;
+        $locked = false;
+        try {
+            $locked = $runner->withRunLock(static function () use ($runner, $snapshotId, $recheck, &$given): void {
+                global $wpdb;
+                /** @var \wpdb $wpdb */
+                $table = $wpdb->prefix . Schema::BACKUP_TASKS_TABLE;
+                $fresh = $wpdb->get_row($wpdb->prepare('SELECT * FROM %i WHERE snapshot_id = %s', $table, $snapshotId), ARRAY_A); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- the live task row, read uncached under the run-lock the give-up decides with; table via the %i identifier placeholder (WP 6.2+)
+                if (!is_array($fresh)) {
+                    return; // Finished, or given up by another pass.
+                }
+                $phase = (string) ($fresh['phase'] ?? '');
+                if ($phase === TaskRunner::PHASE_COMPLETED || $phase === TaskRunner::PHASE_FAILED) {
+                    return;
+                }
+                $reason = $recheck($fresh, self::decodeSubState($fresh['sub_state'] ?? ''));
+                if ($reason === null) {
+                    DebugLog::write(sprintf('WPMgr Backup: watchdog kept snapshot %s: the task re-read under its run-lock is no longer due to be given up', $snapshotId));
+                    return;
+                }
+                try {
+                    $runner->reclaimScratch();
+                } catch (\Throwable $e) {
+                    // A reclaim failure never keeps a given-up row.
+                    DebugLog::write('WPMgr Backup: watchdog scratch reclaim failed: ' . $e->getMessage());
+                }
+                @$wpdb->delete($table, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table, under the run-lock; terminal give-up
+                $given = $reason;
+            });
+        } catch (\Throwable $e) {
+            DebugLog::write('WPMgr Backup: watchdog give-up failed for snapshot ' . $snapshotId . ': ' . $e->getMessage());
+        }
+        if ($given === null) {
+            // Nothing was given up: the next watchdog pass decides again.
+            if (!$locked) {
+                DebugLog::write(sprintf('WPMgr Backup: watchdog deferred giving up snapshot %s to its next pass: a live worker holds its run-lock, or the lock could not be taken', $snapshotId));
+            }
+            self::schedule($snapshotId, self::RESCHEDULE_SECONDS);
+        }
+        return $given;
     }
 
     /**
@@ -355,8 +634,11 @@ final class Watchdog
      *     is abandoned.
      * The lock is the liveness signal here, not a second, independently
      * maintained heuristic that could disagree with the one run() itself
-     * relies on for correctness. This does not change the caller's row
-     * DELETE, which proceeds regardless: only the file reclaim is gated.
+     * relies on for correctness. GH #983: only the 24h ceiling, and a row
+     * without params to locate its lock, reach this method; their row
+     * DELETE proceeds regardless and only the file reclaim is gated. Every
+     * other give-up reclaims and deletes inside one hold of the run-lock
+     * (giveUpUnderRunLock()).
      *
      * Best-effort and defensive: sub_state.params (or its scratch_dir) may
      * be absent (a row seeded by something other than BackupCommand, or a
@@ -449,43 +731,34 @@ final class Watchdog
             return;
         }
 
-        // SAFETY (Bug 2 fix): refuse to enter a backup task whose phase has
-        // moved past `queued` AND whose started_at is >2h ago. A
-        // wpmgr_backup_run cron event scheduled hours ago that fires NOW
-        // (because wp-cron only runs on visitor traffic + the host has been
-        // idle) MUST NOT re-spawn TaskRunner against an old in-flight row —
-        // it would re-issue presignChunks calls the CP would 422-reject
-        // (observed in M5.6 ADR-034 live QA, mid-restore).
-        $startedAt = (int) ($row['started_at'] ?? 0);
-        if ($startedAt > 0 && (time() - $startedAt) > 7200 && $phase !== TaskRunner::PHASE_QUEUED) {
-            // GH #256: reclaim scratch BEFORE the row (the only record of
-            // where it lives) is deleted below. Same 7200s dead-run premise
-            // as resumeIfStalled()'s own hard-ceiling guard above, and the
-            // same caveat: an unusually large site can legitimately still
-            // be running at this age, so the file reclaim inside
-            // reclaimRunScratch() does not rely on this age check alone. It
-            // only ever reclaims files from inside TaskRunner's own
-            // run-lock (TaskRunner::withRunLock()) and skips deleting any
-            // file when a live runner still holds it, deferring to
-            // BackupJanitor::gcRuns(). See reclaimRunScratch()'s own doc.
-            self::reclaimRunScratch($row);
-            @$wpdb->delete($table, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; stale dispatch cleanup
-            DebugLog::write(sprintf(
-                'WPMgr Backup: dispatch refusing to start stale task for snapshot %s (started %ds ago, phase=%s); deleted row',
+        // SAFETY (Bug 2 fix): refuse to enter an old backup task whose phase
+        // has moved past `queued`. A wpmgr_backup_run cron event scheduled
+        // hours ago that fires NOW (because wp-cron only runs on visitor
+        // traffic + the host has been idle) MUST NOT re-spawn TaskRunner
+        // against an abandoned in-flight row — it would re-issue
+        // presignChunks calls the CP would 422-reject (observed in M5.6
+        // ADR-034 live QA, mid-restore). GH #983: "old" is the same rule
+        // resume() applies, so a task whose progress is recent is never
+        // refused here. GH #256: giveUp() reclaims scratch under the
+        // run-lock before the row (the only record of where it lives) goes.
+        $subState  = self::decodeSubState($row['sub_state'] ?? '');
+        $ageReason = $phase !== TaskRunner::PHASE_QUEUED ? self::ageGiveUpReasonUnlessLive($row, $subState) : null;
+        if ($ageReason !== null) {
+            $startedAt = (int) ($row['started_at'] ?? 0);
+            self::giveUp($row, $subState, sprintf(
+                'WPMgr Backup: dispatch refusing to start stale task for snapshot %s (started %ds ago, phase=%s); deleted row.',
                 $snapshotId, time() - $startedAt, $phase
-            ));
+            ), $ageReason, self::ageRecheck($ageReason));
             return;
         }
 
-        $subState = self::decodeSubState($row['sub_state'] ?? '');
-        $params   = is_array($subState['params'] ?? null) ? $subState['params'] : null;
+        $params = is_array($subState['params'] ?? null) ? $subState['params'] : null;
         if (!is_array($params)) {
             DebugLog::write(sprintf('WPMgr Backup: dispatch cannot extract params for snapshot %s', $snapshotId));
             return;
         }
         // Lift PHP's per-request caps — this cron worker may run for minutes.
-        @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup dispatch must not hit max_execution_time; @-guarded
-        @ignore_user_abort(true);
+        LongRunningJob::extendLimits();
         try {
             (new TaskRunner($params))->run();
         } catch (\Throwable $e) {
