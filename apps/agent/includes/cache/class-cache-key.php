@@ -205,6 +205,98 @@ final class CacheKey
     }
 
     /**
+     * The key the advanced-cache drop-in hands the writer for a request: the
+     * file the request is served from, relative to the cache root
+     * ("{host bucket}/{path}/{name}.html.gz"), worked out by the drop-in's own
+     * rule. Null when the drop-in would hand over none, because it would not
+     * serve the request from the cache: a host that names no bucket, a URI
+     * longer than it reads, more cache-varying query keys than a variant may
+     * carry, a Bypass URL, a bypass cookie, a logged-in visitor when logged-in
+     * pages are not cached.
+     *
+     * This is for a site where the drop-in does not run (WP_CACHE is off,
+     * another plugin owns advanced-cache.php, ours sits under another file
+     * name). The web-server rules the agent writes look for a stored page by
+     * this same key, so the page is stored under it. The drop-in and this method
+     * are two implementations of one rule: the host, path and request-URI blocks
+     * are duplicated verbatim, and tests/AdvancedCacheDropinTest.php runs the
+     * drop-in itself over a corpus of requests and requires the two to agree.
+     *
+     * Every input is the value as the web server sent it, with the slashes
+     * WordPress added taken off and nothing else done to it: the key is a
+     * function of exactly what the drop-in reads, so a value that has been
+     * sanitised first is not an input.
+     *
+     * @param array{uri?:string,host?:string,user_agent?:string,cookies?:array<mixed>,query?:array<mixed>} $request The request as it arrived.
+     * @param CacheConfig $config Page-cache settings.
+     * @return string|null The key, or null when the drop-in would hand over none.
+     */
+    public static function forRequest(array $request, CacheConfig $config): ?string
+    {
+        $cookies = isset($request['cookies']) && is_array($request['cookies']) ? $request['cookies'] : [];
+        $query   = isset($request['query']) && is_array($request['query']) ? $request['query'] : [];
+
+        // The host names the bucket; one that names none is not cached.
+        $bucket = self::normalizeHost((string) ($request['host'] ?? ''));
+        if ($bucket === '') {
+            return null;
+        }
+
+        // Bridge through the drop-in's variable name so the two copies of the
+        // block below are byte-identical once dedented.
+        $wpmgr_uri_raw = (string) ($request['uri'] ?? '/');
+
+        // WPMGR-REQUEST-URI-SHARED BEGIN
+        $wpmgr_uri     = (string) preg_replace('/[\x00-\x1F\x7F]/', '', $wpmgr_uri_raw);
+        // A URI longer than the cap is looked up by its first 2048 bytes. Such a
+        // request may still be answered from the page stored for that prefix, but no
+        // page is stored for it: it would be filed under a key that belongs to a
+        // different request.
+        $wpmgr_uri_whole = strlen($wpmgr_uri) <= 2048;
+        $wpmgr_uri       = substr($wpmgr_uri, 0, 2048);
+        unset($wpmgr_uri_raw);
+        // Treat an empty URI (after stripping) as root.
+        if ($wpmgr_uri === '') {
+            $wpmgr_uri = '/';
+        }
+        $wpmgr_qpos = strpos($wpmgr_uri, '?');
+        if ($wpmgr_qpos !== false) {
+            $wpmgr_uri = substr($wpmgr_uri, 0, $wpmgr_qpos);
+        }
+        // WPMGR-REQUEST-URI-SHARED END
+        unset($wpmgr_qpos);
+        if (!$wpmgr_uri_whole) {
+            return null;
+        }
+
+        // Bypass cookies and Bypass URLs, by the same lists and against the same
+        // subject as the drop-in: the URI as it arrived, not as sanitised.
+        $cacheability = new Cacheability([], $config->bypassUrls, $config->bypassCookies, $config->wooCacheableSession);
+        if ($cacheability->matchesBypassCookie($cookies) || $cacheability->matchesBypassUrl($wpmgr_uri)) {
+            return null;
+        }
+
+        // The user agent as the drop-in reads it: control characters out, at
+        // most 512 bytes.
+        $userAgent = substr((string) preg_replace('/[\x00-\x1F\x7F]/', '', (string) ($request['user_agent'] ?? '')), 0, 512);
+
+        $name = (new self())->build(
+            $cookies,
+            $query,
+            $userAgent,
+            $config->cacheLoggedIn,
+            $config->cacheMobile,
+            $config->includeCookies,
+            $config->includeQueries
+        );
+        if ($name === null) {
+            return null;
+        }
+
+        return $bucket . self::normalizePath($wpmgr_uri) . '/' . $name;
+    }
+
+    /**
      * Whether any cookie marks the visitor as a logged-in WordPress user.
      *
      * @param array<string,mixed> $cookies Request cookie map.

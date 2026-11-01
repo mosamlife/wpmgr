@@ -31,6 +31,7 @@ final class CacheNormalizeParityTest extends TestCase
 {
     private const PATH_MARKER = 'WPMGR-NORMALIZE-PATH-SHARED';
     private const HOST_MARKER = 'WPMGR-NORMALIZE-HOST-SHARED';
+    private const URI_MARKER  = 'WPMGR-REQUEST-URI-SHARED';
 
     /**
      * Paths exercised by both implementations. Ordinary traffic first, then the
@@ -203,6 +204,28 @@ final class CacheNormalizeParityTest extends TestCase
 
         $this->assertNotSame('', trim($classBlock), 'class host block must not be empty');
         $this->assertSame($classBlock, $dropinBlock, 'store and serve must carry the same host rule');
+    }
+
+    /**
+     * The block that turns the request URI into the string the key's path is
+     * worked out from (control characters out, at most 2048 bytes, root when
+     * empty, query cut off) is duplicated the same way, for a site where the
+     * drop-in does not run and CacheKey::forRequest() works the key out
+     * instead. It must match byte for byte once dedented.
+     */
+    public function test_shared_request_uri_blocks_are_byte_identical(): void
+    {
+        $classBlock  = $this->sharedBlock(
+            dirname(__DIR__) . '/includes/cache/class-cache-key.php',
+            self::URI_MARKER
+        );
+        $dropinBlock = $this->sharedBlock(
+            dirname(__DIR__) . '/assets/wpmgr-advanced-cache.php',
+            self::URI_MARKER
+        );
+
+        $this->assertNotSame('', trim($classBlock), 'class request-URI block must not be empty');
+        $this->assertSame($classBlock, $dropinBlock, 'the derived key and the drop-in must read the request URI by the same rule');
     }
 
     /**
