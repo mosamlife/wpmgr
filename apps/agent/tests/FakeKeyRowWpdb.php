@@ -3,11 +3,16 @@
  * In-memory $wpdb double over the options table, for the keystore's own
  * reads and writes of the backup-key row.
  *
- * It answers exactly the three statements Keystore issues for that row and
+ * For a key row it answers exactly the three statements Keystore issues and
  * throws on anything else: the aggregate SELECT that reads it, the plain
  * INSERT that creates it, and the UPDATE that fills it only while it is empty.
  * An INSERT of a row that exists fails as a duplicate key does: query()
- * returns false and last_error is set.
+ * returns false and last_error is set. Any other statement that names a key
+ * row throws, so a change to the keystore's SQL fails loudly.
+ *
+ * A statement on any other option, such as another component's claim row,
+ * gets a neutral answer and changes nothing: an INSERT returns false with no
+ * rows affected, any other write affects no rows, and a read finds nothing.
  * Rows are the test's own options array, shared by reference, so a value the
  * test's get_option() / update_option() stubs see is the value the table
  * holds.
@@ -29,6 +34,12 @@ namespace WPMgr\Agent\Tests;
  */
 final class FakeKeyRowWpdb
 {
+    /** Option names of the keystore's key rows. */
+    private const KEY_ROWS = [
+        \WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY,
+        \WPMgr\Agent\Keystore::OPTION_SITE_KEYPAIR,
+    ];
+
     /** Options table name, as core exposes it. */
     public string $options = 'wp_options';
 
@@ -61,6 +72,12 @@ final class FakeKeyRowWpdb
 
     /** @var list<string> Every statement run, in order. */
     public array $statements = [];
+
+    /** @var list<string> Statements on other options, answered neutrally, in order. */
+    public array $neutralStatements = [];
+
+    /** Rows the last write affected, as core keeps it. */
+    public int $rows_affected = 0;
 
     /**
      * Runs before each INSERT.
@@ -108,10 +125,13 @@ final class FakeKeyRowWpdb
         [$sql, $args] = self::decode($prepared);
         $this->statements[] = $sql;
         $this->last_error   = '';
-        if ($output !== ARRAY_A
-            || $sql !== 'SELECT COUNT(*) AS stored_rows, MAX(option_value) AS stored_value FROM wp_options WHERE option_name = %s'
-        ) {
-            throw new \LogicException('FakeKeyRowWpdb does not answer: ' . $sql);
+        if ($sql !== 'SELECT COUNT(*) AS stored_rows, MAX(option_value) AS stored_value FROM wp_options WHERE option_name = %s') {
+            $this->answerNeutrally($sql, $args);
+
+            return null;
+        }
+        if ($output !== ARRAY_A) {
+            throw new \LogicException('FakeKeyRowWpdb answers the key-row read with ARRAY_A only: ' . $sql);
         }
         if ($this->failSelects > 0) {
             --$this->failSelects;
@@ -195,7 +215,46 @@ final class FakeKeyRowWpdb
             return 1;
         }
 
-        throw new \LogicException('FakeKeyRowWpdb does not answer: ' . $sql);
+        $this->answerNeutrally($sql, $args);
+        $this->rows_affected = 0;
+
+        return preg_match('/^\s*INSERT\b/i', $sql) === 1 ? false : 0;
+    }
+
+    /**
+     * Read one value: only statements on other options are answered, and they
+     * find nothing.
+     *
+     * @param string $prepared Output of prepare().
+     * @return null
+     */
+    public function get_var(string $prepared)
+    {
+        [$sql, $args] = self::decode($prepared);
+        $this->statements[] = $sql;
+        $this->last_error   = '';
+        $this->answerNeutrally($sql, $args);
+
+        return null;
+    }
+
+    /**
+     * Record a statement on another option, or throw when it names a key row:
+     * the keystore's own statements for key rows are answered above, and any
+     * other statement on them is a change to fail loudly on.
+     *
+     * @param string      $sql  Statement with placeholders.
+     * @param list<mixed> $args Bound values.
+     * @return void
+     */
+    private function answerNeutrally(string $sql, array $args): void
+    {
+        foreach (self::KEY_ROWS as $keyRow) {
+            if (str_contains($sql, $keyRow) || in_array($keyRow, $args, true)) {
+                throw new \LogicException('FakeKeyRowWpdb does not answer this statement on a key row: ' . $sql);
+            }
+        }
+        $this->neutralStatements[] = $sql;
     }
 
     /**
