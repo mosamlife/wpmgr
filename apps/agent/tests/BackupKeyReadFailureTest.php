@@ -329,9 +329,9 @@ final class BackupKeyReadFailureTest extends TestCase
 
         $ready = $this->runSetupKeystore();
 
+        $this->assertSame($sealed, $this->rows[Keystore::OPTION_AGE_IDENTITY], 'The backup key must not be replaced.');
         $this->assertSame(1, $this->wpdb->failedSelects, 'Precondition: the read of the backup key failed.');
         $this->assertFalse($ready);
-        $this->assertSame($sealed, $this->rows[Keystore::OPTION_AGE_IDENTITY], 'The backup key must not be replaced.');
         $this->assertSame(0, $this->wpdb->inserted);
         $this->assertArrayNotHasKey(Plugin::OPTION_KEYSTORE_ERROR, $this->rows);
         $this->assertArrayNotHasKey(Plugin::OPTION_KEYSTORE_ERROR_KIND, $this->rows);

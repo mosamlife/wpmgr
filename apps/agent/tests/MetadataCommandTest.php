@@ -19,10 +19,14 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
  */
 final class MetadataCommandTest extends TestCase
 {
+    /** @var mixed */
+    private $previousWpdb;
+
     protected function set_up(): void
     {
         parent::set_up();
         Monkey\setUp();
+        $this->previousWpdb = $GLOBALS['wpdb'] ?? null;
 
         // MetadataCommand calls wp_upload_dir() under a function_exists() guard.
         // Once any test in the suite defines wp_upload_dir as a Brain Monkey stub,
@@ -37,6 +41,7 @@ final class MetadataCommandTest extends TestCase
 
     protected function tear_down(): void
     {
+        $GLOBALS['wpdb'] = $this->previousWpdb;
         Monkey\tearDown();
         parent::tear_down();
     }
@@ -778,6 +783,8 @@ PHP;
         Functions\when('get_stylesheet')->justReturn('twentytwentyfour');
         Functions\when('get_site_transient')->justReturn(false);
         Functions\when('get_core_updates')->justReturn([]);
+        // The keystore reads and creates the backup-key row in the same table.
+        $GLOBALS['wpdb'] = new FakeKeyRowWpdb($options);
     }
 
     /**

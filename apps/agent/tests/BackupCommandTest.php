@@ -420,17 +420,32 @@ final class BackupCommandTest extends TestCase
             });
         }
 
-        // Any database access (preflight row, dedup claim) would reach this spy.
+        // The keystore's own read of the backup-key row is answered; any other
+        // database access (preflight row, dedup claim) reaches this spy.
         $dbCalls = [];
         $previousWpdb = $GLOBALS['wpdb'] ?? null;
-        $GLOBALS['wpdb'] = new class ($dbCalls) {
+        $GLOBALS['wpdb'] = new class ($dbCalls, new FakeKeyRowWpdb($options)) {
             public string $prefix = 'wp_';
+            public string $options = 'wp_options';
+            public string $last_error = '';
             /** @var list<string> */
             private array $calls;
+            private FakeKeyRowWpdb $keyRows;
             /** @param list<string> $calls */
-            public function __construct(array &$calls)
+            public function __construct(array &$calls, FakeKeyRowWpdb $keyRows)
             {
-                $this->calls = &$calls;
+                $this->calls   = &$calls;
+                $this->keyRows = $keyRows;
+            }
+            /** @param mixed ...$args */
+            public function prepare(string $query, ...$args): string
+            {
+                return $this->keyRows->prepare($query, ...$args);
+            }
+            /** @return array<string,string|null>|null */
+            public function get_row(string $prepared, $output = 'OBJECT')
+            {
+                return $this->keyRows->get_row($prepared, $output);
             }
             /** @param array<int,mixed> $args */
             public function __call(string $method, array $args): bool
@@ -476,7 +491,7 @@ final class BackupCommandTest extends TestCase
         if (!EncryptAndUpload::ENCRYPT_CHUNKS) {
             $this->assertStringContainsString('Backups already taken are not affected.', $res['detail']);
         }
-        $this->assertSame([], $dbCalls, 'The refusal must come before any database work.');
+        $this->assertSame([], $dbCalls, 'The refusal must come before any database work other than reading the backup key.');
         $this->assertSame([], $writes, 'The refusal must not write anything.');
         $this->assertSame($sealed, $options[\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY]);
         $this->assertFalse($scratchExisted, 'The refusal must come before the scratch directory is created.');
@@ -517,8 +532,14 @@ final class BackupCommandTest extends TestCase
             });
         }
 
-        $res = (new BackupCommand(new AgeIdentity(new \WPMgr\Agent\Keystore())))
-            ->execute([], $this->acceptorParams($this->identity['recipient']));
+        $previousWpdb    = $GLOBALS['wpdb'] ?? null;
+        $GLOBALS['wpdb'] = new FakeKeyRowWpdb($options);
+        try {
+            $res = (new BackupCommand(new AgeIdentity(new \WPMgr\Agent\Keystore())))
+                ->execute([], $this->acceptorParams($this->identity['recipient']));
+        } finally {
+            $GLOBALS['wpdb'] = $previousWpdb;
+        }
 
         $this->assertArrayNotHasKey(
             \WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY,
@@ -557,12 +578,19 @@ final class BackupCommandTest extends TestCase
         });
         (new \WPMgr\Agent\Keystore())->generateSiteKeypair();
 
-        $identity = new AgeIdentity(new \WPMgr\Agent\Keystore());
-        $res      = (new BackupCommand($identity))->execute([], $this->acceptorParams($this->identity['recipient']));
+        $previousWpdb    = $GLOBALS['wpdb'] ?? null;
+        $GLOBALS['wpdb'] = new FakeKeyRowWpdb($options);
+        try {
+            $identity  = new AgeIdentity(new \WPMgr\Agent\Keystore());
+            $res       = (new BackupCommand($identity))->execute([], $this->acceptorParams($this->identity['recipient']));
+            $recipient = $identity->recipient();
+        } finally {
+            $GLOBALS['wpdb'] = $previousWpdb;
+        }
 
         $this->assertArrayHasKey(\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY, $options, 'The absent backup key must be created.');
         $this->assertSame(\WPMgr\Agent\Keystore::PROBE_OK, (new \WPMgr\Agent\Keystore())->probe()['state']);
-        $this->assertStringStartsWith('age1', $identity->recipient());
+        $this->assertStringStartsWith('age1', $recipient);
         // The command's recipient is another site's, so the check itself refuses.
         $this->assertSame('age recipient mismatch', $res['detail']);
     }

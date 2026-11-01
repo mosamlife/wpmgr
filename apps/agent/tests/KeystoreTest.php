@@ -133,7 +133,7 @@ final class KeystoreTest extends TestCase
         $keystore = new Keystore();
         $keystore->generateSiteKeypair();
         $keystore->storeControlPlanePublicKey(random_bytes(32));
-        $keystore->storeAgeIdentity(random_bytes(32));
+        $this->options[Keystore::OPTION_AGE_IDENTITY] = $keystore->encrypt(random_bytes(32));
         $keystore->storeEmailSecret('smtp-password');
         $keystore->store_connection_secrets(['primary' => 'api-key']);
 

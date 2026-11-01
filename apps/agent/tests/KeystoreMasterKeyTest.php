@@ -672,7 +672,7 @@ final class KeystoreMasterKeyTest extends TestCase
         $this->defineRealSalts();
         $keystore = new Keystore();
         $keystore->generateSiteKeypair();
-        $keystore->storeAgeIdentity(random_bytes(32));
+        $this->options[Keystore::OPTION_AGE_IDENTITY] = $keystore->encrypt(random_bytes(32));
         $this->assertSame(
             ['source' => 'salts'],
             $this->options[Keystore::OPTION_MASTER_KEY_SOURCE] ?? null,
