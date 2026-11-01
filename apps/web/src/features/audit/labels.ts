@@ -404,6 +404,10 @@ const WRITE_OVERRIDES = new Set<string>([
   "assistant.request.completed",
   "assistant.request.undone",
   "assistant.ability_request.dispatched",
+  // "cleared" is not a write stem, and this empties the key a site's backups are
+  // encrypted to. Left to the stem heuristic it would read as the quiet default,
+  // and a filter on writes would miss it.
+  "site.backup.recipient.cleared",
 ]);
 
 // The heuristic below would otherwise flag these as writes (they contain a
