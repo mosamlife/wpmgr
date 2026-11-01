@@ -14,7 +14,7 @@
  */
 import { describe, it, expect } from "vitest";
 
-import { actionLabel, classifySeverity } from "./labels";
+import { actionLabel, classifySeverity, type AuditSeverity } from "./labels";
 import { humanizeReason, humanizeTargetType } from "./metadata";
 
 describe("actionLabel", () => {
@@ -192,11 +192,15 @@ describe("site email provider removal (site.email.config.reset)", () => {
 // (unsigned_report), and reasonReEnrollment is re_enrollment, all in
 // apps/api/internal/site/service.go. A key with no entry would read as the
 // dotted key spelled out, "Site backup recipient set".
+//
+// All three are writes, so none reads as the quiet default and a filter on
+// writes finds each. "set" (a whole segment) and "change" are write stems;
+// "cleared" matches no stem and is held by an explicit override in labels.ts.
 describe("backup key events (D1004)", () => {
-  const ACTIONS: Array<[string, string]> = [
-    ["site.backup.recipient.set", "Backup key recorded"],
-    ["site.backup.recipient.change_rejected", "Backup key change refused"],
-    ["site.backup.recipient.cleared", "Backup key cleared by reconnect"],
+  const ACTIONS: Array<[string, string, AuditSeverity]> = [
+    ["site.backup.recipient.set", "Backup key recorded", "write"],
+    ["site.backup.recipient.change_rejected", "Backup key change refused", "write"],
+    ["site.backup.recipient.cleared", "Backup key cleared by reconnect", "write"],
   ];
   const REASONS: Array<[string, string]> = [
     ["already_set", "WPMgr already had a key for this site"],
@@ -208,6 +212,10 @@ describe("backup key events (D1004)", () => {
 
   it.each(ACTIONS)("labels %s in plain words", (key, label) => {
     expect(actionLabel(key)).toBe(label);
+  });
+
+  it.each(ACTIONS)("classifies %s by the severity beside its label", (key, _label, severity) => {
+    expect(classifySeverity(key)).toBe(severity);
   });
 
   it.each(REASONS)("describes the reason %s in plain words", (code, description) => {
