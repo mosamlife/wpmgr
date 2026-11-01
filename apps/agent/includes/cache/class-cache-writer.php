@@ -171,7 +171,9 @@ final class CacheWriter
      * stored. PHP reserves the whole chunk against memory_limit when the buffer
      * opens, which is why it is sized from what the request has left and not
      * fixed. The memory in use is the memory PHP has obtained from the system,
-     * the figure memory_limit is enforced against.
+     * the figure memory_limit is enforced against. A limit at or below the
+     * memory in use, however far below it, leaves nothing and gives
+     * {@see MIN_CHUNK_BYTES}.
      *
      * @return int
      */
@@ -193,6 +195,13 @@ final class CacheWriter
             return self::MAX_CHUNK_BYTES;
         }
 
+        // Decided before the two are subtracted: a limit can be any int, and
+        // the subtraction only stays inside the int range for a limit above the
+        // memory in use, which is the only kind that leaves anything.
+        if ($limitBytes <= $usedBytes) {
+            return self::MIN_CHUNK_BYTES;
+        }
+
         return max(
             self::MIN_CHUNK_BYTES,
             min(self::MAX_CHUNK_BYTES, intdiv($limitBytes - $usedBytes, self::FREE_MEMORY_SHARE))
@@ -203,7 +212,8 @@ final class CacheWriter
      * memory_limit in bytes, read the way WordPress reads it
      * (wp_convert_hr_to_bytes(): "128M", "1G", a plain byte count, "-1"). 0 when
      * it cannot be read, which counts as no memory left and gives the smallest
-     * chunk.
+     * chunk. WordPress hands back a float for a count that goes past the range
+     * of an int; that float is held to the nearest end of the range, never cast.
      *
      * @return int
      */
@@ -214,7 +224,20 @@ final class CacheWriter
             return 0;
         }
 
-        return (int) wp_convert_hr_to_bytes($configured);
+        /** @var int|float $bytes */
+        $bytes = wp_convert_hr_to_bytes($configured);
+        if (is_float($bytes)) {
+            // A float outside the range of an int has no int value: PHP reports
+            // the cast and wraps it to a value on the other side of the range.
+            if ($bytes <= (float) PHP_INT_MIN) {
+                return PHP_INT_MIN;
+            }
+            if ($bytes >= (float) PHP_INT_MAX) {
+                return PHP_INT_MAX;
+            }
+        }
+
+        return (int) $bytes;
     }
 
     /**
