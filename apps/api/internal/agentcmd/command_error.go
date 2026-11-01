@@ -584,3 +584,10 @@ func isDecodeErr(err error) bool {
 	var typ *json.UnmarshalTypeError
 	return errors.As(err, &typ)
 }
+
+// IsDecodeErr is the exported form of isDecodeErr, for a caller outside this
+// package that reads the body of a successful reply itself (diagnostics hands
+// it to its own ingester) and needs to tell "the site's reply was not JSON"
+// from its own failures. Export only widens visibility; it does not change what
+// the predicate matches.
+func IsDecodeErr(err error) bool { return isDecodeErr(err) }
