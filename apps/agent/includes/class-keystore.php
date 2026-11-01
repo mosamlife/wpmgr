@@ -443,19 +443,35 @@ final class Keystore implements EmailKeystoreInterface
     }
 
     /**
-     * Generate this site's Ed25519 keypair and store it encrypted.
+     * Create this site's Ed25519 keypair, stored encrypted, when none is
+     * stored, and return the public key of the keypair stored afterwards.
+     *
+     * A failed read never replaces a stored keypair: the keypair is created
+     * only with an insert that cannot replace an existing row, then read
+     * back, so when a keypair is already stored (or another request stores
+     * one first) that keypair's public key is returned.
      *
      * @return string The raw 32-byte site public key (for sharing upstream).
+     * @throws KeystoreReadFailed When the row could not be read back.
+     * @throws \RuntimeException  When no keypair is stored after the write, or the stored one does not open.
      */
     public function generateSiteKeypair(): string
     {
-        $keypair   = sodium_crypto_sign_keypair();
-        $publicKey = sodium_crypto_sign_publickey($keypair);
+        $keypair = sodium_crypto_sign_keypair();
+        try {
+            $this->insertKeyRow(self::OPTION_SITE_KEYPAIR, $this->encrypt($keypair), 'site keypair');
+        } finally {
+            // Wipe the in-memory keypair as soon as it is written.
+            SecureMemory::wipe($keypair);
+        }
 
-        update_option(self::OPTION_SITE_KEYPAIR, $this->encrypt($keypair), false);
-
-        // Wipe the in-memory keypair as soon as it is persisted.
-        SecureMemory::wipe($keypair);
+        $stored = $this->readKeyRow(self::OPTION_SITE_KEYPAIR, 'site keypair');
+        if ($stored === null) {
+            throw new \RuntimeException('WPMgr Agent: the site keypair could not be stored.');
+        }
+        $storedKeypair = $this->decrypt($stored);
+        $publicKey     = sodium_crypto_sign_publickey($storedKeypair);
+        SecureMemory::wipe($storedKeypair);
 
         return $publicKey;
     }
@@ -463,13 +479,20 @@ final class Keystore implements EmailKeystoreInterface
     /**
      * Retrieve and decrypt this site's Ed25519 keypair (secret||public, 64+32).
      *
-     * @return string|null Raw sodium keypair string, or null if absent.
+     * A read that fails is never taken for an absent keypair: when the option
+     * reads empty, the row is read directly before null is returned.
+     *
+     * @return string|null Raw sodium keypair string, or null when no keypair is stored.
+     * @throws KeystoreReadFailed When the row could not be read.
      */
     public function getSiteKeypair(): ?string
     {
         $stored = get_option(self::OPTION_SITE_KEYPAIR);
         if (!is_string($stored) || $stored === '') {
-            return null;
+            $stored = $this->readKeyRow(self::OPTION_SITE_KEYPAIR, 'site keypair');
+            if ($stored === null) {
+                return null;
+            }
         }
 
         return $this->decrypt($stored);
@@ -519,31 +542,9 @@ final class Keystore implements EmailKeystoreInterface
      */
     public function createAgeIdentity(string $rawSecret): string
     {
-        global $wpdb;
-        if (!is_object($wpdb) || !method_exists($wpdb, 'prepare') || !method_exists($wpdb, 'query')
-            || !isset($wpdb->options) || !is_string($wpdb->options) || $wpdb->options === ''
-        ) {
-            throw new KeystoreReadFailed('WPMgr Agent: the backup key cannot be stored without a database connection.');
-        }
+        $this->insertKeyRow(self::OPTION_AGE_IDENTITY, $this->encrypt($rawSecret), 'backup key');
 
-        $envelope = $this->encrypt($rawSecret);
-        // A plain INSERT, portable to every database WordPress runs on. When
-        // the row exists it fails on the unique option_name and changes
-        // nothing; that expected failure is kept out of the error log.
-        $suppressed = method_exists($wpdb, 'suppress_errors') ? $wpdb->suppress_errors(true) : null;
-        try {
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- creating the backup key must never replace a stored one; a plain INSERT on the unique option_name cannot
-            $wpdb->query($wpdb->prepare("INSERT INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')", self::OPTION_AGE_IDENTITY, $envelope));
-        } finally {
-            if ($suppressed !== null) {
-                $wpdb->suppress_errors($suppressed);
-            }
-        }
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- fills a row only while it is empty (it holds no key), so it can never replace a stored key; update_option() is not conditional
-        $wpdb->query($wpdb->prepare("UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = ''", $envelope, self::OPTION_AGE_IDENTITY));
-        $this->forgetCachedAgeIdentity();
-
-        $stored = $this->readAgeIdentityRow();
+        $stored = $this->readKeyRow(self::OPTION_AGE_IDENTITY, 'backup key');
         if ($stored === null) {
             throw new \RuntimeException('WPMgr Agent: the backup key could not be stored.');
         }
@@ -563,7 +564,7 @@ final class Keystore implements EmailKeystoreInterface
      */
     public function getAgeIdentity(): ?string
     {
-        $stored = $this->readAgeIdentityRow();
+        $stored = $this->readKeyRow(self::OPTION_AGE_IDENTITY, 'backup key');
         if ($stored === null) {
             return null;
         }
@@ -572,28 +573,30 @@ final class Keystore implements EmailKeystoreInterface
     }
 
     /**
-     * Read the stored backup-key envelope directly from the options table, so
-     * a read that fails is never taken for an absent key. A read that
-     * succeeds always returns one row; no row, or a database error, means the
-     * read failed.
+     * Read a stored key envelope directly from the options table, so a read
+     * that fails is never taken for an absent key. A read that succeeds
+     * always returns one row; no row, or a database error, means the read
+     * failed.
      *
+     * @param string $option Option name of the key row.
+     * @param string $what   What the row holds, for the error message.
      * @return string|null The stored envelope, or null when no row is stored or it is empty.
      * @throws KeystoreReadFailed When the read failed.
      */
-    private function readAgeIdentityRow(): ?string
+    private function readKeyRow(string $option, string $what): ?string
     {
         global $wpdb;
         if (!is_object($wpdb) || !method_exists($wpdb, 'prepare') || !method_exists($wpdb, 'get_row')
             || !isset($wpdb->options) || !is_string($wpdb->options) || $wpdb->options === ''
         ) {
-            throw new KeystoreReadFailed('WPMgr Agent: the backup key cannot be read without a database connection.');
+            throw new KeystoreReadFailed('WPMgr Agent: the ' . $what . ' cannot be read without a database connection.');
         }
 
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- reads the key row directly, so a read that fails is never taken for an absent key
-        $row   = $wpdb->get_row($wpdb->prepare("SELECT COUNT(*) AS stored_rows, MAX(option_value) AS stored_value FROM {$wpdb->options} WHERE option_name = %s", self::OPTION_AGE_IDENTITY), ARRAY_A);
+        $row   = $wpdb->get_row($wpdb->prepare("SELECT COUNT(*) AS stored_rows, MAX(option_value) AS stored_value FROM {$wpdb->options} WHERE option_name = %s", $option), ARRAY_A);
         $error = isset($wpdb->last_error) && is_string($wpdb->last_error) ? $wpdb->last_error : '';
         if ($error !== '' || !is_array($row) || !isset($row['stored_rows']) || !is_numeric($row['stored_rows'])) {
-            throw new KeystoreReadFailed('WPMgr Agent: the backup key could not be read from the database.');
+            throw new KeystoreReadFailed('WPMgr Agent: the ' . $what . ' could not be read from the database.');
         }
         if ((int) $row['stored_rows'] === 0) {
             return null;
@@ -603,45 +606,84 @@ final class Keystore implements EmailKeystoreInterface
         if (!is_string($stored) || $stored === '') {
             return null;
         }
-        $this->forgetMissingAgeIdentityMark();
+        $this->forgetMissingMark($option);
 
         return $stored;
     }
 
     /**
-     * Drop any cached record that the backup-key option is missing, once its
-     * row has been read and found.
+     * Store a key envelope only when its row is absent: an insert that cannot
+     * replace an existing row, then a fill of the row only while it is still
+     * empty (an empty row holds no key). The caller reads the row back.
      *
+     * @param string $option   Option name of the key row.
+     * @param string $envelope Encrypted envelope to store.
+     * @param string $what     What the row holds, for the error message.
+     * @return void
+     * @throws KeystoreReadFailed When there is no database connection.
+     */
+    private function insertKeyRow(string $option, string $envelope, string $what): void
+    {
+        global $wpdb;
+        if (!is_object($wpdb) || !method_exists($wpdb, 'prepare') || !method_exists($wpdb, 'query')
+            || !isset($wpdb->options) || !is_string($wpdb->options) || $wpdb->options === ''
+        ) {
+            throw new KeystoreReadFailed('WPMgr Agent: the ' . $what . ' cannot be stored without a database connection.');
+        }
+
+        // A plain INSERT, portable to every database WordPress runs on. When
+        // the row exists it fails on the unique option_name and changes
+        // nothing; that expected failure is kept out of the error log.
+        $suppressed = method_exists($wpdb, 'suppress_errors') ? $wpdb->suppress_errors(true) : null;
+        try {
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- creating a key must never replace a stored one; a plain INSERT on the unique option_name cannot
+            $wpdb->query($wpdb->prepare("INSERT INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')", $option, $envelope));
+        } finally {
+            if ($suppressed !== null) {
+                $wpdb->suppress_errors($suppressed);
+            }
+        }
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- fills a row only while it is empty (it holds no key), so it can never replace a stored key; update_option() is not conditional
+        $wpdb->query($wpdb->prepare("UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = ''", $envelope, $option));
+        $this->forgetCachedRow($option);
+    }
+
+    /**
+     * Drop any cached record that a key option is missing, once its row has
+     * been read and found.
+     *
+     * @param string $option Option name of the key row.
      * @return void
      */
-    private function forgetMissingAgeIdentityMark(): void
+    private function forgetMissingMark(string $option): void
     {
         if (!function_exists('wp_cache_get') || !function_exists('wp_cache_set')) {
             return;
         }
         $notoptions = wp_cache_get('notoptions', 'options');
-        if (is_array($notoptions) && array_key_exists(self::OPTION_AGE_IDENTITY, $notoptions)) {
-            unset($notoptions[self::OPTION_AGE_IDENTITY]);
+        if (is_array($notoptions) && array_key_exists($option, $notoptions)) {
+            unset($notoptions[$option]);
             wp_cache_set('notoptions', $notoptions, 'options');
         }
     }
 
     /**
-     * Drop every cached copy of the backup-key option, so the next read of it
-     * goes to the database.
+     * Drop every cached copy of a key option, so the next read of it goes to
+     * the database.
      *
+     * @param string $option Option name of the key row.
      * @return void
      */
-    private function forgetCachedAgeIdentity(): void
+    private function forgetCachedRow(string $option): void
     {
         if (!function_exists('wp_cache_delete') || !function_exists('wp_cache_get') || !function_exists('wp_cache_set')) {
             return;
         }
-        wp_cache_delete(self::OPTION_AGE_IDENTITY, 'options');
+        wp_cache_delete($option, 'options');
         foreach (['notoptions', 'alloptions'] as $list) {
             $cached = wp_cache_get($list, 'options');
-            if (is_array($cached) && array_key_exists(self::OPTION_AGE_IDENTITY, $cached)) {
-                unset($cached[self::OPTION_AGE_IDENTITY]);
+            if (is_array($cached) && array_key_exists($option, $cached)) {
+                unset($cached[$option]);
                 wp_cache_set($list, $cached, 'options');
             }
         }
