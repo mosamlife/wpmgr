@@ -9,8 +9,9 @@
  *      Any failure aborts before a single byte is written to live wp-content.
  *   2. Extract entries into `wp-content/.wpmgr-staging-<short>/` (NOT into live
  *      wp-content). 0700 perms. An entry the restore means to keep that
- *      cannot be written whole into staging stops the stage: the staging
- *      tree is removed and stage() throws, so nothing is promoted over live.
+ *      cannot be written whole into staging stops the stage: stage() throws,
+ *      so nothing is promoted over live. Staging is left in place for the
+ *      regular cleanup.
  *   3. Per-entry path-traversal defense: full resolved path must live INSIDE
  *      staging dir. Reject `..`, absolute paths, NUL bytes, symlink targets.
  *   4. Skip the canonical "keep the site running" EXCLUDE LIST (config files
@@ -112,24 +113,6 @@ final class FilesRestorer
 
     /** Emit a progress event every N extracted entries. */
     private const PROGRESS_EVERY_FILES = 50;
-
-    /**
-     * Says whether this run may remove a staging tree it gives up on. Null
-     * means it may; RestoreRunner passes its run-lock check, so only the
-     * runner holding the restore's lock ever removes staging.
-     *
-     * @var (\Closure():bool)|null
-     */
-    private ?\Closure $mayRemoveStaging;
-
-    /**
-     * @param (\Closure():bool)|null $mayRemoveStaging Whether a failing stage may
-     *                                                remove its staging tree.
-     */
-    public function __construct(?\Closure $mayRemoveStaging = null)
-    {
-        $this->mayRemoveStaging = $mayRemoveStaging;
-    }
 
     /**
      * Default GC threshold for `.wpmgr-old-files-*` directories: 1 h.
@@ -245,7 +228,7 @@ final class FilesRestorer
      * @throws \RuntimeException On preflight failure or unrecoverable I/O, and
      *                           when an entry it means to restore cannot have
      *                           its folder created or cannot be unpacked whole
-     *                           (the staging tree is removed first).
+     *                           (staging is left for the regular cleanup).
      */
     public function stage(array $zipPaths, string $targetDir, string $restoreId, callable $progress): string
     {
@@ -342,7 +325,7 @@ final class FilesRestorer
                     // missing it, and the swap would promote that over live.
                     error_clear_last();
                     if (!is_dir($targetParent) && !wp_mkdir_p($targetParent) && !is_dir($targetParent)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- converted to wp_mkdir_p
-                        throw $this->failEntry($stagingDir, $entryName, 'could not create its folder', self::folderFailureReason($targetParent));
+                        throw self::entryFailure($entryName, 'could not create its folder', self::folderFailureReason($targetParent));
                     }
                     // Double-check containment against the canonical staging
                     // root after dir creation (defends against a malicious
@@ -369,13 +352,13 @@ final class FilesRestorer
                         if ($extractReason === '' && $zip->status !== ZipArchive::ER_OK) {
                             $extractReason = (string) $zip->getStatusString();
                         }
-                        throw $this->failEntry($stagingDir, $entryName, 'could not unpack it', $extractReason);
+                        throw self::entryFailure($entryName, 'could not unpack it', $extractReason);
                     }
                     if (substr($entryName, -1) !== '/') {
                         $expected  = is_array($stat) && isset($stat['size']) ? (int) $stat['size'] : -1;
                         $shortfall = self::unpackedShortfall($target, $expected);
                         if ($shortfall !== '') {
-                            throw $this->failEntry($stagingDir, $entryName, 'could not unpack it', $extractReason !== '' ? $extractReason : $shortfall);
+                            throw self::entryFailure($entryName, 'could not unpack it', $extractReason !== '' ? $extractReason : $shortfall);
                         }
                     }
 
@@ -1206,8 +1189,7 @@ final class FilesRestorer
 
     /**
      * The exception a restore throws for an entry it means to restore but
-     * could not write whole into staging. Removing the staging tree is the
-     * caller's decision (see abandonStaging()). Shared by stage() and
+     * could not write whole into staging. Shared by stage() and
      * RestoreRunner's core-part staging.
      *
      * @internal
@@ -1218,18 +1200,6 @@ final class FilesRestorer
     public static function entryFailure(string $entryName, string $what, string $reason): \RuntimeException
     {
         return new \RuntimeException(self::entryFailureMessage($entryName, $what, $reason)); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- exception message for log/SSE, not browser; parts escaped in entryFailureMessage()
-    }
-
-    /**
-     * stage()'s failure for one entry: removes the staging tree only when this
-     * run may (see $mayRemoveStaging), then returns the exception to throw.
-     */
-    private function failEntry(string $stagingDir, string $entryName, string $what, string $reason): \RuntimeException
-    {
-        if ($this->mayRemoveStaging === null || ($this->mayRemoveStaging)() === true) {
-            self::abandonStaging($stagingDir);
-        }
-        return self::entryFailure($entryName, $what, $reason);
     }
 
     /**
@@ -1290,23 +1260,6 @@ final class FilesRestorer
         $cut = strrpos($message, ': ');
 
         return $cut === false ? $message : trim(substr($message, $cut + 2));
-    }
-
-    /**
-     * Remove a staging tree a failed restore is giving up on, so it does not
-     * keep holding the disk space it used. A linked staging path is left
-     * alone: removal never follows a link. Callers remove only staging their
-     * run owns: RestoreRunner calls this only while it holds the restore's
-     * run lock.
-     *
-     * @internal
-     */
-    public static function abandonStaging(string $stagingDir): void
-    {
-        if ($stagingDir === '' || is_link($stagingDir)) {
-            return;
-        }
-        self::rrmdir($stagingDir);
     }
 
     /**

@@ -793,25 +793,13 @@ final class TaskRunner
      */
     private function getLock(?string $name = null): ?string
     {
-        return self::getNamedLock($name ?? $this->lockName());
-    }
-
-    /**
-     * Non-blocking MySQL advisory lock acquire for any run lock name. Shared
-     * with RestoreRunner's per-restore run lock; see getLock() for what the
-     * result does and does not promise.
-     *
-     * @return string|null '1' won, '0' held by another session, null unsupported or failed.
-     */
-    public static function getNamedLock(string $name): ?string
-    {
         global $wpdb;
         if (!is_object($wpdb)) {
             return null;
         }
         /** @var \wpdb $wpdb */
         try {
-            $result = $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $name)); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- advisory run-lock probe; anti-double-fire correctness read, not a cacheable value
+            $result = $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $name ?? $this->lockName())); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- advisory run-lock probe; anti-double-fire correctness read, not a cacheable value
         } catch (\Throwable $e) {
             return null;
         }
@@ -825,22 +813,13 @@ final class TaskRunner
      */
     private function releaseLock(?string $name = null): void
     {
-        self::releaseNamedLock($name ?? $this->lockName());
-    }
-
-    /**
-     * Release an advisory lock taken with getNamedLock(). Best-effort — MySQL
-     * releases it automatically when this session's connection closes.
-     */
-    public static function releaseNamedLock(string $name): void
-    {
         global $wpdb;
         if (!is_object($wpdb)) {
             return;
         }
         /** @var \wpdb $wpdb */
         try {
-            $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $name)); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- advisory run-lock release; no core helper exists
+            $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $name ?? $this->lockName())); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- advisory run-lock release; no core helper exists
         } catch (\Throwable $e) {
             // Swallow — MySQL releases the lock automatically on connection close.
         }
@@ -994,17 +973,6 @@ final class TaskRunner
      * @param resource|null $handle
      */
     private function releaseFileLock($handle): void
-    {
-        self::releaseFileLockHandle($handle);
-    }
-
-    /**
-     * Release + close a flock handle from acquireFileLockAtPath(). Shared with
-     * RestoreRunner's per-restore run lock. Safe with a non-resource.
-     *
-     * @param resource|null $handle
-     */
-    public static function releaseFileLockHandle($handle): void
     {
         if ($handle === null || !is_resource($handle)) {
             return;

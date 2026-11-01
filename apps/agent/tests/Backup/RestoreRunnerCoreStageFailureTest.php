@@ -11,8 +11,9 @@
  *   - A core entry that cannot be written (a folder sits where the file must
  *     go), one that is cut short on disk, and one whose folder cannot be
  *     created: the run fails in stage_files with the operator message, the
- *     live core files hash the same before and after, and no core staging
- *     tree, swap pointer or shutdown rollback is left.
+ *     live core files hash the same before and after, no swap pointer or
+ *     shutdown rollback exists, and core staging is left for the regular
+ *     cleanup.
  *   - Control: a clean core part (plus an unsafe entry, still skipped) does
  *     reach the overlay and changes the live core files, so "unchanged"
  *     above is a result of the stop.
@@ -177,7 +178,7 @@ final class RestoreRunnerCoreStageFailureTest extends TestCase
 
     /**
      * Run a core-only restore of $files from stage_files, assert it failed
-     * there with the live core untouched and nothing left behind, and return
+     * there with the live core untouched and nothing swapped, and return
      * the recorded message.
      *
      * @param array<string,string> $files
@@ -194,7 +195,7 @@ final class RestoreRunnerCoreStageFailureTest extends TestCase
         $this->assertSame(RestoreRunner::PHASE_STAGE_FILES, $sub['failed_in'] ?? null);
         $this->assertArrayNotHasKey('swap_files', $sub, 'no overlay may run after a failed core stage');
         $this->assertArrayNotHasKey('stage', $sub);
-        $this->assertDirectoryDoesNotExist($this->coreStagingDir(), 'the partial core staging tree must be removed');
+        $this->assertDirectoryExists($this->coreStagingDir(), 'core staging is left in place for the regular cleanup');
         $this->assertSame(0, $this->fireShutdown(), 'nothing was overlaid, so no shutdown rollback may be armed');
 
         $message = (string) ($sub['last_error'] ?? '');

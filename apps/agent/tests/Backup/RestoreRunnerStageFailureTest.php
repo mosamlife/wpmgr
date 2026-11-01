@@ -10,8 +10,8 @@
  *   - The part holds an entry whose folder cannot be created. The run ends
  *     failed in stage_files with an operator message that says the site was
  *     not changed, names the file and says what to do; the live tree hashes
- *     the same before and after; no swap pointer, old-files tree, staging
- *     tree or shutdown rollback is left behind.
+ *     the same before and after; no swap pointer, old-files tree or
+ *     shutdown rollback exists, and staging is left for the regular cleanup.
  *   - Control: the same rig with a part that stages cleanly does reach the
  *     swap and changes the live tree, so the first case's "unchanged" is a
  *     result of the stop, not of a rig that never swaps.
@@ -123,7 +123,7 @@ final class RestoreRunnerStageFailureTest extends TestCase
         $this->assertArrayNotHasKey('swap_files', $sub, 'no swap may run after a failed stage');
         $this->assertArrayNotHasKey('stage', $sub, 'a failed stage must not record a staging dir for a later swap');
 
-        $this->assertSame([], $this->siblings('.wpmgr-staging-'), 'the partial staging tree must be removed');
+        $this->assertCount(1, $this->siblings('.wpmgr-staging-'), 'staging is left in place for the regular cleanup');
         $this->assertSame([], $this->siblings('.wpmgr-old-'), 'no live tree may be moved aside');
         $this->assertSame(0, $this->fireShutdown(), 'nothing was swapped, so no shutdown rollback may be armed');
     }

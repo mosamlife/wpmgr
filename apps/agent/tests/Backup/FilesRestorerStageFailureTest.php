@@ -1,8 +1,8 @@
 <?php
 /**
  * GH #1008: FilesRestorer::stage() stops at the first entry it means to
- * restore but cannot write into staging, and leaves nothing behind for a
- * swap to promote.
+ * restore but cannot write into staging, so no swap promotes an incomplete
+ * tree. Staging is left in place for the regular cleanup.
  *
  *   - An entry whose folder cannot be created (a regular file occupies the
  *     parent path in staging): stage() throws, naming the entry and "could
@@ -83,7 +83,7 @@ final class FilesRestorerStageFailureTest extends TestCase
         $this->assertStringContainsString('could not create its folder', $message);
         $this->assertStringContainsString('the site was not changed', $message);
         $this->assertStringContainsString('Free disk space or fix folder permissions, then retry', $message);
-        $this->assertDirectoryDoesNotExist($staging, 'a failed stage must not leave its partial tree for a swap to promote');
+        $this->assertDirectoryExists($staging, 'staging is left in place for the regular cleanup');
         $this->assertSame('live', file_get_contents($fx['targetDir'] . '/plugins/live/live.php'));
     }
 
@@ -122,7 +122,7 @@ final class FilesRestorerStageFailureTest extends TestCase
         $this->assertStringContainsString('plugins/locked/locked.php', $message);
         $this->assertStringContainsString('could not unpack it', $message);
         $this->assertStringContainsString('the site was not changed', $message);
-        $this->assertDirectoryDoesNotExist($staging);
+        $this->assertDirectoryExists($staging, 'staging is left in place for the regular cleanup');
     }
 
     public function test_stage_stops_when_a_folder_sits_where_the_file_must_be_written(): void
@@ -144,7 +144,7 @@ final class FilesRestorerStageFailureTest extends TestCase
 
         $this->assertStringContainsString('plugins/foo/foo.php', $message);
         $this->assertStringContainsString('could not unpack it', $message);
-        $this->assertDirectoryDoesNotExist($staging);
+        $this->assertDirectoryExists($staging, 'staging is left in place for the regular cleanup');
     }
 
     public function test_a_long_entry_name_keeps_the_message_within_what_a_failed_restore_records(): void
@@ -194,22 +194,7 @@ final class FilesRestorerStageFailureTest extends TestCase
         $message = $this->stageExpectingFailure($zipPath, $fx['targetDir'], $restoreId);
 
         $this->assertStringContainsString('uploads/big.bin: could not unpack it (4096 of 65536 bytes written)', $message);
-        $this->assertDirectoryDoesNotExist($staging);
-    }
-
-    public function test_removing_staging_never_follows_a_staging_path_that_is_a_link(): void
-    {
-        $fx     = $this->makeRestoreRoot('linkedstaging');
-        $victim = $fx['root'] . '/elsewhere';
-        mkdir($victim . '/keep', 0755, true);
-        file_put_contents($victim . '/keep/keep.txt', 'must survive');
-        $link = $fx['root'] . '/.wpmgr-staging-linked';
-        symlink($victim, $link);
-
-        FilesRestorer::abandonStaging($link);
-
-        $this->assertFileExists($victim . '/keep/keep.txt', 'removal followed a linked staging path');
-        $this->assertTrue(is_link($link), 'a linked staging path is left alone');
+        $this->assertDirectoryExists($staging, 'staging is left in place for the regular cleanup');
     }
 
     public function test_the_message_keeps_its_guidance_within_240_bytes_after_escaping(): void
