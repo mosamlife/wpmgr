@@ -521,7 +521,9 @@ final class Keystore implements EmailKeystoreInterface
     public function createAgeIdentity(string $rawSecret): string
     {
         global $wpdb;
-        if (!is_object($wpdb) || !isset($wpdb->options) || !is_string($wpdb->options) || $wpdb->options === '') {
+        if (!is_object($wpdb) || !method_exists($wpdb, 'prepare') || !method_exists($wpdb, 'query')
+            || !isset($wpdb->options) || !is_string($wpdb->options) || $wpdb->options === ''
+        ) {
             throw new KeystoreReadFailed('WPMgr Agent: the backup key cannot be stored without a database connection.');
         }
 
@@ -577,7 +579,9 @@ final class Keystore implements EmailKeystoreInterface
     private function readAgeIdentityRow(): ?string
     {
         global $wpdb;
-        if (!is_object($wpdb) || !isset($wpdb->options) || !is_string($wpdb->options) || $wpdb->options === '') {
+        if (!is_object($wpdb) || !method_exists($wpdb, 'prepare') || !method_exists($wpdb, 'get_row')
+            || !isset($wpdb->options) || !is_string($wpdb->options) || $wpdb->options === ''
+        ) {
             throw new KeystoreReadFailed('WPMgr Agent: the backup key cannot be read without a database connection.');
         }
 

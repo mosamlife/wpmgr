@@ -9,7 +9,8 @@
  * add_option(), which skips its existence check when 'notoptions' lists the
  * option and writes with ON DUPLICATE KEY UPDATE, replacing the row. The
  * database is FakeKeyRowWpdb over the same rows, and one SELECT of the row can
- * fail the way a MySQL error does.
+ * fail the way a MySQL error does. The metadata push cases live in
+ * MetadataCommandTest, next to the inventory stubs that push needs.
  *
  * @package WPMgr\Agent\Tests
  */
@@ -21,7 +22,6 @@ namespace WPMgr\Agent\Tests;
 use Brain\Monkey;
 use Brain\Monkey\Functions;
 use WPMgr\Agent\Commands\BackupCommand;
-use WPMgr\Agent\Commands\MetadataCommand;
 use WPMgr\Agent\Keystore;
 use WPMgr\Agent\KeystoreReadFailed;
 use WPMgr\Agent\Plugin;
@@ -33,7 +33,6 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
  * @covers \WPMgr\Agent\Keystore
  * @covers \WPMgr\Agent\Support\AgeIdentity
  * @covers \WPMgr\Agent\Commands\BackupCommand
- * @covers \WPMgr\Agent\Commands\MetadataCommand
  */
 final class BackupKeyReadFailureTest extends TestCase
 {
@@ -223,18 +222,6 @@ final class BackupKeyReadFailureTest extends TestCase
         ];
     }
 
-    private function stubInventory(): void
-    {
-        Functions\when('get_bloginfo')->justReturn('6.5.2');
-        Functions\when('is_multisite')->justReturn(false);
-        Functions\when('get_site_option')->alias(static fn ($name, $default = false) => $default);
-        Functions\when('get_plugins')->justReturn([]);
-        Functions\when('wp_get_themes')->justReturn([]);
-        Functions\when('get_stylesheet')->justReturn('twentytwentyfour');
-        Functions\when('get_site_transient')->justReturn(false);
-        Functions\when('get_core_updates')->justReturn([]);
-    }
-
     public function test_a_failed_read_throws_keystore_read_failed(): void
     {
         $this->seedHealthyKeystore();
@@ -280,41 +267,6 @@ final class BackupKeyReadFailureTest extends TestCase
         $this->assertSame('age_recipient_mismatch', $res['code'] ?? null);
         $this->assertSame('age recipient mismatch', $res['detail']);
         $this->assertSame($sealed, $this->rows[Keystore::OPTION_AGE_IDENTITY]);
-    }
-
-    /** (b) The metadata push, when the backup key's own read fails. */
-    public function test_metadata_push_sends_no_recipient_when_the_key_read_fails(): void
-    {
-        $this->seedHealthyKeystore();
-        $sealed = $this->rows[Keystore::OPTION_AGE_IDENTITY];
-        $this->stubInventory();
-        // The keystore probe reads through get_option(), served from the
-        // value cache; the backup key's own read is the one that fails.
-        $this->valueCache[Keystore::OPTION_AGE_IDENTITY] = $sealed;
-        $this->wpdb->failSelects                         = 1;
-
-        $data = (new MetadataCommand(new AgeIdentity(new Keystore())))->collect();
-
-        $this->assertSame(1, $this->wpdb->failedSelects, 'Precondition: the read of the backup key failed.');
-        $this->assertArrayNotHasKey('age_recipient', $data);
-        $this->assertSame($sealed, $this->rows[Keystore::OPTION_AGE_IDENTITY], 'The backup key must not be replaced.');
-        $this->assertSame(0, $this->wpdb->inserted);
-    }
-
-    /** (b) The metadata push, when the keystore probe's get_option() read fails first. */
-    public function test_metadata_push_keeps_the_key_when_the_probe_read_fails(): void
-    {
-        $recipient = $this->seedHealthyKeystore();
-        $sealed    = $this->rows[Keystore::OPTION_AGE_IDENTITY];
-        $this->stubInventory();
-        $this->wpdb->failSelects = 1;
-
-        $data = (new MetadataCommand(new AgeIdentity(new Keystore())))->collect();
-
-        $this->assertSame(1, $this->wpdb->failedSelects, 'Precondition: the read of the backup key failed.');
-        $this->assertSame($sealed, $this->rows[Keystore::OPTION_AGE_IDENTITY], 'The backup key must not be replaced.');
-        $this->assertSame($recipient, $data['age_recipient'] ?? null, 'The push carries the stored key, never a new one.');
-        $this->assertSame(0, $this->wpdb->inserted);
     }
 
     /** (c) Admin setup: a failed read leaves the key, and records no notice. */
