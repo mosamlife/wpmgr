@@ -82,7 +82,7 @@ const reportedURLSource = "agent_diagnostics"
 func (s *Service) SetReportedURLSink(sink ReportedURLSink) { s.reportedURL = sink }
 
 // RefreshEnqueuer enqueues an on-demand diagnostics command to the agent.
-// Optional; when nil the /diagnostics/refresh endpoint returns a 503 pointing
+// Optional; when nil the /diagnostics/refresh endpoint returns a 501 pointing
 // at the missing wire (mirrors the InspectionDeps pattern in backups).
 type RefreshEnqueuer interface {
 	EnqueueRefreshDiagnostics(ctx context.Context, tenantID, siteID uuid.UUID) error
@@ -496,7 +496,7 @@ func (s *Service) SetSilenced(ctx context.Context, tenantID, siteID uuid.UUID, m
 
 // RefreshAgent fires the on-demand command. Returns nil on success; when the
 // enqueuer is unwired it returns a stable "feature unwired" error the handler
-// turns into a 503.
+// turns into a 501.
 func (s *Service) RefreshAgent(ctx context.Context, tenantID, siteID uuid.UUID) error {
 	if s.enqueuer == nil {
 		return errUnwired
@@ -561,7 +561,7 @@ func coalesce(s, fallback string) string {
 }
 
 // errUnwired is returned by RefreshAgent when no enqueuer is wired. The
-// handler maps it to a 503 with a stable code.
+// handler maps it to a 501 with a stable code.
 var errUnwired = &unwiredError{}
 
 type unwiredError struct{}

@@ -5,7 +5,7 @@ import { test, expect, type Page } from "@playwright/test";
 // control plane. Covers: the header ribbon (Host / PHP+EOL / WP / Collected /
 // as-of + single "Re-run all checks"), the honest empty summary stubs
 // (Vulnerabilities "Not scanned yet", Performance "Not measured yet"), the
-// titled diagnostics sections, and the 503 "unwired" refresh surfacing as a
+// titled diagnostics sections, and the 501 "unwired" refresh surfacing as a
 // toast rather than inline text.
 
 const SITE_ID = "11111111-1111-1111-1111-111111111111";
@@ -237,16 +237,22 @@ test("diagnostics render in titled sections with the directory-size bar", async 
 
 test("an unwired re-run surfaces as a toast, not inline text", async ({ page }) => {
   await mockApi(page);
+  // The status and message the control plane sends for an install without the
+  // command client: apps/api/internal/diagnostics/handler.go (refresh), where
+  // domain.Unavailable maps to 501.
   await page.route(`**/api/v1/sites/${SITE_ID}/diagnostics/refresh`, (route) =>
     route.fulfill({
-      status: 503,
+      status: 501,
       contentType: "application/json",
-      body: JSON.stringify({ code: "diagnostics_refresh_unwired", message: "not wired" }),
+      body: JSON.stringify({
+        code: "diagnostics_refresh_unwired",
+        message: "on-demand diagnostics refresh is not yet wired",
+      }),
     }),
   );
 
   await page.goto(`/sites/${SITE_ID}/health`);
   await page.getByRole("button", { name: "Re-run all checks" }).click();
 
-  await expect(page.getByText("Could not queue a re-run")).toBeVisible();
+  await expect(page.getByText("Could not re-run the checks")).toBeVisible();
 });

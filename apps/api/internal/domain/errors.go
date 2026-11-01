@@ -48,6 +48,19 @@ const (
 	// billing plan entitlement (HTTP 402). Used by internal/billing's site-cap
 	// gate (M16 Phase A); never returned when WPMGR_HOSTED is disabled.
 	KindPaymentRequired
+	// KindBadGateway indicates that a request to another system made on the
+	// caller's behalf, such as a site's agent, failed or was answered with
+	// something unusable (HTTP 502). The message is fixed operator copy written
+	// by the control plane. It never carries the other system's body or any
+	// other text it sent; the only values it may take from that system's answer
+	// are bounded and sanitised by the caller (a status number, an allow-listed
+	// code, a validated address; see agentcmd.DescribeSiteFailure for the
+	// site's case). httpx.Error shows it as written, so a client renders it as
+	// plain text. Distinct from KindServiceUnavailable (this server cannot
+	// serve the request right now) and from KindInternal (a fault in this
+	// server). Appended last so the numeric values of the kinds above do not
+	// move.
+	KindBadGateway
 )
 
 // Error is a domain error carrying a Kind, a stable machine code, a
@@ -158,6 +171,18 @@ func PaymentRequired(code, msg string) *Error {
 	return &Error{Kind: KindPaymentRequired, Code: code, Message: msg}
 }
 
+// BadGateway builds a KindBadGateway error (HTTP 502). Use it when the
+// control plane reached for another system on the caller's behalf, such as a
+// site's agent, and got a failure or an unusable answer. msg is shown to the
+// caller as written and rendered as plain text, so it must be fixed copy the
+// control plane wrote. It may include bounded values from the other system's
+// answer once they are sanitised (a status number, an allow-listed code, a
+// validated address). It must never include that system's body, any other
+// text it sent, or the error text of the failed call.
+func BadGateway(code, msg string) *Error {
+	return &Error{Kind: KindBadGateway, Code: code, Message: msg}
+}
+
 // HTTPStatus maps an error to an HTTP status code. Non-domain errors are 500.
 func HTTPStatus(err error) int {
 	var de *Error
@@ -185,6 +210,8 @@ func HTTPStatus(err error) int {
 			return http.StatusRequestEntityTooLarge
 		case KindPaymentRequired:
 			return http.StatusPaymentRequired
+		case KindBadGateway:
+			return http.StatusBadGateway
 		default:
 			return http.StatusInternalServerError
 		}
