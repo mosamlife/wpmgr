@@ -190,7 +190,7 @@ final class OptimizerFontTranscodeTest extends TestCase
         $settings = new Settings();
 
         $keystore = new Keystore();
-        $keystore->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->generateSiteKeypair());
         $signer = new Signer($keystore);
 
         Functions\when('wp_remote_post')->alias(
@@ -616,7 +616,7 @@ final class OptimizerFontTranscodeTest extends TestCase
         });
 
         $keystore = new Keystore();
-        $keystore->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->generateSiteKeypair());
         $signer   = new Signer($keystore);
         $settings = new Settings();
         $client   = new FontTranscodeClient($signer, $settings, $cache);
@@ -652,7 +652,7 @@ final class OptimizerFontTranscodeTest extends TestCase
         );
 
         $keystore = new Keystore();
-        $keystore->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->generateSiteKeypair());
         $signer   = new Signer($keystore);
         $settings = new Settings();
         $client   = new FontTranscodeClient($signer, $settings, $cache);
@@ -675,7 +675,7 @@ final class OptimizerFontTranscodeTest extends TestCase
         Functions\when('wp_remote_request')->justReturn(new \WP_Error('http', 'Connection refused'));
 
         $keystore = new Keystore();
-        $keystore->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->generateSiteKeypair());
         $signer   = new Signer($keystore);
         $settings = new Settings();
         $client   = new FontTranscodeClient($signer, $settings, $cache);

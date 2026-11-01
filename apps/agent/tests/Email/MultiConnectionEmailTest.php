@@ -773,7 +773,7 @@ class MultiConnectionEmailTest extends TestCase {
 		file_put_contents( (string) constant( 'WPMGR_AGENT_KEY_FILE' ), random_bytes( 32 ) );
 
 		$keystore = new Keystore();
-		$keystore->generateSiteKeypair();
+		\WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->generateSiteKeypair());
 		$signer = new Signer( $keystore );
 
 		$option_store[ Settings::OPTION_SITE_ID ] = 'test-site-mc';

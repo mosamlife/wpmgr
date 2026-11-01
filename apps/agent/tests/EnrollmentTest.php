@@ -73,7 +73,7 @@ final class EnrollmentTest extends TestCase
         Functions\when('is_wp_error')->justReturn(false);
 
         $this->keystore = new Keystore();
-        $this->keystore->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $this->keystore->generateSiteKeypair());
         $this->settings = new Settings();
         $signer         = new Signer($this->keystore);
         $this->enrollment = new Enrollment($this->keystore, $this->settings, $signer, new MetadataCommand());

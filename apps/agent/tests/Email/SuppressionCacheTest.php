@@ -68,7 +68,7 @@ class SuppressionCacheTest extends TestCase
         file_put_contents((string) constant('WPMGR_AGENT_KEY_FILE'), random_bytes(32));
 
         $keystore = new Keystore();
-        $keystore->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->generateSiteKeypair());
         $this->signer = new Signer($keystore);
 
         $this->optionStore[Settings::OPTION_SITE_ID] = 'test-site-uuid';

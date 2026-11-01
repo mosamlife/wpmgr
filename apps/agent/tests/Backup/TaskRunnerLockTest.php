@@ -104,7 +104,7 @@ final class TaskRunnerLockTest extends TestCase
         // `new Keystore()` (constructed fresh inside runEncryptingUploading)
         // finds it via the shared in-memory option store above — exactly the
         // SignerTest pattern.
-        (new Keystore())->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(static fn () => (new Keystore())->generateSiteKeypair());
     }
 
     protected function tear_down(): void

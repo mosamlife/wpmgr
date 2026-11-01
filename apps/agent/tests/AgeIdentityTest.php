@@ -28,6 +28,9 @@ final class AgeIdentityTest extends TestCase
 
     private string $keyFile = '';
 
+    /** @var mixed */
+    private $previousWpdb;
+
     protected function set_up(): void
     {
         parent::set_up();
@@ -37,7 +40,9 @@ final class AgeIdentityTest extends TestCase
         if (!defined('WPMGR_AGENT_KEY_FILE')) {
             define('WPMGR_AGENT_KEY_FILE', $this->keyFile);
         }
-        $this->options = [];
+        $this->options      = [];
+        $this->previousWpdb = $GLOBALS['wpdb'] ?? null;
+        $GLOBALS['wpdb']    = new FakeKeyRowWpdb($this->options);
         Functions\when('update_option')->alias(function ($name, $value) {
             $this->options[$name] = $value;
 
@@ -50,6 +55,7 @@ final class AgeIdentityTest extends TestCase
 
     protected function tear_down(): void
     {
+        $GLOBALS['wpdb'] = $this->previousWpdb;
         if (is_file($this->keyFile)) {
             @unlink($this->keyFile);
         }

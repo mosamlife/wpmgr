@@ -1502,7 +1502,7 @@ final class BackupArchiveBehaviorTest extends TestCase
         if (!defined('WPMGR_AGENT_KEY_FILE')) { define('WPMGR_AGENT_KEY_FILE', __DIR__ . '/issue954-signing.key'); }
         self::assertSame(__DIR__ . '/issue954-signing.key', WPMGR_AGENT_KEY_FILE, 'Run this issue-specific test in its own PHP process.');
         $this->createdKey = !is_file(WPMGR_AGENT_KEY_FILE);
-        (new Keystore())->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(static fn () => (new Keystore())->generateSiteKeypair());
         Functions\when('is_wp_error')->justReturn(false);
         Functions\when('wp_remote_retrieve_response_code')->justReturn(200);
     }

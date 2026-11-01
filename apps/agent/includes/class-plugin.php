@@ -1284,6 +1284,11 @@ final class Plugin
             delete_option(self::OPTION_KEYSTORE_ERROR_KIND);
 
             return true;
+        } catch (KeystoreReadFailed $e) {
+            // The backup key could not be read from the database just now.
+            // Nothing was created, and no notice is recorded for a read that
+            // can succeed a moment later; the next setup reads it again.
+            return false;
         } catch (\Throwable $e) {
             update_option(self::OPTION_KEYSTORE_ERROR, KeystoreHealth::setupFailureNotice($e), false);
             update_option(self::OPTION_KEYSTORE_ERROR_KIND, KeystoreHealth::KIND_SETUP, false);

@@ -131,9 +131,9 @@ final class KeystoreTest extends TestCase
         Functions\when('delete_option')->justReturn(true);
 
         $keystore = new Keystore();
-        $keystore->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->generateSiteKeypair());
         $keystore->storeControlPlanePublicKey(random_bytes(32));
-        $keystore->storeAgeIdentity(random_bytes(32));
+        $this->options[Keystore::OPTION_AGE_IDENTITY] = $keystore->encrypt(random_bytes(32));
         $keystore->storeEmailSecret('smtp-password');
         $keystore->store_connection_secrets(['primary' => 'api-key']);
 
@@ -159,7 +159,7 @@ final class KeystoreTest extends TestCase
     {
         $this->pinToNewKeyFile();
         $keystore = new Keystore();
-        $keystore->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->generateSiteKeypair());
         $this->options[Keystore::OPTION_AGE_IDENTITY] = $this->sealUnderForeignKey(random_bytes(32));
 
         $probe = (new Keystore())->probe();
@@ -177,7 +177,7 @@ final class KeystoreTest extends TestCase
     {
         $this->pinToNewKeyFile();
         $keystore = new Keystore();
-        $keystore->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->generateSiteKeypair());
         $this->options[Keystore::OPTION_AGE_IDENTITY] = 'not-an-envelope';
         $this->options[Keystore::OPTION_EMAIL_SECRET] = base64_encode('too short');
 
@@ -230,7 +230,7 @@ final class KeystoreTest extends TestCase
     {
         $keyPath  = $this->pinToNewKeyFile();
         $keystore = new Keystore();
-        $keystore->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->generateSiteKeypair());
         $this->options[Keystore::OPTION_AGE_IDENTITY] = $this->sealUnderForeignKey(random_bytes(32));
         $keyBytes = file_get_contents($keyPath);
 
@@ -314,7 +314,7 @@ final class KeystoreTest extends TestCase
     {
         $keystore = new Keystore();
 
-        $publicKey = $keystore->generateSiteKeypair();
+        $publicKey = \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->generateSiteKeypair());
 
         $this->assertSame(SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES, strlen($publicKey));
 

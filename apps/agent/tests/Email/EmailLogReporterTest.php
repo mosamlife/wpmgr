@@ -90,7 +90,7 @@ class EmailLogReporterTest extends TestCase {
 		file_put_contents( (string) constant( 'WPMGR_AGENT_KEY_FILE' ), random_bytes( 32 ) );
 
 		$keystore = new Keystore();
-		$keystore->generateSiteKeypair();
+		\WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->generateSiteKeypair());
 		$this->signer = new Signer( $keystore );
 
 		// Pre-enroll: Settings::isEnrolled() requires site_id + cp_url both non-empty.

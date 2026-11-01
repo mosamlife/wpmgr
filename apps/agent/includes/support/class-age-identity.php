@@ -25,6 +25,7 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Support;
 
 use WPMgr\Agent\Keystore;
+use WPMgr\Agent\KeystoreReadFailed;
 
 /**
  * Generates, stores, and uses the site's age identity for backup crypto.
@@ -61,13 +62,17 @@ class AgeIdentity
      * Returns this site's PUBLIC recipient ("age1...").
      *
      * This is the only place a backup key is created. It creates one only
-     * when none is stored and a keystore probe taken just before shows the
-     * current key is the one this site uses now (KeystoreHealth::backupKeyUsable):
-     * every stored key opens, or the site keypair opens. Otherwise it throws
-     * and stores nothing.
+     * when the database read shows no backup key is stored and a keystore
+     * probe taken just before shows the current key is the one this site
+     * uses now (KeystoreHealth::backupKeyUsable): every stored key opens, or
+     * the site keypair opens. Otherwise it throws and stores nothing. When
+     * the read itself fails it throws KeystoreReadFailed and stores nothing.
+     * Creating never replaces a stored key: when another request stores one
+     * first, that key's recipient is returned.
      *
      * @return string The site's age recipient.
-     * @throws \RuntimeException When no backup key is stored and none may be created.
+     * @throws KeystoreReadFailed When the backup key could not be read from the database.
+     * @throws \RuntimeException  When no backup key is stored and none may be created.
      */
     public function ensureRecipient(): string
     {
@@ -78,13 +83,13 @@ class AgeIdentity
                     'WPMgr Agent: no backup key is stored, and none is created while the saved keys do not open.'
                 );
             }
-            $pair   = $this->age->generateIdentity();
-            $this->keystore->storeAgeIdentity($pair['secret']);
-            $recipient = $pair['recipient'];
-            SecureMemory::wipe($pair['secret']);
-            SecureMemory::wipe($pair['identity']);
-
-            return $recipient;
+            $pair = $this->age->generateIdentity();
+            try {
+                $secret = $this->keystore->createAgeIdentity($pair['secret']);
+            } finally {
+                SecureMemory::wipe($pair['secret']);
+                SecureMemory::wipe($pair['identity']);
+            }
         }
 
         $recipient = $this->age->recipientForSecret($secret);

@@ -171,7 +171,7 @@ final class UpdateCheckerTest extends TestCase
         $this->settings = new Settings();
 
         // Build real Signer (needs site keypair).
-        $this->keystore->generateSiteKeypair();
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $this->keystore->generateSiteKeypair());
         $this->signer = new Signer($this->keystore);
 
         // Build a fake ReplayCache that can be configured per-test.

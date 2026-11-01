@@ -19,10 +19,14 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
  */
 final class MetadataCommandTest extends TestCase
 {
+    /** @var mixed */
+    private $previousWpdb;
+
     protected function set_up(): void
     {
         parent::set_up();
         Monkey\setUp();
+        $this->previousWpdb = $GLOBALS['wpdb'] ?? null;
 
         // MetadataCommand calls wp_upload_dir() under a function_exists() guard.
         // Once any test in the suite defines wp_upload_dir as a Brain Monkey stub,
@@ -37,6 +41,7 @@ final class MetadataCommandTest extends TestCase
 
     protected function tear_down(): void
     {
+        $GLOBALS['wpdb'] = $this->previousWpdb;
         Monkey\tearDown();
         parent::tear_down();
     }
@@ -778,6 +783,8 @@ PHP;
         Functions\when('get_stylesheet')->justReturn('twentytwentyfour');
         Functions\when('get_site_transient')->justReturn(false);
         Functions\when('get_core_updates')->justReturn([]);
+        // The keystore reads and creates the backup-key row in the same table.
+        $GLOBALS['wpdb'] = new FakeKeyRowWpdb($options);
     }
 
     /**
@@ -946,6 +953,101 @@ PHP;
         $this->assertArrayNotHasKey('age_recipient', $data);
         $this->assertArrayNotHasKey(\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY, $options, 'No backup key may be created.');
         $this->assertSame($keypair, $options[\WPMgr\Agent\Keystore::OPTION_SITE_KEYPAIR]);
+    }
+
+    /**
+     * GH #1004. A failed read of the backup key leaves it unchanged, and the
+     * push carries no recipient.
+     */
+    public function test_a_failed_key_read_sends_no_recipient_and_leaves_the_key_unchanged(): void
+    {
+        $keyPath = sys_get_temp_dir() . '/wpmgr-agent-metadata-' . bin2hex(random_bytes(8)) . '.key';
+        file_put_contents($keyPath, random_bytes(32));
+        $options = [
+            \WPMgr\Agent\Keystore::OPTION_MASTER_KEY_SOURCE => ['source' => 'file', 'path' => $keyPath],
+        ];
+        $this->stubInventory($options);
+        $wpdb            = new FakeKeyRowWpdb($options);
+        $GLOBALS['wpdb'] = $wpdb;
+
+        try {
+            $keystore = new \WPMgr\Agent\Keystore();
+            $keystore->generateSiteKeypair();
+            $sealed = $keystore->encrypt(random_bytes(32));
+            $options[\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY] = $sealed;
+            $wpdb->failSelects = 1;
+
+            $data = (new MetadataCommand(new \WPMgr\Agent\Support\AgeIdentity(new \WPMgr\Agent\Keystore())))->collect();
+        } finally {
+            @unlink($keyPath);
+        }
+
+        $this->assertSame($sealed, $options[\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY], 'The backup key must not be replaced.');
+        $this->assertSame(1, $wpdb->failedSelects, 'Precondition: the read of the backup key failed.');
+        $this->assertArrayNotHasKey('age_recipient', $data);
+        $this->assertSame(0, $wpdb->insertedFor(\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY));
+    }
+
+    /**
+     * GH #1004. When the keystore probe's read of the backup key fails, the
+     * stored key is left unchanged and the push carries its recipient.
+     */
+    public function test_a_failed_probe_read_leaves_the_key_unchanged(): void
+    {
+        $keyPath = sys_get_temp_dir() . '/wpmgr-agent-metadata-' . bin2hex(random_bytes(8)) . '.key';
+        file_put_contents($keyPath, random_bytes(32));
+        $options = [
+            \WPMgr\Agent\Keystore::OPTION_MASTER_KEY_SOURCE => ['source' => 'file', 'path' => $keyPath],
+        ];
+        $this->stubInventory($options);
+        $wpdb            = new FakeKeyRowWpdb($options);
+        $GLOBALS['wpdb'] = $wpdb;
+
+        $notoptions = [];
+        $failedRead = 0;
+        // Stand-in for get_option(): the first read of the backup key fails.
+        Functions\when('get_option')->alias(static function ($name, $default = false) use (&$options, &$notoptions, &$failedRead) {
+            if ($name === 'active_plugins') {
+                return [];
+            }
+            if ($name === \WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY) {
+                if (isset($notoptions[$name])) {
+                    return $default;
+                }
+                if ($failedRead === 0) {
+                    ++$failedRead;
+                    $notoptions[$name] = true;
+
+                    return $default;
+                }
+            }
+
+            return $options[$name] ?? $default;
+        });
+        // Stand-in for update_option().
+        Functions\when('update_option')->alias(static function ($name, $value) use (&$options, &$notoptions) {
+            $options[$name] = $value;
+            unset($notoptions[$name]);
+
+            return true;
+        });
+
+        try {
+            $keystore = new \WPMgr\Agent\Keystore();
+            $keystore->generateSiteKeypair();
+            $pair   = (new \WPMgr\Agent\Support\AgeCrypto())->generateIdentity();
+            $sealed = $keystore->encrypt($pair['secret']);
+            $options[\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY] = $sealed;
+
+            $data = (new MetadataCommand(new \WPMgr\Agent\Support\AgeIdentity(new \WPMgr\Agent\Keystore())))->collect();
+        } finally {
+            @unlink($keyPath);
+        }
+
+        $this->assertSame($sealed, $options[\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY], 'The backup key must not be replaced.');
+        $this->assertSame(1, $failedRead, 'Precondition: the probe read of the backup key failed.');
+        $this->assertSame($pair['recipient'], $data['age_recipient'] ?? null, 'The push carries the stored key, never a new one.');
+        $this->assertSame(0, $wpdb->insertedFor(\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY));
     }
 
     /** Over-fire guard: a healthy keystore reports ok and still sends the recipient. */
