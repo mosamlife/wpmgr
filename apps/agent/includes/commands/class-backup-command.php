@@ -409,8 +409,7 @@ final class BackupCommand implements CommandInterface
             // belt-and-suspenders flush that also covers OpenLiteSpeed
             // (GH #274), which has no fastcgi_finish_request().
             $finisher->finish();
-            @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running backup runner must not hit max_execution_time; @-guarded
-            @ignore_user_abort(true);
+            LongRunningJob::extendLimits();
             try {
                 (new TaskRunner($shutdownParams))->run();
             } catch (\Throwable $e) {
@@ -768,8 +767,8 @@ final class BackupCommand implements CommandInterface
         if ($scratchBase !== '/wpmgr-agent/runs') {
             $probeDir = is_dir($scratchBase) ? $scratchBase : (is_dir(dirname($scratchBase)) ? dirname($scratchBase) : '');
             if ($probeDir !== '' && function_exists('disk_free_space')) {
-                $free = @disk_free_space($probeDir);
-                if ($free === false) {
+                $free = LongRunningJob::diskFreeSpace($probeDir);
+                if ($free === null) {
                     $warnings[] = 'disk_free_space() returned false; cannot probe headroom';
                 } else {
                     $needed = 2 * $this->estimateBackupSize();
