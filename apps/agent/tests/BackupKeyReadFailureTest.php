@@ -268,7 +268,7 @@ final class BackupKeyReadFailureTest extends TestCase
     }
 
     /** (c) Admin setup: a failed read leaves the key, and records no notice. */
-    public function test_a_failed_read_during_admin_setup_leaves_the_key_unchanged(): void
+    public function test_a_failed_read_records_no_notice_and_leaves_the_key_unchanged(): void
     {
         $this->seedHealthyKeystore();
         $sealed = $this->rows[Keystore::OPTION_AGE_IDENTITY];
@@ -367,8 +367,8 @@ final class BackupKeyReadFailureTest extends TestCase
         $this->assertFalse($this->wpdb->suppressErrors, 'The previous error state is restored.');
     }
 
-    /** A failed read of the site keypair during admin setup leaves the keypair unchanged and records no notice. */
-    public function test_a_failed_keypair_read_during_admin_setup_leaves_the_keypair_unchanged(): void
+    /** A failed read never replaces the site keypair, and records no notice. */
+    public function test_a_failed_read_never_replaces_the_site_keypair(): void
     {
         $this->seedHealthyKeystore();
         $keypair          = $this->rows[Keystore::OPTION_SITE_KEYPAIR];
@@ -385,8 +385,8 @@ final class BackupKeyReadFailureTest extends TestCase
         $this->assertArrayNotHasKey(Plugin::OPTION_KEYSTORE_ERROR_KIND, $this->rows);
     }
 
-    /** A failed read of the site keypair while its public key is taken for enrolment keeps the stored keypair. */
-    public function test_a_failed_keypair_read_for_enrolment_keeps_the_stored_keypair(): void
+    /** When a read of the site keypair fails, the stored keypair is the one used. */
+    public function test_the_stored_site_keypair_is_used_when_a_read_fails(): void
     {
         $this->seedHealthyKeystore();
         $keypair          = $this->rows[Keystore::OPTION_SITE_KEYPAIR];
