@@ -116,9 +116,11 @@ final class FilesRestorerStageFailureTest extends TestCase
             }
         }
 
+        // The cause in parentheses is not asserted: under the test harness
+        // every file open goes through Patchwork's stream wrapper, which
+        // replaces the operating system's "Permission denied".
         $this->assertStringContainsString('plugins/locked/locked.php', $message);
         $this->assertStringContainsString('could not unpack it', $message);
-        $this->assertStringContainsString('Permission denied', $message);
         $this->assertStringContainsString('the site was not changed', $message);
         $this->assertDirectoryDoesNotExist($staging);
     }
@@ -143,6 +145,26 @@ final class FilesRestorerStageFailureTest extends TestCase
         $this->assertStringContainsString('plugins/foo/foo.php', $message);
         $this->assertStringContainsString('could not unpack it', $message);
         $this->assertDirectoryDoesNotExist($staging);
+    }
+
+    public function test_a_long_entry_name_keeps_the_message_within_what_a_failed_restore_records(): void
+    {
+        $fx        = $this->makeRestoreRoot('longname');
+        $restoreId = $this->makeRestoreId();
+
+        $deep    = 'plugins/conflict/' . str_repeat('nested-folder/', 20) . 'the-file-that-failed.php';
+        $zipPath = $fx['scratchDir'] . '/part001.zip';
+        $this->buildFixtureZip($zipPath, [
+            'plugins/conflict' => 'a file where a folder must go',
+            $deep              => '<?php // deep',
+        ]);
+
+        $message = $this->stageExpectingFailure($zipPath, $fx['targetDir'], $restoreId);
+
+        $this->assertLessThanOrEqual(240, strlen($message), $message);
+        $this->assertStringContainsString('the-file-that-failed.php', $message);
+        $this->assertStringContainsString('could not create its folder', $message);
+        $this->assertStringContainsString('Free disk space or fix folder permissions, then retry.', $message);
     }
 
     public function test_entries_stage_leaves_out_are_still_skipped_and_the_rest_is_staged(): void

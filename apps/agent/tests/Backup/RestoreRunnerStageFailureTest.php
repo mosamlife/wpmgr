@@ -118,7 +118,7 @@ final class RestoreRunnerStageFailureTest extends TestCase
         $message = (string) ($sub['last_error'] ?? '');
         $this->assertStringContainsString('the site was not changed', $message);
         $this->assertStringContainsString('plugins/conflict/inner.php', $message);
-        $this->assertStringContainsString('could not create its folder', $message);
+        $this->assertStringContainsString('could not create its folder (a file is in the way)', $message);
         $this->assertStringContainsString('Free disk space or fix folder permissions, then retry', $message);
         $this->assertArrayNotHasKey('swap_files', $sub, 'no swap may run after a failed stage');
         $this->assertArrayNotHasKey('stage', $sub, 'a failed stage must not record a staging dir for a later swap');
