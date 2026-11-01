@@ -205,9 +205,9 @@ if (!function_exists('wp_convert_hr_to_bytes')) {
      * mirrors the real WP implementation.
      *
      * @param string $value Shorthand byte value.
-     * @return int
+     * @return int|float An int; a float, as in WordPress, when a negative count of a unit goes past the bottom of the int range.
      */
-    function wp_convert_hr_to_bytes(string $value): int
+    function wp_convert_hr_to_bytes(string $value)
     {
         $value = strtolower(trim($value));
         $bytes = (int) $value;
@@ -221,7 +221,7 @@ if (!function_exists('wp_convert_hr_to_bytes')) {
         }
 
         // Large (float) values run into the maximum integer size.
-        return (int) min($bytes, PHP_INT_MAX);
+        return min($bytes, PHP_INT_MAX);
     }
 }
 

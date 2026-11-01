@@ -11,9 +11,11 @@
  *    page, a download answered on init) is passed through and never stored;
  *  - a response that is not HTML, or carries Content-Disposition, is not
  *    stored; a response that reaches one chunk is passed through as it is
- *    produced, so it is never held in memory in full, and is not stored;
+ *    produced, so it is never held in memory in full, and is not stored, and
+ *    neither is the tail that follows the chunk, whatever the tail looks like;
  *  - the chunk is an eighth of the memory the request has left, between 512 KB
- *    and 4 MB (4 MB when memory_limit is -1), and a page smaller than the chunk
+ *    and 4 MB (4 MB when memory_limit is -1, and 512 KB when it is at or below
+ *    the memory in use, however far below), and a page smaller than the chunk
  *    is stored whatever the chunk is;
  *  - output is never held back across chunks, so a plugin that takes the
  *    buffer (ob_get_clean) loses nothing that was already on its way;
@@ -66,6 +68,9 @@ final class CacheWriterStoreGatesTest extends TestCase
 
     /** The memory_limit the tests run under, wide enough for a 64 MB download. */
     private const ROOM = '1024M';
+
+    /** The end of a page whose script writes a document of its own into a new window. */
+    private const TAIL_WITH_A_DOCTYPE = '<script>function printView(){var w=window.open();w.document.write("<!DOCTYPE html><html><body>print view</body></html>");}</script></body></html>';
 
     private string $base = '';
 
@@ -191,7 +196,7 @@ final class CacheWriterStoreGatesTest extends TestCase
             $limit = (string) (memory_get_usage(true) + $left);
         }
 
-        ini_set('memory_limit', $limit);
+        self::setMemoryLimit($limit);
         try {
             $manager->startBuffer();
         } finally {
@@ -199,6 +204,26 @@ final class CacheWriterStoreGatesTest extends TestCase
         }
 
         return (int) ob_get_status()['chunk_size'];
+    }
+
+    /**
+     * Set memory_limit to a string, the way a php.ini line would. PHP remarks on
+     * a value outside the range it can parse (a warning that comes from the
+     * ini_set() call itself) and keeps the string, which is what ini_get() hands
+     * to the code under test. That remark is about the value written here and is
+     * not something a test asserts, so it is absorbed; a warning raised anywhere
+     * else is not.
+     *
+     * @param string $limit memory_limit as php.ini writes it.
+     */
+    private static function setMemoryLimit(string $limit): void
+    {
+        set_error_handler(static fn (): bool => true, E_WARNING);
+        try {
+            ini_set('memory_limit', $limit);
+        } finally {
+            restore_error_handler();
+        }
     }
 
     /**
@@ -520,6 +545,50 @@ final class CacheWriterStoreGatesTest extends TestCase
     }
 
     /**
+     * A page of one chunk plus a tail, where the tail carries a DOCTYPE of its
+     * own inside a script. Once the first chunk has left, the final flush holds
+     * only the tail, and the DOCTYPE test of the cacheability rules matches
+     * anywhere in a body, so the tail passes it. What keeps the tail from being
+     * stored as if it were the page is the pass-through that begins when the
+     * first chunk leaves.
+     *
+     * @dataProvider provide_how_a_page_is_echoed
+     *
+     * @param int $pieceBytes Size of the pieces the chunk is echoed in; 0 echoes it in one piece.
+     */
+    public function test_the_tail_of_a_page_over_one_chunk_is_not_stored_when_it_carries_a_doctype(int $pieceBytes): void
+    {
+        $page    = '';
+        $visitor = $this->respond(static function () use ($pieceBytes, &$page): void {
+            $head  = '<!DOCTYPE html><html><body>';
+            $chunk = (int) ob_get_status()['chunk_size'];
+            $first = $head . str_repeat('x', $chunk - strlen($head)); // exactly one chunk: it leaves at once
+            $page  = $first . self::TAIL_WITH_A_DOCTYPE;
+            self::echoPage($first, $pieceBytes);
+            echo self::TAIL_WITH_A_DOCTYPE;                           // all that is left for the final flush
+        });
+
+        $this->assertGreaterThan(self::CEILING, strlen($page), 'the page must be over one chunk');
+        $this->assertSame(md5($page), md5($visitor), 'the visitor must receive every byte, in order');
+        $this->assertFalse($this->stored(), 'the tail of a page that passed a chunk must not be stored as the page');
+    }
+
+    /**
+     * Control for the test above: the same tail is stored when it is the whole
+     * response, so the DOCTYPE test does accept it and the test above can only
+     * stay green because the tail is passed through.
+     */
+    public function test_the_tail_with_a_doctype_is_stored_when_it_is_the_whole_response(): void
+    {
+        $visitor = $this->respond(static function (): void {
+            echo self::TAIL_WITH_A_DOCTYPE;
+        });
+
+        $this->assertSame(self::TAIL_WITH_A_DOCTYPE, $visitor);
+        $this->assertTrue($this->stored(), 'the DOCTYPE test accepts this tail, or the test above proves nothing');
+    }
+
+    /**
      * A plugin that opened its own buffer before init takes the top buffer,
      * which is the capture, with ob_get_clean() at shutdown and sends the page
      * on. The visitor receives the page whole, and a page the plugin took is
@@ -637,6 +706,10 @@ final class CacheWriterStoreGatesTest extends TestCase
             'no limit'                               => [-1, 24 * $mb, self::CEILING],
             'no limit, a lot in use'                 => [-1, 900 * $mb, self::CEILING],
             'the largest limit there is'             => [PHP_INT_MAX, 24 * $mb, self::CEILING],
+            'a limit below zero'                     => [-2, 24 * $mb, self::FLOOR],
+            'the lowest limit there is'              => [PHP_INT_MIN, 24 * $mb, self::FLOOR],
+            'the lowest limit, nothing in use'       => [PHP_INT_MIN, 0, self::FLOOR],
+            'one above the lowest limit'             => [PHP_INT_MIN + 1, 24 * $mb, self::FLOOR],
         ];
     }
 
@@ -697,6 +770,84 @@ final class CacheWriterStoreGatesTest extends TestCase
             'in gigabytes' => ['1G'],
             'in megabytes' => ['1024M'],
             'in kilobytes' => ['1048576K'],
+        ];
+    }
+
+    /**
+     * A host can lock memory_limit (php_admin_value) at the bottom of the int
+     * range; PHP keeps the string and WordPress cannot raise it. WordPress
+     * reads each of these as the lowest int there is, a limit below the memory
+     * in use, so the buffer opens with the smallest chunk, 512 KB, and init
+     * goes on.
+     *
+     * @dataProvider provide_memory_limits_at_the_bottom_of_the_int_range
+     *
+     * @param string $limit memory_limit as php.ini writes it.
+     */
+    public function test_a_memory_limit_at_the_bottom_of_the_int_range_opens_the_512_kb_chunk(string $limit): void
+    {
+        $chunk = 0;
+        try {
+            $chunk = $this->chunkOpenedWith($limit);
+        } catch (\Throwable $e) {
+            $this->fail('opening the capture buffer threw ' . get_class($e) . ': ' . $e->getMessage());
+        }
+
+        $this->assertSame(self::FLOOR, $chunk);
+    }
+
+    /**
+     * @return array<string,array{0:string}>
+     */
+    public static function provide_memory_limits_at_the_bottom_of_the_int_range(): array
+    {
+        return [
+            'the lowest int'                      => ['-9223372036854775808'],
+            'a count past the lowest int'         => ['-99999999999999999999'],
+            'a unit that lands on the lowest int' => ['-8589934592G'],
+        ];
+    }
+
+    /**
+     * A count of a unit that goes past the range of an int is read without
+     * casting a float to an int: PHP 8.5 reports that cast on every request
+     * ("not representable as an int"), and the cast wraps a limit far below
+     * zero into a large positive one, a limit with room to spare. Past the
+     * bottom of the range the buffer opens with 512 KB; past the top, with 4 MB.
+     *
+     * @dataProvider provide_memory_limits_written_past_the_int_range
+     *
+     * @param string $limit memory_limit as php.ini writes it.
+     * @param int    $chunk The chunk the buffer opens with.
+     */
+    public function test_a_memory_limit_written_past_the_int_range_is_read_without_a_cast_warning(string $limit, int $chunk): void
+    {
+        $warnings = [];
+        set_error_handler(static function (int $level, string $message) use (&$warnings): bool {
+            $warnings[] = $message;
+
+            return true;
+        }, E_WARNING);
+        try {
+            $opened = $this->chunkOpenedWith($limit);
+        } finally {
+            restore_error_handler();
+        }
+
+        $this->assertSame([], $warnings, 'reading memory_limit must not raise a warning');
+        $this->assertSame($chunk, $opened);
+    }
+
+    /**
+     * @return array<string,array{0:string,1:int}>
+     */
+    public static function provide_memory_limits_written_past_the_int_range(): array
+    {
+        return [
+            'one gigabyte past the lowest int'  => ['-8589934593G', self::FLOOR],
+            'far past the lowest int'           => ['-99999999999G', self::FLOOR],
+            'a unit that lands on 2 to the 63'  => ['8589934592G', self::CEILING],
+            'far past the highest int'          => ['99999999999G', self::CEILING],
         ];
     }
 
