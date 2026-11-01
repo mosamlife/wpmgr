@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.167
+Stable tag: 0.61.168
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -285,7 +285,21 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 == Changelog ==
 
-The entries below summarize the notable changes since 0.61.78. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+The entries below summarize the notable changes since 0.61.79. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+
+= 0.61.168 =
+* Fixed: Two-factor sign-in works on a site that renames its login page. Switching to the email code or a backup code works: a switch is not counted as a code attempt, and one sign-in sends at most three email codes.
+* Fixed: Where two-factor is optional, a user is asked for a code only after enrolling a method other than email. A user who must use two-factor is asked for a method the policy allows, or sent to set one up.
+* Fixed: The QR code on the two-factor setup screen scans in authenticator apps. Setup with an authenticator app finishes only when its secret is saved.
+* Changed: Each two-factor sign-in is bound to the browser that passed the password step. A step submitted from another browser goes back to the login form with a notice.
+* Fixed: The plugin loads translation files from its languages folder, and the login block messages, sign-in prompts and verification email can be translated.
+* Added: A new command lets WPMgr clear the site's own email provider settings and the mail credentials the agent holds.
+* Fixed: A resumed backup continues its archive where it stopped and keeps one pass of parts on disk. Backups leave out the agent's own working files and the Local destination's store, and a restore keeps the live store.
+* Changed: A large backup that resumes across many workers runs until it finishes. It is given up when it stops making progress, or after 24 hours whatever its progress, and every give-up is reported with a reason. A worker that has saved progress hands over to the next one before its time limit.
+* Fixed: A restore stops before it replaces any live file when a file it should restore cannot be unpacked whole. It names the file and the reason, and the site is left as it was.
+* Fixed: The agent never replaces its backup key or its site keys after a failed database read. When it cannot read the backup key, a backup is refused with a message to try again in a few minutes, and nothing is changed.
+* Fixed: The page cache gives a homepage under a language prefix, and a page whose address has accented or percent-encoded characters, its own entry. A Bypass URL covers a path with or without its trailing slash.
+* Changed: The page cache stores only a whole HTML page that the visitor received and passes other responses through. Preload requests carry a token the site generates, and the first start after this update clears the stored pages once.
 
 = 0.61.167 =
 * Fixed: Backup folder exclusions now match folders named with digits, such as 2024 under uploads.
@@ -437,9 +451,6 @@ The entries below summarize the notable changes since 0.61.78. This project ship
 
 = 0.61.79 =
 * Fixed: on a site installed from a plain git clone or a GitHub source download (no `composer install` run), activating the plugin could fail immediately with a fatal error (GH #262). The plugin's own class loader could not find a handful of its own files; it now resolves every one of them without depending on any other tool being present.
-
-= 0.61.78 =
-* Fixed: the plugin could fail to set up its encryption key on some managed hosts (for example Hostinger and other CloudLinux/CageFS hosts), leaving it active but unable to connect (GH #257). It now tolerates a wp-config.php with missing or partial secret salts, tries the uploads folder as an additional fallback file location, and as a last resort can store a dedicated encryption key in the database when no file location is writable. Key setup is now safe against two requests racing to set it up at the same time and against a write interrupted partway through. Already-connected sites are unaffected.
 
 == Upgrade Notice ==
 
