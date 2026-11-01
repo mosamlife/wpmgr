@@ -213,10 +213,12 @@ describe("backup key events (D1004)", () => {
   });
 
   it("words every label and description from the operator's side, with no dashes", () => {
+    // Built from char codes (en dash, em dash) so this file carries no dash.
+    const dash = new RegExp(`[${String.fromCharCode(0x2013)}${String.fromCharCode(0x2014)}]`);
     const all = [...ACTIONS, ...REASONS].map(([, text]) => text);
     for (const text of all) {
       expect(text).not.toMatch(/recipient|\bage\b/i);
-      expect(text).not.toMatch(/[–—]/);
+      expect(text).not.toMatch(dash);
     }
   });
 });
