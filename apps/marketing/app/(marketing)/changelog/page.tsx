@@ -50,6 +50,94 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.199",
+    date: "2026-11-01",
+    summary:
+      "Client reports list each version change and cover every client site, a site's own email provider can be removed, backups continue where they stopped and restores stop before changing a site they cannot fully restore, two-factor sign-in and its QR code work on more sites, and the page cache handles language prefixes and encoded addresses.",
+    items: [
+      {
+        tag: "Added",
+        text: "Each client report lists, per site, what changed in the period: one row per plugin, theme or core from the first version to the last, and each failed or rolled-back attempt on its own row, in the HTML report and the PDF. A site shows at most 50 rows, then how many more changes there were.",
+      },
+      {
+        tag: "Added",
+        text: "The client report schedule form has an Overview switch, shown first, in the order the report shows its sections.",
+      },
+      {
+        tag: "Added",
+        text: "A site's own email provider can be removed from its email settings after you type the provider's name. The site then uses the organisation's default email settings, or WordPress's own mailer when there are none, and the site's email log is kept. WPMgr removes its own copy only after the site's agent confirms, so a refusal, an unreachable site or a settings change during the removal removes nothing. It is also available over the API. Agent 0.61.168; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Changed",
+        text: "Signed commands from WPMgr to a site identify themselves with the User-Agent WPMgr-CommandClient/1.0, so a host rule can allow that exact string. Contributed by Liron Poelstra.",
+      },
+      {
+        tag: "Changed",
+        text: "Re-running the diagnostics check against a site that refuses or cannot answer now says why. The API answers 502 with a stable code for a refused request, a redirect, an agent error, another HTTP error, a timeout, an unreachable site or a reply that is not the agent's, and the message never carries the site's own reply text.",
+      },
+      {
+        tag: "Changed",
+        text: "The update counts in a client report no longer include the agent's own updates, and the HTML report shows the Core count, as the PDF already did.",
+      },
+      {
+        tag: "Changed",
+        text: "A large backup that resumes across many workers runs until it finishes. It is given up when it stops making progress, or after 24 hours whatever its progress, and every give-up is reported with a reason. A worker that has saved progress and used 80% of its time limit hands over to the next one. Agent 0.61.168; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Changed",
+        text: "The page cache stores only a whole HTML page that the visitor received and passes other responses through. Preload requests carry a token the site generates, and the first start after the update clears the stored pages once. A Bypass URL covers a path with or without its trailing slash. Agent 0.61.168; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Changed",
+        text: "A backup that a site refuses because its backup key changed now fails at once with the steps to reconnect the site, for agents up to 0.61.167 as well as this version. Backups already taken are not affected.",
+      },
+      {
+        tag: "Fixed",
+        text: "A resumed backup continues its archive where it stopped and keeps one pass of parts on disk. Backups leave out the agent's own working files and the Local destination's store, so backups stored on the site itself are no longer included in later backups, and a restore keeps the live store. Agent 0.61.168; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Fixed",
+        text: "A restore stops before it replaces any live file when a file it should restore cannot be unpacked whole. The site is left as it was, and the message names the file and the reason. Agent 0.61.168; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Fixed",
+        text: "The agent never replaces its backup key or its site keys after a failed database read. When it cannot read its backup key, a backup is refused with a message to try again in a few minutes and WPMgr retries it automatically. Agent 0.61.168; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Fixed",
+        text: "Reconnecting a site, or enrolling it again with a pairing code, accepts the backup key the site holds at that moment, and the audit log records the change.",
+      },
+      {
+        tag: "Fixed",
+        text: "Two-factor sign-in works on a site that renames its login page, and switching to the email code or a backup code works. Where two-factor is optional, a user is asked for a code only after enrolling a method other than email. Agent 0.61.168; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Fixed",
+        text: "The QR code on the two-factor setup screen follows the QR standard and scans in authenticator apps, and authenticator setup finishes only when the secret is saved. Agent 0.61.168; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Fixed",
+        text: "The agent loads translation files from its languages folder, and the login messages, sign-in prompts and verification email can be translated. Agent 0.61.168; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Fixed",
+        text: "A homepage served under a language prefix, and a page whose address has accented or percent-encoded characters, gets its own page cache entry. Agent 0.61.168; sites get it when the plugin updates.",
+      },
+      {
+        tag: "Fixed",
+        text: "Client reports cover every one of a client's sites, a report generated on demand uses the client's saved settings, and saving the settings no longer turns Overview off. Upgrading turns Overview back on for saved schedules that stored it as off.",
+      },
+      {
+        tag: "Fixed",
+        text: "PDF reports no longer fail on an emoji, on the reason of a paused site or on a logo that cannot be drawn. A report that no job is still working on no longer blocks Generate now, and a schedule's first run is computed in the client's timezone.",
+      },
+      {
+        tag: "Security",
+        text: "Each two-factor session is bound to the browser that passed the password step, and a step submitted without it returns to the login form with a notice. Agent 0.61.168; sites get it when the plugin updates.",
+      },
+    ],
+  },
+  {
     version: "0.61.198",
     date: "2026-10-24",
     summary:
