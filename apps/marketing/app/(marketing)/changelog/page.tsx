@@ -65,7 +65,7 @@ const RELEASES: ChangeEntry[] = [
       },
       {
         tag: "Added",
-        text: "A site's own email provider can be removed from its email settings after you type the provider's name. The site then uses the organisation's default email settings, or WordPress's own mailer when there are none, and the site's email log is kept. WPMgr removes its own copy only after the site's agent confirms, so a refusal, an unreachable site or a settings change during the removal removes nothing. It is also available over the API. Agent 0.61.168; sites get it when the plugin updates.",
+        text: "A site's own email provider can be removed from its email settings after you type the provider's name. The site then uses the organisation's default email settings, or WordPress's own mailer when there are none, and the site's email log is kept. If the organisation's settings cannot be read or sent to the site, the removal still succeeds and the site uses WordPress's own mailer until Sync to site succeeds. WPMgr removes its own copy only after the site's agent confirms. If the agent cannot be reached, refuses or does not confirm, WPMgr keeps its copy, says why, and the removal can be tried again. If the request had already run, for example when the response was lost, the site may already have stopped using the provider. Changes made to the settings during the removal are kept and sent back to the site. It is also available over the API. Agent 0.61.168; sites get it when the plugin updates.",
       },
       {
         tag: "Changed",
