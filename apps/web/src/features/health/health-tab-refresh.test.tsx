@@ -239,8 +239,9 @@ describe("Re-run all checks, 202", () => {
     expect(toastSuccess).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: /Running checks/ })).toBeDisabled();
 
-    await act(async () => {
+    await act(() => {
       refetch.resolve(ok({ items: storedReport }));
+      return Promise.resolve();
     });
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledTimes(1));
     expect(screen.getByText("6.7.2")).toBeInTheDocument();
@@ -285,8 +286,9 @@ describe("Re-run all checks, 502 from the site", () => {
     fireEvent.click(await rerunButton());
     expect(await screen.findByText(SITE_REFUSED_MESSAGE)).toBeInTheDocument();
 
-    await act(async () => {
+    await act(() => {
       vi.advanceTimersByTime(60_000);
+      return Promise.resolve();
     });
 
     expect(screen.getByRole("alert")).toBeInTheDocument();
@@ -361,8 +363,9 @@ describe("Re-run all checks, 502 from the site", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.queryByText(SITE_REFUSED_MESSAGE)).not.toBeInTheDocument();
 
-    await act(async () => {
+    await act(() => {
       second.resolve(siteFailure(502, "site_timeout", SITE_TIMEOUT_MESSAGE));
+      return Promise.resolve();
     });
 
     expect(await screen.findByText(SITE_TIMEOUT_MESSAGE)).toBeInTheDocument();
