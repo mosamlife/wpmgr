@@ -4,8 +4,10 @@
  * reads and writes of the backup-key row.
  *
  * It answers exactly the three statements Keystore issues for that row and
- * throws on anything else: the aggregate SELECT that reads it, the INSERT
- * IGNORE that creates it, and the UPDATE that fills it only while it is empty.
+ * throws on anything else: the aggregate SELECT that reads it, the plain
+ * INSERT that creates it, and the UPDATE that fills it only while it is empty.
+ * An INSERT of a row that exists fails as a duplicate key does: query()
+ * returns false and last_error is set.
  * Rows are the test's own options array, shared by reference, so a value the
  * test's get_option() / update_option() stubs see is the value the table
  * holds.
@@ -44,6 +46,15 @@ final class FakeKeyRowWpdb
 
     /** Rows an INSERT created so far. */
     public int $inserted = 0;
+
+    /** INSERTs that failed as a duplicate key so far. */
+    public int $duplicateInserts = 0;
+
+    /** Whether errors are suppressed, as suppress_errors() sets it. */
+    public bool $suppressErrors = false;
+
+    /** @var list<bool> Whether errors were suppressed while each INSERT ran. */
+    public array $insertSuppressed = [];
 
     /** @var list<string> Every statement run, in order. */
     public array $statements = [];
@@ -116,25 +127,42 @@ final class FakeKeyRowWpdb
     }
 
     /**
-     * Run the INSERT IGNORE that creates a row, or the UPDATE that fills an
-     * empty one.
+     * Set whether errors are suppressed, as core does.
+     *
+     * @param bool $suppress New state.
+     * @return bool The previous state.
+     */
+    public function suppress_errors($suppress = true): bool
+    {
+        $previous             = $this->suppressErrors;
+        $this->suppressErrors = (bool) $suppress;
+
+        return $previous;
+    }
+
+    /**
+     * Run the INSERT that creates a row, or the UPDATE that fills an empty one.
      *
      * @param string $prepared Output of prepare().
-     * @return int Rows written.
+     * @return int|false Rows written, or false when the statement failed.
      */
-    public function query(string $prepared): int
+    public function query(string $prepared)
     {
         [$sql, $args] = self::decode($prepared);
         $this->statements[] = $sql;
         $this->last_error   = '';
 
-        if ($sql === "INSERT IGNORE INTO wp_options (option_name, option_value, autoload) VALUES (%s, %s, 'no')") {
+        if ($sql === "INSERT INTO wp_options (option_name, option_value, autoload) VALUES (%s, %s, 'no')") {
+            $this->insertSuppressed[] = $this->suppressErrors;
             if ($this->beforeInsert !== null) {
                 ($this->beforeInsert)();
             }
             $name = (string) $args[0];
             if (array_key_exists($name, $this->rows)) {
-                return 0;
+                ++$this->duplicateInserts;
+                $this->last_error = "Duplicate entry '" . $name . "' for key 'option_name'";
+
+                return false;
             }
             $this->rows[$name] = (string) $args[1];
             ++$this->inserted;

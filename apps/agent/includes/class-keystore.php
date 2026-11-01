@@ -506,12 +506,11 @@ final class Keystore implements EmailKeystoreInterface
      * stored AES-256-GCM-encrypted under the master key, exactly like the
      * Ed25519 keypair, and is never logged or transmitted.
      *
-     * It never replaces a stored backup key. The row is written with an
-     * insert that does nothing when the row exists, and an empty row (which
-     * holds no key) is filled only while it is still empty. The row is then
-     * read back and the secret stored in it is returned: when another request
-     * stored a backup key first, that key is the one returned, so concurrent
-     * creators settle on one key.
+     * Creates the key only with an insert that cannot replace an existing
+     * row; an empty row, which holds no key, is filled only while it is still
+     * empty. The row is then read back and the secret stored in it is
+     * returned: when another request stored a backup key first, that key is
+     * the one returned, so concurrent creators settle on one key.
      *
      * @param string $rawSecret Raw 32-byte X25519 scalar to store when none is.
      * @return string The raw secret now stored: $rawSecret, or the key another request stored first.
@@ -528,8 +527,18 @@ final class Keystore implements EmailKeystoreInterface
         }
 
         $envelope = $this->encrypt($rawSecret);
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- the backup key must never replace a stored one: add_option() can write over an existing row, an INSERT IGNORE on the unique option_name cannot
-        $wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')", self::OPTION_AGE_IDENTITY, $envelope));
+        // A plain INSERT, portable to every database WordPress runs on. When
+        // the row exists it fails on the unique option_name and changes
+        // nothing; that expected failure is kept out of the error log.
+        $suppressed = method_exists($wpdb, 'suppress_errors') ? $wpdb->suppress_errors(true) : null;
+        try {
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- creating the backup key must never replace a stored one; a plain INSERT on the unique option_name cannot
+            $wpdb->query($wpdb->prepare("INSERT INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')", self::OPTION_AGE_IDENTITY, $envelope));
+        } finally {
+            if ($suppressed !== null) {
+                $wpdb->suppress_errors($suppressed);
+            }
+        }
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- fills a row only while it is empty (it holds no key), so it can never replace a stored key; update_option() is not conditional
         $wpdb->query($wpdb->prepare("UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = ''", $envelope, self::OPTION_AGE_IDENTITY));
         $this->forgetCachedAgeIdentity();
@@ -545,8 +554,8 @@ final class Keystore implements EmailKeystoreInterface
     /**
      * Retrieve and decrypt the site's age X25519 secret scalar.
      *
-     * The row is read straight from the options table, never from the options
-     * caches, so a read that failed is told apart from a row that is absent.
+     * Reads the key row directly, so a read that fails is never taken for an
+     * absent key.
      *
      * @return string|null Raw 32-byte X25519 scalar, or null when no backup key is stored.
      * @throws KeystoreReadFailed When the row could not be read: whether a key is stored is unknown.
@@ -563,15 +572,10 @@ final class Keystore implements EmailKeystoreInterface
     }
 
     /**
-     * Read the stored backup-key envelope straight from the options table.
-     *
-     * get_option() cannot be used here: when its SELECT fails it records the
-     * option as missing in the 'notoptions' cache and returns false, exactly
-     * as for a row that is absent, and a persistent object cache keeps that
-     * record into later requests. This read bypasses the 'notoptions' and
-     * 'alloptions' caches. The statement is an aggregate, so a read that
-     * succeeds always returns one row; no row, or a database error, means
-     * the read failed.
+     * Read the stored backup-key envelope directly from the options table, so
+     * a read that fails is never taken for an absent key. A read that
+     * succeeds always returns one row; no row, or a database error, means the
+     * read failed.
      *
      * @return string|null The stored envelope, or null when no row is stored or it is empty.
      * @throws KeystoreReadFailed When the read failed.
@@ -585,7 +589,7 @@ final class Keystore implements EmailKeystoreInterface
             throw new KeystoreReadFailed('WPMgr Agent: the backup key cannot be read without a database connection.');
         }
 
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- a failed read must be told apart from an absent row, which get_option() and the options caches cannot do
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- reads the key row directly, so a read that fails is never taken for an absent key
         $row   = $wpdb->get_row($wpdb->prepare("SELECT COUNT(*) AS stored_rows, MAX(option_value) AS stored_value FROM {$wpdb->options} WHERE option_name = %s", self::OPTION_AGE_IDENTITY), ARRAY_A);
         $error = isset($wpdb->last_error) && is_string($wpdb->last_error) ? $wpdb->last_error : '';
         if ($error !== '' || !is_array($row) || !isset($row['stored_rows']) || !is_numeric($row['stored_rows'])) {
@@ -605,9 +609,8 @@ final class Keystore implements EmailKeystoreInterface
     }
 
     /**
-     * Drop a 'notoptions' record that the backup-key option is missing, once
-     * the row has been read and found, so get_option() stops reporting it
-     * absent. A persistent object cache would otherwise keep that record.
+     * Drop any cached record that the backup-key option is missing, once its
+     * row has been read and found.
      *
      * @return void
      */
@@ -624,8 +627,8 @@ final class Keystore implements EmailKeystoreInterface
     }
 
     /**
-     * Drop every cached copy of the backup-key option, including a 'notoptions'
-     * record that it is missing, so get_option() reads the row afresh.
+     * Drop every cached copy of the backup-key option, so the next read of it
+     * goes to the database.
      *
      * @return void
      */
