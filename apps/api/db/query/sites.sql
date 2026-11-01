@@ -320,8 +320,15 @@ RETURNING *;
 -- ---------------------------------------------------------------------------
 
 -- name: GetSiteByURLForEnroll :one
+-- Legacy re-enrollment read. FOR UPDATE holds the row until the transaction
+-- ends, so the age_recipient returned here is exactly the value
+-- AttachAgentToSite clears later in the same transaction, and the caller can
+-- record it after commit (PostgreSQL 16 has no RETURNING OLD). Under app.enroll
+-- sites_enroll is FOR ALL, so the lock's UPDATE-policy check passes; the
+-- tenant_id predicate, not RLS, is what confines this read to one tenant.
 SELECT * FROM sites
-WHERE tenant_id = $1 AND url = $2;
+WHERE tenant_id = $1 AND url = $2
+FOR UPDATE;
 
 -- name: CreateSiteForEnroll :one
 INSERT INTO sites (tenant_id, url, name, status, wp_version, php_version,
@@ -331,8 +338,14 @@ RETURNING *;
 
 -- name: AttachAgentToSite :one
 -- Re-enrollment: rotate the agent key and mark the site active/enrolled again.
+-- It also clears the pinned backup recipient. An enrollment the operator
+-- authorised is the one path that re-pins it: the agent's next metadata push
+-- then records its current recipient as a first set, while a push on its own
+-- never replaces a recipient already set. Read the previous value with
+-- GetSiteByURLForEnroll, which locks the row, earlier in this transaction.
 UPDATE sites
 SET agent_public_key = $3,
+    age_recipient = '',
     status = 'active',
     enrolled_at = now(),
     last_seen_at = now(),

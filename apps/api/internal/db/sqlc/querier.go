@@ -312,6 +312,12 @@ type Querier interface {
 	// instead of failing on sites_tenant_id_url_key. The caller learns whether the
 	// address was adopted by comparing the returned url with the one it passed.
 	// Deciding WHICH address may be passed is the caller's job, not this query's.
+	//
+	// age_recipient is cleared, as in AttachAgentToSite: an enrollment the operator
+	// authorised is the one path that re-pins the backup recipient, and the agent's
+	// next metadata push records its current recipient as a first set. On a first
+	// connect the column is already empty. The previous value comes from
+	// GetSiteForTransition, which locks the row earlier in this transaction.
 	// Defense-in-depth (Phase 6 review, finding E): consume only from
 	// 'pending_enrollment'. A code is bound to a site BeginReEnrollment already moved
 	// to pending_enrollment, so this holds on the happy path; the guard stops a
@@ -319,6 +325,11 @@ type Querier interface {
 	// back to 'connected' out of sequence (a loser yields ErrNoRows like an expired code).
 	AttachAgentAndConnect(ctx context.Context, arg AttachAgentAndConnectParams) (Site, error)
 	// Re-enrollment: rotate the agent key and mark the site active/enrolled again.
+	// It also clears the pinned backup recipient. An enrollment the operator
+	// authorised is the one path that re-pins it: the agent's next metadata push
+	// then records its current recipient as a first set, while a push on its own
+	// never replaces a recipient already set. Read the previous value with
+	// GetSiteByURLForEnroll, which locks the row, earlier in this transaction.
 	AttachAgentToSite(ctx context.Context, arg AttachAgentToSiteParams) (Site, error)
 	// GH #826. Compare-and-set from no undo to in_progress on a write that
 	// failed or was given up on but left the post it created (a draft) on the
@@ -2039,6 +2050,12 @@ type Querier interface {
 	// ---------------------------------------------------------------------------
 	// Enrollment path (app.enroll GUC). These run before any tenant scope exists.
 	// ---------------------------------------------------------------------------
+	// Legacy re-enrollment read. FOR UPDATE holds the row until the transaction
+	// ends, so the age_recipient returned here is exactly the value
+	// AttachAgentToSite clears later in the same transaction, and the caller can
+	// record it after commit (PostgreSQL 16 has no RETURNING OLD). Under app.enroll
+	// sites_enroll is FOR ALL, so the lock's UPDATE-policy check passes; the
+	// tenant_id predicate, not RLS, is what confines this read to one tenant.
 	GetSiteByURLForEnroll(ctx context.Context, arg GetSiteByURLForEnrollParams) (Site, error)
 	// URL-dedup check before MintEnrollmentCode. Tenant-scoped; includes ALL states
 	// (archived, pending, etc.) so that a tombstone from a previously-cancelled or
@@ -2111,6 +2128,8 @@ type Querier interface {
 	// ---------------------------------------------------------------------------
 	// Loads a site under the tenant scope with a row lock so the load → validate →
 	// write sequence is serialized against concurrent transitions on the same row.
+	// The site-first enrollment also runs it under app.enroll before
+	// AttachAgentAndConnect, so its age_recipient is the value that UPDATE clears.
 	GetSiteForTransition(ctx context.Context, arg GetSiteForTransitionParams) (Site, error)
 	// Fetch a site's URL by id. Used by the propagation worker and alert digest to
 	// build per-site dashboard links. Runs under InAgentTx.
