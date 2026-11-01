@@ -209,6 +209,15 @@ func (s *connService) ConsumeEnrollmentCode(ctx context.Context, in ConsumeEnrol
 		"generation": res.Site.ConnectionGeneration,
 	})
 	s.recordEnrollURLAudit(ctx, res)
+	// The attach cleared the recorded backup recipient (an operator-issued
+	// code is the one path that re-pins it). Recorded here, after the enroll
+	// transaction committed and in a tenant transaction of its own: audit_log
+	// has no app.enroll policy, so writing it inside the enroll transaction
+	// would fail and roll the enrollment back.
+	if res.ClearedAgeRecipient != "" {
+		s.recordAudit(ctx, res.Site.TenantID, res.Site.ID, audit.ActorSystem, uuid.Nil,
+			audit.ActionSiteBackupRecipientCleared, recipientClearedMeta(res.ClearedAgeRecipient))
+	}
 	s.recordAudit(ctx, res.Site.TenantID, res.Site.ID, audit.ActorSystem, uuid.Nil, audit.ActionSiteConnected, nil)
 	s.publishStateChange(ctx, res.Site.TenantID, res.Site.ID, EventSiteStateChanged, StatePendingEnrollment, StateConnected, res.Site, map[string]any{"enrolled": true})
 	// Best-effort post-enroll hook (e.g. trigger a first-time screenshot capture).

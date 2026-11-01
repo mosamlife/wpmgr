@@ -23,6 +23,9 @@ import (
 const (
 	recipientA = "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqsaaaaaa"
 	recipientB = "age1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzsbbbbbb"
+
+	// testAgentKey stands in for the agent key that authenticated a push.
+	testAgentKey = "dGVzdC1hZ2VudC1rZXktdGhhdC1zaWduZWQtdGhlLXB1c2g="
 )
 
 // logCapture wires a service to a JSON logger writing into a buffer, so a test
@@ -38,7 +41,7 @@ func logCapture(svc *Service) *bytes.Buffer {
 
 func applyRecipient(t *testing.T, svc *Service, tenantID, siteID uuid.UUID, rec string) error {
 	t.Helper()
-	_, err := svc.ApplyAgentMetadata(context.Background(), tenantID, siteID, agentpkg.Metadata{
+	_, err := svc.ApplyAgentMetadata(context.Background(), tenantID, siteID, testAgentKey, agentpkg.Metadata{
 		WPVersion:    "6.7",
 		AgentVersion: "0.61.161",
 		AgeRecipient: rec,
@@ -101,7 +104,7 @@ func TestAgentMetadataRefusesAndReportsRecipientChange(t *testing.T) {
 	buf := logCapture(svc)
 	tenantID, siteID := uuid.New(), uuid.New()
 
-	out, err := svc.ApplyAgentMetadata(context.Background(), tenantID, siteID, agentpkg.Metadata{
+	out, err := svc.ApplyAgentMetadata(context.Background(), tenantID, siteID, testAgentKey, agentpkg.Metadata{
 		WPVersion:    "6.7",
 		AgentVersion: "0.61.161",
 		AgeRecipient: recipientB,
@@ -198,7 +201,7 @@ type racingRepo struct {
 	winner string
 }
 
-func (r *racingRepo) SetAgeRecipientIfUnset(_ context.Context, tenantID, siteID uuid.UUID, _ string) (Site, bool, error) {
+func (r *racingRepo) SetAgeRecipientIfUnset(_ context.Context, tenantID, siteID uuid.UUID, _, _ string) (Site, bool, error) {
 	r.ifUnsetCalls++
 	r.ageRecipient = r.winner
 	return Site{ID: siteID, TenantID: tenantID, AgeRecipient: r.winner}, false, nil

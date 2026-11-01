@@ -55,7 +55,7 @@ func TestApplyAgentMetadata_AgentVersionCappedInLogAndAudit(t *testing.T) {
 	svc.SetLogger(slog.New(capture))
 
 	huge := strings.Repeat("9", 1<<20) // 1 MiB, far past any real plugin version
-	if _, err := svc.ApplyAgentMetadata(context.Background(), uuid.New(), uuid.New(), agentpkg.Metadata{
+	if _, err := svc.ApplyAgentMetadata(context.Background(), uuid.New(), uuid.New(), testAgentKey, agentpkg.Metadata{
 		AgeRecipient: "age1otherrecipient",
 		AgentVersion: huge,
 	}); err != nil {

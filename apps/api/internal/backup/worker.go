@@ -82,6 +82,49 @@ const codeKeystoreUnreadable = "keystore_unreadable"
 // notice and steps.
 const keystoreUnreadableOperatorMessage = "Backup not started: the agent on this site cannot read its backup key. Open this site's WordPress admin for the exact steps."
 
+// codeAgeRecipientMismatch (GH #1004) is the STABLE refusal code the agent
+// sets when the backup key it holds does not match the recipient WPMgr
+// recorded for the site and sent with the command. Agents up to 0.61.167
+// refuse the same way without a code, with exactly
+// legacyAgeRecipientMismatchDetail as the detail; both map to the same fixed
+// message. Retrying cannot help: the recorded recipient changes only when an
+// operator re-enrolls the site.
+const codeAgeRecipientMismatch = "age_recipient_mismatch"
+
+// legacyAgeRecipientMismatchDetail is the whole detail an agent without the
+// code sends for this refusal. Matched exactly, never as a substring, so no
+// other refusal that happens to mention it is reclassified.
+const legacyAgeRecipientMismatchDetail = "age recipient mismatch"
+
+// ageRecipientMismatchOperatorMessage is FIXED, CP-authored copy for that
+// refusal; the agent's own detail is never forwarded. The steps are the
+// dashboard's real reconnect flow: a connected site cannot be re-enrolled
+// directly (connected to pending_enrollment is not a legal transition), so it
+// is disconnected first and then reconnected. Disconnect makes the agent
+// deactivate itself on its next heartbeat while keeping its backup key, so
+// the plugin may need activating again before the new code can be entered.
+// Backups taken so far do not depend on this key, so they are not affected.
+const ageRecipientMismatchOperatorMessage = "Backup not started: this site's backup key changed after WPMgr recorded it, so the site refused to back up with the old one. To accept the site's current key, reconnect the site: in WPMgr, open the site and click Disconnect, then click Reconnect to get a new pairing code. In the site's WordPress admin, activate the WPMgr Agent plugin again if it was deactivated, open the WPMgr Agent menu and enter the code. Backups already taken are not affected."
+
+// codeKeystoreReadFailed (GH #1004) is the refusal code the agent sets when it
+// could not read its backup key just now (a failed database read), as opposed
+// to a key it read and found unusable. It is transient, so the dispatch is
+// retried like a transport failure, with a plain reason recorded meanwhile.
+const codeKeystoreReadFailed = "keystore_read_failed"
+
+// keystoreReadFailedAttemptMessage is the reason shown while that refusal is
+// being retried.
+const keystoreReadFailedAttemptMessage = "The site could not read its backup key just now. WPMgr will try again automatically."
+
+// isAgeRecipientMismatch reports whether an agent refusal is the recipient
+// mismatch, by its code or, for agents that send no code, by its exact detail.
+func isAgeRecipientMismatch(resp agentcmd.BackupResponse) bool {
+	if resp.Code == codeAgeRecipientMismatch {
+		return true
+	}
+	return resp.Code == "" && resp.Detail == legacyAgeRecipientMismatchDetail
+}
+
 // Audit action names for the backup/restore lifecycle.
 const (
 	ActionBackupStarted    = "backup.started"
@@ -511,6 +554,23 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 			// doing any work; a retry a few seconds later cannot make the
 			// key readable.
 			return w.fail(ctx, snap, keystoreUnreadableOperatorMessage)
+		}
+		if isAgeRecipientMismatch(resp) {
+			// GH #1004: terminal, with fixed copy that names the one way to
+			// accept the site's current key. A retry would be refused the same
+			// way until an operator re-enrolls the site.
+			return w.fail(ctx, snap, ageRecipientMismatchOperatorMessage)
+		}
+		if resp.Code == codeKeystoreReadFailed {
+			// GH #1004: transient. Record the plain reason (best-effort, as for
+			// a transport failure) and let River retry the dispatch.
+			if werr := w.svc.RecordAttemptError(ctx, snap.TenantID, snap.ID, keystoreReadFailedAttemptMessage); werr != nil {
+				w.logger.Warn("record backup attempt error failed",
+					slog.String("snapshot_id", snap.ID.String()),
+					slog.String("tenant_id", snap.TenantID.String()),
+					slog.Any("error", werr))
+			}
+			return fmt.Errorf("agent could not read its backup key (%s); retrying", codeKeystoreReadFailed)
 		}
 		return w.fail(ctx, snap, "agent refused the backup: "+resp.Detail)
 	}

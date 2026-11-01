@@ -413,7 +413,7 @@ func (s *Service) Enroll(ctx context.Context, req EnrollRequest) (Site, error) {
 		}
 	}
 
-	return s.repo.Enroll(ctx, codeHash, EnrollInput{
+	site, cleared, err := s.repo.Enroll(ctx, codeHash, EnrollInput{
 		URL:            req.SiteURL,
 		Name:           req.Name,
 		AgentPublicKey: req.AgentPublicKey,
@@ -421,6 +421,38 @@ func (s *Service) Enroll(ctx context.Context, req EnrollRequest) (Site, error) {
 		PHPVersion:     req.PHPVersion,
 		Tags:           normalizeTags(req.Tags),
 	})
+	if err != nil {
+		return Site{}, err
+	}
+	// A re-enrollment cleared the recorded backup recipient. Recorded after
+	// the enroll transaction committed, in a tenant transaction of its own:
+	// audit_log has no app.enroll policy, so writing it inside the enroll
+	// transaction would fail and roll the enrollment back.
+	if cleared != "" {
+		s.recordRecipientCleared(ctx, site.TenantID, site.ID, cleared)
+	}
+	return site, nil
+}
+
+// reasonReEnrollment names why a recorded backup recipient was cleared.
+const reasonReEnrollment = "re_enrollment"
+
+// recipientClearedMeta is the metadata of a site.backup.recipient.cleared
+// audit entry; both attach paths record the same shape.
+func recipientClearedMeta(previous string) map[string]any {
+	return map[string]any{
+		"previous_recipient": previous,
+		"reason":             reasonReEnrollment,
+	}
+}
+
+// recordRecipientCleared logs and audits that a re-enrollment cleared the
+// recorded backup recipient, so the log shows which key the site's earlier
+// backups were written for and that the next first set is expected.
+func (s *Service) recordRecipientCleared(ctx context.Context, tenantID, siteID uuid.UUID, previous string) {
+	s.logger.Info("site backup recipient cleared by re-enrollment",
+		"tenant_id", tenantID, "site_id", siteID, "previous_recipient", previous)
+	s.recordAudit(ctx, tenantID, siteID, audit.ActionSiteBackupRecipientCleared, recipientClearedMeta(previous))
 }
 
 // ResolveByAgentKey resolves an enrolled site by its agent public key,
@@ -441,7 +473,10 @@ func (s *Service) RecordNonce(ctx context.Context, siteID uuid.UUID, nonce strin
 
 // ApplyAgentMetadata adapts agent-package metadata to the site domain and
 // returns the updated site in OpenAPI form, satisfying agent.MetadataSink.
-func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.UUID, m agentpkg.Metadata) (gen.Site, error) {
+// agentKey is the agent key the metadata is attributed to: on a push, the key
+// that authenticated it, exactly as GetSiteByAgentKey matched it. The first
+// set of the backup recipient lands only while that key is still the site's.
+func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.UUID, agentKey string, m agentpkg.Metadata) (gen.Site, error) {
 	// Capped once, here, and passed everywhere else this push's agent version
 	// is used: the stored metadata below, the age-recipient log/audit path,
 	// and the address-adoption enqueue. Every one of those bounds its own
@@ -480,7 +515,7 @@ func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.
 	// distinguishes a first set from a change to an established value.
 	if rec := strings.TrimSpace(m.AgeRecipient); rec != "" && len(rec) <= 256 &&
 		strings.HasPrefix(rec, "age1") && out.AgeRecipient != rec {
-		updated, err := s.applyAgentAgeRecipient(ctx, tenantID, siteID, rec, out, v)
+		updated, err := s.applyAgentAgeRecipient(ctx, tenantID, siteID, agentKey, rec, out, v)
 		if err != nil {
 			return gen.Site{}, err
 		}
@@ -501,9 +536,23 @@ func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.
 // key the site's future backups are encrypted to, and the control plane never
 // holds the matching identity.
 //
-// FIRST SET (column empty) is applied. That is ordinary enrolment and the
-// column gates backups outright (internal/backup: age_recipient_missing), so
-// breaking it would stop every new site backing up.
+// The contract, in three rules:
+//
+//   - The agent channel never changes an established value. Not on a push, not
+//     on a re-check, not however often the same new value arrives.
+//   - An enrollment the operator authorised (a re-enrollment with a pairing
+//     code, or Reconnect) is the one way to re-pin it. The attach clears the
+//     column in the same UPDATE that rotates the agent key and records
+//     site.backup.recipient.cleared; the agent's next push is then a first set.
+//   - A first set needs the request's current agent key. agentKey is the key
+//     the metadata is attributed to (on a push, the key that authenticated
+//     it), and the write lands only while that key is still the site's. A push
+//     that authenticated with the old key before a re-enrollment committed
+//     therefore cannot claim the first set the re-enrollment opened up.
+//
+// FIRST SET (column empty, key current) is applied. That is ordinary enrolment
+// and the column gates backups outright (internal/backup:
+// age_recipient_missing), so breaking it would stop every new site backing up.
 //
 // A CHANGE to an established recipient is NOT applied. The agent channel proves
 // possession of the site's agent credential, and nothing more: a cloned install
@@ -525,16 +574,17 @@ func (s *Service) ApplyAgentMetadata(ctx context.Context, tenantID, siteID uuid.
 // carries the whole inventory and rejecting it would strand every other field
 // over a value the agent cannot fix by retrying. A failure to PERSIST is a
 // different matter and is returned (see below).
-func (s *Service) applyAgentAgeRecipient(ctx context.Context, tenantID, siteID uuid.UUID, rec string, current Site, agentVersion string) (Site, error) {
+func (s *Service) applyAgentAgeRecipient(ctx context.Context, tenantID, siteID uuid.UUID, agentKey, rec string, current Site, agentVersion string) (Site, error) {
 	if current.AgeRecipient != "" {
 		s.recordRecipientChangeRejected(ctx, tenantID, siteID, current.AgeRecipient, rec, agentVersion, "already_set")
 		return current, nil
 	}
 
 	// The read-and-decide above is advisory only: the authoritative first-set
-	// check happens inside the repo's transaction, under a per-site advisory
-	// lock, so two concurrent pushes cannot both conclude they are first.
-	updated, applied, err := s.repo.SetAgeRecipientIfUnset(ctx, tenantID, siteID, rec)
+	// check is one compare-and-set inside the repo's transaction, under a
+	// per-site advisory lock, so two concurrent pushes cannot both conclude
+	// they are first, and a push whose key was rotated away cannot win.
+	updated, applied, err := s.repo.SetAgeRecipientIfUnset(ctx, tenantID, siteID, agentKey, rec)
 	if err != nil {
 		// NOT swallowed. The old code dropped this error on the floor and
 		// returned the pre-write site, so a failed write read back to the
@@ -546,10 +596,17 @@ func (s *Service) applyAgentAgeRecipient(ctx context.Context, tenantID, siteID u
 		return Site{}, err
 	}
 	if !applied {
-		// Lost the race to a concurrent first set. If the winner stored the
-		// same value there is nothing to report; a different one is a refused
-		// change like any other.
-		if updated.AgeRecipient != rec {
+		switch updated.AgeRecipient {
+		case rec:
+			// A concurrent first set stored the same value: nothing to report.
+		case "":
+			// Still empty, so the key this metadata is attributed to is no
+			// longer the site's: a re-enrollment rotated it after the request
+			// resolved the site. Refused, and recorded like any other refusal.
+			s.recordRecipientChangeRejected(ctx, tenantID, siteID, "", rec, agentVersion, "agent_key_not_current")
+		default:
+			// Lost the race to a concurrent first set that stored a different
+			// value: a refused change like any other.
 			s.recordRecipientChangeRejected(ctx, tenantID, siteID, updated.AgeRecipient, rec, agentVersion, "concurrent_first_set")
 		}
 		return updated, nil
