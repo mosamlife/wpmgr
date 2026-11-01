@@ -529,6 +529,15 @@ final class CacheWriter
             return false;
         }
 
+        // A page rendered for a logged-in user is stored only under the
+        // logged-in variant of its key, never under the key of a page served
+        // to visitors who are not logged in, whatever its headers say.
+        if (!empty($ctx['logged_in'])
+            && !self::isLoggedInVariant((string) $ctx['store_key'], (array) ($ctx['cookies'] ?? []))
+        ) {
+            return false;
+        }
+
         // The settings this request started with may be out of date by now: a
         // push that added a Bypass URL, or switched the cache off, while the
         // page was rendering has already cleared the cache, and storing the
@@ -610,6 +619,25 @@ final class CacheWriter
             }
         }
         return $cacheRoot . '/' . $key;
+    }
+
+    /**
+     * Whether a key names the logged-in variant of a page, as the key rule
+     * builds it (see CacheKey): the request carries the logged-in cookie, and
+     * the file name starts with the logged-in segment the rule puts first for
+     * such a request.
+     *
+     * @param string       $key     Key relative to the cache root ("{host}/{path}/{name}.html.gz").
+     * @param array<mixed> $cookies Request cookies, by name.
+     * @return bool
+     */
+    private static function isLoggedInVariant(string $key, array $cookies): bool
+    {
+        $slash = strrpos($key, '/');
+        $file  = $slash === false ? $key : substr($key, $slash + 1);
+
+        return (new CacheKey())->hasLoggedInCookie($cookies)
+            && preg_match('/^index-logged-in(?:-|\.html\.gz$)/', $file) === 1;
     }
 
     /**

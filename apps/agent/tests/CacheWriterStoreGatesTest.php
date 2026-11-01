@@ -21,6 +21,8 @@
  *    buffer (ob_get_clean) loses nothing that was already on its way;
  *  - a buffer a plugin throws away (ob_end_clean, ob_get_clean) is not stored;
  *  - Cache-Control no-store or private, and DONOTCACHEPAGE, mean not stored;
+ *  - a page rendered for a logged-in user is never stored under the anonymous
+ *    key, whatever its Cache-Control says;
  *  - the Bypass URLs and the enabled flag are read again when the page is
  *    stored, so a page bypassed or a cache switched off while the request ran
  *    is not stored; a push that switches the cache off clears it.
@@ -1005,6 +1007,99 @@ final class CacheWriterStoreGatesTest extends TestCase
         });
 
         $this->assertTrue($this->stored());
+    }
+
+    // ---------------------------------------------------------------------
+    // Item: a page rendered for a logged-in user is never stored under the
+    // anonymous key.
+    // ---------------------------------------------------------------------
+
+    /**
+     * With logged-in caching on, a page rendered while a user is logged in is
+     * stored only under the logged-in variant of its key. Handed the key of
+     * the page served to visitors who are not logged in, it is not stored,
+     * whatever the response's Cache-Control says.
+     *
+     * @dataProvider provide_cache_control_of_a_logged_in_page
+     *
+     * @param list<string> $headers Response headers.
+     */
+    public function test_a_page_rendered_for_a_logged_in_user_is_never_stored_under_the_anonymous_key(array $headers): void
+    {
+        $this->optionStore[CacheManager::OPTION_CONFIG] = ['enabled' => true, 'cache_logged_in' => true];
+        Functions\when('is_user_logged_in')->justReturn(true);
+        $this->headers = $headers;
+
+        $this->respond(static function (): void {
+            echo self::PAGE;
+        });
+
+        $this->assertFalse($this->stored(), 'a page rendered for a logged-in user must not be stored under the anonymous key');
+        $this->assertSame([], $this->storedPages());
+    }
+
+    /**
+     * @return array<string,array{0:list<string>}>
+     */
+    public static function provide_cache_control_of_a_logged_in_page(): array
+    {
+        return [
+            'no-store and private'  => [['Content-Type: text/html; charset=UTF-8', 'Cache-Control: no-cache, must-revalidate, max-age=0, no-store, private']],
+            'no-cache only'         => [['Content-Type: text/html; charset=UTF-8', 'Cache-Control: no-cache, must-revalidate, max-age=0']],
+            'no Cache-Control'      => [['Content-Type: text/html; charset=UTF-8']],
+        ];
+    }
+
+    /**
+     * A logged-in visitor with the logged-in cookie: with logged-in caching
+     * on, the page is still not stored.
+     */
+    public function test_a_page_for_a_visitor_with_the_logged_in_cookie_is_not_stored(): void
+    {
+        $this->optionStore[CacheManager::OPTION_CONFIG] = ['enabled' => true, 'cache_logged_in' => true];
+        Functions\when('is_user_logged_in')->justReturn(true);
+        $_COOKIE = ['wordpress_logged_in_0123abcd' => 'editor|1|token|hmac', 'wpmgr_logged_in_roles' => 'editor'];
+
+        $this->respond(static function (): void {
+            echo self::PAGE;
+        });
+
+        $this->assertSame([], $this->storedPages());
+    }
+
+    /**
+     * And with logged-in caching on, a page for a visitor who is not logged in
+     * is still stored under the anonymous key.
+     */
+    public function test_an_anonymous_page_is_stored_with_logged_in_caching_on(): void
+    {
+        $this->optionStore[CacheManager::OPTION_CONFIG] = ['enabled' => true, 'cache_logged_in' => true];
+
+        $this->respond(static function (): void {
+            echo self::PAGE;
+        });
+
+        $this->assertTrue($this->stored());
+        $this->assertSame([self::KEY], $this->storedPages());
+    }
+
+    /**
+     * @return list<string> Every stored page, relative to the cache root.
+     */
+    private function storedPages(): array
+    {
+        $out = [];
+        if (!is_dir($this->root)) {
+            return $out;
+        }
+        $it = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($this->root, \FilesystemIterator::SKIP_DOTS));
+        foreach ($it as $file) {
+            if (substr((string) $file, -8) === '.html.gz') {
+                $out[] = substr((string) $file, strlen($this->root) + 1);
+            }
+        }
+        sort($out);
+        return $out;
     }
 
     // ---------------------------------------------------------------------

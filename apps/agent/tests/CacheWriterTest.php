@@ -137,6 +137,39 @@ final class CacheWriterTest extends TestCase
         $this->assertFalse($written);
     }
 
+    /**
+     * With logged-in caching on, a page rendered for a logged-in user is never
+     * stored under the anonymous key.
+     */
+    public function test_a_page_for_a_logged_in_user_is_never_stored_under_the_anonymous_key(): void
+    {
+        $ctx = $this->ctx(['logged_in' => true, 'cache_logged_in' => true]);
+
+        $written = $this->writer(['cache_logged_in' => true])->maybeWrite(self::HTML, $ctx);
+
+        $this->assertFalse($written);
+        $this->assertFileDoesNotExist($this->root . '/example.com/about/index.html.gz');
+    }
+
+    /**
+     * A logged-in visitor with the logged-in cookie, handed the logged-in
+     * variant of the key, with logged-in caching on: still not stored.
+     */
+    public function test_a_page_for_a_visitor_with_the_logged_in_cookie_is_not_stored(): void
+    {
+        $ctx = $this->ctx([
+            'store_key'       => 'example.com/about/index-logged-in-editor.html.gz',
+            'logged_in'       => true,
+            'cache_logged_in' => true,
+            'cookies'         => ['wordpress_logged_in_x' => '1', 'wpmgr_logged_in_roles' => 'editor'],
+        ]);
+
+        $written = $this->writer(['cache_logged_in' => true])->maybeWrite(self::HTML, $ctx);
+
+        $this->assertFalse($written);
+        $this->assertFileDoesNotExist($this->root . '/example.com/about/index-logged-in-editor.html.gz');
+    }
+
     public function test_non_200_writes_nothing(): void
     {
         $written = $this->writer()->maybeWrite(self::HTML, $this->ctx(['status' => 404]));
