@@ -137,6 +137,7 @@ func (q *Queries) ArchiveSite(ctx context.Context, arg ArchiveSiteParams) (Site,
 const attachAgentAndConnect = `-- name: AttachAgentAndConnect :one
 UPDATE sites
 SET agent_public_key = $1,
+    age_recipient    = '',
     connection_state = 'connected',
     status           = 'active',
     health_status    = 'healthy',
@@ -184,6 +185,12 @@ type AttachAgentAndConnectParams struct {
 // instead of failing on sites_tenant_id_url_key. The caller learns whether the
 // address was adopted by comparing the returned url with the one it passed.
 // Deciding WHICH address may be passed is the caller's job, not this query's.
+//
+// age_recipient is cleared, as in AttachAgentToSite: an enrollment the operator
+// authorised is the one path that re-pins the backup recipient, and the agent's
+// next metadata push records its current recipient as a first set. On a first
+// connect the column is already empty. The previous value comes from
+// GetSiteForTransition, which locks the row earlier in this transaction.
 // Defense-in-depth (Phase 6 review, finding E): consume only from
 // 'pending_enrollment'. A code is bound to a site BeginReEnrollment already moved
 // to pending_enrollment, so this holds on the happy path; the guard stops a
@@ -547,6 +554,8 @@ type GetSiteForTransitionParams struct {
 // ---------------------------------------------------------------------------
 // Loads a site under the tenant scope with a row lock so the load → validate →
 // write sequence is serialized against concurrent transitions on the same row.
+// The site-first enrollment also runs it under app.enroll before
+// AttachAgentAndConnect, so its age_recipient is the value that UPDATE clears.
 func (q *Queries) GetSiteForTransition(ctx context.Context, arg GetSiteForTransitionParams) (Site, error) {
 	row := q.db.QueryRow(ctx, getSiteForTransition, arg.ID, arg.TenantID)
 	var i Site

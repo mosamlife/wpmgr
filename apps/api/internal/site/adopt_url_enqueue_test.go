@@ -102,7 +102,7 @@ func TestEnqueueAdoptReportedURL_QueuesAValidEquivalentAddress(t *testing.T) {
 	}
 
 	svc, q = newEnqueueService("http://example.com")
-	if _, err := svc.ApplyAgentMetadata(ctx, uuid.New(), uuid.New(), agentpkg.Metadata{HomeURL: "https://www.example.com"}); err != nil {
+	if _, err := svc.ApplyAgentMetadata(ctx, uuid.New(), uuid.New(), testAgentKey, agentpkg.Metadata{HomeURL: "https://www.example.com"}); err != nil {
 		t.Fatalf("metadata push: %v", err)
 	}
 	if n := len(q.jobs); n != 1 || q.jobs[0].Reported != "https://www.example.com" {
@@ -118,7 +118,7 @@ func TestEnqueueAdoptReportedURL_MetadataDropsWhatTheSavedAddressCannotBecome(t 
 	svc, q := newEnqueueService("https://example.com")
 
 	for _, reported := range []string{"https://other.example.org", "https://example.com/blog", "http://example.com", "https://example.com/", "https://EXAMPLE.com"} {
-		if _, err := svc.ApplyAgentMetadata(ctx, uuid.New(), uuid.New(), agentpkg.Metadata{HomeURL: reported}); err != nil {
+		if _, err := svc.ApplyAgentMetadata(ctx, uuid.New(), uuid.New(), testAgentKey, agentpkg.Metadata{HomeURL: reported}); err != nil {
 			t.Fatalf("metadata push of %q: %v", reported, err)
 		}
 	}
@@ -198,7 +198,7 @@ func TestEnqueueAdoptReportedURL_OneJobPerCanonicalAddress(t *testing.T) {
 	svc.SetAdoptURLEnqueuer(q)
 	tenant, site := uuid.New(), uuid.New()
 
-	if _, err := svc.ApplyAgentMetadata(ctx, tenant, site, agentpkg.Metadata{HomeURL: "https://EXAMPLE.com"}); err != nil {
+	if _, err := svc.ApplyAgentMetadata(ctx, tenant, site, testAgentKey, agentpkg.Metadata{HomeURL: "https://EXAMPLE.com"}); err != nil {
 		t.Fatalf("metadata push: %v", err)
 	}
 	for _, reported := range []string{"https://Example.com", "https://example.com", "https://example.com:443/"} {
@@ -234,7 +234,7 @@ func TestEnqueueAdoptReportedURL_CapsTheAgentVersion(t *testing.T) {
 	huge := strings.Repeat("9", 1<<20)
 	svc, q := newEnqueueService("http://example.com")
 
-	if _, err := svc.ApplyAgentMetadata(ctx, uuid.New(), uuid.New(), agentpkg.Metadata{HomeURL: "https://example.com", AgentVersion: huge}); err != nil {
+	if _, err := svc.ApplyAgentMetadata(ctx, uuid.New(), uuid.New(), testAgentKey, agentpkg.Metadata{HomeURL: "https://example.com", AgentVersion: huge}); err != nil {
 		t.Fatalf("metadata push: %v", err)
 	}
 	if err := svc.EnqueueAdoptReportedURL(ctx, uuid.New(), uuid.New(), "https://example.com", "agent_diagnostics", huge); err != nil {

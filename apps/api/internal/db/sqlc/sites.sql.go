@@ -16,6 +16,7 @@ import (
 const attachAgentToSite = `-- name: AttachAgentToSite :one
 UPDATE sites
 SET agent_public_key = $3,
+    age_recipient = '',
     status = 'active',
     enrolled_at = now(),
     last_seen_at = now(),
@@ -36,6 +37,11 @@ type AttachAgentToSiteParams struct {
 }
 
 // Re-enrollment: rotate the agent key and mark the site active/enrolled again.
+// It also clears the pinned backup recipient. An enrollment the operator
+// authorised is the one path that re-pins it: the agent's next metadata push
+// then records its current recipient as a first set, while a push on its own
+// never replaces a recipient already set. Read the previous value with
+// GetSiteByURLForEnroll, which locks the row, earlier in this transaction.
 func (q *Queries) AttachAgentToSite(ctx context.Context, arg AttachAgentToSiteParams) (Site, error) {
 	row := q.db.QueryRow(ctx, attachAgentToSite,
 		arg.ID,
@@ -518,6 +524,7 @@ const getSiteByURLForEnroll = `-- name: GetSiteByURLForEnroll :one
 
 SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, components_updated_at, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, content_editing_enabled_at, content_editing_principal_user_id, content_editing_enabled_by, ai_mode, ai_mode_source, ai_mode_set_by, ai_mode_set_at, ai_mode_version, ai_mode_step_up, ai_mode_launch_emailed_at, created_at, updated_at FROM sites
 WHERE tenant_id = $1 AND url = $2
+FOR UPDATE
 `
 
 type GetSiteByURLForEnrollParams struct {
@@ -528,6 +535,12 @@ type GetSiteByURLForEnrollParams struct {
 // ---------------------------------------------------------------------------
 // Enrollment path (app.enroll GUC). These run before any tenant scope exists.
 // ---------------------------------------------------------------------------
+// Legacy re-enrollment read. FOR UPDATE holds the row until the transaction
+// ends, so the age_recipient returned here is exactly the value
+// AttachAgentToSite clears later in the same transaction, and the caller can
+// record it after commit (PostgreSQL 16 has no RETURNING OLD). Under app.enroll
+// sites_enroll is FOR ALL, so the lock's UPDATE-policy check passes; the
+// tenant_id predicate, not RLS, is what confines this read to one tenant.
 func (q *Queries) GetSiteByURLForEnroll(ctx context.Context, arg GetSiteByURLForEnrollParams) (Site, error) {
 	row := q.db.QueryRow(ctx, getSiteByURLForEnroll, arg.TenantID, arg.Url)
 	var i Site
@@ -1532,6 +1545,44 @@ func (q *Queries) SetSiteAgeRecipient(ctx context.Context, arg SetSiteAgeRecipie
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const setSiteAgeRecipientIfUnsetForAgentKey = `-- name: SetSiteAgeRecipientIfUnsetForAgentKey :execrows
+UPDATE sites
+SET age_recipient = $1, updated_at = now()
+WHERE id = $2 AND tenant_id = $3
+  AND age_recipient = ''
+  AND agent_public_key <> ''
+  AND agent_public_key = $4
+`
+
+type SetSiteAgeRecipientIfUnsetForAgentKeyParams struct {
+	AgeRecipient   string    `json:"age_recipient"`
+	ID             uuid.UUID `json:"id"`
+	TenantID       uuid.UUID `json:"tenant_id"`
+	AgentPublicKey string    `json:"agent_public_key"`
+}
+
+// The agent path's first set of the backup recipient, as one compare-and-set.
+// It writes only while the column is still empty and only for the agent key
+// the site holds now, which must be the key that authenticated the push, passed
+// exactly as GetSiteByAgentKey matched it. A push signed with a key that a
+// re-enrollment has since rotated away therefore changes nothing, and a
+// recipient already set is never replaced. Under READ COMMITTED a push that
+// waits on the row lock of a concurrent re-enrollment re-checks both
+// conditions against the committed row. Returns the number of rows changed:
+// 1 when this call set the recipient, 0 otherwise. Runs in InTenantTx.
+func (q *Queries) SetSiteAgeRecipientIfUnsetForAgentKey(ctx context.Context, arg SetSiteAgeRecipientIfUnsetForAgentKeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setSiteAgeRecipientIfUnsetForAgentKey,
+		arg.AgeRecipient,
+		arg.ID,
+		arg.TenantID,
+		arg.AgentPublicKey,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setSiteHealthStatus = `-- name: SetSiteHealthStatus :execrows

@@ -162,7 +162,7 @@ func TestApplyAgentMetadataStoresBuilderFacts(t *testing.T) {
 	svc := newSvc(repo)
 	tenantID, siteID := uuid.New(), uuid.New()
 
-	_, err := svc.ApplyAgentMetadata(context.Background(), tenantID, siteID, agentpkg.Metadata{
+	_, err := svc.ApplyAgentMetadata(context.Background(), tenantID, siteID, testAgentKey, agentpkg.Metadata{
 		WPVersion: "7.1",
 		BuilderFacts: &agentpkg.BuilderFacts{
 			SchemaVersion: 1,
@@ -191,7 +191,7 @@ func TestApplyAgentMetadataStoresBuilderFacts(t *testing.T) {
 		t.Fatalf("builder_facts did not reach the stored document intact: %s", repo.gotComponents)
 	}
 
-	_, err = svc.ApplyAgentMetadata(context.Background(), tenantID, siteID, agentpkg.Metadata{WPVersion: "7.1"})
+	_, err = svc.ApplyAgentMetadata(context.Background(), tenantID, siteID, testAgentKey, agentpkg.Metadata{WPVersion: "7.1"})
 	if err != nil {
 		t.Fatalf("ApplyAgentMetadata (old agent): %v", err)
 	}

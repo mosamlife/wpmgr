@@ -14,8 +14,8 @@
  */
 import { describe, it, expect } from "vitest";
 
-import { actionLabel, classifySeverity } from "./labels";
-import { humanizeTargetType } from "./metadata";
+import { actionLabel, classifySeverity, type AuditSeverity } from "./labels";
+import { humanizeReason, humanizeTargetType } from "./metadata";
 
 describe("actionLabel", () => {
   it("returns a hand-written label for a known key", () => {
@@ -182,5 +182,53 @@ describe("site email provider removal (site.email.config.reset)", () => {
   it("leaves its sibling, the settings update, exactly as it was", () => {
     expect(actionLabel("site.email.config.updated")).toBe("Updated email settings");
     expect(classifySeverity("site.email.config.updated")).toBe("write");
+  });
+});
+
+// D1004: the audit actions the control plane records for a site's backup key
+// (ActionSiteBackupRecipient* in apps/api/internal/audit/audit.go) and the
+// reasons they carry. recordRecipientChangeRejected passes already_set,
+// concurrent_first_set, agent_key_not_current or reasonUnsignedReport
+// (unsigned_report), and reasonReEnrollment is re_enrollment, all in
+// apps/api/internal/site/service.go. A key with no entry would read as the
+// dotted key spelled out, "Site backup recipient set".
+//
+// All three are writes, so none reads as the quiet default and a filter on
+// writes finds each. "set" (a whole segment) and "change" are write stems;
+// "cleared" matches no stem and is held by an explicit override in labels.ts.
+describe("backup key events (D1004)", () => {
+  const ACTIONS: Array<[string, string, AuditSeverity]> = [
+    ["site.backup.recipient.set", "Backup key recorded", "write"],
+    ["site.backup.recipient.change_rejected", "Backup key change refused", "write"],
+    ["site.backup.recipient.cleared", "Backup key cleared by reconnect", "write"],
+  ];
+  const REASONS: Array<[string, string]> = [
+    ["already_set", "WPMgr already had a key for this site"],
+    ["concurrent_first_set", "Another report recorded a key first"],
+    ["agent_key_not_current", "The report came from an old connection"],
+    ["unsigned_report", "The report was not signed by the site's agent"],
+    ["re_enrollment", "The site was reconnected"],
+  ];
+
+  it.each(ACTIONS)("labels %s in plain words", (key, label) => {
+    expect(actionLabel(key)).toBe(label);
+  });
+
+  it.each(ACTIONS)("classifies %s by the severity beside its label", (key, _label, severity) => {
+    expect(classifySeverity(key)).toBe(severity);
+  });
+
+  it.each(REASONS)("describes the reason %s in plain words", (code, description) => {
+    expect(humanizeReason(code)).toBe(description);
+  });
+
+  it("words every label and description from the operator's side, with no dashes", () => {
+    // Built from char codes (en dash, em dash) so this file carries no dash.
+    const dash = new RegExp(`[${String.fromCharCode(0x2013)}${String.fromCharCode(0x2014)}]`);
+    const all = [...ACTIONS, ...REASONS].map(([, text]) => text);
+    for (const text of all) {
+      expect(text).not.toMatch(/recipient|\bage\b/i);
+      expect(text).not.toMatch(dash);
+    }
   });
 });

@@ -241,6 +241,13 @@ const ACTION_LABELS: Record<string, string> = {
   "restore.failed": "Restore failed",
   "backup.schedule.changed": "Changed backup schedule",
 
+  // Backup key: the key a site's backups are encrypted to. Worded from the
+  // operator's side; the wire keys (apps/api/internal/audit/audit.go) still say
+  // "recipient". Their reasons are described in metadata.ts (REASON_LABELS).
+  "site.backup.recipient.set": "Backup key recorded",
+  "site.backup.recipient.change_rejected": "Backup key change refused",
+  "site.backup.recipient.cleared": "Backup key cleared by reconnect",
+
   // Uptime & alerts
   // Deliberately doesn't assert "Sent" — the row's email_status/webhook_status
   // metadata (rendered in audit-detail.tsx) carries the actual sent/skipped/
@@ -397,6 +404,10 @@ const WRITE_OVERRIDES = new Set<string>([
   "assistant.request.completed",
   "assistant.request.undone",
   "assistant.ability_request.dispatched",
+  // "cleared" is not a write stem, and this empties the key a site's backups are
+  // encrypted to. Left to the stem heuristic it would read as the quiet default,
+  // and a filter on writes would miss it.
+  "site.backup.recipient.cleared",
 ]);
 
 // The heuristic below would otherwise flag these as writes (they contain a

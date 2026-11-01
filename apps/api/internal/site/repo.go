@@ -36,11 +36,12 @@ type Repo interface {
 	SetTags(ctx context.Context, in SetTagsInput) (Site, error)
 	SetAgeRecipient(ctx context.Context, tenantID, siteID uuid.UUID, recipient string) (Site, error)
 	// SetAgeRecipientIfUnset is the AGENT path's write: it stores the recipient
-	// only when the site has none yet, and never overwrites an established one.
-	// Returns the site as it stands after the call and whether the write was
-	// applied. SetAgeRecipient (above) stays the deliberate, unconditional
-	// operator path.
-	SetAgeRecipientIfUnset(ctx context.Context, tenantID, siteID uuid.UUID, recipient string) (Site, bool, error)
+	// only when the site has none yet AND agentKey (the key that authenticated
+	// the push) is still the site's agent key, and never overwrites an
+	// established one. Returns the site as it stands after the call and whether
+	// the write was applied; not applied is never an error. SetAgeRecipient
+	// (above) stays the deliberate, unconditional operator path.
+	SetAgeRecipientIfUnset(ctx context.Context, tenantID, siteID uuid.UUID, agentKey, recipient string) (Site, bool, error)
 	// AdoptSiteURL replaces the saved address with to, compare-and-set on
 	// from, for an enrolled site. false with no error means not adopted (the
 	// address changed, the state is not enrolled, or another site in the
@@ -60,7 +61,10 @@ type Repo interface {
 
 	// Enrollment path (public /enroll; app.enroll GUC).
 	CreatePairingCode(ctx context.Context, in CreatePairingCodeInput, codeHash string, expiresAt time.Time) (PairingCode, error)
-	Enroll(ctx context.Context, codeHash string, in EnrollInput) (Site, error)
+	// Enroll also returns the backup recipient a re-enrollment cleared: the
+	// value the existing row held, read under its row lock, or "" when the
+	// enrollment created a new site or the row held none.
+	Enroll(ctx context.Context, codeHash string, in EnrollInput) (Site, string, error)
 
 	// Agent-auth path (app.agent GUC): resolve a site by its agent public key.
 	GetByAgentKey(ctx context.Context, agentPublicKey string) (Site, error)
@@ -216,6 +220,10 @@ type ConsumeResult struct {
 	// when the code records none (the user was since deleted, or the code
 	// predates the column being set).
 	CodeCreatedBy uuid.UUID
+	// ClearedAgeRecipient is the backup recipient the attach cleared: the
+	// value the row held under its lock before AttachAgentAndConnect, or ""
+	// when it held none.
+	ClearedAgeRecipient string
 }
 
 // EnrollURLResult names what a site-bound enrollment did with the address its
@@ -686,7 +694,19 @@ func (r *pgRepo) SetAgeRecipient(ctx context.Context, tenantID, siteID uuid.UUID
 // so it never serializes unrelated sites.
 const ageRecipientLockNamespace = "site_age_recipient"
 
-func (r *pgRepo) SetAgeRecipientIfUnset(ctx context.Context, tenantID, siteID uuid.UUID, recipient string) (Site, bool, error) {
+// SetAgeRecipientIfUnset runs the first set as one compare-and-set
+// (SetSiteAgeRecipientIfUnsetForAgentKey): it lands only while the column is
+// empty and only while agentKey is still the site's agent key. That second
+// condition is what stops a push authenticated with a key that a
+// re-enrollment has since rotated away (the request resolved the site before
+// the re-enrollment committed) from winning the first set the re-enrollment
+// opened up. agentKey must be passed exactly as GetSiteByAgentKey matched it.
+//
+// Zero rows changed means "not applied" and is never an error: the column was
+// already set, or the key is no longer the site's. The row is then re-read so
+// the caller can tell those apart and record which it was. Only a re-read that
+// finds no row at all (the site was deleted meanwhile) is site_not_found.
+func (r *pgRepo) SetAgeRecipientIfUnset(ctx context.Context, tenantID, siteID uuid.UUID, agentKey, recipient string) (Site, bool, error) {
 	var out Site
 	var applied bool
 	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
@@ -696,6 +716,19 @@ func (r *pgRepo) SetAgeRecipientIfUnset(ctx context.Context, tenantID, siteID uu
 			return domain.Internal("site_recipient_lock_failed", "failed to lock site age recipient").WithCause(err)
 		}
 		q := sqlc.New(tx)
+		n, err := q.SetSiteAgeRecipientIfUnsetForAgentKey(ctx, sqlc.SetSiteAgeRecipientIfUnsetForAgentKeyParams{
+			AgeRecipient:   recipient,
+			ID:             siteID,
+			TenantID:       tenantID,
+			AgentPublicKey: agentKey,
+		})
+		if err != nil {
+			return domain.Internal("site_set_recipient_failed", "failed to set site age recipient").WithCause(err)
+		}
+		applied = n == 1
+		// Report the row as it stands now, applied or not. Not applied leaves
+		// the decision (same value, refused change, or a superseded key) to
+		// the caller, which records it.
 		cur, err := q.GetSite(ctx, sqlc.GetSiteParams{ID: siteID, TenantID: tenantID})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -703,26 +736,7 @@ func (r *pgRepo) SetAgeRecipientIfUnset(ctx context.Context, tenantID, siteID uu
 			}
 			return domain.Internal("site_get_failed", "failed to load site").WithCause(err)
 		}
-		// Already set: leave it alone and report the row as it stands. The
-		// caller decides whether that is a no-op (same value) or a refused
-		// change (different value) and records it.
-		if cur.AgeRecipient != "" {
-			out = toModelFromGetSiteRow(cur)
-			return nil
-		}
-		row, err := q.SetSiteAgeRecipient(ctx, sqlc.SetSiteAgeRecipientParams{
-			ID:           siteID,
-			TenantID:     tenantID,
-			AgeRecipient: recipient,
-		})
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return domain.NotFound("site_not_found", "site not found")
-			}
-			return domain.Internal("site_set_recipient_failed", "failed to set site age recipient").WithCause(err)
-		}
-		out = toModel(row)
-		applied = true
+		out = toModelFromGetSiteRow(cur)
 		return nil
 	})
 	if err != nil {
@@ -774,9 +788,11 @@ func (r *pgRepo) CreatePairingCode(ctx context.Context, in CreatePairingCodeInpu
 // the site, rotating the agent key on re-enrollment. The whole flow runs in a
 // single enroll-scoped transaction so a failure rolls everything back (the code
 // is not consumed unless the site is created/attached). It returns the resulting
-// site. Domain errors are returned for the invalid-code cases.
-func (r *pgRepo) Enroll(ctx context.Context, codeHash string, in EnrollInput) (Site, error) {
+// site and the backup recipient a re-enrollment cleared ("" when none was
+// cleared). Domain errors are returned for the invalid-code cases.
+func (r *pgRepo) Enroll(ctx context.Context, codeHash string, in EnrollInput) (Site, string, error) {
 	var out Site
+	var clearedRecipient string
 	err := r.pool.InEnrollTx(ctx, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
 		pc, err := q.GetPairingCodeByHash(ctx, codeHash)
@@ -829,6 +845,9 @@ func (r *pgRepo) Enroll(ctx context.Context, codeHash string, in EnrollInput) (S
 				return mapEnrollDupKey(aerr)
 			}
 			out = toModel(row)
+			// AttachAgentToSite cleared the recipient; existing was read
+			// under the row lock, so this is the value it replaced.
+			clearedRecipient = existing.AgeRecipient
 		case errors.Is(err, pgx.ErrNoRows):
 			// A genuinely NEW site is about to be born (the re-enroll/attach
 			// branch above reuses an existing row and does not need this check).
@@ -889,7 +908,10 @@ func (r *pgRepo) Enroll(ctx context.Context, codeHash string, in EnrollInput) (S
 		}
 		return nil
 	})
-	return out, err
+	if err != nil {
+		return Site{}, "", err
+	}
+	return out, clearedRecipient, nil
 }
 
 func (r *pgRepo) GetByAgentKey(ctx context.Context, agentPublicKey string) (Site, error) {

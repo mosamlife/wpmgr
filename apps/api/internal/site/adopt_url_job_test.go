@@ -91,7 +91,7 @@ func TestAdoptReportedURL_PushesDoNotWaitForTheProbe(t *testing.T) {
 	if err := svc.EnqueueAdoptReportedURL(ctx, tenant, site, " https://example.com ", "agent_diagnostics", ""); err != nil {
 		t.Fatalf("diagnostics enqueue: %v", err)
 	}
-	if _, err := svc.ApplyAgentMetadata(ctx, tenant, site, agentpkg.Metadata{HomeURL: "https://example.com", AgentVersion: "0.61.150"}); err != nil {
+	if _, err := svc.ApplyAgentMetadata(ctx, tenant, site, testAgentKey, agentpkg.Metadata{HomeURL: "https://example.com", AgentVersion: "0.61.150"}); err != nil {
 		t.Fatalf("metadata push: %v", err)
 	}
 	if took := time.Since(start); took > time.Second {
@@ -194,7 +194,7 @@ func TestAdoptReportedURL_EnqueueFailureNeverFailsThePush(t *testing.T) {
 	svc, repo := newAdoptService("http://example.com", prober, clk)
 	svc.SetAdoptURLEnqueuer(&recordingQueue{err: errors.New("queue unavailable")})
 
-	if _, err := svc.ApplyAgentMetadata(ctx, uuid.New(), uuid.New(), agentpkg.Metadata{HomeURL: "https://example.com"}); err != nil {
+	if _, err := svc.ApplyAgentMetadata(ctx, uuid.New(), uuid.New(), testAgentKey, agentpkg.Metadata{HomeURL: "https://example.com"}); err != nil {
 		t.Fatalf("metadata push failed on an enqueue failure: %v", err)
 	}
 	if err := svc.EnqueueAdoptReportedURL(ctx, uuid.New(), uuid.New(), "https://example.com", "agent_diagnostics", ""); err == nil {

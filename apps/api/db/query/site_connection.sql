@@ -12,6 +12,8 @@
 -- name: GetSiteForTransition :one
 -- Loads a site under the tenant scope with a row lock so the load → validate →
 -- write sequence is serialized against concurrent transitions on the same row.
+-- The site-first enrollment also runs it under app.enroll before
+-- AttachAgentAndConnect, so its age_recipient is the value that UPDATE clears.
 SELECT * FROM sites
 WHERE id = $1 AND tenant_id = $2
 FOR UPDATE;
@@ -124,8 +126,15 @@ RETURNING *;
 -- instead of failing on sites_tenant_id_url_key. The caller learns whether the
 -- address was adopted by comparing the returned url with the one it passed.
 -- Deciding WHICH address may be passed is the caller's job, not this query's.
+--
+-- age_recipient is cleared, as in AttachAgentToSite: an enrollment the operator
+-- authorised is the one path that re-pins the backup recipient, and the agent's
+-- next metadata push records its current recipient as a first set. On a first
+-- connect the column is already empty. The previous value comes from
+-- GetSiteForTransition, which locks the row earlier in this transaction.
 UPDATE sites
 SET agent_public_key = @agent_public_key,
+    age_recipient    = '',
     connection_state = 'connected',
     status           = 'active',
     health_status    = 'healthy',

@@ -27,6 +27,10 @@ type fakeRepo struct {
 	ifUnsetErr        error
 	ifUnsetCalls      int
 	unconditionalSets int
+	// siteAgentKey models sites.agent_public_key for the first-set
+	// compare-and-set; ifUnsetKey is the key the last guarded write was given.
+	siteAgentKey string
+	ifUnsetKey   string
 }
 
 func (f *fakeRepo) Create(_ context.Context, in CreateInput) (Site, error) {
@@ -68,14 +72,18 @@ func (f *fakeRepo) SetAgeRecipient(_ context.Context, tenantID, siteID uuid.UUID
 }
 
 // SetAgeRecipientIfUnset mirrors the pgRepo contract: first set wins, an
-// established value is never overwritten, and the returned Site is the row as
-// it stands after the call.
-func (f *fakeRepo) SetAgeRecipientIfUnset(_ context.Context, tenantID, siteID uuid.UUID, recipient string) (Site, bool, error) {
+// established value is never overwritten, the write needs a non-empty agent
+// key that is still the site's (siteAgentKey; left empty, any non-empty key
+// counts as current), and the returned Site is the row as it stands after the
+// call.
+func (f *fakeRepo) SetAgeRecipientIfUnset(_ context.Context, tenantID, siteID uuid.UUID, agentKey, recipient string) (Site, bool, error) {
 	f.ifUnsetCalls++
+	f.ifUnsetKey = agentKey
 	if f.ifUnsetErr != nil {
 		return Site{}, false, f.ifUnsetErr
 	}
-	if f.ageRecipient != "" {
+	keyCurrent := agentKey != "" && (f.siteAgentKey == "" || agentKey == f.siteAgentKey)
+	if f.ageRecipient != "" || !keyCurrent {
 		return Site{ID: siteID, TenantID: tenantID, AgeRecipient: f.ageRecipient}, false, nil
 	}
 	f.ageRecipient = recipient
@@ -93,8 +101,8 @@ func (f *fakeRepo) CreatePairingCode(_ context.Context, in CreatePairingCodeInpu
 	return PairingCode{ID: uuid.New(), TenantID: in.TenantID, ExpiresAt: expiresAt}, nil
 }
 
-func (f *fakeRepo) Enroll(_ context.Context, _ string, in EnrollInput) (Site, error) {
-	return Site{ID: uuid.New(), URL: in.URL, AgentPublicKey: in.AgentPublicKey}, nil
+func (f *fakeRepo) Enroll(_ context.Context, _ string, in EnrollInput) (Site, string, error) {
+	return Site{ID: uuid.New(), URL: in.URL, AgentPublicKey: in.AgentPublicKey}, "", nil
 }
 
 func (f *fakeRepo) GetByAgentKey(_ context.Context, key string) (Site, error) {

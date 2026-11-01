@@ -22,6 +22,11 @@ const maxAgentBody = 4 << 20 // 4 MiB
 type Identity struct {
 	SiteID   uuid.UUID
 	TenantID uuid.UUID
+	// AgentPublicKey is the base64 Ed25519 key that signed this request,
+	// exactly as GetSiteByAgentKey matched it (it matches by equality). A
+	// write that must only land while this key is still the site's, such as
+	// the first set of the backup recipient, compares against it.
+	AgentPublicKey string
 }
 
 type identityCtxKey struct{}
@@ -125,6 +130,10 @@ func (a *Authenticator) Authenticate() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		// The key the site was resolved by, carried to handlers that must
+		// re-check it at write time (a re-enrollment can rotate it between
+		// this lookup and the write).
+		id.AgentPublicKey = keyB64
 
 		// Anti-replay: the nonce must be unseen for this site.
 		fresh, err := a.resolver.RecordNonce(ctx, id.SiteID, nonce)
