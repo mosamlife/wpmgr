@@ -26,8 +26,8 @@ func assertReconnectMessage(t *testing.T, got Snapshot, agentDetail string) {
 	for _, want := range []string{
 		"backup key changed after WPMgr recorded it",
 		"reconnect the site",
-		"click Disconnect",
-		"click Reconnect",
+		"choose Disconnect site from its actions menu and confirm",
+		"choose Reconnect",
 		"new pairing code",
 		"activate the WPMgr Agent plugin again if it was deactivated",
 		"open the WPMgr Agent menu and enter the code",

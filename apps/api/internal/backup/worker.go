@@ -104,7 +104,7 @@ const legacyAgeRecipientMismatchDetail = "age recipient mismatch"
 // deactivate itself on its next heartbeat while keeping its backup key, so
 // the plugin may need activating again before the new code can be entered.
 // Backups taken so far do not depend on this key, so they are not affected.
-const ageRecipientMismatchOperatorMessage = "Backup not started: this site's backup key changed after WPMgr recorded it, so the site refused to back up with the old one. To accept the site's current key, reconnect the site: in WPMgr, open the site and click Disconnect, then click Reconnect to get a new pairing code. In the site's WordPress admin, activate the WPMgr Agent plugin again if it was deactivated, open the WPMgr Agent menu and enter the code. Backups already taken are not affected."
+const ageRecipientMismatchOperatorMessage = "Backup not started: this site's backup key changed after WPMgr recorded it, so the site refused to back up with the old one. To accept the site's current key, reconnect the site: in WPMgr, open the site, choose Disconnect site from its actions menu and confirm, then choose Reconnect to get a new pairing code. In the site's WordPress admin, activate the WPMgr Agent plugin again if it was deactivated, open the WPMgr Agent menu and enter the code. Backups already taken are not affected."
 
 // codeKeystoreReadFailed (GH #1004) is the refusal code the agent sets when it
 // could not read its backup key just now (a failed database read), as opposed
