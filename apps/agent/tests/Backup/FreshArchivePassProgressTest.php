@@ -102,6 +102,21 @@ final class FreshArchivePassProgressTest extends TestCase
         self::assertSame(self::NEW_PASS, end($records)['pass'] ?? null);
     }
 
+    public function testRecordThatNamesNoPassLearnsItWithoutCountingAnAdvance(): void
+    {
+        // A record saved before passes were recorded, or before the archive
+        // had a pass: finding the pass it is already in is not progress, or a
+        // worker would hand over before it closed anything. Once learned, a
+        // fresh pass is told from it as usual.
+        $db = $this->seed(600, 600, 5, false);
+
+        $records = $this->runAWorkerThroughAFreshPass($db);
+
+        self::assertSame([7, 7, 8, 9, 9], array_column($records, 'seq'), 'only the fresh pass\'s checkpoints advance the record');
+        self::assertSame(self::OLD_PASS, $records[0]['pass'] ?? null, 'the first save names the pass the worker resumed in');
+        self::assertSame(self::NEW_PASS, $records[2]['pass'] ?? null);
+    }
+
     // ---- The watchdog neither counts that resume nor gives the task up ----
 
     public function testWatchdogDoesNotCountTheResumeAfterAFreshPassSavedItsFirstCheckpoint(): void
@@ -195,14 +210,15 @@ final class FreshArchivePassProgressTest extends TestCase
      * OLD_PASS: its record is at sequence 7, its last worker started at
      * sequence 7 and saved nothing since, and its row is stalled.
      */
-    private function seed(int $startedAgo, int $progressAgo, int $resumeCount): FakeBackupTasksWpdb
+    private function seed(int $startedAgo, int $progressAgo, int $resumeCount, bool $recordNamesItsPass = true): FakeBackupTasksWpdb
     {
-        $now   = time();
-        $parts = ['uploads.g000.part001.zip', 'uploads.g000.part002.zip', 'uploads.g000.part003.zip', 'uploads.g000.part004.zip', 'uploads.g000.part005.zip'];
-        $state = [
+        $now    = time();
+        $parts  = ['uploads.g000.part001.zip', 'uploads.g000.part002.zip', 'uploads.g000.part003.zip', 'uploads.g000.part004.zip', 'uploads.g000.part005.zip'];
+        $record = ['mark' => [2, 5, 100, 0, 0], 'at' => $now - $progressAgo, 'seq' => 7];
+        $state  = [
             'params'   => $this->params(),
             'files'    => $this->cursor(self::OLD_PASS, $parts, 100),
-            'progress' => ['mark' => [2, 5, 100, 0, 0], 'at' => $now - $progressAgo, 'seq' => 7, 'pass' => self::OLD_PASS],
+            'progress' => $recordNamesItsPass ? $record + ['pass' => self::OLD_PASS] : $record,
             'worker'   => ['seq' => 7, 'started_at' => $now - $progressAgo],
         ];
         $db = new FakeBackupTasksWpdb();

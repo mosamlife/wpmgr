@@ -2101,16 +2101,19 @@ final class TaskRunner
         // mark is later than the last saved one, or when the archive has begun
         // a fresh pass: a pass restarts the marks, so the first parts a fresh
         // pass closes compare as earlier than the pass it replaced. The record
-        // names the pass it last advanced in, and a pass it has not seen is an
-        // advance. This worker keeps the record, so a caller's older copy of
-        // sub_state never rolls it back.
+        // names the pass it is in, and a different pass is an advance. A record
+        // that names none learns the pass it finds, which is not an advance.
+        // This worker keeps the record, so a caller's older copy of sub_state
+        // never rolls it back.
         $mark   = self::progressMark($phase, $subState);
         $pass   = self::progressPass($subState);
         $record = $this->progress ?? self::progressRecord($subState['progress'] ?? null);
         if ($record === null) {
             $record = self::newProgressRecord($mark, $pass, $now, 0);
-        } elseif (($pass !== '' && $pass !== ($record['pass'] ?? '')) || self::markAdvanced($mark, $record['mark'])) {
+        } elseif (self::markAdvanced($mark, $record['mark']) || ($pass !== '' && isset($record['pass']) && $pass !== $record['pass'])) {
             $record = self::newProgressRecord($mark, $pass, $now, $record['seq'] + 1);
+        } elseif ($pass !== '' && !isset($record['pass'])) {
+            $record['pass'] = $pass;
         }
         $subState['progress'] = $record;
         $encoded = self::encodeSubState($subState);
