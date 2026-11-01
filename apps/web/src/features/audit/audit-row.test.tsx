@@ -249,8 +249,8 @@ describe("AuditEntryRow for a removed email provider (GH #968)", () => {
 // "site", actor "system" and the metadata keys are the ones recorded by
 // recordRecipientChangeRejected, recordRecipientCleared and
 // applyAgentAgeRecipient in apps/api/internal/site/service.go. The reason codes
-// are already_set, concurrent_first_set, agent_key_not_current (same file) and
-// re_enrollment (reasonReEnrollment).
+// are already_set, concurrent_first_set, agent_key_not_current, unsigned_report
+// (reasonUnsignedReport, same file) and re_enrollment (reasonReEnrollment).
 describe("AuditEntryRow for the backup key events (D1004)", () => {
   const renderRow = (e: AuditEntry) =>
     renderWithProviders(<AuditEntryRow entry={e} sites={SITES} isToday={false} />, { withRouter: true });
@@ -274,6 +274,7 @@ describe("AuditEntryRow for the backup key events (D1004)", () => {
     ["already_set", "WPMgr already had a key for this site"],
     ["concurrent_first_set", "Another report recorded a key first"],
     ["agent_key_not_current", "The report came from an old connection"],
+    ["unsigned_report", "The report was not signed by the site's agent"],
   ])("titles a refused change in plain words and explains %s once opened", async (reason, plain) => {
     renderRow(refused(reason));
 
@@ -290,6 +291,30 @@ describe("AuditEntryRow for the backup key events (D1004)", () => {
     expect(screen.getByText("Reason")).toBeInTheDocument();
     // The wire code never becomes visible text.
     expect(screen.queryByText(reason)).not.toBeInTheDocument();
+  });
+
+  // The table above gives every reason a recorded key. A report no agent key
+  // signed arrives while none is recorded, so the control plane writes this row
+  // with an empty current_recipient (recordRecipientChangeRejected in
+  // apps/api/internal/site/service.go; apps/api/tests/
+  // c1004_reenroll_repin_integration_test.go asserts that exact shape).
+  it("explains an unsigned report on the row written when no key is recorded", async () => {
+    renderRow(
+      keyEvent("site.backup.recipient.change_rejected", {
+        current_recipient: "",
+        proposed_recipient: "age1reportedkey",
+        source: "agent_metadata",
+        agent_version: "0.61.167",
+        reason: "unsigned_report",
+      }),
+    );
+
+    expect(await screen.findByText("Backup key change refused")).toBeInTheDocument();
+    openRow("Backup key change refused");
+
+    expect(await screen.findByText("The report was not signed by the site's agent")).toBeInTheDocument();
+    expect(screen.getByText("Reason")).toBeInTheDocument();
+    expect(screen.queryByText("unsigned_report")).not.toBeInTheDocument();
   });
 
   it("says a reconnect cleared the key, and why, once opened", async () => {

@@ -188,9 +188,10 @@ describe("site email provider removal (site.email.config.reset)", () => {
 // D1004: the audit actions the control plane records for a site's backup key
 // (ActionSiteBackupRecipient* in apps/api/internal/audit/audit.go) and the
 // reasons they carry. recordRecipientChangeRejected passes already_set,
-// concurrent_first_set or agent_key_not_current, and reasonReEnrollment is
-// re_enrollment, all in apps/api/internal/site/service.go. A key with no entry
-// would read as the dotted key spelled out, "Site backup recipient set".
+// concurrent_first_set, agent_key_not_current or reasonUnsignedReport
+// (unsigned_report), and reasonReEnrollment is re_enrollment, all in
+// apps/api/internal/site/service.go. A key with no entry would read as the
+// dotted key spelled out, "Site backup recipient set".
 describe("backup key events (D1004)", () => {
   const ACTIONS: Array<[string, string]> = [
     ["site.backup.recipient.set", "Backup key recorded"],
@@ -201,6 +202,7 @@ describe("backup key events (D1004)", () => {
     ["already_set", "WPMgr already had a key for this site"],
     ["concurrent_first_set", "Another report recorded a key first"],
     ["agent_key_not_current", "The report came from an old connection"],
+    ["unsigned_report", "The report was not signed by the site's agent"],
     ["re_enrollment", "The site was reconnected"],
   ];
 
