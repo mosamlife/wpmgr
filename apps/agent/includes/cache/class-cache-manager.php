@@ -197,6 +197,13 @@ final class CacheManager
 
         $requestUri = sanitize_text_field( wp_unslash( isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '/' ) );
         $writer     = new CacheWriter($this->config(), $this->cacheRoot(), $this->storeKey(), null, null, $requestUri);
+        // Whether the page is rendered for a logged-in user is recorded as the
+        // capture opens (WordPress has worked out the user before init) and
+        // on every change of the current user while it is open.
+        $writer->recordCurrentUser();
+        if (function_exists('add_action')) {
+            add_action('set_current_user', [$writer, 'recordCurrentUser']);
+        }
         // Full-page output buffer with a callback handler: this is the standard
         // page-cache capture pattern. PHP finalizes the buffer at request end,
         // invoking CacheWriter::handle() with the complete response. The buffer

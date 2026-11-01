@@ -152,6 +152,25 @@ final class CacheWriterTest extends TestCase
     }
 
     /**
+     * A key whose file name reads like the logged-in variant is not enough:
+     * a page rendered for a logged-in user is stored only under a logged-in
+     * variant the key rule built for a request with the logged-in cookie.
+     */
+    public function test_a_page_for_a_logged_in_user_is_not_stored_under_a_name_that_only_looks_like_the_logged_in_variant(): void
+    {
+        $ctx = $this->ctx([
+            'store_key'       => 'example.com/about/index-logged-in.html.gz',
+            'logged_in'       => true,
+            'cache_logged_in' => true,
+        ]);
+
+        $written = $this->writer(['cache_logged_in' => true])->maybeWrite(self::HTML, $ctx);
+
+        $this->assertFalse($written);
+        $this->assertFileDoesNotExist($this->root . '/example.com/about/index-logged-in.html.gz');
+    }
+
+    /**
      * A logged-in visitor with the logged-in cookie, handed the logged-in
      * variant of the key, with logged-in caching on: still not stored.
      */

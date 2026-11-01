@@ -22,7 +22,9 @@
  *  - a buffer a plugin throws away (ob_end_clean, ob_get_clean) is not stored;
  *  - Cache-Control no-store or private, and DONOTCACHEPAGE, mean not stored;
  *  - a page rendered for a logged-in user is never stored under the anonymous
- *    key, whatever its Cache-Control says;
+ *    key, whatever its Cache-Control says; a page counts as rendered for a
+ *    logged-in user when a user was current as the capture opened or became
+ *    current while it was open, even if none is current at the flush;
  *  - the Bypass URLs and the enabled flag are read again when the page is
  *    stored, so a page bypassed or a cache switched off while the request ran
  *    is not stored; a push that switches the cache off clears it.
@@ -85,6 +87,12 @@ final class CacheWriterStoreGatesTest extends TestCase
     private array $headers = ['Content-Type: text/html; charset=UTF-8'];
 
     private bool $templateStage = true;
+
+    /** Whether a user is current, for tests that follow the current user. */
+    private bool $userLoggedIn = false;
+
+    /** @var list<callable> Callbacks added to set_current_user. */
+    private array $onSetCurrentUser = [];
 
     protected function set_up(): void
     {
@@ -1081,6 +1089,111 @@ final class CacheWriterStoreGatesTest extends TestCase
 
         $this->assertTrue($this->stored());
         $this->assertSame([self::KEY], $this->storedPages());
+    }
+
+    /**
+     * A page rendered while a user is logged in counts as rendered for a
+     * logged-in user even when no user is current by the time the buffer is
+     * flushed, so it is not stored under the anonymous key.
+     *
+     * @dataProvider provide_cache_control_without_no_store_or_private
+     *
+     * @param list<string> $headers Response headers.
+     */
+    public function test_a_page_rendered_for_a_user_reset_to_nobody_before_the_flush_is_not_stored(array $headers): void
+    {
+        $this->optionStore[CacheManager::OPTION_CONFIG] = ['enabled' => true, 'cache_logged_in' => true];
+        $this->followCurrentUser(true);
+        $this->headers = $headers;
+
+        $visitor = $this->respond(function (): void {
+            echo self::PAGE;
+            $this->setCurrentUser(0);
+        });
+
+        $this->assertSame(self::PAGE, $visitor);
+        $this->assertSame([], $this->storedPages(), 'a page rendered for a logged-in user must not be stored under the anonymous key');
+    }
+
+    /**
+     * The same for a user made current while the page renders and set back
+     * to nobody before the flush.
+     *
+     * @dataProvider provide_cache_control_without_no_store_or_private
+     *
+     * @param list<string> $headers Response headers.
+     */
+    public function test_a_page_rendered_for_a_user_made_current_during_the_render_is_not_stored(array $headers): void
+    {
+        $this->optionStore[CacheManager::OPTION_CONFIG] = ['enabled' => true, 'cache_logged_in' => true];
+        $this->followCurrentUser(false);
+        $this->headers = $headers;
+
+        $this->respond(function (): void {
+            $this->setCurrentUser(7);
+            echo self::PAGE;
+            $this->setCurrentUser(0);
+        });
+
+        $this->assertSame([], $this->storedPages(), 'a page rendered for a logged-in user must not be stored under the anonymous key');
+    }
+
+    /**
+     * @return array<string,array{0:list<string>}>
+     */
+    public static function provide_cache_control_without_no_store_or_private(): array
+    {
+        return [
+            'no Cache-Control' => [['Content-Type: text/html; charset=UTF-8']],
+            'no-cache only'    => [['Content-Type: text/html; charset=UTF-8', 'Cache-Control: no-cache, must-revalidate, max-age=0']],
+        ];
+    }
+
+    /**
+     * A page for a visitor who is not logged in is still stored when a plugin
+     * sets the current user to nobody while it renders.
+     */
+    public function test_an_anonymous_page_is_stored_when_the_current_user_is_set_to_nobody(): void
+    {
+        $this->optionStore[CacheManager::OPTION_CONFIG] = ['enabled' => true, 'cache_logged_in' => true];
+        $this->followCurrentUser(false);
+
+        $this->respond(function (): void {
+            $this->setCurrentUser(0);
+            echo self::PAGE;
+        });
+
+        $this->assertSame([self::KEY], $this->storedPages());
+    }
+
+    /**
+     * Answer is_user_logged_in() from the current user the test sets, and keep
+     * the callbacks added to set_current_user so they run as WordPress runs
+     * them.
+     *
+     * @param bool $loggedIn Whether a user is current when the capture opens.
+     */
+    private function followCurrentUser(bool $loggedIn): void
+    {
+        $this->userLoggedIn = $loggedIn;
+        Functions\when('is_user_logged_in')->alias(fn (): bool => $this->userLoggedIn);
+        Monkey\Actions\expectAdded('set_current_user')->zeroOrMoreTimes()->whenHappen(function ($callback): void {
+            $this->onSetCurrentUser[] = $callback;
+        });
+    }
+
+    /**
+     * As wp_set_current_user(): the current user changes, then the
+     * set_current_user action fires.
+     *
+     * @param int $id User ID; 0 is nobody.
+     */
+    private function setCurrentUser(int $id): void
+    {
+        $this->userLoggedIn = $id > 0;
+        foreach ($this->onSetCurrentUser as $callback) {
+            $callback();
+        }
     }
 
     /**

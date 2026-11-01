@@ -111,6 +111,14 @@ final class CacheWriter
     private ?string $requestUri;
 
     /**
+     * Set once a user is logged in at any point the capture sees: when it
+     * opens, or on a set_current_user action while it is open. From then on
+     * the response counts as rendered for a logged-in user, whoever is current
+     * at the flush.
+     */
+    private bool $renderedForUser = false;
+
+    /**
      * @param CacheConfig       $config       Page-cache config.
      * @param string            $cacheRoot    Absolute cache root.
      * @param string|null       $storeKey     The key to store this request's page
@@ -154,6 +162,20 @@ final class CacheWriter
             $this->optimizerResolved = true;
         } else {
             $this->optimizer = null;
+        }
+    }
+
+    /**
+     * Record that the response is rendered for a logged-in user when a user is
+     * logged in now. Called as the capture opens and on every set_current_user
+     * action while it is open; once recorded, it stays for the request.
+     *
+     * @return void
+     */
+    public function recordCurrentUser(): void
+    {
+        if (function_exists('is_user_logged_in') && is_user_logged_in()) {
+            $this->renderedForUser = true;
         }
     }
 
@@ -657,7 +679,10 @@ final class CacheWriter
         $method = sanitize_text_field( wp_unslash( isset( $_SERVER['REQUEST_METHOD'] ) ? (string) $_SERVER['REQUEST_METHOD'] : 'GET' ) );
         $ua     = sanitize_text_field( wp_unslash( isset( $_SERVER['HTTP_USER_AGENT'] ) ? (string) $_SERVER['HTTP_USER_AGENT'] : '' ) );
 
-        $loggedIn = function_exists('is_user_logged_in') ? (bool) is_user_logged_in() : false;
+        // Rendered for a logged-in user when one was logged in at any point
+        // the capture saw (see recordCurrentUser()), or is now.
+        $loggedIn = $this->renderedForUser
+            || (function_exists('is_user_logged_in') && is_user_logged_in());
         $isAdmin  = function_exists('is_admin') ? (bool) is_admin() : false;
         $isAjax   = function_exists('wp_doing_ajax') ? (bool) wp_doing_ajax() : false;
         // http_response_code() returns FALSE when no status has been explicitly
