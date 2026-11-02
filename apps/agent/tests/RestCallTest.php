@@ -1279,7 +1279,7 @@ final class RestCallTest extends TestCase
         $pair   = sodium_crypto_sign_keypair();
         $secret = sodium_crypto_sign_secretkey($pair);
         $keys   = new Keystore();
-        $keys->storeControlPlanePublicKey(sodium_crypto_sign_publickey($pair));
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keys->storeControlPlanePublicKey(sodium_crypto_sign_publickey($pair)));
         $siteId = (string) $f['site_id'];
         $this->options[Settings::OPTION_SITE_ID] = $siteId;
         $this->resetShieldStash();

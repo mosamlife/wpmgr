@@ -168,7 +168,7 @@ final class AutologinCommandTest extends TestCase
         $this->cpPublic = sodium_crypto_sign_publickey($kp);
 
         $this->keystore = new Keystore();
-        $this->keystore->storeControlPlanePublicKey($this->cpPublic);
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $this->keystore->storeControlPlanePublicKey($this->cpPublic));
         // Site keypair for the Signer's outbound headers on the consume call.
         \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $this->keystore->generateSiteKeypair());
 

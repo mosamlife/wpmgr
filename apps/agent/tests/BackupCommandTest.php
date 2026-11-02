@@ -591,7 +591,7 @@ final class BackupCommandTest extends TestCase
         }
 
         $this->assertArrayHasKey(\WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY, $options, 'The absent backup key must be created.');
-        $this->assertSame(\WPMgr\Agent\Keystore::PROBE_OK, (new \WPMgr\Agent\Keystore())->probe()['state']);
+        $this->assertSame(\WPMgr\Agent\Keystore::PROBE_OK, OptionsBackedKeyRowWpdb::around(static fn () => (new \WPMgr\Agent\Keystore())->probe())['state']);
         $this->assertStringStartsWith('age1', $recipient);
         // The command's recipient is another site's, so the check itself refuses.
         $this->assertSame('age recipient mismatch', $res['detail']);

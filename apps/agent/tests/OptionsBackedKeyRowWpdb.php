@@ -8,7 +8,8 @@
  * It answers exactly the statements Keystore issues for a key row and throws
  * on anything else: the aggregate SELECT that reads it, the plain INSERT that
  * creates it (which fails as a duplicate key does when the option has a
- * value), and the UPDATE that fills it only while it is empty.
+ * value), and conditional UPDATEs that fill empty rows or an exact malformed
+ * source descriptor. Arrays are serialized as WordPress stores them.
  *
  * @package WPMgr\Agent\Tests
  */
@@ -100,7 +101,7 @@ final class OptionsBackedKeyRowWpdb
             return ['stored_rows' => '0', 'stored_value' => null];
         }
 
-        return ['stored_rows' => '1', 'stored_value' => is_string($value) ? $value : ''];
+        return ['stored_rows' => '1', 'stored_value' => is_array($value) ? serialize($value) : (string) $value];
     }
 
     /**
@@ -122,7 +123,7 @@ final class OptionsBackedKeyRowWpdb
 
                 return false;
             }
-            update_option($name, (string) $args[1], false);
+            update_option($name, self::optionValue($name, (string) $args[1]), false);
 
             return 1;
         }
@@ -132,12 +133,35 @@ final class OptionsBackedKeyRowWpdb
             if (get_option($name, null) !== '') {
                 return 0;
             }
-            update_option($name, (string) $args[0], false);
+            update_option($name, self::optionValue($name, (string) $args[0]), false);
+
+            return 1;
+        }
+
+        if ($sql === 'UPDATE wp_options SET option_value = %s WHERE option_name = %s AND BINARY option_value = %s') {
+            $name = (string) $args[1];
+            $current = get_option($name, null);
+            $current = is_array($current) ? serialize($current) : $current;
+            if ($current !== $args[2]) {
+                return 0;
+            }
+            update_option($name, self::optionValue($name, (string) $args[0]), false);
 
             return 1;
         }
 
         throw new \LogicException('OptionsBackedKeyRowWpdb does not answer: ' . $sql);
+    }
+
+    /**
+     * @param string $name Option name.
+     * @param string $value Stored value.
+     * @return mixed
+     */
+    private static function optionValue(string $name, string $value)
+    {
+        return $name === \WPMgr\Agent\Keystore::OPTION_MASTER_KEY_SOURCE
+            ? unserialize($value, ['allowed_classes' => false]) : $value;
     }
 
     /**

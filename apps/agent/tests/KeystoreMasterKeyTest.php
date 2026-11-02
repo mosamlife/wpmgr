@@ -59,10 +59,15 @@ final class KeystoreMasterKeyTest extends TestCase
     /** @var list<string> Temp paths/dirs to clean up. */
     private array $cleanup = [];
 
+    /** @var mixed Previous database handle. */
+    private $previousWpdb;
+
     protected function set_up(): void
     {
         parent::set_up();
         Monkey\setUp();
+        $this->previousWpdb = $GLOBALS['wpdb'] ?? null;
+        $GLOBALS['wpdb'] = new OptionsBackedKeyRowWpdb();
 
         $this->options        = [];
         $this->optionAutoload = [];
@@ -81,8 +86,7 @@ final class KeystoreMasterKeyTest extends TestCase
             return true;
         });
         // Real add_option() semantics: INSERT-only, returns false (and does
-        // NOT overwrite) if the option row already exists. This is what makes
-        // it usable as an atomic claim for keyFromDatabase()'s race guard.
+        // NOT overwrite) if the option row already exists.
         Functions\when('add_option')->alias(function ($name, $value, $deprecated = '', $autoload = null) {
             if (array_key_exists($name, $this->options)) {
                 return false;
@@ -95,6 +99,7 @@ final class KeystoreMasterKeyTest extends TestCase
 
     protected function tear_down(): void
     {
+        $GLOBALS['wpdb'] = $this->previousWpdb;
         foreach ($this->cleanup as $path) {
             if (is_file($path)) {
                 @unlink($path);
@@ -558,34 +563,26 @@ final class KeystoreMasterKeyTest extends TestCase
         $this->assertSame('db-payload', $fresh->decrypt($envelope));
     }
 
-    public function test_db_key_add_option_race_adopts_concurrent_winner(): void
+    public function test_db_key_creation_adopts_concurrent_winner(): void
     {
-        // Simulate a concurrent request (e.g. an admin_init keystore retry
-        // overlapping an in-flight Enroll POST) that has already won the
-        // atomic claim by the time THIS request's add_option() call runs:
-        // add_option() returns false (the row already exists), exactly like
-        // the real wp_options UNIQUE(option_name) constraint would after a
-        // losing INSERT. The winner's key is what actually lands in the
-        // option store.
         $winnerKey = random_bytes(32);
-        Functions\when('add_option')->alias(function ($name, $value, $deprecated = '', $autoload = null) use ($winnerKey) {
-            // The "winner" already stored its key before this call arrives.
-            $this->options[$name] = base64_encode($winnerKey);
-            return false;
-        });
-
+        $wpdb = new FakeKeyRowWpdb($this->options);
+        $GLOBALS['wpdb'] = $wpdb;
+        $wpdb->beforeInsert = function (string $name) use ($winnerKey): void {
+            if ($name === Keystore::OPTION_DB_MASTER_KEY) {
+                $this->options[$name] = base64_encode($winnerKey);
+            }
+        };
         $this->blockEveryFileCandidate();
 
         $keystore = new Keystore();
         $envelope = $keystore->encrypt('race-payload');
 
-        // Must decrypt correctly, proving the LOSER adopted the winner's key
-        // instead of using its own freshly generated (and discarded) one.
         $this->assertSame('race-payload', $keystore->decrypt($envelope));
         $this->assertSame(
             base64_encode($winnerKey),
             $this->options[Keystore::OPTION_DB_MASTER_KEY],
-            'the loser must adopt the concurrently-persisted winner key, not overwrite it'
+            'The stored key is the one used.'
         );
     }
 

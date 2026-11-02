@@ -18,6 +18,7 @@ namespace WPMgr\Agent\Tests;
 
 use Brain\Monkey;
 use Brain\Monkey\Functions;
+use PHPUnit\Framework\Attributes\DataProvider;
 use WPMgr\Agent\Commands\BackupCommand;
 use WPMgr\Agent\Keystore;
 use WPMgr\Agent\KeystoreReadFailed;
@@ -25,6 +26,7 @@ use WPMgr\Agent\Plugin;
 use WPMgr\Agent\Signer;
 use WPMgr\Agent\Support\AgeCrypto;
 use WPMgr\Agent\Support\AgeIdentity;
+use WPMgr\Agent\Support\KeystoreHealth;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -125,8 +127,13 @@ final class BackupKeyReadFailureTest extends TestCase
             return $this->valueCache[$name];
         }
         $this->wpdb->statements[] = 'get_option SELECT';
-        if ($this->wpdb->failSelects > 0) {
-            --$this->wpdb->failSelects;
+        if ($this->wpdb->failSelects > 0 || ($this->wpdb->failSelectsByName[$name] ?? 0) > 0) {
+            if (($this->wpdb->failSelectsByName[$name] ?? 0) > 0) {
+                --$this->wpdb->failSelectsByName[$name];
+            } else {
+                --$this->wpdb->failSelects;
+            }
+            $this->wpdb->last_error = 'Lock wait timeout exceeded; try restarting transaction';
             ++$this->wpdb->failedSelects;
             $this->notoptions[$name] = true;
 
@@ -224,7 +231,7 @@ final class BackupKeyReadFailureTest extends TestCase
     {
         $this->seedHealthyKeystore();
         $sealed                  = $this->rows[Keystore::OPTION_AGE_IDENTITY];
-        $this->wpdb->failSelects = 1;
+        $this->wpdb->failSelectsByName[Keystore::OPTION_AGE_IDENTITY] = 1;
 
         try {
             (new Keystore())->getAgeIdentity();
@@ -240,7 +247,7 @@ final class BackupKeyReadFailureTest extends TestCase
     {
         $recipient               = $this->seedHealthyKeystore();
         $sealed                  = $this->rows[Keystore::OPTION_AGE_IDENTITY];
-        $this->wpdb->failSelects = 1;
+        $this->wpdb->failSelectsByName[Keystore::OPTION_AGE_IDENTITY] = 1;
 
         $res = (new BackupCommand(new AgeIdentity(new Keystore())))->execute([], $this->backupParams($recipient));
 
@@ -250,6 +257,90 @@ final class BackupKeyReadFailureTest extends TestCase
         $this->assertFalse($res['ok']);
         $this->assertSame('keystore_read_failed', $res['code'] ?? null);
         $this->assertSame(self::READ_FAILED_DETAIL, $res['detail']);
+    }
+
+    public function test_a_failed_marker_read_throws_without_creating_a_backup_key(): void
+    {
+        (new Keystore())->generateSiteKeypair();
+        $before = $this->rows;
+        $this->wpdb->insertedByName = [];
+        $this->wpdb->failSelectsByName[Keystore::OPTION_MASTER_KEY_SOURCE] = 1;
+
+        try {
+            (new AgeIdentity(new Keystore()))->ensureRecipient();
+            $this->fail('A failed read must throw KeystoreReadFailed.');
+        } catch (KeystoreReadFailed $e) {
+            $this->assertSame(1, $this->wpdb->failedSelects);
+        }
+        $this->assertSame($before, $this->rows);
+        $this->assertArrayNotHasKey(Keystore::OPTION_AGE_IDENTITY, $this->rows);
+        $this->assertSame([], $this->wpdb->insertedByName);
+    }
+
+    /** @return array<string,array{bool}> */
+    public static function recipientCheckPaths(): array
+    {
+        return [
+            'recipient check' => [false],
+            'fallback probe' => [true],
+        ];
+    }
+
+    private function backupIdentity(bool $checkFails): AgeIdentity
+    {
+        if (!$checkFails) {
+            return new AgeIdentity(new Keystore());
+        }
+
+        return new class (new Keystore()) extends AgeIdentity {
+            public function recipientMatches(string $candidate): bool
+            {
+                throw new \RuntimeException('recipient check failed');
+            }
+        };
+    }
+
+    #[DataProvider('recipientCheckPaths')]
+    public function test_a_failed_marker_read_refuses_a_backup_without_creating_a_key(bool $checkFails): void
+    {
+        (new Keystore())->generateSiteKeypair();
+        $before = $this->rows;
+        $this->wpdb->insertedByName = [];
+        $this->wpdb->failSelectsByName[Keystore::OPTION_MASTER_KEY_SOURCE] = 1;
+        $recipient = (new AgeCrypto())->generateIdentity()['recipient'];
+
+        $res = (new BackupCommand($this->backupIdentity($checkFails)))->execute([], $this->backupParams($recipient));
+
+        $this->assertSame(1, $this->wpdb->failedSelects);
+        $this->assertSame($before, $this->rows);
+        $this->assertArrayNotHasKey(Keystore::OPTION_AGE_IDENTITY, $this->rows);
+        $this->assertSame([], $this->wpdb->insertedByName);
+        $this->assertFalse($res['ok']);
+        $this->assertSame('keystore_read_failed', $res['code'] ?? null);
+        $this->assertSame(self::READ_FAILED_DETAIL, $res['detail']);
+    }
+
+    #[DataProvider('recipientCheckPaths')]
+    public function test_an_unusable_keystore_refuses_a_backup_without_creating_a_key(bool $checkFails): void
+    {
+        (new Keystore())->generateSiteKeypair();
+        file_put_contents($this->keyFile, random_bytes(32));
+        $before = $this->rows;
+        $this->wpdb->insertedByName = [];
+        $probe = (new Keystore())->probe();
+        $this->assertSame(Keystore::PROBE_UNREADABLE, $probe['state']);
+        $this->assertArrayNotHasKey('read_failed', $probe);
+        $recipient = (new AgeCrypto())->generateIdentity()['recipient'];
+
+        $res = (new BackupCommand($this->backupIdentity($checkFails)))->execute([], $this->backupParams($recipient));
+
+        $this->assertSame(0, $this->wpdb->failedSelects);
+        $this->assertSame($before, $this->rows);
+        $this->assertArrayNotHasKey(Keystore::OPTION_AGE_IDENTITY, $this->rows);
+        $this->assertSame([], $this->wpdb->insertedByName);
+        $this->assertFalse($res['ok']);
+        $this->assertSame('keystore_unreadable', $res['code'] ?? null);
+        $this->assertSame(KeystoreHealth::backupRefusal($probe), $res['detail']);
     }
 
     /** The mismatch refusal gains a stable code and keeps its detail byte for byte. */
@@ -275,7 +366,7 @@ final class BackupKeyReadFailureTest extends TestCase
         // The options cache reports the key missing, and this request's read
         // of the row fails.
         $this->notoptions[Keystore::OPTION_AGE_IDENTITY] = true;
-        $this->wpdb->failSelects                         = 1;
+        $this->wpdb->failSelectsByName[Keystore::OPTION_AGE_IDENTITY] = 1;
 
         $ready = $this->runSetupKeystore();
 
@@ -374,7 +465,7 @@ final class BackupKeyReadFailureTest extends TestCase
         $keypair          = $this->rows[Keystore::OPTION_SITE_KEYPAIR];
         $this->modelled[] = Keystore::OPTION_SITE_KEYPAIR;
         $this->wpdb->insertedByName = [];
-        $this->wpdb->failSelects    = 1;
+        $this->wpdb->failSelectsByName[Keystore::OPTION_SITE_KEYPAIR] = 1;
 
         $this->runSetupKeystore();
 
@@ -393,7 +484,7 @@ final class BackupKeyReadFailureTest extends TestCase
         $expected         = sodium_crypto_sign_publickey((new Keystore())->decrypt($keypair));
         $this->modelled[] = Keystore::OPTION_SITE_KEYPAIR;
         $this->wpdb->insertedByName = [];
-        $this->wpdb->failSelects    = 1;
+        $this->wpdb->failSelectsByName[Keystore::OPTION_SITE_KEYPAIR] = 1;
 
         $public = (new Signer(new Keystore()))->agentPublicKey();
 

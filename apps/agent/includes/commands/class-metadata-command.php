@@ -199,7 +199,7 @@ final class MetadataCommand implements CommandInterface
                 }
             }
 
-            if ($probe !== null) {
+            if ($probe !== null && empty($probe['read_failed'])) {
                 try {
                     $payload['keystore'] = KeystoreHealth::status($probe);
                     KeystoreHealth::flag($probe);
