@@ -14,6 +14,9 @@ use Brain\Monkey\Functions;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
+use WPMgr\Agent\Commands\MetadataCommand;
+use WPMgr\Agent\Support\AgeIdentity;
+use WPMgr\Agent\Support\KeystoreHealth;
 use WPMgr\Agent\Keystore;
 use WPMgr\Agent\KeystoreReadFailed;
 use WPMgr\Agent\Plugin;
@@ -99,7 +102,8 @@ final class KeystoreMasterKeyReadFailureTest extends TestCase
     private function optionGet(string $name, $default = false)
     {
         if (!in_array($name, [Keystore::OPTION_MASTER_KEY_SOURCE, Keystore::OPTION_DB_MASTER_KEY], true)) {
-            return $this->rows[$name] ?? $default;
+            $value = $this->rows[$name] ?? $default;
+            return is_serialized($value) ? unserialize(trim($value), ['allowed_classes' => false]) : $value;
         }
         if (isset($this->missing[$name])) {
             return $default;
@@ -112,7 +116,134 @@ final class KeystoreMasterKeyReadFailureTest extends TestCase
             $this->missing[$name] = true;
             return $default;
         }
-        return $this->rows[$name];
+        $value = $this->rows[$name];
+        return is_serialized($value) ? unserialize(trim($value), ['allowed_classes' => false]) : $value;
+    }
+
+    public function test_surrounding_whitespace_preserves_the_stored_marker(): void
+    {
+        $plain = $this->seed();
+        $marker = " \t" . serialize(['source' => 'db']) . "\r\n ";
+        $this->rows[Keystore::OPTION_MASTER_KEY_SOURCE] = $marker;
+        (new Keystore())->encrypt('payload');
+        $this->assertSame($marker, $this->rows[Keystore::OPTION_MASTER_KEY_SOURCE]);
+        $this->assertSame([], $this->optionWrites);
+        $this->assertSame([], $this->wpdb->insertedByName);
+        $this->assertReadable($plain);
+    }
+
+    /** @return array<string,array{string}> */
+    public static function serializedValues(): array
+    {
+        return [
+            'database key' => [Keystore::OPTION_DB_MASTER_KEY],
+            'site keypair' => [Keystore::OPTION_SITE_KEYPAIR],
+            'backup key' => [Keystore::OPTION_AGE_IDENTITY],
+        ];
+    }
+
+    #[DataProvider('serializedValues')]
+    public function test_serialized_option_values_keep_the_stored_key(string $name): void
+    {
+        $plain = $this->seed();
+        $this->rows[$name] = " \t" . serialize($this->rows[$name]) . "\r\n";
+        $before = $this->rows[$name];
+        $keystore = new Keystore();
+        if ($name === Keystore::OPTION_SITE_KEYPAIR) {
+            $this->assertSame($plain[$name], $keystore->getSiteKeypair());
+            $this->assertSame(sodium_crypto_sign_publickey($plain[$name]), $keystore->generateSiteKeypair());
+        } elseif ($name === Keystore::OPTION_AGE_IDENTITY) {
+            $this->assertSame($plain[$name], $keystore->getAgeIdentity());
+            $this->assertSame($plain[$name], $keystore->createAgeIdentity(random_bytes(32)));
+        } else {
+            $this->assertReadable($plain);
+        }
+        $this->assertSame($before, $this->rows[$name]);
+    }
+
+    /** @return array<string,array{string}> */
+    public static function noticePaths(): array
+    {
+        return ['setup' => ['setup'], 'admin' => ['admin'], 'metadata' => ['metadata']];
+    }
+
+    private function runNoticePath(string $path, bool $temporary = true): void
+    {
+        if ($path === 'setup') {
+            $this->assertFalse($this->setupKeystore());
+            return;
+        }
+        if ($path === 'metadata') {
+            Functions\when('get_bloginfo')->justReturn('7.1');
+            Functions\when('is_multisite')->justReturn(false);
+            Functions\when('get_plugins')->justReturn([]);
+            Functions\when('wp_get_themes')->justReturn([]);
+            Functions\when('get_stylesheet')->justReturn('');
+            Functions\when('get_site_transient')->justReturn(false);
+            Functions\when('get_core_updates')->justReturn([]);
+            Functions\when('wp_upload_dir')->justReturn(['basedir' => '/unused', 'baseurl' => 'https://example.com/uploads']);
+            $data = (new MetadataCommand(new AgeIdentity(new Keystore())))->collect();
+            if ($temporary) {
+                $this->assertArrayNotHasKey('keystore', $data);
+            } else {
+                $this->assertSame(KeystoreHealth::status((new Keystore())->probe()), $data['keystore']);
+            }
+            $this->assertArrayNotHasKey('age_recipient', $data);
+            return;
+        }
+        Functions\when('current_user_can')->justReturn(true);
+        Functions\when('get_transient')->justReturn(false);
+        Functions\when('set_transient')->justReturn(true);
+        $class = new \ReflectionClass(Plugin::class);
+        $plugin = $class->newInstanceWithoutConstructor();
+        $class->getProperty('keystore')->setValue($plugin, new Keystore());
+        $plugin->ensureKeystoreReady();
+    }
+
+    #[DataProvider('noticePaths')]
+    public function test_a_temporary_marker_read_records_no_notice(string $path): void
+    {
+        $plain = $this->seed();
+        $before = $this->rows;
+        $this->wpdb->failSelectsByName[Keystore::OPTION_MASTER_KEY_SOURCE] = 1;
+        $this->runNoticePath($path);
+        $this->assertSame(1, $this->wpdb->failedSelects);
+        $this->assertArrayNotHasKey(Plugin::OPTION_KEYSTORE_ERROR, $this->rows);
+        $this->assertArrayNotHasKey(Plugin::OPTION_KEYSTORE_ERROR_KIND, $this->rows);
+        $this->assertSame($before, $this->rows);
+        $this->assertReadable($plain);
+    }
+
+    #[DataProvider('noticePaths')]
+    public function test_an_unavailable_key_records_its_notice(string $path): void
+    {
+        $this->seed();
+        $this->rows[Keystore::OPTION_DB_MASTER_KEY] = 'unavailable';
+        $probe = (new Keystore())->probe();
+        $this->assertSame(Keystore::PROBE_KEY_UNAVAILABLE, $probe['state']);
+        $this->assertArrayNotHasKey('read_failed', $probe);
+        $this->runNoticePath($path, false);
+        $this->assertSame(KeystoreHealth::keyUnavailableNotice($probe), $this->rows[Plugin::OPTION_KEYSTORE_ERROR]);
+        $this->assertSame(KeystoreHealth::KIND_KEY_UNAVAILABLE, $this->rows[Plugin::OPTION_KEYSTORE_ERROR_KIND]);
+    }
+
+    public function test_repair_honours_a_marker_stored_first(): void
+    {
+        $plain = $this->seed();
+        $winner = $this->rows[Keystore::OPTION_MASTER_KEY_SOURCE];
+        $this->rows[Keystore::OPTION_MASTER_KEY_SOURCE] = 'unassigned';
+        $updates = 0;
+        $this->wpdb->beforeConditionalUpdate = function (string $name) use ($winner, &$updates): void {
+            $this->assertSame(Keystore::OPTION_MASTER_KEY_SOURCE, $name);
+            ++$updates;
+            $this->rows[$name] = $winner;
+        };
+        $envelope = (new Keystore())->encrypt('payload');
+        $this->assertSame(1, $updates);
+        $this->assertSame($winner, $this->rows[Keystore::OPTION_MASTER_KEY_SOURCE]);
+        $this->assertSame([], $this->optionWrites);
+        $this->assertSame('payload', (new Keystore())->decrypt($envelope));
+        $this->assertReadable($plain);
     }
 
     /** @return array<string,array{string}> */

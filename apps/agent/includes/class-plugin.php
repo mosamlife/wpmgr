@@ -1247,6 +1247,9 @@ final class Plugin
     {
         try {
             $probe = $this->keystore->probe();
+            if (!empty($probe['read_failed'])) {
+                return false;
+            }
             if ($probe['state'] !== Keystore::PROBE_OK) {
                 if ($probe['state'] === Keystore::PROBE_UNREADABLE
                     && $probe['items']['age_identity'] === Keystore::ITEM_ABSENT
@@ -1329,7 +1332,10 @@ final class Plugin
             set_transient(self::TRANSIENT_KEYSTORE_PROBE, time(), self::KEYSTORE_PROBE_INTERVAL);
         }
 
-        KeystoreHealth::flag($this->keystore->probe());
+        $probe = $this->keystore->probe();
+        if (empty($probe['read_failed'])) {
+            KeystoreHealth::flag($probe);
+        }
     }
 
     /**

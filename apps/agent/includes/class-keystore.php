@@ -272,9 +272,11 @@ final class Keystore implements EmailKeystoreInterface
      *   - PROBE_KEY_UNAVAILABLE: items are stored, but the key cannot be
      *     loaded; 'detail' carries the reason.
      *
+     * Temporary database read failures carry read_failed=true. Callers must
+     * retry without recording a notice or publishing a keystore status.
      * The result never contains key material or anything derived from it.
      *
-     * @return array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>,detail:string}
+     * @return array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>,detail:string,read_failed?:true}
      */
     public function probe(): array
     {
@@ -310,6 +312,8 @@ final class Keystore implements EmailKeystoreInterface
 
             try {
                 $key = $this->existingMasterKey($pinned);
+            } catch (KeystoreReadFailed $e) {
+                throw $e;
             } catch (\Throwable $e) {
                 return $this->probeAllUnreadable($result, $stored, self::PROBE_KEY_UNAVAILABLE, $e->getMessage());
             }
@@ -338,6 +342,9 @@ final class Keystore implements EmailKeystoreInterface
 
             return $result;
         } catch (\Throwable $e) {
+            if ($e instanceof KeystoreReadFailed) {
+                $result['read_failed'] = true;
+            }
             // A missing crypto extension or a failing option read: nothing
             // stored can be confirmed readable.
             $result['state']  = self::PROBE_KEY_UNAVAILABLE;
@@ -464,7 +471,7 @@ final class Keystore implements EmailKeystoreInterface
             SecureMemory::wipe($keypair);
         }
 
-        $stored = $this->readKeyRow(self::OPTION_SITE_KEYPAIR);
+        $stored = $this->readKeyEnvelope(self::OPTION_SITE_KEYPAIR);
         if ($stored === null) {
             throw new \RuntimeException('WPMgr Agent: the site keypair could not be stored.');
         }
@@ -491,7 +498,7 @@ final class Keystore implements EmailKeystoreInterface
     {
         $stored = get_option(self::OPTION_SITE_KEYPAIR);
         if (!is_string($stored) || $stored === '') {
-            $stored = $this->readKeyRow(self::OPTION_SITE_KEYPAIR);
+            $stored = $this->readKeyEnvelope(self::OPTION_SITE_KEYPAIR);
             if ($stored === null) {
                 return null;
             }
@@ -546,7 +553,7 @@ final class Keystore implements EmailKeystoreInterface
     {
         $this->insertKeyRow(self::OPTION_AGE_IDENTITY, $this->encrypt($rawSecret));
 
-        $stored = $this->readKeyRow(self::OPTION_AGE_IDENTITY);
+        $stored = $this->readKeyEnvelope(self::OPTION_AGE_IDENTITY);
         if ($stored === null) {
             throw new \RuntimeException('WPMgr Agent: the backup key could not be stored.');
         }
@@ -566,12 +573,42 @@ final class Keystore implements EmailKeystoreInterface
      */
     public function getAgeIdentity(): ?string
     {
-        $stored = $this->readKeyRow(self::OPTION_AGE_IDENTITY);
+        $stored = $this->readKeyEnvelope(self::OPTION_AGE_IDENTITY);
         if ($stored === null) {
             return null;
         }
 
         return $this->decrypt($stored);
+    }
+
+    /**
+     * Decode an option value as WordPress does, without instantiating objects.
+     *
+     * @param string|null $value Stored option bytes.
+     * @return mixed Decoded option value.
+     */
+    private function decodeOptionValue(?string $value)
+    {
+        if ($value === null || !is_serialized($value)) {
+            return $value;
+        }
+
+        // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_unserialize -- WordPress option decoding with object instantiation disabled
+        return @unserialize(trim($value), ['allowed_classes' => false]);
+    }
+
+    /**
+     * Read a key envelope using WordPress option decoding.
+     *
+     * @param string $option Option name.
+     * @return string|null Envelope, or null when absent or not a string.
+     * @throws KeystoreReadFailed When the row could not be read.
+     */
+    private function readKeyEnvelope(string $option): ?string
+    {
+        $value = $this->decodeOptionValue($this->readKeyRow($option));
+
+        return is_string($value) && $value !== '' ? $value : null;
     }
 
     /**
@@ -1015,8 +1052,7 @@ final class Keystore implements EmailKeystoreInterface
      */
     private function decodeSource(?string $value): ?array
     {
-        // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_unserialize -- only arrays are accepted and object instantiation is disabled
-        $stored = $value === null ? null : @unserialize($value, ['allowed_classes' => false]);
+        $stored = $this->decodeOptionValue($value);
         if (!is_array($stored) || !isset($stored['source']) || !is_string($stored['source'])) {
             return null;
         }
@@ -1213,7 +1249,8 @@ final class Keystore implements EmailKeystoreInterface
      */
     private function decodeDatabaseKey(?string $stored): ?string
     {
-        if ($stored === null || $stored === '') {
+        $stored = $this->decodeOptionValue($stored);
+        if (!is_string($stored) || $stored === '') {
             return null;
         }
 

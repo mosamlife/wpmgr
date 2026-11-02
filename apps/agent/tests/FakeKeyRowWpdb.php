@@ -91,6 +91,9 @@ final class FakeKeyRowWpdb
      */
     public ?\Closure $beforeInsert = null;
 
+    /** @var (\Closure(string): void)|null Runs before an exact-value UPDATE. */
+    public ?\Closure $beforeConditionalUpdate = null;
+
     /** @var array<string,mixed> Options table rows, shared with the test by reference. */
     private array $rows;
 
@@ -231,6 +234,9 @@ final class FakeKeyRowWpdb
 
         if ($sql === 'UPDATE wp_options SET option_value = %s WHERE option_name = %s AND BINARY option_value = %s') {
             $name = (string) $args[1];
+            if ($this->beforeConditionalUpdate !== null) {
+                ($this->beforeConditionalUpdate)($name);
+            }
             $current = $this->rows[$name] ?? null;
             $current = is_array($current) ? serialize($current) : $current;
             if ($current !== $args[2]) {
