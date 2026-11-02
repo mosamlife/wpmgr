@@ -6,6 +6,11 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+### Fixed
+
+- A failed database read never changes which master key the agent uses, and never makes it create a new one. Every key and secret the agent stores keeps opening once the database answers again. Agent 0.61.169.
+- When the agent cannot read which master key it uses, or the master key held in its database, its key check treats that as temporary: it shows no admin notice and reports no key status, and a backup that needs a new backup key is refused with `keystore_read_failed`, so it can be retried. Agent 0.61.169.
+
 ## [0.61.199] - 2026-11-01
 
 ### Added

@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.168
+Stable tag: 0.61.169
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -285,7 +285,11 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 == Changelog ==
 
-The entries below summarize the notable changes since 0.61.79. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+The entries below summarize the notable changes since 0.61.84. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+
+= 0.61.169 =
+* Fixed: A failed database read never changes which master key the agent uses, and never makes it create a new one. Every key and secret the agent stores keeps opening once the database answers again.
+* Fixed: When the agent cannot read which master key it uses, or the master key held in its database, its key check treats that as temporary and shows no admin notice. A backup that needs a new backup key is then refused with a message to try again in a few minutes, and nothing is changed.
 
 = 0.61.168 =
 * Fixed: Two-factor sign-in works on a site that renames its login page. Switching to the email code or a backup code works: a switch is not counted as a code attempt, and one sign-in sends at most three email codes.
@@ -438,19 +442,6 @@ The entries below summarize the notable changes since 0.61.79. This project ship
 
 = 0.61.84 =
 * Fixed: backups no longer time out on OpenLiteSpeed and LiteSpeed servers (GH #274). The agent acknowledges a backup request and continues the work in the background; it previously released that acknowledgment using a PHP-FPM-only mechanism, which OpenLiteSpeed's PHP does not provide, so the connection stayed open for the entire backup. The agent now releases the acknowledgment using whichever mechanism the site's server actually supports.
-
-= 0.61.82 =
-* Fixed: the "disable file editor" hardening toggle could fatal every request on a Roots/Bedrock site (GH #268). Roots/Bedrock manages that constant through its own config layer and throws when it is defined a second time; the agent now checks whether it is already defined (or the config file is otherwise framework-managed) before writing anything, so nothing is written in that case and the toggle still reports success. Standard WordPress installs are unaffected. The full-page cache's WP_CACHE constant is protected the same way.
-
-= 0.61.81 =
-* Fixed: control-plane commands could fail on sites running a third-party plugin that globally decodes the Authorization header on every request, for example as part of its own JWT-based auth (GH #269). The agent now moves its own signed Authorization value out of the request before any other plugin's code runs, so this class of conflict can no longer occur.
-
-= 0.61.80 =
-* Changed: the WordPress.org distribution build no longer adjusts WordPress's own upgrader working-directory handling during a plugin, theme, or core update. Self-hosted installs are unaffected.
-* Fixed: reworded a documentation comment in the file-manager write guard that quoted an example attack payload verbatim, so security scanners no longer report a false-positive match on the plugin's own file (GH #266). No behavior changed.
-
-= 0.61.79 =
-* Fixed: on a site installed from a plain git clone or a GitHub source download (no `composer install` run), activating the plugin could fail immediately with a fatal error (GH #262). The plugin's own class loader could not find a handful of its own files; it now resolves every one of them without depending on any other tool being present.
 
 == Upgrade Notice ==
 
