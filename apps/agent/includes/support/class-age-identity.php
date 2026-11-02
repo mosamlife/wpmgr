@@ -50,7 +50,7 @@ class AgeIdentity
      * Read-only health check of the keystore this identity lives in. See
      * Keystore::probe(): it never writes, never generates and never throws.
      *
-     * @return array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>,detail:string}
+     * @return array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>,detail:string,read_failed?:true}
      */
     public function probeKeystore(): array
     {
@@ -71,14 +71,18 @@ class AgeIdentity
      * first, that key's recipient is returned.
      *
      * @return string The site's age recipient.
-     * @throws KeystoreReadFailed When the backup key could not be read from the database.
+     * @throws KeystoreReadFailed When the backup key or keystore could not be read from the database.
      * @throws \RuntimeException  When no backup key is stored and none may be created.
      */
     public function ensureRecipient(): string
     {
         $secret = $this->keystore->getAgeIdentity();
         if ($secret === null) {
-            if (!KeystoreHealth::backupKeyUsable($this->keystore->probe())) {
+            $probe = $this->keystore->probe();
+            if (!empty($probe['read_failed'])) {
+                throw new KeystoreReadFailed('WPMgr Agent: a stored key could not be read from the database.');
+            }
+            if (!KeystoreHealth::backupKeyUsable($probe)) {
                 throw new \RuntimeException(
                     'WPMgr Agent: no backup key is stored, and none is created while the saved keys do not open.'
                 );

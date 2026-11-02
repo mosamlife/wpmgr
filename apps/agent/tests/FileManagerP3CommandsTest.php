@@ -104,9 +104,14 @@ final class FileManagerP3CommandsTest extends TestCase {
 	/** Absolute path to the staging base (wpmgr-file-backups under temp). */
 	private string $stagingBase = '';
 
+	/** @var mixed Previous database handle. */
+	private $previousWpdb;
+
 	protected function set_up(): void {
 		parent::set_up();
 		Monkey\setUp();
+		$this->previousWpdb = $GLOBALS['wpdb'] ?? null;
+		$GLOBALS['wpdb'] = new OptionsBackedKeyRowWpdb();
 
 		Functions\when( 'wp_json_encode' )->alias( static function ( $data ): string {
 			return (string) json_encode( $data );
@@ -156,6 +161,7 @@ final class FileManagerP3CommandsTest extends TestCase {
 	}
 
 	protected function tear_down(): void {
+		$GLOBALS['wpdb'] = $this->previousWpdb;
 		$this->rmdirR( $this->testAbsDir );
 		$this->rmdirR( $this->stagingBase );
 		Monkey\tearDown();

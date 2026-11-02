@@ -272,7 +272,7 @@ final class PageCreateWriteTest extends TestCase
         $keypair        = sodium_crypto_sign_keypair();
         $this->cpSecret = sodium_crypto_sign_secretkey($keypair);
         $keystore       = new Keystore();
-        $keystore->storeControlPlanePublicKey(sodium_crypto_sign_publickey($keypair));
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->storeControlPlanePublicKey(sodium_crypto_sign_publickey($keypair)));
         $this->options[Settings::OPTION_SITE_ID] = $this->siteId;
 
         $test            = $this;

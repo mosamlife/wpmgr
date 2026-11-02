@@ -170,8 +170,8 @@ class ClearEmailConfigCommandTest extends TestCase
         ];
 
         $keystore = new Keystore();
-        $keystore->storeEmailSecret('smtp-password');
-        $keystore->store_connection_secrets(['backup' => 'sendgrid-api-key']);
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->storeEmailSecret('smtp-password'));
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->store_connection_secrets(['backup' => 'sendgrid-api-key']));
 
         // Seeding is not part of what the command did.
         $this->written = [];
@@ -240,12 +240,12 @@ class ClearEmailConfigCommandTest extends TestCase
         $this->assertSame(['config' => true, 'secret' => false, 'connection_secrets' => false], $result['existed']);
 
         // Only the primary secret.
-        $keystore->storeEmailSecret('only-the-secret');
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->storeEmailSecret('only-the-secret'));
         $result = (new ClearEmailConfigCommand($keystore))->execute([], []);
         $this->assertSame(['config' => false, 'secret' => true, 'connection_secrets' => false], $result['existed']);
 
         // Only the connection secrets.
-        $keystore->store_connection_secrets(['backup' => 'only-this']);
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->store_connection_secrets(['backup' => 'only-this']));
         $result = (new ClearEmailConfigCommand($keystore))->execute([], []);
         $this->assertSame(['config' => false, 'secret' => false, 'connection_secrets' => true], $result['existed']);
         $this->assertTrue($result['cleared']);
@@ -553,7 +553,7 @@ class ClearEmailConfigCommandTest extends TestCase
     {
         $pair           = sodium_crypto_sign_keypair();
         $this->cpSecret = sodium_crypto_sign_secretkey($pair);
-        $keystore->storeControlPlanePublicKey(sodium_crypto_sign_publickey($pair));
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $keystore->storeControlPlanePublicKey(sodium_crypto_sign_publickey($pair)));
         $this->options[Settings::OPTION_SITE_ID] = $this->siteId;
         // Registration seeded rows too; the command's own deletions start here.
         $this->written = [];

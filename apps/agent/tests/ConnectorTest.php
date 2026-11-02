@@ -64,7 +64,7 @@ final class ConnectorTest extends TestCase
         $this->cpPublic = sodium_crypto_sign_publickey($keypair);
 
         $this->keystore = new Keystore();
-        $this->keystore->storeControlPlanePublicKey($this->cpPublic);
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $this->keystore->storeControlPlanePublicKey($this->cpPublic));
 
         // Persist this site's enrolled UUID so Settings::siteId() returns it.
         $this->options[Settings::OPTION_SITE_ID] = $this->siteId;

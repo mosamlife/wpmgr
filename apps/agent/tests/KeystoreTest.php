@@ -25,10 +25,15 @@ final class KeystoreTest extends TestCase
     /** @var array<string,mixed> In-memory option store. */
     private array $options = [];
 
+    /** @var mixed Previous database handle. */
+    private $previousWpdb;
+
     protected function set_up(): void
     {
         parent::set_up();
         Monkey\setUp();
+        $this->previousWpdb = $GLOBALS['wpdb'] ?? null;
+        $GLOBALS['wpdb'] = new OptionsBackedKeyRowWpdb();
 
         $this->keyFile = sys_get_temp_dir() . '/wpmgr-agent-test-' . bin2hex(random_bytes(8)) . '.key';
         if (!defined('WPMGR_AGENT_KEY_FILE')) {
@@ -56,6 +61,7 @@ final class KeystoreTest extends TestCase
 
     protected function tear_down(): void
     {
+        $GLOBALS['wpdb'] = $this->previousWpdb;
         if (is_file($this->keyFile)) {
             @unlink($this->keyFile);
         }
