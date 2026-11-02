@@ -272,8 +272,9 @@ final class Keystore implements EmailKeystoreInterface
      *   - PROBE_KEY_UNAVAILABLE: items are stored, but the key cannot be
      *     loaded; 'detail' carries the reason.
      *
-     * Temporary database read failures carry read_failed=true. Callers must
-     * retry without recording a notice or publishing a keystore status.
+     * A temporary failure to read the master-key source marker or the
+     * database-held master key carries read_failed=true. Callers must retry
+     * without recording a notice or publishing a keystore status.
      * The result never contains key material or anything derived from it.
      *
      * @return array{state:string,key_source:string,items:array<string,string>,unreadable:list<string>,detail:string,read_failed?:true}
