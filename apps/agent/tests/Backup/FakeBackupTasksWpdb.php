@@ -30,6 +30,10 @@ final class FakeBackupTasksWpdb
 {
     public string $prefix = 'wp_';
 
+    public string $options = 'wp_options';
+
+    public string $last_error = '';
+
     /** @var array<string,array<string,mixed>> snapshot_id => row */
     public array $rows = [];
 
@@ -105,7 +109,10 @@ final class FakeBackupTasksWpdb
      */
     public function get_row(string $prepared, $output = null)
     {
-        [, $args] = $this->decode($prepared);
+        [$sql, $args] = $this->decode($prepared);
+        if ($sql === 'SELECT COUNT(*) AS stored_rows, MAX(option_value) AS stored_value FROM wp_options WHERE option_name = %s') {
+            return (new \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb())->get_row($prepared, $output);
+        }
         $id = $this->idFromArgs($args);
         if ($id === '' || !isset($this->rows[$id])) {
             return null;

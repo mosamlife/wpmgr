@@ -30,10 +30,9 @@
  *      where neither the salts nor any candidate directory is usable (for
  *      example some CloudLinux/CageFS shared-hosting configurations that
  *      restrict writes above the account's own webroot while also shipping
- *      wp-config.php without real secret salts). Claimed atomically via
- *      add_option()'s UNIQUE(option_name) semantics, so two concurrent
- *      first-establishment requests converge on one winning key rather than
- *      each encrypting under a different one. This key lives in the
+ *      wp-config.php without real secret salts). An insert that cannot
+ *      replace a stored row, followed by a read-back, makes concurrent
+ *      first-establishment requests converge on the stored key. It lives in the
  *      database alongside the ciphertext it protects, so it is strictly
  *      weaker than tiers 1-3 — defining WPMGR_AGENT_KEY_FILE or setting real
  *      wp-config.php salts is the recommended defense-in-depth upgrade. It
@@ -581,11 +580,12 @@ final class Keystore implements EmailKeystoreInterface
      * always returns one row; no row, or a database error, means the read
      * failed.
      *
-     * @param string $option Option name of the key row.
-     * @return string|null The stored envelope, or null when no row is stored or it is empty.
+     * @param string $option        Option name of the key row.
+     * @param bool   $emptyIsAbsent Whether an empty row counts as absent.
+     * @return string|null The stored value, or null when absent (or empty with $emptyIsAbsent).
      * @throws KeystoreReadFailed When the read failed.
      */
-    private function readKeyRow(string $option): ?string
+    private function readKeyRow(string $option, bool $emptyIsAbsent = true): ?string
     {
         global $wpdb;
         if (!is_object($wpdb) || !method_exists($wpdb, 'prepare') || !method_exists($wpdb, 'get_row')
@@ -605,7 +605,7 @@ final class Keystore implements EmailKeystoreInterface
         }
 
         $stored = $row['stored_value'] ?? null;
-        if (!is_string($stored) || $stored === '') {
+        if (!is_string($stored) || ($emptyIsAbsent && $stored === '')) {
             return null;
         }
         $this->forgetMissingMark($option);
@@ -850,8 +850,7 @@ final class Keystore implements EmailKeystoreInterface
         // 1. Explicit constant.
         $key = $this->keyFromConstant();
         if ($key !== null) {
-            $this->pinSource(['source' => 'constant']);
-            return $key;
+            return $this->keyForPinnedSource($this->pinSource(['source' => 'constant']), true);
         }
 
         // 1b. Re-adopt any key file this install already has (current write
@@ -866,23 +865,20 @@ final class Keystore implements EmailKeystoreInterface
         foreach ($this->existingKeyFilePaths() as $existing) {
             $key = $this->readKeyFile($existing);
             if ($key !== null) {
-                $this->pinSource(['source' => 'file', 'path' => $existing]);
-                return $key;
+                return $this->keyForPinnedSource($this->pinSource(['source' => 'file', 'path' => $existing]), true);
             }
         }
 
         // 2. Preferred portable default: derive from wp-config salts.
         $key = $this->keyFromSalts();
         if ($key !== null) {
-            $this->pinSource(['source' => 'salts']);
-            return $key;
+            return $this->keyForPinnedSource($this->pinSource(['source' => 'salts']), true);
         }
 
         // 3. Fallback: write a key file to the first writable candidate.
         $written = $this->writeKeyFileToFirstWritable();
         if ($written !== null) {
-            $this->pinSource(['source' => 'file', 'path' => $written['path']]);
-            return $written['key'];
+            return $this->keyForPinnedSource($this->pinSource(['source' => 'file', 'path' => $written['path']]), true);
         }
 
         // 4. Last resort: a random key stored in wp_options. Opt out with
@@ -891,8 +887,7 @@ final class Keystore implements EmailKeystoreInterface
         // availability yourself).
         $key = $this->keyFromDatabase();
         if ($key !== null) {
-            $this->pinSource(['source' => 'db']);
-            return $key;
+            return $this->keyForPinnedSource($this->pinSource(['source' => 'db']), true);
         }
 
         throw new \RuntimeException(
@@ -1005,10 +1000,23 @@ final class Keystore implements EmailKeystoreInterface
      * Read the pinned master-key source marker, if present and well-formed.
      *
      * @return array{source:string,path?:string}|null
+     * @throws KeystoreReadFailed When the marker could not be read.
      */
     private function pinnedSource(): ?array
     {
-        $stored = get_option(self::OPTION_MASTER_KEY_SOURCE);
+        return $this->decodeSource($this->readKeyRow(self::OPTION_MASTER_KEY_SOURCE));
+    }
+
+    /**
+     * Decode the source descriptor stored by WordPress.
+     *
+     * @param string|null $value Serialized option value.
+     * @return array{source:string,path?:string}|null
+     */
+    private function decodeSource(?string $value): ?array
+    {
+        // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_unserialize -- only arrays are accepted and object instantiation is disabled
+        $stored = $value === null ? null : @unserialize($value, ['allowed_classes' => false]);
         if (!is_array($stored) || !isset($stored['source']) || !is_string($stored['source'])) {
             return null;
         }
@@ -1022,15 +1030,38 @@ final class Keystore implements EmailKeystoreInterface
     }
 
     /**
-     * Pin the master-key source so later requests resolve the same key. Only
-     * the source/path (never the key itself) is persisted.
+     * Pin discovery without replacing a valid stored marker, then honour the
+     * descriptor stored afterwards. Empty or malformed markers may be filled;
+     * a malformed value is changed only while its exact bytes still match.
      *
      * @param array{source:string,path?:string} $marker Source descriptor.
-     * @return void
+     * @return array{source:string,path?:string} Stored source descriptor.
+     * @throws KeystoreReadFailed When the marker could not be read back.
+     * @throws \RuntimeException When the marker could not be stored.
      */
-    private function pinSource(array $marker): void
+    private function pinSource(array $marker): array
     {
-        update_option(self::OPTION_MASTER_KEY_SOURCE, $marker, false);
+        // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize -- the option stores the same serialized array as WordPress
+        $encoded = serialize($marker);
+        $this->insertKeyRow(self::OPTION_MASTER_KEY_SOURCE, $encoded);
+        $stored = $this->readKeyRow(self::OPTION_MASTER_KEY_SOURCE);
+        $pinned = $this->decodeSource($stored);
+        if ($pinned !== null) {
+            return $pinned;
+        }
+
+        if ($stored !== null) {
+            global $wpdb;
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- only the exact malformed marker read above may be filled; a concurrent valid pin is honoured
+            $wpdb->query($wpdb->prepare("UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND BINARY option_value = %s", $encoded, self::OPTION_MASTER_KEY_SOURCE, $stored));
+            $this->forgetCachedRow(self::OPTION_MASTER_KEY_SOURCE);
+            $pinned = $this->pinnedSource();
+            if ($pinned !== null) {
+                return $pinned;
+            }
+        }
+
+        throw new \RuntimeException('WPMgr Agent: the master-key source could not be stored.');
     }
 
     /**
@@ -1131,14 +1162,9 @@ final class Keystore implements EmailKeystoreInterface
      * WPMGR_AGENT_KEY_FILE or setting real wp-config.php salts remains the
      * recommended defense-in-depth upgrade over this tier.
      *
-     * First establishment is claimed ATOMICALLY via add_option(), which
-     * INSERTs and returns false if the option row already exists (the
-     * wp_options table enforces UNIQUE(option_name)). Two requests racing to
-     * establish the key for the first time (for example an admin_init retry
-     * overlapping an in-flight Enroll POST) therefore cannot both "win": the
-     * loser's freshly generated bytes are discarded and it adopts whatever
-     * the winner actually persisted, so every request ends up encrypting
-     * under the SAME key.
+     * First establishment uses an insert that cannot replace a stored key,
+     * followed by a read of the key stored afterwards. Concurrent creators
+     * use the same stored key.
      *
      * @return string|null 32 raw bytes, or null when disabled via
      *                      WPMGR_AGENT_DISABLE_DB_KEY.
@@ -1149,19 +1175,17 @@ final class Keystore implements EmailKeystoreInterface
             return null;
         }
 
-        $existing = $this->readDatabaseKey();
-        if ($existing !== null) {
-            return $existing;
+        $stored = $this->readKeyRow(self::OPTION_DB_MASTER_KEY, false);
+        if ($stored !== null) {
+            return $this->decodeDatabaseKey($stored);
         }
 
         $key = random_bytes(self::KEY_BYTES);
-        if (add_option(self::OPTION_DB_MASTER_KEY, base64_encode($key), '', false)) {
-            return $key;
+        try {
+            $this->insertKeyRow(self::OPTION_DB_MASTER_KEY, base64_encode($key));
+        } finally {
+            SecureMemory::wipe($key);
         }
-
-        // Lost the race: another request's add_option() already won.
-        // Discard this key and adopt whichever key actually got persisted.
-        SecureMemory::wipe($key);
 
         return $this->readDatabaseKey();
     }
@@ -1174,11 +1198,22 @@ final class Keystore implements EmailKeystoreInterface
      * blocks NEW installs from adopting it.
      *
      * @return string|null 32 raw bytes, or null if absent/corrupt.
+     * @throws KeystoreReadFailed When the key could not be read.
      */
     private function readDatabaseKey(): ?string
     {
-        $stored = get_option(self::OPTION_DB_MASTER_KEY);
-        if (!is_string($stored) || $stored === '') {
+        return $this->decodeDatabaseKey($this->readKeyRow(self::OPTION_DB_MASTER_KEY));
+    }
+
+    /**
+     * Decode a stored database master key.
+     *
+     * @param string|null $stored Stored base64 key.
+     * @return string|null Valid key bytes, or null.
+     */
+    private function decodeDatabaseKey(?string $stored): ?string
+    {
+        if ($stored === null || $stored === '') {
             return null;
         }
 

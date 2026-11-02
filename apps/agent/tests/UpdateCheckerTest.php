@@ -153,7 +153,7 @@ final class UpdateCheckerTest extends TestCase
 
         // Build real Keystore + Settings.
         $this->keystore = new Keystore();
-        $this->keystore->storeControlPlanePublicKey($this->cpPublic);
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $this->keystore->storeControlPlanePublicKey($this->cpPublic));
 
         $this->options[Settings::OPTION_SITE_ID] = $this->siteId;
         $this->options[Settings::OPTION_CP_URL]  = 'https://cp.example.com';

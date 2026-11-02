@@ -1,11 +1,11 @@
 <?php
 /**
  * In-memory $wpdb double over the options table, for the keystore's own
- * reads and writes of the backup-key row.
+ * reads and writes of the keystore option rows.
  *
- * For a key row it answers exactly the three statements Keystore issues and
- * throws on anything else: the aggregate SELECT that reads it, the plain
- * INSERT that creates it, and the UPDATE that fills it only while it is empty.
+ * For a keystore row it answers the statements Keystore issues and throws
+ * on anything else: the aggregate SELECT, the plain INSERT, and conditional
+ * UPDATEs that fill empty rows or an exact malformed source descriptor.
  * An INSERT of a row that exists fails as a duplicate key does: query()
  * returns false and last_error is set. Any other statement that names a key
  * row throws, so a change to the keystore's SQL fails loudly.
@@ -30,7 +30,7 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Tests;
 
 /**
- * Emulates the wpdb surface Keystore touches for the backup-key row.
+ * Emulates the wpdb surface Keystore touches for its option rows.
  */
 final class FakeKeyRowWpdb
 {
@@ -38,6 +38,8 @@ final class FakeKeyRowWpdb
     private const KEY_ROWS = [
         \WPMgr\Agent\Keystore::OPTION_AGE_IDENTITY,
         \WPMgr\Agent\Keystore::OPTION_SITE_KEYPAIR,
+        \WPMgr\Agent\Keystore::OPTION_MASTER_KEY_SOURCE,
+        \WPMgr\Agent\Keystore::OPTION_DB_MASTER_KEY,
     ];
 
     /** Options table name, as core exposes it. */
@@ -51,6 +53,9 @@ final class FakeKeyRowWpdb
 
     /** How many of the next SELECTs fail. */
     public int $failSelects = 0;
+
+    /** @var array<string,int> Pending read failures by option name. */
+    public array $failSelectsByName = [];
 
     /** SELECTs that failed so far. */
     public int $failedSelects = 0;
@@ -82,7 +87,7 @@ final class FakeKeyRowWpdb
     /**
      * Runs before each INSERT.
      *
-     * @var (\Closure(): void)|null
+     * @var (\Closure(string): void)|null
      */
     public ?\Closure $beforeInsert = null;
 
@@ -133,6 +138,14 @@ final class FakeKeyRowWpdb
         if ($output !== ARRAY_A) {
             throw new \LogicException('FakeKeyRowWpdb answers the key-row read with ARRAY_A only: ' . $sql);
         }
+        $name = (string) $args[0];
+        if (($this->failSelectsByName[$name] ?? 0) > 0) {
+            --$this->failSelectsByName[$name];
+            ++$this->failedSelects;
+            $this->last_error = 'Lock wait timeout exceeded; try restarting transaction';
+
+            return null;
+        }
         if ($this->failSelects > 0) {
             --$this->failSelects;
             ++$this->failedSelects;
@@ -141,12 +154,13 @@ final class FakeKeyRowWpdb
             return null;
         }
 
-        $name = (string) $args[0];
         if (!array_key_exists($name, $this->rows)) {
             return ['stored_rows' => '0', 'stored_value' => null];
         }
 
-        return ['stored_rows' => '1', 'stored_value' => (string) $this->rows[$name]];
+        $value = $this->rows[$name];
+
+        return ['stored_rows' => '1', 'stored_value' => is_array($value) ? serialize($value) : (string) $value];
     }
 
     /**
@@ -188,17 +202,17 @@ final class FakeKeyRowWpdb
 
         if ($sql === "INSERT INTO wp_options (option_name, option_value, autoload) VALUES (%s, %s, 'no')") {
             $this->insertSuppressed[] = $this->suppressErrors;
-            if ($this->beforeInsert !== null) {
-                ($this->beforeInsert)();
-            }
             $name = (string) $args[0];
+            if ($this->beforeInsert !== null) {
+                ($this->beforeInsert)($name);
+            }
             if (array_key_exists($name, $this->rows)) {
                 ++$this->duplicateInserts;
                 $this->last_error = "Duplicate entry '" . $name . "' for key 'option_name'";
 
                 return false;
             }
-            $this->rows[$name] = (string) $args[1];
+            $this->rows[$name] = self::optionValue($name, (string) $args[1]);
             ++$this->inserted;
             $this->insertedByName[$name] = ($this->insertedByName[$name] ?? 0) + 1;
 
@@ -210,7 +224,19 @@ final class FakeKeyRowWpdb
             if (!array_key_exists($name, $this->rows) || $this->rows[$name] !== '') {
                 return 0;
             }
-            $this->rows[$name] = (string) $args[0];
+            $this->rows[$name] = self::optionValue($name, (string) $args[0]);
+
+            return 1;
+        }
+
+        if ($sql === 'UPDATE wp_options SET option_value = %s WHERE option_name = %s AND BINARY option_value = %s') {
+            $name = (string) $args[1];
+            $current = $this->rows[$name] ?? null;
+            $current = is_array($current) ? serialize($current) : $current;
+            if ($current !== $args[2]) {
+                return 0;
+            }
+            $this->rows[$name] = self::optionValue($name, (string) $args[0]);
 
             return 1;
         }
@@ -255,6 +281,17 @@ final class FakeKeyRowWpdb
             }
         }
         $this->neutralStatements[] = $sql;
+    }
+
+    /**
+     * @param string $name Option name.
+     * @param string $value Stored value.
+     * @return mixed
+     */
+    private static function optionValue(string $name, string $value)
+    {
+        return $name === \WPMgr\Agent\Keystore::OPTION_MASTER_KEY_SOURCE
+            ? unserialize($value, ['allowed_classes' => false]) : $value;
     }
 
     /**

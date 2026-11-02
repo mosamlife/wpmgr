@@ -1428,7 +1428,7 @@ final class BackupArchiveBehaviorTest extends TestCase
     public function testEarlyWorkerFailureIncludesTiming(): void
     {
         $this->signing();
-        unset($GLOBALS['wpdb']);
+        $GLOBALS['wpdb'] = new \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb();
         $params = $this->params(true) + ['timing' => ['received_at' => 100, 'preflight_done_at' => 101, 'claimed_at' => 102]];
         $events = [];
         Functions\when('wp_remote_post')->alias(static function ($url, $args) use (&$events) {

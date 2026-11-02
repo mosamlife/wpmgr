@@ -267,7 +267,7 @@ final class SelfUpdateOfferInvariantTest extends TestCase
         }
 
         $this->keystore = new Keystore();
-        $this->keystore->storeControlPlanePublicKey($this->cpPublic);
+        \WPMgr\Agent\Tests\OptionsBackedKeyRowWpdb::around(fn () => $this->keystore->storeControlPlanePublicKey($this->cpPublic));
 
         Functions\when('get_site_option')->alias(function (string $key, $default = null) {
             if ($key === Settings::OPTION_SITE_ID) {

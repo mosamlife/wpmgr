@@ -125,8 +125,13 @@ final class BackupKeyReadFailureTest extends TestCase
             return $this->valueCache[$name];
         }
         $this->wpdb->statements[] = 'get_option SELECT';
-        if ($this->wpdb->failSelects > 0) {
-            --$this->wpdb->failSelects;
+        if ($this->wpdb->failSelects > 0 || ($this->wpdb->failSelectsByName[$name] ?? 0) > 0) {
+            if (($this->wpdb->failSelectsByName[$name] ?? 0) > 0) {
+                --$this->wpdb->failSelectsByName[$name];
+            } else {
+                --$this->wpdb->failSelects;
+            }
+            $this->wpdb->last_error = 'Lock wait timeout exceeded; try restarting transaction';
             ++$this->wpdb->failedSelects;
             $this->notoptions[$name] = true;
 
@@ -224,7 +229,7 @@ final class BackupKeyReadFailureTest extends TestCase
     {
         $this->seedHealthyKeystore();
         $sealed                  = $this->rows[Keystore::OPTION_AGE_IDENTITY];
-        $this->wpdb->failSelects = 1;
+        $this->wpdb->failSelectsByName[Keystore::OPTION_AGE_IDENTITY] = 1;
 
         try {
             (new Keystore())->getAgeIdentity();
@@ -240,7 +245,7 @@ final class BackupKeyReadFailureTest extends TestCase
     {
         $recipient               = $this->seedHealthyKeystore();
         $sealed                  = $this->rows[Keystore::OPTION_AGE_IDENTITY];
-        $this->wpdb->failSelects = 1;
+        $this->wpdb->failSelectsByName[Keystore::OPTION_AGE_IDENTITY] = 1;
 
         $res = (new BackupCommand(new AgeIdentity(new Keystore())))->execute([], $this->backupParams($recipient));
 
@@ -275,7 +280,7 @@ final class BackupKeyReadFailureTest extends TestCase
         // The options cache reports the key missing, and this request's read
         // of the row fails.
         $this->notoptions[Keystore::OPTION_AGE_IDENTITY] = true;
-        $this->wpdb->failSelects                         = 1;
+        $this->wpdb->failSelectsByName[Keystore::OPTION_AGE_IDENTITY] = 1;
 
         $ready = $this->runSetupKeystore();
 
@@ -374,7 +379,7 @@ final class BackupKeyReadFailureTest extends TestCase
         $keypair          = $this->rows[Keystore::OPTION_SITE_KEYPAIR];
         $this->modelled[] = Keystore::OPTION_SITE_KEYPAIR;
         $this->wpdb->insertedByName = [];
-        $this->wpdb->failSelects    = 1;
+        $this->wpdb->failSelectsByName[Keystore::OPTION_SITE_KEYPAIR] = 1;
 
         $this->runSetupKeystore();
 
@@ -393,7 +398,7 @@ final class BackupKeyReadFailureTest extends TestCase
         $expected         = sodium_crypto_sign_publickey((new Keystore())->decrypt($keypair));
         $this->modelled[] = Keystore::OPTION_SITE_KEYPAIR;
         $this->wpdb->insertedByName = [];
-        $this->wpdb->failSelects    = 1;
+        $this->wpdb->failSelectsByName[Keystore::OPTION_SITE_KEYPAIR] = 1;
 
         $public = (new Signer(new Keystore()))->agentPublicKey();
 
