@@ -334,6 +334,10 @@ Migrations apply automatically on boot. The `validate-env` command (`make valida
 
 Full install guide, env reference, and production hardening: [docs/install.md](./docs/install.md).
 
+## One-Click Deploy
+
+[![Deploy on RepoCloud](https://d16t0pc4846x52.cloudfront.net/deploylobe.svg)](https://repocloud.io/details/WPMgr/)
+
 ---
 
 ## Install the Agent
